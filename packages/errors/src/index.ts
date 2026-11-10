@@ -113,6 +113,7 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   HOOK_FORCE_CLAIMED: 'hook-force-claimed',
+  HOOK_EXPIRED: 'hook-expired',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
@@ -933,11 +934,49 @@ export class HookForceClaimedError extends WorkflowError {
 }
 
 /**
+ * Thrown to a hook's awaiters when the hook reaches the end of its `ttl`
+ * without receiving a payload.
+ *
+ * Every hook created with `createHook()`, `createWebhook()` or
+ * `defineHook().create()` has a time-to-live (`ttl`, 30 days unless
+ * configured). When it passes, the runtime disposes the hook, which
+ * releases its token, and wakes the workflow so it can react: the pending
+ * `await hook` (or the next iteration of `for await (const payload of hook)`)
+ * rejects with this error, as does every later await. Payloads received
+ * before the hook expired are still delivered first.
+ *
+ * Catch it to time out gracefully, or let it fail the run.
+ *
+ * Use the static `HookExpiredError.is()` method for type-safe checking in
+ * catch blocks; the class identity differs between the workflow VM and the
+ * host, so `instanceof` is not reliable across that boundary.
+ */
+export class HookExpiredError extends WorkflowError {
+  token: string;
+  /** When the hook expired: its creation time plus its `ttl`. */
+  expiredAt: Date;
+
+  constructor(token: string, expiredAt: Date) {
+    super(
+      `Hook with token "${token}" expired at ${expiredAt.toISOString()} without receiving a payload`,
+      { slug: ERROR_SLUGS.HOOK_EXPIRED }
+    );
+    this.name = 'HookExpiredError';
+    this.token = token;
+    this.expiredAt = expiredAt;
+  }
+
+  static is(value: unknown): value is HookExpiredError {
+    return isError(value) && value.name === 'HookExpiredError';
+  }
+}
+
+/**
  * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
  * does not match any active hook.
  *
  * Common causes:
- * - The hook has expired (past its TTL)
+ * - The hook has expired (past its `ttl`, see `HookExpiredError`)
  * - The hook was already disposed after being consumed
  * - The workflow has not started yet, so the hook does not exist
  *
@@ -1383,6 +1422,7 @@ const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
 const HOOK_FORCE_CLAIMED_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookForceClaimedError'
 );
+const HOOK_EXPIRED_ERROR_KEY = Symbol.for('@workflow/errors//HookExpiredError');
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
@@ -1419,6 +1459,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY, {
       value: HookForceClaimedError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, HOOK_EXPIRED_ERROR_KEY)) {
+    Object.defineProperty(globalThis, HOOK_EXPIRED_ERROR_KEY, {
+      value: HookExpiredError,
       writable: false,
       enumerable: false,
       configurable: false,

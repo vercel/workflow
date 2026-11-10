@@ -233,7 +233,7 @@ function offsetClock() {
 
 const HOOK_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow(token) {
-    const hook = createHook({ token });
+    const hook = createHook({ ttl: Infinity, token });
     const payload = await hook;
     return payload.value;
   }${transform('workflow')}`;
@@ -243,7 +243,7 @@ const HOOK_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE
 const HOOK_OR_STEP_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   const tick = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("hw_tick");
   async function workflow(token) {
-    const hook = createHook({ token });
+    const hook = createHook({ ttl: Infinity, token });
     const winner = await Promise.race([
       hook.then((p) => "hook:" + p.value),
       tick("a"),
@@ -257,7 +257,7 @@ const HOOK_OR_STEP_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFLO
 const HOOK_OR_SLEEP_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow(token) {
-    const hook = createHook({ token });
+    const hook = createHook({ ttl: Infinity, token });
     const winner = await Promise.race([
       hook.then((p) => "hook:" + p.value),
       sleep("1s").then(() => "sleep"),
@@ -272,7 +272,7 @@ const HOOK_ABORTS_STEP_WORKFLOW = `const createHook = globalThis[Symbol.for("WOR
   const abortable = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("hw_abortable");
   async function workflow(token) {
     const controller = new AbortController();
-    const hook = createHook({ token });
+    const hook = createHook({ ttl: Infinity, token });
     const step = abortable(controller.signal);
     return await Promise.race([
       hook.then((p) => { controller.abort(); return "hook:" + p.value; }),
@@ -309,7 +309,7 @@ describe.each([
       const code = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
         const handle = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("hw_handle");
         async function workflow() {
-          const hooks = [createHook({ token: "c1" }), createHook({ token: "c2" }), createHook({ token: "c3" })];
+          const hooks = [createHook({ ttl: Infinity, token: "c1" }), createHook({ ttl: Infinity, token: "c2" }), createHook({ ttl: Infinity, token: "c3" })];
           const out = [];
           let i = 0;
           for (const hook of hooks) {

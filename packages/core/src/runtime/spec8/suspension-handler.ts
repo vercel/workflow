@@ -1093,6 +1093,7 @@ export async function handleSuspension({
         correlationId: queueItem.correlationId,
         eventData: {
           resumeAt: queueItem.resumeAt,
+          ...(queueItem.hookId && { hookId: queueItem.hookId }),
         },
       };
       if (batchFanoutEligible) {

@@ -402,7 +402,7 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook({ token: 'test-token' });
+    const hook = createHook({ token: 'test-token', ttl: Infinity });
 
     // After creating the hook, it should be in the queue
     expect(ctx.invocationsQueue.size).toBe(1);
@@ -431,7 +431,7 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook();
+    const hook = createHook({ ttl: Infinity });
 
     await expect(hook.getConflict()).resolves.toBeNull();
 
@@ -1117,7 +1117,7 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook({ token: 'my-conflicting-token' });
+    const hook = createHook({ token: 'my-conflicting-token', ttl: Infinity });
 
     // Hook should initially be in the queue
     expect(ctx.invocationsQueue.size).toBe(1);
@@ -1218,8 +1218,8 @@ describe('createCreateHook', () => {
     const ctx = setupWorkflowContext([]);
 
     const createHook = createCreateHook(ctx);
-    const hook1 = createHook({ token: 'token-a' });
-    const _hook2 = createHook({ token: 'token-b' });
+    const hook1 = createHook({ token: 'token-a', ttl: Infinity });
+    const _hook2 = createHook({ token: 'token-b', ttl: Infinity });
 
     // Only dispose the first hook
     hook1.dispose();
@@ -1330,7 +1330,10 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook<{ message: string }>({ token: 'test-token' });
+    const hook = createHook<{ message: string }>({
+      token: 'test-token',
+      ttl: Infinity,
+    });
 
     // Use iterator with break but no dispose()
     for await (const payload of hook) {

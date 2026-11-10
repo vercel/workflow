@@ -157,7 +157,7 @@ const openHookRaceWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW
   const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
   async function workflow() {
-    const hook = createHook({ token: "retained-hook" });
+    const hook = createHook({ ttl: Infinity, token: "retained-hook" });
     const a = await Promise.race([hook.then(() => 999), s1()]);
     const b = await s2();
     return a + b;
@@ -216,8 +216,8 @@ const bufferedHookAcrossStepWorkflow = `const createHook = globalThis[Symbol.for
   const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
   async function workflow() {
-    const buffered = createHook({ token: "retained-buffered-hook" });
-    const empty = createHook({ token: "retained-empty-hook" });
+    const buffered = createHook({ ttl: Infinity, token: "retained-buffered-hook" });
+    const empty = createHook({ ttl: Infinity, token: "retained-empty-hook" });
     await s1();
     const stepValue = await s2();
     const payload = await new Promise((resolve, reject) => {
@@ -235,7 +235,7 @@ const concurrentHookWakeWorkflow = `const createHook = globalThis[Symbol.for("WO
   const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s1");
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_concurrent_s2");
   async function workflow() {
-    const hook = createHook({ token: "retained-concurrent-hook" });
+    const hook = createHook({ ttl: Infinity, token: "retained-concurrent-hook" });
     const a = await Promise.race([hook.then(() => 999), s1()]);
     const b = await s2();
     return a + b;
@@ -397,7 +397,7 @@ registerStepFunction('r_echo', async (value) => value);
 const hookConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "retained-conflict-token" });
+    const hook = createHook({ ttl: Infinity, token: "retained-conflict-token" });
     const conflict = await hook.getConflict();
     const a = await s1();
     return conflict === null ? a : -1;
@@ -413,7 +413,7 @@ const hookConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STE
 const parallelGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "retained-parallel-token" });
+    const hook = createHook({ ttl: Infinity, token: "retained-parallel-token" });
     const [conflict, a] = await Promise.all([hook.getConflict(), s1()]);
     return conflict === null ? a : -1;
   }
@@ -427,7 +427,7 @@ const racedBranchGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFL
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "retained-raced-token" });
+    const hook = createHook({ ttl: Infinity, token: "retained-raced-token" });
     const branch = hook.getConflict().then(function (conflict) {
       return conflict === null ? s2() : -1;
     });
@@ -444,9 +444,9 @@ const chainedGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_U
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
     const step = s1();
-    const first = createHook({ token: "retained-chained-token-1" });
+    const first = createHook({ ttl: Infinity, token: "retained-chained-token-1" });
     await first.getConflict();
-    const second = createHook({ token: "retained-chained-token-2" });
+    const second = createHook({ ttl: Infinity, token: "retained-chained-token-2" });
     await second.getConflict();
     return await step;
   }
@@ -461,9 +461,9 @@ const chainedDependentGetConflictWorkflow = `const blocked = globalThis[Symbol.f
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
     const waiting = blocked();
-    const first = createHook({ token: "retained-chained-dep-1" });
+    const first = createHook({ ttl: Infinity, token: "retained-chained-dep-1" });
     await first.getConflict();
-    const second = createHook({ token: "retained-chained-dep-2" });
+    const second = createHook({ ttl: Infinity, token: "retained-chained-dep-2" });
     await second.getConflict();
     const released = await release();
     return (await waiting) + released;
@@ -482,7 +482,7 @@ const CONFLICTING_TOKEN = 'retained-taken-token';
 const conflictingGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
+    const hook = createHook({ ttl: Infinity, token: "${CONFLICTING_TOKEN}" });
     let observed;
     try {
       observed = (await hook.getConflict()) === null ? "clean" : "conflict";
@@ -502,7 +502,7 @@ const conflictingGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFL
 const conflictingParallelGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
+    const hook = createHook({ ttl: Infinity, token: "${CONFLICTING_TOKEN}" });
     const work = s1();
     let conflict;
     try {
@@ -524,7 +524,7 @@ const conflictingOverflowGetConflictWorkflow = `const s1 = globalThis[Symbol.for
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
+    const hook = createHook({ ttl: Infinity, token: "${CONFLICTING_TOKEN}" });
     const work = Promise.all([s1(), s2()]);
     let conflict;
     try {
@@ -544,7 +544,7 @@ const conflictingOverflowGetConflictWorkflow = `const s1 = globalThis[Symbol.for
 const conflictingAwaitWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
+    const hook = createHook({ ttl: Infinity, token: "${CONFLICTING_TOKEN}" });
     let observed;
     try {
       await hook;

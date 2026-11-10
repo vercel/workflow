@@ -1050,7 +1050,7 @@ describe('workflowEntrypoint replay guards', () => {
     await runWorkflowHandlerWithEvents(
       `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
       async function workflow() {
-        const hook = createHook({ token: 'expected-token' });
+        const hook = createHook({ ttl: Infinity, token: 'expected-token' });
         const payload = await hook;
         return payload.message;
       }${getWorkflowTransformCode('workflow')}`,
@@ -1119,7 +1119,7 @@ describe('workflowEntrypoint replay guards', () => {
     await runWorkflowHandlerWithEvents(
       `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
       async function workflow() {
-        const hook = createHook({ token: 'expected-token' });
+        const hook = createHook({ ttl: Infinity, token: 'expected-token' });
         const payload = await hook;
         return payload.message;
       }${getWorkflowTransformCode('workflow')}`,
@@ -2835,7 +2835,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
   const hookAndStepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
     const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStep");
     async function workflow() {
-      const hook = createHook({ token: 'delta-gate-token' });
+      const hook = createHook({ ttl: Infinity, token: 'delta-gate-token' });
       return await s();
     };globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set("workflow", workflow);`;
@@ -2846,7 +2846,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStep");
     const b = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStepB");
     async function workflow() {
-      const hook = createHook({ token: 'delta-gate-token' });
+      const hook = createHook({ ttl: Infinity, token: 'delta-gate-token' });
       await a();
       return await b();
     };globalThis.__private_workflows = new Map();
@@ -3842,7 +3842,7 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
       await setupConflictRun(`wrun_conflict_preclaimed_${retainedVm}`);
 
     await invoke(`
-      const hook = createHook({ token: 'taken-token' });
+      const hook = createHook({ ttl: Infinity, token: 'taken-token' });
       const result = await conflictStep();
       return result + ':' + typeof hook.token;`);
 
@@ -3869,7 +3869,7 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
     );
 
     await invoke(`
-      const hook = createHook({ token: 'taken-token' });
+      const hook = createHook({ ttl: Infinity, token: 'taken-token' });
       const pending = conflictStep();
       await hook;
       return await pending;`);
@@ -3894,7 +3894,7 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
     );
 
     const result = await invoke(`
-      const hook = createHook({ token: 'taken-token' });
+      const hook = createHook({ ttl: Infinity, token: 'taken-token' });
       const results = await Promise.all([
         conflictStep(),
         conflictEagerStep(),
@@ -4139,8 +4139,8 @@ describe('workflowEntrypoint concurrent hook continuation', () => {
     const entry = workflowEntrypoint(`
       const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
       async function workflow() {
-        const first = createHook({ token: 'customer:first' });
-        const second = createHook({ token: 'customer:second' });
+        const first = createHook({ ttl: Infinity, token: 'customer:first' });
+        const second = createHook({ ttl: Infinity, token: 'customer:second' });
         const owners = await Promise.all([first.getConflict(), second.getConflict()]);
         return owners.every(owner => owner === null);
       }

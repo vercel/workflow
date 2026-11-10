@@ -499,6 +499,7 @@ export async function dispatchPendingOps(params: {
     correlationId: wait.correlationId,
     eventData: {
       resumeAt: new Date(wait.resumeAt),
+      ...(wait.hookId ? { hookId: wait.hookId } : {}),
       ...(creatorMessageId ? { creatorMessageId } : {}),
     },
   });

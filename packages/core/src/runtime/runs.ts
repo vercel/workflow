@@ -510,6 +510,26 @@ function rememberWakeUp(
 }
 
 /**
+ * Whether `event` (a `wait_created`) is a hook's expiry (its `ttl`) rather
+ * than a `sleep()`. The expiry's id reuses its hook's ULID (`hook_<ulid>` ->
+ * `wait_<ulid>`), which identifies it from the log alone, on every World;
+ * `eventData.hookId` is the explicit tag where the World keeps it.
+ */
+export function isHookExpiryWait(
+  event: Event,
+  events: readonly Event[]
+): boolean {
+  if (event.eventType !== 'wait_created') return false;
+  if (event.eventData?.hookId) return true;
+  const ulid = event.correlationId?.replace(/^wait_/, '');
+  if (!ulid) return false;
+  const hookId = `hook_${ulid}`;
+  return events.some(
+    (e) => e.eventType === 'hook_created' && e.correlationId === hookId
+  );
+}
+
+/**
  * Wake up a workflow run by interrupting pending sleep() calls.
  *
  * On a single-orchestrator run (spec version 9 and later) the run's
@@ -571,6 +591,12 @@ export async function wakeUpRun(
       pendingWaits = pendingWaits.filter(
         (event: Event) =>
           event.correlationId && targetCorrelationIds.has(event.correlationId)
+      );
+    } else {
+      // A hook's expiry (its `ttl`) is a wait too, but not a sleep: waking
+      // it would expire the hook. Only an explicit `correlationIds` reaches it.
+      pendingWaits = pendingWaits.filter(
+        (event: Event) => !isHookExpiryWait(event, allEvents)
       );
     }
 

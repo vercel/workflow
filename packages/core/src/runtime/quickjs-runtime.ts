@@ -139,6 +139,8 @@ export interface PendingWait {
   resumeAt: string;
   /** Whether a wait_created event already exists for this wait */
   hasCreatedEvent: boolean;
+  /** Set on a hook's expiry (its `ttl`): the hook's correlationId. */
+  hookId?: string;
 }
 
 export interface PendingHook {
@@ -891,6 +893,37 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     }
   }
 
+  // The hook's expiry (its ttl: 30 days unless configured; Infinity opts
+  // out; SDK-internal hooks never expire). Recorded as an ordinary wait
+  // tagged with the hook's id, whose id reuses the hook's ULID so no extra id
+  // is drawn. Mirrors workflow/hook.ts.
+  var expiresAt;
+  if (!(options.isSystem === true && !options.isWebhook)) {
+    var ttl = options.ttl === undefined ? "30d" : options.ttl;
+    var invalidTtl = function() {
+      return new Error("\`createHook()\` was called with an invalid \`ttl\` (" + String(ttl) + "). Pass a duration string, a non-negative number of milliseconds, a \`Date\`, or \`Infinity\` for a hook that never expires.");
+    };
+    if (ttl === Infinity) {
+      expiresAt = undefined;
+    } else if (typeof ttl === "number") {
+      if (!(ttl >= 0)) throw invalidTtl();
+      expiresAt = new Date(Date.now() + ttl).toISOString();
+    } else if (typeof ttl === "string") {
+      var ttlMs = globalThis.__parseDurationMs(ttl);
+      if (typeof ttlMs === "number" && isFinite(ttlMs) && ttlMs >= 0) {
+        expiresAt = new Date(Date.now() + ttlMs).toISOString();
+      } else {
+        var ttlDate = new Date(ttl);
+        if (isNaN(ttlDate.getTime())) throw invalidTtl();
+        expiresAt = ttlDate.toISOString();
+      }
+    } else if (ttl && typeof ttl.getTime === "function" && !isNaN(ttl.getTime())) {
+      expiresAt = new Date(ttl.getTime()).toISOString();
+    } else {
+      throw invalidTtl();
+    }
+  }
+
   // Register in pending operations. Metadata stays a RAW value; the host
   // serializes it through a handle when it collects the pending op.
   // The start Hook's creation is run_created itself, so its op is created
@@ -939,8 +972,51 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     // Hook the takeover may precede this call (__startHookForceClaimed).
     forceClaimed: bindsStartHook ? (globalThis.__startHookForceClaimed || null) : null,
     force: options.experimental_force === true,
+    // Set when the hook's expiry completed while it was still live: every
+    // await after the buffered payloads rejects with it, and the host drops
+    // payloads that land later.
+    expired: null,
     getConflictResolvers: [],
   };
+
+  var expiryOp;
+  if (expiresAt !== undefined) {
+    var expiryWaitId = "wait_" + correlationId.slice(correlationId.indexOf("_") + 1);
+    expiryOp = globalThis.__pushPending({
+      type: "wait",
+      correlationId: expiryWaitId,
+      resumeAt: expiresAt,
+      hasCreatedEvent: false,
+      hookId: correlationId,
+    });
+    globalThis.__registerResolver(expiryWaitId, function() {
+      if (isDisposed || hookState.conflict || hookState.forceClaimed || hookState.expired) return;
+      var ExpiredCls = globalThis[Symbol.for('@workflow/errors//HookExpiredError')];
+      var expiredError;
+      if (typeof ExpiredCls === "function") {
+        expiredError = new ExpiredCls(token, new Date(expiresAt));
+      } else {
+        expiredError = new Error('Hook with token "' + token + '" expired at ' + expiresAt + ' without receiving a payload');
+        expiredError.name = "HookExpiredError";
+        expiredError.token = token;
+        expiredError.expiredAt = new Date(expiresAt);
+      }
+      hookState.expired = expiredError;
+      // The hook can never receive another payload: dispose it, which frees
+      // its token.
+      globalThis.__pushPending({
+        type: "hook_dispose",
+        correlationId: correlationId,
+        token: token,
+        hasCreatedEvent: false,
+      });
+      var waiting = globalThis.__resolvers[correlationId];
+      if (waiting) {
+        delete globalThis.__resolvers[correlationId];
+        waiting.reject(expiredError);
+      }
+    }, function() {});
+  }
 
   // Each await creates a new promise for the next payload.
   // The correlationId stays the same — the resolver is replaced each time.
@@ -955,6 +1031,9 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
         ? Promise.reject(next.error)
         : Promise.resolve(next);
     }
+    if (hookState.expired) {
+      return Promise.reject(hookState.expired);
+    }
     if (hookState.forceClaimed) {
       return Promise.reject(hookState.forceClaimed);
     }
@@ -966,6 +1045,15 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   function disposeHook() {
     if (isDisposed) return;
     isDisposed = true;
+    // Disposed before its expiry was recorded: nothing needs to wake the run
+    // for it, so don't record it at all.
+    if (expiryOp && !expiryOp.hasCreatedEvent) {
+      globalThis.__releasePending(expiryOp);
+      delete globalThis.__resolvers[expiryOp.correlationId];
+      expiryOp = undefined;
+    }
+    // Already disposed by its expiry.
+    if (hookState.expired) return;
     // A conflicted hook was never created (the world rejected its claim
     // — the token belongs to another run), so there is no entity to
     // dispose. Mirrors the node:vm engine, where hook_conflict removes
@@ -2945,6 +3033,30 @@ async function processEvents(
           break;
         }
 
+        // The hook already expired (its ttl): the World accepted this payload
+        // between the expiry's wait_completed and this run's hook_disposed,
+        // but the workflow already moved on. Drop it in every replay alike.
+        // Mirrors workflow/hook.ts.
+        if (
+          vm.dump(
+            vm.evalCode(
+              `!!(globalThis.__hooks && globalThis.__hooks[${cidJs}] && globalThis.__hooks[${cidJs}].expired)`
+            )
+          )
+        ) {
+          runtimeLogger.debug(
+            'QuickJS runtime: hook_received after the hook expired, dropping',
+            { correlationId: cid, eventId: event.eventId }
+          );
+          if (event.eventId) {
+            vm.evalCode(
+              `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${JSON.stringify(event.eventId)}] = true;`
+            ).dispose();
+          }
+          markCreated(vm, cidJs);
+          break;
+        }
+
         // Resilient-resume dedup (parity with the node engine's
         // EventsConsumer in workflow/hook.ts): two hook_received rows for
         // ONE resume attempt share a client-minted `resumeId` (a duplicate
@@ -3733,6 +3845,8 @@ function collectDrainOperations(
       if (p.hasCreatedEvent) return false;
       // Skip system hooks that were disposed before ever being created.
       if (p.type === "hook" && p.disposed) return false;
+      // A hook's expiry only wakes a live run; termination releases the hook.
+      if (p.type === "wait" && p.hookId !== undefined) return false;
       return true;
     });
   })()`,
