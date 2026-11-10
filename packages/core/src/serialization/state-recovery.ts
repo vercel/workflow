@@ -3,6 +3,7 @@ import { runtimeLogger } from '../logger.js';
 import { getWorldLazy } from '../runtime/get-world-lazy.js';
 import type { PayloadKey } from './encryption.js';
 import { decodeFormatPrefix, peekFormatPrefix } from './format.js';
+import { getCommonRevivers } from './reducers/common.js';
 import {
   STATE_REF_REDUCER,
   StateContext,
@@ -91,7 +92,11 @@ export async function recoverStateContext(
     context.stats.recoveryBytes += prepared.byteLength;
     if (context.stats.recoveryBytes > MAX_BYTES)
       throw fatal('the run log is larger than the 256 MiB recovery limit');
-    context.ingest(payload, source);
+    context.ingest(
+      payload,
+      getCommonRevivers(globalThis) as Record<string, (v: unknown) => unknown>,
+      source
+    );
   };
   const run = await read('input', () =>
     world.runs.get(runId, { resolveData: 'all' })

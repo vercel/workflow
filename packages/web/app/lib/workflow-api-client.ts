@@ -26,6 +26,7 @@ export {
   useWorkflowRuns,
 } from './client/hooks/use-paginated-list';
 export {
+  createRunStateHydratorForEnv,
   fetchSpanDetailResource,
   useWorkflowResourceData,
 } from './client/hooks/use-resource-data';

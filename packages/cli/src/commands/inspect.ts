@@ -10,6 +10,7 @@ import {
 } from '../lib/inspect/errors.js';
 import { validateInspectFlags } from '../lib/inspect/flag-bounds.js';
 import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
+import { resolveStateFrom } from '../lib/inspect/hydration.js';
 import {
   listAttributes,
   listEvents,
@@ -257,6 +258,9 @@ export default class Inspect extends BaseCommand {
           'Failed to connect to backend. Check your configuration.'
         );
       }
+
+      // Values a run stored by reference rebuild from its history.
+      resolveStateFrom(world);
 
       // Convert flags to InspectCLIOptions with proper typing
       const options = toInspectOptions(flags, attributes);

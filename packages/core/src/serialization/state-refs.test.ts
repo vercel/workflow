@@ -12,6 +12,7 @@ import {
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { decodeFormatPrefix } from './format.js';
+import { getCommonRevivers } from './reducers/common.js';
 import {
   bindStateContext,
   isFrozenState,
@@ -33,7 +34,10 @@ const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const cold = (...payloads: Uint8Array[]) => {
   const context = new StateContext();
   for (const p of payloads)
-    context.ingest(decodeFormatPrefix(p).payload as Uint8Array);
+    context.ingest(
+      decodeFormatPrefix(p).payload as Uint8Array,
+      getCommonRevivers(globalThis) as Record<string, (v: unknown) => unknown>
+    );
   return context;
 };
 
@@ -225,7 +229,11 @@ describe('frozen values stored by reference', () => {
     expect(text(output2)).not.toContain('Weather in Oslo');
     expect(read(output2, body).session.history.at(-1).content).toBe(message);
     const recovered = cold(output1);
-    recovered.ingest(decodeFormatPrefix(hook).payload as Uint8Array, source);
+    recovered.ingest(
+      decodeFormatPrefix(hook).payload as Uint8Array,
+      {},
+      source
+    );
     expect(read(output2, recovered).session.history.at(-1).content).toBe(
       message
     );
@@ -921,7 +929,8 @@ describe('frozen values stored by reference', () => {
     const second = write(
       {
         s: produce(v1 as { items: unknown[] }, (d) => {
-          d.items.push(at, new Uint8Array([1, 2]));
+          // Float16Array is encoded by devalue itself, not by Workflow's reducers.
+          d.items.push(at, new Uint8Array([1, 2]), new Float16Array([1.5]));
         }),
       },
       body
@@ -932,6 +941,7 @@ describe('frozen values stored by reference', () => {
     ).s;
     expect(recovered.items[1]).toEqual(at);
     expect(recovered.items[2]).toEqual(new Uint8Array([1, 2]));
+    expect(recovered.items[3]).toEqual(new Float16Array([1.5]));
 
     const unknown = new TextEncoder().encode(
       JSON.stringify([
