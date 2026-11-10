@@ -14,6 +14,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@ai-sdk/openai": "catalog:ai-sdk-v7",
     "@ai-sdk/react": "catalog:ai-sdk-v7",
     "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@node-rs/xxhash": "1.7.6",

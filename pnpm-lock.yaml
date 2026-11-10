@@ -6,6 +6,9 @@ settings:
 
 catalogs:
   ai-sdk-v7:
+    '@ai-sdk/openai':
+      specifier: 4.0.110
+      version: 4.0.110
     '@ai-sdk/react':
       specifier: 4.0.167
       version: 4.0.167
@@ -2053,6 +2056,9 @@ importers:
 
   workbench/nextjs-turbopack:
     dependencies:
+      '@ai-sdk/openai':
+        specifier: catalog:ai-sdk-v7
+        version: 4.0.110(zod@4.6.7)
       '@ai-sdk/react':
         specifier: catalog:ai-sdk-v7
         version: 4.0.167(react@19.2.7)(zod@4.6.7)
@@ -2177,6 +2183,9 @@ importers:
 
   workbench/nextjs-webpack:
     dependencies:
+      '@ai-sdk/openai':
+        specifier: catalog:ai-sdk-v7
+        version: 4.0.110(zod@4.6.7)
       '@ai-sdk/react':
         specifier: catalog:ai-sdk-v7
         version: 4.0.167(react@19.2.7)(zod@4.6.7)
@@ -2739,6 +2748,12 @@ packages:
   '@ai-sdk/openai@3.0.41':
     resolution: {integrity: sha512-IZ42A+FO+vuEQCVNqlnAPYQnnUpUfdJIwn1BEDOBywiEHa23fw7PahxVtlX9zm3/zMvTW4JKPzWyvAgDu+SQ2A==}
     engines: {node: '>=18'}
+    peerDependencies:
+      zod: 4.6.7
+
+  '@ai-sdk/openai@4.0.110':
+    resolution: {integrity: sha512-NIehl+lMI21kTFYM692tBMUiWVhwMZc/pVttnrRYkwc4Y8J9l4aN67F8Ld3exY8Uwa3o+lTb0zCu9KhLdAzDHg==}
+    engines: {node: '>=22'}
     peerDependencies:
       zod: 4.6.7
 
@@ -18205,6 +18220,12 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.19(zod@4.6.7)
       zod: 4.6.7
     optional: true
+
+  '@ai-sdk/openai@4.0.110(zod@4.6.7)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.6.7)
+      zod: 4.6.7
 
   '@ai-sdk/provider-utils@4.0.19(zod@4.6.7)':
     dependencies:

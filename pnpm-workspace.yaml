@@ -27,6 +27,7 @@ catalog:
 
 catalogs:
   ai-sdk-v7:
+    "@ai-sdk/openai": 4.0.110
     "@ai-sdk/react": 4.0.167
     "@ai-sdk/workflow": 2.0.95
     ai: 7.0.163
