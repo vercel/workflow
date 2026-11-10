@@ -449,11 +449,11 @@ importers:
   packages/cli:
     dependencies:
       '@oclif/core':
-        specifier: 4.14.0
-        version: 4.14.0
+        specifier: 4.11.4
+        version: 4.11.4
       '@oclif/plugin-help':
-        specifier: 6.3.0
-        version: 6.3.0
+        specifier: 6.2.37
+        version: 6.2.37
       '@swc/core':
         specifier: 'catalog:'
         version: 1.15.3(@swc/helpers@0.5.23)
@@ -5147,12 +5147,12 @@ packages:
       nuxt: ^4.6.4
       vite: ^8.3.5
 
-  '@oclif/core@4.14.0':
-    resolution: {integrity: sha512-QCJIZoVJxV7jywgVAUlsQwl3dr3Sa21kfi5z9KrYolbexWJUtFSEtMoNiBWojD05mYycLnB50gp/VxlGdaOCRA==}
+  '@oclif/core@4.11.4':
+    resolution: {integrity: sha512-URwiQ5ALx/sJ2iH4vzXEd+H4K6NAI7LRs6Jag3hrgKEpGmaE6alfRC8qjO4GIgb6A3ACaJumqP9twi/M9ywdHQ==}
     engines: {node: '>=18.0.0'}
 
-  '@oclif/plugin-help@6.3.0':
-    resolution: {integrity: sha512-cpSRv7tyHHFPv39HrV22eNmu8ylrwjmPvqdlNo3URp79+p5319p+a8PI/3ez6A6GZmjwBj1EWUdVz1aPUAsSmw==}
+  '@oclif/plugin-help@6.2.37':
+    resolution: {integrity: sha512-5N/X/FzlJaYfpaHwDC0YHzOzKDWa41s9t+4FpCDu4f9OMReds4JeNBaaWk9rlIzdKjh2M6AC5Q18ORfECRkHGA==}
     engines: {node: '>=18.0.0'}
 
   '@oozcitak/dom@2.0.2':
@@ -10580,11 +10580,6 @@ packages:
     engines: {node: '>=0.10.0'}
     hasBin: true
 
-  ejs@6.0.1:
-    resolution: {integrity: sha512-UaaM14yby8U3k02ihS1Bmj5Kz2d7CCQM1scxpgs4Mhkq8F1wR2gl3+Ts4h5Ne4Mnt7M9m4Dw7jsuMr3+xO4vZA==}
-    engines: {node: '>=0.12.18'}
-    hasBin: true
-
   electron-to-chromium@1.5.472:
     resolution: {integrity: sha512-s4+nfT29b0FKpVKoaIxl2pWsoNcn7A/nMPSrxayw4T3BsmPeV2lF9Y06BsAQeMGhCTQ4nYJ5XST7jkqe4ZEqFw==}
 
@@ -16005,10 +16000,6 @@ packages:
     resolution: {integrity: sha512-g/eziiSUNBSsdDJtCLB8bdYEUMj4jR7AGeUo96p/3dTafgjHhpF4RiCFPiRILwjQoDXx5MqkBr4fwWtR3Ky4Wg==}
     engines: {node: '>=20'}
 
-  wsl-utils@0.4.0:
-    resolution: {integrity: sha512-9YmF+2sFEd+T7TkwlmE337F0IVzfDvDknhtpBQxxXzEOfgPphGlFYpyx0cTuCIFj8/p+sqwBYAeGxOMNSzPPDA==}
-    engines: {node: '>=20'}
-
   xdg-app-paths@5.1.0:
     resolution: {integrity: sha512-RAQ3WkPf4KTU1A8RtFx3gWywzVKe00tfOPFfl2NDGqbIFENQO4kqAJp7mhQjNj/33W5x5hiWWUdyfPq/5SU3QA==}
     engines: {node: '>=6'}
@@ -19888,30 +19879,30 @@ snapshots:
       - unplugin
     optional: true
 
-  '@oclif/core@4.14.0':
+  '@oclif/core@4.11.4':
     dependencies:
       ansi-escapes: 4.3.2
       ansis: 3.17.0
       clean-stack: 3.0.1
       cli-spinners: 2.9.2
       debug: 4.4.3(supports-color@8.1.1)
-      ejs: 6.0.1
+      ejs: 3.1.10
       get-package-type: 0.1.0
       indent-string: 4.0.0
+      is-wsl: 2.2.0
       lilconfig: 3.1.3
       minimatch: 10.2.6
-      semver: 7.8.5
+      semver: 7.8.6
       string-width: 4.2.3
       supports-color: 8.1.1
       tinyglobby: 0.2.17
       widest-line: 3.1.0
       wordwrap: 1.0.0
       wrap-ansi: 7.0.0
-      wsl-utils: 0.4.0
 
-  '@oclif/plugin-help@6.3.0':
+  '@oclif/plugin-help@6.2.37':
     dependencies:
-      '@oclif/core': 4.14.0
+      '@oclif/core': 4.11.4
 
   '@oozcitak/dom@2.0.2':
     dependencies:
@@ -25842,8 +25833,6 @@ snapshots:
   ejs@3.1.10:
     dependencies:
       jake: 10.9.2
-
-  ejs@6.0.1: {}
 
   electron-to-chromium@1.5.472: {}
 
@@ -33566,11 +33555,6 @@ snapshots:
       is-wsl: 3.1.0
 
   wsl-utils@0.3.1:
-    dependencies:
-      is-wsl: 3.1.1
-      powershell-utils: 0.1.0
-
-  wsl-utils@0.4.0:
     dependencies:
       is-wsl: 3.1.1
       powershell-utils: 0.1.0

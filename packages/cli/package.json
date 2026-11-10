@@ -46,8 +46,8 @@
     "vitest": "catalog:"
   },
   "dependencies": {
-    "@oclif/core": "4.14.0",
-    "@oclif/plugin-help": "6.3.0",
+    "@oclif/core": "4.11.4",
+    "@oclif/plugin-help": "6.2.37",
     "@swc/core": "catalog:",
     "@vercel/cli-auth": "0.0.1",
     "@workflow/builders": "workspace:*",
