@@ -90,8 +90,19 @@ export function createWorkflowEntrypointOptionsCode(options?: {
  * delivers to this route.
  */
 export function createRefreshOptionsCode(options?: { namespace?: string }) {
-  const namespace = resolveQueueNamespace(options?.namespace);
-  return namespace ? `, { namespace: ${JSON.stringify(namespace)} }` : '';
+  const field = createNamespaceFieldCode(options?.namespace);
+  return field ? `, { ${field} }` : '';
+}
+
+/**
+ * The `namespace: "..."` field for the options of `refreshWorkflowHandler`
+ * and `registerWorkflowHandler`, resolved while building as
+ * {@link createWorkflowEntrypointOptionsCode} resolves it, or `undefined`
+ * when no namespace is set.
+ */
+export function createNamespaceFieldCode(namespace?: string) {
+  const resolved = resolveQueueNamespace(namespace);
+  return resolved ? `namespace: ${JSON.stringify(resolved)}` : undefined;
 }
 
 /**

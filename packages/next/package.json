@@ -36,9 +36,9 @@
   "dependencies": {
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
-    "@workflow/utils": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "ignore": "7.0.5",
     "semver": "catalog:",
     "watchpack": "2.5.1"
