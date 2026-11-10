@@ -1,8 +1,5 @@
-import type { World } from '@workflow/world';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
-import { getRun, getWorld } from '../src/runtime';
-import { setupWorld } from './utils';
 
 /**
  * Vercel-specific suite for `start(..., { experimental_inline: true })` and
@@ -15,6 +12,9 @@ import { setupWorld } from './utils';
  * have every step report the process it ran in. The routes
  * (app/api/inline-start/*) import `workflow/next/inline`, so their process
  * can run the workflow; a step that reports the route's process ran inline.
+ *
+ * Runs are read back through the deployment (app/api/inline-start/run/[runId]),
+ * so the suite needs only `DEPLOYMENT_URL` and a protection bypass.
  *
  * Each test also looks for double delivery: every step must run once
  * (attempt 1) and reach one committed outcome, and the log must not grow
@@ -58,45 +58,60 @@ interface StartAnswer {
   region: string | null;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetchWithTrustedSources(new URL(path, deploymentUrl), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetchWithTrustedSources(new URL(path, deploymentUrl), init);
   if (!res.ok) {
     throw new Error(`${path} answered ${res.status}: ${await res.text()}`);
   }
   return (await res.json()) as T;
 }
 
+const post = <T>(path: string, body: unknown) =>
+  request<T>(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+interface RunAnswer<T> {
+  status: string;
+  completedAt: number | null;
+  returnValue: T | null;
+  events: { eventType: string; correlationId: string | null }[];
+}
+
+/** The run's outcome and log, read by the deployment once it finished. */
+async function readRun<T>(runId: string): Promise<RunAnswer<T>> {
+  for (let i = 0; i < 5; i++) {
+    const answer = await request<RunAnswer<T>>(
+      `/api/inline-start/run/${runId}?waitMs=50000`
+    );
+    if (answer.status !== 'pending' && answer.status !== 'running') {
+      expect(answer.status).toBe('completed');
+      return answer;
+    }
+  }
+  throw new Error(`run ${runId} did not finish`);
+}
+
 /** The event types of a run's log, by correlation ID. */
-async function eventLog(world: World, runId: string) {
+function eventLog(answer: RunAnswer<unknown>) {
   const types: string[] = [];
   const byCorrelation = new Map<string, string[]>();
-  let cursor: string | undefined;
-  do {
-    const page = await world.events.list({
-      runId,
-      resolveData: 'none',
-      pagination: { cursor, limit: 1000, sortOrder: 'asc' },
-    });
-    for (const event of page.data) {
-      types.push(event.eventType);
-      if (event.correlationId) {
-        const list = byCorrelation.get(event.correlationId) ?? [];
-        list.push(event.eventType);
-        byCorrelation.set(event.correlationId, list);
-      }
+  for (const event of answer.events) {
+    types.push(event.eventType);
+    if (event.correlationId) {
+      const list = byCorrelation.get(event.correlationId) ?? [];
+      list.push(event.eventType);
+      byCorrelation.set(event.correlationId, list);
     }
-    cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
-  } while (cursor);
+  }
   return { types, byCorrelation };
 }
 
 /** Every step started once and completed once: no double delivery. */
 function expectEachStepOnce(
-  log: Awaited<ReturnType<typeof eventLog>>,
+  log: ReturnType<typeof eventLog>,
   steps: StepReport[]
 ) {
   for (const step of steps) expect(step.attempt).toBe(1);
@@ -133,16 +148,18 @@ function ranInline(answer: { instance: string }, steps: StepReport[]): boolean {
   return inline;
 }
 
+interface TimingValue {
+  startCalledAt: number;
+  steps: StepReport[];
+}
+
 async function startTiming(inline: boolean, specVersion?: number) {
   const answer = await post<StartAnswer>('/api/inline-start', {
     inline,
     ...(specVersion !== undefined && { specVersion }),
   });
-  const run = getRun<{ startCalledAt: number; steps: StepReport[] }>(
-    answer.runId
-  );
-  const value = await run.returnValue;
-  return { answer, run, value };
+  const read = await readRun<TimingValue>(answer.runId);
+  return { answer, read, value: read.returnValue as TimingValue };
 }
 
 function median(values: number[]): number {
@@ -154,14 +171,6 @@ function median(values: number[]): number {
 describe
   .skipIf(!process.env.WORKFLOW_VERCEL_ENV)
   .concurrent('inline start (experimental_inline)', () => {
-    let world: World;
-
-    beforeAll(async () => {
-      setupWorld(deploymentUrl);
-      world = await getWorld();
-      expect(world.capabilities?.experimental_queueHold).toBe(true);
-    });
-
     test.each([
       ['the default spec', undefined],
       ['spec 9 (single orchestrator)', 9],
@@ -169,17 +178,17 @@ describe
       'an inline start with %s runs in the calling route, once',
       { timeout: 240_000 },
       async (_label, specVersion) => {
-        const { answer, value } = await startTiming(true, specVersion);
+        const { answer, read, value } = await startTiming(true, specVersion);
         ranInline(answer, value.steps);
         // Both steps of a two-step run belong to the one delivery.
         expect(value.steps[1]?.instance).toBe(value.steps[0]?.instance);
 
-        const log = await eventLog(world, answer.runId);
+        const log = eventLog(read);
         expectEachStepOnce(log, value.steps);
         // Past the hold's lease: a redelivery that ran the run again would
         // have written to the log by now.
         await sleep(LEASE_LAPSE_MS);
-        const after = await eventLog(world, answer.runId);
+        const after = eventLog(await readRun(answer.runId));
         expect(after.types).toEqual(log.types);
       }
     );
@@ -188,9 +197,9 @@ describe
       'without the option the same route queues the run',
       { timeout: 120_000 },
       async () => {
-        const { answer, value } = await startTiming(false);
+        const { answer, read, value } = await startTiming(false);
         expect(value.steps[0]?.instance).not.toBe(answer.instance);
-        expectEachStepOnce(await eventLog(world, answer.runId), value.steps);
+        expectEachStepOnce(eventLog(read), value.steps);
       }
     );
 
@@ -203,9 +212,6 @@ describe
           inline: false,
           hookToken: token,
         });
-        const run = getRun<{ resumedAt: number; steps: StepReport[] }>(
-          started.runId
-        );
         // Resume once the hook exists (the run has suspended on it); until
         // then the route answers with the resume's not-found error.
         let resumed: { instance: string; resumedAt: number } | undefined;
@@ -219,12 +225,17 @@ describe
           }
         }
         expect(resumed, String(lastError)).toBeDefined();
-        expect(resumed).toBeDefined();
-        const value = await run.returnValue;
+        const read = await readRun<{ resumedAt: number; steps: StepReport[] }>(
+          started.runId
+        );
+        const value = read.returnValue as {
+          resumedAt: number;
+          steps: StepReport[];
+        };
         const after = value.steps[1];
         const inline = after?.instance === resumed?.instance;
         if (expectInline) expect(inline).toBe(true);
-        const log = await eventLog(world, started.runId);
+        const log = eventLog(read);
         expectEachStepOnce(log, value.steps);
         expect(log.types.filter((t) => t === 'hook_received')).toHaveLength(1);
       }
@@ -238,9 +249,8 @@ describe
         // Interleaved, so both modes see the same conditions.
         for (let i = 0; i < samples; i++) {
           for (const inline of [true, false]) {
-            const { answer, run, value } = await startTiming(inline);
-            const completedAt = (await world.runs.get(answer.runId))
-              .completedAt;
+            const { answer, read, value } = await startTiming(inline);
+            const { completedAt } = read;
             rows.push({
               mode: inline ? 'inline' : 'queued',
               ranInline: value.steps[0]?.instance === answer.instance,
@@ -248,10 +258,9 @@ describe
               firstStepMs: value.steps[0].at - answer.startCalledAt,
               lastStepMs: value.steps[1].at - answer.startCalledAt,
               completedMs: completedAt
-                ? completedAt.getTime() - answer.startCalledAt
+                ? completedAt - answer.startCalledAt
                 : Number.NaN,
               region: answer.region ?? '',
-              runId: run.runId,
             });
           }
         }
@@ -270,11 +279,7 @@ describe
         });
         console.info(
           '[e2e-inline-start] timing samples',
-          JSON.stringify(
-            rows.map(({ runId: _runId, ...row }) => row),
-            null,
-            2
-          )
+          JSON.stringify(rows, null, 2)
         );
         console.info(
           '[e2e-inline-start] timing summary',
