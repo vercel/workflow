@@ -1,6 +1,6 @@
-import { waitForHook, waitForSleep } from '@workflow/vitest';
+import { skipSleep, waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
-import { getRun, resumeHook, resumeWebhook, start } from 'workflow/api';
+import { resumeHook, resumeWebhook, start } from 'workflow/api';
 import { hookWorkflow } from '../workflows/hooks.js';
 import { calculateWorkflow } from '../workflows/simple.js';
 import { multiSleepWorkflow, sleepingWorkflow } from '../workflows/sleeping.js';
@@ -29,7 +29,7 @@ describe('sleeping workflow', () => {
 
     const sleepId = await waitForSleep(run);
     expect(sleepId).toBeTypeOf('string');
-    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+    await skipSleep(run, { correlationIds: [sleepId] });
 
     const result = await run.returnValue;
     expect(result).toBe('finalized:prepared:test-input');
@@ -40,12 +40,12 @@ describe('sleeping workflow', () => {
 
     // Wake up the first sleep (1h)
     const firstSleepId = await waitForSleep(run);
-    await getRun(run.runId).wakeUp({ correlationIds: [firstSleepId] });
+    await skipSleep(run, { correlationIds: [firstSleepId] });
 
     // Wake up the second sleep (24h)
     const secondSleepId = await waitForSleep(run);
     expect(secondSleepId).not.toBe(firstSleepId);
-    await getRun(run.runId).wakeUp({ correlationIds: [secondSleepId] });
+    await skipSleep(run, { correlationIds: [secondSleepId] });
 
     const result = await run.returnValue;
     expect(result).toBe('done:finalized:prepared:multi');

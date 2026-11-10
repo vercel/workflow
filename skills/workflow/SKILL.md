@@ -654,8 +654,8 @@ export default defineConfig({
 ```typescript
 // approval.integration.test.ts
 import { describe, it, expect } from "vitest";
-import { start, getRun, resumeHook } from "workflow/api";
-import { waitForHook, waitForSleep } from "@workflow/vitest";
+import { start, resumeHook } from "workflow/api";
+import { skipSleep, waitForHook, waitForSleep } from "@workflow/vitest";
 import { approvalWorkflow } from "./approval";
 
 describe("approvalWorkflow", () => {
@@ -668,7 +668,7 @@ describe("approvalWorkflow", () => {
 
     // Wait for sleep, then wake it up
     const sleepId = await waitForSleep(run);
-    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+    await skipSleep(run, { correlationIds: [sleepId] });
 
     const result = await run.returnValue;
     expect(result).toEqual({ status: "published", reviewer: "alice" });
@@ -695,7 +695,7 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 - `run.returnValue`: Await workflow completion
 - `waitForHook(run, { token? })` / `waitForSleep(run)`: Wait for workflow to reach a pause point
 - `resumeHook(token, data)` / `resumeWebhook(token, request)`: Resume paused workflows
-- `getRun(runId).wakeUp({ correlationIds })`: Skip `sleep()` calls
+- `skipSleep(run, { correlationIds? })`: Skip `sleep()` calls (test-only; `run.wakeUp()` is deprecated and not for app code)
 - `getWorkflowRef(name)` / `listWorkflowRefs()`: Look a workflow up in the test build's manifest when the test cannot import the function (never hand-write `workflow//...` ids)
 
 **Best practices:**

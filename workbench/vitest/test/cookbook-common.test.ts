@@ -1,4 +1,4 @@
-import { waitForHook, waitForSleep } from '@workflow/vitest';
+import { skipSleep, waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
 import { getRun, resumeWebhook, start } from 'workflow/api';
 import { batchWorkflow } from '../workflows/cookbook/batching.js';
@@ -34,10 +34,10 @@ describe('batching', () => {
 
     // Wake up sleeps between batches
     const sleep1 = await waitForSleep(run);
-    await getRun(run.runId).wakeUp({ correlationIds: [sleep1] });
+    await skipSleep(run, { correlationIds: [sleep1] });
 
     const sleep2 = await waitForSleep(run);
-    await getRun(run.runId).wakeUp({ correlationIds: [sleep2] });
+    await skipSleep(run, { correlationIds: [sleep2] });
 
     const result = await run.returnValue;
     expect(result).toEqual({ total: 5, succeeded: 5, failed: 0 });
@@ -66,7 +66,7 @@ describe('scheduling', () => {
 
     const sleepId = await waitForSleep(run);
     expect(sleepId).toBeTypeOf('string');
-    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+    await skipSleep(run, { correlationIds: [sleepId] });
 
     const result = await run.returnValue;
     expect(result).toEqual({ email: 'user@test.com', status: 'completed' });

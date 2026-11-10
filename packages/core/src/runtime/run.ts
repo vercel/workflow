@@ -317,14 +317,44 @@ export class Run<TResult> {
   }
 
   /**
-   * Interrupts pending `sleep()` calls, resuming the workflow early.
+   * **Internal escape hatch. Do not use this in application code.**
    *
-   * @param options - Optional settings to target specific sleep calls by correlation ID.
-   *   If not provided, all pending sleep calls will be interrupted.
-   * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
-   *   On a single-orchestrator run it is the number of sleep calls the run's
-   *   orchestrator was asked to complete, which is best-effort while an
-   *   orchestrator invocation of the run is live (see `wakeUpRun`).
+   * Forces pending `sleep()` calls of the run to complete early. A run never
+   * needs this to make progress: every `sleep()` resumes on its own when it is
+   * due. Reaching for it in production means something in the Workflow SDK or
+   * the World went wrong, and that should be reported as a bug instead of
+   * worked around. It exists so operators (e.g. the observability dashboard)
+   * can unstick a run by hand, and it may change or be removed in any release
+   * without notice.
+   *
+   * To end a sleep early as part of normal execution, race the `sleep()`
+   * against a hook and resume the hook. To skip sleeps in tests, use
+   * `skipSleep()` from `@workflow/vitest`.
+   *
+   * On a single-orchestrator run this is best-effort while an orchestrator
+   * invocation of the run is live (see `wakeUpRun`).
+   *
+   * @internal
+   * @param options - Optional settings to target specific sleep calls by
+   *   correlation ID. If not provided, all pending sleep calls are completed.
+   * @returns A {@link StopSleepResult} with the number of sleep calls the
+   *   call completed, or on a single-orchestrator run asked the run's
+   *   orchestrator to complete.
+   */
+  async internal_wakeUpRun(
+    options?: StopSleepOptions
+  ): Promise<StopSleepResult> {
+    'use step';
+    return wakeUpRun(await this.#lazyWorldPromise, this.runId, options);
+  }
+
+  /**
+   * @deprecated `wakeUp()` was never meant to be a user-facing API and will be
+   * removed in the next major version. A run never needs it to make progress:
+   * every `sleep()` resumes on its own when it is due. To end a sleep early as
+   * part of normal execution, race the `sleep()` against a hook and resume the
+   * hook. To skip sleeps in tests, use `skipSleep()` from `@workflow/vitest`.
+   * Operators unsticking a run by hand can use {@link Run.internal_wakeUpRun}.
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
     'use step';

@@ -1,6 +1,6 @@
-import { waitForHook, waitForSleep } from '@workflow/vitest';
+import { skipSleep, waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
-import { getRun, start } from 'workflow/api';
+import { start } from 'workflow/api';
 import { durableAgentWorkflow } from '../workflows/cookbook/durable-agent.js';
 import {
   approvalHook,
@@ -78,7 +78,7 @@ describe('human-in-the-loop pattern', () => {
     // The workflow races hook vs sleep('24h'). Wake up the sleep to simulate timeout.
     await waitForHook(run, { token: 'approval:item-3' });
     const sleepId = await waitForSleep(run);
-    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+    await skipSleep(run, { correlationIds: [sleepId] });
 
     const result = await run.returnValue;
     expect(result).toEqual({ status: 'expired', itemId: 'item-3' });
@@ -91,7 +91,7 @@ describe('tool-orchestration pattern', () => {
 
     // The workflow has a sleep(5000) in the combined path — wake it up
     const sleepId = await waitForSleep(run);
-    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+    await skipSleep(run, { correlationIds: [sleepId] });
 
     const result = await run.returnValue;
     expect(result).toEqual({
@@ -123,7 +123,7 @@ describe('stop-workflow pattern', () => {
     // Advance each scheduled iteration without sending a stop signal.
     for (let i = 0; i < 3; i++) {
       const sleepId = await waitForSleep(run);
-      await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+      await skipSleep(run, { correlationIds: [sleepId] });
     }
     const result = await run.returnValue;
 

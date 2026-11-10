@@ -75,22 +75,6 @@ export default WorkflowRunWritableStreamOptions;`}
 
 Use `run.writable` for the default stream or `run.getWritable(options)` to configure it. See [Writing to another run's stream](/docs/foundations/streaming#writing-to-another-runs-stream) for lifecycle details.
 
-#### StopSleepOptions
-
-<TSDoc
-definition={`
-import type { StopSleepOptions } from "workflow/api";
-export default StopSleepOptions;`}
-/>
-
-#### StopSleepResult
-
-<TSDoc
-definition={`
-import type { StopSleepResult } from "workflow/api";
-export default StopSleepResult;`}
-/>
-
 ## Examples
 
 ### Check if a run exists
@@ -151,35 +135,6 @@ export async function GET(req: Request) {
 }
 ```
 
-### Wake up a sleeping workflow
-
-Interrupt pending `sleep()` calls to resume a workflow early. This is useful for testing workflows or building custom UIs that let users skip wait periods:
-
-```typescript lineNumbers
-import { getRun } from "workflow/api";
-
-export async function POST(req: Request) {
-  const { runId } = await req.json();
-  const run = getRun(runId);
-
-  // Wake up all pending sleep calls
-  const { stoppedCount } = await run.wakeUp(); // [!code highlight]
-
-  return Response.json({ stoppedCount });
-}
-```
-
-You can also target specific sleep calls by correlation ID:
-
-```typescript lineNumbers
-import { getRun } from "workflow/api";
-
-const run = getRun("my-run-id"); // @setup
-const { stoppedCount } = await run.wakeUp({
-  correlationIds: ["wait_abc123"],
-});
-```
-
 ### Cancel a run
 
 Cancel a workflow run. You can pass an optional free-text `cancelReason` (up to 512 characters) that is recorded on the run's cancellation event and shown in the run detail view:
@@ -199,9 +154,12 @@ export async function POST(req: Request) {
 
 The options object is optional: `await run.cancel()` cancels the run without recording a reason.
 
-## Spec 9 (experimental)
+## Deprecated: `run.wakeUp()`
 
-On runs of the experimental spec 9 runtime, `wakeUp()` asks the run's orchestrator to complete the sleeps instead of completing them itself, `stoppedCount` counts the sleeps it asked to complete, and the request is best-effort while the run is active. See [`run.wakeUp()` on spec 9 runs](/docs/changelog/spec-9#runwakeup-and-waitforsleep).
+`run.wakeUp()` is deprecated and will be removed in the next major version. It was never meant for application code: every `sleep()` resumes on its own when it is due, so a run never needs it to make progress.
+
+- **To end a sleep early as part of normal execution**, race the `sleep()` against a [hook](/docs/foundations/hooks) and resume the hook.
+- **To skip sleeps in tests**, use [`skipSleep()`](/docs/api-reference/vitest#skipsleep) from `@workflow/vitest`.
 
 ## Related functions
 

@@ -199,8 +199,8 @@ You can write an integration test that starts the workflow, waits for the hook a
 
 ```typescript title="workflows/approval.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
-import { start, getRun, resumeHook } from "workflow/api"; // [!code highlight]
-import { waitForHook, waitForSleep } from "@workflow/vitest"; // [!code highlight]
+import { start, resumeHook } from "workflow/api"; // [!code highlight]
+import { skipSleep, waitForHook, waitForSleep } from "@workflow/vitest"; // [!code highlight]
 import { approvalWorkflow } from "./approval";
 
 describe("approvalWorkflow", () => {
@@ -216,11 +216,11 @@ describe("approvalWorkflow", () => {
 
     // Wait for the first pending sleep to be reached.
     // waitForSleep() returns the sleep's correlation ID, which can be
-    // passed to wakeUp() later to target a specific sleep in the workflow.
+    // passed to skipSleep() later to target a specific sleep in the workflow.
     const sleepId = await waitForSleep(run); // [!code highlight]
 
-    // Calling wakeUp() without correlationIds would resume all active sleeps
-    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlight]
+    // Calling skipSleep() without correlationIds would skip all active sleeps
+    await skipSleep(run, { correlationIds: [sleepId] }); // [!code highlight]
 
     const result = await run.returnValue;
     expect(result).toEqual({
@@ -238,7 +238,7 @@ describe("approvalWorkflow", () => {
       reviewer: "bob",
     });
 
-    // No wakeUp() needed here; the rejected path has no sleep
+    // No skipSleep() needed here; the rejected path has no sleep
     const result = await run.returnValue;
     expect(result).toEqual({
       status: "rejected",
@@ -249,7 +249,7 @@ describe("approvalWorkflow", () => {
 ```
 
 <Callout type="info">
-[`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run) are the key API functions for integration testing. Use `start()` to trigger a workflow, `resumeHook()` to simulate external events, and `wakeUp()` to skip `sleep()` calls so tests run instantly. [`waitForSleep()`](/docs/api-reference/vitest#waitforsleep) and [`waitForHook()`](/docs/api-reference/vitest#waitforhook) from `@workflow/vitest` let you wait for the workflow to reach a specific point before resuming. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
+[`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), and [`skipSleep()`](/docs/api-reference/vitest#skipsleep) are the key API functions for integration testing. Use `start()` to trigger a workflow, `resumeHook()` to simulate external events, and `skipSleep()` to skip `sleep()` calls so tests run instantly. [`waitForSleep()`](/docs/api-reference/vitest#waitforsleep) and [`waitForHook()`](/docs/api-reference/vitest#waitforhook) from `@workflow/vitest` let you wait for the workflow to reach a specific point before resuming. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
 </Callout>
 
 <Callout type="info">
@@ -489,7 +489,7 @@ Integration tests are the right place to verify that your workflows handle error
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows programmatically
 - [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) - Resume hooks with data
 - [`resumeWebhook()` API Reference](/docs/api-reference/workflow-api/resume-webhook) - Resume webhooks with Request objects
-- [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status and wake up sleeping runs
+- [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status
 - [`@workflow/vitest` API Reference](/docs/api-reference/vitest) - Test helpers: `waitForSleep()`, `waitForHook()`, `getWorkflowRef()`, and plugin setup
 - [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
 - [Observability](/docs/observability) - Inspect and debug workflow runs with the CLI and Web UI

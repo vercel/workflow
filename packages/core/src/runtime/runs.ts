@@ -464,8 +464,8 @@ const wakeUps = globalSingleton(
 );
 
 /**
- * Waits of `runId` that a `run.wakeUp()` in this process asked its
- * orchestrator to complete. On a single-orchestrator run `wakeUp` returns
+ * Waits of `runId` that a {@link wakeUpRun} in this process asked its
+ * orchestrator to complete. On a single-orchestrator run `wakeUpRun` returns
  * before the orchestrator writes their `wait_completed`; a caller looking for
  * the run's next pending sleep skips these.
  *
@@ -510,7 +510,17 @@ function rememberWakeUp(
 }
 
 /**
- * Wake up a workflow run by interrupting pending sleep() calls.
+ * **Internal escape hatch. Do not use this in application code.**
+ *
+ * Wake up a workflow run by interrupting pending sleep() calls. A run never
+ * needs this to make progress: every `sleep()` resumes on its own when it is
+ * due, so needing it means something in the Workflow SDK or the World went
+ * wrong. It exists for operators (the observability dashboard and the
+ * `@workflow/web` run actions) to unstick a run by hand, and for
+ * `@workflow/vitest`'s `skipSleep()`. It may change or be removed in any
+ * release without notice.
+ *
+ * @internal
  *
  * On a single-orchestrator run (spec version 9 and later) the run's
  * orchestrator completes the waits: this names them on an ordinary

@@ -171,16 +171,16 @@ const names = listWorkflowRefs().map((ref) => ref.name); // [!code highlight]
 
 ### `waitForSleep()`
 
-Polls the event log until the workflow has a pending `sleep()` call, one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
+Polls the event log until the workflow has a pending `sleep()` call, one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`skipSleep()`](#skipsleep) to target a specific sleep.
 
 
 ```typescript
-import { waitForSleep } from "@workflow/vitest"; // [!code highlight]
-import { start, getRun } from "workflow/api";
+import { skipSleep, waitForSleep } from "@workflow/vitest"; // [!code highlight]
+import { start } from "workflow/api";
 
 const run = await start(myWorkflow, []);
 const sleepId = await waitForSleep(run); // [!code highlight]
-await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlight]
+await skipSleep(run, { correlationIds: [sleepId] });
 ```
 
 **Parameters:**
@@ -190,12 +190,37 @@ await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlig
 | `run` | `Run<any>` | The workflow run to monitor |
 | `options?` | `WaitOptions` | Polling and timeout configuration |
 
-**Returns:** `Promise<string>`, the correlation ID of the first pending sleep. Pass this to `wakeUp({ correlationIds: [id] })` to target a specific sleep.
+**Returns:** `Promise<string>`, the correlation ID of the first pending sleep. Pass this to `skipSleep(run, { correlationIds: [id] })` to target a specific sleep.
 
 #### Behavior with multiple sleeps
 
-- **Sequential sleeps**: `waitForSleep()` returns each sleep as the workflow reaches it. After waking one, call `waitForSleep()` again for the next.
-- **Parallel sleeps**: `waitForSleep()` returns whichever pending sleep is found first. After waking it, call `waitForSleep()` again to get the next one.
+- **Sequential sleeps**: `waitForSleep()` returns each sleep as the workflow reaches it. After skipping one, call `waitForSleep()` again for the next.
+- **Parallel sleeps**: `waitForSleep()` returns whichever pending sleep is found first. After skipping it, call `waitForSleep()` again to get the next one.
+
+### `skipSleep()`
+
+Completes a run's pending `sleep()` calls early so a test does not wait for them. Without `correlationIds` it skips every pending sleep; with them, only the named ones (as returned by [`waitForSleep()`](#waitforsleep)).
+
+```typescript
+import { skipSleep, waitForSleep } from "@workflow/vitest"; // [!code highlight]
+import { start } from "workflow/api";
+
+const run = await start(myWorkflow, []);
+const sleepId = await waitForSleep(run);
+await skipSleep(run, { correlationIds: [sleepId] }); // [!code highlight]
+const result = await run.returnValue;
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `run` | `Run<any>` | The workflow run whose sleeps to skip |
+| `options?` | `{ correlationIds?: string[] }` | Correlation IDs of the sleeps to skip. Omit to skip every pending sleep |
+
+**Returns:** `Promise<{ stoppedCount: number }>`, the number of sleeps it skipped.
+
+`skipSleep()` is a testing tool. In application code, end a sleep early by racing it against a [hook](/docs/foundations/hooks) instead. It replaces `getRun(runId).wakeUp()`, which is deprecated.
 
 ### `waitForHook()`
 

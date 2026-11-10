@@ -156,11 +156,12 @@ You can use any server framework that supports the workflow runtime. The example
 
 ## Writing tests
 
-Tests are written the same way as [in-process integration tests](/docs/testing#writing-integration-tests). You can use the same programmatic APIs ([`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run)) to control workflow execution:
+Tests are written the same way as [in-process integration tests](/docs/testing#writing-integration-tests). You can use the same programmatic APIs ([`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook), and [`skipSleep()`](/docs/api-reference/vitest#skipsleep) from `@workflow/vitest`) to control workflow execution:
 
 ```typescript title="workflows/calculate.server.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
-import { start, getRun, resumeHook } from "workflow/api";
+import { skipSleep } from "@workflow/vitest";
+import { start, resumeHook } from "workflow/api";
 import { calculateWorkflow } from "./calculate";
 import { approvalWorkflow } from "./approval";
 
@@ -181,13 +182,13 @@ describe("approvalWorkflow", () => {
   it("should publish when approved", async () => {
     const run = await start(approvalWorkflow, ["doc-1"]);
 
-    // Use resumeHook and wakeUp to control workflow execution
+    // Use resumeHook and skipSleep to control workflow execution
     await resumeHook("approval:doc-1", {
       approved: true,
       reviewer: "alice",
     });
 
-    await getRun(run.runId).wakeUp();
+    await skipSleep(run);
 
     const result = await run.returnValue;
     expect(result).toEqual({

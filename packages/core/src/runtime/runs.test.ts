@@ -778,7 +778,7 @@ describe('Run.getReadable', () => {
   });
 });
 
-describe('Run.wakeUp', () => {
+describe('Run.internal_wakeUpRun', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
   });
@@ -799,7 +799,7 @@ describe('Run.wakeUp', () => {
     setWorld(world);
 
     const run = new Run('wrun_123');
-    const result = await run.wakeUp();
+    const result = await run.internal_wakeUpRun();
 
     expect(result.stoppedCount).toBe(1);
     expect(world.queue).toHaveBeenCalled();
@@ -840,7 +840,9 @@ describe('Run.wakeUp', () => {
     setWorld(world);
 
     const run = new Run('wrun_123');
-    const result = await run.wakeUp({ correlationIds: ['wait_abc'] });
+    const result = await run.internal_wakeUpRun({
+      correlationIds: ['wait_abc'],
+    });
 
     expect(result.stoppedCount).toBe(1);
     // Should only complete wait_abc, not wait_def
@@ -863,11 +865,39 @@ describe('Run.wakeUp', () => {
     setWorld(world);
 
     const run = new Run('wrun_123');
-    const result = await run.wakeUp();
+    const result = await run.internal_wakeUpRun();
 
     expect(result.stoppedCount).toBe(0);
     // Should not re-enqueue when nothing was stopped
     expect(world.queue).not.toHaveBeenCalled();
+  });
+
+  it('keeps the deprecated wakeUp() as an alias', async () => {
+    const events: Event[] = [
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_abc',
+        eventData: { resumeAt: new Date('2024-01-01T00:00:01.000Z') },
+        createdAt: new Date(),
+      },
+    ];
+    const world = createMockWorld({ events });
+    setWorld(world);
+
+    const run = new Run('wrun_123');
+    const result = await run.wakeUp();
+
+    expect(result.stoppedCount).toBe(1);
+    expect(world.events.create).toHaveBeenCalledWith(
+      'wrun_123',
+      expect.objectContaining({
+        eventType: 'wait_completed',
+        correlationId: 'wait_abc',
+      }),
+      expect.anything()
+    );
   });
 });
 

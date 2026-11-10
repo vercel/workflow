@@ -2,7 +2,11 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
-import type { Run } from '@workflow/core/runtime';
+import type {
+  Run,
+  StopSleepOptions,
+  StopSleepResult,
+} from '@workflow/core/runtime';
 import { pendingWakeUpWaits, setWorld } from '@workflow/core/runtime';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Event, Hook } from '@workflow/world';
@@ -329,12 +333,40 @@ async function fetchAllEvents(w: LocalWorld, runId: string): Promise<Event[]> {
 }
 
 /**
+ * Skip pending `sleep()` calls of a run so a test does not wait for them.
+ *
+ * Completes the run's pending sleeps early, or only the ones named in
+ * `options.correlationIds` (as returned by {@link waitForSleep}). This is a
+ * testing tool: in application code every `sleep()` resumes on its own when
+ * it is due, and a sleep that has to end early should race a hook instead.
+ *
+ * Works with the in-process test world from {@link setupWorkflowTests} and
+ * with server-based tests that reach a run through `start()` or `getRun()`.
+ *
+ * @returns A `StopSleepResult` with the number of sleeps it skipped.
+ *
+ * @example
+ * ```ts
+ * const run = await start(myWorkflow, []);
+ * const sleepId = await waitForSleep(run);
+ * await skipSleep(run, { correlationIds: [sleepId] });
+ * const result = await run.returnValue;
+ * ```
+ */
+export async function skipSleep(
+  run: Run<any>,
+  options?: StopSleepOptions
+): Promise<StopSleepResult> {
+  return run.internal_wakeUpRun(options);
+}
+
+/**
  * Wait until the workflow has a pending `sleep()` call.
  *
  * Polls the event log for a `wait_created` event without a corresponding
  * `wait_completed` event. Returns the correlation ID of the pending sleep,
- * which can be passed to `run.wakeUp({ correlationIds: [id] })` to target
- * a specific sleep call.
+ * which can be passed to `skipSleep(run, { correlationIds: [id] })` to
+ * target a specific sleep call.
  *
  * @returns The correlation ID of the first pending sleep.
  *
@@ -342,7 +374,7 @@ async function fetchAllEvents(w: LocalWorld, runId: string): Promise<Event[]> {
  * ```ts
  * const run = await start(myWorkflow, []);
  * const sleepId = await waitForSleep(run);
- * await run.wakeUp({ correlationIds: [sleepId] });
+ * await skipSleep(run, { correlationIds: [sleepId] });
  * const result = await run.returnValue;
  * ```
  */
@@ -364,7 +396,7 @@ export async function waitForSleep(
         .map((e) => e.correlationId)
     );
 
-    // A sleep `run.wakeUp()` already named is being completed by the run's
+    // A sleep `skipSleep()` already named is being completed by the run's
     // orchestrator; the next pending sleep is another one.
     const wokenIds = pendingWakeUpWaits(run.runId);
     const pendingSleep = events.find(
