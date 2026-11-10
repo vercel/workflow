@@ -34,6 +34,12 @@ import type { RunStartHook } from './runtime/start-hook-binding.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
+  bindStateContext,
+  registerStateSource,
+  StateContext,
+  stateSourceId,
+} from './serialization/state-refs.js';
+import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
 } from './serialization.js';
@@ -470,6 +476,11 @@ async function createWorkflowSessionInner(
     seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
     fixedTimestamp,
   });
+
+  // Each replay rebuilds frozen state versions from the log it reads, and
+  // inline steps resolve their inputs against the same context.
+  replayPayloadCache.stateContext = new StateContext();
+  bindStateContext(vmGlobalThis, replayPayloadCache.stateContext);
 
   const initialInterruption = withResolvers<never>();
   let state: WorkflowSessionState = {
@@ -1251,7 +1262,7 @@ async function createWorkflowSessionInner(
     args = await trace('workflow.input.hydrate', async () => {
       const prepared =
         await replayPayloadCache.prepareWorkflowInput(workflowRun);
-      return hydrateWorkflowArguments(
+      const hydrated = await hydrateWorkflowArguments(
         workflowRun.input,
         workflowRun.runId,
         encryptionKey,
@@ -1259,6 +1270,9 @@ async function createWorkflowSessionInner(
         {},
         prepared
       );
+      // Later state changes may refer to the input's strings.
+      registerStateSource(vmGlobalThis, stateSourceId('run-input'), hydrated);
+      return hydrated;
     });
   });
   await workflowContext.promiseQueue;

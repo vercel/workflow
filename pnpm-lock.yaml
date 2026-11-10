@@ -648,6 +648,9 @@ importers:
       genversion:
         specifier: 3.2.0
         version: 3.2.0
+      immer:
+        specifier: 10.1.1
+        version: 10.1.1
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -675,6 +678,9 @@ importers:
       ai:
         specifier: catalog:ai-sdk-v7
         version: 7.0.163(zod@4.6.7)
+      immer:
+        specifier: 10.1.1
+        version: 10.1.1
       workflow:
         specifier: workspace:*
         version: link:../workflow
@@ -1207,7 +1213,7 @@ importers:
         version: link:../world-vercel
       '@xyflow/react':
         specifier: 12.12.1
-        version: 12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@10.1.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       cbor-x:
         specifier: ^1
         version: 1.6.9
@@ -1353,6 +1359,9 @@ importers:
       ai:
         specifier: catalog:ai-sdk-v7
         version: 7.0.163(zod@4.6.7)
+      immer:
+        specifier: 10.1.1
+        version: 10.1.1
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -2690,6 +2699,9 @@ importers:
       '@workflow/vitest':
         specifier: workspace:*
         version: link:../../packages/vitest
+      immer:
+        specifier: 10.1.1
+        version: 10.1.1
       ms:
         specifier: 2.1.3
         version: 2.1.3
@@ -11604,6 +11616,9 @@ packages:
 
   immediate@3.0.6:
     resolution: {integrity: sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ==}
+
+  immer@10.1.1:
+    resolution: {integrity: sha512-s2MPrmjovJcoMaHtx6K11Ra7oD05NT97w1IC5zpMkT6Atjr7H8LjaDd81iIxUYpMKSRRNMJE703M1Fhr/TctHw==}
 
   import-fresh@3.3.1:
     resolution: {integrity: sha512-TR3KfrTZTYLPB6jUjfx6MF9WcWrHL9su5TObK4ZkYgBdWKPOFoSoQIdEuTuR82pmtxH2spWG9h6etwfr1pLBqQ==}
@@ -24327,13 +24342,13 @@ snapshots:
 
   '@xtuc/long@4.2.2': {}
 
-  '@xyflow/react@12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@xyflow/react@12.12.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(immer@10.1.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@xyflow/system': 0.0.84
       classcat: 5.0.5
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
-      zustand: 4.5.7(@types/react@19.3.0)(react@19.3.1)
+      zustand: 4.5.7(@types/react@19.3.0)(immer@10.1.1)(react@19.3.1)
     optionalDependencies:
       '@types/react': 19.3.0
       '@types/react-dom': 19.3.0(@types/react@19.3.0)
@@ -27250,6 +27265,8 @@ snapshots:
   image-size@2.1.0: {}
 
   immediate@3.0.6: {}
+
+  immer@10.1.1: {}
 
   import-fresh@3.3.1:
     dependencies:
@@ -33665,11 +33682,12 @@ snapshots:
 
   zod@4.6.7: {}
 
-  zustand@4.5.7(@types/react@19.3.0)(react@19.3.1):
+  zustand@4.5.7(@types/react@19.3.0)(immer@10.1.1)(react@19.3.1):
     dependencies:
       use-sync-external-store: 1.6.0(react@19.3.1)
     optionalDependencies:
       '@types/react': 19.3.0
+      immer: 10.1.1
       react: 19.3.1
 
   zwitch@2.0.4: {}

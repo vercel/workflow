@@ -27,7 +27,8 @@
     "zod": "catalog:",
     "@ai-sdk/react": "catalog:ai-sdk-v7",
     "@ai-sdk/workflow": "catalog:ai-sdk-v7",
-    "ai": "catalog:ai-sdk-v7"
+    "ai": "catalog:ai-sdk-v7",
+    "immer": "10.1.1"
   },
   "devDependencies": {
     "@types/node": "catalog:",

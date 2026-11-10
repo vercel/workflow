@@ -76,6 +76,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "ai": "catalog:ai-sdk-v7",
+    "immer": "10.1.1",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

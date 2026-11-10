@@ -24,12 +24,19 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
-
 import type { FlushableStreamState } from '../../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import type { PayloadKey } from '../../serialization/encryption.js';
 import { formatSerializationError } from '../../serialization/errors.js';
+import { WorkflowStateRecoveryError } from '../../serialization/state-recovery.js';
+import {
+  type StateContext,
+  stateContextForData,
+  stateDehydrateAttributes,
+  stateHydrateAttributes,
+  stateWriteCounts,
+} from '../../serialization/state-refs.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -104,6 +111,13 @@ export interface CallerStart {
 
 export interface StepExecutorParams {
   world: World;
+  /**
+   * The replay's frozen state context, for an inline step: its input's
+   * references resolve against it, and its output's changes are encoded
+   * against it. Absent elsewhere; the input's own binding or a recovery from
+   * the run's log is used instead.
+   */
+  stateContext?: StateContext;
   /** Writes this step's events. See {@link StepEventWriter}. */
   createEvent: StepEventWriter;
   workflowRunId: string;
@@ -688,6 +702,8 @@ export async function executeStep(
 
     try {
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
+      let stateContext =
+        params.stateContext ?? stateContextForData(params.input);
       const hydratedInput = await trace(
         'step.hydrate',
         {},
@@ -704,10 +720,15 @@ export async function executeStep(
             streamStates,
             // A workflow-created writable passed into an optimistic step can
             // emit chunks before run_started lands, just like getWritable().
-            optimisticStart ? params.runReadyBarrier : undefined
+            optimisticStart ? params.runReadyBarrier : undefined,
+            stateContext
           );
+          // The step writes its output through the layer the hydrated input
+          // is bound to, not the context shared with other inline steps.
+          stateContext = stateContextForData(hydrated) ?? stateContext;
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
+            ...stateHydrateAttributes(stateContext),
             ...Attribute.StepArgumentsCount(hydrated.args.length),
             ...Attribute.QueueDeserializeTimeMs(durationMs),
           });
@@ -870,6 +891,7 @@ export async function executeStep(
 
       result = await trace('step.dehydrate', {}, async (dehydrateSpan) => {
         const startTime = Date.now();
+        const stateBefore = stateWriteCounts(stateContext);
         const dehydrated = await dehydrateStepReturnValue(
           result,
           workflowRunId,
@@ -885,10 +907,12 @@ export async function executeStep(
           optimisticStart ? params.runReadyBarrier : undefined,
           ops,
           // Step-initiated aborts are read by this deployment's runtime.
-          true
+          true,
+          stateContext
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
+          ...stateDehydrateAttributes(stateContext, stateBefore),
           ...Attribute.QueueSerializeTimeMs(durationMs),
           ...Attribute.StepResultType(typeof dehydrated),
         });
@@ -936,6 +960,9 @@ export async function executeStep(
         await Promise.all(preCompletionOps).catch(() => {});
       }
     } catch (err: unknown) {
+      // The run's log could not be read to rebuild this step's frozen state
+      // input: retry the delivery, not the user's step (its body has not run).
+      if (WorkflowStateRecoveryError.is(err)) throw err;
       if (preCompletionOps.length > 0) {
         await Promise.all(preCompletionOps).catch(() => {});
       }
