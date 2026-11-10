@@ -185,11 +185,18 @@ export function createRunsStorage(
       outcome.outcome === 'deleted' ||
       outcome.outcome === 'already_deleted'
     ) {
-      // Also for `already_deleted`: whatever an earlier pass left behind goes
-      // too. Never throws; a file it cannot scrub is logged and skipped. No
-      // event cache to clear: a run's cached events are released when its
-      // terminal event lands.
-      await purgeRunEntityData(basedir, runId, tag);
+      // Keep trying every payload, but report incomplete deletion as failed
+      // so callers can retry instead of accepting a false success.
+      const errors: unknown[] = [];
+      await purgeRunEntityData(basedir, runId, tag, (error) => {
+        errors.push(error);
+      });
+      if (errors.length > 0) {
+        throw new AggregateError(
+          errors,
+          `Failed to delete data of run ${runId}.`
+        );
+      }
     }
     return outcome;
   }

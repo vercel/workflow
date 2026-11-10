@@ -93,11 +93,13 @@ export function withRunPayloadsPurged<T extends WorkflowRun>(
  * scrubbed is logged and skipped rather than thrown. This runs after the run
  * is already terminal and nothing will retry it, so one unreadable file must
  * not stop the rest of the purge — and must never fail the run itself.
+ * An explicit deletion can collect these failures through `onError`.
  */
 export async function purgeRunEntityData(
   basedir: string,
   runId: string,
-  tag: string | undefined
+  tag: string | undefined,
+  onError?: (error: unknown) => void
 ): Promise<void> {
   await Promise.all([
     scrubEntityFiles(
@@ -107,7 +109,8 @@ export async function purgeRunEntityData(
         step.input = undefined;
         step.output = undefined;
         step.error = undefined;
-      }
+      },
+      onError
     ),
     scrubEntityFiles(
       path.join(basedir, runEntityDir('events', runId)),
@@ -131,10 +134,11 @@ export async function purgeRunEntityData(
             delete (startHook as Record<string, unknown>).metadata;
           }
         }
-      }
+      },
+      onError
     ),
-    scrubHookMetadata(basedir, runId),
-    purgeRunStreamData(basedir, runId, tag),
+    scrubHookMetadata(basedir, runId, onError),
+    purgeRunStreamData(basedir, runId, tag, onError),
   ]);
 }
 
@@ -189,13 +193,15 @@ export const ReadEventSchema: z.ZodType<Event> = z.preprocess((raw) => {
 async function scrubEntityFiles(
   directory: string,
   runId: string,
-  scrub: (raw: Record<string, any>) => void
+  scrub: (raw: Record<string, any>) => void,
+  onError?: (error: unknown) => void
 ): Promise<void> {
   let fileIds: string[];
   try {
     fileIds = await listJSONFiles(directory);
   } catch (error) {
     logPurgeFailure(directory, error);
+    onError?.(error);
     return;
   }
   for (const fileId of fileIds) {
@@ -211,6 +217,7 @@ async function scrubEntityFiles(
       await writeJSON(filePath, raw, { overwrite: true });
     } catch (error) {
       logPurgeFailure(filePath, error);
+      onError?.(error);
     }
   }
 }
@@ -225,7 +232,8 @@ async function scrubEntityFiles(
  */
 async function scrubHookMetadata(
   basedir: string,
-  runId: string
+  runId: string,
+  onError?: (error: unknown) => void
 ): Promise<void> {
   let markers: Awaited<ReturnType<typeof listHookByRunMarkers>>;
   try {
@@ -233,6 +241,7 @@ async function scrubHookMetadata(
     markers = await listHookByRunMarkers(basedir, runId);
   } catch (error) {
     logPurgeFailure(`hooks of ${runId}`, error);
+    onError?.(error);
     return;
   }
   for (const marker of markers) {
@@ -248,6 +257,7 @@ async function scrubHookMetadata(
       await writeJSON(hookPath, hook, { overwrite: true });
     } catch (error) {
       logPurgeFailure(marker.hookId, error);
+      onError?.(error);
     }
   }
 }

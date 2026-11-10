@@ -183,12 +183,14 @@ const PURGED_STREAM_TOMBSTONE_ID = `chnk_${'0'.repeat(26)}`;
  *
  * Failures are logged and skipped, never thrown: this runs after the run is
  * already terminal, where nothing retries, and a stream that resists cleanup
- * must not fail the run.
+ * must not fail the run. Explicit deletions can collect failures through
+ * `onError` without stopping cleanup of the remaining streams.
  */
 export async function purgeRunStreamData(
   basedir: string,
   runId: string,
-  tag?: string
+  tag?: string,
+  onError?: (error: unknown) => void
 ): Promise<void> {
   const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
   const tagSuffix = tag ? `.${tag}` : '';
@@ -205,6 +207,7 @@ export async function purgeRunStreamData(
     names = mapping?.streams ?? [];
   } catch (error) {
     logStreamPurgeFailure(`streams of ${runId}`, error);
+    onError?.(error);
     return;
   }
 
@@ -221,12 +224,16 @@ export async function purgeRunStreamData(
         if (!entry.endsWith('.bin') && !entry.endsWith('.json')) continue;
         await withWindowsRetry(() => fs.unlink(path.join(dir, entry))).catch(
           (error: NodeJS.ErrnoException) => {
-            if (error.code !== 'ENOENT') logStreamPurgeFailure(entry, error);
+            if (error.code !== 'ENOENT') {
+              logStreamPurgeFailure(entry, error);
+              onError?.(error);
+            }
           }
         );
       }
     } catch (error) {
       logStreamPurgeFailure(name, error);
+      onError?.(error);
     }
   }
 }
