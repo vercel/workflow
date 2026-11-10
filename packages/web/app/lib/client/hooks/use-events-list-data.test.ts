@@ -153,6 +153,49 @@ describe('useEventsListData', () => {
     );
   });
 
+  it('defers pagination until the warm refresh has settled', async () => {
+    vi.mocked(fetchEvents).mockReturnValue(
+      page([event('event-1')], 'cursor-1')
+    );
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useEventsListData(env, 'run-1', { enabled }),
+      { initialProps: { enabled: true } }
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const refresh = deferred<Awaited<ReturnType<typeof fetchEvents>>>();
+    vi.mocked(fetchEvents)
+      .mockReturnValueOnce(refresh.promise)
+      .mockReturnValueOnce(page([event('event-2')]));
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+
+    expect(result.current.loadingMore).toBe(true);
+    await act(async () => result.current.loadMore());
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(result.current.events).toEqual([event('event-1')]);
+
+    await act(async () => {
+      refresh.resolve({
+        success: true,
+        data: {
+          data: [event('event-1')],
+          cursor: 'refreshed-cursor-1',
+          hasMore: true,
+        },
+      });
+    });
+    expect(result.current.loadingMore).toBe(false);
+    await act(async () => result.current.loadMore());
+    expect(fetchEvents).toHaveBeenLastCalledWith(env, 'run-1', {
+      cursor: 'refreshed-cursor-1',
+      sortOrder: 'asc',
+      limit: 100,
+      withData: false,
+    });
+    expect(result.current.events).toEqual([event('event-1'), event('event-2')]);
+  });
+
   it('ignores pagination that resolves after the query changes', async () => {
     vi.mocked(fetchEvents).mockReturnValue(
       page([event('event-1')], 'cursor-1')

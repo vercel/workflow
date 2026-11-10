@@ -50,6 +50,7 @@ export function useEventsListData(
   const [cursor, setCursor] = useState<string | undefined>();
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   // Bumped per query fetch so responses from a superseded query are dropped.
   const generationRef = useRef(0);
   const pagesLoadedRef = useRef(0);
@@ -72,6 +73,7 @@ export function useEventsListData(
     async (pageCount: number, cold: boolean) => {
       const generation = ++generationRef.current;
       const isCurrent = () => generation === generationRef.current;
+      setRefreshing(true);
       if (cold) {
         setLoading(true);
         setError(null);
@@ -115,7 +117,10 @@ export function useEventsListData(
       } catch (err) {
         if (isCurrent() && cold) setError(err as Error);
       } finally {
-        if (isCurrent()) setLoading(false);
+        if (isCurrent()) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
     [env, runId, sortOrder, hydrateEvents]
@@ -146,7 +151,7 @@ export function useEventsListData(
   }, [encryptionKey]);
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !cursor) return;
+    if (refreshing || loadingMore || !cursor) return;
     const generation = generationRef.current;
     setLoadingMore(true);
     try {
@@ -174,7 +179,7 @@ export function useEventsListData(
     } finally {
       setLoadingMore(false);
     }
-  }, [env, runId, sortOrder, cursor, loadingMore, hydrateEvents]);
+  }, [env, runId, sortOrder, cursor, loadingMore, refreshing, hydrateEvents]);
 
   const searchByExactId = useCallback(
     async (
@@ -253,7 +258,7 @@ export function useEventsListData(
     loading,
     error,
     hasMore,
-    loadingMore,
+    loadingMore: loadingMore || refreshing,
     loadMore,
     searchByExactId,
   };
