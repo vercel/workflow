@@ -44,7 +44,10 @@ export const RETENTION_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}retention`;
 export type RunRetention = 0 | 'default';
 
 /** Wire value of {@link RETENTION_ATTRIBUTE} meaning "auto-delete on finish". */
-export const RETENTION_ZERO = '0';
+export const RETENTION_AUTO_DELETE = '0';
+
+/** @deprecated Use {@link RETENTION_AUTO_DELETE}. */
+export const RETENTION_ZERO = RETENTION_AUTO_DELETE;
 
 /** Wire value meaning "use the World's default". Equivalent to absence. */
 export const RETENTION_DEFAULT = 'default';
@@ -90,7 +93,7 @@ export function readRunRetention(
     return { mode: 'default', wellFormed: false, unsupported: false };
   }
   if (RETENTION_INTEGER_PATTERN.test(raw)) {
-    return raw === RETENTION_ZERO
+    return raw === RETENTION_AUTO_DELETE
       ? { mode: 'none', raw, wellFormed: true, unsupported: false }
       : { mode: 'default', raw, wellFormed: true, unsupported: true };
   }

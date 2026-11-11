@@ -479,7 +479,7 @@ describe('run retention (world-local)', () => {
       // An `expiredAt` is a retention *deadline*, not a request to delete
       // anything now. Nothing in this World writes one except the purge, but
       // a run imported from a World that does — or a future plan-default
-      // boundary — must not be mistaken for a zero-retention run.
+      // boundary — must not be mistaken for an auto-delete run.
       const run = await startRun();
       const deadline = new Date(Date.now() + 86_400_000);
       const stored = await storage.runs.get(run.runId);

@@ -142,7 +142,7 @@ export async function purgeRunUserData(
  * logged, and the run keeps data it asked to have deleted, which is loud
  * enough to notice and safe enough to leave.
  */
-export async function purgeRunUserDataIfZeroRetention(
+export async function purgeRunUserDataIfAutoDelete(
   drizzle: DrizzleHandle,
   runId: string,
   attributes: Record<string, string> | undefined,

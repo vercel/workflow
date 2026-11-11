@@ -729,7 +729,7 @@ describe.skipIf(process.platform === 'win32')(
       expect(receives[0].resumeId).toBe(id);
     });
 
-    it('purges invocation inputs/results at zero retention and prevents late recreation', async () => {
+    it('purges invocation inputs/results on auto-delete and prevents late recreation', async () => {
       const runId = randomUUID();
       await seedTransportRun(runId, { $retention: '0' });
       const firstId = randomUUID();
@@ -877,7 +877,7 @@ describe.skipIf(process.platform === 'win32')(
       expect(rows).toEqual([{ payload: null, result: null }]);
     });
 
-    it('backfills zero-retention mailbox data left by an earlier preview', async () => {
+    it('backfills auto-delete mailbox data left by an earlier preview', async () => {
       const runId = randomUUID();
       await seedTransportRun(runId, { $retention: '0' });
       await pool.query(

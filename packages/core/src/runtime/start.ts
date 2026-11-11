@@ -150,7 +150,7 @@ const CROSS_DEPLOYMENT_PROBE_CACHE_MAX_ENTRIES = 256;
  * `$retention` value is a duration written as a decimal integer — so zero
  * travels as `'0'`, not as the name of a mode.
  */
-const RETENTION_ZERO_ATTRIBUTE_VALUE = '0';
+const RETENTION_AUTO_DELETE_ATTRIBUTE_VALUE = '0';
 
 /**
  * Where a run's stamped spec version came from, recorded on the `start()`
@@ -1272,7 +1272,7 @@ export async function start<TArgs extends unknown[], TResult>(
           throw specGateError('start({ experimental_retention }) requires');
         }
         retentionAttribute = {
-          [RETENTION_ATTRIBUTE]: RETENTION_ZERO_ATTRIBUTE_VALUE,
+          [RETENTION_ATTRIBUTE]: RETENTION_AUTO_DELETE_ATTRIBUTE_VALUE,
         };
       }
 
