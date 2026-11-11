@@ -404,7 +404,9 @@ function isHandoff(text: string): boolean {
  * into the run's running delivery: dropped, and covered by that delivery's
  * re-run, which reads the run's log. Every producer commits what such a
  * message is for (a step outcome, a `hook_received`, a cancellation) before
- * it sends it. A start message (`runInput`) carries the input of a run that
+ * it sends it. A `run.wakeUp()` message's `completeWaits` is lost when
+ * coalesced, so its waits run their full length: best effort, as the World
+ * contract allows and as on world-vercel and world-postgres. A start message (`runInput`) carries the input of a run that
  * may not exist yet, a legacy resume (`hookInput`) carries a payload the
  * orchestrator still has to write, a restart's recovery message
  * (`recovery: true`) asks its delivery to re-send what died with the
@@ -848,7 +850,10 @@ export function createQueue(
           // A spec 9 handoff (`{ timeoutSeconds: 0 }`) is delivered again at
           // once, before the run's orchestrator messages that queued behind
           // it: it keeps the run's gate, as a new invocation (a fresh
-          // `invocationStartedAt` and re-run budget). Without the gate (a
+          // `invocationStartedAt` and re-run budget). That delivery reads the
+          // log, so it also covers the coalescible messages waiting behind
+          // it, and carries the resume timing of a hook wake among them: it
+          // is the delivery that consumes that resume. Without the gate (a
           // message no gate holds) it is simply redelivered.
           if (
             response.ok &&
@@ -860,6 +865,12 @@ export function createQueue(
             if (lease) {
               holdStartedAt = Date.now();
               rerunsThisHold = 0;
+              if (rerunsCoalesced) {
+                const taken = lease.takeWaiting();
+                if (taken.resume) {
+                  deliveryBody = rerunBody(message, taken.resume);
+                }
+              }
             } else {
               endDelivery();
             }

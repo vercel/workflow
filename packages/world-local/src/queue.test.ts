@@ -1355,6 +1355,41 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
     expect(seen[1]).toMatchObject({ attempt: 1, deliveryCount: 2 });
     expect(seen[1]?.invocationStartedAt).toBeGreaterThanOrEqual(startedAt);
   });
+
+  it("covers the wakes waiting behind a handoff with its redelivery, carrying a hook wake's timing", async () => {
+    let handedOff = false;
+    const { seen, release } = recordingHandler((_all, body) => {
+      if (!handedOff && body.tag === 'first') {
+        handedOff = true;
+        return { timeoutSeconds: 0 };
+      }
+      return undefined;
+    });
+    const absorbed = { resumeRequestedAtMs: 10, queuePublishRequestedAtMs: 20 };
+    const first = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', { tag: 'first' })
+    );
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    const wakes = await Promise.all([
+      localQueue.queue(QUEUE, spec9('run_a')),
+      localQueue.queue(QUEUE, spec9('run_a', { hookResumeTiming: absorbed })),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The handed-off redelivery covered both wakes: no re-run after it, and
+    // neither wake was delivered.
+    expect(seen.map((d) => d.messageId)).toEqual([
+      first.messageId,
+      first.messageId,
+    ]);
+    expect(seen[1]?.body.hookResumeTiming).toEqual(absorbed);
+    for (const { messageId: id } of wakes) {
+      expect(seen.some((d) => d.messageId === id)).toBe(false);
+    }
+  });
 });
 
 describe('an unstamped orchestrator message of a spec 9 run', () => {
