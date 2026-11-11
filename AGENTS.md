@@ -33,7 +33,9 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
-Runs default to spec 8. The opt-in spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`, a single orchestrator per run behind the World's in-band fence) lives in `packages/core/src/runtime/spec9/`, and its reference (model, World contract, edge cases, decisions) is `packages/core/src/runtime/spec9/README.md`. Read it before changing spec 9 behaviour, and keep it up to date in the same change.
+Runs default to spec 8. The opt-in spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`, a single orchestrator per run behind the World's in-band fence) lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
+
+Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
 
 ## Development commands
 
@@ -408,6 +410,7 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - When modifying package functionality, ensure corresponding README updates are included
 - Document every user-configurable environment variable in the docs.
 - Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
+- Docs pages never reference or link to source files in this repository. Design notes for maintainers live as markdown next to the code they describe (see [Workflow execution model](#workflow-execution-model)) and are referenced from source comments.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
 ### Docs preview links in PR descriptions

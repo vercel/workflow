@@ -1,9 +1,6 @@
----
-title: Resilient run start
-description: Run start logic tolerates World storage unavailability when the queue is healthy and reduces run start latency.
----
-
 # Resilient `start()`
+
+Run start logic tolerates World storage unavailability when the queue is healthy and reduces run start latency.
 
 ## Motivation
 
@@ -69,6 +66,8 @@ The `resilientStart` flag is not set on the `Run` instance in this case (409 is 
 ### Atomicity of run entity creation
 
 The normal `run_created` path and the resilient start path can race on creating the run entity. In `world-local`, both paths use `writeExclusive` (O_CREAT|O_EXCL), atomic at the OS level, so exactly one writer wins and the other gets EEXIST. The normal path throws `EntityConflictError` on conflict (handled by `start()` as 409); the resilient start path re-reads the run from disk on conflict.
+
+Local World now restores a lost `run_created` from the run record before the run's first lifecycle event.
 
 In `world-postgres`, the resilient start path uses `onConflictDoNothing` plus a re-read on conflict for the same effect, with the same outcome on either side of the race.
 

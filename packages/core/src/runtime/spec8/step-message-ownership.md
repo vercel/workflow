@@ -1,16 +1,11 @@
----
-title: Inline step message ownership
-description: Why inline step_started now records its owning queue message ID, why ownership is bounded by a lease, and why the alternatives, from queue serialization to heartbeats, were rejected. Fixes duplicate inline step execution (issue #2780).
----
-
 # Inline step message ownership
 
 > Fixes [#2780](https://github.com/vercel/workflow/issues/2780) (duplicate
-> inline step execution when a hook or wait wakes a run mid-step). This page
+> inline step execution when a hook or wait wakes a run mid-step). This document
 > is the design defense for the change: what it does, why each choice was
 > made, and why the alternatives were rejected. Lease tuning:
 > `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` (see
-> [Runtime tuning](/docs/configuration/runtime-tuning)).
+> [Runtime tuning](https://useworkflow.dev/docs/configuration/runtime-tuning)).
 
 ## What this change does
 
@@ -73,7 +68,7 @@ steady-state writes beyond one field on an event we already write.
 ID across redelivery attempts. That stability is exactly the property recovery needs: "a
 delivery whose ID matches the stamp" means "the queue redelivered the work that crashed":
 permission to re-execute. The requirement is now documented in the
-[Queue contract](/docs/api-reference/workflow-runtime/world/queue); a World whose queue
+[Queue contract](https://useworkflow.dev/docs/api-reference/workflow-runtime/world/queue); a World whose queue
 mints fresh IDs per delivery degrades gracefully (the owner check never matches, so
 crashed steps recover via the delayed backstop instead of immediately): it never wedges
 and never duplicates.

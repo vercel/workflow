@@ -1,9 +1,6 @@
----
-title: Turbo mode (fast first invocation)
-description: Fast-path the first delivery of the first invocation by backgrounding run_started, skipping the initial event-log load, and forcing optimistic inline start. A no-op for everything else.
----
-
 # Turbo mode
+
+Fast-path the first delivery of the first invocation by backgrounding run_started, skipping the initial event-log load, and forcing optimistic inline start. A no-op for everything else.
 
 ## Motivation
 
@@ -11,7 +8,7 @@ The first invocation of a workflow run is where time-to-first-step matters most,
 
 1. **`run_started` is awaited.** The handler writes `run_started` and waits for it to return the run entity before doing anything else.
 2. **The event log is loaded.** A full `events.list` runs before the first replay, even though on the first delivery nothing has written any events yet.
-3. **Optimistic inline start is off by default.** The [optimistic inline start](./lazy-event-creation#optimistic-inline-start-opt-in-off-by-default) optimization (running a step body before its `step_started` is confirmed) is off by default because under contention two handlers can both run a body and corrupt non-idempotent side effects.
+3. **Optimistic inline start is off by default.** The [optimistic inline start](./lazy-inline-step-start.md#optimistic-inline-start-opt-in-off-by-default) optimization (running a step body before its `step_started` is confirmed) is off by default because under contention two handlers can both run a body and corrupt non-idempotent side effects.
 
 Turbo mode removes all three costs **for the first delivery of the first invocation only**, where each is provably safe to remove, then gets out of the way. For every subsequent invocation it is a complete no-op.
 
@@ -19,7 +16,7 @@ Turbo mode removes all three costs **for the first delivery of the first invocat
 
 When the handler detects the first delivery of the first invocation, it:
 
-1. **Backgrounds `run_started`.** The event is written without awaiting; the run entity is synthesized locally from the queued run input (status `running`, `startedAt` now) so replay can begin immediately. The `run_started` round-trip overlaps replay instead of blocking it. This reuses the [resilient start](./resilient-start) contract: `run_started` carrying the run input creates the run on the fly (synthetic `run_created`) if it doesn't exist yet. Because turbo uses this `run_started` purely as a write barrier and never reads its response, it also asks the World to **skip the `run_started` event-log preload** (the list+resolve the World normally returns so a run can skip its first `events.list`). That preload would be wasted work here. Since the first `step_started` is chained on the `run_started` barrier, trimming the `run_started` request directly shortens the wait before the first durable `step_started` (and therefore time-to-second-step). A World that ignores the hint stays correct; the runtime falls back to `events.list` if it ever needs the log.
+1. **Backgrounds `run_started`.** The event is written without awaiting; the run entity is synthesized locally from the queued run input (status `running`, `startedAt` now) so replay can begin immediately. The `run_started` round-trip overlaps replay instead of blocking it. This reuses the [resilient start](../resilient-start.md) contract: `run_started` carrying the run input creates the run on the fly (synthetic `run_created`) if it doesn't exist yet. Because turbo uses this `run_started` purely as a write barrier and never reads its response, it also asks the World to **skip the `run_started` event-log preload** (the list+resolve the World normally returns so a run can skip its first `events.list`). That preload would be wasted work here. Since the first `step_started` is chained on the `run_started` barrier, trimming the `run_started` request directly shortens the wait before the first durable `step_started` (and therefore time-to-second-step). A World that ignores the hint stays correct; the runtime falls back to `events.list` if it ever needs the log.
 2. **Skips the initial event-log load.** Nothing has been written, so the first replay runs against an empty log. The second loop iteration does a normal incremental load once the first step's events exist.
 3. **Forces optimistic inline start** for that invocation, independent of `WORKFLOW_OPTIMISTIC_INLINE_START`. The step body runs immediately against locally-synthesized state; only the `step_started` network write waits for the backgrounded `run_started`.
 
@@ -88,4 +85,4 @@ So turbo deliberately stops at forced-optimistic *start* and awaits each `step_c
 
 ## Spec 9 runs
 
-This page describes turbo on spec 8 runs, the default. The experimental spec 9 runtime has its own turbo path, and runs ahead of durable writes within bounds that address the two reasons above. See [Turbo](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#turbo) and [Run-ahead](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#run-ahead) in the spec 9 reference.
+This document describes turbo on spec 8 runs, the default. The experimental spec 9 runtime has its own turbo path, and runs ahead of durable writes within bounds that address the two reasons above. See [Turbo](../spec9/README.md#turbo) and [Run-ahead](../spec9/README.md#run-ahead) in the spec 9 reference.

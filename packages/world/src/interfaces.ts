@@ -511,6 +511,10 @@ export interface Storage {
      * owns those barriers itself: the core runtime never batches a
      * suspension that carries attribute writes, and writes a suspension's
      * hook events through the single path concurrently with its batch.
+     *
+     * The design is described in
+     * `packages/core/src/runtime/spec8/batched-event-writes.md` in the Workflow
+     * SDK repository.
      */
     createBatch?(
       runId: string,

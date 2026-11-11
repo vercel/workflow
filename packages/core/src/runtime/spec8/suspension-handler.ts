@@ -852,7 +852,8 @@ export async function handleSuspension({
   // method and a run whose events are slot-numbered. Hook writes cannot ride
   // a batch (see `createBatch`), but they need no barrier against one either:
   // they commit through the single path alongside the batch. Everything
-  // outside the gate keeps the single-event path byte-for-byte.
+  // outside the gate keeps the single-event path byte-for-byte. See
+  // `./batched-event-writes.md`.
   const batchFanoutEligible =
     typeof world.events.createBatch === 'function' &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&

@@ -134,7 +134,8 @@ export interface StepExecutorParams {
    * surfaces as `EntityConflictError` → `{ type: 'skipped' }`, so a handler
    * that did not win the create never runs the body. Omitted on every other
    * path, where the step already has a `step_created` and `step_started`
-   * carries no payload (the legacy contract).
+   * carries no payload (the legacy contract). See
+   * `./lazy-inline-step-start.md`.
    */
   lazyStepInput?: SerializedData;
   /**

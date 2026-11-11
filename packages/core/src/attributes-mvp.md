@@ -1,8 +1,3 @@
----
-title: Workflow Attributes (MVP, experimental)
-description: A minimal, write-only subset of the planned Workflow Attributes feature, forward-compatible with the full 5.0.0 release. Lets workflow code attach plaintext string key/value metadata to a run.
----
-
 # Workflow Attributes (MVP)
 
 This **experimental** minimum viable product (MVP) implements a subset of the [planned Workflow Attributes feature for 5.0.0](https://github.com/vercel/workflow/pull/1933). See [discussion #132](https://github.com/vercel/workflow/discussions/132) for broader background on the use cases and the full design space.
@@ -19,7 +14,7 @@ The v4 implementation now completes the planned dispatch migration while preserv
 - The World spec is bumped to v4; attributes are supported for v4 runs rather than being backported into older run specifications.
 - The direct server attributes endpoint remains available only as a deprecated compatibility path for clients that shipped with the MVP.
 
-The remainder of this page documents the original MVP motivation and implementation.
+The remainder of this document documents the original MVP motivation and implementation.
 
 ## What MVP supports
 
@@ -53,8 +48,6 @@ The MVP instead writes attributes via a direct entity-mutation path (outside the
 ### 1. `@workflow/world`: storage interface addition
 
 Add an `experimentalSetAttributes` method to `Storage.runs`:
-
-{/*@skip-typecheck - snippet, not runnable code*/}
 
 ```ts
 runs: {
@@ -113,8 +106,6 @@ The `changes` field **deliberately mirrors** the eventual `attr_set` event's `ev
 
 A new export from `@workflow/core` (re-exported by `workflow`):
 
-{/*@skip-typecheck - snippet, not runnable code*/}
-
 ```ts
 function experimental_setAttributes(
   attrs: Record<string, string | undefined>,
@@ -136,8 +127,6 @@ Validation (shared helper, applied both client-side and server-side):
 Keys starting with `$` are reserved for framework and library code built on top of the workflow SDK (telemetry tags, agent metadata, future platform-emitted attributes, etc.). User code calling `experimental_setAttributes({ '$foo': 'bar' })` throws `FatalError` so accidental collisions with tooling-owned keys can't slip through.
 
 Framework / library authors that own a `$`-prefixed sub-namespace can opt in per-call:
-
-{/*@skip-typecheck - snippet, not runnable code*/}
 
 ```ts
 await experimental_setAttributes(
@@ -171,8 +160,6 @@ Three call patterns are supported. Pick by whether you need ordering and whether
 
 **Awaited (default).** The workflow blocks on the internal write step before continuing. Use this when later workflow logic should wait until the attribute write has either succeeded or exhausted the MVP's best-effort retry budget. Deterministic SDK validation errors still throw before dispatch; persistence failures from the world are retried by the internal step and then logged/dropped after three attempts so failing to post tags does not fail a run during the experimental phase.
 
-{/*@skip-typecheck - snippet, not runnable code*/}
-
 ```ts
 'use workflow';
 await experimental_setAttributes({ phase: 'init' });
@@ -181,8 +168,6 @@ await experimental_setAttributes({ phase: 'done', orderId: result.id });
 ```
 
 **Fire-and-forget (`void`).** Drop the `await` to let the workflow proceed without blocking. The pending step queues on the workflow's next suspension (any `await` on a runtime primitive: a step, `sleep`, a hook). This is the canonical pattern for observability / tracking metadata where the workflow doesn't depend on the write.
-
-{/*@skip-typecheck - snippet, not runnable code*/}
 
 ```ts
 'use workflow';
@@ -200,8 +185,6 @@ Two trade-offs to know about:
 2. **The last `void` before `return` may not land.** If you place a `void experimental_setAttributes(...)` immediately before returning, with no intervening `await` on a runtime primitive, drain-on-completion commits the `step_created` event but the step body is not reliably dispatched before the run transitions to its terminal status. See the architectural note in the "Implementation notes" section. In practice workflows almost always have an `await` after the last fire-and-forget call (a step, a sleep, a hook); if you don't, add `await sleep('0s')` before returning, or use the awaited form for that final write.
 
 **Parallel (`Promise.all`).** Multiple calls dispatch concurrently. Writes to disjoint keys all land. Writes to the same key resolve last-write-wins by *arrival order at the world* (not the order the workflow body issued the calls), so don't use `Promise.all` for writes that must observe a specific order to the same key.
-
-{/*@skip-typecheck - snippet, not runnable code*/}
 
 ```ts
 'use workflow';

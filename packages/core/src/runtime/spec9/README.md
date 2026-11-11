@@ -227,7 +227,6 @@ In `@workflow/vitest`, `waitForSleep()` skips a sleep that `wakeUp()` already na
 
 Only the orchestrator writes decisions: `step_created`, `wait_created`, `wait_completed`, hook and attribute events, `run_completed` and `run_failed`. It also runs inline steps. A background step's own invocation writes only that step's `step_started` and outcome, then sends the orchestrator one plain wake, without reading the log. Its body starts once its `step_started` committed; `WORKFLOW_OPTIMISTIC_BACKGROUND_START=1` starts it while the start is in flight instead (see [Background step bodies start once their start commits](#background-step-bodies-start-once-their-start-commits)).
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function checkout(orderId: string) {
   "use workflow";
@@ -385,7 +384,6 @@ An out-of-band event below the write (a background step's outcome, a `hook_recei
 
 #### Example: a hook payload lands while an inline step runs
 
-{/* @skip-typecheck - illustrative workflow fragment */}
 ```typescript
 const hook = createHook({ token: 'race' });
 return await Promise.race([hook.then(() => 'hook'), gated()]);
@@ -522,7 +520,7 @@ On the node engine, a replay that diverges from the log discards the VM, reloads
 
 ### Turbo
 
-[Turbo mode](https://useworkflow.dev/docs/changelog/turbo-mode) fast-paths a run's first delivery. On that delivery the log holds only `run_created`, whose position counts as the run's first in-band write, and no other orchestrator exists yet. So it writes `run_started` without waiting, starts the in-band writer from `IN_BAND_SEQ_AT_RUN_CREATION` instead of loading the log, and starts the first inline step bodies before their start commits. Every in-band write queues behind `run_started` in the delivery's writer, and a refused `run_started` stops the delivery like any fence refusal.
+[Turbo mode](../spec8/turbo-mode.md) fast-paths a run's first delivery. On that delivery the log holds only `run_created`, whose position counts as the run's first in-band write, and no other orchestrator exists yet. So it writes `run_started` without waiting, starts the in-band writer from `IN_BAND_SEQ_AT_RUN_CREATION` instead of loading the log, and starts the first inline step bodies before their start commits. Every in-band write queues behind `run_started` in the delivery's writer, and a refused `run_started` stops the delivery like any fence refusal.
 
 Turbo is on by default (`WORKFLOW_TURBO`) and applies when all of these hold:
 
@@ -586,7 +584,6 @@ Turbo is client-side and needs no World changes. A World with `createBatch` save
 
 A background step keeps one queue message for its whole life and retries in place on it. Any delivery other than a plain first delivery reads the log before running the body.
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 async function sendWireTransfer(amount: number) {
   "use step";
@@ -760,7 +757,6 @@ Spec 9 (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model) is op
 2. Implement the spec 9 storage and queue rules: the [event rules](#spec-9-event-rules), [the spec 9 queue rules](#spec-9-queue-rules) and [the dedupe contract](#the-dedupe-contract).
 3. Declare `capabilities.inBandFence: true`, and pass it to `mintedSpecVersion`. That lets your World's users opt in: new runs stay on spec 8 unless they set `WORKFLOW_SPEC_VERSION=9`.
 
-{/* @skip-typecheck - partial World, the other members are elided */}
 ```typescript
 import { mintedSpecVersion } from '@workflow/world';
 
@@ -856,7 +852,6 @@ Two suites check a World, and both skip their fence checks for a World that does
 
 `inBandFenceConformance` from `@workflow/world` runs against your events storage directly. It checks the capability, a new run's snapshot, acceptance at the current count, a stale write refused without allocating, out-of-band writes that move only `seq`, a race of in-band writers on one count (exactly one wins), the 400 for a missing count, the stored `occurredAt`, the bookkeeping fields, and an inline step created by its first `step_started`. Pass `secondEvents` when two storage instances can share one store, to check that they share one fence. It imports `vitest`.
 
-{/* @skip-typecheck - depends on your World's own factories */}
 ```typescript
 import { inBandFenceConformance } from '@workflow/world/test-support/in-band-fence-conformance.js';
 import { createWorld } from './index.js';
@@ -955,7 +950,6 @@ Every re-run measures its inline deadline from the invocation's start, which wor
 
 **Example: a fan-out whose completions coalesce.**
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function resizeAll(urls: string[]) {
   "use workflow";
@@ -994,7 +988,6 @@ A spec 9 delivery that has to end before the run's work is done hands its messag
 
 **Example: a long workflow crossing the inline deadline.**
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function nightlyReport() {
   "use workflow";
@@ -1106,7 +1099,6 @@ Each flow below follows one part of a spec 9 run, then lists the edge cases that
 
 This section follows one run of the workflow below from `start()` to `run_completed`. With the default `WORKFLOW_MAX_INLINE_STEPS` of 3, the four-way `Promise.all` gets three inline steps and one background step.
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function order(id: string) {
   "use workflow";
@@ -1220,7 +1212,6 @@ The in-band writer and the consume-after-commit rule are under [Event posting](#
 
 ### Fan-out
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function resizeAll(urls: string[]) {
   "use workflow";
@@ -1431,7 +1422,6 @@ A recovery delivery (world-local after a restart) owns every chain: the timers d
 
 #### Two sleeps in one `Promise.all`
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function reminders() {
   "use workflow";
@@ -1557,7 +1547,6 @@ The 5 s hook-only linger bounds how long a run that waits only on hooks drops `w
 
 An out-of-band `wait_completed` could commit below events the orchestrator already acted on while running ahead, and a later replay would see them in a different order. world-vercel refuses an out-of-band `wait_completed` on a spec 9 run with 409 `wait-completion-in-band-only`, and the run-ahead hazard check treats any `wait_completed` from another writer as a hazard.
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function digest(userId: string) {
   "use workflow";
@@ -1892,7 +1881,6 @@ A keyed wake also never overlaps the running delivery; an unkeyed one could drop
 
 The alternative, `wakeUp()` writing `wait_completed` out-of-band the way `resumeHook()` writes `hook_received`, is refused by world-vercel on spec 9 runs, on purpose. An out-of-band completion could land below events the orchestrator already acted on while running ahead, and a later replay would order them differently:
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function digest(userId: string) {
   "use workflow";
@@ -1996,7 +1984,6 @@ Spec 9 runs on both engines, and every spec 9 runtime test file runs on both. Di
 
 A run of short sequential inline steps reaches the inline-start margin (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`, 60 seconds before the inline deadline) before any step runs into the deadline, so its next step goes to the background on its own message, and its completion wakes the orchestrator on a fresh one.
 
-{/* @skip-typecheck - illustrative workflow */}
 ```typescript
 export async function nightlyReport() {
   "use workflow";

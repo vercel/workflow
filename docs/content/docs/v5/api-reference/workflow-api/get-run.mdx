@@ -201,7 +201,7 @@ The options object is optional: `await run.cancel()` cancels the run without rec
 
 ## Spec 9 (experimental)
 
-On runs of the experimental spec 9 runtime, `wakeUp()` asks the run's orchestrator to complete the sleeps instead of completing them itself, `stoppedCount` counts the sleeps it asked to complete, and the request is best-effort while the run is active. See [`run.wakeUp()` on spec 9 runs](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#runwakeup-and-waitforsleep).
+On runs of the experimental spec 9 runtime, `wakeUp()` asks the run's orchestrator to complete the sleeps instead of completing them itself, `stoppedCount` counts the sleeps it asked to complete, and the request is best-effort while the run is active.
 
 ## Related functions
 

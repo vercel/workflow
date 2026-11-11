@@ -1,9 +1,6 @@
----
-title: Durable hook resume
-description: resumeHook() durably writes hook_received and only then publishes the workflow wake, so a resolved call can never be lost to a disposal race.
----
-
 # Durable hook resume
+
+resumeHook() durably writes hook_received and only then publishes the workflow wake, so a resolved call can never be lost to a disposal race.
 
 ## Motivation
 
