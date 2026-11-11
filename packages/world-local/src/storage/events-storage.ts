@@ -136,6 +136,7 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import {
+  purgeEventPayloads,
   purgeRunEntityData,
   purgesUserDataOnFinish,
   ReadEventSchema,
@@ -1455,8 +1456,34 @@ export function createEventsStorage(
     throw new HookNotFoundError(hookId);
   }
 
-  const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
-    paginatedFileSystemQuery({
+  // Event files are append-only only until retention/deletion scrubs them.
+  // Check the durable boundary AFTER loading a page, not just before: another
+  // World/process may delete data while this query clones cached events or
+  // reads files. Never cache the boundary itself or rely on the deleting
+  // instance to invalidate this instance's cache.
+  async function respectRunExpiry(
+    runId: string,
+    events: Event[]
+  ): Promise<void> {
+    const run = await readJSONWithFallback(
+      basedir,
+      'runs',
+      runId,
+      RunRecordSchema,
+      tag
+    );
+    if (!run?.expiredAt || run.expiredAt.getTime() > Date.now()) return;
+    clearRunCache(runId);
+    // Also scrub the detached results: the file purge may still be in flight
+    // or may need a retry, and clearing the cache does not change these copies.
+    for (const event of events) purgeEventPayloads(event);
+  }
+
+  const queryRunEvents = async (
+    runId: string,
+    pagination: PaginationOptions
+  ) => {
+    const result = await paginatedFileSystemQuery({
       directory: path.join(basedir, runEntityDir('events', runId)),
       schema: ReadEventSchema,
       cachedItems: eventCache,
@@ -1469,6 +1496,9 @@ export function createEventsStorage(
       getSortKey: eventSortKey,
       getSortKeyFromFileId: (fileId) => eventSortKeyFromFileId(runId, fileId),
     });
+    await respectRunExpiry(runId, result.data);
+    return result;
+  };
 
   const missingRunCreatedError = (runId: string, reason: string) =>
     new WorkflowWorldError(
@@ -4564,6 +4594,7 @@ export function createEventsStorage(
       if (!event) {
         throw new Error(`Event ${eventId} in run ${runId} not found`);
       }
+      await respectRunExpiry(runId, [event]);
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       return stripEventDataRefs(event, resolveData);
     },
@@ -4616,6 +4647,7 @@ export function createEventsStorage(
         getSortKeyFromFileId: (fileId) =>
           eventSortKeyFromFileId(params.runId, fileId),
       });
+      await respectRunExpiry(params.runId, result.data);
 
       // If resolveData is "none", remove eventData from events
       if (resolveData === 'none') {

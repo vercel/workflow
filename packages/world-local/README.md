@@ -45,3 +45,8 @@ const world = createWorld({
   dataDir: './custom-workflow-data',
 });
 ```
+
+Event reads check the run's persisted expiry boundary before returning payloads.
+Expired or explicitly deleted run data is omitted even when another World
+instance or process holds cached events, or the on-disk payload purge needs a
+retry. Event records remain listable.

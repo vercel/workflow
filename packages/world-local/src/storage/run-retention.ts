@@ -115,31 +115,34 @@ export async function purgeRunEntityData(
     scrubEntityFiles(
       path.join(basedir, runEntityDir('events', runId)),
       runId,
-      (event) => {
-        const eventData = event.eventData;
-        if (!eventData || typeof eventData !== 'object') return;
-        for (const field of getEventDataRefFields(String(event.eventType))) {
-          delete (eventData as Record<string, unknown>)[field];
-        }
-        if (
-          event.eventType === 'run_created' ||
-          event.eventType === 'run_started'
-        ) {
-          delete (eventData as Record<string, unknown>).dynamicWorkflowCode;
-          delete (eventData as Record<string, unknown>).dynamicWorkflowCodeRef;
-          // A start Hook's metadata is user data; its token and retention
-          // are not.
-          const startHook = (eventData as { startHook?: unknown }).startHook;
-          if (startHook && typeof startHook === 'object') {
-            delete (startHook as Record<string, unknown>).metadata;
-          }
-        }
-      },
+      purgeEventPayloads,
       onError
     ),
     scrubHookMetadata(basedir, runId, onError),
     purgeRunStreamData(basedir, runId, tag, onError),
   ]);
+}
+
+/** Scrub the same payload fields from a disk record or a detached event read. */
+export function purgeEventPayloads(event: {
+  eventType?: unknown;
+  eventData?: unknown;
+}): void {
+  const eventData = event.eventData;
+  if (!eventData || typeof eventData !== 'object') return;
+  for (const field of getEventDataRefFields(String(event.eventType))) {
+    delete (eventData as Record<string, unknown>)[field];
+  }
+  if (event.eventType === 'run_created' || event.eventType === 'run_started') {
+    delete (eventData as Record<string, unknown>).dynamicWorkflowCode;
+    delete (eventData as Record<string, unknown>).dynamicWorkflowCodeRef;
+    // A start Hook's metadata is user data; its token and retention
+    // are not.
+    const startHook = (eventData as { startHook?: unknown }).startHook;
+    if (startHook && typeof startHook === 'object') {
+      delete (startHook as Record<string, unknown>).metadata;
+    }
+  }
 }
 
 /**

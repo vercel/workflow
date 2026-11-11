@@ -8,9 +8,11 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readJSON, taggedPath, writeJSON } from '../fs.js';
 import { createStorage } from '../storage.js';
 import { createStreamer } from '../streamer.js';
 import { createStep, updateStep } from '../test-helpers.js';
+import { RunRecordSchema } from './helpers.js';
 
 describe('runs.deleteDataMany (world-local)', () => {
   let testDir: string;
@@ -125,6 +127,102 @@ describe('runs.deleteDataMany (world-local)', () => {
     const chunks = await streamer.streams.getChunks(run.runId, 'stream-a');
     expect(chunks.data).toEqual([]);
     expect(chunks.done).toBe(true);
+  });
+
+  it.each([
+    'run_completed',
+    'run_cancelled',
+  ] as const)('does not expose the original writer cache after another instance writes %s and deletes data', async (eventType) => {
+    const run = await startRun();
+    const other = createStorage(testDir);
+    const before = await storage.events.listByCorrelationId({
+      runId: run.runId,
+      correlationId: 'step_001',
+    });
+    expect(before.data).toHaveLength(2);
+    expect(await eventPayloads(run.runId)).not.toEqual([]);
+
+    await other.events.create(run.runId, {
+      eventType,
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: eventType === 'run_completed' ? { output: RUN_OUTPUT } : {},
+    });
+    const deleted = await other.runs.deleteDataMany?.({ runIds: [run.runId] });
+    expect(deleted?.results[0].outcome).toBe('deleted');
+
+    // Exercise the correlation reader first: a general listing must not be
+    // needed to invalidate this instance's cached step input and result.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const after = await storage.events.listByCorrelationId({
+        runId: run.runId,
+        correlationId: 'step_001',
+      });
+      expect(after.data).toHaveLength(2);
+      expect(after.data[0].eventData).not.toHaveProperty('input', STEP_INPUT);
+      expect(after.data[1].eventData).not.toHaveProperty('result', STEP_OUTPUT);
+      expect(await eventPayloads(run.runId)).toEqual([]);
+    }
+  });
+
+  async function expectBoundaryReads(
+    reader: Storage,
+    runId: string,
+    expired: boolean
+  ) {
+    const listed = await reader.events.list({ runId });
+    const created = listed.data.find((e) => e.eventType === 'run_created');
+    if (created?.eventType !== 'run_created')
+      throw new Error('Expected run creation');
+    expect(created.eventData.input).toEqual(expired ? undefined : RUN_INPUT);
+    const correlated = await reader.events.listByCorrelationId({
+      runId,
+      correlationId: 'step_001',
+    });
+    expect(correlated.data).toHaveLength(2);
+    const completed = correlated.data.find(
+      (e) => e.eventType === 'step_completed'
+    );
+    if (completed?.eventType !== 'step_completed')
+      throw new Error('Expected step completion');
+    expect(completed.eventData.result).toEqual(
+      expired ? undefined : STEP_OUTPUT
+    );
+    const single = await reader.events.get(runId, completed.eventId);
+    if (single.eventType !== 'step_completed')
+      throw new Error('Expected step completion');
+    expect(single.eventData.result).toEqual(expired ? undefined : STEP_OUTPUT);
+  }
+
+  it.each([
+    false,
+    true,
+  ])('checks the durable expiry boundary even before event files are scrubbed (expired: %s)', async (expired) => {
+    const run = await startRun();
+    const other = createStorage(testDir);
+    await other.events.create(run.runId, {
+      eventType: 'run_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { output: RUN_OUTPUT },
+    });
+    const runPath = taggedPath(testDir, 'runs', run.runId);
+    const stored = await readJSON(runPath, RunRecordSchema);
+    if (!stored) throw new Error('Expected run record');
+    // Model the interval after the atomic boundary write but before the
+    // entity purge (also possible when an explicit deletion must retry).
+    await writeJSON(
+      runPath,
+      {
+        ...stored,
+        expiredAt: new Date(Date.now() + (expired ? -60_000 : 60_000)),
+      },
+      { overwrite: true }
+    );
+
+    // Both the original writer's cache and a new reader of the unscrubbed
+    // files must obey the boundary. A future deadline must retain data.
+    for (const reader of [storage, createStorage(testDir)]) {
+      await expectBoundaryReads(reader, run.runId, expired);
+    }
   });
 
   it('answers already_deleted on a second call, keeping the first expiredAt', async () => {
