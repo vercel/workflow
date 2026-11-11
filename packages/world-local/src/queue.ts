@@ -264,6 +264,7 @@ const inMemoryQueueAuthKey: QueueAuthKey = {
   current: async () => getQueueAuthKey(),
   reload: async () => getQueueAuthKey(),
   restore: async () => {},
+  written: async () => {},
 };
 
 export function createQueue(
