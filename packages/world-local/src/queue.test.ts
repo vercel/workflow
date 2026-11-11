@@ -1257,7 +1257,7 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
     expect(seen[1]?.body).not.toHaveProperty('hookResumeTiming');
   });
 
-  it('leaves a start message, a legacy hook resume and an invocation to their own deliveries', async () => {
+  it('leaves a start message, a legacy hook resume, a wake-up and an invocation to their own deliveries', async () => {
     const { seen, release } = recordingHandler();
     await localQueue.queue(QUEUE, spec9('run_a'));
     await vi.waitFor(() => expect(seen).toHaveLength(1));
@@ -1284,13 +1284,20 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
         },
       })
     );
+    // `run.wakeUp()`: coalesced, the waits it names would be lost.
+    const wakeUp = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', { completeWaits: ['wait_1'] })
+    );
     release();
-    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    await vi.waitFor(() => expect(seen).toHaveLength(4));
     expect(seen.map((d) => d.messageId).slice(1)).toEqual([
       start.messageId,
       legacy.messageId,
+      wakeUp.messageId,
     ]);
-    expect(seen.slice(1).map((d) => d.deliveryCount)).toEqual([1, 1]);
+    expect(seen.slice(1).map((d) => d.deliveryCount)).toEqual([1, 1, 1]);
+    expect(seen[3]?.body.completeWaits).toEqual(['wait_1']);
   });
 
   it(`re-runs at most ${MAX_LOCAL_COALESCED_RERUNS} times per hold, then delivers what still waits`, async () => {

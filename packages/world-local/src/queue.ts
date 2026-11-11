@@ -404,9 +404,12 @@ function isHandoff(text: string): boolean {
  * into the run's running delivery: dropped, and covered by that delivery's
  * re-run, which reads the run's log. Every producer commits what such a
  * message is for (a step outcome, a `hook_received`, a cancellation) before
- * it sends it. A `run.wakeUp()` message's `completeWaits` is lost when
- * coalesced, so its waits run their full length: best effort, as the World
- * contract allows and as on world-vercel and world-postgres. A start message (`runInput`) carries the input of a run that
+ * it sends it. A `run.wakeUp()` message (`completeWaits`) names waits the
+ * log does not: coalesced, it would be lost and the waits would run their
+ * full length. The World contract allows that, and world-vercel and
+ * world-postgres do it, but world-local delivers it after the running
+ * delivery instead, so `@workflow/vitest`'s `waitForSleep()` then
+ * `wakeUp()` does not race the delivery that created the wait. A start message (`runInput`) carries the input of a run that
  * may not exist yet, a legacy resume (`hookInput`) carries a payload the
  * orchestrator still has to write, a restart's recovery message
  * (`recovery: true`) asks its delivery to re-send what died with the
@@ -417,6 +420,8 @@ function isCoalescible(message: Record<string, unknown>): boolean {
   return !(
     'runInput' in message ||
     'hookInput' in message ||
+    (Array.isArray(message.completeWaits) &&
+      message.completeWaits.length > 0) ||
     message.recovery === true ||
     message.invoke
   );
