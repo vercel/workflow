@@ -224,7 +224,7 @@ In `@workflow/vitest`, `waitForSleep()` skips a sleep that `wakeUp()` already na
 - **Unstamped messages** are checked against the run's stored `spec_version`, and a spec 9 run's is stamped and moved to its named queue (see [An unstamped message](#an-unstamped-message)).
 - **Hard-killed workers.** A worker killed mid-job leaves the named queue locked, and Graphile clears that only after 4 hours. By default every delivery renews its locks, renewing workers register (migration 0030), and any process releases a registered holder's named-queue job unrenewed for 300 seconds, so the run continues within about 8 minutes. Jobs of earlier-version processes keep the 4-hour reset. `jobLockStaleSeconds` changes this (see [Postgres World](/worlds/postgres#workflow_postgres_job_lock_stale_seconds)).
 
-**world-vercel.** Spec 9 runs get one orchestrator invocation at a time without `WORKFLOW_SEQUENTIAL_REPLAYS=1`: their orchestrator messages carry the run's id as a [Vercel Queues](https://vercel.com/docs/queues) concurrency key, and world-vercel fences the orchestrator's writes. Under `WORKFLOW_SEQUENTIAL_REPLAYS=1` (see [Vercel World](/worlds/vercel#workflow_sequential_replays)) they use per-run topics without a key, since Vercel Queues refuses a keyed send to a topic a `maxConcurrency` consumer reads, and nothing is coalesced: each step completion wakes the orchestrator once.
+**world-vercel.** Spec 9 runs get one orchestrator invocation at a time: their orchestrator messages carry the run's id as a [Vercel Queues](https://vercel.com/docs/queues) concurrency key, and world-vercel fences the orchestrator's writes.
 
 ## The spec 9 model
 
@@ -807,7 +807,7 @@ A World implements two mechanisms: **queue serialization** makes two orchestrato
 
 `singleOrchestratorRunIdOf(payload)` from `@workflow/world` returns the run a message is an orchestrator delivery for when the run is spec 9 by the payload's stamp, and `undefined` for a step message, a health check, an intermediate hop of a long wait's timer, or an earlier run's message. While one delivery for such a run is in flight, hold the run's other orchestrator deliveries until it responds. Never hold step messages back, and never hold an earlier run's deliveries: a spec 8 orchestrator can hold an inline step until another wake of the same run aborts it. A delivery waiting out a `{ timeoutSeconds }` delay is not in flight. This applies to the Workflow SDK's own queue prefix only.
 
-Declare `capabilities.maxConcurrency` when your queue does this. world-postgres uses a Graphile named queue per run and world-local an in-process per-run gate; world-vercel uses a concurrency key per run on the shared flow topic, or, under `WORKFLOW_SEQUENTIAL_REPLAYS=1`, a per-run topic consumed with `maxConcurrency: 1`.
+Declare `capabilities.maxConcurrency` when your queue does this. world-postgres uses a Graphile named queue per run and world-local an in-process per-run gate; world-vercel uses a concurrency key per run on the shared flow topic.
 
 A queue may **coalesce** instead of holding: while one delivery of a run is in flight, it drops the run's other orchestrator messages and records them on that delivery, as world-vercel does with the concurrency key and world-postgres with its named queue. That is safe because what an orchestrator message is sent for is committed to the log first, with two exceptions and one obligation:
 
@@ -887,15 +887,13 @@ world-vercel decides from the payload alone, at send and at delivery alike, with
 
 - `messageRunSpecVersion` reads `runInput.specVersion`, then `runContext.specVersion`, then the `runSpecVersion` hint. `isSingleOrchestratorMessage` is true when that is 9 or more. A message without a stamp counts as spec 8.
 - `orchestratorRunIdOf` returns the run id for an orchestrator message, and `undefined` for a step message, a health check, and an intermediate hop of a long wait's timer (`isIntermediateWaitHop`: `waitContinuation.resumeAtMs` is set).
-- world-vercel keys a message only when it is on a flow topic, `WORKFLOW_SEQUENTIAL_REPLAYS=1` is off, the message is spec 9, and `orchestratorRunIdOf` returns a run id.
+- world-vercel keys a message only when it is on a flow topic, the message is spec 9, and `orchestratorRunIdOf` returns a run id.
 
 ```mermaid
 flowchart TD
     M["Queue message"] --> F{"Flow topic?"}
     F -->|"no"| U["No key"]
-    F -->|"yes"| S{"WORKFLOW_SEQUENTIAL_REPLAYS=1?"}
-    S -->|"yes"| U2["No key, per-run or per-step topic"]
-    S -->|"no"| V{"Spec 9 or later by stamp?"}
+    F -->|"yes"| V{"Spec 9 or later by stamp?"}
     V -->|"no, spec 8 or unstamped"| U
     V -->|"yes"| O{"Orchestrator message?"}
     O -->|"step message, health check, intermediate hop"| U
@@ -924,10 +922,6 @@ flowchart LR
     TR -->|"no key"| C2["Step invocations, parallel"]
     TR -->|"no key"| C3["Intermediate hop, reads run status only"]
 ```
-
-### The `WORKFLOW_SEQUENTIAL_REPLAYS=1` opt-in
-
-This existing opt-in keeps the per-run topology for every run, spec 8 and spec 9: a per-run topic for orchestrator messages (`__wkf_workflow_<name>_<runId>`), a per-step topic for step messages, a per-probe topic for health checks, and `maxConcurrency: 1` on the flow trigger. Spec 9 messages are then sent unkeyed, because Vercel Queues refuses (400) a keyed send to a topic a `maxConcurrency` consumer reads. The per-run topic serializes the orchestrator, nothing is coalesced, and handoffs still work. Each background completion's wake is then its own orchestrator invocation, one after another, the same shape as on world-local (see [Known limitations](#known-limitations)).
 
 ### What the design needs from the Vercel Queues client
 
@@ -1215,7 +1209,7 @@ Three exceptions take other exits: a fence refusal sends the messages the delive
 - **Stream writes still flushing**, or **a hook conflict** the workflow has to consume in a fresh pass: the delivery hands off.
 - **An event that landed after the VM decided.** Before suspending, a foreign event above the pass's consumed slot starts another pass instead of acknowledging, because its own wake would find the position already recorded and exit.
 - **Throttled inline start.** Defers the run by the longest backoff once every sibling settled.
-- **Uncoalesced wakes.** On world-local, and on world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1`, each background outcome's wake is its own orchestrator delivery, delivered after the running one; world-postgres covers the wakes queued behind a running delivery with re-runs of it. A wake that finds nothing new acknowledges after one tail read; the others load the log and replay ([Known limitations](#known-limitations)).
+- **Uncoalesced wakes.** On world-local, each background outcome's wake is its own orchestrator delivery, delivered after the running one; world-postgres covers the wakes queued behind a running delivery with re-runs of it. A wake that finds nothing new acknowledges after one tail read; the others load the log and replay ([Known limitations](#known-limitations)).
 - **QuickJS engine.** Same delivery, writer and run-ahead depth after setup, but no divergence recovery ([QuickJS run-ahead](#quickjs-run-ahead)).
 
 ### Event posting with consume-after-commit
@@ -1818,7 +1812,7 @@ A replay diverges from the log. The delivery records the divergence, discards th
 
 #### Uncoalesced wakes on world-local and world-postgres
 
-world-postgres coalesces the orchestrator messages queued behind a running delivery (see [world-local and world-postgres](#world-local-and-world-postgres)). world-local does not: each background completion is its own orchestrator delivery, in series, as is world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1`. See [Known limitations](#known-limitations).
+world-postgres coalesces the orchestrator messages queued behind a running delivery (see [world-local and world-postgres](#world-local-and-world-postgres)). world-local does not: each background completion is its own orchestrator delivery, in series. See [Known limitations](#known-limitations).
 
 #### world-postgres re-send next to a locked job
 
@@ -1857,7 +1851,7 @@ Spec 8 runs keep the previous orchestrator unchanged, at the cost of two orchest
 
 ### Spec 8 messages are not keyed
 
-Spec 8 messages carry no concurrency key. A key would serialize them, and a wake that the queue coalesced would become a re-run inside one invocation instead of a separate delivery, which changes spec 8 behaviour. Spec 8 runs keep the shared, unserialized topic, their new-message continuations, and `WORKFLOW_SEQUENTIAL_REPLAYS` as the way to serialize them.
+Spec 8 messages carry no concurrency key. A key would serialize them, and a wake that the queue coalesced would become a re-run inside one invocation instead of a separate delivery, which changes spec 8 behaviour. Spec 8 runs keep the shared, unserialized topic and their new-message continuations.
 
 ### `{ timeoutSeconds: 0 }` means handoff, by run spec
 
@@ -1865,7 +1859,7 @@ The handoff could have been a result flag (`handoff: true`) behind a capability.
 
 ### Per-run and per-step topics are dropped for spec 9
 
-With the key doing the serialization, a spec 9 run uses one topic per workflow name. That reduces the number of topics and lets a fan-out's step messages share batch requests (16 messages each, sent in parallel). The trade-off is that the key is the only queue-side serialization: a spec 9 message sent without it, such as one without its spec stamp, has none, and only the in-band fence keeps the run correct (see [Spec detection rests on the payload stamp](#spec-detection-rests-on-the-payload-stamp)). `WORKFLOW_SEQUENTIAL_REPLAYS=1` keeps per-run topics on world-vercel, without keys.
+With the key doing the serialization, a spec 9 run uses one topic per workflow name. That reduces the number of topics and lets a fan-out's step messages share batch requests (16 messages each, sent in parallel). The trade-off is that the key is the only queue-side serialization: a spec 9 message sent without it, such as one without its spec stamp, has none, and only the in-band fence keeps the run correct (see [Spec detection rests on the payload stamp](#spec-detection-rests-on-the-payload-stamp)).
 
 ### Coalesced re-runs instead of new deliveries
 
@@ -1973,7 +1967,7 @@ When a hazard stops run-ahead, a step whose body started ahead of its creation, 
 
 ### world-local does not coalesce
 
-world-local serializes a spec 9 run's orchestrator deliveries behind a per-run gate but does not coalesce them, so every background completion's wake is its own delivery, run one after another: a 97-step fan-out gets 97 orchestrator deliveries. A handoff (`{ timeoutSeconds: 0 }`, up to 10,000 per message) redelivers the same message with `attempt` unchanged, but releases the run gate and takes it again in FIFO order, so wakes already waiting run first. world-postgres and world-vercel coalesce (see [world-local and world-postgres](#world-local-and-world-postgres)). world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has world-local's shape: its spec 9 messages go unkeyed on per-run topics, so each wake is one invocation.
+world-local serializes a spec 9 run's orchestrator deliveries behind a per-run gate but does not coalesce them, so every background completion's wake is its own delivery, run one after another: a 97-step fan-out gets 97 orchestrator deliveries. A handoff (`{ timeoutSeconds: 0 }`, up to 10,000 per message) redelivers the same message with `attempt` unchanged, but releases the run gate and takes it again in FIFO order, so wakes already waiting run first. world-postgres and world-vercel coalesce (see [world-local and world-postgres](#world-local-and-world-postgres)).
 
 ### Spec detection rests on the payload stamp
 
