@@ -5,7 +5,7 @@
 > is the design defense for the change: what it does, why each choice was
 > made, and why the alternatives were rejected. Lease tuning:
 > `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` (see
-> [Runtime tuning](https://useworkflow.dev/docs/configuration/runtime-tuning)).
+> [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning)).
 
 ## What this change does
 
@@ -68,7 +68,7 @@ steady-state writes beyond one field on an event we already write.
 ID across redelivery attempts. That stability is exactly the property recovery needs: "a
 delivery whose ID matches the stamp" means "the queue redelivered the work that crashed":
 permission to re-execute. The requirement is now documented in the
-[Queue contract](https://useworkflow.dev/docs/api-reference/workflow-runtime/world/queue); a World whose queue
+[Queue contract](https://workflow-sdk.dev/docs/api-reference/workflow-runtime/world/queue); a World whose queue
 mints fresh IDs per delivery degrades gracefully (the owner check never matches, so
 crashed steps recover via the delayed backstop instead of immediately): it never wedges
 and never duplicates.

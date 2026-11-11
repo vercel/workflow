@@ -411,6 +411,9 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - Document every user-configurable environment variable in the docs.
 - Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
 - Docs pages never reference or link to source files in this repository. Design notes for maintainers live as markdown next to the code they describe (see [Workflow execution model](#workflow-execution-model)) and are referenced from source comments.
+- The docs site is public: everything under `docs/content/` is published on workflow-sdk.dev, indexed by search engines, and served to agents through site search, `llms.txt` and the docs MCP. Write it only for people who use the SDK or build a World. Design notes, RFCs, implementation references and anything else aimed at maintainers go next to the code, never into a docs page. There is no `/docs/changelog` section; release notes come from changesets (rendered at `/changelog`).
+- Preview-only tooling pages go in a docs tree's `internal/` folder with `internal: true` frontmatter, which makes production answer 404 for them, keeps them out of the sidebar, sitemap, search, `llms.txt` and chat, and marks them `noindex`. Public pages never link to them.
+- `pnpm --filter docs lint:links` (the Docs Links CI job) enforces the three rules above. When a page leaves the site, add a redirect in `docs/next.config.ts`.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
 ### Docs preview links in PR descriptions

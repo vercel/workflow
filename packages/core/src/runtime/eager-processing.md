@@ -151,7 +151,7 @@ To prevent deadlock when polling is executed inline by the step executor, `Run#p
 
 **Follow-up**: Replace the worker-pool sizing requirement with a polling design that does not occupy a worker slot. Options under consideration: moving child-completion polling out of the step body into the suspension layer, or emitting a `run_completed` notification on the parent's stream/queue so the parent only resumes when the child actually finishes.
 
-**Update**: A parent awaiting `returnValue` of a child it started now suspends on a system hook the child resumes when it finishes, so it holds no worker slot while it waits. Only `returnValue` awaits that fall back to polling (inside a step, or with `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0`) still count toward this sizing. See [Child Workflows](https://useworkflow.dev/cookbook/advanced/child-workflows#how-the-parent-waits).
+**Update**: A parent awaiting `returnValue` of a child it started now suspends on a system hook the child resumes when it finishes, so it holds no worker slot while it waits. Only `returnValue` awaits that fall back to polling (inside a step, or with `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0`) still count toward this sizing. See [Child Workflows](https://workflow-sdk.dev/cookbook/advanced/child-workflows#how-the-parent-waits).
 
 ### Mixed suspensions
 
