@@ -1,13 +1,8 @@
----
-title: "Spec 9: single orchestrator"
-description: Opt-in spec 9 runs (WORKFLOW_SPEC_VERSION=9) on Worlds that implement the in-band fence (the Vercel, Local and Postgres Worlds); new runs stay on spec 8 by default. One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. The reference for users, World authors, and maintainers.
----
-
 # Spec 9: single orchestrator
 
-Spec 9 is an opt-in run format driven by a single orchestrator per run. New runs stay on spec 8 unless you set [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec_version), on a World that implements the in-band fence (the Vercel, Local and Postgres Worlds do). Nothing on this page applies to spec 8 runs.
+Spec 9 is an opt-in run format driven by a single orchestrator per run. New runs stay on spec 8 unless you set [`WORKFLOW_SPEC_VERSION=9`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_spec_version), on a World that implements the in-band fence (the Vercel, Local and Postgres Worlds do). Nothing in this document applies to spec 8 runs.
 
-This page is long, and its sections serve different readers:
+This document is the reference for spec 9, kept next to the runtime that implements it (`packages/core/src/runtime/spec9/`). Update it in the same change when spec 9 behaviour, the World contract, or a decision recorded here changes. It is long, and its sections serve different readers:
 
 - **Using spec 9:** [Overview](#overview), [Settings and behaviour on spec 9 runs](#settings-and-behaviour-on-spec-9-runs), and [Known limitations](#known-limitations).
 - **Building or maintaining a World:** [World contract changes](#world-contract-changes), including [Implementing spec 9 in a World](#implementing-spec-9-in-a-world), [Queue topology, handoffs and rotation](#queue-topology-handoffs-and-rotation), and [Spec 8 and spec 9 side by side](#spec-8-and-spec-9-side-by-side).
@@ -35,7 +30,7 @@ On spec 8 runs the World refuses a second start or a second outcome by checking 
 
 ### Opting in
 
-Set [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec_version). The Vercel, Local and Postgres Worlds implement the in-band fence spec 9 runs need. A World that does not declare the fence (`capabilities.inBandFence`) keeps creating spec 8 runs, and logs a one-time warning if `WORKFLOW_SPEC_VERSION=9` asks it for spec 9.
+Set [`WORKFLOW_SPEC_VERSION=9`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_spec_version). The Vercel, Local and Postgres Worlds implement the in-band fence spec 9 runs need. A World that does not declare the fence (`capabilities.inBandFence`) keeps creating spec 8 runs, and logs a one-time warning if `WORKFLOW_SPEC_VERSION=9` asks it for spec 9.
 
 - **Upgrade the whole fleet first.** Every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release or later before any of them sets `WORKFLOW_SPEC_VERSION=9`.
 - **Every caller of `start()` decides too.** A start that targets another deployment stamps the lower of the caller's and the target's versions, so a spec 9 run needs `WORKFLOW_SPEC_VERSION=9` on both.
@@ -46,7 +41,7 @@ Set [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec
 Once spec 9 runs exist, do not roll back below this release. An older SDK fails writes to a spec 9 run (`RunNotSupportedError` on the Local and Postgres Worlds, HTTP 400 on Vercel). Reads still work, and nothing is corrupted.
 
 - **On Vercel**, a run's deliveries go only to the deployment that created it, so only an older process's `cancel()` and other non-resume writes fail. Its `resumeHook()` and webhooks still work: world-vercel accepts their `hook_received` as an out-of-band write (see [An older SDK and a spec 9 run](#an-older-sdk-and-a-spec-9-run)).
-- **On a shared Local or Postgres queue**, an older process can take the run's messages, and the run stalls while it does. After re-upgrading the run continues, unless the older release used up a message's delivery budget ([`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries), 48): it then acknowledges the message and leaves the run as it is. world-local's restart recovery re-sends steps and timers; on world-postgres they stay lost until something else wakes the run, which can need a manual wake.
+- **On a shared Local or Postgres queue**, an older process can take the run's messages, and the run stalls while it does. After re-upgrading the run continues, unless the older release used up a message's delivery budget ([`WORKFLOW_MAX_QUEUE_DELIVERIES`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_max_queue_deliveries), 48): it then acknowledges the message and leaves the run as it is. world-local's restart recovery re-sends steps and timers; on world-postgres they stay lost until something else wakes the run, which can need a manual wake.
 
 Spec 8 runs are unaffected: upgrading, rolling back, and mixing old and new processes work as on earlier releases.
 
@@ -76,7 +71,7 @@ On a deployment of this release or newer with `WORKFLOW_SPEC_VERSION` unset (or 
 
 ### What spec 9 runs no longer use
 
-Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, and the precondition guard. They remain on spec 8 runs (see [Runtime tuning](/docs/configuration/runtime-tuning#replay-and-queue-delivery)).
+Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, and the precondition guard. They remain on spec 8 runs (see [Runtime tuning](https://useworkflow.dev/docs/configuration/runtime-tuning#replay-and-queue-delivery)).
 
 ### Status
 
@@ -86,14 +81,14 @@ Lazy inline step start, batched step claims, optimistic inline start outside tur
 
 ## Settings and behaviour on spec 9 runs
 
-The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](/docs/configuration/runtime-tuning#spec-9-experimental) lists the spec 9 settings briefly and links here.
+The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://useworkflow.dev/docs/configuration/runtime-tuning#spec-9-experimental) lists the spec 9 settings briefly and links here.
 
 ### Runtime settings
 
 Settings that apply to every run, read differently on spec 9 runs:
 
 - **`WORKFLOW_MAX_QUEUE_DELIVERIES`** (48): only orchestrator messages count. A fence refusal's redelivery counts on every first-party World, so a run whose every write is refused fails instead of looping; a handoff does not count. Step messages retry in place and are bounded by `maxRetries` and retention instead, except that past the cap a step showing no activity for an hour (every delivery fails before it starts, say because its input cannot be read) fails with a catchable `FatalError` naming `MAX_DELIVERIES_EXCEEDED`.
-- **`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`**: recovery replays run in the same delivery, reloading the log and replaying from cold in a fresh VM. Once spent, the run fails with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log); a redelivery starts the count again.
+- **`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`**: recovery replays run in the same delivery, reloading the log and replaying from cold in a fresh VM. Once spent, the run fails with [`CORRUPTED_EVENT_LOG`](https://useworkflow.dev/docs/errors/corrupted-event-log); a redelivery starts the count again.
 - **`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`**: an open wait due within the inline window plus this allowance makes [run-ahead](#workflow_run_ahead_depth) wait for its writes at that boundary.
 - **`WORKFLOW_MAX_INLINE_STEPS`**: clamped to `0` to `16`. `0` enqueues every step (on spec 8 runs `0` is read as unset). An inline step whose retry is due moves to the background.
 - **`WORKFLOW_OPTIMISTIC_INLINE_START`**: only `0` or `false` has an effect, making bodies wait for their start to commit on turbo's first delivery, under run-ahead, and under `WORKFLOW_OPTIMISTIC_BACKGROUND_START`.
@@ -150,7 +145,7 @@ Settings that exist only for spec 9 runs:
 #### `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`
 
 - Default: `60000`
-- The orchestrator stops starting inline steps this long before its inline window ([`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms)) ends, on both engines, and enqueues steps created inside the margin.
+- The orchestrator stops starting inline steps this long before its inline window ([`WORKFLOW_V2_TIMEOUT_MS`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_v2_timeout_ms)) ends, on both engines, and enqueues steps created inside the margin.
 
 #### `WORKFLOW_OPTIMISTIC_BACKGROUND_START`
 
@@ -180,12 +175,12 @@ A `maxRetries: 0` step whose invocation dies after it started fails rather than 
 
 ### The event log
 
-Steps and waits are folded from the run's events, not kept as state the World checks writes against. A World may keep step and wait records for its read APIs; the runtime never relies on them. Spec 9 runs always use the [sealed log](/docs/how-it-works/event-sourcing#sealed-positions-noop-events), since the fence counts sequencer positions.
+Steps and waits are folded from the run's events, not kept as state the World checks writes against. A World may keep step and wait records for its read APIs; the runtime never relies on them. Spec 9 runs always use the [sealed log](https://useworkflow.dev/docs/how-it-works/event-sourcing#sealed-positions-noop-events), since the fence counts sequencer positions.
 
 - **Creation.** An inline step's first `step_started` carries its name, input and `inline: true`, with no `step_created`. A background step has `step_created` (with `creatorMessageId`), then its invocation's `step_started`.
 - **Attempts.** A step's attempt count is the number of its `step_started` events. One after a `step_retrying` is a retry; one after another `step_started` is a redelivery.
 - **Waits.** Only the orchestrator writes `wait_created` and `wait_completed`; a second `wait_completed` is inert.
-- **Inert after terminal.** Once a step's outcome, `wait_completed`, `hook_disposed` or workflow `attr_set` is consumed, later events under that correlation ID are stepped over (see [Duplicate events](/docs/how-it-works/event-sourcing#duplicate-events)). That covers the duplicates that can still occur, such as a second `step_started` from a background step redelivered after its lease expired.
+- **Inert after terminal.** Once a step's outcome, `wait_completed`, `hook_disposed` or workflow `attr_set` is consumed, later events under that correlation ID are stepped over (see [Duplicate events](https://useworkflow.dev/docs/how-it-works/event-sourcing#duplicate-events)). That covers the duplicates that can still occur, such as a second `step_started` from a background step redelivered after its lease expired.
 
 #### Events returned on a write
 
@@ -222,7 +217,7 @@ In `@workflow/vitest`, `waitForSleep()` skips a sleep that `wakeUp()` already na
 - **Delivery cap.** A fence refusal's delayed redelivery carries the attempt count over, so a run refused on every pass reaches `MAX_DELIVERIES_EXCEEDED`.
 - **Keyed sends.** A step's message and a near-due timer use Graphile's `unsafe_dedupe` job key mode, so a re-send is a no-op while any job holds the key and never resets its attempts or `run_at`.
 - **Unstamped messages** are checked against the run's stored `spec_version`, and a spec 9 run's is stamped and moved to its named queue (see [An unstamped message](#an-unstamped-message)).
-- **Hard-killed workers.** A worker killed mid-job leaves the named queue locked, and Graphile clears that only after 4 hours. By default every delivery renews its locks, renewing workers register (migration 0030), and any process releases a registered holder's named-queue job unrenewed for 300 seconds, so the run continues within about 8 minutes. Jobs of earlier-version processes keep the 4-hour reset. `jobLockStaleSeconds` changes this (see [Postgres World](/worlds/postgres#workflow_postgres_job_lock_stale_seconds)).
+- **Hard-killed workers.** A worker killed mid-job leaves the named queue locked, and Graphile clears that only after 4 hours. By default every delivery renews its locks, renewing workers register (migration 0030), and any process releases a registered holder's named-queue job unrenewed for 300 seconds, so the run continues within about 8 minutes. Jobs of earlier-version processes keep the 4-hour reset. `jobLockStaleSeconds` changes this (see [Postgres World](https://useworkflow.dev/worlds/postgres#workflow_postgres_job_lock_stale_seconds)).
 
 **world-vercel.** Spec 9 runs get one orchestrator invocation at a time: their orchestrator messages carry the run's id as a [Vercel Queues](https://vercel.com/docs/queues) concurrency key, and world-vercel fences the orchestrator's writes.
 
@@ -523,11 +518,11 @@ QuickJS runs ahead with the same writer, classification, depth and hazard rules,
 
 #### Replay divergence
 
-On the node engine, a replay that diverges from the log discards the VM, reloads the log and replays from cold in a fresh VM in the same delivery, up to [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](/docs/configuration/runtime-tuning#workflow_replay_divergence_max_retries) times (3 by default), then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence carries `replayDivergenceCount`. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no in-delivery divergence recovery.
+On the node engine, a replay that diverges from the log discards the VM, reloads the log and replays from cold in a fresh VM in the same delivery, up to [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_replay_divergence_max_retries) times (3 by default), then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence carries `replayDivergenceCount`. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no in-delivery divergence recovery.
 
 ### Turbo
 
-[Turbo mode](/docs/changelog/turbo-mode) fast-paths a run's first delivery. On that delivery the log holds only `run_created`, whose position counts as the run's first in-band write, and no other orchestrator exists yet. So it writes `run_started` without waiting, starts the in-band writer from `IN_BAND_SEQ_AT_RUN_CREATION` instead of loading the log, and starts the first inline step bodies before their start commits. Every in-band write queues behind `run_started` in the delivery's writer, and a refused `run_started` stops the delivery like any fence refusal.
+[Turbo mode](https://useworkflow.dev/docs/changelog/turbo-mode) fast-paths a run's first delivery. On that delivery the log holds only `run_created`, whose position counts as the run's first in-band write, and no other orchestrator exists yet. So it writes `run_started` without waiting, starts the in-band writer from `IN_BAND_SEQ_AT_RUN_CREATION` instead of loading the log, and starts the first inline step bodies before their start commits. Every in-band write queues behind `run_started` in the delivery's writer, and a refused `run_started` stops the delivery like any fence refusal.
 
 Turbo is on by default (`WORKFLOW_TURBO`) and applies when all of these hold:
 
@@ -757,7 +752,7 @@ Graphile's `preserve_run_at` job-key mode does not meet the contract: next to a 
 
 ### Implementing spec 9 in a World
 
-This is the guide for a World author; [Building a World](/worlds/building-a-world) describes the spec 8 contract.
+This is the guide for a World author; [Building a World](https://useworkflow.dev/worlds/building-a-world) describes the spec 8 contract.
 
 Spec 9 (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model) is opt-in, for users and for Worlds. A World that does nothing in this section keeps working and creates spec 8 runs. To let users opt in with `WORKFLOW_SPEC_VERSION=9`:
 
@@ -853,7 +848,7 @@ Optional surfaces:
 - **Abandoned reads.** `events.list()` may receive a `signal`; the runtime aborts it when it gives up on a read and never uses that read's result. Cancel the request on abort so a held read does not keep a connection open. A World that ignores it is still correct.
 - **Lost queues.** If your World re-enqueues active runs on start and its queue does not survive a restart (an in-memory queue, as world-local's), pass `{ queueLost: true }` as the fifth argument of `reenqueueActiveRuns()`, so each message carries `recovery: true` and re-arms what died with the queue.
 
-Spec 8 runs keep the [hooks-only suspension](/worlds/building-a-world#event-id-allocation) shortcut that omits `eventCount` and `sinceCursor`.
+Spec 8 runs keep the [hooks-only suspension](https://useworkflow.dev/worlds/building-a-world#event-id-allocation) shortcut that omits `eventCount` and `sinceCursor`.
 
 #### Conformance
 
@@ -1887,7 +1882,7 @@ By default a background step's body runs only once its out-of-band `step_started
 
 The opposite default, starting the body of a first delivery while its `step_started` is in flight (as turbo does for inline steps), was tried and reverted: a step queued before `run.cancel()` ran its side effects after the cancel, and a throttled start ran the body, discarded its outcome and ran it again, several times per step under throttling at scale. A background step has already paid a queue hop, so the start's round trip is a small share of its latency.
 
-It remains an opt-in, [`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`](/docs/configuration/runtime-tuning#workflow_optimistic_background_start). Under it the outcome is still written only once the start committed, and a `maxRetries: 0` step, every delivery that reads the log, and an explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` keep the awaited start. `WORKFLOW_OPTIMISTIC_INLINE_START` was not reused because on spec 9 it is an opt-out for inline steps.
+It remains an opt-in, [`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_optimistic_background_start). Under it the outcome is still written only once the start committed, and a `maxRetries: 0` step, every delivery that reads the log, and an explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` keep the awaited start. `WORKFLOW_OPTIMISTIC_INLINE_START` was not reused because on spec 9 it is an opt-out for inline steps.
 
 ### `run.wakeUp()` stays best-effort
 
@@ -1947,7 +1942,7 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 
 ### `run.wakeUp()` is best-effort on Vercel and Postgres
 
-A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](/docs/configuration/runtime-tuning#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](/docs/configuration/runtime-tuning#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
+A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](https://useworkflow.dev/docs/configuration/runtime-tuning#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
 
 ### An open hook keeps every invocation lingering
 

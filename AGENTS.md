@@ -33,6 +33,8 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
+Runs default to spec 8. The opt-in spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`, a single orchestrator per run behind the World's in-band fence) lives in `packages/core/src/runtime/spec9/`, and its reference (model, World contract, edge cases, decisions) is `packages/core/src/runtime/spec9/README.md`. Read it before changing spec 9 behaviour, and keep it up to date in the same change.
+
 ## Development commands
 
 ### Workspace-level commands

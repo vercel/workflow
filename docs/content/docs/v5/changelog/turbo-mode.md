@@ -88,4 +88,4 @@ So turbo deliberately stops at forced-optimistic *start* and awaits each `step_c
 
 ## Spec 9 runs
 
-This page describes turbo on spec 8 runs, the default. The experimental spec 9 runtime has its own turbo path, and runs ahead of durable writes within bounds that address the two reasons above. See [Turbo](/docs/changelog/spec-9#turbo) and [Run-ahead](/docs/changelog/spec-9#run-ahead) on the spec 9 page.
+This page describes turbo on spec 8 runs, the default. The experimental spec 9 runtime has its own turbo path, and runs ahead of durable writes within bounds that address the two reasons above. See [Turbo](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#turbo) and [Run-ahead](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#run-ahead) in the spec 9 reference.

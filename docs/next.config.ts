@@ -225,6 +225,22 @@ const config: NextConfig = {
         destination: '/docs/comparisons',
         permanent: false,
       },
+      // The spec 9 changelog page moved out of the docs into a markdown
+      // reference next to the spec 9 runtime source. Old links (and their
+      // `.md` alternate) land on it on GitHub. Anchor fragments are carried
+      // over by the browser, and the headings kept their slugs.
+      {
+        source: '/docs/changelog/spec-9',
+        destination:
+          'https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md',
+        permanent: false,
+      },
+      {
+        source: '/docs/changelog/spec-9.md',
+        destination:
+          'https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md',
+        permanent: false,
+      },
       // Cookbook: child-workflows and distributed-abort-controller moved
       // from common-patterns (now "Reliability Patterns") to advanced
       {

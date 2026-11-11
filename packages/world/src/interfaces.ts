@@ -752,7 +752,9 @@ export interface WorldCapabilities {
    *   fence.
    *
    * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
-   * each of these against a World's `events` storage.
+   * each of these against a World's `events` storage. "Implementing spec 9 in
+   * a World" in `packages/core/src/runtime/spec9/README.md` (in the Workflow SDK
+   * repository) is the full guide.
    */
   inBandFence?: boolean;
 

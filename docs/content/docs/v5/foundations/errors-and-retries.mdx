@@ -279,4 +279,4 @@ export async function placeOrderSaga(orderId: string) {
 
 ## Spec 9 (experimental)
 
-The experimental spec 9 runtime retries steps differently: a failed step is retried after about a second by default on its one queue message, and a `maxRetries = 0` step whose invocation dies after it started fails instead of running again. See [Retries on spec 9 runs](/docs/changelog/spec-9#retries).
+The experimental spec 9 runtime retries steps differently: a failed step is retried after about a second by default on its one queue message, and a `maxRetries = 0` step whose invocation dies after it started fails instead of running again. See [Retries on spec 9 runs](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#retries).

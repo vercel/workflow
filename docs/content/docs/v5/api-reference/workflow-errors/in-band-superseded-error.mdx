@@ -5,7 +5,6 @@ type: reference
 summary: InBandSupersededError is the in-band fence's refusal. The runtime handles it by stopping the superseded orchestrator invocation, which sends the queue messages its own writes owe and then asks for a redelivery of its message.
 related:
   - /docs/api-reference/workflow-errors/workflow-world-error
-  - /docs/changelog/spec-9
 ---
 
 A World throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) when it refuses a write made by a run's orchestrator because another invocation of the same run's orchestrator has written in-band since this one loaded the event log. It applies only to runs of the experimental spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`).
@@ -14,7 +13,7 @@ A World throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) whe
 The Workflow runtime handles this error. The refused invocation stops writing, sends the queue messages its own committed writes still owe, and asks for a redelivery of its queue message instead of acknowledging it. You will only encounter it when interacting with World storage APIs directly.
 </Callout>
 
-See [The in-band fence](/docs/changelog/spec-9#the-in-band-fence) on the spec 9 page.
+See [The in-band fence](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#the-in-band-fence) in the spec 9 reference.
 
 ```typescript lineNumbers
 import { InBandSupersededError } from "workflow/errors"
