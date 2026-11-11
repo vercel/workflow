@@ -4376,21 +4376,6 @@ async function runDelivery(
         // pays the await-then-run path for the rest of that
         // one invocation, which is cheap next to the
         // alternative.
-        //
-        // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
-        // topics consumed with `maxConcurrency: 1`) would in
-        // principle waive this latch: serialized orchestrator
-        // invocations restore the single-handler guarantee for
-        // the whole delivery. The waiver is intentionally NOT
-        // taken: the env var is a runtime-process setting that
-        // cannot prove the BUILT flow trigger actually carries
-        // `maxConcurrency: 1` (it must be set at build time
-        // too, and some integrations write their own trigger
-        // config), and `capabilities.maxConcurrency` only
-        // declares queue support, not deployed configuration.
-        // Until the build emits a verifiable signal that the
-        // deployed trigger is serialized, the conservative
-        // latch stays.
         const forceOptimisticStart =
           turbo &&
           !suspensionResult.hasAttributeEvents &&

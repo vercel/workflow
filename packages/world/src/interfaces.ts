@@ -705,10 +705,8 @@ export interface WorldCapabilities {
   /**
    * The World's queue delivers a single-orchestrator run's orchestrator
    * messages one at a time (see `singleOrchestratorRunIdOf`): on Vercel
-   * Queues, a concurrency key per run (or, under
-   * `WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run topics consumed with
-   * `maxConcurrency: 1`); an in-process per-run gate or a per-run job queue
-   * elsewhere. Worlds whose queue cannot serialize a run's orchestrator
+   * Queues, a concurrency key per run; an in-process per-run gate or a
+   * per-run job queue elsewhere. Worlds whose queue cannot serialize a run's orchestrator
    * deliveries must leave this unset.
    *
    * Declares queue *support*, not deployed configuration. The runtime takes
