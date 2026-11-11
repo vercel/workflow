@@ -9,8 +9,9 @@ import { expect, onTestFinished, test, vi } from 'vitest';
 import { createFetcher, startServer } from '../src/util.mjs';
 import type { Hook } from '../workflows/hooks.ts';
 
-// A Local World that created a spec 8 run is restarted with spec 9 opted in
-// (`WORKFLOW_SPEC_VERSION=9`) while the run waits on a hook. The restarted
+// A Local World that created a spec 8 run (`WORKFLOW_SPEC_VERSION=8`) is
+// restarted at spec 9 (`WORKFLOW_SPEC_VERSION=9`, the default) while the run
+// waits on a hook. The restarted
 // server keeps driving the run with the spec 8 orchestrator, and its new runs
 // are spec 9.
 test(

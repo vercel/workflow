@@ -69,7 +69,15 @@ async function stored(runId: string): Promise<Stored[]> {
 
 const kinds = (s: Stored) =>
   [...s.text.matchAll(/"(ref|patch|full)"/g)].map((m) => m[1]);
-const inputs = (log: Stored[]) => log.filter((e) => e.type === 'step_created');
+/**
+ * Step inputs: on `step_created`, or, for a spec 9 run's inline step, which
+ * has no `step_created`, on its first `step_started`.
+ */
+const inputs = (log: Stored[]) =>
+  log.filter(
+    (e) =>
+      e.type === 'step_created' || (e.type === 'step_started' && e.bytes > 0)
+  );
 const outputs = (log: Stored[]) =>
   log.filter((e) => e.type === 'step_completed');
 

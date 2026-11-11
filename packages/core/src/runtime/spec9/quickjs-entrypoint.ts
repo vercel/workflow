@@ -30,6 +30,7 @@ import {
   type EventBatchResult,
   type EventResult,
   eventIdToSlot,
+  purgesUserDataOnFinish,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   type SerializedData,
@@ -327,181 +328,205 @@ async function queueStepMessage(params: {
   });
 }
 
-export async function runWorkflowWithQuickJS(params: {
-  workflowCode: string;
-  workflowName: string;
-  workflowRun: WorkflowRun;
-  /**
-   * Events returned inline by `events.create('run_started', ...)` or by
-   * the lazy hook fast path's `hook_received` preload. When they indicate
-   * a first invocation, or when `preloadedEventsComplete` attests they
-   * are the complete log, they are used as the event log instead of
-   * fetching via `events.list`, matching the node:vm engine's fast path.
-   */
-  preloadedEvents?: Event[];
-  /**
-   * True when the caller has validated that `preloadedEvents` is the run's
-   * COMPLETE event log (e.g. the lazy hook fast path's hasMore-false
-   * replay preload). The first-invocation heuristic below only recognizes
-   * run_created/run_started-only preloads, so without this attestation a
-   * hook-resume preload would be discarded and refetched.
-   */
-  preloadedEventsComplete?: boolean;
-  /**
-   * The `events.list` cursor positioned after the last of `preloadedEvents`,
-   * when the caller has one. Lets this invocation read incrementally from
-   * where the preload ended and ask for an inline delta against it. Without
-   * it the first read after the preload starts from the top of the log.
-   */
-  preloadedCursor?: string | null;
-  /**
-   * Run input carried through the queue message on first delivery. Used
-   * as a last-resort fallback for `run_created.eventData.input` when
-   * the event log is incomplete.
-   */
-  runInput?: RunInput;
-  /**
-   * The parent OTel span (the outer `WORKFLOW {workflowName}` span from
-   * `runtime.ts`). When supplied, VM lifecycle attributes are attached
-   * to it for end-to-end visibility.
-   */
-  parentSpan?: Span;
-  /**
-   * Server-supplied per-run event ceiling from the run_started response
-   * (undefined ⇒ no enforcement). Mirrors the node:vm engine's guard:
-   * a runaway run is failed once its log reaches the ceiling. The throw
-   * propagates to the replay loop's catch in runtime.ts (the QuickJS
-   * dispatch runs inside that loop's try), which classifies it and
-   * records run_failed with MAX_EVENTS_EXCEEDED.
-   */
-  maxEventsLimit?: number;
-  /**
-   * Queue delivery attempt of the message driving this invocation (from
-   * the queue handler's metadata; 1 = first delivery). A redelivery may own
-   * wait chains a crashed delivery left (see `ownedWaitChains`), and the
-   * step re-send rule reads it.
-   */
-  deliveryAttempt?: number;
-  /**
-   * Whether this delivery may hold an orchestrator message the queue
-   * coalesced into it (any delivery but its message's first), and so arms
-   * the near-due waits of chains it does not own on exit (see
-   * `armNearDueTimers` in `delivery.ts`). Absent: it may.
-   */
-  armsNearDueWaits?: boolean;
-  /**
-   * Epoch ms of the invocation's inline deadline: its start plus its inline
-   * window (`WORKFLOW_V2_TIMEOUT_MS`), as on the node engine. A turn that
-   * begins at or past it starts nothing more and continues the run in the
-   * next delivery (`continueInNextDelivery`). Within the inline-start margin
-   * before it (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`), new steps are
-   * background steps instead of inline ones, and a delivery with nothing
-   * left to run does not linger for work done elsewhere (see
-   * `getOrchestratorLingerMsFor`). Absent (standalone callers): no deadline
-   * and no lingering.
-   */
-  inlineDeadlineMs?: number;
-  /**
-   * Continues the run in a fresh delivery once this one ends: a handoff of
-   * the delivery's message (`{ timeoutSeconds: 0 }`). Absent (standalone
-   * callers): a new orchestrator message.
-   */
-  continueInNextDelivery?: () => Promise<void>;
-  /**
-   * Queue message ID of the delivery driving this invocation, stamped as
-   * `ownerMessageId` on inline lazy step claims so wake replays defer to
-   * the in-flight body instead of requeueing the step.
-   */
-  ownerMessageId?: string;
-  /** Request ID of the queue invocation, when the queue provides one. */
-  requestId?: string;
-  /**
-   * The orchestrator's in-band writer. Every event this engine writes goes
-   * through it, so the writes are marked in-band and fenced.
-   */
-  writer?: InBandWriter;
-  /**
-   * Run-ahead depth for this delivery (`WORKFLOW_RUN_AHEAD_DEPTH`, or 0 when
-   * run-ahead is off for it; see `runtime/out-of-band-observation.ts`): at an
-   * inert boundary, at most this many inline step outcomes reach the VM
-   * before their writes commit. Absent or 0, or without a `writer`: off.
-   */
-  runAheadDepth?: number;
-  /**
-   * Queue namespace resolved at route registration (runtime.ts). Must be
-   * threaded into every message publish: the builders bake the namespace
-   * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`.
-   * A publish without it lands on `__wkf_workflow_*` and is never
-   * picked up.
-   */
-  namespace?: string;
-  /**
-   * Run-origin trace carrier accessor from runtime.ts
-   * (getNextTraceCarrier). In the default `linked` trace mode every
-   * invocation must link back to the run's origin (workflow.start) in a
-   * star; capturing the current invocation context instead would chain
-   * invocations to each other and fragment the run view on async queues.
-   */
-  nextTraceCarrier?: () => Promise<Record<string, string>>;
-  /**
-   * The wait this invocation is the delayed continuation for, if it is one
-   * (`WorkflowInvokePayload.waitContinuation`). Read only to decide the next
-   * continuation's idempotency key: a continuation that finds its own wait
-   * still pending has spent its key, so the re-arm has to advance the attempt
-   * or the world's dedupe window drops it and the wait loses its only timer.
-   */
-  waitContinuation?: { correlationId: string; attempt: number };
-  /**
-   * Turbo mode (the run's first delivery, see `isTurboEnabled`): the caller
-   * wrote `run_started` without waiting for it and did not load the log, which
-   * holds only the run's creation. The VM starts on an empty log, no snapshot
-   * is looked up, and while `optimistic` holds, inline step bodies start
-   * before their `step_created`/`step_started` commit, until a suspension has
-   * an operation other than a step.
-   */
-  /**
-   * Waits a `run.wakeUp()` asked this delivery to complete whatever their
-   * `resumeAt` (`WorkflowInvokePayload.completeWaits`).
-   */
-  wakeUpWaits?: ReadonlySet<string>;
-  /**
-   * Called once a step's message went out, with the step's correlation id.
-   * The delivery keeps what its committed writes still owe the queue, and
-   * sends that itself if it ends early (a fence refusal).
-   */
-  onStepMessageSent?: (correlationId: string) => void;
-  /** Called once a wait's timer message went out, with the wait's id. */
-  onWaitTimerSent?: (correlationId: string) => void;
-  /**
-   * The steps of a log whose message this delivery sends again (see
-   * `stepsToReenqueue`), once per invocation. Absent (standalone callers):
-   * the re-send rule applied to `deliveryAttempt` on every pass.
-   */
-  stepResends?: (events: readonly Event[]) => ReadonlySet<string>;
-  /** Called for each step whose message this delivery sends again. */
-  onStepResent?: (correlationId: string) => void;
-  /**
-   * A delivery of a message the World sent after it lost its queue: every
-   * open wait's chain is this delivery's to arm (see `stepsToReenqueue` for
-   * the steps).
-   */
-  recovery?: boolean;
-  /**
-   * Waits whose `wait_completed` this delivery committed, filled by the
-   * delivery from its writer's accepted events; this engine adds its own
-   * completions too. Their chains are this delivery's to arm (see
-   * `ownedWaitChains`).
-   */
-  completedWaits?: Set<string>;
-  turbo?: {
-    /** The backgrounded `run_started`, folded into the log view on landing. */
-    runStarted: Promise<EventResult>;
-    /** Settles once `run_started` landed; rejects if it failed. */
-    runReadyBarrier: Promise<void>;
-    /** Whether inline bodies may start ahead of their start. */
-    optimistic: boolean;
-  };
-}): Promise<{ timeoutSeconds?: number } | void> {
+/**
+ * Inline bodies still running when the delivery's run ended (a race's
+ * loser), which settle after its terminal event is written. See
+ * {@link runWorkflowWithQuickJS}.
+ */
+type InlineBodiesAfterTerminal = { drain?: Promise<void> };
+
+export async function runWorkflowWithQuickJS(
+  params: Parameters<typeof runQuickJSDelivery>[0]
+): ReturnType<typeof runQuickJSDelivery> {
+  // A workflow that finishes while an inline body still runs does not wait
+  // for that body before its terminal event, as on node:vm: the body settles
+  // after it, before the delivery returns.
+  const afterTerminal: InlineBodiesAfterTerminal = {};
+  try {
+    return await runQuickJSDelivery(params, afterTerminal);
+  } finally {
+    await afterTerminal.drain;
+  }
+}
+
+async function runQuickJSDelivery(
+  params: {
+    workflowCode: string;
+    workflowName: string;
+    workflowRun: WorkflowRun;
+    /**
+     * Events returned inline by `events.create('run_started', ...)` or by
+     * the lazy hook fast path's `hook_received` preload. When they indicate
+     * a first invocation, or when `preloadedEventsComplete` attests they
+     * are the complete log, they are used as the event log instead of
+     * fetching via `events.list`, matching the node:vm engine's fast path.
+     */
+    preloadedEvents?: Event[];
+    /**
+     * True when the caller has validated that `preloadedEvents` is the run's
+     * COMPLETE event log (e.g. the lazy hook fast path's hasMore-false
+     * replay preload). The first-invocation heuristic below only recognizes
+     * run_created/run_started-only preloads, so without this attestation a
+     * hook-resume preload would be discarded and refetched.
+     */
+    preloadedEventsComplete?: boolean;
+    /**
+     * The `events.list` cursor positioned after the last of `preloadedEvents`,
+     * when the caller has one. Lets this invocation read incrementally from
+     * where the preload ended and ask for an inline delta against it. Without
+     * it the first read after the preload starts from the top of the log.
+     */
+    preloadedCursor?: string | null;
+    /**
+     * Run input carried through the queue message on first delivery. Used
+     * as a last-resort fallback for `run_created.eventData.input` when
+     * the event log is incomplete.
+     */
+    runInput?: RunInput;
+    /**
+     * The parent OTel span (the outer `WORKFLOW {workflowName}` span from
+     * `runtime.ts`). When supplied, VM lifecycle attributes are attached
+     * to it for end-to-end visibility.
+     */
+    parentSpan?: Span;
+    /**
+     * Server-supplied per-run event ceiling from the run_started response
+     * (undefined ⇒ no enforcement). Mirrors the node:vm engine's guard:
+     * a runaway run is failed once its log reaches the ceiling. The throw
+     * propagates to the replay loop's catch in runtime.ts (the QuickJS
+     * dispatch runs inside that loop's try), which classifies it and
+     * records run_failed with MAX_EVENTS_EXCEEDED.
+     */
+    maxEventsLimit?: number;
+    /**
+     * Queue delivery attempt of the message driving this invocation (from
+     * the queue handler's metadata; 1 = first delivery). A redelivery may own
+     * wait chains a crashed delivery left (see `ownedWaitChains`), and the
+     * step re-send rule reads it.
+     */
+    deliveryAttempt?: number;
+    /**
+     * Whether this delivery may hold an orchestrator message the queue
+     * coalesced into it (any delivery but its message's first), and so arms
+     * the near-due waits of chains it does not own on exit (see
+     * `armNearDueTimers` in `delivery.ts`). Absent: it may.
+     */
+    armsNearDueWaits?: boolean;
+    /**
+     * Epoch ms of the invocation's inline deadline: its start plus its inline
+     * window (`WORKFLOW_V2_TIMEOUT_MS`), as on the node engine. A turn that
+     * begins at or past it starts nothing more and continues the run in the
+     * next delivery (`continueInNextDelivery`). Within the inline-start margin
+     * before it (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`), new steps are
+     * background steps instead of inline ones, and a delivery with nothing
+     * left to run does not linger for work done elsewhere (see
+     * `getOrchestratorLingerMsFor`). Absent (standalone callers): no deadline
+     * and no lingering.
+     */
+    inlineDeadlineMs?: number;
+    /**
+     * Continues the run in a fresh delivery once this one ends: a handoff of
+     * the delivery's message (`{ timeoutSeconds: 0 }`). Absent (standalone
+     * callers): a new orchestrator message.
+     */
+    continueInNextDelivery?: () => Promise<void>;
+    /**
+     * Queue message ID of the delivery driving this invocation, stamped as
+     * `ownerMessageId` on inline lazy step claims so wake replays defer to
+     * the in-flight body instead of requeueing the step.
+     */
+    ownerMessageId?: string;
+    /** Request ID of the queue invocation, when the queue provides one. */
+    requestId?: string;
+    /**
+     * The orchestrator's in-band writer. Every event this engine writes goes
+     * through it, so the writes are marked in-band and fenced.
+     */
+    writer?: InBandWriter;
+    /**
+     * Run-ahead depth for this delivery (`WORKFLOW_RUN_AHEAD_DEPTH`, or 0 when
+     * run-ahead is off for it; see `runtime/out-of-band-observation.ts`): at an
+     * inert boundary, at most this many inline step outcomes reach the VM
+     * before their writes commit. Absent or 0, or without a `writer`: off.
+     */
+    runAheadDepth?: number;
+    /**
+     * Queue namespace resolved at route registration (runtime.ts). Must be
+     * threaded into every message publish: the builders bake the namespace
+     * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`.
+     * A publish without it lands on `__wkf_workflow_*` and is never
+     * picked up.
+     */
+    namespace?: string;
+    /**
+     * Run-origin trace carrier accessor from runtime.ts
+     * (getNextTraceCarrier). In the default `linked` trace mode every
+     * invocation must link back to the run's origin (workflow.start) in a
+     * star; capturing the current invocation context instead would chain
+     * invocations to each other and fragment the run view on async queues.
+     */
+    nextTraceCarrier?: () => Promise<Record<string, string>>;
+    /**
+     * The wait this invocation is the delayed continuation for, if it is one
+     * (`WorkflowInvokePayload.waitContinuation`). Read only to decide the next
+     * continuation's idempotency key: a continuation that finds its own wait
+     * still pending has spent its key, so the re-arm has to advance the attempt
+     * or the world's dedupe window drops it and the wait loses its only timer.
+     */
+    waitContinuation?: { correlationId: string; attempt: number };
+    /**
+     * Turbo mode (the run's first delivery, see `isTurboEnabled`): the caller
+     * wrote `run_started` without waiting for it and did not load the log, which
+     * holds only the run's creation. The VM starts on an empty log, no snapshot
+     * is looked up, and while `optimistic` holds, inline step bodies start
+     * before their `step_created`/`step_started` commit, until a suspension has
+     * an operation other than a step.
+     */
+    /**
+     * Waits a `run.wakeUp()` asked this delivery to complete whatever their
+     * `resumeAt` (`WorkflowInvokePayload.completeWaits`).
+     */
+    wakeUpWaits?: ReadonlySet<string>;
+    /**
+     * Called once a step's message went out, with the step's correlation id.
+     * The delivery keeps what its committed writes still owe the queue, and
+     * sends that itself if it ends early (a fence refusal).
+     */
+    onStepMessageSent?: (correlationId: string) => void;
+    /** Called once a wait's timer message went out, with the wait's id. */
+    onWaitTimerSent?: (correlationId: string) => void;
+    /**
+     * The steps of a log whose message this delivery sends again (see
+     * `stepsToReenqueue`), once per invocation. Absent (standalone callers):
+     * the re-send rule applied to `deliveryAttempt` on every pass.
+     */
+    stepResends?: (events: readonly Event[]) => ReadonlySet<string>;
+    /** Called for each step whose message this delivery sends again. */
+    onStepResent?: (correlationId: string) => void;
+    /**
+     * A delivery of a message the World sent after it lost its queue: every
+     * open wait's chain is this delivery's to arm (see `stepsToReenqueue` for
+     * the steps).
+     */
+    recovery?: boolean;
+    /**
+     * Waits whose `wait_completed` this delivery committed, filled by the
+     * delivery from its writer's accepted events; this engine adds its own
+     * completions too. Their chains are this delivery's to arm (see
+     * `ownedWaitChains`).
+     */
+    completedWaits?: Set<string>;
+    turbo?: {
+      /** The backgrounded `run_started`, folded into the log view on landing. */
+      runStarted: Promise<EventResult>;
+      /** Settles once `run_started` landed; rejects if it failed. */
+      runReadyBarrier: Promise<void>;
+      /** Whether inline bodies may start ahead of their start. */
+      optimistic: boolean;
+    };
+  },
+  afterTerminal: InlineBodiesAfterTerminal
+): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
     workflowName,
@@ -1617,6 +1642,8 @@ export async function runWorkflowWithQuickJS(params: {
     outcome: PromiseSettledResult<StepExecutionResult>;
   };
   const inFlightInline = new Map<string, Promise<void>>();
+  /** Set when the workflow finished while an inline body still ran. */
+  let deferInlineDrain = false;
   const settledInline: InlineSettled[] = [];
   let inlineFeed: LiveLogFeed | undefined;
   /** Removes the live feed's listener on the writer's commits. */
@@ -3285,9 +3312,26 @@ export async function runWorkflowWithQuickJS(params: {
       });
       await waitForInlineProgress(pendingOperations);
     }
-    // Every inline body settles before the delivery returns, including when
-    // the workflow finished while one still ran.
-    await drainInline();
+    // A workflow that finished while an inline body still runs (a race's
+    // loser) writes its terminal event without waiting for that body, as on
+    // node:vm; the body settles after it (`afterTerminal`). Its outcome, if
+    // it lands, follows the run's terminal event and is inert. Speculative
+    // writes still settle first: nothing is decided past one that failed or
+    // was displaced. Zero-retention runs must drain before terminalization:
+    // Worlds may purge payloads only once, at the terminal event, and a late
+    // inline outcome would otherwise repopulate that purged storage. Every
+    // other exit lets every body settle here.
+    deferInlineDrain =
+      !result.suspended &&
+      inFlightInline.size > 0 &&
+      !purgesUserDataOnFinish(workflowRun.attributes);
+    if (deferInlineDrain) {
+      // The loser's outcome is a plain write, never a speculative one.
+      boundaryInert = false;
+      await settleRunAhead();
+    } else {
+      await drainInline();
+    }
     await processSettledInline();
     // Nothing is decided past a speculative write that failed or was
     // displaced: the run's terminal write included.
@@ -3360,8 +3404,15 @@ export async function runWorkflowWithQuickJS(params: {
     // Every exit, a throw included, lets running inline bodies settle and
     // stops the live feed before the VM goes away; otherwise the feed keeps
     // polling and holds its subscription for as long as the process lives.
-    await drainInline();
-    session.dispose();
+    // A finished run's still-running bodies settle after its terminal event
+    // (see above), and the VM goes away once they have.
+    if (deferInlineDrain) {
+      const vm = session;
+      afterTerminal.drain = drainInline().finally(() => vm.dispose());
+    } else {
+      await drainInline();
+      session.dispose();
+    }
     if (writer && runAheadDepth > 0) writer.onAccepted = previousOnAccepted;
   }
 

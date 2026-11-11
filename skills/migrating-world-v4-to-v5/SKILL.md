@@ -385,7 +385,7 @@ Fail the migration if any of these are true:
 
 ## Spec 9 (experimental)
 
-A World does not implement the in-band fence to migrate to v5. Spec 9 is opt-in (`WORKFLOW_SPEC_VERSION=9`), and `mintedSpecVersion()` called with no options never returns 9. A World that opts in declares `capabilities.inBandFence: true`, calls `mintedSpecVersion(process.env, { inBandFence: true })`, and tells its users to upgrade the whole fleet first and not to roll back below that release once spec 9 runs exist. See <https://workflow.dev/docs/changelog/spec-9#implementing-spec-9-in-a-world>.
+A World does not implement the in-band fence to migrate to v5: `mintedSpecVersion()` called with no options never returns 9. A World that supports spec 9 declares `capabilities.inBandFence: true` and calls `mintedSpecVersion(process.env, { inBandFence: true })`, which then creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts out). It tells its users to upgrade the whole fleet together, with `WORKFLOW_SPEC_VERSION=8` on the upgraded deployments until all of them run that release, and not to roll back below that release once spec 9 runs exist. See <https://workflow.dev/docs/changelog/spec-9#implementing-spec-9-in-a-world>.
 
 ## Reference
 

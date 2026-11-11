@@ -1,6 +1,6 @@
 import { ThrottleError, WorkflowWorldError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import type { Event } from '@workflow/world';
+import { type Event, RETENTION_ATTRIBUTE } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
@@ -956,4 +956,82 @@ describe.each([
     },
     THREE_BATCH_FAN_OUT_TIMEOUT_MS
   );
+});
+
+describe.each([
+  ['quickjs', '0'],
+  ['quickjs', 'default'],
+  ['quickjs', undefined],
+  ['node', '0'],
+  ['node', 'default'],
+  ['node', undefined],
+] as const)('%s inline race losers (retention: %s)', (engine, retention) => {
+  it.each([
+    'completed',
+    'failed',
+  ] as const)('orders the losing body and run_%s according to retention', async (status) => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '1');
+    const code =
+      status === 'completed'
+        ? hookRaceWorkflow
+        : hookRaceWorkflow.replace(
+            '() => "hook"',
+            '() => { throw new Error("hook failed"); }'
+          );
+    const terminal = withResolvers<void>();
+    const { world, runId, start } = await setupOrchestratorRun(
+      code,
+      [],
+      {
+        beforeCreate: (data) => {
+          if (data.eventType === `run_${status}`) terminal.resolve();
+        },
+      },
+      engine
+    );
+    const run = await world.asWorld().runs.get(runId);
+    run.attributes =
+      retention === undefined ? {} : { [RETENTION_ATTRIBUTE]: retention };
+    const delivery = world.deliver(start);
+    try {
+      await bodyEntered.promise;
+      const hook = eventsOf(world, 'hook_created')[0];
+      if (!hook) throw new Error('expected the racing hook to be created');
+      world.appendOutOfBand({
+        eventType: 'hook_received',
+        correlationId: hook.correlationId,
+        eventData: {
+          token: dataOf(hook)?.token,
+          payload: await dehydrateStepReturnValue('payload', runId, undefined),
+        },
+      } as Partial<Event>);
+      // Give the hook winner time to finish while the loser's body is
+      // held open. Default-retention runs terminalize in this window.
+      await Promise.race([
+        terminal.promise,
+        new Promise((resolve) =>
+          setTimeout(resolve, retention === '0' ? 500 : 5_000)
+        ),
+      ]);
+    } finally {
+      bodyGate.resolve();
+      await delivery;
+    }
+    await world.runUntilIdle();
+    expect(eventsOf(world, 'step_completed')).toHaveLength(1);
+    expect(eventsOf(world, `run_${status}`)).toHaveLength(1);
+    // Postgres purges once at terminalization. Every inline payload write
+    // must precede that purge, including on the workflow's failure path.
+    const outcomeAt = world.events.findIndex(
+      (e) => e.eventType === 'step_completed'
+    );
+    const terminalAt = world.events.findIndex(
+      (e) => e.eventType === `run_${status}`
+    );
+    if (retention === '0') {
+      expect(outcomeAt).toBeLessThan(terminalAt);
+    } else {
+      expect(terminalAt).toBeLessThan(outcomeAt);
+    }
+  });
 });

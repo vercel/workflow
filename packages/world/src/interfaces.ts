@@ -658,9 +658,10 @@ export interface Storage {
  * closed (keep their conservative behavior) unless the World explicitly
  * declares it.
  *
- * {@link inBandFence} is required for spec 9 runs, which are opt-in
- * (`WORKFLOW_SPEC_VERSION=9`): the runtime refuses to create or drive one on
- * a World that does not declare it. A World without it creates spec 8 runs.
+ * {@link inBandFence} is required for spec 9 runs: the runtime refuses to
+ * create or drive one on a World that does not declare it. A World that
+ * declares it creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts
+ * out); a World without it creates spec 8 runs.
  */
 export interface WorldCapabilities {
   /**
@@ -720,11 +721,11 @@ export interface WorldCapabilities {
    * The World implements the in-band writer fence on single-orchestrator runs
    * (spec >= 9). **Required for spec 9 runs**: `@workflow/core` refuses to
    * create one in `start()`, or to begin a spec 9 orchestrator delivery, on
-   * a World that does not declare it, before it writes anything. Spec 9 runs
-   * are opt-in (`WORKFLOW_SPEC_VERSION=9`), and a World that declares this
-   * passes `{ inBandFence: true }` to `mintedSpecVersion` so the setting can
-   * take effect. A World without it creates spec 8 runs, which need no
-   * fence.
+   * a World that does not declare it, before it writes anything. A World
+   * that declares this passes `{ inBandFence: true }` to `mintedSpecVersion`,
+   * which then creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8`
+   * keeps them on spec 8). A World without it creates spec 8 runs, which
+   * need no fence.
    *
    * Declaring it commits the World to all of:
    *

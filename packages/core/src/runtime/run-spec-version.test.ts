@@ -18,9 +18,10 @@ describe('specVersionForRunWrite', () => {
     );
   });
 
-  it('stamps a spec 9 run at spec 9, though this SDK mints spec 8 by default', () => {
-    // A process without WORKFLOW_SPEC_VERSION=9 still writes hook resumes,
-    // cancels and wakes to spec 9 runs created by one that has it.
+  it('stamps a spec 9 run at spec 9, though an unknown run is assumed spec 8', () => {
+    // A process that mints spec 8 (WORKFLOW_SPEC_VERSION=8, or a World
+    // without the fence) still writes hook resumes, cancels and wakes to
+    // spec 9 runs created by one that mints spec 9.
     expect(specVersionForRunWrite(SPEC_VERSION_SINGLE_ORCHESTRATOR)).toBe(
       SPEC_VERSION_SINGLE_ORCHESTRATOR
     );

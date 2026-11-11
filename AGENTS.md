@@ -182,8 +182,9 @@ them with an exclusive `link(2)` against a directory that two processes (the app
 and the harness) both write to. A slot race a transaction closes is not
 automatically closed by a filesystem.
 
-Export `WORKFLOW_SPEC_VERSION=9` to race the single orchestrator; CI runs both
-worlds at the default spec and at spec 9. Read the world-local spec 9 cell with
+Both worlds race the single orchestrator (spec 9) by default; export
+`WORKFLOW_SPEC_VERSION=8` to race the spec 8 one. CI runs both worlds at the
+default spec and at spec 8. Read the world-local default (spec 9) cell with
 one difference in mind: its run gate is in-process, and the harness calls
 `start()` and `resumeHook()` from its own process, so those messages reach the
 app through the harness' queue and overlap the app's own deliveries of the run.

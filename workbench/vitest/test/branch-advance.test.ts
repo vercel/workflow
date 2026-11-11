@@ -27,6 +27,13 @@ const SLOW_MS = 2000;
  */
 const lockstepEngine = process.env.WORKFLOW_VM === 'quickjs';
 
+/**
+ * Runs pinned to spec 8. New runs are spec 9 by default, and the tests that
+ * pin spec 8 behavior (a race loser that retries after the run ended, the
+ * precondition guard) start their runs at spec 8, which keeps them covered.
+ */
+const SPEC_8 = { specVersion: 8 };
+
 async function markerFile() {
   const dir = await mkdtemp(join(tmpdir(), 'wf-4457-'));
   return join(dir, 'marker.log');
@@ -176,11 +183,11 @@ describe('parallel branches advance independently (#4457)', () => {
   // with the step still pending.
   it('a race loser that retries after the run ended', async () => {
     const markerPath = await markerFile();
-    const run = await start(raceLoserRetriesWorkflow, [
-      FAST_MS,
-      FAST_MS * 4,
-      markerPath,
-    ]);
+    const run = await start(
+      raceLoserRetriesWorkflow,
+      [FAST_MS, FAST_MS * 4, markerPath],
+      SPEC_8
+    );
     await expect(run.returnValue).resolves.toBe('fast');
     // Past the loser's first attempt and its 100ms retryAfter.
     await new Promise((resolve) => setTimeout(resolve, FAST_MS * 10));
@@ -299,11 +306,11 @@ describe('parallel branches advance independently (#4457)', () => {
       }) as typeof originalCreate;
       try {
         const markerPath = await markerFile();
-        const run = await start(retryBesideSleepWorkflow, [
-          FAST_MS,
-          FAST_MS * 3,
-          markerPath,
-        ]);
+        const run = await start(
+          retryBesideSleepWorkflow,
+          [FAST_MS, FAST_MS * 3, markerPath],
+          SPEC_8
+        );
         await expect(run.returnValue).resolves.toEqual(['slept', 2]);
         expect(refused).toBe(1);
 

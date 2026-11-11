@@ -27,6 +27,11 @@ to the user-facing reader rather than leaving it waiting for more data.
 Streams that finish draining after the inline wait budget expires do not force
 an extra queued continuation unless other background operations remain pending.
 
+Spec-9 runs with `experimental_retention: 0` wait for running inline steps
+before recording completion or failure, on both the node:vm and QuickJS engines. This keeps losing race branches'
+payload writes ahead of the World's terminal retention purge. Other retention
+settings allow the workflow to terminalize while losing inline bodies drain.
+
 Hook registration acknowledgements and token conflicts participate in replay
 delivery ordering alongside step results, hook payloads, and sleep completions.
 Concurrent branches awaiting `hook.getConflict()` preserve their step correlation
