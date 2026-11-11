@@ -24,6 +24,17 @@
  * generation, which is the slow, network-bound part of the real command, so
  * it is cheap enough to run on every PR.
  *
+ * It also enforces one versioning rule of this repo: `workflow` only takes a
+ * minor (or major) release when `@workflow/core` does. `workflow` is in a
+ * fixed group with `@workflow/core` and `@workflow/world-vercel`, so a
+ * changeset that bumps any member of that group bumps all three by the same
+ * type. Changes to the packages `workflow` depends on (`@workflow/cli`,
+ * `@workflow/next`, `@workflow/web-shared`, the worlds, ...) already reach it
+ * as a patch through the dependency graph; only a changeset that lists
+ * `workflow` or `@workflow/world-vercel` itself at `minor` can make the whole
+ * SDK a minor release for a change core does not ship. Such a changeset has
+ * to list `@workflow/core` at the same bump, or use `patch` for the others.
+ *
  * The libraries are the same ones `@changesets/cli` uses, declared as root
  * devDependencies at the ranges the CLI itself declares, so this check cannot
  * drift from what the Release job will do.
@@ -73,6 +84,39 @@ try {
   );
   console.error(
     '\n  A changeset may only list packages that are published, and never one from the `ignore` array in .changeset/config.json.'
+  );
+  process.exit(1);
+}
+
+// Members of @workflow/core's fixed group, other than core itself, may not
+// raise the group's bump above the one core takes in the same changeset.
+const RANK = { none: 0, patch: 1, minor: 2, major: 3 };
+const CORE = '@workflow/core';
+const coreGroup = (config.fixed ?? []).find((group) => group.includes(CORE));
+const violations = [];
+for (const changeset of changesets) {
+  const coreType =
+    changeset.releases.find((r) => r.name === CORE)?.type ?? 'none';
+  for (const release of changeset.releases) {
+    if (release.name === CORE || !coreGroup?.includes(release.name)) continue;
+    if (RANK[release.type] >= RANK.minor && RANK[release.type] > RANK[coreType])
+      violations.push(
+        `.changeset/${changeset.id}.md: "${release.name}": ${release.type} (with "${CORE}": ${coreType})`
+      );
+  }
+}
+if (violations.length > 0) {
+  console.error(
+    `✗ A changeset would make \`workflow\` a minor or major release without \`${CORE}\` taking that bump:\n`
+  );
+  for (const violation of violations) console.error(`    ${violation}`);
+  console.error(
+    `\n  \`${coreGroup.join('`, `')}\` share one version, so this bumps all of them. Use \`patch\` for ${coreGroup
+      .filter((name) => name !== CORE)
+      .map((name) => `\`${name}\``)
+      .join(
+        ' and '
+      )} unless \`${CORE}\` itself ships the feature, and then list \`${CORE}\` at the same bump.`
   );
   process.exit(1);
 }
