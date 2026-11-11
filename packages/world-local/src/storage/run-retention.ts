@@ -43,7 +43,7 @@ export function purgesUserDataOnFinish(
 }
 
 /**
- * The run's half of a zero-retention purge: its own payloads dropped and the
+ * The run's half of an auto-delete purge: its own payloads dropped and the
  * retention boundary moved onto it, as one value the caller writes in one
  * atomic file replace.
  *
@@ -76,7 +76,7 @@ export function withRunPayloadsPurged<T extends WorkflowRun>(
 }
 
 /**
- * Delete the user payloads a finished zero-retention run left outside its own
+ * Delete the user payloads a finished auto-delete run left outside its own
  * row: its steps' input/output/error, its events' payloads, the metadata on
  * any hook that outlived it, and its streams' contents.
  *
@@ -148,7 +148,7 @@ export async function purgeRunEntityData(
 const RawEntitySchema = z.record(z.string(), z.any());
 
 /**
- * `EventSchema`, tolerant of a zero-retention purge having deleted an
+ * `EventSchema`, tolerant of an auto-delete purge having deleted an
  * event's ref field (`eventData.input`/`result`/`error`/`payload`, see
  * {@link getEventDataRefFields}) outright.
  *

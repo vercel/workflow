@@ -644,9 +644,11 @@ export interface StartOptionsBase {
    * chunks), the event log, and any analytics data. Options are:
    * - `'default'`: same as omission, the World will decide. On Vercel, this
    *   is based on your team's plan.
-   * - `0`: data is deleted as soon as your run completes or fails. On
-   *   Vercel, user data is deleted, but metadata may persist for your plan's
-   *   default retention period.
+   * - `0`: auto-delete. User data is deleted as soon as your run completes,
+   *   fails, or is cancelled, and stops being readable immediately. On
+   *   Vercel, metadata may persist for your plan's default retention period,
+   *   and run data may still persist in encrypted database backups for a
+   *   short period after deletion.
    *
    * The value is a duration, with zero being the only valid option currently.
    *

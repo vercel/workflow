@@ -30,7 +30,9 @@ export const RETENTION_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}retention`;
  * Value accepted by `start({ retention })`, before it is encoded into
  * {@link RETENTION_ATTRIBUTE}.
  *
- * - `0` — delete user data as soon as the run reaches a terminal state.
+ * - `0` — auto-delete: delete user data as soon as the run reaches a terminal
+ *   state. Deleted payloads stop being readable, but run data may still
+ *   persist in encrypted database backups for a short period after deletion.
  * - `'default'` — let the World decide; the same as omitting the option.
  *
  * A number rather than a string because the value is a duration and this
@@ -41,7 +43,7 @@ export const RETENTION_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}retention`;
  */
 export type RunRetention = 0 | 'default';
 
-/** Wire value of {@link RETENTION_ATTRIBUTE} meaning "delete on finish". */
+/** Wire value of {@link RETENTION_ATTRIBUTE} meaning "auto-delete on finish". */
 export const RETENTION_ZERO = '0';
 
 /** Wire value meaning "use the World's default". Equivalent to absence. */

@@ -999,9 +999,9 @@ export class EntityConflictError extends WorkflowWorldError {
  * cleaned up, expired, or already reached a terminal state (completed/failed).
  *
  * Also thrown by `await run.returnValue` when the run's data passed its
- * retention boundary — because it was started with
- * `experimental_retention: 0`, or simply because it aged out of the World's
- * default window. The run's metadata usually outlives its payloads, so
+ * retention boundary — because it was started with auto-delete
+ * (`experimental_retention: 0`), or simply because it aged out of the
+ * World's default window. The run's metadata usually outlives its payloads, so
  * `runStatus` and `expiredAt` are populated when the World still has them: the
  * caller can tell "it succeeded, but the result is gone" from "it failed".
  * When even the metadata is gone the World reports the run as missing and you

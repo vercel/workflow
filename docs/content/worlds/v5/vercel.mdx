@@ -135,7 +135,7 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 
 Retention for the Vercel World is documented in the [Vercel Workflows docs](https://vercel.com/docs/workflows/retention): how long run payloads stay readable and when they're deleted, how long run metadata is kept, where run data is stored, and how to delete run data sooner.
 
-To delete a run's payloads as soon as it finishes, start it with [`experimental_retention: 0`](/docs/observability/retention).
+To delete a run's payloads as soon as it finishes, start it with [auto-delete (`experimental_retention: 0`)](/docs/observability/retention#auto-delete-for-new-runs). Run data may still persist in encrypted database backups for a short period after deletion.
 
 ## Queue consumers other than the Workflow SDK
 

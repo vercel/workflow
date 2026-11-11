@@ -32,11 +32,11 @@ workflow genuinely returned, `returnValue` throws.
 
 Two ways to reach it:
 
-- **The run was started with `experimental_retention: 0`.** Its data is
-  deleted the moment it reaches a terminal state, and that deletion races your
-  own read of the result — and generally wins. On these runs, expect this
-  error rather than treating it as an edge case. See
-  [Data retention](/docs/observability/retention).
+- **The run was started with auto-delete (`experimental_retention: 0`).** Its
+  data is deleted as soon as it reaches a terminal state, and that deletion
+  races your own read of the result — and generally wins. On these runs,
+  expect this error rather than treating it as an edge case. See
+  [Data retention](/docs/observability/retention#auto-delete-for-new-runs).
 - **The run simply aged out.** It finished long enough ago that the World's
   default retention window has passed. For the Vercel World's retention
   rules, see the
@@ -72,13 +72,13 @@ export async function readResult(runId: string) {
 The error carries `runId`, `runStatus` and `expiredAt` when the World reports
 them.
 
-### If you need the result of a zero-retention run
+### If you need the result of an auto-delete run
 
 Do not read it back off the run. Send it somewhere you control while the run
 is still executing — a step that writes it to your own store. That is the
 intended pattern for `experimental_retention: 0`: the point of the option is
-that the platform does not keep your data, so the platform cannot also be where
-you fetch it from afterwards.
+that the run's payloads are deleted as soon as it finishes, so the platform
+cannot also be where you fetch them from afterwards.
 
 ## Related
 

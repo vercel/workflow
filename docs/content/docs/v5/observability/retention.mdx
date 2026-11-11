@@ -26,7 +26,7 @@ on, not by the SDK.
 `experimental_retention` on [`start()`](/docs/api-reference/workflow-api/start)
 lets a run ask for a specific retention period, rather than the World's default.
 
-## Deleting a run's data as soon as it ends
+## Auto-delete for new runs
 
 {/* @skip-typecheck: abbreviated usage; processDocumentWorkflow is the reader's own workflow */}
 ```typescript lineNumbers
@@ -35,14 +35,21 @@ const run = await start(processDocumentWorkflow, [documentId], {
 })
 ```
 
-`0` asks the World to delete the run's **user data** the moment the run
-completes or fails, rather than keeping it for the World's default window.
+`0` turns on auto-delete: it asks the World to delete the run's **user data**
+as soon as the run completes, fails, or is cancelled, rather than keeping it
+for the World's default window. The run's payloads stop being readable
+immediately.
+
+<Callout type="warn">
+  Run data may still persist in encrypted database backups for a short period
+  after deletion.
+</Callout>
 
 Two values are accepted today:
 
 | Value | Meaning |
 | --- | --- |
-| `0` | Delete user data as soon as the run reaches a terminal state. |
+| `0` | Auto-delete: delete user data as soon as the run reaches a terminal state. |
 | `'default'` | Use the World's default. Identical to omitting the option. |
 
 <Callout type="warn">
@@ -70,8 +77,8 @@ workflow inspect runs wrun_...
 
 Step, hook and event payloads read back empty. On the Vercel World they also
 render as `<data expired>`; on Worlds that clear the stored value outright
-they simply show as empty. Either way the data is gone — the difference is
-only in how the absence is labelled.
+they simply show as empty. Either way the payloads can no longer be read —
+the difference is only in how the absence is labelled.
 
 <Callout type="warn">
   **You cannot read the return value of a run started with
@@ -100,4 +107,7 @@ so `experimental_retention: 0` throws against an older World rather than being
 recorded and ignored. A World that does implement spec version 4 but not
 retention **keeps the data**. If you need certainty that a specific World
 deletes your data, confirm it against that World's own documentation rather
-than the presence of this option.
+than the presence of this option. Deletion also does not reach backups of the
+World's storage: on a self-hosted World such as Postgres, your own database
+backups keep whatever they captured, and on Vercel, run data may still persist
+in encrypted database backups for a short period after deletion.

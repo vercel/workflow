@@ -123,7 +123,7 @@ export async function purgeRunUserData(
 }
 
 /**
- * Purge a terminal run's user data if it asked for zero retention.
+ * Purge a terminal run's user data if it asked for auto-delete.
  *
  * Call this after the run's terminal event row has committed and before the
  * terminal `NOTIFY`: the terminal event is itself payload-bearing
@@ -135,7 +135,7 @@ export async function purgeRunUserData(
  * The response the caller is about to receive is a pre-purge snapshot. That
  * is deliberate and matches the Vercel World, whose purge runs after the
  * response is sent — and the SDK already documents that `await
- * run.returnValue` on a zero-retention run resolves to an expired-data
+ * run.returnValue` on an auto-delete run resolves to an expired-data
  * placeholder rather than the value.
  *
  * Never throws. A run must still finish if its purge fails; the failure is
@@ -166,7 +166,7 @@ export async function purgeRunUserDataIfZeroRetention(
     await purgeRunUserData(drizzle, runId, purgedAt);
   } catch (cause) {
     console.error(
-      `[workflow] failed to purge user data for zero-retention run "${runId}"`,
+      `[workflow] failed to purge user data for auto-delete run "${runId}"`,
       cause
     );
   }

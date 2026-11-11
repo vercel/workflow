@@ -475,11 +475,11 @@ error with code `INVOCATION_DATA_EXPIRED`. Writers lock and recheck the run so
 late writes cannot restore purged data. A caller can receive this expiry error
 after its hook event committed if the result expires before the caller reads it.
 The migration also clears invocation data for runs that already expired or ended
-with zero retention.
+with auto-delete (`$retention: 0`).
 
 The experimental implementation has these remaining limitations:
 
-- Results outside zero-retention purging have no automatic cleanup.
+- Results outside auto-delete purging have no automatic cleanup.
 - A handler can continue writing after Graphile aborts or reclaims its job.
 - Requests are not routed to a compatible deployment when workers run different code versions.
 

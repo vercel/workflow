@@ -72,7 +72,7 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 Retention for the Vercel World is documented in the [Vercel Workflows docs](https://vercel.com/docs/workflows/retention): how long run payloads stay readable and when they're deleted, how long run metadata is kept, where run data is stored, and how to delete run data sooner.
 
-Runs created by the 4.x release line follow the same retention rules as runs created by 5.x. Deleting a run's payloads as soon as it finishes (`experimental_retention: 0`) requires `workflow` 5.0.0 or later.
+Runs created by the 4.x release line follow the same retention rules as runs created by 5.x. Auto-delete, which deletes a run's payloads as soon as it finishes (`experimental_retention: 0`), requires `workflow` 5.0.0 or later.
 
 ## Limitations
 
