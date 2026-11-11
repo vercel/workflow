@@ -41,7 +41,19 @@ const docsPage = createDocsPage({
       editPath: 'docs/content/docs/v4/{path}',
     },
   },
-  source: v4GeistdocsSource,
+  source: {
+    ...v4GeistdocsSource,
+    source: {
+      ...v4GeistdocsSource.source,
+      // Access checks compare getPages() URLs with getPage()'s raw URLs.
+      // getPageUrl applies the public version prefix when rendering links.
+      getPages: (lang) =>
+        v4GeistdocsSource.source.getPages(lang).map((page) => ({
+          ...page,
+          url: page.url.slice(VERSION_PREFIX.length),
+        })),
+    },
+  },
   getPageUrl,
   mdx: ({ link, page }) =>
     getMDXComponents({
