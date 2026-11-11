@@ -279,6 +279,33 @@ describe('queue timeout re-enqueue', () => {
     );
   });
 
+  it('dedupes simultaneous sends under the same idempotency key', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        await held;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    try {
+      const sent = await Promise.all([
+        localQueue.queue('__wkf_workflow_test' as any, workflowPayload, {
+          idempotencyKey: 'same-step',
+        }),
+        localQueue.queue('__wkf_workflow_test' as any, workflowPayload, {
+          idempotencyKey: 'same-step',
+        }),
+      ]);
+      expect(sent[1].messageId).toBe(sent[0].messageId);
+    } finally {
+      release();
+    }
+  });
+
   it('dedupes a second send under the same idempotency key while the first message is retrying', async () => {
     let calls = 0;
     let release!: () => void;

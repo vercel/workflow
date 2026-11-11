@@ -574,6 +574,7 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queueName, sentMessage, opts) => {
     const cleanup = [] as (() => void)[];
+    const message = await stampFromRun(sentMessage);
 
     if (opts?.idempotencyKey) {
       const existing = inflightMessages.get(opts.idempotencyKey);
@@ -582,7 +583,6 @@ export function createQueue(
       }
     }
 
-    const message = await stampFromRun(sentMessage);
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
     // A caller's headers never carry the auth header: only the send loop
