@@ -7,6 +7,7 @@ import {
   Logo,
   nav,
   prompt,
+  search,
   siteId,
   suggestions,
   title,
@@ -32,6 +33,7 @@ export const config = defineConfig({
   // entry since linking to the site you're already on is redundant.
   navbarActiveProduct: 'workflow-sdk',
   basePath,
+  search,
   siteId,
   translations,
   webmcp: { enabled: true },

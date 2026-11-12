@@ -1,5 +1,8 @@
 import { LogoWorkflowSdk } from '@vercel/geistdocs/assets/logos/logo-workflow-sdk';
-import type { GeistdocsAgentReadinessConfig } from '@vercel/geistdocs/config';
+import type {
+  GeistdocsAgentReadinessConfig,
+  GeistdocsSearchConfig,
+} from '@vercel/geistdocs/config';
 
 export const Logo = () => <LogoWorkflowSdk />;
 
@@ -98,3 +101,7 @@ export const translations = {
 export const basePath: string | undefined = undefined;
 
 export const siteId: string | undefined = 'workflow';
+
+export const search = {
+  provider: 'mixedbread',
+} satisfies GeistdocsSearchConfig;

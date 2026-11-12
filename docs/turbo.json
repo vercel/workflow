@@ -3,6 +3,7 @@
   "extends": ["//"],
   "tasks": {
     "build": {
+      "env": ["WORKFLOW_PUBLIC_MANIFEST", "MXBAI_API_KEY", "MXBAI_STORE_ID"],
       "outputs": [".next/**", ".source/**", "!.next/cache/**"]
     }
   }
