@@ -1522,6 +1522,55 @@ describe('postgres queue http execution', () => {
     ).not.toThrow();
   });
 
+  it('starts the runner for a flow handler registered under another prefix, and warns naming both', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // The World was given a namespace; the route was built without one.
+      const queue = buildQueue(
+        { connectionString: 'postgres://test', namespace: 'tenant' },
+        pool
+      );
+      queue.registerHandler(
+        '__wkf_workflow_',
+        withEntry(async () => undefined)
+      );
+      await queue.start();
+      expect(run).toHaveBeenCalledTimes(1);
+      const warnings = warn.mock.calls.map((call) => String(call[0]));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('"__wkf_workflow_"');
+      expect(warnings[0]).toContain('"__tenant_wkf_workflow_"');
+      expect(warnings[0]).toContain('WORKFLOW_QUEUE_NAMESPACE');
+      // A worker: not told that it only enqueues.
+      await queue.start();
+      expect(warn.mock.calls).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("starts no runner for a queue consumer's handler, and does not warn about its prefix", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      queue.registerHandler('__agent_wkf_workflow_', async () =>
+        Response.json({ ok: true })
+      );
+      await queue.start();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(run).not.toHaveBeenCalled();
+      const warnings = warn.mock.calls.map((call) => String(call[0]));
+      expect(
+        warnings.filter((w) => w.includes('WORKFLOW_QUEUE_NAMESPACE'))
+      ).toEqual([]);
+      expect(warnings.filter((w) => w.includes('only enqueues'))).toHaveLength(
+        1
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('fails an in-process delivery when the job is aborted, and leaves the job to Graphile', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     const entered = Promise.withResolvers<void>();
