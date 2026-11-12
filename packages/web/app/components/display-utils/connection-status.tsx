@@ -63,7 +63,7 @@ function renderKeyValueTable(rows: Array<{ key: string; value: string }>) {
     <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 font-mono">
       {rows.map(({ key, value }) => (
         <div key={key} className="contents">
-          <div className="opacity-70">{key}</div>
+          <div>{key}</div>
           <div className="break-all">{value}</div>
         </div>
       ))}
@@ -118,7 +118,7 @@ export function ConnectionStatus() {
               <div className="font-medium">
                 Local data directory looks misconfigured
               </div>
-              <div className="opacity-70">
+              <div>
                 This UI appears to be pointing at <code>packages/web</code>.
                 Configure the local data directory / working directory and
                 restart the web UI. See{' '}
