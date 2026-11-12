@@ -16,6 +16,22 @@ function workerModulePath(srcDir: string): string {
 }
 
 /**
+ * Whether `WORKFLOW_TARGET_WORLD` selects a first-party World that delivers
+ * over HTTP or by subscription (the Local and Vercel Worlds, under any of
+ * their spellings), or none at all (the Local World by default). Such a
+ * World takes no flow route and is not built at boot.
+ */
+function isHttpDeliveringTarget(target: string | undefined): boolean {
+  return (
+    !target ||
+    target === 'local' ||
+    target === 'vercel' ||
+    target === '@workflow/world-local' ||
+    target === '@workflow/world-vercel'
+  );
+}
+
+/**
  * The production worker entry: `dist/server/workflow-worker.mjs`, a second
  * entry of the server build whose `startWorkflowWorker()` a start script
  * calls before the server entry, to run the process as a worker for a World
@@ -112,14 +128,18 @@ export function workflowPlugin(
       },
       // The development server: run it as a worker when the World delivers
       // in process, as the production worker entry does, since Astro has no
-      // startup hook of its own for an app to do so. Registering decides:
-      // it succeeds only on such a World, and only then is the World started
-      // here. The handler loads the route on every delivery, so edits take
-      // effect without a restart.
+      // startup hook of its own for an app to do so. The Local and Vercel
+      // Worlds never take the route and are not built at boot (they are on
+      // the first request); any other World is asked, as the Nest and Nitro
+      // integrations do. Registering decides: it succeeds only on a World
+      // that delivers in process, and only then is the World started here.
+      // The handler loads the route on every delivery, so edits take effect
+      // without a restart.
       'astro:server:setup': async ({
         server,
       }: HookParameters<'astro:server:setup'>) => {
         if (process.env.VERCEL_DEPLOYMENT_ID || !workerPath) return;
+        if (isHttpDeliveringTarget(process.env.WORKFLOW_TARGET_WORLD)) return;
         try {
           const worker = (await server.ssrLoadModule(workerPath)) as {
             registerWorkflowWorker: () => Promise<boolean>;

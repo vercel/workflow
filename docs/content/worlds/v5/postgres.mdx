@@ -199,7 +199,7 @@ export class AppModule {}
 
 <TabContent order={5}>
 
-Astro has no server startup hook of its own. In development, the `workflow/astro` integration registers the route and starts the World when `astro dev` starts. A production build with the Node adapter emits a second server entry, `dist/server/workflow-worker.mjs`; start your server through a script that calls it before the server entry:
+Astro has no server startup hook of its own. In development, the `workflow/astro` integration registers the route and starts the World when `astro dev` starts, when the configured World delivers in process (`WORKFLOW_TARGET_WORLD` names the Postgres World, or a module of your own whose World declares `queueAuthMode: 'deny'`); the Local and Vercel Worlds are not built at boot. A production build with the Node adapter emits a second server entry, `dist/server/workflow-worker.mjs`; start your server through a script that calls it before the server entry:
 
 ```js title="scripts/start.mjs" lineNumbers
 const { startWorkflowWorker } = await import("../dist/server/workflow-worker.mjs");

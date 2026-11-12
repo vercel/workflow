@@ -98,16 +98,21 @@ export function createRefreshOptionsCode(options?: { namespace?: string }) {
  * The route exports of a generated flow route. The module imports
  * `workflowEntrypoint` and `refreshWorkflowHandler` from `workflow/runtime`:
  * in a process that runs as a worker for a World that delivers in process
- * (see `registerWorkflowHandler`), each evaluation of the module hands the
- * World this evaluation's route, so a route rebuilt in development replaces
- * the one registered at startup. Elsewhere the call does nothing.
+ * (see `registerWorkflowHandler`), each evaluation of the module outside
+ * production hands the World this evaluation's route, so a route rebuilt in
+ * development replaces the one registered at startup. In production the
+ * route is built once and registered at startup, so the module is evaluated
+ * without a side effect (a bundler that inlines `NODE_ENV` drops the call).
+ * Elsewhere the call does nothing.
  */
 export function createWorkflowRouteHandlersCode(
   workflowEntrypointCall: string,
   refreshOptions?: { namespace?: string }
 ) {
   return `export const POST = ${workflowEntrypointCall};
-refreshWorkflowHandler(POST${createRefreshOptionsCode(refreshOptions)});
+if (process.env.NODE_ENV !== 'production') {
+  refreshWorkflowHandler(POST${createRefreshOptionsCode(refreshOptions)});
+}
 export const GET = POST;
 export const HEAD = POST;
 export const OPTIONS = POST;`;
