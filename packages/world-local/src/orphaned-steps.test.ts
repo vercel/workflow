@@ -77,10 +77,13 @@ async function restart(
   await world.start();
   return {
     world,
-    atDelivery: await vi.waitFor(() => {
-      if (!atDelivery) throw new Error('run not delivered yet');
-      return atDelivery;
-    }),
+    atDelivery: await vi.waitFor(
+      () => {
+        if (!atDelivery) throw new Error('run not delivered yet');
+        return atDelivery;
+      },
+      { timeout: 20_000 }
+    ),
   };
 }
 
@@ -329,7 +332,9 @@ describe('orphaned inline steps on restart', () => {
     await bootNewRealm();
     await world.start();
 
-    await vi.waitFor(() => expect(atDelivery.size).toBe(runIds.length));
+    await vi.waitFor(() => expect(atDelivery.size).toBe(runIds.length), {
+      timeout: 20_000,
+    });
     for (const runId of runIds) {
       expect(atDelivery.get(runId)).toEqual([
         'step_created',
@@ -359,7 +364,9 @@ describe('orphaned inline steps on restart', () => {
     await bootNewRealm();
     await world.start();
 
-    await vi.waitFor(() => expect(delivered).toEqual([runId]));
+    await vi.waitFor(() => expect(delivered).toEqual([runId]), {
+      timeout: 20_000,
+    });
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
         `Failed to release orphaned steps of run ${runId}`

@@ -62,7 +62,14 @@ describe('Run#getReadable() key resolution over a real World', () => {
       else process.env[key] = originalEnv[key];
     }
     setWorld(undefined as unknown as World);
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, {
+      recursive: true,
+      force: true,
+      // Windows: world-local closes its connection to the database a moment
+      // after the last operation; until then the file cannot be deleted.
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
 
   /** A running run whose input is large enough that resolving it is the cost. */
