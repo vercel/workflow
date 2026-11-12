@@ -19,6 +19,9 @@ import { eventIdToSlot, slotToEventId } from '@workflow/world';
 import { decode, encode } from '../db/codec.js';
 import type { Database } from '../db/index.js';
 
+/** Rows one batch of a capped `listEvents` page reads (see `maxBytes`). */
+const EVENT_READ_BATCH = 64;
+
 export interface RunRow {
   run: WorkflowRun;
   tag: string | null;
@@ -217,43 +220,67 @@ export class Store {
     const sortOrder = options.sortOrder ?? 'asc';
     const limit = Math.max(1, options.limit ?? 20);
     const after = parseEventCursor(options.cursor);
-    const clauses = ['run_id = ?'];
-    const params: unknown[] = [runId];
-    if (options.correlationId !== undefined) {
-      clauses.push('correlation_id = ?');
-      params.push(options.correlationId);
-    }
-    if (after !== null) {
-      clauses.push(sortOrder === 'asc' ? 'seq > ?' : 'seq < ?');
-      params.push(after);
-    }
-    const rows = this.db.all<{ doc: string }>(
-      `SELECT doc FROM events WHERE ${clauses.join(' AND ')}
-       ORDER BY seq ${sortOrder === 'asc' ? 'ASC' : 'DESC'} LIMIT ?`,
-      ...params,
-      limit + 1
-    );
-    let hasMore = rows.length > limit;
-    const data: Event[] = [];
-    let bytes = 0;
-    for (const row of hasMore ? rows.slice(0, limit) : rows) {
-      if (
-        options.maxBytes !== undefined &&
-        data.length > 0 &&
-        bytes + row.doc.length > options.maxBytes
-      ) {
-        hasMore = true;
-        break;
+    const query = (from: number | null, take: number) => {
+      const clauses = ['run_id = ?'];
+      const params: unknown[] = [runId];
+      if (options.correlationId !== undefined) {
+        clauses.push('correlation_id = ?');
+        params.push(options.correlationId);
       }
-      bytes += row.doc.length;
-      data.push(decode<Event>(row.doc));
-    }
-    const last = data.at(-1);
-    return {
-      data,
-      cursor: last ? eventCursor(last.eventId) : null,
-      hasMore,
+      if (from !== null) {
+        clauses.push(sortOrder === 'asc' ? 'seq > ?' : 'seq < ?');
+        params.push(from);
+      }
+      return this.db.all<{ seq: number; doc: string }>(
+        `SELECT seq, doc FROM events WHERE ${clauses.join(' AND ')}
+         ORDER BY seq ${sortOrder === 'asc' ? 'ASC' : 'DESC'} LIMIT ?`,
+        ...params,
+        take
+      );
     };
+    const page = (data: Event[], hasMore: boolean) => {
+      const last = data.at(-1);
+      return {
+        data,
+        cursor: last ? eventCursor(last.eventId) : null,
+        hasMore,
+      };
+    };
+
+    const { maxBytes } = options;
+    if (maxBytes === undefined) {
+      const rows = query(after, limit + 1);
+      const hasMore = rows.length > limit;
+      return page(
+        (hasMore ? rows.slice(0, limit) : rows).map((row) =>
+          decode<Event>(row.doc)
+        ),
+        hasMore
+      );
+    }
+
+    // Capped: read in small batches, so a page that the cap ends early never
+    // reads (let alone decodes) the rows after it, however large `limit` is.
+    // One read snapshot across the batches, so the page is consistent.
+    return this.db.snapshot(() => {
+      const data: Event[] = [];
+      let bytes = 0;
+      let from = after;
+      for (;;) {
+        const take = Math.min(EVENT_READ_BATCH, limit - data.length + 1);
+        const rows = query(from, take);
+        for (const row of rows) {
+          if (data.length === limit) return page(data, true);
+          if (data.length > 0 && bytes + row.doc.length > maxBytes) {
+            return page(data, true);
+          }
+          bytes += row.doc.length;
+          data.push(decode<Event>(row.doc));
+          from = Number(row.seq);
+        }
+        if (rows.length < take) return page(data, false);
+      }
+    });
   }
 
   /** Events strictly between two positions, in order. */

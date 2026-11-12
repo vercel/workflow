@@ -236,10 +236,20 @@ function acquire(file: string, wait = true): Connection {
   return open(file, wait);
 }
 
+/**
+ * How many times a write waiting for the lock retries on the next turn of the
+ * event loop before it backs off to ~1 ms timers. A lock is usually held for
+ * well under a millisecond, and a waiter asleep in a timer when it frees
+ * loses it to whichever process retries first (often the one that just
+ * committed): with 4, 8 processes writing flat out made ~20% fewer writes per
+ * second than with a synchronous wait; with 32, as many.
+ */
+const LOCK_SPIN_ATTEMPTS = 32;
+
 /** Waits for the lock between attempts without blocking the thread. */
 function yieldForLock(attempt: number): Promise<void> {
   return new Promise<void>((resolve) => {
-    if (attempt < 4) setImmediate(resolve);
+    if (attempt < LOCK_SPIN_ATTEMPTS) setImmediate(resolve);
     else setTimeout(resolve, 1 + Math.random());
   });
 }

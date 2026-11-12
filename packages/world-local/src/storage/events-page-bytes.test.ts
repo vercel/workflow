@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { databaseFor } from '../db/index.js';
+import { Database, databaseFor } from '../db/index.js';
 import { createStorage } from '../storage.js';
 import { createRun } from '../test-helpers.js';
 
@@ -66,6 +66,52 @@ it('ends a page of large events early, and the cursor reaches every event', asyn
   // Several pages, none of them the whole log.
   expect(pages.length).toBeGreaterThan(2);
   expect(Math.max(...pages)).toBeLessThan(150);
+});
+
+it('reads no further than the capped page, however large the limit', async () => {
+  const storage = createStorage(dataDir);
+  const run = await createRun(storage, {
+    deploymentId: 'dep-1',
+    workflowName: 'wf',
+    input: new Uint8Array(),
+  });
+  const payload = new Uint8Array(64 * 1024).fill(1);
+  for (let i = 0; i < 300; i++) {
+    await storage.events.create(run.runId, {
+      eventType: 'step_created',
+      correlationId: `step_${i}`,
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'add', input: payload },
+    });
+  }
+
+  // Rows the event queries read, whatever the page then returns.
+  let rowsRead = 0;
+  const all = Database.prototype.all;
+  vi.spyOn(Database.prototype, 'all').mockImplementation(function (
+    this: Database,
+    sql: string,
+    ...params: unknown[]
+  ) {
+    const rows = all.call(this, sql, ...params);
+    if (sql.trimStart().startsWith('SELECT seq, doc FROM events')) {
+      rowsRead += rows.length;
+    }
+    return rows;
+  } as typeof Database.prototype.all);
+
+  for (const limit of [100, 10_000]) {
+    rowsRead = 0;
+    const page = await storage.events.list({
+      runId: run.runId,
+      pagination: { limit },
+    });
+    expect(page.hasMore).toBe(true);
+    // The rows it returns, plus at most one batch it stopped in.
+    expect(rowsRead, `limit ${limit}`).toBeLessThanOrEqual(
+      page.data.length + 64
+    );
+  }
 });
 
 it('returns small events in one page, as before', async () => {
