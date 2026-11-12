@@ -8,6 +8,8 @@ related:
   - /docs/configuration/worlds
 ---
 
+The Workflow CLI is installed with the `workflow` package as `workflow` (alias `wf`). It is also installed as `vercel-workflow`, so in a project that depends on `workflow`, Vercel CLI runs it as `vercel workflow` (or `vc workflow`) — for example, `vc workflow inspect runs --backend vercel`. Vercel CLI runs the copy in your project's `node_modules`, so the commands always match the version of the SDK you deploy.
+
 The Workflow CLI uses flags first, then environment variables, then defaults or local inference.
 
 Vercel project and auth settings can often be inferred from `.vercel/project.json` and your Vercel CLI login. In a monorepo, the CLI uses the nearest `.vercel/project.json` before the repository's `.vercel/repo.json`.
