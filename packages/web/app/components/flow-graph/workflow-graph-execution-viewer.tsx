@@ -91,8 +91,7 @@ function ExecutionLoopNodeComponent({ data, selected }: NodeProps) {
         borderStyle: 'solid',
         backgroundColor: nodeData.nodeStyle?.backgroundColor,
         borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
-        opacity: nodeData.nodeStyle?.opacity,
-        boxShadow: selected ? '0 0 0 2px rgba(168, 85, 247, 0.5)' : undefined,
+        boxShadow: selected ? '0 0 0 2px var(--ds-purple-500)' : undefined,
       }}
     >
       {/* Node content */}
@@ -147,8 +146,7 @@ function ExecutionNodeComponent({ data, selected }: NodeProps) {
         borderStyle: 'solid',
         backgroundColor: nodeData.nodeStyle?.backgroundColor,
         borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
-        opacity: nodeData.nodeStyle?.opacity,
-        boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.35)' : undefined,
+        boxShadow: selected ? '0 0 0 2px var(--ds-blue-500)' : undefined,
       }}
     >
       {nodeData.label}
@@ -194,8 +192,7 @@ function ExecutionDiamondNodeComponent({ data, selected }: NodeProps) {
           borderRadius: 4,
           backgroundColor: nodeData.nodeStyle?.backgroundColor,
           borderColor: nodeData.nodeStyle?.borderColor ?? '#ef4444',
-          opacity: nodeData.nodeStyle?.opacity,
-          boxShadow: selected ? '0 0 0 2px rgba(239, 68, 68, 0.5)' : undefined,
+          boxShadow: selected ? '0 0 0 2px var(--ds-red-500)' : undefined,
         }}
       />
       {/* Label overlay (not rotated) */}
@@ -253,13 +250,12 @@ const edgeTypes = createEdgeTypes(executionSelfLoopStyle);
 function getExecutionNodeStyle(nodeKind: string, executions?: StepExecution[]) {
   const backgroundColor = getNodeBackgroundColor(nodeKind);
 
-  // If no execution data, show faded state with gray border
+  // If no execution data, show the muted pending palette
   if (!executions || executions.length === 0) {
     return {
-      color: 'var(--card-foreground)',
-      backgroundColor,
-      borderColor: '#9ca3af', // gray-400
-      opacity: 0.4,
+      color: 'var(--ds-gray-700)',
+      backgroundColor: 'var(--ds-background-200)',
+      borderColor: 'var(--ds-gray-400)',
     };
   }
 
@@ -360,7 +356,7 @@ function renderNodeLabel(
         {latestExecution.duration && latestExecution.duration > 0 && (
           <Badge
             variant="secondary"
-            className="text-xs px-1.5 py-0 bg-black/10 dark:bg-white/15 border-0"
+            className="text-xs px-1.5 py-0 bg-gray-alpha-300 border-0"
           >
             ⏱ {formatDuration(latestExecution.duration, true)}
           </Badge>
@@ -628,13 +624,14 @@ function convertToReactFlowEdges(
         edgeType = 'bezier';
     }
 
-    // Simple color scheme: gray for non-executed, dark green for executed
-    const baseStrokeColor = '#6b7280'; // gray-500
+    // Simple color scheme: gray for non-executed, dark green for executed.
+    // Non-traversed edges are made subtle with a lighter gray token when
+    // there's execution data, rather than by fading the edge.
+    const baseStrokeColor =
+      hasExecution && !isTraversed ? 'var(--ds-gray-400)' : '#6b7280'; // gray-500
     const finalStrokeColor = isTraversed ? '#22c55e' : baseStrokeColor;
     const finalDasharray = isTraversed ? undefined : strokeDasharray;
 
-    // Make non-traversed edges subtle when there's execution data
-    const opacity = hasExecution && !isTraversed ? 0.35 : 1;
     const strokeWidth = isTraversed ? 2.5 : 1;
 
     // Label styling - conditional edges get dark bg with white text
@@ -670,7 +667,6 @@ function convertToReactFlowEdges(
       },
       labelBgStyle: {
         fill: labelBgColor,
-        fillOpacity: 0.95,
         stroke: labelBorderColor,
         strokeWidth: 1,
       },
@@ -685,7 +681,6 @@ function convertToReactFlowEdges(
       style: {
         strokeWidth,
         stroke: finalStrokeColor,
-        opacity,
         strokeDasharray: finalDasharray,
       },
     };
@@ -824,7 +819,7 @@ function GraphNodeDetailPanel({
         {/* Input section */}
         {resolvedInput !== undefined && (
           <details className="group mb-3">
-            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
+            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-gray-alpha-100">
               <span className="font-medium">Input</span>
               <span className="text-muted-foreground ml-1">
                 ({Array.isArray(resolvedInput) ? resolvedInput.length : 1} args)
@@ -833,7 +828,7 @@ function GraphNodeDetailPanel({
             <div className="relative pl-6 mt-3">
               <div className="absolute left-3 -top-3 w-px h-3 bg-border" />
               <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-border" />
-              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30 max-h-64 overflow-y-auto">
+              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-background-200 max-h-64 overflow-y-auto">
                 <code>{JSON.stringify(resolvedInput, null, 2)}</code>
               </pre>
             </div>
@@ -843,13 +838,13 @@ function GraphNodeDetailPanel({
         {/* Output section */}
         {resolvedOutput !== undefined && (
           <details className="group mb-3">
-            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
+            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-gray-alpha-100">
               <span className="font-medium">Output</span>
             </summary>
             <div className="relative pl-6 mt-3">
               <div className="absolute left-3 -top-3 w-px h-3 bg-border" />
               <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-border" />
-              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-muted/30 max-h-64 overflow-y-auto">
+              <pre className="text-[11px] overflow-x-auto rounded-md border p-2.5 bg-background-200 max-h-64 overflow-y-auto">
                 <code>{JSON.stringify(resolvedOutput, null, 2)}</code>
               </pre>
             </div>
@@ -859,7 +854,7 @@ function GraphNodeDetailPanel({
         {/* Error section */}
         {resolvedError && (
           <details className="group mb-3" open>
-            <summary className="cursor-pointer rounded-md border border-red-300 bg-red-50 dark:bg-red-950/20 px-2.5 py-1.5 text-xs hover:brightness-95">
+            <summary className="cursor-pointer rounded-md border border-red-300 bg-red-100 px-2.5 py-1.5 text-xs hover:brightness-95">
               <span className="font-medium text-red-600 dark:text-red-400">
                 Error
               </span>
@@ -867,7 +862,7 @@ function GraphNodeDetailPanel({
             <div className="relative pl-6 mt-3">
               <div className="absolute left-3 -top-3 w-px h-3 bg-red-300" />
               <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-red-300" />
-              <pre className="text-[11px] overflow-x-auto rounded-md border border-red-200 p-2.5 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 whitespace-pre-wrap max-h-64 overflow-y-auto">
+              <pre className="text-[11px] overflow-x-auto rounded-md border border-red-200 p-2.5 bg-red-100 text-red-700 dark:text-red-300 whitespace-pre-wrap max-h-64 overflow-y-auto">
                 <code>
                   {typeof resolvedError === 'object'
                     ? JSON.stringify(resolvedError, null, 2)
@@ -881,7 +876,7 @@ function GraphNodeDetailPanel({
         {/* Attempt history for retries */}
         {hasMultipleAttempts && (
           <details className="group">
-            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-muted/50">
+            <summary className="cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 bg-gray-alpha-100">
               <span className="font-medium">Attempt History</span>
               <span className="text-muted-foreground ml-1">
                 ({executions.length} attempts)
@@ -1016,7 +1011,7 @@ export function WorkflowGraphExecutionViewer({
           {/* Legend with border status colors */}
           <Panel
             position="top-left"
-            className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-2 text-xs"
+            className="bg-background-100 border rounded-lg p-2 text-xs"
           >
             <div className="space-y-1.5">
               <div className="font-semibold text-[10px] text-muted-foreground mb-1">
@@ -1038,8 +1033,8 @@ export function WorkflowGraphExecutionViewer({
                 <div className="w-6 h-4 rounded border-2 border-yellow-500 bg-background" />
                 <span>Cancelled</span>
               </div>
-              <div className="flex items-center gap-2 opacity-50">
-                <div className="w-6 h-4 rounded border-2 border-gray-400 bg-background" />
+              <div className="flex items-center gap-2 text-gray-700">
+                <div className="w-6 h-4 rounded border-2 border-gray-400 bg-background-200" />
                 <span>Pending</span>
               </div>
             </div>
@@ -1049,7 +1044,7 @@ export function WorkflowGraphExecutionViewer({
           {execution && (
             <Panel
               position="top-right"
-              className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-3 text-xs space-y-1.5"
+              className="bg-background-100 border rounded-lg p-3 text-xs space-y-1.5"
             >
               <div className="font-semibold text-sm">Execution</div>
               <div className="flex items-center gap-2">

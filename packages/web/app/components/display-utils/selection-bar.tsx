@@ -48,15 +48,15 @@ export function SelectionBar({
       </span>
 
       {actions && (
-        <div className="flex items-center gap-2 border-l border-primary-foreground/20 pl-3">
+        <div className="flex items-center gap-2 border-l border-gray-900 pl-3">
           {actions}
         </div>
       )}
 
       <Button
-        variant="tertiary"
+        variant="default"
         size="small"
-        className="h-7 px-2 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+        className="h-7 px-2"
         onClick={onClearSelection}
       >
         <X className="h-4 w-4" />

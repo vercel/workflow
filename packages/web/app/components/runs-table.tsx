@@ -989,9 +989,9 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="tertiary"
+                  variant="default"
                   size="small"
-                  className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+                  className="h-7"
                   onClick={handleBulkReenqueue}
                   disabled={isBulkReenqueuing || selectedRuns.length === 0}
                 >
@@ -1015,9 +1015,9 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                       button is disabled */}
                   <span className="inline-flex">
                     <Button
-                      variant="tertiary"
+                      variant="default"
                       size="small"
-                      className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+                      className="h-7"
                       onClick={handleBulkCancel}
                       disabled={isBulkCancelling || exceedsBulkCancelLimit}
                     >

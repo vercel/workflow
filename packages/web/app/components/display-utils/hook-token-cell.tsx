@@ -55,7 +55,7 @@ export function HookTokenCell({ env, runId, hookId }: HookTokenCellProps) {
             type="button"
             onClick={handleCopy}
             disabled={status === 'loading'}
-            className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/copy:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm p-1 rounded"
+            className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/copy:opacity-100 transition-opacity bg-background-100 p-1 rounded"
             aria-label="Copy token"
           >
             {status === 'loading' ? (
