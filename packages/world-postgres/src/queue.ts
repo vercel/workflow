@@ -57,6 +57,7 @@ import {
   resolveJobLeasePolicy,
 } from './job-lease.js';
 import { MessageData } from './message.js';
+import { createRunQueueReaper } from './run-queue-reaper.js';
 
 /**
  * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
@@ -389,6 +390,10 @@ export function createQueue(
   const executorQueueName = (runId: string) =>
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
+  const runQueueReaper = createRunQueueReaper(pool, {
+    prefix: `${getJobQueueName()}:`,
+    suffix: ':executor',
+  });
 
   const createQueueHandler: Queue['createQueueHandler'] = (
     prefix,
@@ -1569,6 +1574,7 @@ export function createQueue(
       prefix: `${getJobQueueName()}:`,
       suffix: ':executor',
     });
+    runQueueReaper.start();
   }
 
   return {
@@ -1616,6 +1622,7 @@ export function createQueue(
       // After the runner, whose active deliveries keep renewing while it
       // drains them.
       await jobLeases.stop();
+      await runQueueReaper.stop();
       if (workerUtils) {
         await workerUtils.release();
         workerUtils = null;
