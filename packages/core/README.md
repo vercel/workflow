@@ -2,6 +2,11 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+If the initial spec 9 history read returns not found while the concurrent run
+lookup succeeds, the orchestrator reloads history once in the same delivery.
+It adopts the returned fence snapshot before executing; a failed reload retains
+the normal failure and queue-redelivery behavior.
+
 Pass the Hook returned by `getHookByToken()` to `resumeHook()` to reuse its
 immutable resume context without another token lookup. JSON, object spreads,
 and structured cloning preserve this behavior. Cached capabilities are ignored;
