@@ -60,13 +60,11 @@ function getDisplayString(config: ServerConfigValue): string {
 
 function renderKeyValueTable(rows: Array<{ key: string; value: string }>) {
   return (
-    <div className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-1">
+    <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 font-mono">
       {rows.map(({ key, value }) => (
         <div key={key} className="contents">
-          <div className="font-mono text-xs text-muted-foreground">{key}</div>
-          <div className="font-mono text-xs text-foreground break-all">
-            {value}
-          </div>
+          <div className="opacity-70">{key}</div>
+          <div className="break-all">{value}</div>
         </div>
       ))}
     </div>
@@ -117,10 +115,10 @@ export function ConnectionStatus() {
         <div className="flex flex-col gap-2 max-w-[640px]">
           {showLocalMisconfigWarning && (
             <div className="mb-2">
-              <div className="font-medium text-foreground">
+              <div className="font-medium">
                 Local data directory looks misconfigured
               </div>
-              <div className="text-muted-foreground">
+              <div className="opacity-70">
                 This UI appears to be pointing at <code>packages/web</code>.
                 Configure the local data directory / working directory and
                 restart the web UI. See{' '}
