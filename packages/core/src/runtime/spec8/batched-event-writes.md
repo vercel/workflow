@@ -1,9 +1,6 @@
----
-title: Batched event writes
-description: An optional World API (events.createBatch) that appends an ordered set of events in one durable write with per-event outcomes, and a suspension fan-out fold that uses it.
----
-
 # Batched event writes (`events.createBatch`)
+
+An optional World API (events.createBatch) that appends an ordered set of events in one durable write with per-event outcomes, and a suspension fan-out fold that uses it.
 
 ## Motivation
 
@@ -31,7 +28,6 @@ interface BatchCapableEvents {
 
 The supporting types, excerpted (canonical definitions live in `@workflow/world`):
 
-{/* @skip-typecheck illustrative excerpts of the canonical @workflow/world types */}
 ```ts
 interface BatchEventRequest {
   /** The event: the same discriminated union the single `create` takes. */

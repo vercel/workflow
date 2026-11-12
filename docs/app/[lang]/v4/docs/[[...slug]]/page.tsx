@@ -12,6 +12,7 @@ import { source, v4GeistdocsSource } from '@/lib/geistdocs/source';
 import { rewriteHrefForVersion } from '@/lib/geistdocs/version-href';
 import { getDocsTreeForVersion } from '@/lib/geistdocs/version-source';
 import { MAINTENANCE_VERSION } from '@/lib/geistdocs/versions';
+import { canViewPage } from '@/lib/geistdocs/visibility';
 
 const VERSION_PREFIX = '/v4';
 const DEFAULT_LANG = config.defaultLanguage ?? 'en';
@@ -32,6 +33,7 @@ function V4Card(props: CardProps) {
 }
 
 const docsPage = createDocsPage({
+  canViewPage,
   config: {
     ...config,
     github: config.github && {
@@ -39,7 +41,19 @@ const docsPage = createDocsPage({
       editPath: 'docs/content/docs/v4/{path}',
     },
   },
-  source: v4GeistdocsSource,
+  source: {
+    ...v4GeistdocsSource,
+    source: {
+      ...v4GeistdocsSource.source,
+      // Access checks compare getPages() URLs with getPage()'s raw URLs.
+      // getPageUrl applies the public version prefix when rendering links.
+      getPages: (lang) =>
+        v4GeistdocsSource.source.getPages(lang).map((page) => ({
+          ...page,
+          url: page.url.slice(VERSION_PREFIX.length),
+        })),
+    },
+  },
   getPageUrl,
   mdx: ({ link, page }) =>
     getMDXComponents({

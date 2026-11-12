@@ -1,23 +1,16 @@
----
-title: Resilient hook resume
-description: resumeHook() now tolerates transient event storage failures when the queue is healthy instead of failing the resume.
----
-
 # Resilient `resumeHook()`
 
-<Callout type="info">
-  Superseded by [durable hook resume](/docs/changelog/lazy-hook-resume):
-  `resumeHook()` now writes the `hook_received` event durably and only then
-  publishes the workflow wake, so the two-writer design, the queue-carried
-  payload, and the `resilientResume` flag described below are historical. The
-  `(runId, resumeId)` constraint remains, converging transport-level retries
-  of the producer's own write (and legacy `hookInput` redeliveries from older
-  producers).
-</Callout>
+> Superseded by [durable hook resume](./durable-hook-resume.md):
+> `resumeHook()` now writes the `hook_received` event durably and only then
+> publishes the workflow wake, so the two-writer design, the queue-carried
+> payload, and the `resilientResume` flag described below are historical. The
+> `(runId, resumeId)` constraint remains, converging transport-level retries
+> of the producer's own write (and legacy `hookInput` redeliveries from older
+> producers).
 
 ## Motivation
 
-`resumeHook()` used to write the `hook_received` event and dispatch the workflow queue message strictly one after the other, so every resume paid two sequential round trips and a transient event-storage failure failed the whole resume even when the queue was healthy. This change runs both writes **concurrently** (cutting a round trip off resume latency) and, on the same path, brings `resumeHook()` to parity with [resilient `start()`](/docs/changelog/resilient-start): a transient event-write failure no longer fails the resume when the payload can still be delivered through the queue.
+`resumeHook()` used to write the `hook_received` event and dispatch the workflow queue message strictly one after the other, so every resume paid two sequential round trips and a transient event-storage failure failed the whole resume even when the queue was healthy. This change runs both writes **concurrently** (cutting a round trip off resume latency) and, on the same path, brings `resumeHook()` to parity with [resilient `start()`](./resilient-start.md): a transient event-write failure no longer fails the resume when the payload can still be delivered through the queue.
 
 ## Design
 

@@ -1,6 +1,10 @@
 /**
  * The spec 9 (single-orchestrator) delivery: one writer per run, enforced by
  * the World's in-band fence. See `../delivery.ts`.
+ *
+ * `./README.md` is the spec 9 reference: the model, the World contract,
+ * lifecycles, edge cases and the decisions behind them. Read it before
+ * changing spec 9 behaviour, and update it in the same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';

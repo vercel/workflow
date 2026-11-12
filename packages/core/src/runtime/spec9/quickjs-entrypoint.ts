@@ -11,6 +11,9 @@
  * 3. On suspension: creates events + queues steps for new pending ops
  * 4. On completion: creates run_completed
  * 5. On failure: creates run_failed
+ *
+ * This is the spec 9 QuickJS orchestrator. `./README.md` is the spec 9
+ * reference; "QuickJS differences" there lists where the two engines differ.
  */
 
 import type { Span } from '@opentelemetry/api';

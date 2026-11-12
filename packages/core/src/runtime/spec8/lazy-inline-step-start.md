@@ -1,9 +1,6 @@
----
-title: Lazy inline step start
-description: Defer step_created for the inline step and fold it into a single step_started, saving one world round-trip per inline step.
----
-
 # Lazy inline step start
+
+Defer step_created for the inline step and fold it into a single step_started, saving one world round-trip per inline step.
 
 ## Motivation
 
@@ -15,7 +12,7 @@ The owned-inline runtime path used to write two separate world events for a step
 
 On the Vercel world each `world.events.create` is a network round-trip, so for a sequential `"use step"` workflow this is pure latency between steps. Steps (1) and (2) are two round-trips for a step we already own and are about to execute in the same invocation.
 
-This change defers `step_created` for that one inline step: `executeStep` sends a single `step_started` carrying the step input, and the world creates the step on the fly. This materializes the step entity **and** a synthetic `step_created` event so replay still observes it. **Two writes per inline step instead of three.** It mirrors the existing [resilient `run_started` → `run_created`](./resilient-start) pattern.
+This change defers `step_created` for that one inline step: `executeStep` sends a single `step_started` carrying the step input, and the world creates the step on the fly. This materializes the step entity **and** a synthetic `step_created` event so replay still observes it. **Two writes per inline step instead of three.** It mirrors the existing [resilient `run_started` → `run_created`](../resilient-start.md) pattern.
 
 Steps that are *queued* (not run inline) keep their eager `step_created` and are unchanged. Only the single inline step per suspension is made lazy.
 

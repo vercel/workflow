@@ -511,6 +511,10 @@ export interface Storage {
      * owns those barriers itself: the core runtime never batches a
      * suspension that carries attribute writes, and writes a suspension's
      * hook events through the single path concurrently with its batch.
+     *
+     * The design is described in
+     * `packages/core/src/runtime/spec8/batched-event-writes.md` in the Workflow
+     * SDK repository.
      */
     createBatch?(
       runId: string,
@@ -752,7 +756,9 @@ export interface WorldCapabilities {
    *   fence.
    *
    * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
-   * each of these against a World's `events` storage.
+   * each of these against a World's `events` storage. "Implementing spec 9 in
+   * a World" in `packages/core/src/runtime/spec9/README.md` (in the Workflow SDK
+   * repository) is the full guide.
    */
   inBandFence?: boolean;
 

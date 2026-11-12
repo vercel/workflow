@@ -1551,7 +1551,7 @@ export function createQueue(
       // fib(6) produces ~24 concurrent polling steps at peak, and at
       // concurrency=10 (the previous default) it would deadlock on the
       // default Postgres setup. See packages/core/src/runtime/run.ts and
-      // docs/content/docs/changelog/eager-processing.mdx for context.
+      // packages/core/src/runtime/eager-processing.md for context.
       concurrency: config.queueConcurrency || 50,
       logger: graphileLogger,
       ...(config.applicationManagedShutdown === true && {
