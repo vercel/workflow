@@ -213,7 +213,7 @@ In `@workflow/vitest`, `waitForSleep()` skips a sleep that `wakeUp()` already na
 
 ### First-party Worlds
 
-**world-local.** Its run gate is in-process and it does not coalesce, so every background completion's wake is its own delivery (see [world-local does not coalesce](#world-local-does-not-coalesce)). It has no live feed, so orchestrators poll and never linger. Messages are sent and redelivered by the enqueuing process, so two processes sharing one data directory (an app plus a script calling `start()` or `resumeHook()`) can overlap deliveries of one run: the fence keeps the log linear, but each overlap costs a refused pass and a redelivery, which on a busy run means long refusal streaks. Keep those calls in the process serving the workflow routes. Restart recovery marks its messages (`recovery: true`), and their delivery re-sends every background step without an outcome and arms every open sleep; pass `{ queueLost: true }` to `reenqueueActiveRuns()` from `@workflow/world` for the same effect.
+**world-local.** Its run gate is in-process. When a spec 9 orchestrator delivery acknowledges, it absorbs the run's orchestrator messages that queued behind it in its process and runs the handler again, up to 32 times, as world-postgres does; a handoff keeps the run's gate, and its redelivery covers them. An orchestrator message without a spec stamp is checked against the run's stored spec version, and a spec 9 run's is stamped and gated like the rest (see [world-local and world-postgres](#world-local-and-world-postgres)). It has no live feed, so orchestrators poll and never linger. Messages are sent and redelivered by the enqueuing process, so two processes sharing one data directory (an app plus a script calling `start()` or `resumeHook()`) can overlap deliveries of one run: the fence keeps the log linear, but each overlap costs a refused pass and a redelivery, which on a busy run means long refusal streaks. Keep those calls in the process serving the workflow routes. Restart recovery marks its messages (`recovery: true`), and their delivery re-sends every background step without an outcome and arms every open sleep; pass `{ queueLost: true }` to `reenqueueActiveRuns()` from `@workflow/world` for the same effect.
 
 **world-postgres.** A spec 9 run's orchestrator deliveries run one at a time across processes as Graphile jobs in the run's named queue (`workflow_flows:<runId>:executor`); step jobs have no named queue and run concurrently. The fence refuses a stale orchestrator that outlived its job's lock.
 
@@ -666,7 +666,7 @@ The World decides the queue side (topic, key, gate, continuation) from the paylo
 A message to a spec 9 run without a stamp still reaches the spec 9 orchestrator, through `runs.get`. What it costs depends on the World:
 
 - **world-vercel** treats it as spec 8: it is sent unkeyed, so it can run beside the keyed holder, and a `{ timeoutSeconds }` result continues on a new message.
-- **world-local** treats it as spec 8 too: its gates key on the stamp, so the message runs beside the live delivery. Resolving the spec from its own run record first, as world-postgres does, is still open there.
+- **world-local** resolves it from its run record: the sending queue, and the handler of the process that receives it (for a message from another process, such as an older SDK's), read the run's stored spec version and stamp a spec 9 run's message with it, so it waits behind the run's live delivery, which may cover it with a coalesced re-run. A spec 8 run, a missing run or a failed read leaves the message as it was. Only unstamped messages pay the read.
 - **world-postgres** resolves it from the run row: for an unstamped orchestrator message of a spec 9 run, the worker re-adds the message stamped with the run's version on the run's named queue, with the same attempt and delivery counts, and completes the original job undelivered. It then waits behind the live delivery, which may cover it with a coalesced re-run. A spec 8 run, a missing run or a failed read leaves the message delivered as before. Only unstamped messages pay the read.
 
 Where the message does run beside the holder, the in-band fence keeps the log linear: the loser's write gets a 412 and it asks for a redelivery of its own message (see [The in-band fence](#the-in-band-fence)). The overlap can still cost more than one invocation: a spec 9 inline step's start carries no owner, so the unserialized delivery can start and run the body of an inline step the holder is still running, and the fence refuses only the later outcome write. A hint below 9 reaches the spec 8 orchestrator first, which hands the message on once it loads the run.
@@ -731,7 +731,7 @@ A World written to the earlier "Building a World" guide (`specVersion: mintedSpe
 | `meta.invocationStartedAt` | New, optional. When the invocation began (epoch ms), the same on every re-run; the inline deadline is measured from it. |
 | `recovery: true` | New, optional, set by `reenqueueActiveRuns(..., { queueLost: true })`. A spec 9 delivery of it re-sends every open step message and arms every open wait chain. Older handlers ignore it. |
 
-world-local and world-postgres declare the fence, mint spec 9 when `WORKFLOW_SPEC_VERSION=9` is set, and serialize only spec 9 runs' orchestrator deliveries. world-postgres coalesces the messages queued behind a running delivery into re-runs of it (at most 32); world-local does not (see [world-local does not coalesce](#world-local-does-not-coalesce)).
+world-local and world-postgres declare the fence, mint spec 9 when `WORKFLOW_SPEC_VERSION=9` is set, and serialize only spec 9 runs' orchestrator deliveries. Both coalesce the messages queued behind a running delivery into re-runs of it (at most 32; see [world-local and world-postgres](#world-local-and-world-postgres)).
 
 ### The dedupe contract
 
@@ -969,7 +969,7 @@ export async function resizeAll(urls: string[]) {
 }
 ```
 
-The 50 step invocations finish over a few seconds, and each sends the orchestrator one plain wake without reading the log. While the orchestrator runs, every wake is coalesced into it. When it tries to acknowledge, it is told how many arrived, reads the log once, and sees every outcome that landed. The run is woken a few times instead of 50, and there is never a second orchestrator to refuse. world-postgres covers the wakes that queued behind a running delivery with re-runs in the same way; world-local does not coalesce (see [world-local and world-postgres](#world-local-and-world-postgres)).
+The 50 step invocations finish over a few seconds, and each sends the orchestrator one plain wake without reading the log. While the orchestrator runs, every wake is coalesced into it. When it tries to acknowledge, it is told how many arrived, reads the log once, and sees every outcome that landed. The run is woken a few times instead of 50, and there is never a second orchestrator to refuse. world-local and world-postgres cover the wakes that queued behind a running delivery with re-runs in the same way (see [world-local and world-postgres](#world-local-and-world-postgres)).
 
 Coalescing is safe because every producer commits what the wake is for (a step outcome, a `hook_received`) before it sends the wake, so the holder's next read sees it. The exceptions are `run.wakeUp()`, which is best-effort (see [`run.wakeUp()` lost under coalescing](#runwakeup-lost-under-coalescing)), and timers, which name their wait (see [Timers and waits](#timers-and-waits)).
 
@@ -1087,21 +1087,21 @@ The redelivery costs one more invocation, after at least 5 seconds on Vercel (th
 
 ### world-local and world-postgres
 
-Both declare the fence, mint spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set, and serialize a spec 9 run's orchestrator deliveries by `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. world-postgres coalesces the orchestrator messages that queue behind a running delivery; world-local does not (see [Known limitations](#known-limitations)).
+Both declare the fence, mint spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set, and serialize a spec 9 run's orchestrator deliveries by `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. Both coalesce the orchestrator messages that queue behind a running delivery, and both resolve an unstamped orchestrator message's spec version from the run (see [An unstamped message](#an-unstamped-message)).
 
 | | world-local | world-postgres |
 |---|---|---|
 | Per-run gate | In-process run gate | A Graphile named queue per run |
-| Handoff | Same message, not an attempt, up to 10,000 handoffs per message (past that it counts, as on Vercel). The delivery releases the run gate and takes it again in FIFO order, so orchestrator messages already waiting run first | A new Graphile job with the same `messageId`, no delay, on the run's named queue, with priority `-1` so it runs before the jobs already waiting there |
+| Handoff | Same message, not an attempt, up to 10,000 handoffs per message (past that it counts, as on Vercel). The delivery keeps the run's gate and is delivered again at once as a new invocation (a fresh `invocationStartedAt` and re-run budget). That redelivery covers the coalescible orchestrator messages waiting behind it, and carries the resume timing of the earliest hook wake among them | A new Graphile job with the same `messageId`, no delay, on the run's named queue, with priority `-1` so it runs before the jobs already waiting there |
 | `attempt` across reschedules | Unchanged by a handoff | Carried over by a handoff and by a spec 9 orchestrator message's delayed reschedule (a fence refusal's redelivery counts toward the cap); a step message's retry in place starts `attempt` over. `deliveryCount` carries over on all of them |
-| Coalescing | None: a second orchestrator message waits and is delivered after the running one | When a delivery acknowledges, the run's orchestrator jobs waiting behind it (due, unlocked, not a start message carrying `runInput`, not a hook resume or invoke request) are deleted and covered by a re-run. Not on invoke mode's executor lane |
-| Re-runs | None | Handler called again in the same worker with `deliveryCount + rerun`, the same `attempt` and the same `invocationStartedAt`, while it finds jobs to take, up to 32 times. Past the cap the remaining jobs are delivered as usual, so no handoff is needed. A failed re-run is retried as the original job, counted above 1 |
+| Coalescing | When a delivery acknowledges, the run's orchestrator messages its process's queue holds behind it (not a start message carrying `runInput`, a legacy `hookInput` resume, a `run.wakeUp()` message carrying `completeWaits`, a restart's `recovery` message or an invoke request) are taken and covered by a re-run. A message another process sends reaches only the handler's gate, where it waits and is not coalesced | When a delivery acknowledges, the run's orchestrator jobs waiting behind it (due, unlocked, not a start message carrying `runInput`, not a hook resume or invoke request) are deleted and covered by a re-run. Not on invoke mode's executor lane |
+| Re-runs | Handler called again with `deliveryCount + rerun`, the same `attempt` and the same `invocationStartedAt` (`x-workflow-local-invocation-started-at`), while messages wait, up to 32 times per hold of the gate; past the cap the waiting messages are delivered as usual. A re-run carries the resume timing of the earliest hook wake it absorbed | Handler called again in the same worker with `deliveryCount + rerun`, the same `attempt` and the same `invocationStartedAt`, while it finds jobs to take, up to 32 times. Past the cap the remaining jobs are delivered as usual, so no handoff is needed. A failed re-run is retried as the original job, counted above 1 |
 | Dedupe of a keyed send | While the first message lives | While a Graphile job holds the key (`unsafe_dedupe`) for a spec 9 run's keyed sends and every run's step messages; `preserve_run_at` for a reschedule and for spec 8's other keyed sends |
 | Live event feed | None | `events.subscribe` over `LISTEN`/`NOTIFY`, at most half of a process's `queueConcurrency` slots live at once |
 
 world-postgres coalesces only jobs that are due: a delayed reschedule or a timer still waiting out its delay stays queued. A start message is never coalesced, since it carries the run's input for a start whose `run_created` may not have committed yet.
 
-On world-local, a fan-out of `n` background steps costs `n` orchestrator deliveries in series. A delivery that finds the log tail at the position this process last consumed acknowledges after one tail read; every other one loads the full log and replays. Matching world-postgres would need the same pieces there: re-runs under the held gate with `deliveryCount + rerun`, the same `attempt` and the first run's `invocationStartedAt`, a re-run cap, and a handoff at the front of the run's queue. Intermediate wait hops must stay ungated.
+world-local coalesces only messages that are due: a delayed message waits out its delay before it reaches the run's gate. Intermediate wait hops stay ungated in both Worlds.
 
 ## Lifecycles and flows
 
@@ -1167,7 +1167,7 @@ sequenceDiagram
 
 #### On world-local
 
-world-local has no `createBatch`, no live-feed push (`events.subscribe`) and no coalescing. It serializes a spec 9 run's orchestrator deliveries with an in-process per-run gate; step messages are not gated. The same run writes its four creations one at a time, polls for the background outcome while the inline bodies run, and never lingers; the step's wake, held behind the gate, finds nothing new afterwards and acknowledges without a replay.
+world-local has no `createBatch` and no live-feed push (`events.subscribe`). It serializes a spec 9 run's orchestrator deliveries with an in-process per-run gate; step messages are not gated. The same run writes its four creations one at a time, polls for the background outcome while the inline bodies run, and never lingers; the step's wake, which queued behind the running delivery, is coalesced into it, and its re-run finds the outcome already consumed and acknowledges.
 
 #### One delivery's main loop
 
@@ -1209,7 +1209,7 @@ Three exceptions take other exits: a fence refusal sends the messages the delive
 - **Stream writes still flushing**, or **a hook conflict** the workflow has to consume in a fresh pass: the delivery hands off.
 - **An event that landed after the VM decided.** Before suspending, a foreign event above the pass's consumed slot starts another pass instead of acknowledging, because its own wake would find the position already recorded and exit.
 - **Throttled inline start.** Defers the run by the longest backoff once every sibling settled.
-- **Uncoalesced wakes.** On world-local, each background outcome's wake is its own orchestrator delivery, delivered after the running one; world-postgres covers the wakes queued behind a running delivery with re-runs of it. A wake that finds nothing new acknowledges after one tail read; the others load the log and replay ([Known limitations](#known-limitations)).
+- **Wakes behind a running delivery.** world-vercel, world-postgres and world-local cover the wakes queued behind a running orchestrator delivery with re-runs of it; on world-local, a wake that another process's queue sent is its own delivery, after the running one. A wake that finds nothing new acknowledges after one tail read; the others load the log and replay ([Known limitations](#known-limitations)).
 - **QuickJS engine.** Same delivery, writer and run-ahead depth after setup, but no divergence recovery ([QuickJS run-ahead](#quickjs-run-ahead)).
 
 ### Event posting with consume-after-commit
@@ -1260,7 +1260,7 @@ On a delivery after the run's first: 1 replay; 2 `createBatch` calls and 7 queue
 
 #### Fan-out on world-local and world-postgres
 
-Neither has `createBatch` or `queueBatch`, so the 100 creations are single in-band writes, all committed before the inline bodies start, and the 97 messages are parallel single sends. world-local then polls, never lingers, and gives each completion wake its own delivery ([world-local does not coalesce](#world-local-does-not-coalesce)); world-postgres sees the outcomes on its live feed and covers the wakes queued behind its delivery with re-runs.
+Neither has `createBatch` or `queueBatch`, so the 100 creations are single in-band writes, all committed before the inline bodies start, and the 97 messages are parallel single sends. world-local then polls, never lingers, and covers the completion wakes that queue behind its delivery with re-runs ([world-local and world-postgres](#world-local-and-world-postgres)); world-postgres sees the outcomes on its live feed and covers the wakes queued behind its delivery with re-runs.
 
 #### Fan-out edge cases
 
@@ -1707,7 +1707,7 @@ By default a background step's body runs only once its `step_started` committed,
 
 #### `run.wakeUp()` lost under coalescing
 
-`run.wakeUp()` sends a keyed message naming the waits to complete (`completeWaits`). While an orchestrator delivery holds the key on world-vercel, or runs on world-postgres, that message is coalesced and the holder's re-run reads only the log, so the wait runs its full length. `wakeUp()` still counts those waits in `stoppedCount`. It is reliable when the run is suspended, and on world-local. This is accepted; a sleep that has to end reliably while the run is active can race a hook instead (see [`run.wakeUp()` and `waitForSleep()`](#runwakeup-and-waitforsleep)). The unkeyed wake it would otherwise need had two worse failures while an orchestrator was running: a fence-losing wake dropped `completeWaits`, and a fence-winning one refused the running orchestrator's `step_completed`, so an open inline step's body ran twice.
+`run.wakeUp()` sends a keyed message naming the waits to complete (`completeWaits`). While an orchestrator delivery holds the key on world-vercel, or runs on world-postgres, that message is coalesced and the holder's re-run reads only the log, so the wait runs its full length. `wakeUp()` still counts those waits in `stoppedCount`. It is reliable when the run is suspended, and on world-local, which never coalesces a wake-up. This is accepted; a sleep that has to end reliably while the run is active can race a hook instead (see [`run.wakeUp()` and `waitForSleep()`](#runwakeup-and-waitforsleep)). The unkeyed wake it would otherwise need had two worse failures while an orchestrator was running: a fence-losing wake dropped `completeWaits`, and a fence-winning one refused the running orchestrator's `step_completed`, so an open inline step's body ran twice.
 
 #### Older SDK after a rollback
 
@@ -1810,9 +1810,9 @@ A replay diverges from the log. The delivery records the divergence, discards th
 
 ### World-specific cases
 
-#### Uncoalesced wakes on world-local and world-postgres
+#### Wakes from another process on world-local
 
-world-postgres coalesces the orchestrator messages queued behind a running delivery (see [world-local and world-postgres](#world-local-and-world-postgres)). world-local does not: each background completion is its own orchestrator delivery, in series. See [Known limitations](#known-limitations).
+world-local coalesces the orchestrator messages its own queue holds behind a running delivery (see [world-local and world-postgres](#world-local-and-world-postgres)). A message another process's queue sends (a script calling `resumeHook()`, the CLI) reaches only the handler's gate in the process serving the routes, where it waits for the running delivery and is then delivered on its own, not coalesced.
 
 #### world-postgres re-send next to a locked job
 
@@ -1891,7 +1891,7 @@ It remains an opt-in, [`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`](/docs/configura
 
 ### `run.wakeUp()` stays best-effort
 
-On spec 9, `run.wakeUp()` names the waits to complete on an ordinary keyed orchestrator message (`completeWaits`), and the orchestrator writes `wait_completed` in-band. A wake-up that arrives while a delivery of the run is live is folded into it and lost: the re-run reads only the log, the sleeps run their full length, and `stoppedCount` still counts the waits the call asked to complete. A wake-up is mostly used while the run is suspended on its sleeps, when the message is delivered on its own, and world-local (no coalescing, no linger) delivers it after the running delivery, so `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working.
+On spec 9, `run.wakeUp()` names the waits to complete on an ordinary keyed orchestrator message (`completeWaits`), and the orchestrator writes `wait_completed` in-band. A wake-up that arrives while a delivery of the run is live is folded into it and lost: the re-run reads only the log, the sleeps run their full length, and `stoppedCount` still counts the waits the call asked to complete. A wake-up is mostly used while the run is suspended on its sleeps, when the message is delivered on its own, and world-local (which never coalesces a wake-up, and never lingers) delivers it after the running delivery, so `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working.
 
 A keyed wake also never overlaps the running delivery; an unkeyed one could drop `completeWaits` when it lost the fence, or, when it won, make an open inline step's body run twice.
 
@@ -1965,15 +1965,11 @@ The Local World's queue is in memory, so a restart loses the step messages and t
 
 When a hazard stops run-ahead, a step whose body started ahead of its creation, and whose creation the stop then refused, has no committed start, so the restarted pass runs its body again. Because a World orders a batch per entity, one refused speculative batch can carry up to `WORKFLOW_RUN_AHEAD_DEPTH` such steps (10 by default), so up to that many bodies can run twice per stop. A stop needs the speculative writes to fail or be overtaken: a refused entry in a speculative batch, a World that did not store a write at its `occurredAt`, or another writer's path-changing event landing below them (an awaited hook makes its boundary path-changing, so the orchestrator waits instead). Which real-world writers can still cause a stop is not verified (see [Run-ahead](#run-ahead)). A `maxRetries: 0` step never starts before its start commits, so it is never one of them.
 
-### world-local does not coalesce
-
-world-local serializes a spec 9 run's orchestrator deliveries behind a per-run gate but does not coalesce them, so every background completion's wake is its own delivery, run one after another: a 97-step fan-out gets 97 orchestrator deliveries. A handoff (`{ timeoutSeconds: 0 }`, up to 10,000 per message) redelivers the same message with `attempt` unchanged, but releases the run gate and takes it again in FIFO order, so wakes already waiting run first. world-postgres and world-vercel coalesce (see [world-local and world-postgres](#world-local-and-world-postgres)).
-
 ### Spec detection rests on the payload stamp
 
 A message's topic, key, gate and continuation are chosen from the spec version it carries. A spec 9 message without one would be sent unkeyed and continue on new messages; a step message would lose its same-message retry and arrive as a plain first delivery, skipping the log read that `maxRetries: 0` steps rely on. Every send in this runtime names the run's spec version (`specVersion` on the queue options, stamped on the payload as `runSpecVersion`; a step message carries `runContext`), spec 8 sends included, and a run that records no version is stamped `SPEC_VERSION_LEGACY`. Routing keeps no per-process memory of run spec versions.
 
-Producers outside this runtime can still send a spec 9 run a message that is unstamped or stamped below 9: `resumeHook()` and `cancel()` callers on an older SDK, or any other client of the World. world-vercel treats such a message as spec 8 and sends it unkeyed, so it can run next to the keyed orchestrator, and world-local lets it past the run gate. world-postgres reads an unstamped orchestrator message's spec from the run and moves it to the run's named queue (see [An unstamped message](#an-unstamped-message)). Routing still delivers it to the spec 9 orchestrator, and the in-band fence keeps the log correct; the cost is wasted orchestrator work, possibly a second run of an inline step's body, not a corrupted log.
+Producers outside this runtime can still send a spec 9 run a message that is unstamped or stamped below 9: `resumeHook()` and `cancel()` callers on an older SDK, or any other client of the World. world-vercel treats such a message as spec 8 and sends it unkeyed, so it can run next to the keyed orchestrator. world-local and world-postgres read an unstamped orchestrator message's spec from the run and gate a spec 9 run's message like the rest (see [An unstamped message](#an-unstamped-message)). Routing still delivers it to the spec 9 orchestrator, and the in-band fence keeps the log correct; the cost is wasted orchestrator work, possibly a second run of an inline step's body, not a corrupted log.
 
 ### Long step retries cost an invocation every 900 seconds on Vercel
 
@@ -2022,7 +2018,6 @@ world-vercel logs what the queue did with each handoff (`accepted`, `not_immedia
 Open work, not scheduled:
 
 - **Stop coalescing speculative creations under run-ahead (measure first).** The hazard check runs on committed writes, and a coalesced run-ahead write can commit an outcome together with the next boundary's speculative creation, so a stop detects a classification gap (logged at error level with `possibleLogCorruption: true`) but cannot undo what committed with it. Keeping speculative creations out of coalesced writes would turn the stop back into a recovery, at the cost of run-ahead's per-turn batching, its latency win. Measure that cost first, and add a test that injects a path-changing event below a speculative write.
-- **world-local: resolve an unstamped message's spec from the run, and coalesce.** world-local still gates by the payload stamp alone and runs one orchestrator delivery per wake. world-postgres does both (see [world-local and world-postgres](#world-local-and-world-postgres)), and world-local would follow its shape: re-runs under the held gate with the next `deliveryCount`, a re-run cap, and handoffs to the front of the run's queue.
 - **A required host contract for the QuickJS orchestrator.** `runWorkflowWithQuickJS` takes its writer, loaded log, message identity, re-send policy and continuation callback as optional parameters, whose unfenced fallbacks only standalone tests use. One required host argument would make a missing fence or handoff a type error, once those tests move to a fence-capable World.
 - **Share timer sends between the engines.** The timer message and key (`waitTimerMessage`) and the ownership rules are shared, but each engine still runs its own sending: owned-chain filtering, sends before the completing commit, the near-due sweep and its bookkeeping. A shared sender, as background step messages have, with the before-commit ordering kept visible at each call site.
 - **Bound a step message whose deliveries throw before the cap check.** A step delivery that throws while resolving the run, checking the deployment or reading the log is redelivered until the World gives up on the message. Bounding it needs those reads moved behind the cap check, or their failures caught into the stall path.

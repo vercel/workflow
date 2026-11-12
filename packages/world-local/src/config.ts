@@ -49,6 +49,15 @@ export type Config = {
    * the web UI) and for world-postgres's internal Local World.
    */
   queueAuthKey?: 'regenerate' | 'read';
+  /**
+   * Whether the queue reads a run's stored spec version for an orchestrator
+   * message that carries none (an older SDK's `resumeHook()` or `cancel()`),
+   * so a spec 9 run's unstamped message is serialized with the run's other
+   * orchestrator deliveries (default `true`). world-postgres's internal Local
+   * World sets `false`: its runs are not in this World's storage, and it
+   * resolves unstamped messages itself.
+   */
+  readUnstampedRunSpec?: boolean;
 };
 
 export const config = once<Config>(() => {

@@ -143,7 +143,21 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     mergedConfig.dataDir,
     mergedConfig.queueAuthKey ?? 'regenerate'
   );
-  const queue = createQueue(mergedConfig, { queueAuthKey });
+  const queue = createQueue(mergedConfig, {
+    queueAuthKey,
+    // Read on demand, once storage exists: only for an orchestrator message
+    // that carries no spec version (see `Config.readUnstampedRunSpec`).
+    ...(mergedConfig.readUnstampedRunSpec !== false && {
+      runSpecVersion: async (runId: string) => {
+        try {
+          const run = await storage.runs.get(runId, { resolveData: 'none' });
+          return run.specVersion;
+        } catch {
+          return undefined;
+        }
+      },
+    }),
+  });
   const { clearCache: clearStorageCache, ...storage } = createStorage(
     mergedConfig.dataDir,
     tag
