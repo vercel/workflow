@@ -381,7 +381,7 @@ This project uses pnpm with workspace configuration. The required version is spe
 - 2-space indentation, single quotes, trailing commas (ES5)
 - Import type enforcement enabled
 - Explicit `any` is discouraged (Biome's `noExplicitAny` rule is currently disabled); exhaustive dependencies warnings enabled
-- Observability UI (`packages/web`, `packages/web-shared`): never use opacity to set a colour. Read `packages/web-shared/AGENTS.md` before touching styles there.
+- Observability UI (`packages/web`, `packages/web-shared`): never use opacity to set a text colour. Read `packages/web-shared/AGENTS.md` before touching styles there.
 
 ## Local checks vs. CI
 

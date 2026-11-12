@@ -2,38 +2,29 @@
 
 These rules apply to `packages/web-shared` and `packages/web` (which consumes it).
 
-## Never use opacity to set a colour
+## Never use opacity to set a text colour
 
-Every text, icon, border, and surface colour comes from a Geist token: `gray-100`…`gray-1000`, `gray-alpha-100`…`gray-alpha-1000`, `background-100` / `background-200`, or a named colour scale (`blue-*`, `red-*`, `amber-*`, …). Do not fade an element or a colour to get a lighter shade. That means none of:
+Text colour always comes from a Geist token or the surface's inherited foreground. Don't make text lighter by fading it:
 
-- `opacity-*` utilities used to dim text, icons, or surfaces (`opacity-50`, `opacity-70`, `disabled:opacity-50`, `hover:opacity-90`, …)
-- Tailwind colour alpha modifiers (`text-foreground/70`, `bg-muted/50`, `border-primary-foreground/20`, `bg-black/50`, …)
-- inline or CSS `opacity`, `fillOpacity` / `strokeOpacity`
-- colour literals with alpha (`rgba()`, `hsla()`, `oklch(… / 0.5)`, 8-digit hex, `color-mix()`)
+- no `opacity-*` on an element to mute its text (`<span className="opacity-60">`)
+- no text-colour alpha modifiers (`text-muted-foreground/70`, `text-foreground/50`)
+- no inline or CSS `color` with alpha (`rgba(…, 0.8)`)
 
-Why: an opacity-derived colour depends on whatever sits underneath it. It looks fine on one surface and breaks on the next: on the inverted tooltip pill, in dark mode, or over a coloured row. A token is defined for both themes.
+A faded text colour depends on whatever is underneath it, so it becomes unreadable on another surface: the inverted tooltip pill, dark mode, or a coloured row. Geist tokens are defined for both themes.
 
-What to use instead:
+Opacity is fine for anything else, such as disabled controls, overlays, fades and animations, or dimming a whole row.
+
+### Follow the dashboard's patterns
+
+Use the same tokens as the dashboard in `vercel/front` (`apps/vercel-site`):
 
 | Need | Use |
 | --- | --- |
-| Secondary or muted text | `text-gray-900`, then `text-gray-700` for tertiary |
-| Disabled control | `bg-gray-100 text-gray-700` with a `gray-400` border (see `ui/button.tsx`); a borderless control just gets `text-gray-700` |
-| Hover or selected fill on a neutral surface | `bg-gray-alpha-100` / `bg-gray-alpha-200` (alpha tokens flip with the theme) |
-| Subtle panel or code background | `bg-background-200` |
-| Inverted surface (tooltip, selection bar) | content inherits the surface's foreground; don't add `text-foreground` / `text-muted-foreground`, which are for the light surface. Use `Button variant="default"` for actions on it |
-| Modal or sheet backdrop | `backdrop-brightness-50` (darkens what's beneath without a translucent colour) |
-| Tint over a canvas or chart | a token fill with `mix-blend-multiply` (and `mix-blend-screen` in dark mode), as in `trace-viewer/components/minimap.tsx` |
+| Primary text | `text-gray-1000` (or inherit) |
+| Secondary text, labels | `text-gray-900`, e.g. `text-gray-900 text-label-13` for a field label |
+| Tertiary text, hints, metadata, muted icons | `text-gray-700` |
+| Muted text that brightens on hover | `text-gray-900 hover:text-gray-1000` |
+| Status text | the `-800` step of the scale: `text-red-800`, `text-amber-800`, `text-green-800` |
+| Text on an inverted surface (tooltip, selection bar) | inherit the surface's foreground. Don't add `text-foreground` / `text-muted-foreground`, which are meant for the light surface |
 
-Content inside the shared `Tooltip` renders on a `gray-1000` pill with `background-100` text. Use the standard single tooltip: plain content in one colour, no colour or text-size overrides.
-
-### Still allowed
-
-- `opacity-0` / `opacity-100` for show/hide and fade transitions.
-- `opacity` inside `@keyframes` (fade and pulse animations).
-- Colour literals in the theme files (`src/styles.css`, `packages/web/app/globals.css`), where tokens such as the shadow scale are defined.
-- Anything else needs an `opacity-allowed: <reason>` comment on the same line or the line above, so the exception gets reviewed. Today that covers only fading a whole multi-colour composite (a search non-match row, an unrelated event row), where no single token can be swapped in.
-
-### Enforcement
-
-`test/no-opacity-colours.test.ts` (this package) and `packages/web/app/no-opacity-colours.test.ts` scan every source file with the rules in `test/opacity-colour-rules.ts` and fail on violations. If a new case really needs opacity, add the `opacity-allowed:` comment with a reason; don't loosen the patterns.
+Content inside the shared `Tooltip` renders on a `gray-1000` pill with `background-100` text. Use the standard single tooltip: plain content in one colour, with no colour or text-size overrides.

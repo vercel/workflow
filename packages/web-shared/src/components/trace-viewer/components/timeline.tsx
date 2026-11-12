@@ -478,7 +478,6 @@ const TimelineBar = memo(function TimelineBar({
       aria-level={1}
       className={cn(
         'group/timeline-row h-10 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200 transition-opacity',
-        // opacity-allowed: fades the whole multi-colour row for search non-matches
         isDimmed && 'opacity-35'
       )}
       onClick={handleClick}

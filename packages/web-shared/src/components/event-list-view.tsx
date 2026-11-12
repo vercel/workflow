@@ -425,7 +425,6 @@ function TreeGutter({
                   inset: 0,
                   borderRadius: '50%',
                   backgroundColor: statusDotColor,
-                  // opacity-allowed: pulse halo animation, faded with its unrelated row
                   opacity: 0.75 * dotOpacity,
                   animation: DOT_PULSE_ANIMATION,
                   zIndex: 1,
@@ -439,7 +438,6 @@ function TreeGutter({
                 height: '100%',
                 borderRadius: '50%',
                 backgroundColor: statusDotColor,
-                // opacity-allowed: fades the lane dot with its unrelated row
                 opacity: dotOpacity,
                 transition: 'opacity 150ms',
                 zIndex: 2,
@@ -1121,7 +1119,6 @@ export function EventRow({
         {/* Content area: dims when unrelated */}
         <div
           className="flex items-center flex-1 min-w-0"
-          // opacity-allowed: fades the whole multi-colour row when unrelated
           style={{ opacity: contentOpacity, transition: 'opacity 150ms' }}
         >
           {/* Expand chevron indicator */}
@@ -1192,7 +1189,6 @@ export function EventRow({
                         inset: 0,
                         borderRadius: '50%',
                         backgroundColor: statusDotColor,
-                        // opacity-allowed: start value of the pulse animation
                         opacity: 0.75,
                         animation: DOT_PULSE_ANIMATION,
                       }}
@@ -1259,7 +1255,6 @@ export function EventRow({
             className="flex-1 my-1.5 mr-3 ml-2 py-2 rounded-md border overflow-hidden"
             style={{
               borderColor: 'var(--ds-gray-alpha-200)',
-              // opacity-allowed: fades the whole expanded panel when unrelated
               opacity: contentOpacity,
               transition: 'opacity 150ms',
             }}
@@ -1798,7 +1793,7 @@ function EventListViewInner({
                 outline: 'none',
                 height: 40,
                 width: '100%',
-                color: onExactIdSearch ? undefined : 'var(--ds-gray-700)',
+                opacity: onExactIdSearch ? 1 : 0.5,
                 cursor: onExactIdSearch ? 'text' : 'not-allowed',
               }}
             />
