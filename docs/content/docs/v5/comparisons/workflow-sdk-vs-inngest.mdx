@@ -95,7 +95,7 @@ Each row is an Inngest capability the Workflow SDK does not replicate one-to-one
 | Inngest feature | How to cover it with the Workflow SDK |
 | --- | --- |
 | Flow control (concurrency, throttling, debounce, rate limiting, batching, priority) | No direct function-level analog; enforce limits inside steps or debounce at the publisher before `start()` |
-| Cron / scheduled functions | Trigger from Vercel Cron or a system cron calling `start()` |
+| Cron / scheduled functions | Point a [Vercel Schedule](/docs/cookbook/integrations/vercel-schedules) at the workflow, or call `start()` from any other cron |
 | Event-bus fan-out by name match | Replace with explicit `start()` calls per target workflow |
 
 ---

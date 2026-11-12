@@ -155,6 +155,10 @@ The Vercel World delivers each queue message to the functions subscribed to its 
 
 The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. Topic names replace characters other than letters, digits, `-` and `_` with `-`. The Vercel World has no `registerRoute()` or `registerHandler()`: a message reaches a function only through a subscription declared at deploy time. Every subscribed function receives its own copy of a message and runs it, whatever prefix its handler was created with, so subscribe each route only to its own prefix's topics.
 
+## Vercel Schedules
+
+A [Vercel Schedule](https://vercel.com/docs/schedules) can start a workflow run without a route of yours. Set [`experimental_schedule`](/docs/api-reference/workflow/experimental-schedule) on the workflow for a static schedule, or spread [`scheduleTarget()`](/docs/api-reference/workflow-api/schedule-target) into `Schedules.create()` for a dynamic one. Either publishes to the workflow's [schedule topic](/docs/api-reference/workflow-api/schedule-topic). The topic is under `__wkf_workflow_`, so the flow route receives the schedule's message, and the Vercel World hands it to the runtime, which starts the workflow once per occurrence. See [Vercel Schedules](/docs/cookbook/integrations/vercel-schedules).
+
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.

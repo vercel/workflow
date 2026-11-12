@@ -190,3 +190,115 @@ export async function gaxWorkflow(): Promise<string> {
     }
   );
 });
+
+describe('VercelBuildOutputAPIBuilder schedules', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    "emits a workflow's experimental_schedule as a Build Output schedule on its topic",
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      await write(
+        join(workingDir, 'src/workflows/nightly-report.ts'),
+        `export async function nightlyReport(run: { scheduledAt: Date }) {
+  'use workflow';
+  return run.scheduledAt;
+}
+nightlyReport.experimental_schedule = {
+  cron: '0 2 * * *',
+  timezone: 'America/New_York',
+} as const;
+
+export async function digest() {
+  'use workflow';
+}
+digest.experimental_schedule = [
+  { cron: '0 9 * * 1-5', name: 'weekday-digest' },
+  { cron: '0 11 * * 0,6', name: 'weekend-digest', jitter: 15 },
+];
+
+export async function unscheduled() {
+  'use workflow';
+}
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      const config = JSON.parse(
+        await readFile(join(workingDir, '.vercel/output/config.json'), 'utf8')
+      );
+      expect(config.version).toBe(3);
+      expect(config.schedules).toEqual({
+        nightlyReport: {
+          schedule: '0 2 * * *',
+          timezone: 'America/New_York',
+          topic:
+            '__wkf_workflow_schedule_src_sworkflows_snightly-report__nightlyReport',
+        },
+        'weekday-digest': {
+          schedule: '0 9 * * 1-5',
+          topic:
+            '__wkf_workflow_schedule_src_sworkflows_snightly-report__digest',
+        },
+        'weekend-digest': {
+          schedule: '0 11 * * 0,6',
+          jitter: 15,
+          topic:
+            '__wkf_workflow_schedule_src_sworkflows_snightly-report__digest',
+        },
+      });
+      // The routes the builder always writes are still there.
+      expect(config.routes).toBeDefined();
+    }
+  );
+
+  it(
+    'fails the build for a schedule the platform would refuse, naming the workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      await write(
+        join(workingDir, 'src/workflows/report.ts'),
+        `export async function report() {
+  'use workflow';
+}
+report.experimental_schedule = { cron: '0 2 * *' };
+`
+      );
+
+      await expect(createBuilder(workingDir).build()).rejects.toThrow(
+        /Invalid experimental_schedule on workflow "report" in src\/workflows\/report\.ts: `cron` "0 2 \* \*" must have five fields/
+      );
+    }
+  );
+
+  it(
+    'writes no schedules when no workflow declares one',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      await write(
+        join(workingDir, 'src/workflows/plain.ts'),
+        `export async function plain() {
+  'use workflow';
+}
+`
+      );
+      await createBuilder(workingDir).build();
+      const config = JSON.parse(
+        await readFile(join(workingDir, '.vercel/output/config.json'), 'utf8')
+      );
+      expect(config).not.toHaveProperty('schedules');
+    }
+  );
+});

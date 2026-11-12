@@ -1,0 +1,55 @@
+---
+title: scheduleTopic
+description: Get the Vercel Queues topic a Vercel Schedule publishes to in order to start a workflow.
+type: reference
+summary: Use scheduleTopic to get the topic for a static schedule's `topic` or a dynamic schedule's target, so the schedule starts the workflow directly.
+prerequisites:
+  - /docs/cookbook/integrations/vercel-schedules
+related:
+  - /docs/api-reference/workflow-api/schedule-target
+  - /docs/api-reference/workflow-api/start
+---
+
+Returns the Vercel Queues topic that starts a workflow when a [Vercel Schedule](https://vercel.com/docs/schedules) publishes to it. The workflow's flow route receives the schedule's message and starts the workflow with a [`ScheduledRun`](/docs/api-reference/workflow-api/schedule-target#scheduledrun), once per occurrence. See [Vercel Schedules](/docs/cookbook/integrations/vercel-schedules) for the whole flow.
+
+```typescript lineNumbers
+import { scheduleTopic } from "workflow/api";
+import { nightlyReport } from "./workflows/nightly-report";
+
+scheduleTopic(nightlyReport); // [!code highlight]
+// "__wkf_workflow_schedule_workflows_snightly-report__nightlyReport"
+```
+
+For a static schedule, set [`experimental_schedule`](/docs/api-reference/workflow/experimental-schedule) on the workflow instead: the build emits the schedule with this topic, so you never write it. To declare the schedule in `vercel.json` yourself, use the topic as its `topic`:
+
+```json title="vercel.json"
+{
+  "schedules": {
+    "nightly-report": {
+      "schedule": "0 2 * * *",
+      "topic": "__wkf_workflow_schedule_workflows_snightly-report__nightlyReport"
+    }
+  }
+}
+```
+
+For a dynamic schedule, spread [`scheduleTarget()`](/docs/api-reference/workflow-api/schedule-target) into `Schedules.create()` instead: it sets the same topic and type-checks the payload.
+
+## API signature
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `workflow` | Workflow function | The imported workflow function (a function with `"use workflow"`), or `{ workflowId }`. Any workflow can be a schedule's target; it receives a `ScheduledRun` as its first argument. |
+| `options.namespace` | `string` | The queue namespace of a flow route deployed with one. Defaults to `WORKFLOW_QUEUE_NAMESPACE`, else none. |
+
+### Returns
+
+`string`: `__wkf_workflow_schedule_` (or `__{namespace}_wkf_workflow_schedule_`) followed by the workflow's name. The name is written without its `workflow//` prefix and leading `./`, with `//` as `__`, `/` as `_s`, `.` as `_d`, `_` as `_u`, `@` as `_a`, `(` and `)` as `_o` and `_c`, and `[` and `]` as `_l` and `_r`, because a schedule topic holds only letters, digits, `_`, and `-`. A workflow from a package, whose module path has no leading `./`, starts with `_p`. The mapping is reversible, so the flow route reads the workflow back from the topic.
+
+The topic depends only on the workflow's file and export name. It is the same on every build and deployment, and changes when you move or rename the workflow.
+
+<Callout type="warn">
+`scheduleTopic` throws for a function without a `"use workflow"` directive (the compiler didn't attach its workflow ID), and for a dynamic workflow, which isn't compiled into the deployment.
+</Callout>

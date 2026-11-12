@@ -1,0 +1,209 @@
+---
+title: Vercel Schedules
+description: Start a workflow run each time a Vercel Schedule fires, with no route or queue consumer in between, and type the schedule's payload against the workflow.
+type: guide
+summary: Set `experimental_schedule` on a workflow for a static schedule, or spread scheduleTarget() into Schedules.create() for a dynamic one. The workflow's flow route receives the schedule's message and starts the workflow with it, once per occurrence.
+related:
+  - /docs/api-reference/workflow-api/schedule-topic
+  - /docs/api-reference/workflow-api/schedule-target
+  - /docs/foundations/idempotency
+  - /cookbook/common-patterns/scheduling
+---
+
+[Vercel Schedules](https://vercel.com/docs/schedules) runs work on a cron cadence or once at a set time. A schedule can start a workflow run directly: point it at the workflow's **schedule topic**, and the workflow's own flow route starts the workflow each time the schedule fires. You don't write a route or a queue consumer for it.
+
+```mermaid
+flowchart LR
+    A["Vercel Schedule fires"] -->|"publishes the occurrence to scheduleTopic(workflow)"| B["Workflow flow route"]
+    B -->|"start(workflow, [run])"| C["Workflow run"]
+```
+
+The workflow receives one argument, a [`ScheduledRun`](/docs/api-reference/workflow-api/schedule-target#scheduledrun): the occurrence the schedule fired for, with its scheduled time, execution ID, and the dynamic schedule's payload.
+
+<Callout type="info">
+Schedule topics are a Vercel World feature. Vercel Schedules publishes to Vercel Queues, which deliver to the flow route the Workflow SDK deploys. Other Worlds don't receive schedule messages.
+</Callout>
+
+## Write the workflow
+
+Give the workflow a `ScheduledRun` parameter. Its type parameter is the payload a dynamic schedule carries; leave it out for a static schedule, which has no payload:
+
+```typescript title="workflows/nightly-report.ts" lineNumbers
+import type { ScheduledRun } from "workflow";
+declare function listAccountIds(): Promise<string[]>; // @setup
+declare function buildReport(accountId: string, night: Date): Promise<string>; // @setup
+declare function emailReport(accountId: string, report: string): Promise<void>; // @setup
+
+export async function nightlyReport(run: ScheduledRun) { // [!code highlight]
+  "use workflow";
+
+  const accountIds = await getAccountIds();
+  for (const accountId of accountIds) {
+    const report = await createReport(accountId, run.scheduledAt);
+    await sendReport(accountId, report);
+  }
+}
+
+async function getAccountIds() {
+  "use step";
+  return listAccountIds();
+}
+
+async function createReport(accountId: string, night: Date) {
+  "use step";
+  return buildReport(accountId, night);
+}
+
+async function sendReport(accountId: string, report: string) {
+  "use step";
+  await emailReport(accountId, report);
+}
+```
+
+`run.scheduledAt` is the time the schedule's expression matched, not when the run started, so a late or catch-up occurrence still reports on the right night.
+
+## Start it from a static schedule
+
+Set `experimental_schedule` on the workflow, in the same file. The build reads it and adds a static schedule to the deployment that starts the workflow. You don't add anything to `vercel.json`:
+
+```typescript title="workflows/nightly-report.ts" lineNumbers
+import type { ScheduledRun, WorkflowSchedule } from "workflow";
+declare function buildAndSendReports(night: Date): Promise<void>; // @setup
+
+export async function nightlyReport(run: ScheduledRun) {
+  "use workflow";
+  await buildAndSendReports(run.scheduledAt);
+}
+
+nightlyReport.experimental_schedule = { // [!code highlight]
+  cron: "0 2 * * *", // [!code highlight]
+  timezone: "America/New_York", // [!code highlight]
+} satisfies WorkflowSchedule; // [!code highlight]
+```
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `cron` | `string` | Required. A five-field cron expression, evaluated in `timezone` |
+| `timezone` | `string` | An IANA timezone, such as `America/New_York`. Defaults to UTC. |
+| `jitter` | `number` | The [jitter window](https://vercel.com/docs/schedules/concepts#jitter) in whole minutes, from 1 to 15 |
+| `name` | `string` | The schedule's name in the deployment. Defaults to the workflow's export name (the file's name for a default export). |
+
+For several schedules, set an array, and give each one a `name`:
+
+```typescript title="workflows/digest.ts" lineNumbers
+import type { ScheduledRun, WorkflowSchedule } from "workflow";
+
+export async function digest(run: ScheduledRun) {
+  "use workflow";
+}
+
+digest.experimental_schedule = [
+  { cron: "0 9 * * 1-5", name: "weekday-digest" },
+  { cron: "0 11 * * 0,6", name: "weekend-digest" },
+] satisfies WorkflowSchedule[];
+```
+
+- **It must be a literal.** The build reads the value without running your code, so write the object (or array) in place, with strings, numbers and nested literals. A variable, a function call or a spread fails the build, and so does a cron expression without five fields, an unknown timezone, a jitter outside 1 to 15, an unknown property, or two schedules with the same name.
+- **It must be on a workflow.** Set it at the top level of the file, on an exported function with `"use workflow"`.
+- **Names are what schedules are tracked by.** Vercel keeps a schedule's state and execution history by its name, so keep names stable. Renaming the export of a workflow that relies on the default name renames its schedule. Names must also be unique across the build and `vercel.json`; a clash fails the deployment with `SCHEDULE_NAME_CONFLICT`.
+- **Static schedules follow Vercel's rules for them.** They start active in production and inactive in Preview, and they change with each deployment. See [Schedules concepts](https://vercel.com/docs/schedules/concepts#static-schedules-and-deployments).
+
+`satisfies WorkflowSchedule` is optional. It checks the value in your editor; the build checks it either way.
+
+<Callout type="info">
+Static schedules from `experimental_schedule` are emitted by every Workflow SDK integration. Next.js apps need a version of the Vercel Next.js builder that returns them, which Vercel uses automatically.
+</Callout>
+
+### Point `vercel.json` at a workflow
+
+To declare the schedule in `vercel.json` instead, set its `topic` to the workflow's schedule topic, from [`scheduleTopic()`](/docs/api-reference/workflow-api/schedule-topic). `experimental_schedule` is the same thing without writing the topic yourself.
+
+## Start it from a dynamic schedule
+
+A dynamic schedule is created at runtime with `@vercel/schedules`. Spread [`scheduleTarget()`](/docs/api-reference/workflow-api/schedule-target) into `Schedules.create()`. It sets the target topic and the payload, and type-checks the payload against the workflow's `ScheduledRun`:
+
+```typescript title="workflows/send-digest.ts" lineNumbers
+import type { ScheduledRun } from "workflow";
+declare function sendDigestEmail(userId: string): Promise<void>; // @setup
+
+export async function sendDigest(run: ScheduledRun<{ userId: string }>) {
+  "use workflow";
+
+  await deliver(run.payload.userId);
+}
+
+async function deliver(userId: string) {
+  "use step";
+  await sendDigestEmail(userId);
+}
+```
+
+```typescript title="app/api/digests/route.ts" lineNumbers
+import { scheduleTarget } from "workflow/api";
+import { sendDigest } from "@/workflows/send-digest";
+declare const Schedules: { create(params: Record<string, unknown>): Promise<unknown> }; // @setup
+
+export async function POST(request: Request) {
+  const { userId, timezone } = await request.json();
+
+  await Schedules.create({
+    name: `digest-${userId}`,
+    namespace: userId,
+    expression: { type: "cron", cron: "0 9 * * *" },
+    timezone,
+    ...scheduleTarget(sendDigest, { userId }), // [!code highlight]
+  });
+
+  return new Response(null, { status: 201 });
+}
+```
+
+`scheduleTarget(sendDigest, { userId })` returns `{ target: { topic }, payload: { userId } }`. Leaving the payload out, or passing one of another shape, is a type error. For a workflow without a payload, call `scheduleTarget(nightlyReport)`.
+
+The payload is stored by Vercel Schedules as JSON, up to 16 KB, so `ScheduledRun`'s payload type only accepts JSON values. Pass IDs and look the rest up in a step.
+
+## One run per occurrence
+
+Vercel can deliver a schedule's message more than once, and Vercel Queues redelivers it when starting the run fails. Each occurrence still starts at most one run. The flow route starts the workflow with [`start({ experimental_hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts), with a token built from the schedule's ID and the occurrence's `executionId`, kept for 7 days. A redelivery finds the run the first delivery started and is acknowledged.
+
+The run's steps can still retry, so keep their side effects safe to repeat. See [Idempotency](/docs/foundations/idempotency).
+
+## What happens when a start fails
+
+| Situation | What the flow route does |
+| --- | --- |
+| The run started | Acknowledges the message |
+| An earlier delivery of the occurrence started the run | Acknowledges the message |
+| Starting the run failed, for example a backend error | Throws, so Vercel Queues redelivers the message with the same token |
+| The occurrence was redelivered past the delivery cap | Logs an error and acknowledges the message, skipping the occurrence |
+| The topic names no workflow (a typo in `vercel.json`) | Logs an error and acknowledges the message |
+| The topic names a workflow the deployment doesn't have (a renamed file) | Starts a run that fails because the workflow isn't found, visible in the dashboard |
+
+A run starts on the deployment the schedule delivered to: the current deployment of the schedule's environment. So every occurrence runs the latest code, and a long-running occurrence stays on the deployment it started on, like any other run.
+
+## Compared with a queue consumer that calls `start()`
+
+Without a schedule topic, a schedule publishes to a topic of your own, a queue consumer route receives the message, and the route calls `start()`. A schedule topic removes the route and its function, and the payload is typed end to end. The flow route still calls `start()`, which publishes the run's first message, so the run's work begins on a following delivery.
+
+## Testing
+
+Call the workflow the way the schedule would, with `start()` and a `ScheduledRun` you build:
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { nightlyReport } from "@/workflows/nightly-report";
+
+await start(nightlyReport, [
+  {
+    scheduleId: "sch_test",
+    executionId: "schx_test",
+    name: "nightly-report",
+    namespace: "default",
+    scheduledAt: new Date(),
+    source: "static",
+    payload: undefined,
+  },
+]);
+```
+
+On Vercel, run a static or dynamic schedule now from the dashboard, `vercel schedules invoke`, or `Schedules.invoke()`. A manual run is an occurrence like any other.

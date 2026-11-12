@@ -1,0 +1,6 @@
+  x `experimental_schedule` can only be set on an exported workflow function ("use workflow"), and `helper` is not one in this file
+   ,-[input.js:6:1]
+ 5 | function helper() {}
+ 6 | helper.experimental_schedule = { cron: '0 2 * * *' };
+   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   `----

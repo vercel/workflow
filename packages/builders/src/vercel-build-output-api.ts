@@ -2,8 +2,20 @@ import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { getWorkflowQueueTrigger } from './constants.js';
+import {
+  type BuildOutputSchedules,
+  writeBuildOutputSchedules,
+} from './schedules.js';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
+  /**
+   * The Build Output schedules of the workflows' `experimental_schedule`
+   * declarations, once `build()` has read the manifest. Integrations that
+   * write the framework's own `config.json` back after `build()` add these
+   * to it again with `writeBuildOutputSchedules`.
+   */
+  protected workflowSchedules: BuildOutputSchedules = {};
+
   async build(): Promise<void> {
     const outputDir = resolve(this.config.workingDir, '.vercel/output');
     const functionsDir = join(outputDir, 'functions');
@@ -47,8 +59,16 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       runtime: this.config.runtime,
     });
 
+    // Validated before anything else is written, so a bad declaration fails
+    // the build with the workflow's name.
+    this.workflowSchedules = this.workflowSchedulesOf(manifest);
+
     await this.buildWebhookFunction({ workflowGeneratedDir });
     await this.createBuildOutputConfig(outputDir);
+    await writeBuildOutputSchedules(
+      join(outputDir, 'config.json'),
+      this.workflowSchedules
+    );
 
     // Generate unified manifest
     const workflowBundlePath = join(

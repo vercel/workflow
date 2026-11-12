@@ -35,6 +35,13 @@ export {
   type WorkflowRunWritableStreamOptions,
 } from '@workflow/core/runtime/run';
 export {
+  type ScheduledRun,
+  type ScheduleJsonValue,
+  scheduleTarget,
+  scheduleTopic,
+  type WorkflowSchedule,
+} from '@workflow/core/runtime/schedule';
+export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,

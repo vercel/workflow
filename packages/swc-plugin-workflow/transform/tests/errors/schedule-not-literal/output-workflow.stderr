@@ -1,0 +1,6 @@
+  x `experimental_schedule` must be a literal (strings, numbers, booleans, arrays and objects), because the build reads it without running your code
+   ,-[input.js:6:1]
+ 5 | }
+ 6 | nightlyReport.experimental_schedule = { cron: CRON };
+   :                                               ^^^^
+   `----

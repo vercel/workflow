@@ -46,6 +46,14 @@ export {
 } from './pseudo-package-esbuild-plugin.js';
 export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
 export {
+  type BuildOutputSchedule,
+  type BuildOutputSchedules,
+  collectWorkflowSchedules,
+  WorkflowScheduleError,
+  writeBuildOutputSchedules,
+  writeBuildOutputSchedulesSync,
+} from './schedules.js';
+export {
   analyzeSerdeCompliance,
   extractClassEntries,
   type SerdeCheckResult,

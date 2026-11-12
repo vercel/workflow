@@ -1,0 +1,73 @@
+---
+title: scheduleTarget
+description: Set a dynamic Vercel Schedule's target and payload so it starts a workflow, with the payload type-checked against the workflow.
+type: reference
+summary: Spread scheduleTarget into Schedules.create() from @vercel/schedules to start a workflow from a dynamic schedule. The workflow receives the occurrence as a ScheduledRun.
+prerequisites:
+  - /docs/cookbook/integrations/vercel-schedules
+related:
+  - /docs/api-reference/workflow-api/schedule-topic
+  - /docs/api-reference/workflow-api/start
+---
+
+Returns the `target` and `payload` of a dynamic [Vercel Schedule](https://vercel.com/docs/schedules) that starts a workflow, to spread into `Schedules.create()` or `Schedules.update()` from `@vercel/schedules`. The payload is type-checked against the workflow's `ScheduledRun` parameter.
+
+```typescript lineNumbers
+import type { ScheduledRun } from "workflow";
+import { scheduleTarget } from "workflow/api";
+declare const Schedules: { create(params: Record<string, unknown>): Promise<unknown> }; // @setup
+declare const userId: string; // @setup
+
+export async function sendDigest(run: ScheduledRun<{ userId: string }>) {
+  "use workflow";
+  // run.payload.userId is a string
+}
+
+await Schedules.create({
+  name: `digest-${userId}`,
+  expression: { type: "cron", cron: "0 9 * * *" },
+  ...scheduleTarget(sendDigest, { userId }), // [!code highlight]
+});
+```
+
+`scheduleTarget(sendDigest, { userId })` returns `{ target: { topic: scheduleTopic(sendDigest) }, payload: { userId } }`. See [Vercel Schedules](/docs/cookbook/integrations/vercel-schedules) for the whole flow.
+
+## API signature
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `workflow` | `(run: ScheduledRun<TPayload>) => Promise<unknown>` | The imported workflow function. |
+| `payload` | `TPayload` | The payload the workflow's `ScheduledRun<TPayload>` declares. Required when it declares one, and not accepted when it doesn't. A JSON value, since Vercel Schedules stores it as JSON (up to 16 KB). |
+
+### Returns
+
+`{ target: { topic: string }; payload?: TPayload }`, with `payload` omitted when there is none.
+
+These are type errors:
+
+{/* @skip-typecheck: shows type errors */}
+```typescript
+scheduleTarget(sendDigest);                  // the workflow needs { userId }
+scheduleTarget(sendDigest, { user: "u1" });  // wrong payload shape
+scheduleTarget(nightlyReport, { userId });   // nightlyReport takes no payload
+scheduleTarget(takesADate);                  // not a (run: ScheduledRun) workflow
+```
+
+## `ScheduledRun`
+
+The argument a workflow started by a schedule receives, exported as a type from `workflow` and `workflow/api`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `scheduleId` | `string` | ID of the schedule |
+| `executionId` | `string` | ID of this occurrence. The same for every delivery of it, and the key that lets it start at most one run. |
+| `name` | `string` | The schedule's name |
+| `namespace` | `string` | The schedule's namespace. Static schedules use `default`. |
+| `scheduledAt` | `Date` | When the schedule's expression matched. It doesn't include jitter, so the run can start later. |
+| `source` | `"static"` or `"dynamic"` | Whether the schedule is in `vercel.json` or was created at runtime |
+| `expression` | `string`, optional | The cron expression, or the local datetime of a one-time schedule |
+| `payload` | `TPayload` | The dynamic schedule's payload. `undefined` for a static schedule. |
+
+`ScheduledRun<TPayload>` takes a JSON value type (`ScheduleJsonValue`), so a payload type with a `Date`, a `Map` or a class instance is a type error.

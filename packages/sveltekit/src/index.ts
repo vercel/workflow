@@ -1,7 +1,11 @@
 import path from 'node:path';
-import { getWorkflowQueueTrigger } from '@workflow/builders';
+import {
+  getWorkflowQueueTrigger,
+  writeBuildOutputSchedulesSync,
+} from '@workflow/builders';
 import fs from 'fs-extra';
 
+import { takePendingSchedules } from './schedules-state.js';
 import { stripWorkflowQueueTriggers } from './vc-config.js';
 
 process.on('beforeExit', () => {
@@ -52,6 +56,13 @@ process.on('beforeExit', () => {
     // workflow queue triggers after the dedicated function is copied out.
     stripWorkflowQueueTriggers(path.join(sourceFuncDir, '.vc-config.json'));
   }
+
+  // The workflows' `experimental_schedule` declarations, on the config the
+  // Vercel adapter wrote. Taken, so a second `beforeExit` adds nothing.
+  writeBuildOutputSchedulesSync(
+    '.vercel/output/config.json',
+    takePendingSchedules()
+  );
 });
 
 export { workflowPlugin } from './plugin.js';

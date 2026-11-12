@@ -7,6 +7,7 @@ import {
   NORMALIZE_REQUEST_CODE,
   resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
+  writeBuildOutputSchedules,
   writeFileIfChanged,
 } from '@workflow/builders';
 
@@ -245,6 +246,8 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
 
     // Use old astro config with updated routes
     await writeFile(configPath, JSON.stringify(config, null, 2));
+    // The workflows' `experimental_schedule` declarations, on astro's config.
+    await writeBuildOutputSchedules(configPath, this.workflowSchedules);
   }
 }
 

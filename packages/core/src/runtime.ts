@@ -43,6 +43,10 @@ import {
 import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
+import {
+  handleScheduleDelivery,
+  parseScheduleDelivery,
+} from './runtime/schedule.js';
 import { spec8Orchestrator } from './runtime/spec8/delivery.js';
 
 import { getWorld } from './runtime/world.js';
@@ -324,6 +328,18 @@ export function workflowEntrypoint(
             healthCheck,
             worldHandlers.specVersion
           );
+          return;
+        }
+
+        // A Vercel Schedules occurrence published to this workflow's
+        // schedule topic: start the workflow for it (runtime/schedule.ts).
+        const scheduleDelivery = parseScheduleDelivery(message_);
+        if (scheduleDelivery) {
+          await handleScheduleDelivery(scheduleDelivery, {
+            queueName: metadata.queueName,
+            workflowPrefix,
+            attempt: metadata.attempt,
+          });
           return;
         }
 

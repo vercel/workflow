@@ -2371,3 +2371,88 @@ describe('queueBatch trace propagation', () => {
     }
   });
 });
+
+describe('createQueueHandler(): Vercel Schedules messages', () => {
+  const scheduleMessage = {
+    scheduleId: 'sch_test',
+    executionId: 'schx_test',
+    name: 'nightly-report',
+    namespace: 'default',
+    scheduledAt: '2026-11-10T07:00:00.000Z',
+    source: 'static',
+    expression: '0 2 * * *',
+  };
+  const scheduleTopic =
+    '__wkf_workflow_schedule_workflows_snightly-report__nightlyReport';
+
+  const capture = () => {
+    let captured:
+      | ((message: unknown, metadata: unknown) => Promise<void>)
+      | undefined;
+    mockHandleCallback.mockImplementation((handler) => {
+      captured = handler;
+      return async () => new Response('ok');
+    });
+    const handler = vi.fn(async () => undefined);
+    createQueue().createQueueHandler('__wkf_workflow_', handler);
+    assert(captured);
+    return { deliver: captured, handler };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('hands an unwrapped schedule message to the runtime, on the topic it arrived on', async () => {
+    const { deliver, handler } = capture();
+    await deliver(scheduleMessage, {
+      messageId: 'msg-schedule',
+      deliveryCount: 1,
+      topicName: scheduleTopic,
+    });
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const [payload, metadata] = handler.mock.calls[0] as unknown as [
+      Record<string, unknown>,
+      { queueName: string; attempt: number },
+    ];
+    expect(payload).toEqual({ ...scheduleMessage, __scheduleDelivery: true });
+    expect(metadata.queueName).toBe(scheduleTopic);
+    expect(metadata.attempt).toBe(1);
+  });
+
+  it('keeps refusing an unwrapped message that is not a schedule message', async () => {
+    const { deliver, handler } = capture();
+    await expect(
+      deliver(
+        { runId: 'run-123' },
+        { messageId: 'msg-x', deliveryCount: 1, topicName: scheduleTopic }
+      )
+    ).rejects.toThrow();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('refuses a schedule message on a topic outside the workflow prefix', async () => {
+    const { deliver, handler } = capture();
+    await expect(
+      deliver(scheduleMessage, {
+        messageId: 'msg-y',
+        deliveryCount: 1,
+        topicName: 'daily-reports',
+      })
+    ).rejects.toThrow();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('still reads the runtime wrapper first', async () => {
+    const { deliver, handler } = capture();
+    await deliver(
+      { payload: { runId: 'run-123' }, queueName: '__wkf_workflow_test' },
+      { messageId: 'msg-z', deliveryCount: 1, topicName: '__wkf_workflow_test' }
+    );
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(
+      (handler.mock.calls[0] as unknown as [{ runId: string }])[0].runId
+    ).toBe('run-123');
+  });
+});

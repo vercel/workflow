@@ -15,6 +15,10 @@ Workflow's `sleep()` is durable: it survives cold starts, restarts, and deployme
 Scheduled workflows are still pinned to the deployment that started them. If you are building recurring or indefinitely running schedules that should adopt newer code over time, see [Versioning](/docs/foundations/versioning) for the explicit `deploymentId: "latest"` continuation pattern.
 </Callout>
 
+<Callout type="info">
+`sleep()` schedules work from inside a run. To start a new run on a cron cadence, or at a time set outside the run, on Vercel, point a Vercel Schedule at the workflow: see [Vercel Schedules](/docs/cookbook/integrations/vercel-schedules).
+</Callout>
+
 ## When to use this
 
 - Sending emails on a schedule, such as drip campaigns, onboarding sequences, or reminders

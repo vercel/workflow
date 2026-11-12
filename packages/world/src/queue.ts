@@ -611,6 +611,53 @@ export const HealthCheckPayloadSchema = z.object({
 });
 
 /**
+ * The message Vercel Schedules publishes when a schedule with a queue topic
+ * target fires: the schedule's details at the top level, and the dynamic
+ * schedule's `payload` when it has one. See
+ * https://vercel.com/docs/schedules/handle-runs#queue-message-format.
+ */
+export const ScheduleQueueMessageSchema = z.object({
+  scheduleId: z.string().min(1),
+  /** The same for every delivery of one occurrence. */
+  executionId: z.string().min(1),
+  name: z.string(),
+  namespace: z.string(),
+  /** ISO 8601 time the schedule's expression matched, without jitter. */
+  scheduledAt: z.string().min(1),
+  source: z.string(),
+  expression: z.string().optional(),
+  payload: z.unknown().optional(),
+});
+export type ScheduleQueueMessage = z.infer<typeof ScheduleQueueMessageSchema>;
+
+/**
+ * A Vercel Schedules message delivered to a workflow's schedule topic (see
+ * `scheduleTopic()` in `workflow/api`), as a World hands it to the runtime:
+ * the schedule's message, marked so it can never be read as another payload.
+ * The runtime starts the topic's workflow with it instead of replaying a run.
+ */
+export const ScheduleDeliveryPayloadSchema = ScheduleQueueMessageSchema.extend({
+  __scheduleDelivery: z.literal(true),
+});
+export type ScheduleDeliveryPayload = z.infer<
+  typeof ScheduleDeliveryPayloadSchema
+>;
+
+/**
+ * The {@link ScheduleDeliveryPayload} for a message a World received without
+ * its own wrapper, when that message is a Vercel Schedules message; otherwise
+ * `undefined`. Only a World whose queue Vercel Schedules publishes to calls it.
+ */
+export function scheduleDeliveryFromMessage(
+  message: unknown
+): ScheduleDeliveryPayload | undefined {
+  const parsed = ScheduleQueueMessageSchema.safeParse(message);
+  return parsed.success
+    ? { ...parsed.data, __scheduleDelivery: true }
+    : undefined;
+}
+
+/**
  * Health check MUST come first.
  *
  * Zod unions return the first matching member's output, and `z.object` strips
@@ -626,6 +673,8 @@ export const HealthCheckPayloadSchema = z.object({
  */
 export const QueuePayloadSchema = z.union([
   HealthCheckPayloadSchema,
+  // Requires `__scheduleDelivery: true`, which no other payload carries.
+  ScheduleDeliveryPayloadSchema,
   WorkflowInvokePayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;

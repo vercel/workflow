@@ -49,6 +49,10 @@ function createBuildersStub(): typeof import('@workflow/builders') {
 
     protected clearDiscoveredEntriesCache(): void {}
 
+    protected workflowSchedulesOf(): Record<string, never> {
+      return {};
+    }
+
     protected async createCombinedBundle(options: RecordedBundle) {
       combinedBundles.push({
         stepsOutfile: options.stepsOutfile,

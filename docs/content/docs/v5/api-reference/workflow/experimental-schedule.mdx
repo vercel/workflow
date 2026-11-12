@@ -1,0 +1,63 @@
+---
+title: experimental_schedule
+description: Declare a static Vercel Schedule on a workflow, so the deployment starts it on a cron cadence with no vercel.json entry.
+type: reference
+summary: Set `myWorkflow.experimental_schedule = { cron }` at the top level of the workflow's file. The build emits a static schedule that starts the workflow with a ScheduledRun.
+prerequisites:
+  - /docs/cookbook/integrations/vercel-schedules
+related:
+  - /docs/api-reference/workflow-api/schedule-target
+  - /docs/api-reference/workflow-api/schedule-topic
+---
+
+A static property on a workflow function that declares its [Vercel Schedules](https://vercel.com/docs/schedules). The build reads it and adds a static schedule to the deployment that starts the workflow each time it fires. The workflow receives the occurrence as a [`ScheduledRun`](/docs/api-reference/workflow-api/schedule-target#scheduledrun).
+
+```typescript lineNumbers
+import type { ScheduledRun, WorkflowSchedule } from "workflow";
+
+export async function nightlyReport(run: ScheduledRun) {
+  "use workflow";
+  // run.scheduledAt is when the cron matched
+}
+
+nightlyReport.experimental_schedule = { // [!code highlight]
+  cron: "0 2 * * *", // [!code highlight]
+  timezone: "America/New_York", // [!code highlight]
+} satisfies WorkflowSchedule; // [!code highlight]
+```
+
+## Value
+
+A `WorkflowSchedule`, or an array of them for several schedules, in which case each needs a `name`.
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `cron` | `string` | Required. A five-field cron expression, evaluated in `timezone` |
+| `timezone` | `string` | An IANA timezone. Defaults to UTC. |
+| `jitter` | `number` | Jitter window in whole minutes, from 1 to 15 |
+| `name` | `string` | The schedule's name in the deployment: 1 to 256 letters, digits, `.`, `_` and `-`, starting with a letter or digit. Defaults to the workflow's export name, or the file's name for a default export. |
+
+## Rules
+
+- Set it at the top level of the workflow's file, with `=`, on an exported function with `"use workflow"`. The compiler fails on a schedule set anywhere else.
+- Use a literal: objects, arrays, strings, numbers and booleans, optionally followed by `as const` or `satisfies WorkflowSchedule`. The build reads the value without running the file, so a variable, a call or a spread fails the build.
+- The build validates each schedule and fails, naming the workflow, on a cron expression without five fields, an unknown timezone, a jitter outside 1 to 15, an unknown property, a missing name in an array, or two schedules with the same name.
+- Each schedule publishes to the workflow's [schedule topic](/docs/api-reference/workflow-api/schedule-topic). The flow route receives it and starts the workflow once per occurrence.
+
+## Output
+
+The build adds the schedules to the deployment's Build Output (`.vercel/output/config.json#schedules`, or the Vercel Next.js builder's output for Next.js):
+
+```json
+{
+  "schedules": {
+    "nightlyReport": {
+      "schedule": "0 2 * * *",
+      "timezone": "America/New_York",
+      "topic": "__wkf_workflow_schedule_workflows_snightly-report__nightlyReport"
+    }
+  }
+}
+```
+
+Vercel merges them with the schedules in `vercel.json`. A name in both fails the deployment with `SCHEDULE_NAME_CONFLICT`.

@@ -12,7 +12,9 @@ import {
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
+  ScheduleDeliveryPayloadSchema,
   SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS,
+  scheduleDeliveryFromMessage,
   singleOrchestratorContinuationPayload,
   singleOrchestratorRunIdOf,
   ValidQueueName,
@@ -587,5 +589,46 @@ describe('RunInputSchema encryptionPublicKey', () => {
     expect(
       RunInputSchema.parse({ ...baseRunInput, encryptionPublicKey: 'pk' })
     ).toEqual({ ...baseRunInput, encryptionPublicKey: 'pk' });
+  });
+});
+
+describe('Vercel Schedules deliveries', () => {
+  const message = {
+    scheduleId: 'sch_1',
+    executionId: 'schx_1',
+    name: 'nightly-report',
+    namespace: 'default',
+    scheduledAt: '2026-11-10T07:00:00.000Z',
+    source: 'static',
+  };
+
+  it('marks a Vercel Schedules message so no other payload can read it', () => {
+    const delivery = scheduleDeliveryFromMessage({
+      ...message,
+      payload: { a: 1 },
+    });
+    expect(delivery).toEqual({
+      ...message,
+      payload: { a: 1 },
+      __scheduleDelivery: true,
+    });
+    expect(QueuePayloadSchema.parse(delivery)).toEqual(delivery);
+    expect(WorkflowInvokePayloadSchema.safeParse(delivery).success).toBe(false);
+    expect(HealthCheckPayloadSchema.safeParse(delivery).success).toBe(false);
+  });
+
+  it('reads nothing else as a schedule message', () => {
+    expect(scheduleDeliveryFromMessage({ runId: 'wrun_1' })).toBeUndefined();
+    expect(
+      scheduleDeliveryFromMessage({ ...message, executionId: '' })
+    ).toBeUndefined();
+    expect(scheduleDeliveryFromMessage(null)).toBeUndefined();
+    // An invoke payload never carries the marker.
+    expect(
+      ScheduleDeliveryPayloadSchema.safeParse({ runId: 'wrun_1' }).success
+    ).toBe(false);
+    expect(QueuePayloadSchema.parse({ runId: 'wrun_1' })).toEqual({
+      runId: 'wrun_1',
+    });
   });
 });

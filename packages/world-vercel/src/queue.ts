@@ -17,6 +17,7 @@ import {
   QueuePayloadSchema,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  scheduleDeliveryFromMessage,
   singleOrchestratorContinuationPayload,
   ValidQueueName,
 } from '@workflow/world';
@@ -125,6 +126,32 @@ class JsonTransport implements Transport<unknown> {
     }
     return JSON.parse(Buffer.concat(chunks).toString());
   }
+}
+
+/**
+ * The wrapper the runtime's own sends carry, or, for a message without one,
+ * a Vercel Schedules run published to a workflow schedule topic
+ * (`scheduleTopic()` in `workflow/api`). Vercel publishes those itself, as
+ * plain JSON, so they have no wrapper: the topic they arrived on is their
+ * queue name, and the deployment is the one they were delivered to. Anything
+ * else fails as it always did.
+ */
+function unwrapMessage(
+  message: unknown,
+  topicName: string
+): {
+  payload: QueuePayload;
+  queueName: ValidQueueName;
+  deploymentId?: string;
+} {
+  const wrapped = MessageWrapper.safeParse(message);
+  if (wrapped.success) return wrapped.data;
+  const schedule = scheduleDeliveryFromMessage(message);
+  const topic = ValidQueueName.safeParse(topicName);
+  if (schedule && topic.success) {
+    return { payload: schedule, queueName: topic.data };
+  }
+  throw wrapped.error;
 }
 
 /**
@@ -993,8 +1020,10 @@ export function createQueue(config?: APIConfig): Queue {
         const requestId = invocation?.requestId;
         // The CborTransport handles CBOR decoding inside deserialize(),
         // so message is already a plain object with Uint8Array values intact.
-        const { payload, queueName, deploymentId } =
-          MessageWrapper.parse(message);
+        const { payload, queueName, deploymentId } = unwrapMessage(
+          message,
+          metadata.topicName
+        );
 
         // Earliest point in an invocation where the run id is known, so the WS
         // handshake happens here instead of on the runtime's first event write

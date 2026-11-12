@@ -30,6 +30,23 @@ The manifest includes:
 
 This manifest is used by bundlers and the runtime to discover and register workflows, steps, and serializable classes.
 
+### Workflow schedules
+
+A top-level `fn.experimental_schedule = <literal>` statement on one of the file's workflow functions adds the literal, as JSON, to that workflow's entry under `schedule`. The statement stays in the output; the build reads the manifest and turns the value into Build Output schedules (`@workflow/builders` `collectWorkflowSchedules`):
+
+```javascript
+export async function nightlyReport(run) {
+  'use workflow';
+}
+nightlyReport.experimental_schedule = { cron: '0 2 * * *', timezone: 'America/New_York' };
+```
+
+```javascript
+/**__internal_workflows{"workflows":{"input.js":{"nightlyReport":{"workflowId":"workflow//./input//nightlyReport","schedule":{"cron":"0 2 * * *","timezone":"America/New_York"}}}}}*/;
+```
+
+Only literals are read: strings (template literals without substitutions included), numbers, booleans, `null`, arrays and plain objects of them, through `as`, `as const`, `satisfies`, `!` and parentheses. Any other value, a compound assignment, a second assignment for the same function, or a schedule on a function that isn't one of the file's workflows is a compile error. Whether the value is a valid schedule is checked by the build, not the compiler.
+
 ## ID generation
 
 IDs use the format `{type}//{modulePath}//{identifier}` where:
