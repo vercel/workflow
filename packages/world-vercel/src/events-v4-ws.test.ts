@@ -43,10 +43,21 @@ const requestMock = vi.fn<() => Promise<WsFrameReply>>();
  * `ws-transport.js`, and an ESM mock replaces a module's exports, not its own
  * call sites. Those selection cases live in `ws-transport.test.ts`.
  */
-const resolveWsTransportMock = vi.fn(() => ({
-  transport: { request: requestMock },
-  wsUrl: WS_URL,
-}));
+type MockResolution =
+  | {
+      kind: 'open';
+      transport: { request: typeof requestMock; isConnected?: () => boolean };
+      wsUrl: string;
+    }
+  | { kind: 'proxy' }
+  | { kind: 'no_channel' };
+const resolveWsTransportMock = vi.fn(
+  (): MockResolution => ({
+    kind: 'open',
+    transport: { request: requestMock },
+    wsUrl: WS_URL,
+  })
+);
 
 vi.mock('./ws-transport.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws-transport.js')>();
@@ -166,7 +177,7 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     // `Once`, matching the rest of this file: a permanent override
     // leaks into every later test, since clearAllMocks resets calls, not
     // implementations.
-    resolveWsTransportMock.mockReturnValueOnce(null);
+    resolveWsTransportMock.mockReturnValueOnce({ kind: 'no_channel' });
 
     await expect(
       createWorkflowRunEventV4(input, { token: 'test-token' })
@@ -178,7 +189,7 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     // `Once`, matching the rest of this file: a permanent override
     // leaks into every later test, since clearAllMocks resets calls, not
     // implementations.
-    resolveWsTransportMock.mockReturnValueOnce(null);
+    resolveWsTransportMock.mockReturnValueOnce({ kind: 'no_channel' });
     // Not in the strict set on purpose: after vercel/workflow#3732 a write
     // issued before the socket finishes connecting takes HTTP by design, and
     // on a cold instance that can be the first step_started of a run.
@@ -204,7 +215,7 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     // `Once`, matching the rest of this file: a permanent override
     // leaks into every later test, since clearAllMocks resets calls, not
     // implementations.
-    resolveWsTransportMock.mockReturnValueOnce(null);
+    resolveWsTransportMock.mockReturnValueOnce({ kind: 'no_channel' });
     const agent = httpReply('/api/v4/runs/wrun_1/events/step_completed');
 
     const result = await createWorkflowRunEventV4(input, {
@@ -260,7 +271,7 @@ describe('per-workflow override (WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS
     // Strict mode promises a socket only for the deployment-wide gate; an
     // unlisted workflow has no channel by design.
     process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
-    resolveWsTransportMock.mockReturnValueOnce(null);
+    resolveWsTransportMock.mockReturnValueOnce({ kind: 'no_channel' });
     const agent = httpAgent();
 
     const result = await createWorkflowRunEventV4(input, {
@@ -324,16 +335,11 @@ describe('createWorkflowRunEventV4 over ws', () => {
   });
 
   it('falls back to HTTP when this World has no usable WS transport', async () => {
-    // `resolveWsTransport` returns null for the api-workflow proxy World (see
+    // `resolveWsTransport` says `proxy` for the api-workflow proxy World (see
     // `ws-transport.test.ts`). The gate is still on here, so the write has to
     // complete over HTTP rather than fail — that fallback is the reason the
-    // resolve step returns null instead of throwing.
-    resolveWsTransportMock.mockReturnValueOnce(
-      null as unknown as {
-        transport: { request: typeof requestMock };
-        wsUrl: string;
-      }
-    );
+    // resolve step reports it instead of throwing.
+    resolveWsTransportMock.mockReturnValueOnce({ kind: 'proxy' });
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -471,9 +477,7 @@ describe('createWorkflowRunEventsBatchV4 over ws', () => {
   });
 
   it('goes over HTTP when no socket is resolvable for the run', async () => {
-    resolveWsTransportMock.mockReturnValueOnce(
-      undefined as unknown as ReturnType<typeof resolveWsTransportMock>
-    );
+    resolveWsTransportMock.mockReturnValueOnce({ kind: 'no_channel' });
     await expect(
       createWorkflowRunEventsBatchV4(
         {
@@ -751,5 +755,114 @@ describe('createWorkflowRunEventV4 decoding over ws', () => {
       code: 'PARSE_ERROR',
       message: 'v4 createEvent: invalid CBOR response body',
     });
+  });
+});
+
+/**
+ * `run_started` is the first write of a delivery, issued while the flow
+ * route's unawaited `openWsChannel` is usually still connecting, and every
+ * later write of the delivery waits for it. It takes HTTP rather than
+ * waiting for the handshake; every other write still joins the handshake.
+ */
+describe('run_started while the socket is still connecting', () => {
+  const runStartedInput = {
+    runId: 'wrun_1',
+    eventType: 'run_started',
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    inBand: true,
+    expectedSeqInBand: 1,
+  } as const;
+
+  /** What a `run_started` write answers with, over either transport. */
+  const runStartedBody = () =>
+    new Uint8Array(
+      encode({
+        event: {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          createdAt: CREATED_AT,
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+        run: {
+          runId: 'wrun_1',
+          status: 'running',
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          startedAt: CREATED_AT,
+          createdAt: CREATED_AT,
+          updatedAt: CREATED_AT,
+        },
+      })
+    );
+
+  const transportWith = (connected: boolean): MockResolution => ({
+    kind: 'open',
+    transport: { request: requestMock, isConnected: () => connected },
+    wsUrl: WS_URL,
+  });
+
+  const httpAgent = () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v5/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(200, runStartedBody(), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': CREATED_AT,
+        },
+      });
+    return agent;
+  };
+
+  it('goes over HTTP instead of waiting for the handshake, with the same result', async () => {
+    resolveWsTransportMock.mockReturnValueOnce(transportWith(false));
+    const agent = httpAgent();
+
+    const result = await createWorkflowRunEventV4(runStartedInput, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(requestMock).not.toHaveBeenCalled();
+    agent.assertNoPendingInterceptors();
+    expect(result.event).toMatchObject({
+      eventId: 'evnt_1',
+      eventType: 'run_started',
+    });
+    expect(result.run).toMatchObject({ status: 'running' });
+  });
+
+  it('takes the socket once it is open', async () => {
+    resolveWsTransportMock.mockReturnValueOnce(transportWith(true));
+    requestMock.mockResolvedValueOnce(ack({}, runStartedBody()));
+
+    const result = await createWorkflowRunEventV4(runStartedInput, {
+      token: 'test-token',
+    });
+
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(result.event).toMatchObject({ eventType: 'run_started' });
+    expect(result.run).toMatchObject({ status: 'running' });
+  });
+
+  it('leaves other writes waiting for the handshake', async () => {
+    resolveWsTransportMock.mockReturnValueOnce(transportWith(false));
+    requestMock.mockResolvedValueOnce(ack());
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    });
+
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(result.event.eventId).toBe('evnt_1');
   });
 });

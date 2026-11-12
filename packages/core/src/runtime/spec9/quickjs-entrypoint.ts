@@ -2625,7 +2625,13 @@ export async function runWorkflowWithQuickJS(params: {
     ) {
       return 'step';
     }
-    const logged = externalWorkOf(fullLog());
+    const observedHookIds = new Set(
+      session
+        .openHooks?.()
+        .filter((hook) => hook.observed)
+        .map((hook) => hook.correlationId) ?? []
+    );
+    const logged = externalWorkOf(fullLog(), observedHookIds);
     if (logged !== undefined) return logged;
     if (pendingOperations.some((op) => op.type === 'hook')) return 'hook';
     return undefined;

@@ -79,7 +79,7 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 The Vercel World supplies a per-run [event limit](/docs/how-it-works/event-sourcing). Each step adds events to that log, so the event budget also constrains how many steps a run can execute. See [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the published default limits and sizing guidance. A run that exhausts its event budget fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
 
-On the default runtime, replay cost can grow with the event log. For workflows with many steps or frequent resumes, consider the experimental [QuickJS runtime](/docs/configuration/runtime-tuning#workflow_vm). Set `WORKFLOW_VM=quickjs` in your project's environment variables and redeploy. Only runs started after the change use the new runtime.
+On the default runtime, replay cost grows with the event log. For workflows with many steps or frequent resumes, use the [QuickJS runtime](/docs/configuration/runtime-tuning#workflow_vm). Set `WORKFLOW_VM=quickjs` in your project's environment variables and redeploy. Only runs started after the change use the new runtime.
 
 QuickJS runs are exempt from the default event cap, allowing larger event logs and more steps. They restore workflow state and replay only events recorded since the last snapshot, reducing replay overhead as the log grows. This does not speed up the work inside individual steps or remove payload, storage, and request rate limits. See [max-events-exceeded](/docs/errors/max-events-exceeded) for eligibility and compatibility details.
 
@@ -380,18 +380,6 @@ The Vercel World doesn't follow HTTP redirects on workflow API requests, so poin
 
 Custom backend URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
 
-### `WORKFLOW_SEQUENTIAL_REPLAYS`
-
-Set `WORKFLOW_SEQUENTIAL_REPLAYS=1` to guarantee that **at most one orchestrator (flow) invocation runs at a time per workflow run**. This behavior is off by default; without it, the runtime relies on idempotency and the event log to tolerate concurrent flow invocations of the same run.
-
-When enabled, each run's orchestrator messages are given their own queue topic and the flow trigger is configured with `maxConcurrency: 1`, so [Vercel Queues](https://vercel.com/docs/queues) processes replays for a given run strictly one at a time. Step executions (which ride the flow topic in the combined handler model) get a per-step topic, so steps keep full parallelism.
-
-<Callout type="warn">
-  This variable is read at **both build time and runtime**, so it must be set as a project-level environment variable that applies to your build and your deployed functions. Setting it for only one will produce an inconsistent configuration. The same applies to framework integrations that write their own queue trigger configuration instead of using `getWorkflowQueueTrigger()` from `@workflow/builders`: they only get the runtime half (per-run topics) unless they also emit `maxConcurrency: 1` on their flow trigger.
-</Callout>
-
-Because it routes each run's flow invocations through a dedicated `maxConcurrency: 1` queue topic, enabling this might lead to higher queue performance overhead.
-
 ### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
 
 Maximum delay, in seconds, that Workflow uses for one Vercel Queues continuation message when implementing `sleep()`. If a workflow sleeps longer than this, the runtime schedules another continuation message when the first one fires, repeating until the sleep's target time is reached. Default: `82800` (23 hours).
@@ -405,10 +393,6 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to its backend
 Below the floor the deadline starts canceling requests that would have succeeded, since a cold route or a large event page can take seconds, and a canceled request is redriven through the queue rather than making progress. The ceiling matches the longest a backend route holds a response. Requests that legitimately outlast it (stream reads and writes, event batches) opt out of the deadline entirely rather than relying on this value.
 
 The same deadline bounds the [events WebSocket](#workflow_events_transport): opening the socket, including resolving the token it is opened with, and each event write over it.
-
-### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
-
-Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
@@ -458,6 +442,8 @@ try {
 
 `openEventsChannel()` returns `undefined`, and writes stay on HTTP, when the transport is disabled or the World cannot hold a socket, such as a `projectConfig` World.
 
+A write issued while the channel's socket is still connecting waits for the handshake, except `run_started`, which goes over HTTP instead. It is a delivery's first write, and every later write of the delivery waits for it.
+
 If the first connect fails, or opening the socket or a write over it gets no answer within [`WORKFLOW_REQUEST_TIMEOUT_MS`](#workflow_request_timeout_ms), the channel closes. The write that failed is retried over HTTP where the event type allows a retry, and every later event write for that run goes over HTTP until a new channel is opened, which the next delivery does. The channel is shared by every concurrent invocation of the run in the same process, so one timed out write moves all of them to HTTP, and releasing it afterwards has nothing left to close.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
@@ -465,6 +451,7 @@ Tracing is unaffected by the choice. Each event write emits an `http POST` clien
 | Attribute | HTTP | WebSocket |
 | --- | --- | --- |
 | `workflow.events.transport` | `http` | `ws` |
+| `workflow.events.transport_fallback` | why a write that tried the socket went over HTTP: `no_channel` (no socket for the run) or `connecting` (a `run_started` during the handshake). Absent when the write never tried the socket, and through a `projectConfig` World. | — |
 | `workflow.event.type` | the event type, e.g. `step_started` | same |
 | `network.protocol.name` | — | `websocket` |
 | `workflow.events.ws.url` | — | the socket the frame went over |

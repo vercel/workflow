@@ -287,10 +287,8 @@ Worlds are nonetheless worth fixing on their own merits, and neither is what
 made the lanes red: world-local defaults to **1000** in-flight deliveries (the
 comment above it says the limit exists to avoid overwhelming the process, and
 the repro script has to override it to 10), world-postgres to 50 embedded
-workers *per process*; and neither World has world-vercel's per-run replay
-serialization, which is itself opt-in there behind
-`WORKFLOW_SEQUENTIAL_REPLAYS` (vercel/workflow#2193), so a run's concurrent
-wakes each replay the whole log.
+workers *per process*; and neither World serializes a spec 8 run's replays,
+so a run's concurrent wakes each replay the whole log.
 
 world-local's storms come out clean far more often than world-postgres's, so the
 default scale says even less there: the corruption it does produce needs a

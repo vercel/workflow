@@ -70,6 +70,12 @@ export {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from './lib/sealed-events';
+export {
+  createRunStateHydrator,
+  type RunStateHydrator,
+  type RunStateHydratorOptions,
+  type StateHistoryPage,
+} from './lib/state-hydration';
 export type { DecodedStreamChunkSource } from './lib/stream-display';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider, useToast } from './lib/toast';

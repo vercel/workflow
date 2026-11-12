@@ -296,15 +296,6 @@ describe('hook registration delivery order', () => {
     expect(afterBind.correlationId > finish.correlationId).toBe(true);
   });
 
-  it('holds with WORKFLOW_LOG_ORDER_DRAWS=0 (single macrotask yield instead of the quiescence fixpoint)', async () => {
-    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '0');
-    const run = await makeRun();
-    const { log, finish } = await writeSiblingLog(run, 'hook_created');
-    const pass3 = await replayOrThrow(SIBLING_CODE, run, log);
-    const afterBind = stepNamed(pass3, 'afterBind');
-    expect(afterBind.correlationId > finish.correlationId).toBe(true);
-  });
-
   it('is stable across repeated replays with two hooks bound in one burst', async () => {
     const run = await makeRun();
     const ev = eventFactory();

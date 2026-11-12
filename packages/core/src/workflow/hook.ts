@@ -24,6 +24,10 @@ import {
 import { replayPayloadEventKey } from '../replay-payload-cache.js';
 import type { Run } from '../runtime/run.js';
 import { mintHookCorrelationId } from '../runtime/start-hook-binding.js';
+import {
+  registerStateSource,
+  stateSourceId,
+} from '../serialization/state-refs.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
 /**
@@ -536,6 +540,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                   {},
                   prepared
                 );
+                // Later state changes may refer to this payload's strings.
+                registerStateSource(
+                  ctx.globalThis,
+                  stateSourceId(event),
+                  payload
+                );
                 hydrateOutcome = { ok: true, value: payload as T };
               } catch (error) {
                 hydrateOutcome = { ok: false, error };
@@ -610,6 +620,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 ctx.globalThis,
                 {},
                 prepared
+              );
+              // Later state changes may refer to this payload's strings.
+              registerStateSource(
+                ctx.globalThis,
+                stateSourceId(event),
+                payload
               );
               outcome = { ok: true, value: payload as T };
             } catch (error) {

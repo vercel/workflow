@@ -705,10 +705,8 @@ export interface WorldCapabilities {
   /**
    * The World's queue delivers a single-orchestrator run's orchestrator
    * messages one at a time (see `singleOrchestratorRunIdOf`): on Vercel
-   * Queues, a concurrency key per run (or, under
-   * `WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run topics consumed with
-   * `maxConcurrency: 1`); an in-process per-run gate or a per-run job queue
-   * elsewhere. Worlds whose queue cannot serialize a run's orchestrator
+   * Queues, a concurrency key per run; an in-process per-run gate or a
+   * per-run job queue elsewhere. Worlds whose queue cannot serialize a run's orchestrator
    * deliveries must leave this unset.
    *
    * Declares queue *support*, not deployed configuration. The runtime takes
@@ -931,6 +929,11 @@ export interface World extends Queue, Streamer, Storage {
    * determines the latest deployment that shares the same environment (e.g., same
    * "production" target or same git branch for "preview" deployments) as the
    * current deployment.
+   *
+   * The CLI's `workflow start` uses it too, so a process that is not itself a
+   * deployment resolves "latest" the same way `start()` does. Such a process
+   * has no current deployment, so an implementation that supports it resolves
+   * relative to the environment it was configured for.
    *
    * Not all World implementations support this: it is only implemented by
    * world-vercel where deployment routing is meaningful.

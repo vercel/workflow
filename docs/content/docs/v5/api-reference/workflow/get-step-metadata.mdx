@@ -61,6 +61,25 @@ async function chargeUser(userId: string, amount: number) {
   <a href="/docs/foundations/idempotency">Idempotency</a> guide.
 </Callout>
 
+### Example: handle the last attempt differently
+
+```typescript lineNumbers
+import { getStepMetadata } from "workflow";
+
+async function welcomeUser(userId: string) {
+  "use step";
+  const { attempt, maxAttempts } = getStepMetadata();
+
+  try {
+    return await sendWelcomeEmail(userId);
+  } catch (error) {
+    if (attempt < maxAttempts) throw error; // [!code highlight]
+    console.error(`Giving up on the welcome email for ${userId}`, error);
+    return null;
+  }
+}
+```
+
 ## API signature
 
 ### Parameters

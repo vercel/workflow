@@ -79,26 +79,6 @@ const BODY_PARSE_RETRY_BASE_MS = 100;
 const getWorkflowServerUrlOverride = (): string =>
   WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
 
-/**
- * Header the server reads to tighten its own limits (stream max-duration,
- * chunk-batch size, …) per request, only ever to a stricter value than the
- * deployment default. See `world-vercel`'s server counterpart.
- */
-const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
-
-/**
- * Forward server-side limit overrides set via `WORKFLOW_TEST_LIMIT_OVERRIDES`.
- *
- * The value is a JSON object of server-constant name → value (e.g.
- * `{"STREAM_MAX_DURATION_MS":5000}`) sent verbatim as
- * `x-workflow-test-limit-overrides`. The server validates and clamps it
- * (stricter-only), so a malformed value is harmlessly ignored there. We don't
- * parse it here. Intended for a dedicated e2e deployment so the suite exercises
- * edge paths (stream reconnect, batch splitting) without long waits; unset in production.
- */
-const getTestLimitOverridesHeader = (): string =>
-  process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
-
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
@@ -129,14 +109,22 @@ export interface APIConfig {
     projectName?: string;
     teamId?: string;
     environment?: string;
+    /**
+     * Git branch whose newest READY deployment `resolveLatestDeploymentId()`
+     * resolves to outside a deployment, when `environment` is `preview`.
+     * Preview deployments are per branch, so this is required there; other
+     * environments ignore it. Inside a deployment the deployment's own branch
+     * is used instead.
+     */
+    gitBranch?: string;
   };
   /**
    * The spec version this World declared when it was created. Set by
    * `createWorld`, which reads `mintedSpecVersion()` once; `run_started`
    * attests at most this value as `executorSpecVersion` (see
    * `executorSpecVersionFor`), so the attestation never exceeds what the
-   * runtime validated, even if `WORKFLOW_SPEC_VERSION` or
-   * `WORKFLOW_SEALED_LOG` changes in-process afterwards.
+   * runtime validated, even if `WORKFLOW_SPEC_VERSION` changes in-process
+   * afterwards.
    *
    * @internal
    */
@@ -272,10 +260,6 @@ export const getHeaders = (
     'User-Agent',
     joinUserAgentProducts(getUserAgent(), headers.get('User-Agent'))
   );
-  const testLimitOverrides = getTestLimitOverridesHeader();
-  if (testLimitOverrides) {
-    headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
-  }
   if (projectConfig) {
     // Derived from the same helper `getEnvironment` uses so the header and the
     // value stamped into `runInput` can never disagree. A drift between them

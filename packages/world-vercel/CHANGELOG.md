@@ -1,5 +1,39 @@
 # @workflow/world-vercel
 
+## 5.5.0
+
+### Minor Changes
+
+- [#5227](https://github.com/vercel/workflow/pull/5227) [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove opt-out and test-only environment variables that are no longer needed. The runtime no longer reads `WORKFLOW_INLINE_EARLY_ADVANCE`, `WORKFLOW_RETURN_VALUE_LONG_POLL`, `WORKFLOW_SLOT_GAP_CHECK`, `WORKFLOW_LOG_ORDER_DRAWS`, `WORKFLOW_INLINE_OWNERSHIP` or `WORKFLOW_BATCH_TRANSITIONS`, and the behavior they could switch off is always on. `WORKFLOW_SEALED_LOG` (deprecated) is no longer read, and `@workflow/world` no longer exports `SEALED_LOG_ENV_VAR`: set `WORKFLOW_SPEC_VERSION=6` to create new runs without the sealed log. The Vercel World no longer reads `WORKFLOW_MAX_CHUNKS_PER_REQUEST` or `WORKFLOW_TEST_LIMIT_OVERRIDES`, and the Local and Postgres Worlds no longer read `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS` and `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`.
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Declare `queueAuthMode: 'skip'`: the flow route only Vercel Queues can trigger takes a message ID, so the runtime does not check a key.
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- [#5316](https://github.com/vercel/workflow/pull/5316) [`9bf1109`](https://github.com/vercel/workflow/commit/9bf110927184c1809b036947a4e7c3fff2b5484e) Thanks [@pranaygp](https://github.com/pranaygp)! - `workflow start` resolves the latest deployment the same way `start({ deploymentId: 'latest' })` does, so workflows that have never run can be started. It gains `--deployment`, and `--branch` for preview.
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5292](https://github.com/vercel/workflow/pull/5292) [`7153e09`](https://github.com/vercel/workflow/commit/7153e0973c7244eec8b6b3dd349a83eb96ac9743) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Keep idle queue connections for 60s instead of 10s, so instances that publish every 10-60s reuse a warm connection instead of paying a TCP and TLS handshake inside each send.
+
+- [#5270](https://github.com/vercel/workflow/pull/5270) [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a run's creation is recorded on its first `run_started` alone, with no separate `run_created`.
+
+- [#5279](https://github.com/vercel/workflow/pull/5279) [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: watch the live feed with backend heartbeats. world-vercel lists the `run-heartbeat` WS flag. Against a backend that confirms heartbeats on `subscribe_ack`, a feed silent for three heartbeat intervals ends through `onError`, a heartbeat naming a slot the feed never delivered makes it read and deliver the missing events from the log, and a heartbeat for another subscription ends the feed.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+
+- [#5329](https://github.com/vercel/workflow/pull/5329) [`a9eba54`](https://github.com/vercel/workflow/commit/a9eba5463de9c5ea49de07069bc07a2ecd36f1ce) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Record why an event write that tried the run's events WebSocket went over HTTP: the HTTP span carries `workflow.events.transport_fallback`, `no_channel` when the run had no socket or `connecting` for a `run_started` written during the handshake. Writes that never tried the socket carry no such attribute.
+
+- [#5299](https://github.com/vercel/workflow/pull/5299) [`6fe8408`](https://github.com/vercel/workflow/commit/6fe8408477d7133eaa45f69a96969347f6bbdcd9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Write `run_started` over HTTP while the run's events WebSocket is still connecting, instead of waiting for the handshake. A delivery writes it first, as the flow route's socket is still opening, and every later write of the delivery waits for it (on spec 9 it gates turbo's first creation batch and step 1's outcome). The handshake keeps going for the writes after it; a socket that is already open still carries `run_started`.
+
+- [#5172](https://github.com/vercel/workflow/pull/5172) [`87847c5`](https://github.com/vercel/workflow/commit/87847c52cbc44793e51ab9196786c0f1290413d5) Thanks [@abhiramshaji-cyber](https://github.com/abhiramshaji-cyber)! - Bound the events WebSocket handshake, including the token fetch before it, by `WORKFLOW_REQUEST_TIMEOUT_MS`, and close the channel when a handshake or a write over it times out, so later event writes fall back to HTTP instead of hanging until `maxDuration`.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/world@5.2.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
 ## 5.4.0
 
 ### Patch Changes

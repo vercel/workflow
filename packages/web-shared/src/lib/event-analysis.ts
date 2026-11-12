@@ -5,9 +5,11 @@
 
 import {
   type Event,
+  isRunCreationEvent,
   isTerminalWorkflowRunStatus,
   type WorkflowRunStatus,
 } from '@workflow/world';
+import { findStartHookCreation } from './start-hook';
 
 // Time thresholds for Re-enqueue button visibility
 const STEP_ACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -113,6 +115,13 @@ export function analyzeEvents(events: Event[] | undefined): EventAnalysis {
         hookDisposed.add(correlationId);
         break;
     }
+  }
+
+  // A start Hook has no `hook_created`: the run's creation stands for it.
+  const startHook = findStartHookCreation(events);
+  if (startHook && !hookCreated.has(startHook.hookId)) {
+    const creationEvent = events.find(isRunCreationEvent);
+    if (creationEvent) hookCreated.set(startHook.hookId, creationEvent);
   }
 
   // Find pending items (created but not completed)

@@ -10,5 +10,7 @@
     "esModuleInterop": true
   },
   "include": ["src"],
-  "exclude": ["node_modules"]
+  // This test writes its fixtures with core's own sources, outside rootDir.
+  // Vitest runs it from src.
+  "exclude": ["node_modules", "src/lib/inspect/hydration-state.test.ts"]
 }

@@ -329,9 +329,9 @@ class WsEventsTransport {
 
   /**
    * Give up this invocation's claim, dropping the socket once the last holder
-   * does. Concurrent invocations for one run share this instance (inline step
-   * executions ride the flow topic on per-step topics, so a run's steps can be
-   * separate invocations of the same container), and the first to finish must
+   * does. Concurrent invocations for one run share this instance (a run's
+   * step messages ride the flow topic unkeyed, so its steps can be separate
+   * invocations of the same container), and the first to finish must
    * not tear the socket out from under the others.
    *
    * Unbalanced calls are inert: without a matching `open` there is nothing to
@@ -369,6 +369,15 @@ class WsEventsTransport {
     );
     // Normal closure: a clean client-side release, not an aborted run.
     conn?.ws.close(1000, reason);
+  }
+
+  /**
+   * Whether a request now would go out at once: the socket finished its
+   * handshake and is open. False while the first handshake (or a reconnect)
+   * is still in flight, when a request would wait for it.
+   */
+  isConnected(): boolean {
+    return !this.closed && this.connection?.ws.readyState === WebSocket.OPEN;
   }
 
   private ensureConnected(): Promise<Connection> {
@@ -1109,9 +1118,25 @@ function resolveChannelUrl(
 }
 
 /**
- * The write path's question: is there an open channel for this run? `null` means
- * write over HTTP, because the transport is disabled, because this World can't
- * hold a socket, or because nothing opened a channel for this invocation.
+ * What {@link resolveWsTransport} found for a run, each reason it knows named
+ * where it knows it, so no caller has to work out why there is no socket:
+ *
+ * - `open`: a channel is open for the run here.
+ * - `proxy`: this World cannot hold a socket at all (a `projectConfig` World,
+ *   routed through the HTTP-only api-workflow proxy). Its writes are on HTTP
+ *   by configuration.
+ * - `no_channel`: nothing opened a channel for this run in this process, or
+ *   the one it had closed (a timed out write, a failed connect).
+ */
+export type WsTransportResolution =
+  | { kind: 'open'; transport: WsEventsTransport; wsUrl: string }
+  | { kind: 'proxy' }
+  | { kind: 'no_channel' };
+
+/**
+ * The write path's question: is there an open channel for this run? Anything
+ * but `open` means write over HTTP (see {@link WsTransportResolution}). The
+ * transport gate itself is checked by the caller.
  *
  * A lookup, never a create. Lazily connecting here is what made the socket's
  * lifetime a property of the *last write* rather than of the caller, and left a
@@ -1120,12 +1145,11 @@ function resolveChannelUrl(
 export function resolveWsTransport(
   runId: string,
   config: APIConfig | undefined
-): {
-  transport: WsEventsTransport;
-  wsUrl: string;
-} | null {
+): WsTransportResolution {
   const wsUrl = resolveChannelUrl(runId, config);
-  if (!wsUrl) return null;
+  if (!wsUrl) return { kind: 'proxy' };
   const transport = wsState.transports.get(wsUrl);
-  return transport ? { transport, wsUrl } : null;
+  return transport
+    ? { kind: 'open', transport, wsUrl }
+    : { kind: 'no_channel' };
 }
