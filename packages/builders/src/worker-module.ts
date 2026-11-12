@@ -1,4 +1,4 @@
-import { createRefreshOptionsCode } from './constants.js';
+import { createNamespaceFieldCode } from './constants.js';
 import { IN_PROCESS_QUEUE_HANDLER_CODE } from './request-converter.js';
 
 /**
@@ -36,11 +36,9 @@ export function createWorkflowWorkerModuleCode({
 }): string {
   const specifier = JSON.stringify(routeSpecifier);
   const entry = IN_PROCESS_QUEUE_HANDLER_CODE;
-  const resolvedNamespace = createRefreshOptionsCode({ namespace })
-    .replace(/^, \{ namespace: /, '')
-    .replace(/ \}$/, '');
+  const namespaceField = createNamespaceFieldCode(namespace);
   const options = [
-    ...(resolvedNamespace ? [`namespace: ${resolvedNamespace}`] : []),
+    ...(namespaceField ? [namespaceField] : []),
     ...(reloads ? ['reloads: true'] : []),
   ];
   const optionsCode = options.length ? `, { ${options.join(', ')} }` : '';

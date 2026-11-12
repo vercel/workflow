@@ -135,10 +135,12 @@ The Workflow build writes `worker.js` next to the generated `+server.js` route. 
 import type { ServerInit } from "@sveltejs/kit";
 
 export const init: ServerInit = async () => {
-  const { startWorkflowWorker } = await import(
-    "./routes/.well-known/workflow/v1/flow/worker.js"
-  );
-  await startWorkflowWorker();
+  if (process.env.WORKFLOW_TARGET_WORLD === "@workflow/world-postgres") {
+    const { startWorkflowWorker } = await import(
+      "./routes/.well-known/workflow/v1/flow/worker.js"
+    );
+    await startWorkflowWorker();
+  }
 };
 ```
 
