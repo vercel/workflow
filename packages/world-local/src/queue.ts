@@ -13,10 +13,13 @@ import {
   isNodeHttpEnabled,
   isSingleOrchestratorMessage,
   MessageId,
+  messageRunSpecVersion,
+  orchestratorRunIdOf,
   parseQueueName,
   parseQueueRoute,
   type Queue,
   QueuePrefix,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorRunIdOf,
   ValidQueueName,
   WORKFLOW_FLOW_ROUTE,
@@ -256,6 +259,188 @@ export function createRunGate() {
 }
 
 /**
+ * Most re-runs one hold of a run's orchestrator gate makes for the messages
+ * coalesced into it, as world-vercel bounds its coalesced re-runs. Past the
+ * cap the delivery releases the gate, and the messages still waiting are
+ * delivered as usual.
+ */
+export const MAX_LOCAL_COALESCED_RERUNS = 32;
+
+/**
+ * When the hold of a run's orchestrator gate that a delivery belongs to
+ * began (epoch ms), sent to the handler as `invocationStartedAt`: the same
+ * for every coalesced re-run, so a late re-run does not get a fresh inline
+ * budget.
+ */
+export const INVOCATION_STARTED_AT_HEADER =
+  'x-workflow-local-invocation-started-at';
+
+/** A hook resume's timing, carried from a coalesced wake to the re-run. */
+export interface CoalescedResume {
+  hookResumeTiming: unknown;
+  traceCarrier?: unknown;
+}
+
+/** One hold of a run's orchestrator gate. */
+export interface OrchestratorLease {
+  /** Releases the gate to the next waiter. Idempotent. */
+  release(): void;
+  /**
+   * Removes the coalescible waiters (see {@link createOrchestratorGate}) and
+   * ends them without a delivery: this holder covers them with a re-run.
+   * Returns how many, and the resume timing of the earliest that carries one.
+   */
+  takeWaiting(): { count: number; resume?: CoalescedResume };
+}
+
+/**
+ * Per-run mutual exclusion for a queue's own orchestrator deliveries of
+ * single-orchestrator (spec >= 9) runs, in FIFO order, with coalescing.
+ *
+ * `acquire(key, ...)` resolves with a lease once every earlier holder has
+ * released, or with `undefined` when the holder took the waiter
+ * (`takeWaiting`): its message was coalesced into the holder's delivery,
+ * which runs the handler again instead of delivering it. Only a coalescible
+ * waiter is taken: an orchestrator message whose payload carries nothing the
+ * run's log does not hold.
+ */
+export function createOrchestratorGate() {
+  interface Waiter {
+    coalescible: boolean;
+    resume?: CoalescedResume;
+    grant: (lease: OrchestratorLease | undefined) => void;
+  }
+  /** Runs whose gate is held, with the waiters behind the holder. */
+  const runs = new Map<string, Waiter[]>();
+  const lease = (key: string): OrchestratorLease => {
+    let released = false;
+    return {
+      release() {
+        if (released) return;
+        released = true;
+        const waiters = runs.get(key);
+        const next = waiters?.shift();
+        if (!next) {
+          runs.delete(key);
+          return;
+        }
+        next.grant(lease(key));
+      },
+      takeWaiting() {
+        const waiters = runs.get(key);
+        if (released || !waiters) return { count: 0 };
+        let count = 0;
+        let resume: CoalescedResume | undefined;
+        const kept: Waiter[] = [];
+        for (const waiter of waiters) {
+          if (!waiter.coalescible) {
+            kept.push(waiter);
+            continue;
+          }
+          count++;
+          resume ??= waiter.resume;
+          waiter.grant(undefined);
+        }
+        runs.set(key, kept);
+        return { count, ...(resume && { resume }) };
+      },
+    };
+  };
+  return {
+    acquire(
+      key: string,
+      options: { coalescible?: boolean; resume?: CoalescedResume } = {}
+    ): Promise<OrchestratorLease | undefined> {
+      const waiters = runs.get(key);
+      if (!waiters) {
+        runs.set(key, []);
+        return Promise.resolve(lease(key));
+      }
+      return new Promise((grant) => {
+        const waiter: Waiter = {
+          coalescible: options.coalescible === true,
+          ...(options.resume && { resume: options.resume }),
+          grant,
+        };
+        waiters.push(waiter);
+      });
+    },
+    /** Runs whose gate is held. For tests. */
+    size(): number {
+      return runs.size;
+    },
+  };
+}
+
+/**
+ * Whether a handler's answer acknowledges the message: no `timeoutSeconds`
+ * (a redelivery or a handoff), and not an invocation's result.
+ */
+function isAcknowledgement(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    return (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !('timeoutSeconds' in parsed) &&
+      !('result' in parsed)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a handler's answer is `{ timeoutSeconds: 0 }`. */
+function isHandoff(text: string): boolean {
+  try {
+    return Number(JSON.parse(text).timeoutSeconds) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a single-orchestrator run's orchestrator message may be coalesced
+ * into the run's running delivery: dropped, and covered by that delivery's
+ * re-run, which reads the run's log. Every producer commits what such a
+ * message is for (a step outcome, a `hook_received`, a cancellation) before
+ * it sends it. A `run.wakeUp()` message (`completeWaits`) names waits the
+ * log does not: coalesced, it would be lost and the waits would run their
+ * full length. The World contract allows that, and world-vercel and
+ * world-postgres do it, but world-local delivers it after the running
+ * delivery instead, so `@workflow/vitest`'s `waitForSleep()` then
+ * `wakeUp()` does not race the delivery that created the wait. A start message (`runInput`) carries the input of a run that
+ * may not exist yet, a legacy resume (`hookInput`) carries a payload the
+ * orchestrator still has to write, a restart's recovery message
+ * (`recovery: true`) asks its delivery to re-send what died with the
+ * in-memory queue, and an invocation (`invoke`) waits for its own answer, so
+ * those are never coalesced.
+ */
+function isCoalescible(message: Record<string, unknown>): boolean {
+  return !(
+    'runInput' in message ||
+    'hookInput' in message ||
+    (Array.isArray(message.completeWaits) &&
+      message.completeWaits.length > 0) ||
+    message.recovery === true ||
+    message.invoke
+  );
+}
+
+/** A hook wake's resume timing, to carry to the re-run that covers it. */
+function resumeOf(
+  message: Record<string, unknown>
+): CoalescedResume | undefined {
+  if (message.hookResumeTiming === undefined) return undefined;
+  return {
+    hookResumeTiming: message.hookResumeTiming,
+    ...(message.traceCarrier !== undefined && {
+      traceCarrier: message.traceCarrier,
+    }),
+  };
+}
+
+/**
  * The key a queue sends when no World gave it one (a queue created on its
  * own, as unit tests do): the in-memory key of `@workflow/utils`, which the
  * runtime checks when no World registered a key source.
@@ -264,6 +449,7 @@ const inMemoryQueueAuthKey: QueueAuthKey = {
   current: async () => getQueueAuthKey(),
   reload: async () => getQueueAuthKey(),
   restore: async () => {},
+  written: async () => {},
 };
 
 export function createQueue(
@@ -271,9 +457,34 @@ export function createQueue(
   options: {
     /** The app's queue auth key, from `createWorld` (see `queue-auth-key.ts`). */
     queueAuthKey?: QueueAuthKey;
+    /**
+     * The spec version a run records, or `undefined` when it cannot be read.
+     * Read for an orchestrator message that carries none (see
+     * `Config.readUnstampedRunSpec`); omitted, such a message is not gated.
+     */
+    runSpecVersion?: (runId: string) => Promise<number | undefined>;
   } = {}
 ): LocalQueue {
   const queueAuthKey = options.queueAuthKey ?? inMemoryQueueAuthKey;
+  /**
+   * The message as the World gates it: an orchestrator message without a
+   * spec stamp (an older SDK's `resumeHook()` or `cancel()`, another client of
+   * the World) is stamped with its run's stored version when that is spec 9
+   * or later, so it is serialized with the run's other orchestrator
+   * deliveries instead of running beside the live one. Only unstamped
+   * messages pay the read; every message this runtime sends is stamped.
+   */
+  const stampFromRun = async (message: unknown): Promise<unknown> => {
+    if (!options.runSpecVersion) return message;
+    if (messageRunSpecVersion(message) !== undefined) return message;
+    const runId = orchestratorRunIdOf(message);
+    if (runId === undefined) return message;
+    const specVersion = await options.runSpecVersion(runId);
+    return specVersion !== undefined &&
+      specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+      ? { ...(message as Record<string, unknown>), runSpecVersion: specVersion }
+      : message;
+  };
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
   // mixes transports mid-flight.
@@ -294,7 +505,11 @@ export function createQueue(
   // health checks and earlier runs' messages are not gated (see
   // `singleOrchestratorRunIdOf`), so a run's steps keep running in parallel
   // with each other and with its orchestrator.
-  const runGate = createRunGate();
+  // Orchestrator messages that queue behind a running delivery of their run
+  // are coalesced into it: the holder takes them when its handler answers
+  // and runs it again, as world-vercel's concurrency key does (see
+  // `createOrchestratorGate`).
+  const runGate = createOrchestratorGate();
   // The same gate on the receiving side, held by `createQueueHandler` around
   // the handler. `runGate` only sees the messages this process's queue sends,
   // but a run's messages can come from several processes on one data
@@ -336,8 +551,38 @@ export function createQueue(
       : createWorkflowUrl(baseUrl, { type: 'flow' });
   };
 
-  const queue: Queue['queue'] = async (queueName, message, opts) => {
+  /**
+   * The body of a coalesced re-run: the delivery's own message, with the
+   * resume timing (and trace context) of a hook wake it absorbed in place of
+   * its own. The runtime starts a resume's latency measurement only from the
+   * `hookResumeTiming` of the message it handles, and the re-run is what
+   * consumes the absorbed resume. Its own timing is dropped either way: the
+   * first run consumed it, and a re-run must not report that resume again.
+   */
+  const rerunBody = (
+    message: unknown,
+    resume: CoalescedResume | undefined
+  ): Uint8Array => {
+    const { hookResumeTiming: _consumed, ...rest } = message as Record<
+      string,
+      unknown
+    >;
+    return transport.serialize(
+      resume
+        ? {
+            ...rest,
+            hookResumeTiming: resume.hookResumeTiming,
+            ...(resume.traceCarrier !== undefined && {
+              traceCarrier: resume.traceCarrier,
+            }),
+          }
+        : rest
+    );
+  };
+
+  const queue: Queue['queue'] = async (queueName, sentMessage, opts) => {
     const cleanup = [] as (() => void)[];
+    const message = await stampFromRun(sentMessage);
 
     if (opts?.idempotencyKey) {
       const existing = inflightMessages.get(opts.idempotencyKey);
@@ -352,9 +597,12 @@ export function createQueue(
     // below sets it. Dropped case-insensitively, since a differently cased
     // copy would be merged into the one the loop sets.
     const callerHeaders = Object.fromEntries(
-      Object.entries(opts?.headers ?? {}).filter(
-        ([name]) => name.toLowerCase() !== QUEUE_AUTH_HEADER
-      )
+      Object.entries(opts?.headers ?? {}).filter(([name]) => {
+        const lower = name.toLowerCase();
+        return (
+          lower !== QUEUE_AUTH_HEADER && lower !== INVOCATION_STARTED_AT_HEADER
+        );
+      })
     );
     const messageId = MessageId.parse(`msg_${generateId()}`);
     // One message for its whole life: every delivery below, including the
@@ -375,6 +623,14 @@ export function createQueue(
     // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a handoff: the
     // redelivery starts at once and the handed-off delivery is not an attempt.
     const handsOff = isSingleOrchestratorMessage(message);
+    const fields = message as Record<string, unknown>;
+    // Whether this message may be coalesced into its run's running delivery,
+    // and whether its own delivery covers messages coalesced into it with
+    // re-runs. An invocation waits for its own answer, so it does neither.
+    const coalescible =
+      orchestratorRunKey !== undefined && isCoalescible(fields);
+    const rerunsCoalesced =
+      orchestratorRunKey !== undefined && fields.invoke !== true;
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -405,10 +661,17 @@ export function createQueue(
        * because a message that is not being delivered occupies neither, as on
        * Vercel Queues.
        */
-      const acquireDelivery = async (): Promise<() => void> => {
-        const releaseRun = orchestratorRunKey
-          ? await runGate.acquire(orchestratorRunKey)
-          : undefined;
+      const acquireDelivery = async (): Promise<
+        { release: () => void; lease?: OrchestratorLease } | 'coalesced'
+      > => {
+        let lease: OrchestratorLease | undefined;
+        if (orchestratorRunKey) {
+          lease = await runGate.acquire(orchestratorRunKey, {
+            coalescible,
+            resume: resumeOf(fields),
+          });
+          if (!lease) return 'coalesced';
+        }
         if (!semaphore.tryAcquire()) {
           // Debug-gated: this is the semaphore doing its job. A fan-out wider
           // than the limit queues behind it and every message still runs, so
@@ -419,9 +682,12 @@ export function createQueue(
           );
           await semaphore.acquire();
         }
-        return () => {
-          semaphore.release();
-          releaseRun?.();
+        return {
+          release: () => {
+            semaphore.release();
+            lease?.release();
+          },
+          ...(lease && { lease }),
         };
       };
       // Handoffs counted as such per message, as Vercel Queues bounds them;
@@ -445,14 +711,40 @@ export function createQueue(
       // Refusals fixed by a new key, retried at once (see
       // `MAX_UNCOUNTED_KEY_ROTATIONS`).
       let keyRotations = 0;
+      // Coalesced re-runs, which, like handoffs, `attempt` and the safety
+      // limit leave out (a re-run is not a delivery of the queue).
+      let reruns = 0;
+      // Re-runs within the current hold of the run's gate.
+      let rerunsThisHold = 0;
+      // The body each delivery sends: the message, or for a re-run the
+      // message with the resume timing of a hook wake it absorbed
+      // (`rerunBody`), kept for the deliveries after it.
+      let deliveryBody: Uint8Array = body;
+      // When the current hold of the run's gate began (see
+      // `INVOCATION_STARTED_AT_HEADER`).
+      let holdStartedAt = 0;
       let releaseDelivery: (() => void) | undefined;
+      let lease: OrchestratorLease | undefined;
       const endDelivery = () => {
         releaseDelivery?.();
         releaseDelivery = undefined;
+        lease = undefined;
       };
       try {
-        for (let loop = 0; loop - handoffs < MAX_LOCAL_SAFETY_LIMIT; loop++) {
-          releaseDelivery = await acquireDelivery();
+        for (
+          let loop = 0;
+          loop - handoffs - reruns < MAX_LOCAL_SAFETY_LIMIT;
+          loop++
+        ) {
+          // Still held for a coalesced re-run or a handoff; else take it.
+          if (!releaseDelivery) {
+            const acquired = await acquireDelivery();
+            if (acquired === 'coalesced') return;
+            releaseDelivery = acquired.release;
+            lease = acquired.lease;
+            rerunsThisHold = 0;
+            holdStartedAt = Date.now();
+          }
           if (closeSignal.aborted) return;
           // The app's key, which the runtime checks before the handler does
           // any work (`queueAuthMode: 'loopback'`). Cached: no file read per
@@ -466,9 +758,12 @@ export function createQueue(
             ...(sentKey !== undefined && { [QUEUE_AUTH_HEADER]: sentKey }),
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(delivery + 1 - handoffs),
+            'x-vqs-message-attempt': String(delivery + 1 - handoffs - reruns),
             'x-vqs-message-delivery-count': String(delivery + 1),
             'x-vqs-message-created-at': createdAt,
+            ...(orchestratorRunKey && {
+              [INVOCATION_STARTED_AT_HEADER]: String(holdStartedAt),
+            }),
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
@@ -478,7 +773,7 @@ export function createQueue(
             if (directHandler) {
               const req = new Request(
                 deliveryUrl(resolveDirectBaseUrl(config), prefix),
-                { method: 'POST', headers, body }
+                { method: 'POST', headers, body: deliveryBody }
               );
               response = await directHandler(req);
             } else {
@@ -488,7 +783,7 @@ export function createQueue(
                 ? await nodeHttpFetch(url, {
                     method: 'POST',
                     headers: new Headers(headers),
-                    body,
+                    body: deliveryBody,
                     agents: nodeHttpAgents,
                     signal: closeSignal,
                     headersTimeoutMs: agentOptions.headersTimeout,
@@ -500,7 +795,7 @@ export function createQueue(
                     duplex: 'half',
                     dispatcher: httpAgent,
                     headers,
-                    body,
+                    body: deliveryBody,
                     signal: closeSignal,
                   } as any);
             }
@@ -539,6 +834,54 @@ export function createQueue(
             continue;
           }
 
+          // An acknowledged delivery covers the run's orchestrator messages
+          // that queued behind it, with a re-run while it still holds the
+          // gate (and its worker slot). Past the cap they are delivered as
+          // usual once it releases.
+          if (
+            response.ok &&
+            lease &&
+            rerunsCoalesced &&
+            rerunsThisHold < MAX_LOCAL_COALESCED_RERUNS &&
+            isAcknowledgement(text)
+          ) {
+            const taken = lease.takeWaiting();
+            if (taken.count > 0) {
+              reruns++;
+              rerunsThisHold++;
+              deliveryBody = rerunBody(message, taken.resume);
+              continue;
+            }
+          }
+          // A spec 9 handoff (`{ timeoutSeconds: 0 }`) is delivered again at
+          // once, before the run's orchestrator messages that queued behind
+          // it: it keeps the run's gate, as a new invocation (a fresh
+          // `invocationStartedAt` and re-run budget). That delivery reads the
+          // log, so it also covers the coalescible messages waiting behind
+          // it, and carries the resume timing of a hook wake among them: it
+          // is the delivery that consumes that resume. Without the gate (a
+          // message no gate holds) it is simply redelivered.
+          if (
+            response.ok &&
+            handsOff &&
+            handoffs < MAX_LOCAL_HANDOFFS &&
+            isHandoff(text)
+          ) {
+            handoffs++;
+            if (lease) {
+              holdStartedAt = Date.now();
+              rerunsThisHold = 0;
+              if (rerunsCoalesced) {
+                const taken = lease.takeWaiting();
+                if (taken.resume) {
+                  deliveryBody = rerunBody(message, taken.resume);
+                }
+              }
+            } else {
+              endDelivery();
+            }
+            continue;
+          }
           endDelivery();
           if (response.ok) {
             try {
@@ -711,6 +1054,12 @@ export function createQueue(
       .optional(),
     // Absent on a delivery from a sender that predates it.
     'x-vqs-message-created-at': z.iso.datetime().optional(),
+    // See `INVOCATION_STARTED_AT_HEADER`; absent from an older sender.
+    [INVOCATION_STARTED_AT_HEADER]: z.coerce
+      .number()
+      .int()
+      .positive()
+      .optional(),
   });
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
@@ -744,7 +1093,12 @@ export function createQueue(
         );
       }
 
-      const body = await new TypedJsonTransport().deserialize(req.body);
+      // A message from another process (a script, an older SDK) reaches only
+      // this gate, so an unstamped one is resolved from its run here too.
+      const body = await stampFromRun(
+        await new TypedJsonTransport().deserialize(req.body)
+      );
+      const invocationStartedAt = headers.data[INVOCATION_STARTED_AT_HEADER];
       const orchestratorRunId = singleOrchestratorRunIdOf(body);
       const releaseRun =
         orchestratorRunId === undefined
@@ -757,6 +1111,7 @@ export function createQueue(
           // starting at 1, including `{ timeoutSeconds }` redeliveries.
           deliveryCount: deliveryCountHeader ?? attempt,
           ...(createdAtHeader ? { createdAt: new Date(createdAtHeader) } : {}),
+          ...(invocationStartedAt !== undefined && { invocationStartedAt }),
           queueName,
           messageId,
         });
