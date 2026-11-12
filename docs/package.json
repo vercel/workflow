@@ -7,7 +7,7 @@
     "node": "24.x"
   },
   "scripts": {
-    "build": "next build && if [ -n \"$MXBAI_API_KEY\" ]; then geistdocs search sync --allow-non-production; fi",
+    "build": "next build && sh ./scripts/preview-mixedbread-sync.sh",
     "dev": "next dev --turbo",
     "start": "next start",
     "postinstall": "fumadocs-mdx",
