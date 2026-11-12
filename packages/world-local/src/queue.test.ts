@@ -17,6 +17,7 @@ import {
   DEFAULT_HEADERS_TIMEOUT_MS,
   getQueueAgentOptions,
   localRetryDelayMs,
+  MAX_LOCAL_COALESCED_RERUNS,
   MAX_LOCAL_SAFETY_LIMIT,
 } from './queue';
 
@@ -276,6 +277,33 @@ describe('queue timeout re-enqueue', () => {
     expect(new Set(metas.map((meta) => meta.createdAt?.getTime())).size).toBe(
       1
     );
+  });
+
+  it('dedupes simultaneous sends under the same idempotency key', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        await held;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    try {
+      const sent = await Promise.all([
+        localQueue.queue('__wkf_workflow_test' as any, workflowPayload, {
+          idempotencyKey: 'same-step',
+        }),
+        localQueue.queue('__wkf_workflow_test' as any, workflowPayload, {
+          idempotencyKey: 'same-step',
+        }),
+      ]);
+      expect(sent[1].messageId).toBe(sent[0].messageId);
+    } finally {
+      release();
+    }
   });
 
   it('dedupes a second send under the same idempotency key while the first message is retrying', async () => {
@@ -1119,6 +1147,379 @@ describe('per-run orchestrator serialization', () => {
     await vi.waitFor(() => expect(order).toEqual(['first', 'second']));
     wakeRedelivery();
     await vi.waitFor(() => expect(order).toEqual(['first', 'second', 'first']));
+  });
+});
+
+describe('coalescing a spec 9 run’s orchestrator messages', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+  const QUEUE = '__wkf_workflow_test' as any;
+  const spec9 = (runId: string, extra: Record<string, unknown> = {}) =>
+    ({
+      runId,
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      ...extra,
+    }) as any;
+
+  interface Seen {
+    messageId: string;
+    attempt: number;
+    deliveryCount?: number;
+    invocationStartedAt?: number;
+    body: Record<string, unknown>;
+  }
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * A handler that records every delivery. The first one waits until the
+   * test releases it; `answer` decides what each delivery returns.
+   */
+  function recordingHandler(
+    answer: (seen: Seen[], body: Record<string, unknown>) => unknown = () =>
+      undefined
+  ) {
+    const seen: Seen[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (message, meta) => {
+        const body = message as Record<string, unknown>;
+        seen.push({
+          messageId: meta.messageId,
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+          invocationStartedAt: meta.invocationStartedAt,
+          body,
+        });
+        if (seen.length === 1) await held;
+        return answer(seen, body);
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    return { seen, release };
+  }
+
+  it('covers the wakes queued behind a delivery with one re-run of it', async () => {
+    const { seen, release } = recordingHandler();
+    const { messageId } = await localQueue.queue(QUEUE, spec9('run_a'));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    const queued = await Promise.all([
+      localQueue.queue(QUEUE, spec9('run_a')),
+      localQueue.queue(QUEUE, spec9('run_a')),
+      localQueue.queue(QUEUE, spec9('run_a')),
+    ]);
+    // Another run's wake is not this run's to cover.
+    await localQueue.queue(QUEUE, spec9('run_b'));
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[1]?.body.runId).toBe('run_b');
+    release();
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    await new Promise((resolve) => setImmediate(resolve));
+    const runA = seen.filter((d) => d.body.runId === 'run_a');
+    expect(runA).toHaveLength(2);
+    // The re-run is the same message: the next delivery count, the same
+    // attempt and the same invocation start.
+    expect(runA.map((d) => d.messageId)).toEqual([messageId, messageId]);
+    expect(runA.map((d) => [d.attempt, d.deliveryCount])).toEqual([
+      [1, 1],
+      [1, 2],
+    ]);
+    expect(runA[0]?.invocationStartedAt).toBeGreaterThan(0);
+    expect(runA[1]?.invocationStartedAt).toBe(runA[0]?.invocationStartedAt);
+    // The coalesced wakes were never delivered.
+    for (const { messageId: id } of queued) {
+      expect(seen.some((d) => d.messageId === id)).toBe(false);
+    }
+  });
+
+  it("carries an absorbed hook wake's resume timing to the re-run, never the first run's own", async () => {
+    const { seen, release } = recordingHandler();
+    const own = { resumeRequestedAtMs: 1, queuePublishRequestedAtMs: 2 };
+    const absorbed = { resumeRequestedAtMs: 10, queuePublishRequestedAtMs: 20 };
+    const traceCarrier = { traceparent: '00-abc-def-01' };
+    await localQueue.queue(QUEUE, spec9('run_a', { hookResumeTiming: own }));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    await localQueue.queue(QUEUE, spec9('run_a'));
+    await localQueue.queue(
+      QUEUE,
+      spec9('run_a', { hookResumeTiming: absorbed, traceCarrier })
+    );
+    release();
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[0]?.body.hookResumeTiming).toEqual(own);
+    expect(seen[1]?.body).toMatchObject({
+      hookResumeTiming: absorbed,
+      traceCarrier,
+    });
+  });
+
+  it('re-runs a re-run that absorbed no timed wake without any timing', async () => {
+    const { seen, release } = recordingHandler();
+    await localQueue.queue(
+      QUEUE,
+      spec9('run_a', {
+        hookResumeTiming: {
+          resumeRequestedAtMs: 1,
+          queuePublishRequestedAtMs: 2,
+        },
+      })
+    );
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    await localQueue.queue(QUEUE, spec9('run_a'));
+    release();
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[1]?.body).not.toHaveProperty('hookResumeTiming');
+  });
+
+  it('leaves a start message, a legacy hook resume, a wake-up and an invocation to their own deliveries', async () => {
+    const { seen, release } = recordingHandler();
+    await localQueue.queue(QUEUE, spec9('run_a'));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    const start = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', {
+        runInput: {
+          input: [],
+          deploymentId: 'dpl',
+          workflowName: 'wf',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+      })
+    );
+    const legacy = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', {
+        hookInput: {
+          resumeId: 'res_1',
+          hookId: 'hook_1',
+          token: 'tok',
+          payload: 'x',
+          payloadDigest: 'digest',
+        },
+      })
+    );
+    // `run.wakeUp()`: coalesced, the waits it names would be lost.
+    const wakeUp = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', { completeWaits: ['wait_1'] })
+    );
+    release();
+    await vi.waitFor(() => expect(seen).toHaveLength(4));
+    expect(seen.map((d) => d.messageId).slice(1)).toEqual([
+      start.messageId,
+      legacy.messageId,
+      wakeUp.messageId,
+    ]);
+    expect(seen.slice(1).map((d) => d.deliveryCount)).toEqual([1, 1, 1]);
+    expect(seen[3]?.body.completeWaits).toEqual(['wait_1']);
+  });
+
+  it(`re-runs at most ${MAX_LOCAL_COALESCED_RERUNS} times per hold, then delivers what still waits`, async () => {
+    // Every delivery of the first message queues one more wake of its run.
+    const { seen, release } = recordingHandler((all, body) => {
+      if (all.length <= MAX_LOCAL_COALESCED_RERUNS + 1 && !body.marker) {
+        void localQueue.queue(QUEUE, spec9('run_a', { marker: all.length }));
+      }
+      return undefined;
+    });
+    const { messageId } = await localQueue.queue(QUEUE, spec9('run_a'));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    release();
+    await vi.waitFor(() =>
+      expect(seen.length).toBeGreaterThanOrEqual(MAX_LOCAL_COALESCED_RERUNS + 2)
+    );
+    const first = seen.filter((d) => d.messageId === messageId);
+    expect(first).toHaveLength(MAX_LOCAL_COALESCED_RERUNS + 1);
+    expect(first.at(-1)?.deliveryCount).toBe(MAX_LOCAL_COALESCED_RERUNS + 1);
+    expect(new Set(first.map((d) => d.attempt))).toEqual(new Set([1]));
+    // The wake queued by its last re-run is delivered as its own message.
+    const next = seen[MAX_LOCAL_COALESCED_RERUNS + 1];
+    expect(next?.messageId).not.toBe(messageId);
+    expect(next?.deliveryCount).toBe(1);
+  });
+
+  it('delivers a handoff before the messages queued behind it, as a new invocation', async () => {
+    let handedOff = false;
+    const { seen, release } = recordingHandler((_all, body) => {
+      if (!handedOff && body.tag === 'first') {
+        handedOff = true;
+        return { timeoutSeconds: 0 };
+      }
+      return undefined;
+    });
+    const first = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', { tag: 'first' })
+    );
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    // Not coalescible, so only the handoff's position decides who goes next.
+    const start = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', {
+        runInput: {
+          input: [],
+          deploymentId: 'dpl',
+          workflowName: 'wf',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+      })
+    );
+    const startedAt = seen[0]?.invocationStartedAt ?? 0;
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    expect(seen.map((d) => d.messageId)).toEqual([
+      first.messageId,
+      first.messageId,
+      start.messageId,
+    ]);
+    expect(seen[1]).toMatchObject({ attempt: 1, deliveryCount: 2 });
+    expect(seen[1]?.invocationStartedAt).toBeGreaterThanOrEqual(startedAt);
+  });
+
+  it("covers the wakes waiting behind a handoff with its redelivery, carrying a hook wake's timing", async () => {
+    let handedOff = false;
+    const { seen, release } = recordingHandler((_all, body) => {
+      if (!handedOff && body.tag === 'first') {
+        handedOff = true;
+        return { timeoutSeconds: 0 };
+      }
+      return undefined;
+    });
+    const absorbed = { resumeRequestedAtMs: 10, queuePublishRequestedAtMs: 20 };
+    const first = await localQueue.queue(
+      QUEUE,
+      spec9('run_a', { tag: 'first' })
+    );
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    const wakes = await Promise.all([
+      localQueue.queue(QUEUE, spec9('run_a')),
+      localQueue.queue(QUEUE, spec9('run_a', { hookResumeTiming: absorbed })),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The handed-off redelivery covered both wakes: no re-run after it, and
+    // neither wake was delivered.
+    expect(seen.map((d) => d.messageId)).toEqual([
+      first.messageId,
+      first.messageId,
+    ]);
+    expect(seen[1]?.body.hookResumeTiming).toEqual(absorbed);
+    for (const { messageId: id } of wakes) {
+      expect(seen.some((d) => d.messageId === id)).toBe(false);
+    }
+  });
+});
+
+describe('an unstamped orchestrator message of a spec 9 run', () => {
+  const QUEUE = '__wkf_workflow_test' as any;
+  const queues: ReturnType<typeof createQueue>[] = [];
+  const runSpecs: Record<string, number> = {
+    run_9: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    run_8: SPEC_VERSION_SINGLE_ORCHESTRATOR - 1,
+  };
+  const reads: string[] = [];
+  const runSpecVersion = async (runId: string) => {
+    reads.push(runId);
+    return runSpecs[runId];
+  };
+
+  afterEach(async () => {
+    for (const queue of queues.splice(0)) await queue.close();
+    reads.length = 0;
+    vi.restoreAllMocks();
+  });
+
+  function setup() {
+    const app = createQueue(
+      { baseUrl: 'http://localhost:3000' },
+      { runSpecVersion }
+    );
+    queues.push(app);
+    const seen: Record<string, unknown>[] = [];
+    const releases: (() => void)[] = [];
+    const handler = app.createQueueHandler(
+      '__wkf_workflow_',
+      async (message) => {
+        seen.push(message as Record<string, unknown>);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return undefined;
+      }
+    );
+    app.registerHandler('__wkf_workflow_', handler);
+    return { app, handler, seen, releases };
+  }
+
+  it("is stamped with its run's version and waits behind the run's live delivery", async () => {
+    const { app, seen, releases } = setup();
+    await app.queue(QUEUE, {
+      runId: 'run_9',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      tag: 'live',
+    } as any);
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    // What an older SDK's resumeHook() sends: no stamp.
+    await app.queue(QUEUE, { runId: 'run_9', tag: 'unstamped' } as any);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(seen).toHaveLength(1);
+    releases[0]?.();
+    // Coalesced into the live delivery's re-run.
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[1]).toMatchObject({ tag: 'live' });
+    releases[1]?.();
+    expect(reads).toEqual(['run_9']);
+  });
+
+  it("is gated by the receiving process when another process's queue sends it", async () => {
+    const { handler, seen, releases, app } = setup();
+    const older = createQueue({ baseUrl: 'http://localhost:3000' });
+    queues.push(older);
+    older.registerHandler('__wkf_workflow_', handler);
+    await app.queue(QUEUE, {
+      runId: 'run_9',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    } as any);
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    // The other process's queue reads nothing and sends it unstamped.
+    await older.queue(QUEUE, { runId: 'run_9', tag: 'older' } as any);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(seen).toHaveLength(1);
+    releases[0]?.();
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[1]).toMatchObject({
+      tag: 'older',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    releases[1]?.();
+  });
+
+  it('is delivered as it is for a spec 8 run, and stamped messages are not read', async () => {
+    const { app, seen, releases } = setup();
+    await app.queue(QUEUE, { runId: 'run_8' } as any);
+    await app.queue(QUEUE, { runId: 'run_8' } as any);
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    expect(seen[0]).toEqual({ runId: 'run_8' });
+    for (const release of releases) release();
+    reads.length = 0;
+    await app.queue(QUEUE, {
+      runId: 'run_9',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    } as any);
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    releases[2]?.();
+    expect(reads).toEqual([]);
   });
 });
 

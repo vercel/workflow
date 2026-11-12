@@ -30,6 +30,21 @@ import {
   readQueueAuthKeyFile,
 } from './queue-auth-key.js';
 
+/** While set, renaming a file over a key file waits for it. */
+const keyRename = vi.hoisted(() => ({
+  held: undefined as Promise<void> | undefined,
+}));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      if (String(args[1]).endsWith('queue-auth-key')) await keyRename.held;
+      return actual.rename(...args);
+    },
+  };
+});
+
 let base: string;
 
 beforeEach(() => {
@@ -37,6 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  keyRename.held = undefined;
   // A fresh process for the next test: no key held, no receiving-side source.
   resetGlobalSingletonForTest('@workflow/world-local//queueAuthKeyFiles', 1);
   clearQueueAuthKeySources();
@@ -373,14 +389,45 @@ describe('a reader (the CLI, the web UI, world-postgres)', () => {
   });
 });
 
+describe('world.start()', () => {
+  it('resolves only once the key is in the file', async () => {
+    const dataDir = path.join(base, 'data');
+    let release!: () => void;
+    keyRename.held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const world = createWorld({ dataDir, recoverActiveRuns: false });
+    try {
+      const starting = world.start?.().then(() => 'started' as const);
+      // Two processes of the app started at once: each reports started only
+      // once its key is written, so the file then holds the last write.
+      expect(
+        await Promise.race([
+          starting,
+          new Promise((resolve) => setTimeout(resolve, 500, 'held')),
+        ])
+      ).toBe('held');
+      expect(existsSync(keyFile(dataDir))).toBe(false);
+
+      release();
+      expect(await starting).toBe('started');
+      const key = await createQueueAuthKey(dataDir, 'regenerate').current();
+      expect(readKey(dataDir)).toBe(key);
+    } finally {
+      release();
+      await world.close?.();
+    }
+  });
+});
+
 describe('world.clear()', () => {
   it('writes the same key again, so the CLI and the running app keep working', async () => {
     const dataDir = path.join(base, 'data');
     const world = createWorld({ dataDir });
     try {
       await world.start?.();
-      // start() does not wait for the key write; this does (the same process
-      // and directory: it returns the World's key, it does not make one).
+      // The same process and directory: this returns the World's key, it does
+      // not make one.
       const key = await createQueueAuthKey(dataDir, 'regenerate').current();
       expect(readKey(dataDir)).toBe(key);
       expect(await verifyQueueAuthKey(key)).toBe(true);

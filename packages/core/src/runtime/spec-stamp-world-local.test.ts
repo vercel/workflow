@@ -185,9 +185,13 @@ describe('spec stamps on world-local', () => {
     for (const spec of routed) expect(spec.specVersion).toBe(specVersion);
   });
 
+  // world-local stamps an unstamped orchestrator message of a spec 9 run
+  // with the run's stored version, so it is gated like the run's other
+  // orchestrator messages and routing does not read the run again. A spec 8
+  // run's message stays unstamped, and routing reads the run once.
   it.each(
     cases
-  )('reads the run once for an unstamped message of a spec $specVersion run ($engine)', async ({
+  )('resolves an unstamped message of a spec $specVersion run from the run once ($engine)', async ({
     specVersion,
     engine,
   }) => {
@@ -196,7 +200,12 @@ describe('spec stamps on world-local', () => {
       workflowVm: engine === 'quickjs' ? 'quickjs' : undefined,
       startMessage: (runId) => ({ runId }),
     });
-    expect(routingReads()).toBe(1);
+    if (specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+      expect(routingReads()).toBe(0);
+      expect(routed[0]?.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    } else {
+      expect(routingReads()).toBe(1);
+    }
   });
 
   it.each([

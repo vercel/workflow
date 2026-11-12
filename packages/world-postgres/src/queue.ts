@@ -295,6 +295,9 @@ export function createQueue(
     dataDir: undefined,
     port,
     queueAuthKey: 'read',
+    // This World's runs are in Postgres, not in the Local World's storage,
+    // and its worker resolves an unstamped orchestrator message itself.
+    readUnstampedRunSpec: false,
   });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
