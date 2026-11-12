@@ -24,6 +24,8 @@ import {
   parseQueueName,
   parseQueueRoute,
   type Queue,
+  type QueueOptions,
+  type QueuePayload,
   QueuePayloadSchema,
   QueuePrefix,
   resolveQueueNamespace,
@@ -266,7 +268,21 @@ function executorInput(message: unknown) {
 /**
  * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
-export type PostgresQueue = Queue & {
+export type PostgresQueue = Omit<Queue, 'queue'> & {
+  queue(
+    queueName: ValidQueueName,
+    message: QueuePayload,
+    opts?: QueueOptions & {
+      /**
+       * The Graphile `jobKey`, in place of the idempotency key or the
+       * message id. Unlike `idempotencyKey` it is not carried on the
+       * message, so the delivery keeps the unkeyed path (per-run
+       * serialization, no completed-message dedupe). Startup recovery keys
+       * its job by run with it.
+       */
+      jobKey?: string;
+    }
+  ): ReturnType<Queue['queue']>;
   start(): Promise<void>;
   close(): Promise<void>;
   /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
@@ -1037,7 +1053,7 @@ export function createQueue(
       ? 'unsafe_dedupe'
       : 'preserve_run_at';
 
-  const queue: Queue['queue'] = async (queue, message, opts) => {
+  const queue: PostgresQueue['queue'] = async (queue, message, opts) => {
     await start();
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
@@ -1059,7 +1075,7 @@ export function createQueue(
       idempotencyKey: opts?.idempotencyKey,
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
-      jobKey: opts?.idempotencyKey ?? messageId,
+      jobKey: opts?.jobKey ?? opts?.idempotencyKey ?? messageId,
       jobKeyMode: jobKeyModeFor(message, opts?.idempotencyKey),
       // Only the SDK's own prefix carries workflow runs; a queue consumer's
       // own messages are never serialized by run.
@@ -1416,6 +1432,31 @@ export function createQueue(
         }
 
         if (result.type === 'completed') {
+          // The run has consumed the wakes it had, and a wake stored while
+          // this delivery ran queued its own job, so startup recovery may
+          // treat the run as parked again (see `createRecoverableRunsList`).
+          // A step delivery or wait-timer hop is not an orchestrator
+          // delivery and leaves the flag set. Best effort: a flag left set
+          // costs the run one replay at the next start(), which is no
+          // reason to fail a delivery that completed.
+          const completedRunId = orchestratorRunIdOf(body);
+          if (completedRunId) {
+            await pool
+              .query(
+                `UPDATE workflow.workflow_runs
+                 SET wake_pending = false
+                 WHERE id = $1 AND wake_pending IS TRUE`,
+                [completedRunId]
+              )
+              .catch((error: { code?: unknown }) => {
+                // No runs table (the queue used on its own) or no
+                // migration 0031: nothing to clear.
+                if (error?.code === '42P01' || error?.code === '42703') return;
+                console.warn(
+                  `[world-postgres] Could not clear wake_pending for run ${completedRunId}: ${error}`
+                );
+              });
+          }
           return 'completed';
         }
 

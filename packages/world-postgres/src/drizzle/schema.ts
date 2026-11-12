@@ -165,6 +165,15 @@ export const runs = schema.table(
      */
     jobPrefix: varchar('job_prefix'),
     /**
+     * Whether an orchestrator delivery is owed: set in the transaction of an
+     * event that wakes the run (or of `run_started`), cleared when an
+     * orchestrator delivery completes. Startup recovery skips a run parked
+     * on a hook or wait only while it is clear, so a wake whose job was
+     * never queued (the process died between the two) still recovers.
+     * Internal, stripped from the run returned to callers.
+     */
+    wakePending: boolean('wake_pending').notNull().default(false),
+    /**
      * The start Hook this run was admitted with through `start({ experimental_hook })`,
      * without its metadata (which lives on the start Hook's own row in
      * `workflow_hooks`). Echo only: the Hook row is what holds the token.
@@ -183,7 +192,11 @@ export const runs = schema.table(
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
       'input' | 'output' | 'executionContext' | 'error'
-    > & { dynamicWorkflowCode?: SerializedData; jobPrefix?: string }
+    > & {
+      dynamicWorkflowCode?: SerializedData;
+      jobPrefix?: string;
+      wakePending?: boolean;
+    }
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
