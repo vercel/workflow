@@ -149,6 +149,45 @@ describe('ReplayPayloadCache', () => {
     ]);
   });
 
+  it('drains a long speculative queue once and in order around demands', async () => {
+    const count = 4000;
+    const demanded = [1000, 2000, 3000];
+    const starts: number[] = [];
+    let releaseFirst!: () => void;
+    const preparer: ReplayPayloadPreparer = (value) => {
+      const bytes = value as Uint8Array;
+      starts.push(bytes[0] | (bytes[1] << 8));
+      if (starts.length > 1) return { data: bytes };
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ data: bytes });
+      });
+    };
+    const cache = new ReplayPayloadCache(undefined, preparer, {
+      concurrency: 1,
+    });
+    const events = Array.from({ length: count }, (_, index) => ({
+      ...makeEvents([new Uint8Array([index & 0xff, index >> 8])])[0],
+      eventId: `evnt_${index}`,
+    }));
+
+    const warming = cache.prewarm(makeRun(undefined), events);
+    const demands = demanded.map((index) =>
+      cache.prepareEventPayload(
+        replayPayloadEventKey(events[index]),
+        'result',
+        events[index].eventData?.result
+      )
+    );
+    await vi.waitFor(() => expect(starts).toEqual([0, ...demanded]));
+    releaseFirst();
+    await Promise.all([warming, ...demands]);
+
+    const rest = Array.from({ length: count }, (_, index) => index).filter(
+      (index) => index !== 0 && !demanded.includes(index)
+    );
+    expect(starts).toEqual([0, ...demanded, ...rest]);
+  });
+
   it('retains a speculative failure until its ordered consumer observes it', async () => {
     const failure = new Error('original speculative failure');
     const preparer = vi.fn<ReplayPayloadPreparer>((value) => {
@@ -199,7 +238,7 @@ describe('ReplayPayloadCache', () => {
     ).toThrow(RangeError);
   });
 
-  it('decrypts a 2000-event log once across three replays above 32 MiB', async () => {
+  it('prepares each payload once across repeated full replays', async () => {
     const key = await importKey(new Uint8Array(32).fill(7));
     const payloads = await Promise.all(
       Array.from({ length: 2000 }, (_, index) =>
@@ -242,7 +281,7 @@ describe('ReplayPayloadCache', () => {
     }
   });
 
-  it('retains a single encrypted payload larger than 32 MiB', async () => {
+  it('retains a single large prepared payload', async () => {
     const key = await importKey(new Uint8Array(32).fill(7));
     const serialized = await dehydrateStepReturnValue(
       'x'.repeat(34 * 1024 * 1024),

@@ -51,6 +51,14 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * preparation has a concurrency limit; a demanded queued payload starts
  * immediately. Failed speculation remains until its ordered consumer observes
  * the original error.
+ *
+ * The concurrency limit buys latency, not throughput or memory. Each Web Crypto
+ * decrypt runs on the libuv threadpool; without a limit, prewarming an
+ * encrypted log queues every decrypt at once, so the first demanded payload and
+ * unrelated threadpool work (fs, `dns.lookup`, async zlib) wait behind the
+ * whole log. Unencrypted payloads are decompressed synchronously, so the limit
+ * does not change how long they block the main thread. Many tiny encrypted
+ * payloads pay a small per-job scheduling cost for it.
  */
 export class ReplayPayloadCache {
   private readonly preparedPayloads = new Map<
@@ -61,6 +69,10 @@ export class ReplayPayloadCache {
   private readonly encryptionKey: Promise<PayloadKey | undefined>;
   private nextUnscannedEventIndex = 0;
   private readonly speculative = new Map<string, PreparationJob>();
+  // FIFO of speculative keys. A Map's front cannot be popped in O(1): deleted
+  // entries stay in V8's table and every new iterator skips them again.
+  private speculativeOrder: string[] = [];
+  private speculativeHead = 0;
   private readonly concurrency: number;
   private activeSpeculative = 0;
 
@@ -211,6 +223,7 @@ export class ReplayPayloadCache {
       this.runJob(job, false);
     } else {
       this.speculative.set(cacheKey, job);
+      this.speculativeOrder.push(cacheKey);
       this.drainPreparations();
     }
     return preparation;
@@ -227,12 +240,20 @@ export class ReplayPayloadCache {
   }
 
   private drainPreparations(): void {
-    while (this.activeSpeculative < this.concurrency) {
-      const entry = this.speculative.entries().next().value;
-      if (!entry) break;
-      const [key, job] = entry;
+    while (
+      this.activeSpeculative < this.concurrency &&
+      this.speculativeHead < this.speculativeOrder.length
+    ) {
+      const key = this.speculativeOrder[this.speculativeHead++];
+      const job = this.speculative.get(key);
+      // A demand already started this job.
+      if (!job) continue;
       this.speculative.delete(key);
       this.runJob(job, true);
+    }
+    if (this.speculativeHead === this.speculativeOrder.length) {
+      this.speculativeOrder = [];
+      this.speculativeHead = 0;
     }
   }
 
