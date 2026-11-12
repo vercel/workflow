@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { databaseFor } from '../db/index.js';
 import { createStorage } from '../storage.js';
 import { createRun } from '../test-helpers.js';
@@ -16,12 +16,17 @@ import { createRun } from '../test-helpers.js';
 let dataDir: string;
 
 beforeEach(() => {
+  // Connections kept open: on Windows world-local's tests otherwise open one
+  // per operation, which makes this many large writes too slow. The
+  // connection is closed before the directory is removed.
+  vi.stubEnv('WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS', '1');
   dataDir = mkdtempSync(path.join(tmpdir(), 'events-page-bytes-'));
 });
 
 afterEach(() => {
   databaseFor(dataDir).close();
   rmSync(dataDir, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 it('ends a page of large events early, and the cursor reaches every event', async () => {
