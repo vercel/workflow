@@ -1525,14 +1525,29 @@ async function runDelivery(
           writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
         }
       } else if (loadOutcome.status === 'rejected') {
-        // A World contract error on the log load fails the run
-        // (out-of-band, since there is no fence snapshot); any
-        // other load failure redelivers.
-        workflowRun ??= run;
-        if (await recordWorkflowSetupFailure(loadOutcome.reason)) {
-          return undefined;
+        try {
+          const error = loadOutcome.reason;
+          if (
+            !WorkflowRunNotFoundError.is(error) &&
+            !(WorkflowWorldError.is(error) && error.status === 404)
+          ) {
+            throw error;
+          }
+          // Queue delivery can beat run_created. The concurrent run read
+          // has now found the run, so reload history once before paying for
+          // a queue redelivery. Use fullLoad to adopt the real fence; a
+          // successful run read alone never authorizes an empty snapshot.
+          span?.addEvent('workflow.replay.load.not_found_retry');
+          await fullLoad();
+        } catch (error) {
+          // A World contract error fails the run (out-of-band if no fence
+          // was loaded); any other failure retains normal redelivery.
+          workflowRun ??= run;
+          if (await recordWorkflowSetupFailure(error)) {
+            return undefined;
+          }
+          throw error;
         }
-        throw loadOutcome.reason;
       }
       if (run && isTerminalWorkflowRunStatus(run.status)) {
         runtimeLogger.info('Workflow already completed or failed, skipping', {
