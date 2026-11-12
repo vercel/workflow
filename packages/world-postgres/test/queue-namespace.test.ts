@@ -72,6 +72,7 @@ describe.skipIf(process.platform === 'win32')(
         pool
       );
       const delivered: string[] = [];
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         queue.registerHandler(sdkPrefix, flowHandler(delivered));
         await queue.start();
@@ -81,7 +82,20 @@ describe.skipIf(process.platform === 'win32')(
         await expect
           .poll(() => delivered, { timeout: 10_000 })
           .toEqual([messageId]);
+        // Said once, naming both prefixes and the variable to set; this
+        // process is a worker, so it is not told that it only enqueues.
+        const warnings = warn.mock.calls.map((call) => String(call[0]));
+        expect(warnings.filter((w) => w.includes('only enqueues'))).toEqual([]);
+        const mismatch = warnings.filter((w) =>
+          w.includes('WORKFLOW_QUEUE_NAMESPACE')
+        );
+        expect(mismatch).toHaveLength(1);
+        expect(mismatch[0]).toContain(`"${sdkPrefix}"`);
+        expect(mismatch[0]).toContain(
+          `"${getQueueTopicPrefix('workflow', 'tenant')}"`
+        );
       } finally {
+        warn.mockRestore();
         await queue.close();
       }
     }, 30_000);

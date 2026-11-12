@@ -448,6 +448,19 @@ export function createQueue(
     getQueueTopicPrefix('workflow', resolveQueueNamespace(config.namespace));
   /** In-process handlers by queue prefix (`registerHandler`). */
   const directHandlers = new Map<string, QueueRouteHandler>();
+  /**
+   * Whether the Workflow SDK's flow handler (one with the in-process entry)
+   * is registered here, under any prefix: the route registers for the
+   * prefix it was built with (`WORKFLOW_QUEUE_NAMESPACE` at build time),
+   * which is this World's own unless the two namespaces differ (see
+   * `registerHandler`). A worker runs wherever that handler is.
+   */
+  const hasFlowHandler = () => {
+    for (const handler of directHandlers.values()) {
+      if (typeof handler[IN_PROCESS_QUEUE_HANDLER] === 'function') return true;
+    }
+    return false;
+  };
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
   /**
@@ -1037,13 +1050,13 @@ export function createQueue(
   /**
    * Starts the Graphile runner once this process is a worker: the queue is
    * started (`workerUtils` is ready), it is not closing, and the Workflow
-   * SDK's flow handler is registered for this World's prefix. Called from
+   * SDK's flow handler is registered (`hasFlowHandler`). Called from
    * `start()` and from `registerHandler()`, whichever comes second. At most
    * one runner: a start in flight is shared, not repeated.
    */
   function ensureRunner(): Promise<void> {
     if (runnerStarting) return runnerStarting;
-    if (closing || runner || !workerUtils || !directHandlers.has(ownPrefix())) {
+    if (closing || runner || !workerUtils || !hasFlowHandler()) {
       return Promise.resolve();
     }
     runnerStarting = setupListeners().finally(() => {
@@ -1125,7 +1138,7 @@ export function createQueue(
    * check (the SDK release, how it was built, the startup hook docs).
    */
   function noteEnqueueOnly(): void {
-    if (closing || enqueueOnlyNoted || directHandlers.has(ownPrefix())) return;
+    if (closing || enqueueOnlyNoted || hasFlowHandler()) return;
     enqueueOnlyNoted = true;
     console.warn(
       '[postgres world] No flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), that the app was built for this World (a Next.js app inlines the worker import at build time: build with WORKFLOW_TARGET_WORLD set to this package), and follow the Postgres World docs, "Run the worker when your server starts".'
@@ -1750,6 +1763,18 @@ export function createQueue(
         // startup, says so once instead of failing every delivery.
         throw new Error(
           "[postgres world] The flow handler registered for the Workflow SDK's queue has no in-process entry (IN_PROCESS_QUEUE_HANDLER from @workflow/world), so the World cannot deliver to it: the flow route takes no HTTP. Hand the World the generated flow route through registerWorkflowHandler() from workflow/runtime, which the framework integrations call when the app starts."
+        );
+      }
+      if (
+        parsed !== ownPrefix() &&
+        typeof handler[IN_PROCESS_QUEUE_HANDLER] === 'function'
+      ) {
+        // The route was built with another WORKFLOW_QUEUE_NAMESPACE than the
+        // World's `namespace` option. Its messages are delivered, but as a
+        // queue consumer's: the per-run ordering and the executor lanes are
+        // kept for this World's own prefix only.
+        console.warn(
+          `[postgres world] The flow handler is registered for queue prefix "${parsed}", but this World's namespace gives "${ownPrefix()}", so the Workflow SDK's messages are delivered as a queue consumer's, without the per-run ordering kept for the World's own prefix. Set WORKFLOW_QUEUE_NAMESPACE at build time to the World's namespace option, so both name the same prefix.`
         );
       }
       directHandlers.set(parsed, handler);
