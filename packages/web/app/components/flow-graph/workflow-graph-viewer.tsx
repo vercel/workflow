@@ -33,6 +33,7 @@ export interface NodeStyleResult {
   backgroundColor: string;
   borderColor: string;
   borderWidth?: number;
+  opacity?: number;
 }
 
 export interface LoopNodeData {
@@ -111,7 +112,8 @@ export function LoopNodeComponent({ data, selected }: NodeProps) {
         borderStyle: 'solid',
         backgroundColor: nodeData.nodeStyle?.backgroundColor,
         borderColor: nodeData.nodeStyle?.borderColor ?? '#9ca3af',
-        boxShadow: selected ? '0 0 0 2px var(--ds-purple-500)' : undefined,
+        opacity: nodeData.nodeStyle?.opacity,
+        boxShadow: selected ? '0 0 0 2px rgba(168, 85, 247, 0.5)' : undefined,
       }}
     >
       {/* Node content */}
@@ -203,7 +205,8 @@ export function DiamondNodeComponent({ data, selected }: NodeProps) {
           borderRadius: 4,
           backgroundColor: nodeData.nodeStyle?.backgroundColor,
           borderColor: nodeData.nodeStyle?.borderColor ?? '#ef4444',
-          boxShadow: selected ? '0 0 0 2px var(--ds-red-500)' : undefined,
+          opacity: nodeData.nodeStyle?.opacity,
+          boxShadow: selected ? '0 0 0 2px rgba(239, 68, 68, 0.5)' : undefined,
         }}
       />
       {/* Label overlay (not rotated) */}
@@ -272,7 +275,8 @@ export const defaultSelfLoopStyle: SelfLoopEdgeStyle = {
 // Execution self-loop edge style (purple for execution view)
 export const executionSelfLoopStyle: SelfLoopEdgeStyle = {
   strokeColor: '#a855f7', // purple-500
-  labelBgClass: 'bg-purple-200 text-gray-1000 border-purple-400',
+  labelBgClass:
+    'bg-purple-200 dark:bg-purple-900/50 text-black dark:text-purple-200 border-purple-400 dark:border-purple-600',
 };
 
 // Factory to create a self-loop edge component with custom styling
@@ -585,8 +589,8 @@ export function calculateEnhancedLayout(
       style: {
         width: groupWidth,
         height: groupHeight,
-        backgroundColor: 'var(--ds-blue-100)',
-        border: '2px dashed var(--ds-blue-400)',
+        backgroundColor: 'rgba(59, 130, 246, 0.05)',
+        border: '2px dashed rgba(59, 130, 246, 0.3)',
         borderRadius: 12,
       },
       data: { label: methodLabel, groupWidth, groupHeight },
@@ -976,6 +980,7 @@ function convertToReactFlowEdges(workflow: WorkflowGraph): Edge[] {
       labelBgBorderRadius: 4,
       labelBgStyle: {
         fill: labelBgColor,
+        fillOpacity: 0.95,
         stroke: labelBorderColor,
         strokeWidth: 1,
       },
@@ -1032,7 +1037,7 @@ export function WorkflowGraphViewer({ workflow }: WorkflowGraphViewerProps) {
         <Controls />
         <Panel
           position="top-left"
-          className="bg-background-100 border rounded-lg p-3 text-xs"
+          className="bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border rounded-lg p-3 text-xs"
         >
           <div className="space-y-3">
             {/* Node types */}

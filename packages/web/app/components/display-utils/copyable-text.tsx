@@ -39,7 +39,7 @@ export function CopyableText({
             <button
               type="button"
               onClick={handleCopy}
-              className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/copy:opacity-100 transition-opacity bg-background-100 p-1 rounded"
+              className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/copy:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm p-1 rounded"
               aria-label="Copy to clipboard"
             >
               {copied ? (

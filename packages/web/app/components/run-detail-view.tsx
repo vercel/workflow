@@ -535,7 +535,7 @@ export function RunDetailView({
             <AlertDialogCancel>Keep Running</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmCancel}
-              className="bg-destructive text-destructive-foreground hover:bg-red-800"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Cancel Run
             </AlertDialogAction>

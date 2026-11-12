@@ -21,7 +21,7 @@ export function SidePanel({
       {/* Backdrop */}
       <button
         type="button"
-        className="fixed inset-0 backdrop-brightness-50 z-40"
+        className="fixed inset-0 bg-black/50 z-40"
         onClick={onClose}
         onKeyDown={(e) => {
           if (e.key === 'Escape') onClose();
