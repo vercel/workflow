@@ -64,15 +64,15 @@ const buttonVariants = cva(
           '[[data-theme=dark]_&]:[--themed-hover-bg:_var(--ds-gray-200)]',
         ],
         // Tertiary is the one variant allowed to go borderless when disabled;
-        // it drops to 50% opacity instead.
+        // it keeps a transparent fill and takes the base gray-700 text.
         tertiary: [
           '[--themed-bg:_transparent]',
           '[--themed-fg:_var(--ds-gray-1000)]',
           '[--themed-border:_transparent]',
           // The alpha token already flips with the theme.
           '[--themed-hover-bg:_var(--ds-gray-alpha-200)]',
-          'disabled:bg-transparent disabled:opacity-50 disabled:shadow-none disabled:hover:bg-transparent',
-          'aria-disabled:bg-transparent aria-disabled:opacity-50 aria-disabled:shadow-none aria-disabled:hover:bg-transparent',
+          'disabled:bg-transparent disabled:shadow-none disabled:hover:bg-transparent',
+          'aria-disabled:bg-transparent aria-disabled:shadow-none aria-disabled:hover:bg-transparent',
         ],
       },
       // Radii are literal rather than `rounded-md`/`rounded-lg`: apps that

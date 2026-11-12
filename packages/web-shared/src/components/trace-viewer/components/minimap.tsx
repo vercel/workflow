@@ -504,7 +504,7 @@ export const Minimap = memo(function Minimap({
       {selection ? (
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 border border-blue-500 bg-blue-300 opacity-40"
+          className="pointer-events-none absolute inset-y-0 border border-blue-500 bg-blue-300 mix-blend-multiply [.dark-theme_&]:mix-blend-screen [.dark_&]:mix-blend-screen [[data-theme=dark]_&]:mix-blend-screen"
           style={{ left: selection.x0, width: selection.x1 - selection.x0 }}
         />
       ) : null}

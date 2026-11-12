@@ -7,7 +7,7 @@ const kbdVariants = cva(
   {
     variants: {
       variant: {
-        subtle: 'bg-background-100/20',
+        subtle: 'bg-gray-alpha-200',
         outline:
           'border border-gray-alpha-400 bg-background-100 font-medium text-gray-900',
       },

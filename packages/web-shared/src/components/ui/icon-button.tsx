@@ -6,7 +6,7 @@ const iconButtonVariants = cva(
   [
     'm-0 inline-flex shrink-0 appearance-none items-center justify-center border-0 bg-transparent p-0 align-baseline font-inherit no-underline [background:none] [-webkit-appearance:none] [-webkit-tap-highlight-color:transparent]',
     'transition-colors duration-150 ease-in-out',
-    'enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40',
+    'enabled:cursor-pointer disabled:cursor-not-allowed disabled:text-gray-700',
     'focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] focus-visible:outline-offset-2',
   ],
   {

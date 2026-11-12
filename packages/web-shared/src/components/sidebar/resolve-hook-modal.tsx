@@ -118,7 +118,7 @@ export function ResolveHookModal({
     >
       {/* Backdrop: matches Geist dialog ::backdrop */}
       <div
-        className="absolute inset-0 bg-black/70"
+        className="absolute inset-0 backdrop-brightness-[0.3]"
         onClick={isSubmitting ? undefined : onClose}
       />
 
@@ -137,7 +137,7 @@ export function ResolveHookModal({
             onClick={onClose}
             disabled={isSubmitting}
             aria-label="Close modal"
-            className="flex cursor-pointer items-center justify-center rounded-md !border-none !bg-transparent p-1 text-gray-900 transition-colors hover:!bg-gray-alpha-200 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex cursor-pointer items-center justify-center rounded-md !border-none !bg-transparent p-1 text-gray-900 transition-colors hover:!bg-gray-alpha-200 disabled:cursor-not-allowed disabled:text-gray-700 disabled:hover:!bg-transparent"
           >
             <X className="size-4" />
           </button>
@@ -171,7 +171,7 @@ export function ResolveHookModal({
               disabled={isSubmitting}
               placeholder='{"key": "value"}'
               className={cn(
-                'box-border h-40 w-full resize-none rounded-lg border bg-background-100 px-3 py-2 font-mono text-[13px] text-gray-1000 leading-[1.5] outline-none disabled:cursor-not-allowed disabled:opacity-50',
+                'box-border h-40 w-full resize-none rounded-lg border bg-background-100 px-3 py-2 font-mono text-[13px] text-gray-1000 leading-[1.5] outline-none disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-700',
                 parseError ? 'border-red-700' : 'border-gray-alpha-400'
               )}
             />
@@ -194,7 +194,7 @@ export function ResolveHookModal({
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="cursor-pointer rounded-lg border border-gray-alpha-400 bg-background-100 px-4 py-2 font-medium text-gray-1000 text-sm transition-colors hover:bg-gray-alpha-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="cursor-pointer rounded-lg border border-gray-alpha-400 bg-background-100 px-4 py-2 font-medium text-gray-1000 text-sm transition-colors hover:bg-gray-alpha-100 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-700 disabled:hover:bg-gray-100"
             >
               Cancel
             </button>
@@ -202,7 +202,7 @@ export function ResolveHookModal({
               type="button"
               onClick={() => void submitPayload()}
               disabled={isSubmitting}
-              className="flex cursor-pointer items-center gap-1.5 rounded-lg !border-none bg-gray-1000 px-4 py-2 font-medium text-background-100 text-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:opacity-50"
+              className="flex cursor-pointer items-center gap-1.5 rounded-lg !border-none bg-gray-1000 px-4 py-2 font-medium text-background-100 text-sm transition-colors hover:bg-[hsl(0,_0%,_22%)] [.dark_&]:hover:bg-[hsl(0,_0%,_80%)] [.dark-theme_&]:hover:bg-[hsl(0,_0%,_80%)] [[data-theme=dark]_&]:hover:bg-[hsl(0,_0%,_80%)] disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-700 disabled:hover:bg-gray-100"
             >
               <Send className="size-3.5" />
               {isSubmitting ? 'Sending...' : 'Send Payload'}

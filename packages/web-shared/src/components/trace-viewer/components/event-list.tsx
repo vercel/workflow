@@ -80,6 +80,7 @@ const EventRow = ({
       className={cn(
         'relative overflow-clip group transition-opacity',
         ROW_HEIGHT_CLASS,
+        // opacity-allowed: fades the whole multi-colour row for search non-matches
         isDimmed && 'opacity-35'
       )}
       role="treeitem"
