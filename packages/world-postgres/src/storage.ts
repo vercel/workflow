@@ -97,7 +97,7 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
-import { purgeRunUserDataIfZeroRetention } from './retention.js';
+import { purgeRunUserDataIfAutoDelete } from './retention.js';
 import { announceRunEvents, type RunEventsFeed } from './run-events.js';
 import {
   notifyRunTerminal,
@@ -1095,7 +1095,7 @@ async function handleLegacyEventPostgres(
       // practice it never does — attributes postdate the legacy spec — but
       // the check is a read of an in-memory map, and a terminal path that
       // silently skips retention is exactly the kind of gap that survives.
-      await purgeRunUserDataIfZeroRetention(
+      await purgeRunUserDataIfAutoDelete(
         drizzle,
         runId,
         updatedRun?.attributes,
@@ -3735,7 +3735,7 @@ function createUnfencedEventsStorage(
         // of catching the output on its way out. `run` is only set on the
         // writer that won the conditional terminal UPDATE, so this fires once
         // per run rather than on every idempotent retry.
-        await purgeRunUserDataIfZeroRetention(
+        await purgeRunUserDataIfAutoDelete(
           drizzle,
           effectiveRunId,
           run.attributes,

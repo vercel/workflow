@@ -151,7 +151,7 @@ async function listChunkFilesForStream(
 }
 
 /**
- * Chunk id of the end-of-stream tombstone a zero-retention purge leaves in
+ * Chunk id of the end-of-stream tombstone an auto-delete purge leaves in
  * place of a stream's contents.
  *
  * All zeros because chunks are ordered by the plain lexical sort of their ids
@@ -166,7 +166,7 @@ const PURGED_STREAM_TOMBSTONE_ID = `chnk_${'0'.repeat(26)}`;
 /**
  * Replace a run's stream contents with an end-of-stream tombstone.
  *
- * A stream's chunks are user data, so a zero-retention run's streams have to
+ * A stream's chunks are user data, so an auto-delete run's streams have to
  * go with its payloads. They cannot simply be unlinked, though: EOF is itself
  * a chunk, and a stream with no chunks at all is indistinguishable from one
  * whose writer has not started, so a reader would poll it forever. Writing

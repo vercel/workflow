@@ -134,7 +134,7 @@ export async function handleLegacyEvent(
         updatedAt: now,
         attributes: currentRun.attributes,
       };
-      // Zero retention (`$retention: '0'`) on the legacy shortcut too.
+      // Auto-delete (`$retention: '0'`) on the legacy shortcut too.
       //
       // Believed unreachable: `start({ experimental_retention })` refuses to
       // seed the attribute below spec version 4, and a legacy run is spec

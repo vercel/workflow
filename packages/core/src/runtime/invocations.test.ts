@@ -129,7 +129,7 @@ describe('handler-return invocation', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('does not read purged event payloads to recover a zero-retention response', async () => {
+  it('does not read purged event payloads to recover an auto-delete response', async () => {
     const { world, payload, getHook, list } = fixture();
     getHook.mockRejectedValue(new HookNotFoundError('h'));
     vi.mocked(world.runs.get).mockResolvedValue({

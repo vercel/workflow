@@ -948,7 +948,7 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
     );
     const attributes = fresh?.attributes ?? proposed.attributes;
     let next: T = { ...proposed, attributes };
-    // Zero retention (`$retention: '0'`): the run's own payloads go, and the
+    // Auto-delete (`$retention: '0'`): the run's own payloads go, and the
     // `expiredAt` boundary that makes their absence legible goes with them,
     // in this one atomic replace. Read from the freshest attributes on disk
     // rather than the caller's snapshot — the same reason the attributes
@@ -4448,7 +4448,7 @@ export function createEventsStorage(
           );
         }
 
-        // Zero retention, second half: the run's own payloads and its
+        // Auto-delete, second half: the run's own payloads and its
         // `expiredAt` boundary landed with the terminal state write above;
         // everything else the run owns goes now.
         //

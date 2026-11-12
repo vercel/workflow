@@ -150,7 +150,7 @@ const CROSS_DEPLOYMENT_PROBE_CACHE_MAX_ENTRIES = 256;
  * `$retention` value is a duration written as a decimal integer — so zero
  * travels as `'0'`, not as the name of a mode.
  */
-const RETENTION_ZERO_ATTRIBUTE_VALUE = '0';
+const RETENTION_AUTO_DELETE_ATTRIBUTE_VALUE = '0';
 
 /**
  * Where a run's stamped spec version came from, recorded on the `start()`
@@ -644,9 +644,11 @@ export interface StartOptionsBase {
    * chunks), the event log, and any analytics data. Options are:
    * - `'default'`: same as omission, the World will decide. On Vercel, this
    *   is based on your team's plan.
-   * - `0`: data is deleted as soon as your run completes or fails. On
-   *   Vercel, user data is deleted, but metadata may persist for your plan's
-   *   default retention period.
+   * - `0`: auto-delete. User data is deleted as soon as your run completes,
+   *   fails, or is cancelled, and stops being readable immediately. On
+   *   Vercel, metadata may persist for your plan's default retention period,
+   *   and run data may still persist in encrypted database backups for a
+   *   short period after deletion.
    *
    * The value is a duration, with zero being the only valid option currently.
    *
@@ -1270,7 +1272,7 @@ export async function start<TArgs extends unknown[], TResult>(
           throw specGateError('start({ experimental_retention }) requires');
         }
         retentionAttribute = {
-          [RETENTION_ATTRIBUTE]: RETENTION_ZERO_ATTRIBUTE_VALUE,
+          [RETENTION_ATTRIBUTE]: RETENTION_AUTO_DELETE_ATTRIBUTE_VALUE,
         };
       }
 
