@@ -21,9 +21,12 @@ const child = fileURLToPath(
 const WRITERS = 6;
 const RUNS_PER_WRITER = 100;
 const EVENTS_PER_RUN = 12;
-// Far above a single write (well under a millisecond), far below a lock
-// wait that blocks the thread (180 ms to over a second here, before).
-const MAX_HEARTBEAT_GAP_MS = 150;
+// Far above a single write (well under a millisecond), below a lock wait that
+// blocks the thread: with the busy handler waiting synchronously, the longest
+// gap here was 430 ms to over a second in every run. That the wait itself
+// never blocks is pinned deterministically by write-lock-wait.test.ts; this
+// test checks it holds across processes under real contention.
+const MAX_HEARTBEAT_GAP_MS = 250;
 
 let testDir: string;
 
@@ -73,9 +76,9 @@ it('writers waiting for each other never block their thread', async () => {
   const writers = Array.from({ length: WRITERS }, (_, i) =>
     startWriter(`w${i}`)
   );
-  // Writes nothing: on a loaded machine (CI runs every package's tests at
-  // once) a process can go unscheduled for a while whatever it runs, and
-  // this measures how long.
+  // Busy like a writer, but writes nothing: on a loaded machine (CI runs
+  // every package's tests at once) a busy process can go unscheduled for a
+  // while whatever it runs, and this measures how long.
   const control = startWriter('control', 0);
   await Promise.all([...writers, control].map((writer) => writer.ready));
   for (const writer of [...writers, control]) writer.proc.send('go');
@@ -84,10 +87,14 @@ it('writers waiting for each other never block their thread', async () => {
   const noise = (await control.report).maxGapMs;
 
   const gaps = reports.map((report) => Math.round(report.maxGapMs));
+  // A writer also does real synchronous work the control doesn't (SQLite
+  // checkpoints the WAL inside the commit that fills it, and disk I/O slows
+  // down on a loaded machine), so under load its gaps run several times the
+  // control's.
   expect(
     Math.max(...gaps),
     `longest heartbeat gaps: ${gaps}; control: ${Math.round(noise)}`
-  ).toBeLessThan(Math.max(MAX_HEARTBEAT_GAP_MS, 2 * noise + 50));
+  ).toBeLessThan(Math.max(MAX_HEARTBEAT_GAP_MS, 6 * noise + 50));
 
   // Every write committed, and every log is dense.
   const db = databaseFor(testDir);

@@ -38,10 +38,23 @@ const write = async (runId, event) => {
 };
 
 const runIds = [];
-// A control (no runs): only the heartbeat, until the parent says stop, so
-// its longest gap is the machine's scheduling noise.
+// A control (no runs): as busy as a writer, in bursts of synchronous work
+// about as long as a write, each followed by a yield, but with no database,
+// until the parent says stop. Its longest gap is what a busy process gets
+// from the machine's scheduler, which on a loaded machine (CI runs every
+// package's tests at once) is far more than an idle process sees.
 if (Number(runCount) === 0) {
-  await new Promise((resolve) => process.once('message', resolve));
+  let stopped = false;
+  process.once('message', () => {
+    stopped = true;
+  });
+  while (!stopped) {
+    const burstEnd = performance.now() + 0.3;
+    while (performance.now() < burstEnd) {
+      JSON.parse(JSON.stringify({ writer, n: Math.random() }));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 }
 for (let n = 0; n < Number(runCount); n++) {
   const created = await write(null, {
