@@ -1,5 +1,13 @@
 # @workflow/errors
 
+## 5.1.2
+
+### Patch Changes
+
+- [#5403](https://github.com/vercel/workflow/pull/5403) [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72) Thanks [@pranaygp](https://github.com/pranaygp)! - Classify runs that fail with `WorkflowNotRegisteredError` under a dedicated `WORKFLOW_NOT_REGISTERED` error code instead of the generic `RUNTIME_ERROR`, so starting a workflow the deployment doesn't bundle is attributed separately from internal runtime failures.
+- Updated dependencies [[`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c)]:
+  - @workflow/world@5.2.1
+
 ## 5.1.1
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.2.1
+
+### Patch Changes
+
+- [#5159](https://github.com/vercel/workflow/pull/5159) [`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c) Thanks [@pranaygp](https://github.com/pranaygp)! - Experimental: `QueueOptions.experimental_hold` (`true`, or `{ consumerGroup, visibilityTimeoutSeconds }`) asks the queue to claim a message for its sender before `queue()` returns, so the sender can run it in the request that sent it (the result's `experimental_hold` is `{ status: 'held', consume, release, ... }` or `{ status: 'not_held', reason }`; `consume(handler)` takes the same handler and delivery semantics as `createQueueHandler`), with the queue as the crash backstop.
+
 ## 5.2.0
 
 ### Minor Changes
