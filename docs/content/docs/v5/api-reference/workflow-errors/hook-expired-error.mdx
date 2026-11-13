@@ -1,0 +1,66 @@
+---
+title: HookExpiredError
+description: Thrown to a hook's awaiters when the hook reaches the end of its ttl without receiving a payload.
+type: reference
+summary: Catch HookExpiredError to handle a hook nobody resumed before its ttl (30 days by default) ran out.
+related:
+  - /docs/api-reference/workflow/create-hook
+  - /docs/foundations/hooks
+  - /docs/errors/hook-expired
+---
+
+`HookExpiredError` is thrown when awaiting a hook that reached the end of its [`ttl`](/docs/api-reference/workflow/create-hook#expiring-hooks-with-ttl), 30 days after `createHook()` unless configured. The hook is disposed, its token is released, and it receives no further payloads. Payloads that arrived before it expired are delivered first. See the [hook-expired](/docs/errors/hook-expired) error guide for how to react.
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+import { HookExpiredError } from "workflow/errors";
+
+export async function approvalWorkflow() {
+  "use workflow";
+
+  const hook = createHook<{ approved: boolean }>({ ttl: "7d" });
+
+  try {
+    const { approved } = await hook;
+    return { approved };
+  } catch (error) {
+    if (HookExpiredError.is(error)) { // [!code highlight]
+      console.log(`Hook "${error.token}" expired at ${error.expiredAt.toISOString()}`);
+      return { approved: false };
+    }
+    throw error;
+  }
+}
+```
+
+## API signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface HookExpiredError {
+  /** The token of the hook that expired. */
+  token: string;
+  /** When the hook expired: its creation time plus its ttl. */
+  expiredAt: Date;
+  /** The error message. */
+  message: string;
+}
+export default HookExpiredError;`}
+/>
+
+### Static methods
+
+#### `HookExpiredError.is(value)`
+
+Type-safe check for `HookExpiredError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
+
+```typescript
+import { HookExpiredError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (HookExpiredError.is(error)) {
+  // error is typed as HookExpiredError
+}
+```

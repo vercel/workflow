@@ -22,7 +22,7 @@ const HEARTBEAT_CODE = `
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
-    createHook({ token: 'wake' });
+    createHook({ ttl: Infinity, token: 'wake' });
     const t0 = Date.now();
     await sleep('30s');
     await probe({ afterSleepMs: Date.now() - t0 });
@@ -52,7 +52,7 @@ const CLAIM_CODE = `
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
     const t0 = Date.now();
-    const hook = createHook({ token: 'wake' });
+    const hook = createHook({ ttl: Infinity, token: 'wake' });
     const a = doWork('a');
     const b = doWork('b');
     await a;
@@ -70,7 +70,7 @@ const REGISTRATION_CODE = `
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow(mode) {
     const t0 = Date.now();
-    const hook = createHook({ token: 'bind' });
+    const hook = createHook({ ttl: Infinity, token: 'bind' });
     if (mode === 'created') {
       await hook.getConflict();
     } else {

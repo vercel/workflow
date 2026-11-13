@@ -125,7 +125,7 @@ const sequential = `const inc = ${step};
 const unobservedHook = `const inc = ${step};
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow(steps) {
-    const hook = createHook({ token: "ra-unobserved" });
+    const hook = createHook({ ttl: Infinity, token: "ra-unobserved" });
     let n = 0;
     for (let i = 0; i < steps; i++) n = await inc(n);
     return n;
@@ -136,7 +136,7 @@ const unobservedHook = `const inc = ${step};
 const observedHook = `const inc = ${step};
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow(steps) {
-    const hook = createHook({ token: "ra-observed" });
+    const hook = createHook({ ttl: Infinity, token: "ra-observed" });
     let resolved = false;
     hook.then(() => { resolved = true; });
     let n = 0;
@@ -162,7 +162,7 @@ const clockBranch = `const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]
   const late = useStep("ra_late");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow(cutoff) {
-    createHook({ token: "ra-clock" });
+    createHook({ ttl: Infinity, token: "ra-clock" });
     await first();
     if (Date.now() < cutoff) return { path: "early", result: await early() };
     return { path: "late", result: await late() };
@@ -172,7 +172,7 @@ const clockBranch = `const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]
 const hookBetweenLoops = `const inc = ${step};
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow(steps) {
-    const hook = createHook({ token: "ra-snapshot" });
+    const hook = createHook({ ttl: Infinity, token: "ra-snapshot" });
     let n = 0;
     for (let i = 0; i < steps; i++) n = await inc(n);
     const payload = await hook;
@@ -193,7 +193,7 @@ const withAbortSignal = `const inc = ${step};
 const withCompletionHook = (waiting: boolean) => `const inc = ${step};
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow(steps) {
-    const hook = createHook({ token: "wkf_child_run_completion:ra-parent", isSystem: true });
+    const hook = createHook({ ttl: Infinity, token: "wkf_child_run_completion:ra-parent", isSystem: true });
     await hook.getConflict();
     ${waiting ? 'hook.then(() => {});' : ''}
     let n = 0;

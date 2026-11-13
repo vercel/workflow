@@ -330,7 +330,7 @@ async function sweepHookInsertion(code: string, payloads: unknown[]) {
 describe('WorkflowSuspension.observedHookIds', () => {
   it('reports a hook only once workflow code awaits it', async () => {
     const code = `async function workflow() {
-      const hook = createHook({ token: "t" });
+      const hook = createHook({ ttl: Infinity, token: "t" });
       for (let i = 0; i < 3; i++) await a(i, Date.now());
       await b(await hook, Date.now());
     }`;
@@ -344,7 +344,7 @@ describe('WorkflowSuspension.observedHookIds', () => {
 
   it('reports a for-await hook between iterations, not during the body', async () => {
     const code = `async function workflow() {
-      const hook = createHook({ token: "t" });
+      const hook = createHook({ ttl: Infinity, token: "t" });
       for await (const message of hook) {
         await a(message, Date.now());
         await b(message, Date.now());
@@ -362,7 +362,7 @@ describe('WorkflowSuspension.observedHookIds', () => {
 
   it('reports a hook a background branch awaits for the whole branch', async () => {
     const code = `async function workflow() {
-      const hook = createHook({ token: "t" });
+      const hook = createHook({ ttl: Infinity, token: "t" });
       const background = hook.then((payload) => b(payload));
       for (let i = 0; i < 3; i++) await a(i, Date.now());
       await background;
@@ -377,7 +377,7 @@ describe('WorkflowSuspension.observedHookIds', () => {
     // buffered payload registered below it, the interleaving run-ahead relies
     // on being inert.
     const code = `async function workflow() {
-      const hook = createHook({ token: "t" });
+      const hook = createHook({ ttl: Infinity, token: "t" });
       const winner = await Promise.race([
         sleep("1h").then(() => "wait"),
         a(0, Date.now()),
@@ -400,7 +400,7 @@ describe('WorkflowSuspension.observedHookIds', () => {
 
   it('reports a hook raced against a step while the race is pending', async () => {
     const code = `async function workflow() {
-      const hook = createHook({ token: "t" });
+      const hook = createHook({ ttl: Infinity, token: "t" });
       const winner = await Promise.race([hook.then(() => "hook"), a(0)]);
       if (winner === "hook") await b(0);
     }`;

@@ -51,7 +51,7 @@ const hookWorkflow = (hooks: number) => `
     var createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
     var total = 0;
     for (var i = 0; i < ${hooks}; i++) {
-      var hook = createHook({ token: "tok-" + i });
+      var hook = createHook({ ttl: Infinity, token: "tok-" + i });
       var payload = await hook;
       total += payload.n;
     }

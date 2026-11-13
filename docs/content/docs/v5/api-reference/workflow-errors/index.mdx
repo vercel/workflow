@@ -74,6 +74,9 @@ All errors extend [`WorkflowError`](/docs/api-reference/workflow-errors/workflow
     <Card href="/docs/api-reference/workflow-errors/hook-force-claimed-error" title="HookForceClaimedError">
         Thrown to a hook's awaiters when another run takes its token over with `experimental_force`.
     </Card>
+    <Card href="/docs/api-reference/workflow-errors/hook-expired-error" title="HookExpiredError">
+        Thrown to a hook's awaiters when the hook reaches the end of its `ttl` (30 days by default).
+    </Card>
 </Cards>
 
 ## Backend errors

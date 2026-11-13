@@ -289,6 +289,7 @@ export async function planStepsAndWaits(
       correlationId: item.correlationId,
       eventData: {
         resumeAt: item.resumeAt,
+        ...(item.hookId && { hookId: item.hookId }),
         creatorMessageId: params.creatorMessageId,
       },
     });

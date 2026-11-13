@@ -386,7 +386,10 @@ export async function handleSuspension({
               eventType: 'wait_created' as const,
               specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: queueItem.correlationId,
-              eventData: { resumeAt: queueItem.resumeAt },
+              eventData: {
+                resumeAt: queueItem.resumeAt,
+                ...(queueItem.hookId && { hookId: queueItem.hookId }),
+              },
             },
             { requestId }
           );

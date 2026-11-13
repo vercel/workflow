@@ -23,7 +23,7 @@ const PRELUDE = `
   // Either registration outcome continues the branch: a rejection here is
   // the bare harness VM having no \`Run\` class to resolve a conflict with.
   const bind = (token) => {
-    const hook = createHook({ token });
+    const hook = createHook({ token, ttl: Infinity });
     return {
       hook,
       bound: hook.getConflict().then(

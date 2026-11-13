@@ -521,6 +521,13 @@ const WaitCreatedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     resumeAt: z.coerce.date(),
     /**
+     * Set when this wait is a hook's expiry rather than a `sleep()`: the
+     * correlationId of the hook it expires at the end of its `ttl`. Tooling
+     * (`run.wakeUp()`, `waitForSleep()`, observability) uses it to leave the
+     * wait out of a run's sleeps. Replay never reads it.
+     */
+    hookId: z.string().optional(),
+    /**
      * Queue message id of the orchestrator delivery that wrote this event
      * (spec >= 9). Only that delivery, or a redelivery of the same message,
      * schedules the wait's timer.
