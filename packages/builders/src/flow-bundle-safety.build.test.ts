@@ -83,6 +83,25 @@ describe('flow bundle sandbox safety (esbuild)', () => {
     );
   }
 
+  /**
+   * Evaluates a flow bundle the way the runtime does (`module`/`exports`
+   * shims, no `require`) and returns its registered workflows.
+   */
+  function loadFlowBundle(bundleText: string) {
+    const context = createContext({ module: { exports: {} }, exports: {} });
+    runInContext(bundleText, context);
+    return runInContext('globalThis.__private_workflows', context) as Map<
+      string,
+      (...args: unknown[]) => Promise<unknown>
+    >;
+  }
+
+  function onlyWorkflow(bundleText: string) {
+    const workflows = [...loadFlowBundle(bundleText).values()];
+    expect(workflows).toHaveLength(1);
+    return workflows[0];
+  }
+
   function packageFiles(
     name: string,
     contents: string
@@ -173,14 +192,64 @@ describe('flow bundle sandbox safety (esbuild)', () => {
 
     const { interimBundleText } = await buildWorkflow(outputDir);
 
-    expect(interimBundleText).toContain('require("crypto")');
-    const context = createContext({ module: { exports: {} }, exports: {} });
-    expect(() =>
-      runInContext(interimBundleText as string, context)
-    ).not.toThrow();
+    // The guard still never takes the `require` branch in the sandbox.
+    expect(interimBundleText).toContain('typeof require');
+    await expect(onlyWorkflow(interimBundleText as string)()).resolves.toBe(
+      false
+    );
   });
 
-  it('fails when a transitive dependency pulls in a Node.js builtin', async () => {
+  it('builds a workflow whose dependency imports a Node.js builtin it never calls', async () => {
+    // The shape of an AI provider SDK reached through a barrel file: the
+    // package is bundled because the barrel imports it, and its dependency
+    // picks a checksum implementation and imports `node:crypto` at module
+    // load, but no workflow ever calls into it.
+    const outputDir = createFixture({
+      'node_modules/checksum-pkg/package.json': JSON.stringify({
+        name: 'checksum-pkg',
+        version: '1.0.0',
+        type: 'module',
+        module: 'index.js',
+      }),
+      'node_modules/checksum-pkg/index.js': [
+        "import * as zlib from 'node:zlib';",
+        "import { createHash } from 'node:crypto';",
+        "const native = typeof zlib.crc32 === 'function' ? zlib.crc32 : undefined;",
+        'export const crc32 = (data) => (native ? native(data) : 0);',
+        "export const md5 = (data) => createHash('md5').update(data).digest('hex');",
+      ].join('\n'),
+      'node_modules/provider-pkg/package.json': JSON.stringify({
+        name: 'provider-pkg',
+        version: '1.0.0',
+        type: 'module',
+        module: 'index.js',
+      }),
+      'node_modules/provider-pkg/index.js': [
+        "import { crc32, md5 } from 'checksum-pkg';",
+        'export const providers = { crc32, md5 };',
+      ].join('\n'),
+      'registry.ts': [
+        "import { providers } from 'provider-pkg';",
+        'export const registry = { checksum: providers, other: {} };',
+      ].join('\n'),
+      'workflow.ts': [
+        "import { registry } from './registry.js';",
+        'export async function wf() { "use workflow"; return Object.keys(registry); }',
+      ].join('\n'),
+    });
+
+    const { interimBundleText } = await buildWorkflow(outputDir);
+
+    expect(interimBundleText).not.toMatch(/require\("node:/);
+    // The dependency is really in the bundle, with the stand-ins.
+    expect(interimBundleText).toContain('NodeJsModuleInWorkflowError');
+    await expect(onlyWorkflow(interimBundleText as string)()).resolves.toEqual([
+      'checksum',
+      'other',
+    ]);
+  });
+
+  it('throws when a workflow calls into a builtin a dependency imports', async () => {
     const outputDir = createFixture({
       ...packageFiles(
         'leaky-pkg',
@@ -194,27 +263,28 @@ describe('flow bundle sandbox safety (esbuild)', () => {
         [
           "const leaky = require('leaky-pkg');",
           'module.exports.go = () => leaky.readIt();',
+          "module.exports.ok = () => 'ok';",
         ].join('\n')
       ),
       'workflow.ts': [
-        "import { go } from 'wrapper-pkg';",
-        'export async function wf() { "use workflow"; return go(); }',
+        "import { go, ok } from 'wrapper-pkg';",
+        'export async function wf(read: boolean) { "use workflow"; return read ? go() : ok(); }',
       ].join('\n'),
     });
 
-    const error = await buildWorkflow(outputDir).catch((e: Error) => e);
+    const { interimBundleText } = await buildWorkflow(outputDir);
 
-    expect(error).toBeInstanceOf(Error);
-    const message = (error as Error).message;
-    expect(message).toContain('node:fs');
-    expect(message).toContain('node_modules/leaky-pkg/index.js');
-    // The chain names the user file that started it.
-    expect(message).toContain('workflow.ts');
-    expect(message).toContain('node_modules/wrapper-pkg/index.js');
-    expect(message).toContain('use step');
+    expect(interimBundleText).not.toContain('require("node:fs")');
+    const wf = onlyWorkflow(interimBundleText as string);
+    await expect(wf(false)).resolves.toBe('ok');
+    // The error is created inside the VM, so it is not this realm's `Error`.
+    const error = await wf(true).catch((e: Error) => e);
+    expect((error as Error).name).toBe('NodeJsModuleInWorkflowError');
+    expect((error as Error).message).toContain('node:fs.readFileSync');
+    expect((error as Error).message).toContain('use step');
   });
 
-  it('fails when a builtin arrives through a re-export', async () => {
+  it('throws when a workflow calls a builtin that arrives through a re-export', async () => {
     const outputDir = createFixture({
       ...packageFiles(
         'reexported-pkg',
@@ -230,11 +300,43 @@ describe('flow bundle sandbox safety (esbuild)', () => {
       ].join('\n'),
     });
 
+    const { interimBundleText } = await buildWorkflow(outputDir);
+
+    await expect(onlyWorkflow(interimBundleText as string)()).rejects.toThrow(
+      /node:os\.platform/
+    );
+  });
+
+  it('fails when workflow code imports a Node.js builtin itself', async () => {
+    const outputDir = createFixture({
+      'workflow.ts': [
+        "import { readFileSync } from 'node:fs';",
+        'export async function wf() { "use workflow"; return readFileSync("x"); }',
+      ].join('\n'),
+    });
+
+    const error = await buildWorkflow(outputDir).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('node:fs');
+  });
+
+  it('fails when user code outside the workflow file imports a Node.js builtin', async () => {
+    const outputDir = createFixture({
+      'helper.ts': [
+        "import * as os from 'node:os';",
+        'export const hostname = os.hostname;',
+      ].join('\n'),
+      'workflow.ts': [
+        "import { hostname } from './helper.js';",
+        'export async function wf() { "use workflow"; return hostname(); }',
+      ].join('\n'),
+    });
+
     const error = await buildWorkflow(outputDir).catch((e: Error) => e);
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('node:os');
-    expect((error as Error).message).toContain('reexport.ts');
   });
 
   it('fails on a user-written dynamic require in workflow code', async () => {
@@ -281,35 +383,23 @@ describe('flow bundle sandbox safety (esbuild)', () => {
   it('downgrades to a warning behind the escape hatch', async () => {
     process.env[ALLOW_UNSAFE_FLOW_BUNDLE_ENV] = '1';
     const outputDir = createFixture({
-      ...packageFiles(
-        'leaky-pkg',
-        [
-          "const fs = require('node:fs');",
-          "module.exports.readIt = () => fs.readFileSync('x');",
-        ].join('\n')
-      ),
-      ...packageFiles(
-        'wrapper-pkg',
-        [
-          "const leaky = require('leaky-pkg');",
-          'module.exports.go = () => leaky.readIt();',
-        ].join('\n')
-      ),
+      'loader.ts': [
+        "const name = ['node', 'fs'].join(':');",
+        'export const fs = require(name);',
+      ].join('\n'),
       'workflow.ts': [
-        "import { go } from 'wrapper-pkg';",
-        'export async function wf() { "use workflow"; return go(); }',
+        "import { fs } from './loader.js';",
+        'export async function wf() { "use workflow"; return Boolean(fs); }',
       ].join('\n'),
     });
 
     const { interimBundleText } = await buildWorkflow(outputDir);
 
-    expect(interimBundleText).toContain('require("node:fs")');
+    expect(interimBundleText).toContain('require(name)');
 
     // ...and that bundle is exactly what the check exists to stop: evaluating
     // it the way the runtime does throws before any workflow can start.
-    // Mirrors the workflow sandbox: `module`/`exports` shims, no `require`.
-    const context = createContext({ module: { exports: {} }, exports: {} });
-    expect(() => runInContext(interimBundleText as string, context)).toThrow(
+    expect(() => loadFlowBundle(interimBundleText as string)).toThrow(
       /require is not defined/
     );
   });
