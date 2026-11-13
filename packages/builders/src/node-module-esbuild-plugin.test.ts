@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createNodeModuleErrorPlugin,
   escapeRegExp,
-  getImportedIdentifier,
+  getImportedIdentifiers,
   getPackageName,
   getViolationLocation,
 } from './node-module-esbuild-plugin.js';
@@ -381,6 +381,33 @@ describe('workflow-node-module-error plugin', () => {
     });
     // Should point to the aliased identifier "read", not "readFile"
     expect(violation.location?.lineText).toContain('read(');
+  });
+
+  it.each([
+    [
+      'the first named import is unused',
+      'import { readFile, writeFile } from "fs";',
+    ],
+    [
+      'the module also has a type-only import',
+      'import type { Stats } from "fs";\nimport { writeFile } from "fs";',
+    ],
+  ])('should point at the call site when %s', async (_, imports) => {
+    const testCode = `${imports}
+      export function workflow(stats?: Stats) {
+        return writeFile("test.txt", "ok");
+      }
+    `;
+
+    const { failure, relativeEntry } =
+      await buildWorkflowWithViolation(testCode);
+
+    expect(failure.errors).toHaveLength(1);
+    expect(failure.errors[0].text).toContain('"fs" which is a Node.js module');
+    expect(failure.errors[0].location).toMatchObject({
+      file: relativeEntry,
+      lineText: '        return writeFile("test.txt", "ok");',
+    });
   });
 
   it('should not error when import is unused (tree-shaken)', async () => {
@@ -755,53 +782,68 @@ describe('workflow-node-module-error helper functions', () => {
     });
   });
 
-  describe('getImportedIdentifier', () => {
+  describe('getImportedIdentifiers', () => {
     it('should extract namespace import identifier', () => {
-      expect(getImportedIdentifier('* as fs')).toBe('fs');
-      expect(getImportedIdentifier('*   as   path')).toBe('path');
+      expect(getImportedIdentifiers('* as fs')).toEqual(['fs']);
+      expect(getImportedIdentifiers('*   as   path')).toEqual(['path']);
     });
 
-    it('should extract first named import', () => {
-      expect(getImportedIdentifier('{ readFile }')).toBe('readFile');
-      expect(getImportedIdentifier('{ readFile, writeFile }')).toBe('readFile');
-    });
-
-    it('should extract aliased named import', () => {
-      expect(getImportedIdentifier('{ readFile as read }')).toBe('read');
-      expect(getImportedIdentifier('{ readFile as read, writeFile }')).toBe(
-        'read'
+    it('should extract every named import', () => {
+      expect(getImportedIdentifiers('{ readFile }')).toEqual(['readFile']);
+      expect(getImportedIdentifiers('{ readFile, writeFile }')).toEqual([
+        'readFile',
+        'writeFile',
+      ]);
+      expect(getImportedIdentifiers('{\n  readFile,\n  writeFile,\n}')).toEqual(
+        ['readFile', 'writeFile']
       );
+    });
+
+    it('should extract aliased named imports', () => {
+      expect(getImportedIdentifiers('{ readFile as read }')).toEqual(['read']);
+      expect(
+        getImportedIdentifiers('{ readFile, writeFile as write }')
+      ).toEqual(['readFile', 'write']);
+      expect(getImportedIdentifiers('{ default as fs }')).toEqual(['fs']);
     });
 
     it('should extract default import', () => {
-      expect(getImportedIdentifier('fs')).toBe('fs');
-      expect(getImportedIdentifier('myDefault')).toBe('myDefault');
+      expect(getImportedIdentifiers('fs')).toEqual(['fs']);
+      expect(getImportedIdentifiers('myDefault')).toEqual(['myDefault']);
     });
 
-    it('should extract first identifier from mixed imports', () => {
-      // The function checks for braces first, so it extracts from named imports
-      expect(getImportedIdentifier('fs, { readFile }')).toBe('readFile');
-      expect(getImportedIdentifier('defaultExport, { named }')).toBe('named');
+    it('should extract default import alongside named or namespace imports', () => {
+      expect(getImportedIdentifiers('fs, { readFile }')).toEqual([
+        'fs',
+        'readFile',
+      ]);
+      expect(getImportedIdentifiers('fs, * as ns')).toEqual(['fs', 'ns']);
     });
 
     it('should handle whitespace variations', () => {
-      expect(getImportedIdentifier('  { readFile }  ')).toBe('readFile');
-      expect(getImportedIdentifier('{readFile}')).toBe('readFile');
-      expect(getImportedIdentifier('{ readFile , writeFile }')).toBe(
-        'readFile'
-      );
+      expect(getImportedIdentifiers('  { readFile }  ')).toEqual(['readFile']);
+      expect(getImportedIdentifiers('{readFile}')).toEqual(['readFile']);
+      expect(getImportedIdentifiers('{ readFile , writeFile }')).toEqual([
+        'readFile',
+        'writeFile',
+      ]);
     });
 
-    it('should handle complex named imports', () => {
-      expect(getImportedIdentifier('type { ReadStream }')).toBe('ReadStream');
-      expect(getImportedIdentifier('{ default as fs }')).toBe('fs');
+    it('should skip type-only imports', () => {
+      expect(getImportedIdentifiers('type { ReadStream }')).toEqual([]);
+      expect(getImportedIdentifiers('type * as fs')).toEqual([]);
+      expect(
+        getImportedIdentifiers('{ type Stats, type Dirent as D, readFile }')
+      ).toEqual(['readFile']);
+      // `type` is also a valid binding name
+      expect(getImportedIdentifiers('type')).toEqual(['type']);
+      expect(getImportedIdentifiers('{ type as kind }')).toEqual(['kind']);
     });
 
-    it('should return undefined for edge cases', () => {
-      expect(getImportedIdentifier('*')).toBeUndefined();
-      expect(getImportedIdentifier('')).toBeUndefined();
-      // Empty braces should return undefined since there's no valid identifier
-      expect(getImportedIdentifier('{}')).toBeUndefined();
+    it('should return no identifiers for edge cases', () => {
+      expect(getImportedIdentifiers('*')).toEqual([]);
+      expect(getImportedIdentifiers('')).toEqual([]);
+      expect(getImportedIdentifiers('{}')).toEqual([]);
     });
   });
 
@@ -891,6 +933,70 @@ export const read = readFile;
           column: 20,
           lineText: 'export const read = readFile;',
           length: 'readFile'.length,
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should find the first usage of any imported binding', async () => {
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `import { readFile, writeFile as write } from "node:fs";
+
+export const first = write;
+export const second = readFile;
+`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toEqual({
+          file: 'file.ts',
+          line: 3,
+          column: 'export const first = '.length,
+          lineText: 'export const first = write;',
+          length: 'write'.length,
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      [
+        'an inline type specifier',
+        'import { type Stats, writeFile }',
+        'writeFile',
+      ],
+      ['a default import with named imports', 'import fs, { readFile }', 'fs'],
+      [
+        'a separate type-only import',
+        'import type { Stats } from "node:fs";\nimport { writeFile }',
+        'writeFile',
+      ],
+    ])('should find the usage past %s', async (_, imports, identifier) => {
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `${imports} from "node:fs";\n\nexport const value = ${identifier};\n`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toMatchObject({
+          lineText: `export const value = ${identifier};`,
+          column: 'export const value = '.length,
+          length: identifier.length,
         });
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
