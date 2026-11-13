@@ -23,6 +23,15 @@ const singleFlight = globalSingleton(
   1,
   () => ({ inFlight: new Map<string, Promise<unknown>>() })
 );
+// In-flight executions that entered at `debug`: fresh inline claims, whose
+// overlap with another delivery is an ordinary wake race. A separate singleton
+// (not a new field on the one above) so copies of this module from different
+// package versions in one process still share `inFlight`.
+const quietWinners = globalSingleton(
+  '@workflow/core//stepSingleFlightQuietWinners',
+  1,
+  () => ({ executions: new WeakSet<Promise<unknown>>() })
+);
 
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
@@ -41,9 +50,13 @@ export async function runSingleFlight<R>(
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
   if (existing) {
-    // Fresh inline claims can overlap during ordinary wake replays. Recovery
-    // callers keep warning: repeated overlap can indicate expiring leases.
-    runtimeLogger[logLevel](
+    // Fresh inline claims can overlap during ordinary wake replays, whichever
+    // side loses: a queued delivery of a step that a fresh inline claim is
+    // already running is the same race. Only contention between two
+    // non-fresh executions (queued or owned recovery) warns: repeated overlap
+    // there can indicate expiring leases.
+    const level = quietWinners.executions.has(existing) ? 'debug' : logLevel;
+    runtimeLogger[level](
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
     );
@@ -71,6 +84,7 @@ export async function runSingleFlight<R>(
 
   const promise = execute();
   singleFlight.inFlight.set(key, promise);
+  if (logLevel === 'debug') quietWinners.executions.add(promise);
   try {
     return await promise;
   } finally {
