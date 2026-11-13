@@ -205,7 +205,7 @@ export function useStreamReader(
         streamId,
         runId,
         abortController.signal,
-        isImageStream ? undefined : options?.cursor
+        isImageStream ? undefined : (options?.cursor ?? undefined)
       );
 
       const skipFrames = isImageStream ? 0 : (options?.skipFrames ?? 0);
@@ -229,18 +229,19 @@ export function useStreamReader(
         const { value, done } = await reader.read();
         if (done) {
           if (encoding === null && buffer.length > 0) {
+            // Refetch a short open stream before deciding whether its
+            // incomplete signature is image bytes or legacy text.
+            if (!streamResponse.done && buffer.length < 12) break;
             encoding = detectEncoding(buffer, streamId);
             if (encoding === 'legacy') textRemainder = decoder.decode(buffer);
           }
           if (encoding === 'image') {
             imageChunkId ??= chunkIdRef.current++;
             frameIndex++;
-            if (frameIndex > skipFrames) {
-              targetBuffer.push({
-                id: imageChunkId,
-                value: buffer,
-              });
-            }
+            targetBuffer.push({
+              id: imageChunkId,
+              value: buffer,
+            });
           } else if (encoding === 'unframed' && buffer.length > 0) {
             frameIndex++;
             if (frameIndex > skipFrames) {
@@ -360,7 +361,7 @@ export function useStreamReader(
         encrypted: false,
         image: isImageStream,
         frameCount: frameIndex,
-        cursor: streamResponse.cursor,
+        cursor: encoding === null ? null : streamResponse.cursor,
         done: streamResponse.done,
       };
     };
