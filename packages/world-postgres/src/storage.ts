@@ -3022,7 +3022,15 @@ function createUnfencedEventsStorage(
                   .for('update')
                   .limit(1);
                 if (!victim) {
-                  return { free: true as const };
+                  // Not proof the token is free. If this read waited on a
+                  // row a concurrent takeover then deleted, Postgres skips
+                  // that row, and this statement's snapshot cannot see the row
+                  // the takeover inserted in its place. Taken as free, that
+                  // run's claim beat ours to the index and we ended in a plain
+                  // `hook_conflict`. Restart instead: the next attempt's
+                  // unlocked read finds the new owner, or finds no row if the
+                  // token really is free.
+                  throw OWNER_CHANGED;
                 }
                 if (
                   victim.runId !== candidate.runId ||
