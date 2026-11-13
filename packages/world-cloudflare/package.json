@@ -53,7 +53,7 @@
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-sim": "workspace:*",
     "esbuild": "catalog:",
-    "quickjs-wasi": "3.4.0",
+    "quickjs-wasi": "3.7.0",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "workflow": "workspace:*",
