@@ -2311,7 +2311,7 @@ export async function startQuickJSWorkflow(
     // throw an error tagged with `name = "WorkflowNotRegisteredError"`
     // so the host-side entrypoint can reconstruct a real
     // WorkflowNotRegisteredError (a WorkflowRuntimeError subclass that
-    // classifies as RUNTIME_ERROR) rather than a generic user error.
+    // classifies as WORKFLOW_NOT_REGISTERED) rather than a generic user error.
     // See quickjs-entrypoint.ts's run_failed branch.
     try {
       vm.evalCode(`
