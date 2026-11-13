@@ -72,6 +72,8 @@ export interface StepSingleFlightOptions {
    * Level of the contention log when this call loses. Fresh inline claims
    * overlap during ordinary wake replays, so they log at `debug`; recovery
    * callers keep `warn`, since repeated overlap can indicate expiring leases.
+   * Any loser to a `debug` winner (a fresh inline claim) also logs at `debug`:
+   * a queued delivery racing that claim is the same wake race.
    */
   logLevel?: 'debug' | 'warn';
   /**
