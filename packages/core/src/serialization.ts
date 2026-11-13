@@ -1381,6 +1381,39 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
 }
 
 /**
+ * Push a stream pipe onto an ops list, observed from the moment it exists.
+ *
+ * A pipe starts running as soon as a reducer creates it, but whoever owns the
+ * list only attaches a handler later: after the rest of the value has been
+ * serialized, after the step body returns, or never, when the step fails. A
+ * pipe whose source errors in that gap (a returned `fetch()` body whose socket
+ * closes rejects with undici's `TypeError: terminated`) would reject with no
+ * handler attached, and Node treats that as an unhandled rejection, which ends
+ * the process on Vercel (#5055). The handler only marks the rejection as
+ * observed and logs it at debug level: the list holds the original promise, so
+ * `Promise.all(ops)` still rejects with the pipe's error.
+ */
+function pushPipeOp(ops: Promise<unknown>[], pipe: Promise<void>): void {
+  pipe.catch((err) => {
+    // On paths that never await the list (a failed step, a dehydration that
+    // throws, a failed `start()`), this is the only trace of the pipe's error.
+    try {
+      runtimeLogger.debug('Stream pipe failed', {
+        errorName: err instanceof Error ? err.name : undefined,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        cause:
+          err instanceof Error && err.cause instanceof Error
+            ? err.cause.message
+            : undefined,
+      });
+    } catch {
+      // Best-effort logging must not create another unhandled rejection.
+    }
+  });
+  ops.push(pipe);
+}
+
+/**
  * Reducers for serialization boundary from the client side, passing arguments
  * to the workflow handler.
  *
@@ -1420,12 +1453,16 @@ export function getExternalReducers(
       const writable = new WorkflowServerWritableStream(name, runId);
       if (type === 'bytes') {
         if (framedByteStreams) {
-          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
+          pushPipeOp(
+            ops,
+            value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+          );
         } else {
-          ops.push(value.pipeTo(writable));
+          pushPipeOp(ops, value.pipeTo(writable));
         }
       } else {
-        ops.push(
+        pushPipeOp(
+          ops,
           value
             .pipeThrough(
               getSerializeStream(
@@ -1484,7 +1521,7 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
 
       const readable = new WorkflowServerReadableStream(name);
-      ops.push(readable.pipeTo(value));
+      pushPipeOp(ops, readable.pipeTo(value));
 
       return { name };
     },
@@ -1598,14 +1635,16 @@ function getStepReducers(
         const writable = new WorkflowServerWritableStream(name, runId);
         if (type === 'bytes') {
           if (framing === 'framed-v1') {
-            ops.push(
+            pushPipeOp(
+              ops,
               value.pipeThrough(getByteFramingStream()).pipeTo(writable)
             );
           } else {
-            ops.push(value.pipeTo(writable));
+            pushPipeOp(ops, value.pipeTo(writable));
           }
         } else {
-          ops.push(
+          pushPipeOp(
+            ops,
             value
               .pipeThrough(
                 getSerializeStream(
@@ -1638,7 +1677,8 @@ function getStepReducers(
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
-        ops.push(
+        pushPipeOp(
+          ops,
           new WorkflowServerReadableStream(name)
             .pipeThrough(
               getDeserializeStream(
