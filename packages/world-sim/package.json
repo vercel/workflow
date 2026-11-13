@@ -29,7 +29,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run --config=../../vitest.config.ts src",
+    "test": "vitest run --config=../../vitest.config.ts src --exclude '**/*.fuzz.test.ts' && vitest run --config=../../vitest.config.ts src/inline-delivery.fuzz.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
