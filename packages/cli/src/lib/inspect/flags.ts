@@ -1,5 +1,5 @@
 import { Flags } from '@oclif/core';
-import { getDefaultBackend } from './default-backend.js';
+import { getDefaultBackend } from './vercel-extension.js';
 
 export const cliFlags = {
   verbose: Flags.boolean({

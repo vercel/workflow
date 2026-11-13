@@ -279,6 +279,28 @@ describe('getHttpConfig (proxied path)', () => {
     // path (api.vercel.com is public) and must NOT be attached.
     expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
+
+  it('sends requests to a custom vercelApiUrl without a token', async () => {
+    process.env.VERCEL_OIDC_TOKEN = 'ambient-oidc-token';
+    const { baseUrl, headers, usingProxy } = await getHttpConfig({
+      projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      vercelApiUrl: 'http://127.0.0.1:4321/',
+    });
+    expect(usingProxy).toBe(true);
+    expect(baseUrl).toBe('http://127.0.0.1:4321/v1/workflow');
+    expect(headers.get('Authorization')).toBeNull();
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
+    expect(headers.get('x-vercel-team-id')).toBe('team_456');
+  });
+
+  it('still sends an explicit token to a custom vercelApiUrl', async () => {
+    const { headers } = await getHttpConfig({
+      projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      vercelApiUrl: 'http://127.0.0.1:4321',
+      token: 'my-vercel-auth-token',
+    });
+    expect(headers.get('Authorization')).toBe('Bearer my-vercel-auth-token');
+  });
 });
 
 describe('makeRequest stream expiry errors', () => {

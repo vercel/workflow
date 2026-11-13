@@ -8,7 +8,7 @@ related:
   - /docs/configuration/worlds
 ---
 
-The Workflow CLI is installed with the `workflow` package as `workflow` (alias `wf`). It is also installed as `vercel-workflow`, so in a project that depends on `workflow`, Vercel CLI runs it as `vercel workflow` (or `vc workflow`) — for example, `vc workflow inspect runs`. Vercel CLI runs the copy in your project's `node_modules`, so the commands always match the version of the SDK you deploy. Run this way, the CLI targets the Vercel backend unless `--backend` or `WORKFLOW_TARGET_WORLD` says otherwise.
+The Workflow CLI is installed with the `workflow` package as `workflow` (alias `wf`). It is also installed as `vercel-workflow`, so in a project that depends on `workflow`, Vercel CLI runs it as `vercel workflow` (or `vc workflow`) — for example, `vc workflow inspect runs`. Vercel CLI runs the copy in your project's `node_modules`, so the commands always match the version of the SDK you deploy. Run this way, the CLI targets the Vercel backend unless `--backend` or `WORKFLOW_TARGET_WORLD` says otherwise, and it reaches the Vercel API through Vercel CLI, which authenticates the requests with whatever Vercel CLI is logged in with (`vc login`, `--token`, or `VERCEL_TOKEN`). An explicit `--authToken` is used as given instead.
 
 The Workflow CLI uses flags first, then environment variables, then defaults or local inference.
 
@@ -27,7 +27,7 @@ Whichever way they are resolved, the CLI ends up building a Vercel World from an
 ### `--authToken` / `-a`
 
 - Environment variable: `WORKFLOW_VERCEL_AUTH_TOKEN`
-- Default: Vercel CLI login
+- Default: Vercel CLI login (under `vercel workflow`, Vercel CLI authenticates the requests itself)
 - Vercel token for `--backend vercel`.
 
 ### `--project`
