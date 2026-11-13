@@ -404,7 +404,7 @@ describe('run retention (world-local)', () => {
       // write. The decision is made inside the run file lock against the
       // re-read attributes for exactly that reason.
       const run = await startRun();
-      await storage.runs.experimentalSetAttributes?.(
+      await storage.runs.setAttributes?.(
         run.runId,
         [{ key: RETENTION_ATTRIBUTE, value: '0' }],
         { allowReservedAttributes: true }

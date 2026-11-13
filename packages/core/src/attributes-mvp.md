@@ -14,6 +14,12 @@ The v4 implementation now completes the planned dispatch migration while preserv
 - The World spec is bumped to v4; attributes are supported for v4 runs rather than being backported into older run specifications.
 - The direct server attributes endpoint remains available only as a deprecated compatibility path for clients that shipped with the MVP.
 
+## World method name
+
+The direct-write World method is `runs.setAttributes`, matching the public `setAttributes()` API, and returns `SetAttributesResult`. It was introduced as `runs.experimentalSetAttributes` (returning `ExperimentalSetAttributesResult`); both old names stay as deprecated aliases so community Worlds that implemented them keep working. `__builtin_set_attributes` calls `runs.setAttributes` when present and falls back to `runs.experimentalSetAttributes`, and the first-party Worlds expose both names so older SDKs that only call the old one keep working. The rename does not touch the wire contract: `world-vercel` still posts to `POST /v2/runs/:runId/attributes`, and no storage column or table changed.
+
+Where the rest of this document says `experimentalSetAttributes`, read `setAttributes`.
+
 The remainder of this document documents the original MVP motivation and implementation.
 
 ## What MVP supports

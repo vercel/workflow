@@ -54,6 +54,9 @@ export const AttributeChangesSchema = z
   });
 
 /** The post-merge attribute snapshot returned by a World. */
-export interface ExperimentalSetAttributesResult {
+export interface SetAttributesResult {
   attributes: Record<string, string>;
 }
+
+/** @deprecated Use {@link SetAttributesResult}. */
+export type ExperimentalSetAttributesResult = SetAttributesResult;

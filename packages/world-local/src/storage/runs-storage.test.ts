@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createStorage } from '../storage.js';
 import { createRun } from '../test-helpers.js';
 
-describe('runs.experimentalSetAttributes (world-local)', () => {
+describe('runs.setAttributes (world-local)', () => {
   let testDir: string;
   let storage: Storage;
 
@@ -37,7 +37,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
   it('upserts new keys', async () => {
     const run = await newRun();
 
-    const result = await storage.runs.experimentalSetAttributes!(run.runId, [
+    const result = await storage.runs.setAttributes!(run.runId, [
       { key: 'phase', value: 'init' },
       { key: 'tenant', value: 't1' },
     ]);
@@ -49,12 +49,12 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
 
   it('updates existing keys (merge semantics)', async () => {
     const run = await newRun();
-    await storage.runs.experimentalSetAttributes!(run.runId, [
+    await storage.runs.setAttributes!(run.runId, [
       { key: 'phase', value: 'init' },
       { key: 'tenant', value: 't1' },
     ]);
 
-    const result = await storage.runs.experimentalSetAttributes!(run.runId, [
+    const result = await storage.runs.setAttributes!(run.runId, [
       { key: 'phase', value: 'done' },
     ]);
 
@@ -63,12 +63,12 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
 
   it('removes keys when value is null', async () => {
     const run = await newRun();
-    await storage.runs.experimentalSetAttributes!(run.runId, [
+    await storage.runs.setAttributes!(run.runId, [
       { key: 'phase', value: 'init' },
       { key: 'orderId', value: 'ord_123' },
     ]);
 
-    const result = await storage.runs.experimentalSetAttributes!(run.runId, [
+    const result = await storage.runs.setAttributes!(run.runId, [
       { key: 'orderId', value: null },
     ]);
 
@@ -78,11 +78,11 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
 
   it('applies set and unset in a single call', async () => {
     const run = await newRun();
-    await storage.runs.experimentalSetAttributes!(run.runId, [
+    await storage.runs.setAttributes!(run.runId, [
       { key: 'stale', value: 'yes' },
     ]);
 
-    const result = await storage.runs.experimentalSetAttributes!(run.runId, [
+    const result = await storage.runs.setAttributes!(run.runId, [
       { key: 'stale', value: null },
       { key: 'fresh', value: 'yes' },
     ]);
@@ -92,7 +92,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
 
   it('throws WorkflowRunNotFoundError for unknown run', async () => {
     await expect(
-      storage.runs.experimentalSetAttributes!('wrun_doesnotexist', [
+      storage.runs.setAttributes!('wrun_doesnotexist', [
         { key: 'phase', value: 'init' },
       ])
     ).rejects.toBeInstanceOf(WorkflowRunNotFoundError);
@@ -101,7 +101,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
   it('rejects keys starting with reserved prefix', async () => {
     const run = await newRun();
     await expect(
-      storage.runs.experimentalSetAttributes!(run.runId, [
+      storage.runs.setAttributes!(run.runId, [
         { key: `${RESERVED_ATTRIBUTE_KEY_PREFIX}sys`, value: 'x' },
       ])
     ).rejects.toBeInstanceOf(AttributeValidationError);
@@ -109,7 +109,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
 
   it('accepts reserved-prefix keys when allowReservedAttributes is set (framework escape hatch)', async () => {
     const run = await newRun();
-    const result = await storage.runs.experimentalSetAttributes!(
+    const result = await storage.runs.setAttributes!(
       run.runId,
       [
         {
@@ -128,7 +128,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
     // Without the flag on a follow-up write, the rejection still
     // fires — the opt-in is per-call, not sticky on the run.
     await expect(
-      storage.runs.experimentalSetAttributes!(run.runId, [
+      storage.runs.setAttributes!(run.runId, [
         { key: `${RESERVED_ATTRIBUTE_KEY_PREFIX}other`, value: 'x' },
       ])
     ).rejects.toBeInstanceOf(AttributeValidationError);
@@ -137,7 +137,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
   it('rejects keys over the max length', async () => {
     const run = await newRun();
     await expect(
-      storage.runs.experimentalSetAttributes!(run.runId, [
+      storage.runs.setAttributes!(run.runId, [
         { key: 'k'.repeat(ATTRIBUTE_KEY_MAX_LENGTH + 1), value: 'x' },
       ])
     ).rejects.toBeInstanceOf(AttributeValidationError);
@@ -146,7 +146,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
   it('rejects values exceeding the byte cap', async () => {
     const run = await newRun();
     await expect(
-      storage.runs.experimentalSetAttributes!(run.runId, [
+      storage.runs.setAttributes!(run.runId, [
         { key: 'big', value: 'a'.repeat(257) },
       ])
     ).rejects.toBeInstanceOf(AttributeValidationError);
@@ -159,10 +159,10 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
       key: `k${i}`,
       value: 'v',
     }));
-    await storage.runs.experimentalSetAttributes!(run.runId, initial);
+    await storage.runs.setAttributes!(run.runId, initial);
 
     // Updating an existing key (no growth) must succeed even at the cap.
-    const result = await storage.runs.experimentalSetAttributes!(run.runId, [
+    const result = await storage.runs.setAttributes!(run.runId, [
       { key: 'k0', value: 'updated' },
     ]);
     expect(result.attributes.k0).toBe('updated');
@@ -176,18 +176,9 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
       { key: 'tenant', value: 't1' as string | null },
     ];
 
-    const first = await storage.runs.experimentalSetAttributes!(
-      run.runId,
-      changes
-    );
-    const second = await storage.runs.experimentalSetAttributes!(
-      run.runId,
-      changes
-    );
-    const third = await storage.runs.experimentalSetAttributes!(
-      run.runId,
-      changes
-    );
+    const first = await storage.runs.setAttributes!(run.runId, changes);
+    const second = await storage.runs.setAttributes!(run.runId, changes);
+    const third = await storage.runs.setAttributes!(run.runId, changes);
 
     // All three converge on the same snapshot — second/third are no-op
     // upserts of the same values.
@@ -203,7 +194,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
       key: `k${i}`,
       value: 'v',
     }));
-    await storage.runs.experimentalSetAttributes!(run.runId, initial);
+    await storage.runs.setAttributes!(run.runId, initial);
 
     // Adding 5 new keys would push us over.
     const overflow = Array.from({ length: 5 }, (_, i) => ({
@@ -211,7 +202,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
       value: 'v',
     }));
     await expect(
-      storage.runs.experimentalSetAttributes!(run.runId, overflow)
+      storage.runs.setAttributes!(run.runId, overflow)
     ).rejects.toBeInstanceOf(AttributeValidationError);
   });
 
@@ -223,7 +214,7 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
     // race loses some.
     await Promise.all(
       Array.from({ length: 20 }, (_, i) =>
-        storage.runs.experimentalSetAttributes!(run.runId, [
+        storage.runs.setAttributes!(run.runId, [
           { key: `k${i}`, value: `v${i}` },
         ])
       )
@@ -231,6 +222,18 @@ describe('runs.experimentalSetAttributes (world-local)', () => {
 
     const refreshed = await storage.runs.get(run.runId);
     expect(Object.keys(refreshed.attributes ?? {})).toHaveLength(20);
+  });
+
+  it('keeps the deprecated experimentalSetAttributes alias for older SDKs', async () => {
+    const run = await newRun();
+
+    const result = await storage.runs.experimentalSetAttributes!(run.runId, [
+      { key: 'phase', value: 'init' },
+    ]);
+
+    expect(result.attributes).toEqual({ phase: 'init' });
+    const refreshed = await storage.runs.get(run.runId);
+    expect(refreshed.attributes).toEqual({ phase: 'init' });
   });
 });
 

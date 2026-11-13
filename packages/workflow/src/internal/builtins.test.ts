@@ -53,9 +53,9 @@ describe('__builtin_set_attributes', () => {
 
   it('rethrows attribute write failures before the third attempt', async () => {
     const error = new Error('world unavailable');
-    const experimentalSetAttributes = vi.fn().mockRejectedValue(error);
+    const setAttributes = vi.fn().mockRejectedValue(error);
     globals[WORLD_CACHE] = {
-      runs: { experimentalSetAttributes },
+      runs: { setAttributes },
     };
 
     for (const attempt of [1, 2]) {
@@ -68,18 +68,18 @@ describe('__builtin_set_attributes', () => {
       ).rejects.toBe(error);
     }
 
-    expect(experimentalSetAttributes).toHaveBeenCalledTimes(2);
+    expect(setAttributes).toHaveBeenCalledTimes(2);
   });
 
   it('logs and completes after the third failed attempt', async () => {
-    const experimentalSetAttributes = vi
+    const setAttributes = vi
       .fn()
       .mockRejectedValue(new Error('world unavailable'));
     const consoleError = vi
       .spyOn(console, 'error')
       .mockImplementation(() => {});
     globals[WORLD_CACHE] = {
-      runs: { experimentalSetAttributes },
+      runs: { setAttributes },
     };
     setStepAttempt(3);
 
@@ -89,7 +89,7 @@ describe('__builtin_set_attributes', () => {
       })
     ).resolves.toBeUndefined();
 
-    expect(experimentalSetAttributes).toHaveBeenCalledWith(
+    expect(setAttributes).toHaveBeenCalledWith(
       'run_123',
       [{ key: '$tag.kind', value: 'agent' }],
       { allowReservedAttributes: true }
@@ -105,5 +105,66 @@ describe('__builtin_set_attributes', () => {
         }
       ).maxRetries
     ).toBe(2);
+  });
+  it('prefers runs.setAttributes over the deprecated name', async () => {
+    const setAttributes = vi.fn().mockResolvedValue({ attributes: {} });
+    const experimentalSetAttributes = vi.fn();
+    globals[WORLD_CACHE] = {
+      runs: { setAttributes, experimentalSetAttributes },
+    };
+    setStepAttempt(1);
+
+    await __builtin_set_attributes([{ key: 'phase', value: 'init' }]);
+
+    expect(setAttributes).toHaveBeenCalledWith(
+      'run_123',
+      [{ key: 'phase', value: 'init' }],
+      undefined
+    );
+    expect(experimentalSetAttributes).not.toHaveBeenCalled();
+  });
+
+  it('falls back to runs.experimentalSetAttributes for older Worlds', async () => {
+    const runs = {
+      calls: [] as unknown[][],
+      // Uses `this` to check the fallback is still invoked as a method.
+      async experimentalSetAttributes(...args: unknown[]) {
+        this.calls.push(args);
+        return { attributes: {} };
+      },
+    };
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    globals[WORLD_CACHE] = { runs };
+    setStepAttempt(1);
+
+    await __builtin_set_attributes([{ key: '$tag.kind', value: 'agent' }], {
+      allowReservedAttributes: true,
+    });
+
+    expect(runs.calls).toEqual([
+      [
+        'run_123',
+        [{ key: '$tag.kind', value: 'agent' }],
+        { allowReservedAttributes: true },
+      ],
+    ]);
+    expect(consoleWarn).not.toHaveBeenCalled();
+  });
+
+  it('warns once and no-ops when the World implements neither name', async () => {
+    delete globals[UNSUPPORTED_WORLD_WARNED];
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    globals[WORLD_CACHE] = { name: 'community', runs: {} };
+    setStepAttempt(1);
+
+    await expect(
+      __builtin_set_attributes([{ key: 'phase', value: 'init' }])
+    ).resolves.toBeUndefined();
+    await __builtin_set_attributes([{ key: 'phase', value: 'done' }]);
+
+    expect(consoleWarn).toHaveBeenCalledTimes(1);
+    expect(consoleWarn.mock.calls[0]?.[0]).toContain(
+      'does not implement runs.setAttributes'
+    );
   });
 });

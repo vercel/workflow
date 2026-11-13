@@ -1,8 +1,5 @@
 import type { Analytics } from './analytics.js';
-import type {
-  AttributeChange,
-  ExperimentalSetAttributesResult,
-} from './attributes.js';
+import type { AttributeChange, SetAttributesResult } from './attributes.js';
 import type {
   BatchEventRequest,
   CreateEventBatchParams,
@@ -307,22 +304,31 @@ export interface Storage {
      * sub-namespace flip this on.
      *
      * OPTIONAL. World implementations may omit this method; the SDK
-     * helper (`setAttributes` in `@workflow/core`) feature-detects its
-     * absence and no-ops with a one-time warning so third-party /
-     * community worlds keep working without adopting the experimental
-     * API.
+     * feature-detects its absence and no-ops with a one-time warning so
+     * third-party / community worlds keep working without adopting it.
+     * Callers prefer this method and fall back to the deprecated
+     * {@link experimentalSetAttributes} when only that one exists.
      *
-     * EXPERIMENTAL: this method exists as a stopgap until the
-     * `attr_set` event type lands in a future spec version. When that
-     * happens, `setAttributes` will dispatch through `events.create`
-     * instead, and this method is expected to be removed. See the
-     * `attributes-mvp` changelog entry for the migration shape.
+     * This direct entity write predates the `attr_set` event type, which
+     * is how `setAttributes()` records changes on current spec versions.
+     * See `packages/core/src/attributes-mvp.md`.
+     */
+    setAttributes?(
+      runId: string,
+      changes: AttributeChange[],
+      options?: { allowReservedAttributes?: boolean }
+    ): Promise<SetAttributesResult>;
+
+    /**
+     * @deprecated Renamed to {@link setAttributes}. Implement
+     * `setAttributes` instead; callers still fall back to this method
+     * when a World provides only the old name.
      */
     experimentalSetAttributes?(
       runId: string,
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
-    ): Promise<ExperimentalSetAttributesResult>;
+    ): Promise<SetAttributesResult>;
 
     /**
      * Cancel many runs in a single operation, returning a per-run outcome

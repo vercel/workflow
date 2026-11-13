@@ -19,10 +19,10 @@ import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
 import {
   cancelWorkflowRuns,
-  experimentalSetAttributes,
   getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
+  setAttributes,
   waitForWorkflowRunTerminalStatus,
 } from './runs.js';
 import { createSnapshotsStorage } from './snapshots.js';
@@ -46,8 +46,11 @@ export function createStorage(config?: APIConfig): Storage {
       >,
       list: ((params?: any) =>
         listWorkflowRuns(params, config)) as Storage['runs']['list'],
+      setAttributes: (runId, changes, options) =>
+        setAttributes(runId, changes, options, config),
+      // Deprecated alias for SDK versions that only know the old name.
       experimentalSetAttributes: (runId, changes, options) =>
-        experimentalSetAttributes(runId, changes, options, config),
+        setAttributes(runId, changes, options, config),
       cancelMany: (request) => cancelWorkflowRuns(request, config),
     },
     steps: {

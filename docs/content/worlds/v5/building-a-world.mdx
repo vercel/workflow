@@ -121,7 +121,7 @@ interface Storage {
     list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
     // Optional: backs setAttributes(). Omitting it means run attributes are
     // unsupported on this World. The SDK helper no-ops with a warning.
-    experimentalSetAttributes?(runId: string, changes: AttributeChange[], options?: { allowReservedAttributes?: boolean }): Promise<ExperimentalSetAttributesResult>;
+    setAttributes?(runId: string, changes: AttributeChange[], options?: { allowReservedAttributes?: boolean }): Promise<SetAttributesResult>;
 
     // Optional: long poll for a terminal status (see below)
     waitForTerminalStatus?(id: string, params?: WaitForTerminalRunStatusParams): Promise<WorkflowRun>;

@@ -31,6 +31,12 @@ const UNSUPPORTED_WORLD_WARNED = Symbol.for(
 
 const INTERNAL_ATTRIBUTES_MAX_ATTEMPTS = 3;
 
+type SetAttributesMethod = (
+  runId: string,
+  changes: Array<{ key: string; value: string | null }>,
+  options?: { allowReservedAttributes?: boolean }
+) => Promise<unknown>;
+
 function formatUnknownError(error: unknown) {
   if (error instanceof Error) {
     return error.stack ?? `${error.name}: ${error.message}`;
@@ -77,15 +83,21 @@ export async function __builtin_set_attributes(
     | {
         name?: string;
         runs?: {
-          experimentalSetAttributes?: (
-            runId: string,
-            changes: Array<{ key: string; value: string | null }>,
-            options?: { allowReservedAttributes?: boolean }
-          ) => Promise<unknown>;
+          setAttributes?: SetAttributesMethod;
+          /** Deprecated name, still implemented by older World adapters. */
+          experimentalSetAttributes?: SetAttributesMethod;
         };
       }
     | undefined;
-  if (typeof world?.runs?.experimentalSetAttributes !== 'function') {
+  const runs = world?.runs;
+  // Bind to `runs` so implementations that rely on `this` keep working.
+  const setAttributes =
+    typeof runs?.setAttributes === 'function'
+      ? runs.setAttributes.bind(runs)
+      : typeof runs?.experimentalSetAttributes === 'function'
+        ? runs.experimentalSetAttributes.bind(runs)
+        : undefined;
+  if (!setAttributes) {
     // World adapter doesn't implement attributes yet, so no-op the call,
     // but emit one process-wide warning so users know their writes are
     // being dropped. The VM-side validation already ran so the input
@@ -94,7 +106,7 @@ export async function __builtin_set_attributes(
       g[UNSUPPORTED_WORLD_WARNED] = true;
       const worldName = world?.name ? ` (${world.name})` : '';
       console.warn(
-        `[workflow] setAttributes: the current world implementation${worldName} does not implement experimentalSetAttributes; this call (and any subsequent setAttributes calls in this process) is a no-op. Attributes will become available once the world adapter adds support.`
+        `[workflow] setAttributes: the current world implementation${worldName} does not implement runs.setAttributes; this call (and any subsequent setAttributes calls in this process) is a no-op. Attributes will become available once the world adapter adds support.`
       );
     }
     return;
@@ -108,7 +120,7 @@ export async function __builtin_set_attributes(
       );
     }
 
-    await world.runs.experimentalSetAttributes(runId, changes, options);
+    await setAttributes(runId, changes, options);
   } catch (error) {
     if (attempt < INTERNAL_ATTRIBUTES_MAX_ATTEMPTS) {
       throw error;
