@@ -5,6 +5,7 @@
     }
   },
   "env": {
-    "WORKFLOW_PUBLIC_MANIFEST": "1"
+    "WORKFLOW_PUBLIC_MANIFEST": "1",
+    "WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS": "1"
   }
 }
