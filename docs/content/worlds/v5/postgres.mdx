@@ -315,7 +315,7 @@ Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. 
 
 ### `WORKFLOW_POSTGRES_DEPLOYMENT_ID`
 
-Pins every run to the deployment that started it, the way the [Vercel World](/worlds/vercel) does. Set it to a value that names one immutable build, such as a container image tag or a commit SHA: letters, digits, `.`, `-`, `_` and `@`, at most 100 characters. Default: unset.
+Pins every run to the deployment that started it, the way the [Vercel World](/worlds/vercel) does. Set it to a value that names one immutable build, such as a container image tag or a commit SHA: letters, digits, `.`, `-`, `_` and `@`, but not `postgres`. It becomes part of Graphile job and queue names, which are limited to 128 characters, so it can be at most 72 characters with the default job prefix (the job prefix and the deployment ID together, at most 81). Default: unset.
 
 When it is set:
 
@@ -326,6 +326,8 @@ When it is set:
 Keep at least one process of a deployment running, or able to start, until its runs finish. Nothing else claims them, so a run whose deployment is gone waits for it.
 
 Unset, every process that shares the job prefix claims every run. A run started before a deploy then continues on the new code, which must replay it the same way.
+
+Runs started before you set it stay unpinned: they record the deployment ID `postgres`, and only a process without `WORKFLOW_POSTGRES_DEPLOYMENT_ID` claims them. Messages for them are routed there, including from pinned processes. When you turn pinning on, keep one process without it running until those runs finish.
 
 ### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 

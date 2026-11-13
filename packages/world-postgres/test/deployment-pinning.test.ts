@@ -163,6 +163,66 @@ describe('deployment pinning', () => {
     }
   });
 
+  test('routes an unpinned run’s message to the unpinned task, from a pinned or unpinned World', async () => {
+    // A run started before `deploymentId` was set records `postgres`, and its
+    // jobs are on the unpinned task, which a process without `deploymentId`
+    // still claims.
+    const pinned = createWorld({ pool, jobPrefix: 'mix_', deploymentId: 'v1' });
+    const unpinned = createWorld({ pool, jobPrefix: 'mix_' });
+    const unpinnedRun = `wrun_${ulid()}`;
+    const pinnedRun = `wrun_${ulid()}`;
+    const queueName = '__wkf_workflow_deployment-pinning-test' as const;
+    try {
+      await pinned.queue(
+        queueName,
+        {
+          runId: unpinnedRun,
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+        { deploymentId: 'postgres' }
+      );
+      // And an unpinned process sends a pinned run's message to its
+      // deployment, rather than running it itself.
+      await unpinned.queue(
+        queueName,
+        { runId: pinnedRun, runSpecVersion: SPEC_VERSION_CURRENT },
+        { deploymentId: 'v1' }
+      );
+      expect(await queued('mix_flows')).toEqual([
+        {
+          runId: unpinnedRun,
+          queueName: `mix_flows:${unpinnedRun}:executor`,
+        },
+      ]);
+      expect(await queued('mix_v1_flows')).toEqual([
+        { runId: pinnedRun, queueName: null },
+      ]);
+      expect(await queued('mix_postgres_flows')).toEqual([]);
+    } finally {
+      await pinned.close();
+      await unpinned.close();
+    }
+  });
+
+  test('enqueues a spec 9 run with the longest deploymentId its jobPrefix allows', async () => {
+    // Graphile Worker limits queue names to 128 characters; the run's queue
+    // `${prefix}flows:${runId}:executor` is the longest name.
+    const deploymentId = 'x'.repeat(72);
+    const world = createWorld({ pool, deploymentId });
+    const runId = `wrun_${ulid()}`;
+    try {
+      await world.queue(
+        '__wkf_workflow_deployment-pinning-test',
+        { runId, runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+        { deploymentId }
+      );
+      const [job] = await queued(`workflow_${deploymentId}_flows`);
+      expect(job?.queueName).toHaveLength(128);
+    } finally {
+      await world.close();
+    }
+  });
+
   test('recovers only the runs of its own deployment', async () => {
     const v1 = createWorld({ pool, jobPrefix: 'rec_', deploymentId: 'v1' });
     const v2 = createWorld({ pool, jobPrefix: 'rec_', deploymentId: 'v2' });
@@ -191,10 +251,22 @@ describe('deployment pinning', () => {
     '',
     'has space',
     'a/b',
-    'x'.repeat(101),
+    // Reserved: the deployment id of unpinned runs.
+    'postgres',
+    // Past what fits Graphile's 128 character names with `bad_` (77).
+    'x'.repeat(78),
   ])('rejects deploymentId %j', (deploymentId) => {
     expect(() =>
       createWorld({ pool, jobPrefix: 'bad_', deploymentId })
     ).toThrow(/Invalid Postgres World deploymentId/);
+  });
+
+  test('bounds deploymentId by what fits its jobPrefix', () => {
+    expect(() =>
+      createWorld({ pool, jobPrefix: 'bad_', deploymentId: 'x'.repeat(77) })
+    ).not.toThrow();
+    expect(() => createWorld({ pool, deploymentId: 'x'.repeat(73) })).toThrow(
+      /at most 72 characters/
+    );
   });
 });

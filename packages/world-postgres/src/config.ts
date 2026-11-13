@@ -26,9 +26,15 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    * task, and the World declares `deploymentAffinity`. Keep a deployment's
    * workers running until its runs have finished: nothing else claims them.
    *
-   * Letters, digits, `.`, `-`, `_` and `@`; at most 100 characters. Defaults
-   * to WORKFLOW_POSTGRES_DEPLOYMENT_ID. Unset, every process sharing the
+   * Letters, digits, `.`, `-`, `_` and `@`, and not `postgres`. The
+   * effective prefix must fit Graphile Worker's 128 character names: at most
+   * 72 characters with the default `jobPrefix`, and in general
+   * `jobPrefix` and `deploymentId` together at most 81. Defaults to
+   * WORKFLOW_POSTGRES_DEPLOYMENT_ID. Unset, every process sharing the
    * `jobPrefix` claims every run, and `getDeploymentId()` reports `postgres`.
+   *
+   * Runs started without it record `postgres` and stay on the unpinned task:
+   * keep a process without `deploymentId` running until they finish.
    */
   deploymentId?: string;
   /**
@@ -92,16 +98,48 @@ export function resolveJobPrefix(
   if (deploymentId === undefined) {
     return base;
   }
-  assertValidDeploymentId(deploymentId);
+  assertValidDeploymentId(deploymentId, base);
   return `${base}${deploymentId}_`;
 }
 
-const DEPLOYMENT_ID = /^[A-Za-z0-9._@-]{1,100}$/;
+const DEPLOYMENT_ID = /^[A-Za-z0-9._@-]+$/;
 
-export function assertValidDeploymentId(deploymentId: string): void {
-  if (!DEPLOYMENT_ID.test(deploymentId)) {
+/**
+ * The deployment id a run records when no `deploymentId` is set (see
+ * `getDeploymentId()`). Reserved: a run recorded with it is unpinned, and its
+ * jobs are on the unpinned task (`${jobPrefix}flows`).
+ */
+export const UNPINNED_DEPLOYMENT_ID = 'postgres';
+
+/**
+ * The longest effective job prefix whose Graphile names fit: Graphile Worker
+ * limits task identifiers and queue names to 128 characters, and the longest
+ * name built from the prefix is a spec 9 run's queue,
+ * `${prefix}flows:${runId}:executor`, where a run id is `wrun_` and a ULID
+ * (31 characters).
+ */
+export const MAX_JOB_PREFIX_LENGTH =
+  128 - 'flows:'.length - 'wrun_'.length - 26 - ':executor'.length;
+
+/**
+ * Throws unless `deploymentId` is usable with this `jobPrefix`: letters,
+ * digits, `.`, `-`, `_` and `@`, not the reserved
+ * {@link UNPINNED_DEPLOYMENT_ID}, and short enough that the effective prefix
+ * `${jobPrefix}${deploymentId}_` is at most {@link MAX_JOB_PREFIX_LENGTH}
+ * characters (72 with the default `workflow_`).
+ */
+export function assertValidDeploymentId(
+  deploymentId: string,
+  jobPrefix: string = DEFAULT_JOB_PREFIX
+): void {
+  const maxLength = MAX_JOB_PREFIX_LENGTH - jobPrefix.length - 1;
+  if (
+    !DEPLOYMENT_ID.test(deploymentId) ||
+    deploymentId.length > maxLength ||
+    deploymentId === UNPINNED_DEPLOYMENT_ID
+  ) {
     throw new Error(
-      `Invalid Postgres World deploymentId ${JSON.stringify(deploymentId)}: use 1-100 letters, digits, ".", "-", "_" or "@"`
+      `Invalid Postgres World deploymentId ${JSON.stringify(deploymentId)}: use letters, digits, ".", "-", "_" or "@", at most ${Math.max(0, maxLength)} characters with jobPrefix ${JSON.stringify(jobPrefix)}, and not ${JSON.stringify(UNPINNED_DEPLOYMENT_ID)}`
     );
   }
 }

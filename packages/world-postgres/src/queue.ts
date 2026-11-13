@@ -48,7 +48,11 @@ import {
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
-import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
+import {
+  type PostgresWorldConfig,
+  resolveJobPrefix,
+  UNPINNED_DEPLOYMENT_ID,
+} from './config.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import {
@@ -354,17 +358,26 @@ export function createQueue(
   /**
    * The task of another deployment's runs, when `opts.deploymentId` names one:
    * a pinned run's messages go to the workers of the deployment that started
-   * it, wherever they are enqueued from. `undefined` means this World's own.
+   * it, wherever they are enqueued from, and an unpinned run's (one recorded
+   * with {@link UNPINNED_DEPLOYMENT_ID}, such as a run started before
+   * `deploymentId` was set) go to the unpinned task. `undefined` means this
+   * World's own, as it does for an id that cannot name a deployment's task.
    */
   function deploymentTask(deploymentId: string | undefined) {
     if (
-      config.deploymentId === undefined ||
       deploymentId === undefined ||
-      deploymentId === config.deploymentId
+      deploymentId === (config.deploymentId ?? UNPINNED_DEPLOYMENT_ID)
     ) {
       return undefined;
     }
-    return getJobQueueName(deploymentId);
+    if (deploymentId === UNPINNED_DEPLOYMENT_ID) {
+      return `${resolveJobPrefix({ jobPrefix: config.jobPrefix })}flows`;
+    }
+    try {
+      return getJobQueueName(deploymentId);
+    } catch {
+      return undefined;
+    }
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
@@ -539,7 +552,7 @@ export function createQueue(
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
-    return config.deploymentId ?? 'postgres';
+    return config.deploymentId ?? UNPINNED_DEPLOYMENT_ID;
   };
 
   const completedMessages = new Set<string>();
