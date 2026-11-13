@@ -61,6 +61,19 @@ function detectEncoding(data: Uint8Array, streamId: string): StreamEncoding {
   return 'legacy';
 }
 
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  if (parts.length === 1) return parts[0];
+  const joined = new Uint8Array(
+    parts.reduce((length, part) => length + part.length, 0)
+  );
+  let offset = 0;
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.length;
+  }
+  return joined;
+}
+
 function hasSameImageBytes(previous: StreamChunk[], next: StreamChunk[]) {
   const before = previous[0]?.value;
   const after = next[0]?.value;
@@ -227,6 +240,9 @@ export function useStreamReader(
       let buffer = new Uint8Array(0);
       let encoding: StreamEncoding | null = null;
       let textRemainder = '';
+      // Image reads are joined once at the end: growing one buffer per read
+      // copies the image repeatedly and stalls large previews.
+      const imageParts: Uint8Array[] = [];
       let frameIndex = 0;
 
       const appendToBuffer = (data: Uint8Array) => {
@@ -253,7 +269,7 @@ export function useStreamReader(
             frameIndex++;
             targetBuffer.push({
               id: imageChunkId,
-              value: buffer,
+              value: concatBytes([buffer, ...imageParts]),
             });
           } else if (encoding === 'unframed' && buffer.length > 0) {
             frameIndex++;
@@ -296,6 +312,8 @@ export function useStreamReader(
           }
         } else if (encoding === 'legacy') {
           textRemainder += decoder.decode(value, { stream: true });
+        } else if (encoding === 'image') {
+          imageParts.push(value);
         } else {
           appendToBuffer(value);
         }
