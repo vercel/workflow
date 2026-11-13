@@ -5,9 +5,11 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  isRunCreationEvent,
   isTerminalStepEventType,
   type WorkflowRun,
 } from '@workflow/world';
+import type { StartHookCreation } from '../../lib/start-hook';
 import type { Span, SpanEvent } from '../../lib/trace-types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
@@ -320,8 +322,14 @@ export function stepToSpan(
   };
 }
 
+/**
+ * Builds a Hook from its events. A run's start Hook has no `hook_created`
+ * (the run's creation stands for it), so pass its `startHook` creation from
+ * `findStartHookCreation` to build it from deliveries alone.
+ */
 export const hookEventsToHookEntity = (
-  events: Event[]
+  events: Event[],
+  startHook?: StartHookCreation
 ): {
   hookId: string;
   runId: string;
@@ -334,7 +342,18 @@ export const hookEventsToHookEntity = (
   const createdEvent = events.find(
     (event) => event.eventType === 'hook_created'
   );
-  if (!createdEvent) {
+  const creation = createdEvent
+    ? {
+        hookId: createdEvent.correlationId,
+        runId: createdEvent.runId,
+        token: createdEvent.eventData?.token,
+        createdAt: getEventTimestamp(createdEvent) ?? createdEvent.createdAt,
+      }
+    : startHook &&
+        events.every((event) => event.correlationId === startHook.hookId)
+      ? startHook
+      : undefined;
+  if (!creation) {
     return null;
   }
   const receivedEvents = events.filter(
@@ -345,10 +364,10 @@ export const hookEventsToHookEntity = (
   );
   const lastReceivedEvent = receivedEvents.at(-1);
   return {
-    hookId: createdEvent.correlationId,
-    runId: createdEvent.runId,
-    token: createdEvent.eventData?.token,
-    createdAt: getEventTimestamp(createdEvent) ?? createdEvent.createdAt,
+    hookId: creation.hookId,
+    runId: creation.runId,
+    token: creation.token,
+    createdAt: creation.createdAt,
     receivedCount: receivedEvents.length,
     lastReceivedAt: getEventTimestamp(lastReceivedEvent),
     disposedAt: getEventTimestamp(disposedEvents.at(-1)),
@@ -358,8 +377,12 @@ export const hookEventsToHookEntity = (
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(hookEvents: Event[], maxEndTime: Date): Span | null {
-  const hook = hookEventsToHookEntity(hookEvents);
+export function hookToSpan(
+  hookEvents: Event[],
+  maxEndTime: Date,
+  startHook?: StartHookCreation
+): Span | null {
+  const hook = hookEventsToHookEntity(hookEvents, startHook);
   if (!hook) {
     return null;
   }
@@ -401,9 +424,9 @@ export function runToSpan(
 
   // Prefer the event occurrence timestamp when available so the root span
   // lines up with child spans that already use event occurrence time.
-  const runCreatedEvent = runEvents.find(
-    (event) => event.eventType === 'run_created'
-  );
+  // The run's creation: its `run_created`, or on spec >= 9 the `run_started`
+  // that created the run at the first slot (no `run_created` in the log).
+  const runCreatedEvent = runEvents.find(isRunCreationEvent);
   const runStartedEvent = runEvents.find(
     (event) => event.eventType === 'run_started'
   );

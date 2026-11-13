@@ -1,14 +1,14 @@
 // Benchmark: serialized payload sizes with and without gzip compression.
 //
 // Measures the exact bytes the serialization layer hands to the World
-// storage backends (S3/DynamoDB refs for world-vercel, bytea columns for
+// storage backends (payload refs for world-vercel, bytea columns for
 // world-postgres, JSON files for world-local) for a set of real-world-style
 // workloads, with compression off vs on.
 //
 // Usage (from packages/core, after `pnpm build`):
 //   node scripts/benchmark-compression-size.mjs
 //
-// Note: backends that store binary as base64 (DynamoDB inline refs,
+// Note: backends that store binary as base64 (some inline refs,
 // world-local JSON files) amplify every byte by 4/3, so the absolute
 // savings there are ~33% larger than the raw numbers below.
 

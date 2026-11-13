@@ -216,7 +216,7 @@ jobs:
           echo "Resolved commit SHA: $SHA"
 
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ steps.resolve.outputs.sha }}
@@ -306,7 +306,7 @@ jobs:
 
       - name: Setup pnpm
         if: steps.existing-pr.outputs.exists != 'true'
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: false
           runtime: node@24
@@ -542,7 +542,7 @@ jobs:
           steps.existing-pr.outputs.exists != 'true' &&
           steps.decide.outputs.decision == 'no' &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REASONING: ${{ steps.decide.outputs.reasoning }}
           SHA: ${{ steps.resolve.outputs.sha }}
@@ -800,7 +800,7 @@ jobs:
           steps.cherry-pick.outputs.status == 'clean' ||
           (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
         id: push-branch
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BRANCH: ${{ steps.existing-pr.outputs.branch }}
           SHA: ${{ steps.resolve.outputs.sha }}
@@ -1065,7 +1065,7 @@ jobs:
         if: |
           steps.backport-pr.outputs.pr_url != '' &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
           PR_URL: ${{ steps.backport-pr.outputs.pr_url }}
@@ -1098,7 +1098,7 @@ jobs:
           steps.cherry-pick.outputs.status == 'conflict' &&
           steps.ai-resolve.outputs.resolved == 'false' &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
@@ -1147,7 +1147,7 @@ jobs:
         if: |
           failure() &&
           steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}

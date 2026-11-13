@@ -12,12 +12,10 @@ import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import { Mutex } from './util.js';
 
-const StreamPublishMessage = z.compile(
-  z.object({
-    streamId: z.string(),
-    chunkId: z.templateLiteral(['chnk_', z.string()]),
-  })
-);
+const StreamPublishMessage = z.object({
+  streamId: z.string(),
+  chunkId: z.templateLiteral(['chnk_', z.string()]),
+});
 
 interface StreamChunkEvent {
   id: `chnk_${string}`;
@@ -65,6 +63,12 @@ export interface ListenChannelOptions {
    * that cannot tolerate a missed notification re-read their state here.
    */
   onReconnect?: () => void;
+  /**
+   * Runs once per outage, when the active connection drops (before any
+   * reconnect attempt). A `NOTIFY` sent from here until `onReconnect` is
+   * lost.
+   */
+  onDisconnect?: () => void;
 }
 
 /**
@@ -113,6 +117,11 @@ export const listenChannel = async (
       console.warn(
         `[world-postgres] LISTEN ${channel} connection lost; reconnecting`
       );
+      try {
+        options.onDisconnect?.();
+      } catch {
+        // A failing callback must not stop the reconnect.
+      }
     }
     scheduleReconnect();
   };

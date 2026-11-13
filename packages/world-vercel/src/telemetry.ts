@@ -307,6 +307,20 @@ export const WorkflowEventsTransport = SemanticConvention<'http' | 'ws'>(
 );
 
 /**
+ * Why an event write that tried the run's events socket went over HTTP
+ * instead (workflow.events.transport_fallback), on its `http` span:
+ * `no_channel` when no socket was resolvable for the run, `connecting` when
+ * the write would not wait for the socket's handshake (`run_started`). Absent
+ * on writes that never tried the socket, such as with the WS transport off, and
+ * on writes through a `projectConfig` World, which is HTTP-only.
+ */
+export type EventsTransportFallback = 'no_channel' | 'connecting';
+export const WorkflowEventsTransportFallback =
+  SemanticConvention<EventsTransportFallback>(
+    'workflow.events.transport_fallback'
+  );
+
+/**
  * HTTP client library the request was issued through
  * (workflow.http.transport): `undici` | `node-http`. Set on BOTH paths, for
  * the same reason as {@link WorkflowEventsTransport}: the two emit the same

@@ -11,6 +11,9 @@
  * 3. On suspension: creates events + queues steps for new pending ops
  * 4. On completion: creates run_completed
  * 5. On failure: creates run_failed
+ *
+ * This is the spec 9 QuickJS orchestrator. `./README.md` is the spec 9
+ * reference; "QuickJS differences" there lists where the two engines differ.
  */
 
 import type { Span } from '@opentelemetry/api';
@@ -57,7 +60,7 @@ import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
 import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
@@ -1619,6 +1622,8 @@ export async function runWorkflowWithQuickJS(params: {
   const inFlightInline = new Map<string, Promise<void>>();
   const settledInline: InlineSettled[] = [];
   let inlineFeed: LiveLogFeed | undefined;
+  /** Removes the live feed's listener on the writer's commits. */
+  let stopInlineFeedActivity: (() => void) | undefined;
   /** Events the live feed delivered so far in this invocation. */
   let fedEventCount = 0;
   /**
@@ -1654,6 +1659,12 @@ export async function runWorkflowWithQuickJS(params: {
       onFeedDown: () => notifyProgress(),
     });
     inlineFeed.start();
+    // Without a push, the poll's backoff starts over on each write of this
+    // delivery (see `LiveLogFeed.noteActivity`).
+    const feed = inlineFeed;
+    stopInlineFeedActivity = writer?.addCommitListener(() =>
+      feed.noteActivity()
+    );
   };
   let progressDirty = false;
   let progressWaiter: (() => void) | undefined;
@@ -2118,7 +2129,7 @@ export async function runWorkflowWithQuickJS(params: {
       events.map((event) => ({
         event,
         occurredAt,
-        computeInstanceId: COMPUTE_INSTANCE_ID,
+        computeInstanceId: getComputeInstanceId(),
       })),
       {
         ...logView.snapshotParams(),
@@ -2311,7 +2322,7 @@ export async function runWorkflowWithQuickJS(params: {
   ): Promise<CallerStart> => {
     const postSentAtMs = Date.now();
     const written = await createEvent(inlineCreationEvent(step, input), {
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
       ...(requestId ? { requestId } : {}),
     });
     return {
@@ -2496,6 +2507,8 @@ export async function runWorkflowWithQuickJS(params: {
     // Speculative writes settle before the delivery ends, whichever way it
     // ends.
     await settleRunAhead();
+    stopInlineFeedActivity?.();
+    stopInlineFeedActivity = undefined;
     inlineFeed?.stop();
     inlineFeed = undefined;
   };
@@ -2615,7 +2628,13 @@ export async function runWorkflowWithQuickJS(params: {
     ) {
       return 'step';
     }
-    const logged = externalWorkOf(fullLog());
+    const observedHookIds = new Set(
+      session
+        .openHooks?.()
+        .filter((hook) => hook.observed)
+        .map((hook) => hook.correlationId) ?? []
+    );
+    const logged = externalWorkOf(fullLog(), observedHookIds);
     if (logged !== undefined) return logged;
     if (pendingOperations.some((op) => op.type === 'hook')) return 'hook';
     return undefined;
@@ -3764,7 +3783,8 @@ export async function runWorkflowWithQuickJS(params: {
     // The VM serializes errors as `{ name, message, stack }`, so we
     // reconstruct a host-side Error of the correct class based on the
     // VM-side `name`: specific WorkflowRuntimeError subclasses need
-    // to be preserved so classifyRunError() tags them as RUNTIME_ERROR.
+    // to be preserved so classifyRunError() tags them with their own
+    // code (WORKFLOW_NOT_REGISTERED for WorkflowNotRegisteredError).
     const reconstructed: Error =
       result.failed.name === 'WorkflowNotRegisteredError'
         ? new WorkflowNotRegisteredError(workflowName)

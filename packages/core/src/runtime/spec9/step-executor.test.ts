@@ -26,12 +26,16 @@ import {
 } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import { contextStorage } from '../../step/context-storage.js';
+import {
+  getStepMetadata,
+  type StepMetadata,
+} from '../../step/get-step-metadata.js';
 import { getWritable } from '../../step/writable-stream.js';
 import {
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../../symbols.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
   unserializableStepInputPlaceholder,
@@ -195,6 +199,34 @@ describe('executeStep', () => {
     ).rejects.toThrow('superseded');
     expect(body).not.toHaveBeenCalled();
     expect(written.map((e) => e.eventType)).toEqual(['step_started']);
+  });
+
+  it.each([
+    [undefined, 4],
+    [2, 3],
+    [0, 1],
+  ])('exposes maxAttempts for maxRetries %s as %s', async (maxRetries, maxAttempts) => {
+    const { createEvent } = recordingWriter();
+    const stepName = `exec_meta_${maxRetries}`;
+    let metadata: StepMetadata | undefined;
+    registerStepFunction(
+      stepName,
+      Object.assign(
+        async () => {
+          metadata = getStepMetadata();
+        },
+        { maxRetries }
+      )
+    );
+    const result = await executeStep({
+      ...base,
+      createEvent,
+      stepName,
+      attempt: 1,
+      input: await input([]),
+    });
+    expect(result.type).toBe('completed');
+    expect(metadata).toMatchObject({ attempt: 1, maxAttempts });
   });
 
   it('fails a step for exhausted retries without running it', async () => {
@@ -788,7 +820,7 @@ describe('executeStep — request and compute provenance', () => {
     const started = calls.find((c) => c.data.eventType === 'step_started');
     expect(started?.params).toMatchObject({
       requestId: 'req_step_executor',
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
   });
 
@@ -807,7 +839,7 @@ describe('executeStep — request and compute provenance', () => {
     });
     const started = calls.find((c) => c.data.eventType === 'step_started');
     expect(started?.params).toMatchObject({
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
     expect(started?.params).not.toHaveProperty('requestId');
   });

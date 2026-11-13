@@ -166,6 +166,7 @@ export {
   EVENT_ID_PREFIX,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  isRunCreationEvent,
   isSlotBody,
   isSlotEventId,
   MAX_EVENT_SLOT,

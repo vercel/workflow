@@ -31,7 +31,7 @@ The thrown `RuntimeDecryptionError` carries a small `context` object with diagno
 
 Common causes, in rough order of likelihood:
 
-1. **Ciphertext mutation or truncation in transit.** The encrypted payload reached the SDK with bytes that differ from what storage holds. Possible sources include a truncated HTTP response from a workflow-server ref endpoint, an edge-cache miss returning a partial 200, or a proxy drop during streaming. A truncated body whose first 4 bytes happen to still spell `encr` produces the exact "auth tag mismatch" symptom.
+1. **Ciphertext mutation or truncation in transit.** The encrypted payload reached the SDK with bytes that differ from what storage holds. Possible sources include a truncated HTTP response from a world backend ref endpoint, an edge-cache miss returning a partial 200, or a proxy drop during streaming. A truncated body whose first 4 bytes happen to still spell `encr` produces the exact "auth tag mismatch" symptom.
 2. **Key resolution mismatch.** The key used to decrypt is not the key that was used to encrypt, e.g. the run's `deploymentId` was not threaded through key resolution and the SDK fell back to the wrong deployment's key material.
 3. **Malformed encrypted envelope.** The envelope is too short to contain the GCM nonce (12 bytes) and auth tag (16 bytes), so decryption is rejected before it begins.
 

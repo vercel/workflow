@@ -432,6 +432,33 @@ describe('full round trip through the host serde only', () => {
     });
   });
 
+  it('carries the engine-captured stack of a thrown Error', () => {
+    // No manual `e.stack = ...`: the trace is the one QuickJS captured
+    // when the Error was constructed (behind the Error.prototype.stack
+    // accessor on QuickJS-NG >= 0.16, not an own data property).
+    const bytes = serializeGuest(
+      `(() => {
+        function innerThrower() { throw new TypeError('deep'); }
+        function outerCaller() { innerThrower(); }
+        try { outerCaller(); } catch (e) { return e; }
+      })()`
+    );
+    const revived = checkInGuest(
+      bytes,
+      `function (e) {
+        return {
+          isTypeError: e instanceof TypeError,
+          message: e.message,
+          stack: e.stack,
+        };
+      }`
+    ) as { isTypeError: boolean; message: string; stack: string };
+    expect(revived.isTypeError).toBe(true);
+    expect(revived.message).toBe('deep');
+    expect(revived.stack).toContain('innerThrower');
+    expect(revived.stack).toContain('outerCaller');
+  });
+
   it('revives a pre-existing DataView payload with its bounds', () => {
     // Written by devalue's built-in encoding before `DataViewBytes` existed:
     // a reference to the whole buffer, with the view's bounds beside it.
@@ -920,6 +947,42 @@ describe('side-effect freedom', () => {
     vm.evalCode(`
       delete Map.prototype[Symbol.iterator];
     `).dispose();
+  });
+
+  it('reading an Error stack does not run a patched Error.prototype.stack', () => {
+    vm.evalCode(`
+      globalThis.__stackSpyCalls = 0;
+      globalThis.__originalStackDescriptor =
+        Object.getOwnPropertyDescriptor(Error.prototype, 'stack');
+      Object.defineProperty(Error.prototype, 'stack', {
+        configurable: true,
+        get() { globalThis.__stackSpyCalls++; return 'spoofed'; },
+        set(v) {},
+      });
+    `).dispose();
+    try {
+      const bytes = serializeGuest(
+        `(() => { function namedFrame() { return new Error('x'); } return namedFrame(); })()`
+      );
+      const spyCalls = vm
+        .evalCode('globalThis.__stackSpyCalls')
+        .consume((h) => h.toNumber());
+      expect(spyCalls).toBe(0);
+      const stack = checkInGuest(
+        bytes,
+        `function (e) { return Object.getOwnPropertyDescriptor(e, 'stack').value; }`
+      );
+      expect(stack).not.toBe('spoofed');
+      expect(stack).toContain('namedFrame');
+    } finally {
+      vm.evalCode(`
+        if (globalThis.__originalStackDescriptor) {
+          Object.defineProperty(Error.prototype, 'stack', globalThis.__originalStackDescriptor);
+        } else {
+          delete Error.prototype.stack;
+        }
+      `).dispose();
+    }
   });
 
   it('a Symbol.toStringTag spoof does not reclassify a plain object', () => {

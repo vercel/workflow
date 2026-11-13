@@ -266,9 +266,10 @@ describe('re-enqueue active runs on start', () => {
     });
     await world.start();
 
-    expect(createEventsStorage).toHaveBeenCalledWith(expect.anything(), {
-      jobPrefix: 'myapp_',
-    });
+    expect(createEventsStorage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ jobPrefix: 'myapp_' })
+    );
     expect(createRecoverableRunsList).toHaveBeenCalledWith(
       expect.anything(),
       'myapp_'
@@ -288,9 +289,10 @@ describe('re-enqueue active runs on start', () => {
     const world = createWorld();
     await world.start();
 
-    expect(createEventsStorage).toHaveBeenCalledWith(expect.anything(), {
-      jobPrefix: 'envapp_',
-    });
+    expect(createEventsStorage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ jobPrefix: 'envapp_' })
+    );
     expect(createRecoverableRunsList).toHaveBeenCalledWith(
       expect.anything(),
       'envapp_'
@@ -302,9 +304,10 @@ describe('re-enqueue active runs on start', () => {
   it('stamps runs with the default jobPrefix when none is configured', async () => {
     const world = createWorld({ connectionString: 'postgres://test', pool });
 
-    expect(createEventsStorage).toHaveBeenCalledWith(expect.anything(), {
-      jobPrefix: 'workflow_',
-    });
+    expect(createEventsStorage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ jobPrefix: 'workflow_' })
+    );
 
     await world.close();
   });
