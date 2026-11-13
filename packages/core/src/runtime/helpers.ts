@@ -259,8 +259,62 @@ export async function handleHealthCheckMessage(
   // Use a deterministic fake runId derived from the correlationId so that
   // the reader side produces the same value.
   const fakeRunId = generateHealthCheckRunId(healthCheck.correlationId);
-  await world.streams.write(fakeRunId, streamName, response);
-  await world.streams.close(fakeRunId, streamName);
+  await writeHealthCheckResponse(
+    world,
+    fakeRunId,
+    streamName,
+    response,
+    healthCheck.correlationId
+  );
+}
+
+/**
+ * Writes and closes a probe response stream. A probe answer is only useful
+ * within the caller's timeout, so a World that refuses it outright must not
+ * turn the probe into a queue redelivery loop: rethrowing would retry the same
+ * refused write for as long as the queue keeps the message, long after the
+ * caller gave up. Transient failures still rethrow, since an early retry can
+ * land inside the caller's window.
+ */
+async function writeHealthCheckResponse(
+  world: World,
+  runId: string,
+  streamName: string,
+  response: string,
+  correlationId: string
+): Promise<void> {
+  try {
+    await world.streams.write(runId, streamName, response);
+    await world.streams.close(runId, streamName);
+  } catch (err) {
+    if (!isDefinitiveWorldRefusal(err)) throw err;
+    runtimeLogger.warn(
+      'Health check response was refused by the World; not retrying the probe',
+      {
+        correlationId,
+        status: worldErrorStatus(err),
+        error: err instanceof Error ? err.message : String(err),
+      }
+    );
+  }
+}
+
+/**
+ * Whether a World error is a refusal that retrying the same request cannot
+ * change: a 4xx other than the statuses that ask the client to come back
+ * (408 Request Timeout, 425 Too Early, 429 Too Many Requests).
+ */
+function isDefinitiveWorldRefusal(err: unknown): boolean {
+  // Read `status` structurally: World errors are matched by `name`, and the
+  // subclasses a stream write throws (e.g. `StreamError`) carry their own.
+  const status = worldErrorStatus(err);
+  if (status === undefined || status < 400 || status >= 500) return false;
+  return status !== 408 && status !== 425 && status !== 429;
+}
+
+function worldErrorStatus(err: unknown): number | undefined {
+  if (!(err instanceof Error) || !('status' in err)) return undefined;
+  return typeof err.status === 'number' ? err.status : undefined;
 }
 
 export interface HealthCheckOptions {
