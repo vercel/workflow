@@ -27,6 +27,9 @@ import type { StepExecutionResult } from './step-executor.js';
  * would leave the step created and never run. The loser runs its own attempt
  * instead, which its claim gates like any other.
  *
+ * The other exception is a winner's `retry` that was folded into the
+ * loser's own message: see `carryFoldedRetry`.
+ *
  * Cross-instance duplicates are what the ownership lease bounds on platforms
  * where it is a death proof, and the documented residual risk on
  * multi-instance self-hosted worlds (mitigate by raising
@@ -36,14 +39,74 @@ export function runStepSingleFlight(
   runId: string,
   correlationId: string,
   execute: () => Promise<StepExecutionResult>,
-  logLevel: 'debug' | 'warn' = 'warn'
+  options: StepSingleFlightOptions = {}
 ): Promise<StepExecutionResult> {
-  return runSingleFlight(
+  return runSingleFlight<StepExecutionResult, FoldedRetry>(
     runId,
     correlationId,
     execute,
-    () => ({ type: 'skipped' }),
-    logLevel,
-    (winner) => winner.type === 'skipped'
+    async (winner) => {
+      if (
+        winner?.settled.type === 'retry' &&
+        options.carryFoldedRetry &&
+        winner.state.publishedAfter &&
+        !winner.state.carried
+      ) {
+        winner.state.carried = true;
+        await winner.state.publishedAfter;
+        return winner.settled;
+      }
+      return { type: 'skipped' };
+    },
+    options.logLevel,
+    (winner) => winner.type === 'skipped',
+    {
+      publishedAfter: options.retryPublishedUnderDispatchKeyAfter,
+      carried: false,
+    }
   );
+}
+
+export interface StepSingleFlightOptions {
+  /**
+   * Level of the contention log when this call loses. Fresh inline claims
+   * overlap during ordinary wake replays, so they log at `debug`; recovery
+   * callers keep `warn`, since repeated overlap can indicate expiring leases.
+   * Any loser to a `debug` winner (a fresh inline claim) also logs at `debug`:
+   * a queued delivery racing that claim is the same wake race.
+   */
+  logLevel?: 'debug' | 'warn';
+  /**
+   * Set by a winner that publishes its own `retry` under the step's dispatch
+   * key (stepDispatchIdempotencyKey): the node engine's inline executions.
+   * The promise settles once that publish is durable, or once the delivery
+   * that owns the execution ended without making it (a throttled batch
+   * hands the step to its continuation's replay instead). A queued delivery
+   * of the same step that is waiting on it was published under that same key
+   * and is still in flight, so the queue folds the retry into it
+   * (world-local returns the in-flight message's id, queues dedupe a key
+   * while its message is in flight, and world-postgres replaces an unlocked
+   * job with the same key or drops a later job whose key it has already
+   * completed). The QuickJS engine publishes its retries under their own
+   * keys, so its winners leave this unset.
+   */
+  retryPublishedUnderDispatchKeyAfter?: Promise<unknown>;
+  /**
+   * Set by the queued-step delivery. When it loses to a winner that sets
+   * `retryPublishedUnderDispatchKeyAfter` and that winner returns `retry`, it
+   * waits for that promise and then returns the `retry` instead of `skipped`,
+   * so its message redelivers after the backoff and runs the attempt the
+   * folded publish can no longer drive (workflow#4728). Waiting keeps the
+   * message in flight until the publish is out, so the publish never lands on
+   * a key the message already spent by acking (a sibling of the winner that
+   * outlasts the backoff would otherwise let the carried attempt finish and
+   * ack first). At most one loser carries a given retry.
+   */
+  carryFoldedRetry?: boolean;
+}
+
+/** The winner side of `carryFoldedRetry`, shared by its losers. */
+interface FoldedRetry {
+  publishedAfter: Promise<unknown> | undefined;
+  carried: boolean;
 }
