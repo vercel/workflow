@@ -1,6 +1,6 @@
 import { StreamError, StreamExpiredError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./version.js', () => ({ version: '0.0.0-test' }));
 
@@ -8,7 +8,9 @@ import { setWorld } from './runtime/world.js';
 import {
   createReconnectingFramedStream,
   FRAMED_STREAM_MAX_RECONNECTS,
+  FRAMED_STREAM_MAX_STALLS_BELOW_TAIL,
   FRAMED_STREAM_MAX_TOTAL_RECONNECTS,
+  FRAMED_STREAM_MIN_STALL_SESSION_MS,
 } from './serialization.js';
 
 const FRAME_HEADER_SIZE = 4;
@@ -29,32 +31,44 @@ function payloadFrame(n: number): Uint8Array {
  * Build a stream from a scripted pull sequence. Each entry either
  * enqueues a value or errors — this keeps the stream from transitioning
  * to the errored state before earlier values are actually read (which
- * `start()`-time `controller.error` does immediately).
+ * `start()`-time `controller.error` does immediately). An `elapse` entry
+ * advances the (fake) system clock before the next entry, modelling a
+ * session the server holds open.
  */
 function scriptedStream(
   steps: Array<
     | { kind: 'value'; value: Uint8Array }
     | { kind: 'error'; err: unknown }
     | { kind: 'close' }
+    | { kind: 'elapse'; ms: number }
   >,
   onCancel?: (reason?: unknown) => void
 ): ReadableStream<Uint8Array> {
   let i = 0;
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      const step = steps[i++];
-      if (!step) {
-        controller.close();
-        return;
-      }
-      if (step.kind === 'value') controller.enqueue(step.value);
-      else if (step.kind === 'error') controller.error(step.err);
-      else controller.close();
+  return new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        let step = steps[i++];
+        while (step?.kind === 'elapse') {
+          vi.setSystemTime(Date.now() + step.ms);
+          step = steps[i++];
+        }
+        if (!step) {
+          controller.close();
+          return;
+        }
+        if (step.kind === 'value') controller.enqueue(step.value);
+        else if (step.kind === 'error') controller.error(step.err);
+        else controller.close();
+      },
+      cancel(reason) {
+        onCancel?.(reason);
+      },
     },
-    cancel(reason) {
-      onCancel?.(reason);
-    },
-  });
+    // Pull only when the reader reads, so an `elapse` entry runs during the
+    // session rather than while `streams.get` is still opening it.
+    { highWaterMark: 0 }
+  );
 }
 
 async function readAll(
@@ -68,6 +82,26 @@ async function readAll(
     if (r.value) chunks.push(r.value);
   }
   return chunks;
+}
+
+/**
+ * Reads a stream to its end, pushing each chunk into `out` as it arrives, and
+ * returns the error the stream failed with, if any.
+ */
+async function readInto(
+  stream: ReadableStream<Uint8Array>,
+  out: Uint8Array[]
+): Promise<unknown> {
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return undefined;
+      out.push(value);
+    }
+  } catch (error) {
+    return error;
+  }
 }
 
 /**
@@ -878,11 +912,26 @@ describe('createReconnectingFramedStream', () => {
   describe('a hole below the known tail (#4306)', () => {
     // The stream's metadata reports chunks through index 5, but chunk 2 is
     // missing server-side. The live read delivers 0..1, and every session
-    // opened at index 2 ends (after the server's max duration in production,
-    // ~2 min each) without delivering a frame. Reconnecting from the same
-    // index can never make progress, so the reader must fail fast with an
-    // error naming the missing index instead of burning the whole
+    // opened at index 2 stays open until the server's max duration (~2 min in
+    // production) and ends without delivering a frame. Reconnecting from the
+    // same index can never make progress, so the reader must fail fast with
+    // an error naming the missing index instead of burning the whole
     // consecutive-reconnect budget (~50 sessions, well over an hour).
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A session the server holds open for its max duration. */
+    const held = { kind: 'elapse', ms: 120_000 } as const;
+    /** A session that ends right away, as during a brief server blip. */
+    const quick = {
+      kind: 'elapse',
+      ms: FRAMED_STREAM_MIN_STALL_SESSION_MS - 1,
+    } as const;
+
     const ends = [
       ['a clean EOF', { kind: 'close' }],
       ['an errored body', { kind: 'error', err: new Error('max duration') }],
@@ -896,9 +945,10 @@ describe('createReconnectingFramedStream', () => {
               scriptedStream([
                 { kind: 'value', value: payloadFrame(0) },
                 { kind: 'value', value: payloadFrame(1) },
+                held,
                 end,
               ]),
-            2: () => scriptedStream([end]),
+            2: () => scriptedStream([held, end]),
           },
           async () => ({ tailIndex: 5, done: false })
         );
@@ -916,13 +966,107 @@ describe('createReconnectingFramedStream', () => {
         expect(StreamError.is(error)).toBe(true);
         expect(error).toHaveProperty(
           'message',
-          expect.stringMatching(/index 2.*tail index 5/)
+          expect.stringMatching(/index 2.*tail index 5.*startIndex 3/)
         );
-        const atHole = calls.filter((i) => i === 2).length;
-        expect(atHole).toBeGreaterThan(0);
-        expect(atHole).toBeLessThan(FRAMED_STREAM_MAX_RECONNECTS);
+        // The session that delivered 0..1 then idled is not a stall; the
+        // sessions opened at index 2 are.
+        expect(calls.filter((i) => i === 2)).toHaveLength(
+          FRAMED_STREAM_MAX_STALLS_BELOW_TAIL
+        );
       });
     }
+
+    it('fails fast again at each of two adjacent holes, so a consumer can step past both', async () => {
+      // Chunks 2 and 3 are both missing (production has shown adjacent
+      // missing indices). Resuming at index + 1 lands on the second hole,
+      // which must fail the same bounded way, naming its own index, rather
+      // than wait out the general reconnect budget. Resuming past it reads
+      // the rest of the stream.
+      const { world, calls } = makeWorldWithScriptedStreams(
+        {
+          0: () =>
+            scriptedStream([
+              { kind: 'value', value: payloadFrame(0) },
+              { kind: 'value', value: payloadFrame(1) },
+              held,
+              { kind: 'error', err: new Error('max duration') },
+            ]),
+          2: () => scriptedStream([held, { kind: 'close' }]),
+          3: () => scriptedStream([held, { kind: 'close' }]),
+          4: () =>
+            scriptedStream([
+              { kind: 'value', value: payloadFrame(4) },
+              { kind: 'value', value: payloadFrame(5) },
+              { kind: 'close' },
+            ]),
+        },
+        async () => ({ tailIndex: 5, done: true })
+      );
+      setWorld(world);
+
+      // Consumer loop: on a hole error, resume after the index it names.
+      const resumeAfterHole = /read from startIndex (\d+)/;
+      const delivered: Uint8Array[] = [];
+      const holes: number[] = [];
+      let startIndex: number | undefined = 0;
+      while (startIndex !== undefined) {
+        const error = await readInto(
+          createReconnectingFramedStream(RUN_ID, 's', startIndex),
+          delivered
+        );
+        if (error === undefined) break;
+        expect(StreamError.is(error)).toBe(true);
+        const next = resumeAfterHole.exec((error as Error).message);
+        expect(next).not.toBeNull();
+        startIndex = Number(next?.[1]);
+        holes.push(startIndex - 1);
+      }
+
+      expect(holes).toEqual([2, 3]);
+      expect(delivered).toEqual([0, 1, 4, 5].map(payloadFrame));
+      expect(calls.filter((i) => i === 2)).toHaveLength(
+        FRAMED_STREAM_MAX_STALLS_BELOW_TAIL
+      );
+      expect(calls.filter((i) => i === 3)).toHaveLength(
+        FRAMED_STREAM_MAX_STALLS_BELOW_TAIL
+      );
+    });
+
+    it('does not count sessions that end quickly as stalls', async () => {
+      // A brief server blip below the tail: several sessions at index 2 end
+      // with no data almost immediately, then the chunk is served. A hole
+      // session stays open for the server's max duration, so these are
+      // retried against the general reconnect budget instead.
+      const blips = FRAMED_STREAM_MAX_STALLS_BELOW_TAIL * 3;
+      let atTwo = 0;
+      const { world } = makeWorldWithScriptedStreams(
+        {
+          0: () =>
+            scriptedStream([
+              { kind: 'value', value: payloadFrame(0) },
+              { kind: 'value', value: payloadFrame(1) },
+              { kind: 'error', err: new Error('blip') },
+            ]),
+          2: () =>
+            ++atTwo <= blips
+              ? scriptedStream([
+                  quick,
+                  atTwo % 2
+                    ? { kind: 'close' }
+                    : { kind: 'error', err: new Error('blip') },
+                ])
+              : scriptedStream([{ kind: 'value', value: payloadFrame(2) }]),
+        },
+        async () => ({ tailIndex: 2, done: true })
+      );
+      setWorld(world);
+
+      const chunks = await readAll(
+        createReconnectingFramedStream(RUN_ID, 's', 0)
+      );
+      expect(chunks).toEqual([0, 1, 2].map(payloadFrame));
+      expect(atTwo).toBe(blips + 1);
+    });
 
     it('does not treat a chunk cut mid-frame as a hole', async () => {
       // Chunk 2 is large and every early session is cut partway through it.
@@ -941,6 +1085,7 @@ describe('createReconnectingFramedStream', () => {
             ++atTwo <= 5
               ? scriptedStream([
                   { kind: 'value', value: big.slice(0, 20) },
+                  held,
                   { kind: 'error', err: new Error('cut') },
                 ])
               : scriptedStream([{ kind: 'value', value: big }]),
@@ -964,7 +1109,7 @@ describe('createReconnectingFramedStream', () => {
       const stallTwiceThen = (idx: number) => () => {
         seen[idx] = (seen[idx] ?? 0) + 1;
         return seen[idx] <= 2
-          ? scriptedStream([{ kind: 'close' }])
+          ? scriptedStream([held, { kind: 'close' }])
           : scriptedStream([{ kind: 'value', value: payloadFrame(idx) }]);
       };
       const { world, calls } = makeWorldWithScriptedStreams(
@@ -1002,7 +1147,7 @@ describe('createReconnectingFramedStream', () => {
             ]),
           2: () =>
             calls.filter((i) => i === 2).length < 5
-              ? scriptedStream([{ kind: 'close' }])
+              ? scriptedStream([held, { kind: 'close' }])
               : scriptedStream([
                   { kind: 'value', value: payloadFrame(2) },
                   { kind: 'close' },

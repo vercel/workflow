@@ -966,13 +966,14 @@ const getFramedStreamMaxTotalReconnects = (): number =>
  */
 export const FRAMED_STREAM_MAX_STALLS_BELOW_TAIL = 3;
 
-/** Effective stall cap. Override: `WORKFLOW_FRAMED_STREAM_MAX_STALLS_BELOW_TAIL`. */
-const getFramedStreamMaxStallsBelowTail = (): number =>
-  envNumber(
-    'WORKFLOW_FRAMED_STREAM_MAX_STALLS_BELOW_TAIL',
-    FRAMED_STREAM_MAX_STALLS_BELOW_TAIL,
-    { integer: true, min: 1 }
-  );
+/**
+ * Shortest zero-byte session that counts as a stall below the tail. A session
+ * at a hole stays open until the server's maximum response duration (about two
+ * minutes on world-vercel). One that ends sooner is a transport blip: it is
+ * retried against the general reconnect budget as before, and neither counts
+ * toward nor resets {@link FRAMED_STREAM_MAX_STALLS_BELOW_TAIL}.
+ */
+export const FRAMED_STREAM_MIN_STALL_SESSION_MS = 10_000;
 
 /**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
@@ -997,11 +998,13 @@ const getFramedStreamMaxStallsBelowTail = (): number =>
  * trusted (legacy behavior) rather than failing a read that may well be
  * complete.
  *
- * A session that ends without receiving any bytes while the metadata reports
- * a chunk at the resume index is a stall at a hole (a chunk missing from
- * storage). After `FRAMED_STREAM_MAX_STALLS_BELOW_TAIL` consecutive stalls the
- * read errors with a `StreamError` naming the missing index, so the consumer
- * can resume past it with `startIndex` instead of waiting indefinitely.
+ * A session that stays open for at least `FRAMED_STREAM_MIN_STALL_SESSION_MS`
+ * and ends without receiving any bytes while the metadata reports a chunk at
+ * the resume index is a stall at a hole (a chunk missing from storage). After
+ * `FRAMED_STREAM_MAX_STALLS_BELOW_TAIL` consecutive stalls the read errors
+ * with a `StreamError` naming the missing index, so the consumer can resume
+ * past it with `startIndex` instead of waiting indefinitely. The reader never
+ * skips the hole itself: silently dropping a chunk can corrupt consumer state.
  *
  * Negative `startIndex` values (last-N semantics) skip the reconnect
  * machinery because we cannot compute an absolute resume position without
@@ -1020,6 +1023,7 @@ export function createReconnectingFramedStream(
   let reconnectCount = 0;
   let totalReconnectCount = 0;
   let stallsBelowTail = 0;
+  let sessionStartedAt = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let canceled = false;
   let cancelReason: unknown;
@@ -1066,8 +1070,19 @@ export function createReconnectingFramedStream(
       return false;
     }
     if (connectMs === undefined) connectMs = Date.now() - connectStart;
+    sessionStartedAt = Date.now();
     reader = stream.getReader();
     return true;
+  }
+
+  /** The stream's metadata, or `undefined` if the lookup fails. */
+  async function getStreamInfo(): Promise<StreamInfoResponse | undefined> {
+    try {
+      const world = await getWorldLazy();
+      return await world.streams.getInfo(runId, name);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1078,26 +1093,17 @@ export function createReconnectingFramedStream(
    * into an error (or a reconnect loop) on a transient metadata blip would
    * be worse than the legacy behavior this check guards against.
    */
-  async function getStreamInfo(): Promise<StreamInfoResponse | undefined> {
-    try {
-      const world = await getWorldLazy();
-      return await world.streams.getInfo(runId, name);
-    } catch {
-      return undefined;
-    }
-  }
-
   function isVerifiedComplete(info: StreamInfoResponse | undefined): boolean {
     if (!info) return true;
     return info.done && currentStartIndex + consumedFrames > info.tailIndex;
   }
 
   /**
-   * Called when a session ends. Throws once consecutive sessions have ended
-   * without receiving any bytes while the metadata reports a chunk at the
-   * resume index. Metadata is only fetched for sessions that received nothing
-   * (unless the caller already has it), so sessions that deliver data pay
-   * nothing extra.
+   * Called when a session ends. Throws once consecutive sessions have stayed
+   * open without receiving any bytes while the metadata reports a chunk at
+   * the resume index. Metadata is only fetched for long sessions that
+   * received nothing (unless the caller already has it), so sessions that
+   * deliver data pay nothing extra.
    */
   async function assertNotStalledAtHole(
     info?: StreamInfoResponse
@@ -1108,6 +1114,11 @@ export function createReconnectingFramedStream(
       stallsBelowTail = 0;
       return;
     }
+    // A zero-byte session that ended quickly is a blip, not a session held
+    // open at a hole: leave it to the general reconnect budget.
+    if (Date.now() - sessionStartedAt < FRAMED_STREAM_MIN_STALL_SESSION_MS) {
+      return;
+    }
     const resolved = info ?? (await getStreamInfo());
     // Unknown metadata neither confirms nor rules out a hole.
     if (!resolved) return;
@@ -1116,7 +1127,7 @@ export function createReconnectingFramedStream(
       return;
     }
     stallsBelowTail++;
-    if (stallsBelowTail >= getFramedStreamMaxStallsBelowTail()) {
+    if (stallsBelowTail >= FRAMED_STREAM_MAX_STALLS_BELOW_TAIL) {
       throw new StreamError(
         `Stream "${name}" of run "${runId}" has no readable chunk at index ` +
           `${currentStartIndex}, below its tail index ${resolved.tailIndex}: ` +
