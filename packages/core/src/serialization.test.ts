@@ -21,6 +21,7 @@ import {
   drainFlushableSnapshot,
   type FlushableStreamState,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
 import {
@@ -8175,6 +8176,7 @@ describe('stream pipe ops are observed as soon as they are created (#5055)', () 
 
   it('a stream nobody awaits, as when the step that wrote it fails', async () => {
     const capture = captureUnhandledRejections();
+    const debug = vi.spyOn(runtimeLogger, 'debug');
     try {
       const ops: Promise<unknown>[] = [];
       await dehydrateStepReturnValue(
@@ -8186,7 +8188,14 @@ describe('stream pipe ops are observed as soon as they are created (#5055)', () 
       await settle();
       expect(ops).toHaveLength(1);
       expect(capture.messages()).toEqual([]);
+      // Nothing awaits this list, so the debug log is the error's only trace.
+      expect(debug).toHaveBeenCalledWith('Stream pipe failed', {
+        errorName: 'TypeError',
+        errorMessage: 'terminated',
+        cause: 'other side closed',
+      });
     } finally {
+      debug.mockRestore();
       capture.stop();
     }
   });

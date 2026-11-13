@@ -25,6 +25,7 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
@@ -2058,12 +2059,23 @@ function attachAbortListenerOnce(
  * pipe whose source errors in that gap (a returned `fetch()` body whose socket
  * closes rejects with undici's `TypeError: terminated`) would reject with no
  * handler attached, and Node treats that as an unhandled rejection, which ends
- * the process on Vercel (#5055). The no-op handler only marks the rejection as
- * observed: the list holds the original promise, so `Promise.all(ops)` still
- * rejects with the pipe's error.
+ * the process on Vercel (#5055). The handler only marks the rejection as
+ * observed and logs it at debug level: the list holds the original promise, so
+ * `Promise.all(ops)` still rejects with the pipe's error.
  */
 function pushPipeOp(ops: Promise<unknown>[], pipe: Promise<void>): void {
-  pipe.catch(() => {});
+  pipe.catch((err) => {
+    // On paths that never await the list (a failed step, a dehydration that
+    // throws, a failed `start()`), this is the only trace of the pipe's error.
+    runtimeLogger.debug('Stream pipe failed', {
+      errorName: err instanceof Error ? err.name : undefined,
+      errorMessage: err instanceof Error ? err.message : String(err),
+      cause:
+        err instanceof Error && err.cause instanceof Error
+          ? err.cause.message
+          : undefined,
+    });
+  });
   ops.push(pipe);
 }
 
