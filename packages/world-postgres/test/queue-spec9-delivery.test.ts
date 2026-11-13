@@ -145,6 +145,7 @@ describe.skipIf(process.platform === 'win32')(
     afterEach(async () => {
       await queue.close();
       await pool.query('DELETE FROM graphile_worker._private_jobs');
+      await pool.query('DELETE FROM workflow.workflow_run_delivery_leases');
     });
 
     /** A response the test releases, for a delivery that should hold its run. */
@@ -162,19 +163,64 @@ describe.skipIf(process.platform === 'win32')(
     const runDeliveries = (runId: string) =>
       deliveries.filter((delivery) => delivery.body.runId === runId);
 
-    /** The jobs waiting on the run's named queue, by payload. */
-    const jobsOnRunQueue = async (runId: string) =>
+    const decode = (payload: { data: string }) =>
+      JSON.parse(Buffer.from(payload.data, 'base64').toString());
+
+    /** The run's jobs no worker has taken yet, by message body. */
+    const waitingJobs = async (runId: string) =>
       (
         await pool.query<{ payload: { data: string } }>(
-          `SELECT jobs.payload FROM graphile_worker._private_jobs AS jobs
-             JOIN graphile_worker._private_job_queues AS job_queues
-               ON job_queues.id = jobs.job_queue_id
-            WHERE job_queues.queue_name LIKE $1 AND jobs.locked_at IS NULL`,
-          [`%:${runId}:executor`]
+          `SELECT payload FROM graphile_worker._private_jobs
+            WHERE locked_at IS NULL`
         )
-      ).rows.map((row) =>
-        JSON.parse(Buffer.from(row.payload.data, 'base64').toString())
+      ).rows
+        .map((row) => decode(row.payload))
+        .filter((body) => body.runId === runId);
+
+    /**
+     * What other deliveries left on the run's delivery lease for its owner
+     * (`run-lease.ts`), by message body; `undefined` once it is released.
+     */
+    const leftOnLease = async (runId: string) => {
+      const { rows } = await pool.query<{
+        wake: { payload: { data: string } } | null;
+        deferred: { payload: { data: string } }[];
+      }>(
+        'SELECT wake, deferred FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+        [runId]
       );
+      const row = rows[0];
+      return row
+        ? {
+            wake: row.wake ? decode(row.wake.payload) : undefined,
+            deferred: row.deferred.map((job) => decode(job.payload)),
+          }
+        : undefined;
+    };
+
+    /** Wait until every wake sent for the run so far is left on its lease. */
+    const untilLeftOnLease = async (runId: string) => {
+      await until(
+        () => waitingJobs(runId),
+        (jobs) => jobs.length === 0
+      );
+      return until(
+        () => leftOnLease(runId),
+        (left) => left?.wake !== undefined
+      );
+    };
+
+    /** Wait until the run's lease is released with nothing left waiting. */
+    const untilReleased = async (runId: string) => {
+      await until(
+        () => leftOnLease(runId),
+        (left) => left === undefined
+      );
+      await until(
+        () => waitingJobs(runId),
+        (jobs) => jobs.length === 0
+      );
+    };
 
     it('covers the orchestrator messages queued behind a delivery with one re-run', async () => {
       const runId = `wrun_${ulid()}`;
@@ -200,16 +246,17 @@ describe.skipIf(process.platform === 'win32')(
         (n) => n === 1
       );
       expect(runDeliveries(runId)).toHaveLength(1);
+      // Each wake's delivery found the run's lease held, left its message
+      // on the lease for the owner, and completed.
+      await untilLeftOnLease(runId);
+      expect(runDeliveries(runId)).toHaveLength(1);
       gate.release();
 
       await until(
         () => runDeliveries(runId).length,
         (n) => n === 2
       );
-      await until(
-        () => jobsOnRunQueue(runId),
-        (jobs) => jobs.length === 0
-      );
+      await untilReleased(runId);
       // Settle: nothing else is delivered for the run.
       await new Promise((resolve) => setTimeout(resolve, 500));
       const [first, rerun] = runDeliveries(runId);
@@ -222,6 +269,29 @@ describe.skipIf(process.platform === 'win32')(
       expect(rerun).toMatchObject({ attempt: 1, deliveryCount: 2 });
       expect(first!.invocationStartedAt).toBeDefined();
       expect(rerun!.invocationStartedAt).toBe(first!.invocationStartedAt);
+    });
+
+    it('leaves no per-run rows behind once its runs are delivered', async () => {
+      // Graphile never deletes a named queue's row, and its `get_job` locks
+      // every available queue row on each poll, so per-run named queues
+      // slowed every poll as runs accumulated. A run's lease row is deleted
+      // when its delivery releases it.
+      const runIds = Array.from({ length: 20 }, () => `wrun_${ulid()}`);
+      for (const runId of runIds) {
+        await wake(runId);
+        await wake(runId);
+      }
+      await until(
+        () => runIds.filter((runId) => runDeliveries(runId).length > 0),
+        (delivered) => delivered.length === runIds.length
+      );
+      for (const runId of runIds) await untilReleased(runId);
+      const { rows } = await pool.query<{ queues: number; leases: number }>(
+        `SELECT
+           (SELECT count(*)::int FROM graphile_worker._private_job_queues) AS queues,
+           (SELECT count(*)::int FROM workflow.workflow_run_delivery_leases) AS leases`
+      );
+      expect(rows[0]).toEqual({ queues: 0, leases: 0 });
     });
 
     it("delivers an absorbed hook wake's resume timing on the re-run, and never re-sends the first run's own", async () => {
@@ -250,15 +320,18 @@ describe.skipIf(process.platform === 'win32')(
       };
       const traceCarrier = { traceparent: '00-abc-def-01' };
       await wake(runId, { hookResumeTiming: absorbedTiming, traceCarrier });
+      // The wake carrying a resume's timing replaces the plain one on the
+      // lease, whichever delivery left its message first.
+      await until(
+        () => untilLeftOnLease(runId),
+        (left) => left?.wake?.hookResumeTiming !== undefined
+      );
       gate.release();
       await until(
         () => runDeliveries(runId).length,
         (n) => n === 2
       );
-      await until(
-        () => jobsOnRunQueue(runId),
-        (jobs) => jobs.length === 0
-      );
+      await untilReleased(runId);
       const [first, rerun] = runDeliveries(runId);
       expect(first!.body.hookResumeTiming).toEqual(ownTiming);
       expect(rerun!.body).toMatchObject({
@@ -282,6 +355,7 @@ describe.skipIf(process.platform === 'win32')(
         (n) => n === 1
       );
       await wake(secondRunId);
+      await untilLeftOnLease(secondRunId);
       secondGate.release();
       await until(
         () => runDeliveries(secondRunId).length,
@@ -316,6 +390,7 @@ describe.skipIf(process.platform === 'win32')(
         strategy: 'sequential',
       };
       await wake(runId, { hookResumeTiming: absorbedTiming });
+      await untilLeftOnLease(runId);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -352,6 +427,12 @@ describe.skipIf(process.platform === 'win32')(
           payloadDigest: 'digest',
         },
       });
+      // Not a wake a re-run covers: deferred, and re-added on release.
+      await until(
+        () => leftOnLease(runId),
+        (left) => left?.deferred.length === 1
+      );
+      expect(runDeliveries(runId)).toHaveLength(1);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -382,6 +463,11 @@ describe.skipIf(process.platform === 'win32')(
           workflowName: 'start',
         },
       });
+      await until(
+        () => leftOnLease(runId),
+        (left) => left?.deferred.length === 1
+      );
+      expect(runDeliveries(runId)).toHaveLength(1);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -391,7 +477,7 @@ describe.skipIf(process.platform === 'win32')(
       expect(runDeliveries(runId)[1]!.deliveryCount).toBe(1);
     });
 
-    it('delivers a handoff before the messages queued behind it', async () => {
+    it('delivers a handoff before the messages left on its lease', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
       let handedOff = false;
@@ -410,6 +496,7 @@ describe.skipIf(process.platform === 'win32')(
         (n) => n === 1
       );
       const queued = await wake(runId, { marker: 'queued' });
+      await untilLeftOnLease(runId);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -421,11 +508,9 @@ describe.skipIf(process.platform === 'win32')(
         attempt: 1,
         deliveryCount: 2,
       });
-      // The queued wake is covered by the continuation's re-run.
-      await until(
-        () => jobsOnRunQueue(runId),
-        (jobs) => jobs.length === 0
-      );
+      // The wake left on the lease is covered by the continuation's re-run:
+      // the handoff passed the lease, with what was left on it, along.
+      await untilReleased(runId);
       expect(
         runDeliveries(runId).some((d) => d.messageId === queued.messageId)
       ).toBe(false);
@@ -487,11 +572,10 @@ describe.skipIf(process.platform === 'win32')(
         );
         // What an older SDK's `resumeHook()` sends: no stamp.
         await queue.queue(QUEUE, { runId });
-        const moved = await until(
-          () => jobsOnRunQueue(runId),
-          (jobs) => jobs.length === 1
-        );
-        expect(moved[0]).toMatchObject({ runId, runSpecVersion: SPEC });
+        // Stamped and re-added, it takes the lease, finds it held, and is
+        // left on it.
+        const left = await untilLeftOnLease(runId);
+        expect(left?.wake).toMatchObject({ runId, runSpecVersion: SPEC });
         expect(runDeliveries(runId)).toHaveLength(1);
         gate.release();
         // Covered by the holder's re-run.
@@ -499,10 +583,7 @@ describe.skipIf(process.platform === 'win32')(
           () => runDeliveries(runId).length,
           (n) => n === 2
         );
-        await until(
-          () => jobsOnRunQueue(runId),
-          (jobs) => jobs.length === 0
-        );
+        await untilReleased(runId);
         expect(runDeliveries(runId)[1]).toMatchObject({
           attempt: 1,
           deliveryCount: 2,

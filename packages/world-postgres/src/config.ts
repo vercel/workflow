@@ -36,8 +36,8 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    * Defaults to WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS. When neither is
    * set, every delivery still renews its lock and registers its worker as
    * renewing (`workflow.workflow_job_lock_holders`, migration 0030), and only
-   * the jobs of a spec 9 run's named queue whose holder registered are
-   * released, after 300 seconds unrenewed; other jobs keep Graphile Worker's
+   * the jobs that own a spec 9 run's delivery lease (migration 0031) whose
+   * holder registered are released, after 300 seconds unrenewed; other jobs keep Graphile Worker's
    * fixed 4 hour reset. `0` turns renewal and the release of stale locks off,
    * which leaves recovery to that reset and to restarts.
    */

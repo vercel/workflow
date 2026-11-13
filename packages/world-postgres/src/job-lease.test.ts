@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createJobLeases,
-  DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS,
+  DEFAULT_RUN_LEASE_LOCK_STALE_SECONDS,
   JOB_LOCK_STALE_SECONDS_ENV,
   JobLockLostError,
   resolveJobLeasePolicy,
@@ -92,8 +92,8 @@ describe('resolveJobLockStaleSeconds', () => {
       process.env[JOB_LOCK_STALE_SECONDS_ENV] = raw;
       expect(resolveJobLockStaleSeconds()).toBeUndefined();
       expect(resolveJobLeasePolicy()).toEqual({
-        scope: 'named-queues',
-        staleSeconds: DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS,
+        scope: 'run-leases',
+        staleSeconds: DEFAULT_RUN_LEASE_LOCK_STALE_SECONDS,
       });
     }
     expect(warn).toHaveBeenCalledTimes(6);
@@ -111,14 +111,14 @@ describe('resolveJobLeasePolicy', () => {
     delete process.env[JOB_LOCK_STALE_SECONDS_ENV];
   });
 
-  it('defaults to releasing only named-queue jobs of renewing holders after 300 seconds', () => {
-    expect(DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS).toBe(300);
+  it('defaults to releasing only run-lease jobs of renewing holders after 300 seconds', () => {
+    expect(DEFAULT_RUN_LEASE_LOCK_STALE_SECONDS).toBe(300);
     expect(resolveJobLeasePolicy()).toEqual({
-      scope: 'named-queues',
+      scope: 'run-leases',
       staleSeconds: 300,
     });
     expect(resolveJobLeasePolicy(undefined, 2)).toEqual({
-      scope: 'named-queues',
+      scope: 'run-leases',
       staleSeconds: 2,
     });
   });
@@ -656,46 +656,28 @@ describe('createJobLeases', () => {
     await leases.stop();
   });
 
-  it('under the named-queue scope, sweeps only per-run named-queue jobs of registered holders', async () => {
+  it('under the run-lease scope, sweeps only run-lease jobs of registered holders', async () => {
     const pool = renewingPool();
     const leases = createJobLeases(routed(pool), {
       staleSeconds: 300,
-      scope: 'named-queues',
+      scope: 'run-leases',
       now,
       random: () => 0.5,
     });
-    leases.startSweeper(['workflow_flows', 'workflow_flows_executor'], {
-      prefix: 'workflow_flows:',
-      suffix: ':executor',
-    });
+    leases.startSweeper(['workflow_flows', 'workflow_flows_executor']);
 
     await advance(150_000);
     expect(pool.query).toHaveBeenCalledTimes(1);
     const [sql, params] = pool.query.mock.calls[0];
     expect(isSweep(sql)).toBe(true);
-    expect(sql).toContain('JOIN "graphile_worker"._private_job_queues');
+    expect(sql).toContain('FROM "workflow"."workflow_run_delivery_leases"');
+    expect(sql).toContain('leases.owner_job_id = jobs.id');
     expect(sql).toContain('FROM "workflow"."workflow_job_lock_holders"');
     expect(sql).toContain('FOR UPDATE OF jobs SKIP LOCKED');
     expect(params).toEqual([
       300,
       ['workflow_flows', 'workflow_flows_executor'],
-      'workflow_flows:',
-      ':executor',
     ]);
-    await leases.stop();
-  });
-
-  it('under the named-queue scope, does not sweep without named queues', async () => {
-    const pool = renewingPool();
-    const leases = createJobLeases(routed(pool), {
-      staleSeconds: 300,
-      scope: 'named-queues',
-      now,
-      random: () => 0.5,
-    });
-    leases.startSweeper(['workflow_flows']);
-    await advance(600_000);
-    expect(pool.query).not.toHaveBeenCalled();
     await leases.stop();
   });
 
@@ -707,20 +689,17 @@ describe('createJobLeases', () => {
     });
     const leases = createJobLeases(routed(pool), {
       staleSeconds: 20,
-      scope: 'named-queues',
+      scope: 'run-leases',
       now,
       random: () => 0.5,
     });
-    leases.startSweeper(['workflow_flows'], {
-      prefix: 'workflow_flows:',
-      suffix: ':executor',
-    });
+    leases.startSweeper(['workflow_flows']);
     await advance(10_000);
     await advance(20_000);
     expect(console.warn).toHaveBeenCalledTimes(1);
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining(
-        'workflow.workflow_job_lock_holders does not exist'
+        'workflow.workflow_job_lock_holders or workflow.workflow_run_delivery_leases does not exist'
       )
     );
     await leases.stop();

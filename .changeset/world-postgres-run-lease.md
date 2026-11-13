@@ -1,0 +1,5 @@
+---
+'@workflow/world-postgres': patch
+---
+
+Serialize a spec 9 run's orchestrator deliveries, and invoke mode's executor deliveries, with a per-run delivery lease (`workflow.workflow_run_delivery_leases`, migration 0031) in place of a Graphile named queue per run. Graphile never deletes a named queue's row, and its job fetch locks every available queue row on each poll, so throughput fell as runs accumulated: about 1,200 jobs/s at 1,000 queue rows, 60 at 52,000 and 7 at 302,000, against about 4,500 for jobs outside named queues. A lease row exists only while a delivery holds it. A delivery that finds the run's lease held leaves its message for the holder, which re-runs for it (coalescing) or re-adds it as a job when it releases. Run `bootstrap` before upgrading. During a rolling upgrade, deliveries of processes on the earlier version are not serialized with those of upgraded processes; the in-band fence refuses an overlapping delivery's writes. Earlier versions' empty queue rows stay until Graphile Worker's `GC_JOB_QUEUES` cleanup task removes them.

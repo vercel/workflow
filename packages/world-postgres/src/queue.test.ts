@@ -392,7 +392,7 @@ describe('postgres queue http execution', () => {
   it.each([
     undefined,
     'custom',
-  ])('routes a run’s orchestrator deliveries to its own named queue (namespace: %s)', async (namespace) => {
+  ])('adds a run’s orchestrator deliveries as plain jobs, without a per-run named queue (namespace: %s)', async (namespace) => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', namespace },
       pool
@@ -428,26 +428,19 @@ describe('postgres queue http execution', () => {
     const options = vi
       .mocked(workerUtilsMock.addJob)
       .mock.calls.map((call) => call[2]);
-    // Without invoke, orchestrator deliveries stay on the ordinary task; the
-    // named queue alone is what serializes them.
+    // Without invoke, orchestrator deliveries stay on the ordinary task. The
+    // run's delivery lease, taken when a job runs, is what serializes them
+    // (`run-lease.ts`); no job is put in a Graphile named queue, whose rows
+    // are never deleted and are all locked on every poll.
     expect(
       vi.mocked(workerUtilsMock.addJob).mock.calls.map((call) => call[0])
     ).toEqual(Array(6).fill('workflow_flows'));
-    expect(options[0]).toMatchObject({
-      queueName: 'workflow_flows:run_a:executor',
-    });
-    expect(options[1]).toMatchObject({
-      queueName: 'workflow_flows:run_a:executor',
-    });
-    expect(options[2]).toMatchObject({
-      queueName: 'workflow_flows:run_b:executor',
-    });
-    expect(options[3]).not.toHaveProperty('queueName');
-    expect(options[4]).not.toHaveProperty('queueName');
-    expect(options[5]).not.toHaveProperty('queueName');
+    for (const option of options) {
+      expect(option).not.toHaveProperty('queueName');
+    }
   });
 
-  it('keeps a rescheduled orchestrator delivery in its run’s named queue', async () => {
+  it('reschedules an orchestrator delivery as a plain job', async () => {
     const server = await startWorkflowHttpServer([], 0, undefined, undefined, {
       timeoutSeconds: 5,
     });
@@ -464,7 +457,7 @@ describe('postgres queue http execution', () => {
     expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
       'workflow_flows',
       expect.objectContaining({ attempt: 2 }),
-      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+      expect.not.objectContaining({ queueName: expect.anything() })
     );
   });
 
@@ -797,7 +790,7 @@ describe('postgres queue http execution', () => {
     );
   });
 
-  it('uses per-run executor queues without serializing step jobs when invoke is enabled', async () => {
+  it('adds orchestration to the executor task and step jobs to the ordinary one when invoke is enabled', async () => {
     const queue = buildQueue(
       {
         connectionString: 'postgres://test',
@@ -825,16 +818,12 @@ describe('postgres queue http execution', () => {
       stepName: 'step',
     });
     const calls = vi.mocked(workerUtilsMock.addJob).mock.calls;
-    expect(calls[0]).toEqual([
+    expect(calls.map((call) => call[0])).toEqual([
       'workflow_flows_executor',
-      expect.any(Object),
-      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' }),
+      'workflow_flows_executor',
+      'workflow_flows',
     ]);
-    expect(calls[1][2]).toMatchObject({
-      queueName: 'workflow_flows:run_b:executor',
-    });
-    expect(calls[2][0]).toBe('workflow_flows');
-    expect(calls[2][2]).not.toHaveProperty('queueName');
+    for (const call of calls) expect(call[2]).not.toHaveProperty('queueName');
   });
 
   it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
@@ -868,7 +857,6 @@ describe('postgres queue http execution', () => {
         'workflow_flows_executor',
         expect.objectContaining({ ...payload, attempt: 4, attemptOffset: 3 }),
         expect.objectContaining({
-          queueName: 'workflow_flows:run_a:executor',
           jobKey: `workflow_flows_executor:transfer:${payload.messageId}`,
           maxAttempts: 6,
         })
@@ -925,7 +913,7 @@ describe('postgres queue http execution', () => {
     ).rejects.toThrow('transfer failed');
   });
 
-  it('only forwards executor provenance for a job on the expected named queue', async () => {
+  it('forwards executor provenance only for a job on the executor task that owns the run lease', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
@@ -935,6 +923,9 @@ describe('postgres queue http execution', () => {
     const fetchMock = vi
       .spyOn(nodeHttp, 'nodeHttpFetch')
       .mockResolvedValue(Response.json({ ok: true }));
+    // Every lease statement finds its row: the claim takes the lease, and
+    // the release finds nothing left on it.
+    pool.query.mockResolvedValue({ rows: [{}], rowCount: 1 });
     const payload = buildMessageData(
       '__wkf_workflow_example',
       { runId: 'run_a' },
@@ -954,19 +945,25 @@ describe('postgres queue http execution', () => {
         locked_by: 'worker-real',
         task_identifier: 'workflow_flows_executor',
       },
-      getQueueName: vi.fn().mockResolvedValue(null),
     };
     try {
-      const execute = getTaskHandler('workflow_flows_executor');
-      await execute(payload, helpers);
+      // A job on the ordinary task is transferred, never delivered there.
+      await getTaskHandler('workflow_flows')(payload, {
+        job: { ...helpers.job, task_identifier: 'workflow_flows' },
+      });
       expect(fetchMock).not.toHaveBeenCalled();
       expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
         'workflow_flows_executor',
         expect.anything(),
-        expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+        expect.anything()
       );
-      helpers.getQueueName.mockResolvedValue('workflow_flows:run_a:executor');
-      await execute(payload, helpers);
+      await getTaskHandler('workflow_flows_executor')(payload, helpers);
+      expect(pool.query).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'INSERT INTO "workflow"."workflow_run_delivery_leases"'
+        ),
+        ['run_a', '42']
+      );
       const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
       expect(headers.get('x-workflow-postgres-executor-job')).toBe('42');
       expect(headers.get('x-workflow-postgres-executor-worker')).toBe(
@@ -1072,25 +1069,19 @@ describe('postgres queue http execution', () => {
         attempt: 3,
         attemptOffset: 2,
       }),
-      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+      expect.not.objectContaining({ queueName: expect.anything() })
     );
   });
 
-  it('refuses inactive/wrong-queue executor evidence before supplying a feed', async () => {
+  it('refuses executor evidence of a job that is inactive or does not own the run lease, before supplying a feed', async () => {
     const { handler, receive } = receiver();
     pool.query.mockResolvedValue({ rows: [] });
     await expect(receive(request(proof))).rejects.toThrow(
-      'not active on the run queue'
+      'does not hold the run lease'
     );
     expect(pool.query).toHaveBeenCalledWith(
-      expect.stringContaining('graphile_worker.jobs'),
-      [
-        '42',
-        'workflow_flows_executor',
-        'workflow_flows:run_a:executor',
-        'worker-real',
-        3,
-      ]
+      expect.stringContaining('workflow.workflow_run_delivery_leases'),
+      ['42', 'workflow_flows_executor', 'run_a', 'worker-real', 3]
     );
     expect(handler).not.toHaveBeenCalled();
     expect(invocationTransport.pending).not.toHaveBeenCalled();
@@ -1254,7 +1245,7 @@ describe('postgres queue http execution', () => {
     );
   });
 
-  it('by default releases only stale per-run named-queue jobs of renewing holders', async () => {
+  it('by default releases only stale run-lease jobs of renewing holders', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', jobPrefix: 'myapp_' },
       pool,
@@ -1264,13 +1255,8 @@ describe('postgres queue http execution', () => {
     await vi.waitFor(
       () => {
         expect(pool.query).toHaveBeenCalledWith(
-          expect.stringContaining('"workflow"."workflow_job_lock_holders"'),
-          [
-            1,
-            ['myapp_flows', 'myapp_flows_executor'],
-            'myapp_flows:',
-            ':executor',
-          ]
+          expect.stringContaining('"workflow"."workflow_run_delivery_leases"'),
+          [1, ['myapp_flows', 'myapp_flows_executor']]
         );
       },
       { timeout: 2_000 }
