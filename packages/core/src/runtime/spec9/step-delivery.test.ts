@@ -131,22 +131,36 @@ describe('decideStepDelivery', () => {
   });
 
   it('fails a maxRetries: 0 step that already started (at most once)', () => {
-    const events = [ev('step_created'), ev('step_started')];
+    const started = ev('step_started');
+    const events = [ev('step_created'), started];
     expect(
       decideStepDelivery({ events, stepId: STEP, maxRetries: 0, nowMs: NOW })
-    ).toEqual({ action: 'fail', attempt: 2, reason: 'max-retries' });
+    ).toEqual({
+      action: 'fail',
+      attempt: 2,
+      reason: 'max-retries',
+      lastStartedAt: new Date(started.createdAt),
+    });
   });
 
   it('fails a step whose attempts exceed maxRetries + 1', () => {
+    const firstStart = ev('step_started');
+    const lastStart = { ...ev('step_started'), createdAt: new Date(NOW) };
     const events = [
       ev('step_created'),
-      ev('step_started'),
+      firstStart,
       ev('step_retrying'),
-      ev('step_started'),
+      lastStart,
     ];
+    // The failure reports the start of the attempt that left no outcome.
     expect(
       decideStepDelivery({ events, stepId: STEP, maxRetries: 1, nowMs: NOW })
-    ).toEqual({ action: 'fail', attempt: 3, reason: 'max-retries' });
+    ).toEqual({
+      action: 'fail',
+      attempt: 3,
+      reason: 'max-retries',
+      lastStartedAt: new Date(NOW),
+    });
   });
 
   it('ignores other steps', () => {

@@ -3869,6 +3869,9 @@ async function runDelivery(
             ...(step.firstStartedAt
               ? { firstStartedAt: step.firstStartedAt }
               : {}),
+            ...(step.lastStartedAt
+              ? { lastStartedAt: step.lastStartedAt }
+              : {}),
           });
         }
       }
@@ -4096,6 +4099,9 @@ async function runDelivery(
                 attempt: step.attempt,
                 ...(step.firstStartedAt
                   ? { firstStartedAt: step.firstStartedAt }
+                  : {}),
+                ...(step.lastStartedAt
+                  ? { lastStartedAt: step.lastStartedAt }
                   : {}),
                 input,
                 ...(step.started ? { started: step.started } : {}),

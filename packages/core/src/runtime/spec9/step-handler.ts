@@ -208,6 +208,9 @@ export async function handleStepMessage(
         stepName,
         attempt: decision.attempt,
         maxRetries,
+        ...(decision.lastStartedAt
+          ? { lastStartedAt: decision.lastStartedAt }
+          : {}),
         encryptionKey: await getEncryptionKey(),
         runSpecVersion: runIdentity.specVersion,
       });
