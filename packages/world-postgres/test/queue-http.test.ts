@@ -330,6 +330,10 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     }
   });
 
+  // The handler never answers, so `close()` waits out Graphile Worker's
+  // graceful shutdown (`gracefulShutdownAbortTimeout`, 5s by default, which
+  // this World does not override) before the abort under test fires: the
+  // test takes just over 5s by design, past vitest's default budget.
   test('shutdown still aborts a pending delivery and releases its job', async () => {
     phase = 'abort';
     accepted = Promise.withResolvers<void>();
@@ -352,5 +356,5 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       'SELECT attempts, locked_at FROM graphile_worker._private_jobs'
     );
     expect(jobs.rows).toEqual([{ attempts: 1, locked_at: null }]);
-  });
+  }, 30_000);
 });

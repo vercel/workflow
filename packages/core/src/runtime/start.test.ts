@@ -979,10 +979,10 @@ async function workflow() {
     });
 
     it('accepts a world switched back to the pre-sealed-log version', async () => {
-      // What `WORKFLOW_SEALED_LOG=0` produces: `mintedSpecVersion()` answers
+      // What `WORKFLOW_SPEC_VERSION=6` produces: `mintedSpecVersion()` answers
       // the slot-identity version, so the World declares one BELOW the version
       // this runtime stamps by default. The runtime has to admit it, or the
-      // kill switch would reject the very World it selects and a rollback
+      // setting would reject the very World it selects and a rollback
       // would surface as a startup failure instead.
       const rolledBack = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',

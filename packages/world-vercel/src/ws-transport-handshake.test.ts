@@ -135,7 +135,7 @@ describe.each([
     expect(first.step).toMatchObject({ stepId: 'step_1' });
     expect(upgrades).toHaveLength(1);
     expect(posts).toBe(1);
-    expect(resolveWsTransport('wrun_1', config)).toBeNull();
+    expect(resolveWsTransport('wrun_1', config).kind).toBe('no_channel');
 
     await writeStepCompleted();
 

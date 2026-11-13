@@ -1406,6 +1406,17 @@ ${apiFileContent}`
           });
         };
 
+        // Load the flow route before the first edit. Next.js 16.4+ server HMR
+        // takes a route's update baseline on its first request, while module
+        // instances are shared across routes, so a flow route first loaded
+        // after an edit would keep the stale step module instantiated by the
+        // API route that imports this fixture.
+        await expectWorkflowResult({
+          description: 'HMR fuzz workflow to run before any edit',
+          stepValue: 'step-0',
+          workflowValue: 'workflow-helper-0',
+        });
+
         let snapshot = await waitForGeneratedArtifactStability();
         const cases = [
           {

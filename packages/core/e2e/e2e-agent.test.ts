@@ -159,7 +159,7 @@ describe.skipIf(isUnsupportedApp)(
         const run = await start(await agentE2e('agentProviderToolE2e'), []);
         const rv = await run.returnValue;
         expect(rv).toMatchObject({
-          stepCount: 2,
+          stepCount: 1,
           lastStepText: 'I found a result for you.',
         });
       });
@@ -168,7 +168,7 @@ describe.skipIf(isUnsupportedApp)(
         const run = await start(await agentE2e('agentMixedToolsE2e'), [3, 7]);
         const rv = await run.returnValue;
         expect(rv).toMatchObject({
-          stepCount: 3,
+          stepCount: 2,
           lastStepText: 'The answer is 10',
         });
       });

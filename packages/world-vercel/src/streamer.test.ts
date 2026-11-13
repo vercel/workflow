@@ -254,25 +254,27 @@ describe('stream writer session capability', () => {
 });
 
 describe('session HTTP fallback', () => {
-  it('paginates with the configured request-work cap', async () => {
-    vi.stubEnv('WORKFLOW_MAX_CHUNKS_PER_REQUEST', '2');
+  it('paginates at the per-request chunk cap', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async () => new Response(null, { status: 200 }));
     const { writeStreamSessionOverHttp } = await import('./streamer.js');
+    const chunks = Array.from(
+      { length: MAX_CHUNKS_PER_REQUEST + 1 },
+      (_, i) => new Uint8Array([i % 256])
+    );
 
-    await writeStreamSessionOverHttp('run-123', 'stream', [
-      new Uint8Array([1]),
-      new Uint8Array([2]),
-      new Uint8Array([3]),
-    ]);
+    await writeStreamSessionOverHttp('run-123', 'stream', chunks);
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(
       fetchSpy.mock.calls.map(
         (call) => (call[1]?.body as Uint8Array).byteLength
       )
-    ).toEqual([10, 5]);
+    ).toEqual([
+      encodeMultiChunks(chunks.slice(0, MAX_CHUNKS_PER_REQUEST)).byteLength,
+      encodeMultiChunks(chunks.slice(MAX_CHUNKS_PER_REQUEST)).byteLength,
+    ]);
   });
 });
 

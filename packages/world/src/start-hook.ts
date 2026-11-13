@@ -186,7 +186,7 @@ export const START_HOOK_CANDIDATE_CANCELLED_CODE =
   'START_HOOK_CANDIDATE_CANCELLED';
 
 /**
- * Wire codes a remote World (workflow-server) answers a start Hook admission
+ * Wire codes a remote World (e.g. world-vercel) answers a start Hook admission
  * with, in the JSON error body's `error` (or `code`) field:
  *
  * - `409 start-hook-conflict`: the candidate was refused. The body carries

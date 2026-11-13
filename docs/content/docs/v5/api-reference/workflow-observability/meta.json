@@ -4,6 +4,7 @@
     "hydrate-resource-io",
     "observability-revivers",
     "hydrate-data",
+    "create-state-resolver",
     "parse-step-name",
     "parse-workflow-name",
     "parse-class-name"

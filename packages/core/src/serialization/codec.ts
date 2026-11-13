@@ -44,6 +44,26 @@ export interface CodecOptions {
   global?: Record<string, any>;
 
   /**
+   * The context that resolves frozen state references (see
+   * `state-refs.ts`). Defaults to the one bound to `global`.
+   */
+  stateContext?: import('./state-refs.js').StateContext;
+
+  /**
+   * The payload is a step input. Its frozen state versions are written and
+   * read without being remembered, because no reader reads step inputs back.
+   */
+  stateInput?: boolean;
+
+  /**
+   * Rebuilds a state context from the run's log when a step input refers to
+   * versions this invocation did not replay.
+   */
+  recoverStateContext?: (
+    data: unknown
+  ) => Promise<import('./state-refs.js').StateContext | undefined>;
+
+  /**
    * Additional reducers to merge into the mode's default reducers.
    * Used by dehydrate/hydrate functions that need stream handling
    * or other mode-specific type reducers.

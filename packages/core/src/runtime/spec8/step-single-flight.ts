@@ -3,7 +3,7 @@ import type { StepExecutionResult } from './step-executor.js';
 
 /**
  * Single-flight for a step body. This is a required companion to inline step
- * ownership (see `isInlineOwnershipEnabled` in `./constants.ts`): the
+ * ownership (see `getInlineOwnershipLeaseSeconds` in `./constants.ts`): the
  * ownership lease is a *death proof* only on platforms with a bounded
  * invocation lifetime. On worlds without an invocation kill bound
  * (world-local's single process, self-hosted deployments) a delayed backstop

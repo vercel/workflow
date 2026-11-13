@@ -3,7 +3,6 @@ import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
-  hydrateResourceIOAsync,
   type SidebarDataContextValue,
   StreamViewer,
   StreamViewerSkeleton,
@@ -55,6 +54,7 @@ import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  createRunStateHydratorForEnv,
   fetchSpanDetailResource,
   getErrorMessage,
   getErrorTitle,
@@ -293,6 +293,12 @@ export function RunDetailView({
     [env]
   );
 
+  // Reused across inspections so the run's history is read at most once.
+  const stateHydrator = useMemo(
+    () => createRunStateHydratorForEnv(env, runId),
+    [env, runId]
+  );
+
   const handleLoadEventData = useCallback(
     async (event: Event) => {
       const { error, result } = await unwrapServerActionResult(
@@ -301,7 +307,9 @@ export function RunDetailView({
       if (error) {
         throw error;
       }
-      const fullEvent = await hydrateResourceIOAsync(
+      // Through the run's state hydrator, so an expanded step event shows the
+      // actual values of state stored by reference, like the span details.
+      const fullEvent = await stateHydrator.hydrate(
         result,
         encryptionKeyRef.current ?? undefined
       );
@@ -310,7 +318,7 @@ export function RunDetailView({
       }
       return null;
     },
-    [env]
+    [env, stateHydrator]
   );
 
   // Only show graph tab for local backend
@@ -347,8 +355,9 @@ export function RunDetailView({
     (selection) =>
       fetchSpanDetailResource(env, selection, {
         encryptionKey: encryptionKey ?? undefined,
+        stateHydrator,
       }),
-    [env, encryptionKey]
+    [env, encryptionKey, stateHydrator]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);

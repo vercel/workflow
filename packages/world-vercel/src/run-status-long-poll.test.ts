@@ -27,11 +27,11 @@ function mockAgent(): MockAgent {
 
 /**
  * `waitForWorkflowRunTerminalStatus` — the `world-vercel` half of
- * `runs.waitForTerminalStatus`, backed by workflow-server's long-pollable
+ * `runs.waitForTerminalStatus`, backed by the backend's long-pollable
  * `GET /v2/runs/:runId/status`.
  *
  * The interesting behavior is the degradation: this adapter can be talking to
- * a workflow-server that does not have the route, and it must tell that apart
+ * a backend that does not have the route, and it must tell that apart
  * from a run that does not exist.
  */
 describe('waitForWorkflowRunTerminalStatus', () => {
@@ -298,7 +298,7 @@ describe('waitForWorkflowRunTerminalStatus', () => {
 
   it('suppresses the fast path per backend, not process-wide', async () => {
     // One process can hold worlds pointed at different backends — the
-    // api.vercel.com proxy and workflow-server directly — which can be on
+    // api.vercel.com proxy and the backend directly — which can be on
     // different versions. A miss against one must not disable the other.
     const agent = mockAgent();
     const direct = agent.get(ORIGIN);
