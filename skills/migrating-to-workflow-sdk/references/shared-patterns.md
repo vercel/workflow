@@ -7,7 +7,10 @@
 - `sleep()` only in workflow context
 - `getWritable()` obtainable in workflow, but interact with stream only in step context
 - External side effects -> `getStepMetadata().stepId` as idempotency key
-- Child workflows -> step-wrapped `start()` / `getRun()`
+- Child workflows -> `start()` called directly in the workflow; keep the returned `Run` and `await run.returnValue`
+- Duplicate-start protection -> `start(wf, args, { experimental_hook: { token } })`
+- Searchable run metadata -> `setAttributes()` / `start(wf, args, { attributes })`
+- In-flight cancellation -> pass an `AbortSignal` into the step; cancel whole runs with `run.cancel()`
 
 ## Choosing hook vs webhook
 
@@ -257,10 +260,12 @@ export async function POST(request: Request) {
 }
 ```
 
-## Child workflow via step-wrapped start/getRun
+## Child workflow via start() in the workflow
+
+In v5, call `start()` from `workflow/api` directly inside the workflow function. It runs through an internal step, so replay stays deterministic. The returned `Run` handle is serializable. `await run.returnValue` suspends the parent on a system hook that the child resumes when it finishes, so there is no polling and no step wrapper.
 
 ```ts
-import { getRun, start } from 'workflow/api';
+import { start } from 'workflow/api';
 
 export async function childWorkflow(input: string) {
   'use workflow';
@@ -272,18 +277,105 @@ async function doWork(input: string) {
   return { input, status: 'done' as const };
 }
 
-async function spawnChild(input: string): Promise<string> {
-  'use step';
-  const run = await start(childWorkflow, [input]);
-  return run.runId;
-}
+export async function parentWorkflow(inputs: string[]) {
+  'use workflow';
 
-async function collectChild(runId: string) {
-  'use step';
-  const run = getRun(runId);
-  return (await run.returnValue) as { input: string; status: 'done' };
+  // Spawn: one child run per input (replaces triggerAndWait / StartExecution / executeChild)
+  const runs = await Promise.all(inputs.map((input) => start(childWorkflow, [input])));
+
+  // Collect: each await suspends until that child finishes
+  const results = await Promise.all(runs.map((run) => run.returnValue));
+
+  return { childRunIds: runs.map((run) => run.runId), results };
 }
 ```
+
+- Keep the `Run` handle returned by `start()`. `getRun(runId)` is not available in workflow context; call it inside a `"use step"` function only when the workflow has a bare run ID.
+- If a child fails or is cancelled, `await run.returnValue` throws `WorkflowRunFailedError` or `WorkflowRunCancelledError`. Use `Promise.allSettled()` when one failed child should not fail the parent.
+- Child runs are tagged with the reserved `$parentRunId` and `$rootRunId` attributes automatically, so a whole fan-out can be found with one attribute filter.
+- Fire-and-forget children: call `start()` and do not await `returnValue`.
+
+## Idempotent start (one run per business key)
+
+Use this for Temporal workflow IDs with a reuse policy, Trigger.dev `idempotencyKey`, Inngest `idempotency` and `singleton`, Cloudflare instance `id`, or Step Functions execution `name` uniqueness. Pick the retention from the source's window: none for "no overlapping runs" (Inngest `singleton`), `'24h'` for Inngest `idempotency`, and the run's maximum duration plus 90 days for a Standard Step Functions execution name (its window counts from when the execution closes, the retention from `start()`).
+
+```ts
+import { start } from 'workflow/api';
+import { HookConflictError } from 'workflow/errors';
+import { processOrder } from './workflows/process-order';
+
+export async function POST(request: Request) {
+  const { orderId } = (await request.json()) as { orderId: string };
+
+  try {
+    const run = await start(processOrder, [orderId], {
+      experimental_hook: {
+        token: `order:${orderId}`,
+        // Omit to release the key when the run ends; set it to keep refusing
+        // duplicates for a window (Trigger.dev idempotencyKeyTTL, Inngest's 24h).
+        experimental_minRetention: '24h',
+      },
+    });
+    return Response.json({ runId: run.runId, duplicate: false });
+  } catch (error) {
+    if (!HookConflictError.is(error)) throw error;
+    return Response.json({ runId: error.conflictingRunId, duplicate: true });
+  }
+}
+```
+
+- Exactly one run owns the token. A duplicate `start()` throws `HookConflictError` naming the owner and never becomes a run.
+- Without `experimental_minRetention`, the token is released when the run ends (like Temporal's default reuse policy after completion). With it, duplicates are refused until the retention passes (like `REJECT_DUPLICATE` for that window).
+- The owner can read payloads sent to the same token with `createHook({ token })` in the workflow, so a duplicate request can be routed to the running owner with `resumeHook(token, payload)` instead of being dropped.
+- To replace the current owner instead (Temporal `TERMINATE_EXISTING`, Inngest `singleton: { mode: 'cancel' }`), cancel the conflicting run with `await getRun(error.conflictingRunId).cancel()` and start again (a token with `experimental_minRetention` stays refused until the retention passes, even after cancellation). For a long-lived run that should hand its token to the newest run, start without `experimental_hook` and open `createHook({ token, experimental_force: true })` in the workflow: the previous owner's `await hook` rejects with `HookForceClaimedError`, and `resumeHook()` callers are routed to the new owner. A start Hook itself cannot force-claim.
+
+## Run attributes (searchable metadata)
+
+Use this for Temporal search attributes, Trigger.dev tags, or any per-run labels the source used to find runs.
+
+```ts
+import { setAttributes } from 'workflow';
+
+export async function orderWorkflow(orderId: string, customerId: string) {
+  'use workflow';
+
+  await setAttributes({ orderId, customerId, phase: 'received' });
+  // ... later
+  await setAttributes({ phase: 'charged' });
+}
+```
+
+- Seed attributes at creation with `start(orderWorkflow, [orderId, customerId], { attributes: { source: 'checkout' } })`.
+- Values must be strings; pass `undefined` to remove a key. Keys starting with `$` are reserved.
+- `setAttributes()` works in workflow and step context. Do not use attributes for large or sensitive data: they are plaintext and meant for filtering.
+
+## Cancellation
+
+```ts
+import { sleep } from 'workflow';
+
+export async function fetchWithDeadline(url: string) {
+  'use workflow';
+
+  const controller = new AbortController();
+  const result = await Promise.race([
+    fetchData(url, controller.signal),
+    sleep('10s').then(() => null),
+  ]);
+  if (result === null) controller.abort(); // reaches the step that is already running
+  return result;
+}
+
+async function fetchData(url: string, signal: AbortSignal) {
+  'use step';
+  const response = await fetch(url, { signal });
+  return response.json();
+}
+```
+
+- `AbortController` / `AbortSignal` are serializable and can be passed into steps. Aborting reaches a step that is already executing. Cancellation is cooperative: a step that ignores its signal runs to completion.
+- Cancel a whole run from app code with `await getRun(runId).cancel({ cancelReason: '...' })`, or from a workflow with `await run.cancel()` on a `Run` returned by `start()`.
+- Bulk cancel from the CLI: `workflow cancel --status=running --workflowName=<name>`.
 
 ## Idempotent external write
 

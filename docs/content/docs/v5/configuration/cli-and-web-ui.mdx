@@ -2,7 +2,7 @@
 title: CLI and Web UI
 description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
 type: reference
-summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, and observability tooling.
+summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, workflow migrate, and observability tooling.
 related:
   - /docs/observability
   - /docs/configuration/worlds
@@ -213,6 +213,36 @@ per flag.
 - Command: `workflow cancel`
 - Default: disabled
 - Skips the interactive confirmation prompt.
+
+## Migrate from Inngest
+
+`workflow migrate inngest [paths...]` rewrites Inngest functions as Workflow SDK code in place: each `createFunction()` becomes a `"use workflow"` function, and each `step.run()` closure becomes a `"use step"` function whose parameters are the variables the closure captured. It prints every step it lifted with its captured variables, and marks what needs a decision with `TODO(workflow-migrate)` comments. See [Migrating from Inngest](/docs/comparisons/workflow-sdk-vs-inngest#run-the-codemod) for what it changes.
+
+Without paths, it migrates the files of the project's `tsconfig.json` (its `include` and `exclude`), plus JavaScript files outside `node_modules` and the build output directories. It parses them with the project's own `typescript` package, so install it as a dev dependency first, or run `npx -p typescript -p workflow workflow migrate inngest`. It refuses to overwrite files with uncommitted changes, and leaves a file unchanged if its migrated code does not parse.
+
+### `--dry-run`
+
+- Command: `workflow migrate`
+- Default: disabled
+- Prints what would change without writing any files.
+
+### `--report`
+
+- Command: `workflow migrate`
+- Default: unset
+- Writes a Markdown report to this file: each lifted step with its captured variables, each TODO, and every `inngest.send()` and `serve()` call in the project with the `start()` or `resumeHook()` call that replaces it.
+
+### `--tsconfig`
+
+- Command: `workflow migrate`
+- Default: the nearest `tsconfig.json`
+- The tsconfig to read the files and compiler options from.
+
+### `--force`
+
+- Command: `workflow migrate`
+- Default: disabled
+- Writes files even if they have uncommitted changes.
 
 ## Health checks
 

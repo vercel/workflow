@@ -29,7 +29,7 @@ related:
 | **Versioning** | Runs pinned to their immutable deployment, safe by default; opt-in `deploymentId: 'latest'` to upgrade | Editing workflow code can break in-flight runs (non-determinism errors); evolve safely via patch APIs or Worker Versioning (keep old worker fleets draining) |
 | **AI SDK & agents** | `WorkflowAgent` ships in the AI SDK; durable agent loop; **native resumable streaming** (`getWritable`/`getReadable`, `WorkflowChatTransport`) | First-party `@temporalio/ai-sdk` and "Workflow Streams", both **Public Preview**; streaming rides on Signals/Updates (batched, history-bound) |
 | **Security** | Zero-config per-run AES-256-GCM E2E encryption by default; platform security is per World (the Vercel World inherits Vercel's security posture) | Workers run your code on your infrastructure (never enters Temporal's plane); client-side E2E via a Codec Server you operate. Cloud: SOC 2 II, HIPAA, GDPR |
-| **Performance** | No-penalty resume; serverless scale-to-zero (true suspension); up to 100,000 concurrency on Vercel | Self-managed workers are long-running; Cloud namespace default 500 actions/sec (auto-scales) |
+| **Performance** | No-penalty resume; several steps execute inline per invocation, and the queue is used only for waits, hooks, or a function nearing its timeout; serverless scale-to-zero (true suspension); up to 100,000 concurrency on Vercel | Self-managed workers are long-running; Cloud namespace default 500 actions/sec (auto-scales) |
 | **Portability** | Apache-2.0 SDK; World abstraction swaps storage/queue/streams independently | MIT server; pluggable persistence (Cassandra/Postgres/MySQL), but an opinionated monolithic backend you run or pay for |
 | **Pricing** | SDK free; pay your platform (Vercel: events + data) or only your infrastructure if self-hosted | Self-host = free software; Temporal Cloud bills per Action (from $50 per million) + storage |
 | **Limits** | No run/sleep cap; 10,000 steps, 50 MB payload, 2 GB/run ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | No run cap (Continue-As-New for long histories); event history capped at 51,200 events / 50 MB; 2 MB payloads |
@@ -66,9 +66,13 @@ The model maps closely. Keep your orchestration logic; drop the workers, task qu
 | Worker + Task Queue | Managed execution | No worker fleet or polling loop to operate. |
 | Signal | `createHook()` / `createWebhook()` | Hooks for typed resume signals; webhooks for HTTP callbacks. |
 | Query | `getWritable({ namespace: 'status' })` stream | Stream status durably; clients read the stream instead of polling. |
-| Child Workflow | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
+| Child Workflow | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | `await run.returnValue` suspends without polling. Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
+| `continueAsNew()` | `start()` the same workflow from inside the workflow, then return | Pass `deploymentId: 'latest'` to move onto new code. See [Self upgrading workflows](/docs/foundations/versioning#self-upgrading-workflows). |
+| Workflow ID + reuse / conflict policy | `start(workflow, args, { experimental_hook: { token } })` | A duplicate start throws `HookConflictError` naming the owner. `experimental_minRetention` keeps refusing after the run ends. See [Run idempotency](/docs/foundations/idempotency#run-idempotency). |
+| Cancellation scopes / `handle.cancel()` | `AbortController` passed into steps; `run.cancel({ cancelReason })` | An abort reaches a step that is already running. See [Cancellation](/docs/foundations/cancellation). |
 | Activity retry policy | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. See [Errors & Retrying](/docs/foundations/errors-and-retries). |
 | Search attributes / visibility queries | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) / `attributes` option on `start()` | Filter runs by `key=value`. See [Attributes](/docs/observability/attributes). |
+| Memo | Workflow arguments, the return value, or a [stream](/docs/foundations/streaming) | Attributes are searchable plaintext strings (up to 256 bytes each, 64 per run), not a place for arbitrary data. Promote only the small labels you filter by. |
 | Event History | Workflow event log / run timeline | Same durable replay; built-in observability UI. |
 
 A minimal translation, where the orchestrator loses `proxyActivities` and becomes plain TypeScript:
