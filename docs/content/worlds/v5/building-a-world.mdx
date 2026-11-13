@@ -120,10 +120,6 @@ interface Storage {
   runs: {
     get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
     list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
-    // Optional: backs setAttributes(). Omitting it means run attributes are
-    // unsupported on this World. The SDK helper no-ops with a warning.
-    experimentalSetAttributes?(runId: string, changes: AttributeChange[], options?: { allowReservedAttributes?: boolean }): Promise<ExperimentalSetAttributesResult>;
-
     // Optional: long poll for a terminal status (see below)
     waitForTerminalStatus?(id: string, params?: WaitForTerminalRunStatusParams): Promise<WorkflowRun>;
   };
@@ -170,6 +166,8 @@ interface Storage {
 **Throttled step results:** `step_completed`, `step_retrying`, and a `step_failed` marked with `afterStepBody: true` in `CreateEventParams` record a step body that already ran. If your World retries throttled writes, keep these waiting longer than other writes, because losing one to queue redelivery runs the body again. `@workflow/world-vercel` waits until the invocation's deadline. The flag is advisory, and a World may ignore it.
 
 **Run creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
+
+**Run attributes:** there is no Storage method for attributes. `setAttributes()` writes an `attr_set` event, and `start(..., { attributes })` passes initial attributes on `run_created`. Validate them with `validateAttributeChanges()` from `@workflow/world` and merge them onto the run's `attributes` in the same atomic update as the event: a string value sets a key, `null` removes it. Reject `attr_set` on a run in a terminal state.
 
 **Event data resolution:** `events.list()` and `events.create()` accept `resolveData: 'skip-step-inputs'`, and the runtime replays with it. The World may leave `input` out of `step_created` and `step_started` events, and returns everything else as for `'all'`. Treat any value other than `'none'` as `'all'`, because a World that tests `resolveData === 'all'` strips step results and breaks every replay. Map the value with `entityResolveData()` from `@workflow/world` before passing it to an entity read.
 

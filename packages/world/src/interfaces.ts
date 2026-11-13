@@ -293,30 +293,20 @@ export interface Storage {
     ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
 
     /**
-     * Apply a batch of attribute changes to a run. Merge semantics:
-     * - `value: string` upserts the key
-     * - `value: null` removes the key
-     * - keys not listed in `changes` are untouched
+     * Apply a batch of attribute changes directly to a run's materialized
+     * `attributes`, outside the event log, and return the post-merge
+     * snapshot.
      *
-     * Returns the post-merge attribute snapshot on the run.
+     * @deprecated The current SDK never calls this method. `setAttributes()`
+     * writes `attr_set` events through `events.create`, and
+     * `start(..., { attributes })` seeds attributes on `run_created`; every
+     * World already handles both. New Worlds should not implement it.
      *
-     * Pass `options.allowReservedAttributes: true` to permit keys
-     * starting with the reserved `$` prefix. Default behavior rejects
-     * those keys so user code can't accidentally collide with
-     * framework / tooling namespaces; framework callers that own a
-     * sub-namespace flip this on.
-     *
-     * OPTIONAL. World implementations may omit this method; the SDK
-     * helper (`setAttributes` in `@workflow/core`) feature-detects its
-     * absence and no-ops with a one-time warning so third-party /
-     * community worlds keep working without adopting the experimental
-     * API.
-     *
-     * EXPERIMENTAL: this method exists as a stopgap until the
-     * `attr_set` event type lands in a future spec version. When that
-     * happens, `setAttributes` will dispatch through `events.create`
-     * instead, and this method is expected to be removed. See the
-     * `attributes-mvp` changelog entry for the migration shape.
+     * It remains on the interface, optional, so existing implementations keep
+     * compiling. The only callers were `workflow` 5.0.0-beta.8 through
+     * 5.0.0-beta.14, the attributes MVP, which wrote through this method. A
+     * World that may still be paired with one of those releases can keep its
+     * implementation. See `packages/core/src/attributes-mvp.md`.
      */
     experimentalSetAttributes?(
       runId: string,
