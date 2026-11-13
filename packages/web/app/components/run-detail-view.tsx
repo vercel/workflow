@@ -23,7 +23,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { RunLimitGuidanceAlert } from '~/components/run-limit-guidance-alert';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
@@ -53,6 +53,7 @@ import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
 import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
+import { useOptimisticSearchParams } from '~/lib/url-state';
 import {
   cancelRun,
   createRunStateHydratorForEnv,
@@ -209,7 +210,8 @@ export function RunDetailView({
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  // Optimistic so tab switches render on the click, not after the navigation.
+  const [searchParams, updateSearchParams] = useOptimisticSearchParams();
   const { serverConfig } = useServerConfig();
   const [cancelling, setCancelling] = useState(false);
   const [rerunning, setRerunning] = useState(false);
@@ -222,22 +224,6 @@ export function RunDetailView({
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
-
-  // Helper to update URL search params
-  const updateSearchParams = useCallback(
-    (updates: Record<string, string | null>) => {
-      const params = new URLSearchParams(searchParams.toString());
-      for (const [key, value] of Object.entries(updates)) {
-        if (value === null) {
-          params.delete(key);
-        } else {
-          params.set(key, value);
-        }
-      }
-      navigate(`?${params.toString()}`, { preventScrollReset: true });
-    },
-    [navigate, searchParams]
-  );
 
   const setActiveTab = useCallback(
     (tab: Tab) => {

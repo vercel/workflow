@@ -9,6 +9,7 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  type ShouldRevalidateFunctionArgs,
   useNavigate,
   useRouteError,
   useSearchParams,
@@ -31,6 +32,27 @@ import './globals.css';
 export async function loader({ context }: Route.LoaderArgs) {
   const serverConfig = await getPublicServerConfig();
   return { serverConfig, basename: context?.basename ?? '' };
+}
+
+// The loader's data is process-wide: it depends on the server's environment
+// and the embed mount path, never on the URL. Without this, every search param
+// change (switching tabs, opening a side panel) and every client-side page
+// change waits on a server round trip to re-run it before the next view
+// renders. Keep the default after mutations and explicit revalidation, where
+// the current and next URLs are the same.
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  formMethod,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  if (formMethod && formMethod.toUpperCase() !== 'GET') {
+    return defaultShouldRevalidate;
+  }
+  if (currentUrl.href === nextUrl.href) {
+    return defaultShouldRevalidate;
+  }
+  return false;
 }
 
 // Catch-all action: handles stray POST requests (e.g. from Radix UI dialogs
