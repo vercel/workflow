@@ -132,6 +132,8 @@ describe('useStreamReader payloads', () => {
   });
 
   it.each([
+    'x',
+    'ab',
     'encrypted text',
     'encp is plain text',
     'devl is plain text',
@@ -176,6 +178,57 @@ describe('useStreamReader payloads', () => {
 describe('useStreamReader status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each([
+    [0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10],
+    [0xff, 0xd8, 0xff, 0xe0],
+    [...new TextEncoder().encode('GIF89a')],
+    [...new TextEncoder().encode('RIFF1234WEBP')],
+  ])('preserves raw image bytes across network chunks: %j', async (...header) => {
+    const payload = Uint8Array.from([...header, 10, 0xff, 0, 1, 2, 3, 4, 5]);
+    vi.mocked(readStream).mockResolvedValue({
+      body: new ReadableStream({
+        start(controller) {
+          for (let offset = 0; offset < payload.length; offset += 2)
+            controller.enqueue(payload.slice(offset, offset + 2));
+          controller.close();
+        },
+      }),
+      cursor: null,
+      done: true,
+    });
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'image', 'run-1', null, 'completed')
+    );
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.chunks.map(({ value }) => value)).toEqual([payload]);
+  });
+
+  it('reads a serialized frame shorter than the longest image signature', async () => {
+    const payload = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      Uint8Array.from(new TextEncoder().encode('[0]'))
+    ) as Uint8Array;
+    const framed = new Uint8Array(4 + payload.length);
+    new DataView(framed.buffer).setUint32(0, payload.length, false);
+    framed.set(payload, 4);
+    vi.mocked(readStream).mockResolvedValue({
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(framed);
+          controller.close();
+        },
+      }),
+      cursor: null,
+      done: true,
+    });
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'stream', 'run-1', null, 'completed')
+    );
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    expect(result.current.chunks.map(({ value }) => value)).toEqual([0]);
   });
 
   it('does not report live while the initial request is loading', async () => {

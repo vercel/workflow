@@ -6,7 +6,7 @@ import {
   type PayloadKey,
   SerializationFormat,
 } from '@workflow/core/serialization-format';
-import { getWebRevivers } from '@workflow/web-shared';
+import { getStreamImageType, getWebRevivers } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
@@ -41,10 +41,11 @@ const YIELD_EVERY_N_FRAMES = 64;
  * - **legacy**: Older SDK versions used newline-delimited devalue strings
  *   with no binary framing.
  */
-type StreamEncoding = 'framed' | 'unframed' | 'legacy';
+type StreamEncoding = 'framed' | 'unframed' | 'legacy' | 'image';
 
 function detectEncoding(data: Uint8Array, streamId: string): StreamEncoding {
-  if (data.length < FRAME_HEADER_SIZE) return 'framed';
+  if (getStreamImageType(data)) return 'image';
+  if (data.length < FRAME_HEADER_SIZE) return 'legacy';
   const prefix = new TextDecoder().decode(data.subarray(0, FRAME_HEADER_SIZE));
   // Only internal abort streams store unframed serialized packets. A user
   // text stream may begin with e.g. "encrypted", which shares the encr prefix.
@@ -224,17 +225,31 @@ export function useStreamReader(
 
         const { value, done } = await reader.read();
         if (done) {
-          if (encoding === 'unframed' && buffer.length > 0) {
+          if (encoding === null && buffer.length > 0) {
+            encoding = detectEncoding(buffer, streamId);
+            if (encoding === 'legacy') textRemainder = decoder.decode(buffer);
+          }
+          if (encoding === 'image') {
+            frameIndex++;
+            if (frameIndex > skipFrames) {
+              targetBuffer.push({ id: chunkIdRef.current++, value: buffer });
+            }
+          } else if (encoding === 'unframed' && buffer.length > 0) {
             frameIndex++;
             if (frameIndex > skipFrames) {
               const result = await processFrame(buffer, cryptoKey, revivers);
               if (result.encrypted) return { encrypted: true };
               targetBuffer.push(result.chunk);
             }
-          } else if (encoding === 'legacy' && textRemainder.trim()) {
-            frameIndex++;
-            if (frameIndex > skipFrames) {
-              targetBuffer.push(parseLegacyLine(textRemainder.trim()));
+          } else if (encoding === 'legacy') {
+            textRemainder += decoder.decode();
+            for (const line of textRemainder.split('\n')) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              frameIndex++;
+              if (frameIndex > skipFrames) {
+                targetBuffer.push(parseLegacyLine(trimmed));
+              }
             }
             textRemainder = '';
           }
@@ -244,7 +259,15 @@ export function useStreamReader(
         if (encoding === null) {
           appendToBuffer(value);
           if (buffer.length >= FRAME_HEADER_SIZE) {
-            encoding = detectEncoding(buffer, streamId);
+            const detected = detectEncoding(buffer, streamId);
+            // Frame headers are distinguishable after four bytes; WebP
+            // needs twelve bytes before a stream can be decoded as text.
+            if (
+              detected === 'framed' ||
+              detected === 'unframed' ||
+              buffer.length >= 12
+            )
+              encoding = detected;
           }
           if (encoding === 'legacy') {
             textRemainder = decoder.decode(buffer, { stream: true });
@@ -271,7 +294,12 @@ export function useStreamReader(
           continue;
         }
 
-        if (encoding === 'unframed') continue;
+        if (
+          encoding === null ||
+          encoding === 'unframed' ||
+          encoding === 'image'
+        )
+          continue;
 
         let offset = 0;
         let framesInBatch = 0;
