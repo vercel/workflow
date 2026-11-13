@@ -27,17 +27,31 @@ Workflow functions run in a sandboxed environment without full Node.js runtime a
 
 Node.js modules have side effects and non-deterministic behavior that could break workflow replay guarantees.
 
-## Transitive dependencies and dynamic `require()`
+## Node.js modules your dependencies import
 
-The same error is reported for a module the workflow bundle could not inline, even when your own code never imports it directly:
+A dependency the workflow bundle includes can import a Node.js module without any workflow ever calling the code that needs it. An AI provider SDK reached through a barrel file is a common example. This doesn't fail the build. The bundle replaces each such module with a stand-in that loads normally, and the build prints a warning that names the module and the file that imports it:
+
+```text
+The workflow bundle includes dependencies that import Node.js or Bun modules, which are not available in workflow functions:
+  • "node:crypto" imported by node_modules/@smithy/core/dist-es/submodules/serde/index.js
+  • "node:zlib" imported by node_modules/@smithy/core/dist-es/submodules/checksum/crc32/Crc32Node.js
+```
+
+If a workflow does call into one, that call throws a `NodeJsModuleInWorkflowError` naming the function, for example `Cannot use node:fs.readFileSync`. Move that code into a step function.
+
+This only applies to modules imported from inside a package. A Node.js module imported from your own code, or a package that needs one and that a workflow file imports directly, still fails the build.
+
+## Dynamic `require()` and modules left external
+
+The build also fails when the workflow bundle still needs `require()` at runtime:
 
 ```text
 Workflow bundle cannot run in the workflow sandbox.
 
 Imports left external (1):
   • "node:fs"
-    imported by node_modules/leaky-pkg/index.js
-    via app/workflows/order.ts → node_modules/wrapper-pkg/index.js → node_modules/leaky-pkg/index.js
+    imported by lib/files.ts
+    via app/workflows/order.ts → lib/files.ts
 
 Unresolved require() calls (1):
   • dynamic require() in node_modules/lazy-pkg/index.js (bundle 412:31)

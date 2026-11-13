@@ -26,12 +26,13 @@
  * `__require` shim), which never run in the sandbox. Both are decided on the
  * parsed syntax tree: a check only excuses the branches it provably skips.
  *
- * Those failures used to be silent at build time.
- * `createNodeModuleErrorPlugin()` marks Node.js/Bun builtins as external and
- * only reports the ones it can trace back to an `import … from "pkg"`
- * statement inside user code, so transitively imported builtins (and
- * re-exported ones, and side-effect-only imports) shipped a bundle that could
- * never run. This module is the backstop that turns those into build errors.
+ * Those failures used to be silent at build time. This module is the backstop
+ * that turns them into build errors. Node.js/Bun builtins that only a
+ * dependency imports never get here: `createNodeModuleErrorPlugin()` replaces
+ * them with stand-in modules that load in the sandbox and throw only when
+ * called. The ones it leaves external (imported from user code) and anything
+ * else that stays external, plus unresolved `require()` calls, are reported
+ * here.
  */
 
 import { ERROR_SLUGS, WorkflowBuildError } from '@workflow/errors';

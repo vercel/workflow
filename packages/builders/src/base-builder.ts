@@ -43,7 +43,10 @@ import {
   resolveModuleSpecifier,
   stripPackageVersion,
 } from './module-specifier.js';
-import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
+import {
+  createNodeModuleErrorPlugin,
+  formatUnavailableBuiltinWarning,
+} from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
@@ -1529,6 +1532,16 @@ export const __steps_registered = ${stepsRegistered};
         metafile: interimBundle.metafile,
         warn: (message) => console.warn(chalk.yellow(message)),
       });
+
+      const unavailableBuiltins = formatUnavailableBuiltinWarning(
+        interimBundle.metafile
+      );
+      if (
+        unavailableBuiltins &&
+        !this.config.suppressCreateWorkflowsBundleWarnings
+      ) {
+        console.warn(chalk.yellow(unavailableBuiltins));
+      }
 
       // Serde compliance warnings: check if workflow bundle has Node.js imports
       // alongside serde-registered classes (these will fail at runtime in the sandbox)
