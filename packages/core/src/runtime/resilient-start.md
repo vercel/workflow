@@ -16,6 +16,7 @@ The runtime also previously called `world.runs.get(runId)` before `run_started`,
 - If `events.create` returns a **429 or 5xx** error, the runtime logs a warning that run creation failed but the run was accepted. The runtime retries creation asynchronously when it processes the queue message. The returned `Run` instance is marked with `resilientStart = true`.
 - If `events.create` errors with **409** (EntityConflictError), the run already exists (e.g., the queue handler's resilient start path created it first due to a cold-start race). This is treated as success.
 - If `world.queue` fails, we still throw: the run truly failed and was not enqueued.
+  - `run_created` has usually committed by then, so a thrown queue failure leaves a run that exists and never runs (and a caller that retries starts a second one). World queues should therefore retry a transient send failure themselves before it reaches `start()`: world-vercel re-sends after a transport failure, its request deadline, a 5xx or a short 429, up to 3 attempts (see `packages/world-vercel/src/queue-send-retry.ts`). Every re-send is safe: keyed messages are deduplicated by the queue, and a duplicate orchestrator message is a spare wake.
 - The queue invocation now receives all the run inputs (`input`, `deploymentId`, `workflowName`, `specVersion`, `executionContext`) via `runInput` so the runtime can create the run later if needed.
 - When the runtime re-enqueues itself, it does **not** pass these inputs: only the first queue cycle carries them.
 
