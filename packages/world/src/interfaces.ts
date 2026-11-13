@@ -534,6 +534,10 @@ export interface Storage {
      * owns those barriers itself: the core runtime never batches a
      * suspension that carries attribute writes, and writes a suspension's
      * hook events through the single path concurrently with its batch.
+     *
+     * The design is described in
+     * `packages/core/src/runtime/spec8/batched-event-writes.md` in the Workflow
+     * SDK repository.
      */
     createBatch?(
       runId: string,
@@ -728,10 +732,8 @@ export interface WorldCapabilities {
   /**
    * The World's queue delivers a single-orchestrator run's orchestrator
    * messages one at a time (see `singleOrchestratorRunIdOf`): on Vercel
-   * Queues, a concurrency key per run (or, under
-   * `WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run topics consumed with
-   * `maxConcurrency: 1`); an in-process per-run gate or a per-run job queue
-   * elsewhere. Worlds whose queue cannot serialize a run's orchestrator
+   * Queues, a concurrency key per run; an in-process per-run gate or a
+   * per-run job queue elsewhere. Worlds whose queue cannot serialize a run's orchestrator
    * deliveries must leave this unset.
    *
    * Declares queue *support*, not deployed configuration. The runtime takes
@@ -740,6 +742,21 @@ export interface WorldCapabilities {
    * overlap safe.
    */
   maxConcurrency?: boolean;
+
+  /**
+   * **Experimental.** The World's queue can hold a message for its sender
+   * (`QueueOptions.experimental_hold`): `queue()` may come back with
+   * `experimental_hold.status: 'held'`, a claim the sender runs itself in
+   * the request that sent it, with the queue as the crash backstop.
+   * Declares *support*: a given send can still come back `not_held` (the
+   * queue service has send-and-hold off, local development), and is then
+   * delivered as usual.
+   * A caller that runs work in process behind a delayed backstop message
+   * where this is unset can send undelayed with a hold where it is set.
+   *
+   * @experimental
+   */
+  experimental_queueHold?: boolean;
 
   /**
    * The World implements the in-band writer fence on single-orchestrator runs
@@ -777,7 +794,9 @@ export interface WorldCapabilities {
    *   fence.
    *
    * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
-   * each of these against a World's `events` storage.
+   * each of these against a World's `events` storage. "Implementing spec 9 in
+   * a World" in `packages/core/src/runtime/spec9/README.md` (in the Workflow SDK
+   * repository) is the full guide.
    */
   inBandFence?: boolean;
 

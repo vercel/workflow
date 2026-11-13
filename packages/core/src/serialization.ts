@@ -31,7 +31,7 @@ import { getStepFunction } from './private.js';
 // world.ts module (and its dynamic-import behaviour) into the flow route.
 // See `packages/core/src/runtime/get-world-lazy.ts` and the
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
-// `docs/content/docs/changelog/eager-processing.mdx`.
+// `packages/core/src/runtime/eager-processing.md`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import {
   bytesToBase64,

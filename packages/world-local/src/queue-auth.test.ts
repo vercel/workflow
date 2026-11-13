@@ -174,6 +174,7 @@ describe('queue auth refusal', () => {
         return key;
       },
       restore: async () => {},
+      written: async () => {},
     };
     localQueue = createQueue({}, { queueAuthKey: rotating });
     const handler = vi.fn(async (_req: Request) => refusal());

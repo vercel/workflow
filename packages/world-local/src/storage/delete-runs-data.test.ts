@@ -8,11 +8,10 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readJSON, taggedPath, writeJSON } from '../fs.js';
+import { databaseFor } from '../db/index.js';
 import { createStorage } from '../storage.js';
 import { createStreamer } from '../streamer.js';
 import { createStep, updateStep } from '../test-helpers.js';
-import { RunRecordSchema } from './helpers.js';
 
 describe('runs.deleteDataMany (world-local)', () => {
   let testDir: string;
@@ -164,67 +163,6 @@ describe('runs.deleteDataMany (world-local)', () => {
     }
   });
 
-  async function expectBoundaryReads(
-    reader: Storage,
-    runId: string,
-    expired: boolean
-  ) {
-    const listed = await reader.events.list({ runId });
-    const created = listed.data.find((e) => e.eventType === 'run_created');
-    if (created?.eventType !== 'run_created')
-      throw new Error('Expected run creation');
-    expect(created.eventData.input).toEqual(expired ? undefined : RUN_INPUT);
-    const correlated = await reader.events.listByCorrelationId({
-      runId,
-      correlationId: 'step_001',
-    });
-    expect(correlated.data).toHaveLength(2);
-    const completed = correlated.data.find(
-      (e) => e.eventType === 'step_completed'
-    );
-    if (completed?.eventType !== 'step_completed')
-      throw new Error('Expected step completion');
-    expect(completed.eventData.result).toEqual(
-      expired ? undefined : STEP_OUTPUT
-    );
-    const single = await reader.events.get(runId, completed.eventId);
-    if (single.eventType !== 'step_completed')
-      throw new Error('Expected step completion');
-    expect(single.eventData.result).toEqual(expired ? undefined : STEP_OUTPUT);
-  }
-
-  it.each([
-    false,
-    true,
-  ])('checks the durable expiry boundary even before event files are scrubbed (expired: %s)', async (expired) => {
-    const run = await startRun();
-    const other = createStorage(testDir);
-    await other.events.create(run.runId, {
-      eventType: 'run_completed',
-      specVersion: SPEC_VERSION_CURRENT,
-      eventData: { output: RUN_OUTPUT },
-    });
-    const runPath = taggedPath(testDir, 'runs', run.runId);
-    const stored = await readJSON(runPath, RunRecordSchema);
-    if (!stored) throw new Error('Expected run record');
-    // Model the interval after the atomic boundary write but before the
-    // entity purge (also possible when an explicit deletion must retry).
-    await writeJSON(
-      runPath,
-      {
-        ...stored,
-        expiredAt: new Date(Date.now() + (expired ? -60_000 : 60_000)),
-      },
-      { overwrite: true }
-    );
-
-    // Both the original writer's cache and a new reader of the unscrubbed
-    // files must obey the boundary. A future deadline must retain data.
-    for (const reader of [storage, createStorage(testDir)]) {
-      await expectBoundaryReads(reader, run.runId, expired);
-    }
-  });
-
   it('answers already_deleted on a second call, keeping the first expiredAt', async () => {
     const run = await finishedRun();
     await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
@@ -289,16 +227,18 @@ describe('runs.deleteDataMany (world-local)', () => {
     });
   });
 
-  it('answers a retryable failure when a payload cannot be scrubbed, and a retry finishes the job', async () => {
+  it('answers a retryable failure, deleting nothing, when a payload cannot be scrubbed, and a retry finishes the job', async () => {
     const run = await finishedRun();
-    const stepsDir = path.join(testDir, 'steps', run.runId);
-    const [stepFile] = (await fs.readdir(stepsDir)).filter((f) =>
-      f.endsWith('.json')
+    const db = databaseFor(testDir);
+    const { doc } = db.get<{ doc: string }>(
+      'SELECT doc FROM steps WHERE run_id = ?',
+      run.runId
+    ) as { doc: string };
+    db.run(
+      'UPDATE steps SET doc = ? WHERE run_id = ?',
+      '{ not json',
+      run.runId
     );
-    if (!stepFile) throw new Error('Expected a step file');
-    const stepPath = path.join(stepsDir, stepFile);
-    const original = await fs.readFile(stepPath, 'utf8');
-    await fs.writeFile(stepPath, '{ not json');
 
     const first = await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
     expect(first?.results).toEqual([
@@ -310,14 +250,17 @@ describe('runs.deleteDataMany (world-local)', () => {
       },
     ]);
     expect(first?.summary.failed).toBe(1);
+    // One transaction: the run itself was not marked deleted either.
+    const untouched = await storage.runs.get(run.runId);
+    expect(untouched.expiredAt).toBeUndefined();
+    expect(untouched.output).toEqual(RUN_OUTPUT);
 
-    await fs.writeFile(stepPath, original);
+    db.run('UPDATE steps SET doc = ? WHERE run_id = ?', doc, run.runId);
     const retry = await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
-    expect(retry?.results).toEqual([
-      { runId: run.runId, outcome: 'already_deleted' },
-    ]);
+    expect(retry?.results).toEqual([{ runId: run.runId, outcome: 'deleted' }]);
     const steps = await storage.steps.list({ runId: run.runId });
     expect(steps.data[0].output).toBeUndefined();
+    expect((await storage.runs.get(run.runId)).output).toBeUndefined();
   });
 
   it('rejects an empty, duplicated or oversized request', async () => {

@@ -1,34 +1,26 @@
-import path from 'node:path';
-import type { Event, WorkflowRun } from '@workflow/world';
+/**
+ * Zero retention (`experimental_retention: 0`, the `$retention: '0'`
+ * attribute): once a run finishes, its user data goes and the run stays
+ * listable.
+ *
+ * The run's own payloads are dropped in the write that makes it terminal
+ * (`withRunPayloadsPurged` in `events-storage.ts`); everything else it owns
+ * (step payloads, event payloads, hook metadata, stream chunks) is scrubbed
+ * by `purgeRunData` in the same transaction, so a purged run is never
+ * observable with any of its data left. The connection zeroes freed pages
+ * (`secure_delete`), and the WAL, which still holds the old pages, is
+ * checkpointed and truncated right after the purge commits.
+ */
+
+import type { Event, Hook, Step } from '@workflow/world';
 import {
-  EventSchema,
   getEventDataRefFields,
   RETENTION_ATTRIBUTE,
   readRunRetention,
 } from '@workflow/world';
-import { z } from 'zod';
-import {
-  listJSONFiles,
-  readJSON,
-  runEntityDir,
-  taggedPath,
-  writeJSON,
-} from '../fs.js';
-import { purgeRunStreamData } from '../streamer.js';
-import { ensureHookIndexes, listHookByRunMarkers } from './hook-index.js';
+import { decode, encode } from '../db/codec.js';
+import type { Database } from '../db/index.js';
 
-/**
- * Whether a finished run asked for its user data to be deleted now.
- *
- * The decision itself is `@workflow/world`'s {@link readRunRetention}, shared
- * with every other World that implements retention — two independently
- * written parsers can drift, and drift here means one World deleting a run
- * another keeps.
- *
- * What this World adds is the warning. An unrecognized value is a rollout
- * problem (an SDK speaking a dialect this version predates), and a dev
- * server's output is where a developer can still notice it.
- */
 export function purgesUserDataOnFinish(
   attributes: Record<string, string> | undefined
 ): boolean {
@@ -42,232 +34,90 @@ export function purgesUserDataOnFinish(
   return retention.mode === 'none';
 }
 
-/**
- * The run's half of a zero-retention purge: its own payloads dropped and the
- * retention boundary moved onto it, as one value the caller writes in one
- * atomic file replace.
- *
- * Both halves ride the same write on purpose. `expiredAt` is the marker the
- * CLI and the web UI gate their `<data expired>` rendering on, so it is what
- * makes the deletion legible rather than silent — a reader that finds an
- * absent `output` and no boundary cannot tell "purged" from "never had one".
- * Landing them together means no reader can see one without the other.
- */
-export function withRunPayloadsPurged<T extends WorkflowRun>(
-  run: T,
-  purgedAt: Date
-): T {
-  return {
-    ...run,
-    input: undefined,
-    output: undefined,
-    error: undefined,
-    // A dynamic run's stored workflow code is application source, and as
-    // much user data as the input it ran on. The run is terminal, so nothing
-    // replays it again.
-    dynamicWorkflowCode: undefined,
-    // A start Hook's metadata is user data too; the token and its retention
-    // are not, and a retained start Hook still needs them.
-    ...(run.startHook?.metadata !== undefined && {
-      startHook: { ...run.startHook, metadata: undefined },
-    }),
-    expiredAt: purgedAt,
-  };
-}
-
-/**
- * Delete the user payloads a finished zero-retention run left outside its own
- * row: its steps' input/output/error, its events' payloads, the metadata on
- * any hook that outlived it, and its streams' contents.
- *
- * Call this only *after* the run's own boundary write (see
- * {@link withRunPayloadsPurged}) has landed, and after the terminal event has
- * been published — that event carries the run's output, so purging before it
- * is in the log would leave behind the one copy that matters.
- *
- * **The entities themselves are kept.** Only user data goes, so a purged run
- * stays listable and its history stays walkable, which is the contract the
- * Vercel World holds to as well.
- *
- * Every step is idempotent and independently fallible: a file that cannot be
- * scrubbed is logged and skipped rather than thrown. This runs after the run
- * is already terminal and nothing will retry it, so one unreadable file must
- * not stop the rest of the purge — and must never fail the run itself.
- * An explicit deletion can collect these failures through `onError`.
- */
-export async function purgeRunEntityData(
-  basedir: string,
-  runId: string,
-  tag: string | undefined,
-  onError?: (error: unknown) => void
-): Promise<void> {
-  await Promise.all([
-    scrubEntityFiles(
-      path.join(basedir, runEntityDir('steps', runId)),
+/** Scrubs a finished run's user data. Runs inside a transaction. */
+export function purgeRunData(db: Database, runId: string): void {
+  for (const row of db.all<{ step_id: string; doc: string }>(
+    'SELECT step_id, doc FROM steps WHERE run_id = ?',
+    runId
+  )) {
+    const step = decode<Step>(row.doc);
+    step.input = undefined as never;
+    step.output = undefined;
+    step.error = undefined;
+    db.run(
+      'UPDATE steps SET doc = ? WHERE run_id = ? AND step_id = ?',
+      encode(step),
       runId,
-      (step) => {
-        step.input = undefined;
-        step.output = undefined;
-        step.error = undefined;
-      },
-      onError
-    ),
-    scrubEntityFiles(
-      path.join(basedir, runEntityDir('events', runId)),
+      row.step_id
+    );
+  }
+
+  for (const row of db.all<{ seq: number; doc: string }>(
+    'SELECT seq, doc FROM events WHERE run_id = ?',
+    runId
+  )) {
+    const event = decode<Event & { eventData?: Record<string, unknown> }>(
+      row.doc
+    );
+    const eventData = event.eventData;
+    if (!eventData || typeof eventData !== 'object') continue;
+    for (const field of getEventDataRefFields(String(event.eventType))) {
+      delete eventData[field];
+    }
+    if (
+      event.eventType === 'run_created' ||
+      event.eventType === 'run_started'
+    ) {
+      delete eventData.dynamicWorkflowCode;
+      delete eventData.dynamicWorkflowCodeRef;
+      // A start Hook's metadata is user data; its token and retention are not.
+      const startHook = eventData.startHook as
+        | Record<string, unknown>
+        | undefined;
+      if (startHook && typeof startHook === 'object') delete startHook.metadata;
+    }
+    db.run(
+      'UPDATE events SET doc = ? WHERE run_id = ? AND seq = ?',
+      encode(event),
       runId,
-      purgeEventPayloads,
-      onError
-    ),
-    scrubHookMetadata(basedir, runId, onError),
-    purgeRunStreamData(basedir, runId, tag, onError),
-  ]);
-}
+      row.seq
+    );
+  }
 
-/** Scrub the same payload fields from a disk record or a detached event read. */
-export function purgeEventPayloads(event: {
-  eventType?: unknown;
-  eventData?: unknown;
-}): void {
-  const eventData = event.eventData;
-  if (!eventData || typeof eventData !== 'object') return;
-  for (const field of getEventDataRefFields(String(event.eventType))) {
-    delete (eventData as Record<string, unknown>)[field];
+  // A hook kept for its token's retention keeps its token, not its payload.
+  for (const row of db.all<{ hook_id: string; doc: string }>(
+    'SELECT hook_id, doc FROM hooks WHERE run_id = ?',
+    runId
+  )) {
+    const hook = decode<Hook>(row.doc);
+    hook.metadata = undefined;
+    db.run(
+      'UPDATE hooks SET doc = ? WHERE hook_id = ?',
+      encode(hook),
+      row.hook_id
+    );
   }
-  if (event.eventType === 'run_created' || event.eventType === 'run_started') {
-    delete (eventData as Record<string, unknown>).dynamicWorkflowCode;
-    delete (eventData as Record<string, unknown>).dynamicWorkflowCodeRef;
-    // A start Hook's metadata is user data; its token and retention
-    // are not.
-    const startHook = (eventData as { startHook?: unknown }).startHook;
-    if (startHook && typeof startHook === 'object') {
-      delete (startHook as Record<string, unknown>).metadata;
-    }
-  }
+
+  purgeRunStreams(db, runId);
 }
 
 /**
- * The file exactly as it was written.
- *
- * Deliberately not the entity's own Zod schema: a schema round-trip strips
- * every key the schema does not declare, and a purge has no business
- * rewriting anything but the payload keys it was asked to remove.
+ * Drops a run's stream chunks and leaves each stream an end-of-stream
+ * marker at index 0, so a purged stream reads as empty and done rather than
+ * as one still being written.
  */
-const RawEntitySchema = z.record(z.string(), z.any());
-
-/**
- * `EventSchema`, tolerant of a zero-retention purge having deleted an
- * event's ref field (`eventData.input`/`result`/`error`/`payload`, see
- * {@link getEventDataRefFields}) outright.
- *
- * `scrubEntityFiles` above deletes the key rather than writing it back as an
- * explicit `undefined`, because JSON has no way to represent "present but
- * undefined" and a schema round-trip would drop it either way. A *missing*
- * key and a key *present with value `undefined`* are different things to
- * Zod, though: a required field whose own schema tolerates `undefined`
- * (`SerializedDataSchema`'s trailing `z.any()`) only accepts the latter.
- * Every read of a stored event goes through this schema instead of the bare
- * `EventSchema` so a purged run's log stays parseable, while `EventSchema`
- * itself stays strict for the create-time contract (`CreateEventSchema`
- * shares the same per-type schemas, and a run genuinely being created must
- * still supply `input`).
- */
-export const ReadEventSchema: z.ZodType<Event> = z.preprocess((raw) => {
-  if (
-    raw &&
-    typeof raw === 'object' &&
-    'eventType' in raw &&
-    'eventData' in raw
-  ) {
-    const eventData = (raw as { eventData: unknown }).eventData;
-    if (eventData && typeof eventData === 'object') {
-      for (const field of getEventDataRefFields(
-        String((raw as { eventType: unknown }).eventType)
-      )) {
-        if (!(field in eventData)) {
-          (eventData as Record<string, unknown>)[field] = undefined;
-        }
-      }
-    }
-  }
-  return raw;
-}, EventSchema);
-
-/** Rewrite every file in `directory` belonging to `runId` with `scrub` applied. */
-async function scrubEntityFiles(
-  directory: string,
-  runId: string,
-  scrub: (raw: Record<string, any>) => void,
-  onError?: (error: unknown) => void
-): Promise<void> {
-  let fileIds: string[];
-  try {
-    fileIds = await listJSONFiles(directory);
-  } catch (error) {
-    logPurgeFailure(directory, error);
-    onError?.(error);
-    return;
-  }
-  for (const fileId of fileIds) {
-    // Tags are ignored when matching, the way terminal wait cleanup already
-    // does it: a tag says which World instance wrote the file, not whose data
-    // it holds, and every file under this run's id holds this run's data.
-    if (!fileId.startsWith(`${runId}-`)) continue;
-    const filePath = path.join(directory, `${fileId}.json`);
-    try {
-      const raw = await readJSON(filePath, RawEntitySchema);
-      if (!raw) continue;
-      scrub(raw);
-      await writeJSON(filePath, raw, { overwrite: true });
-    } catch (error) {
-      logPurgeFailure(filePath, error);
-      onError?.(error);
-    }
-  }
-}
-
-/**
- * Drop the metadata from any hook still standing after terminal cleanup.
- *
- * Most of a run's hooks are deleted outright when it finishes, but one whose
- * `tokenRetentionUntil` has not elapsed is deliberately kept so its token
- * stays reserved. Keeping the reservation does not mean keeping the payload,
- * so the entity stays and its metadata goes.
- */
-async function scrubHookMetadata(
-  basedir: string,
-  runId: string,
-  onError?: (error: unknown) => void
-): Promise<void> {
-  let markers: Awaited<ReturnType<typeof listHookByRunMarkers>>;
-  try {
-    await ensureHookIndexes(basedir);
-    markers = await listHookByRunMarkers(basedir, runId);
-  } catch (error) {
-    logPurgeFailure(`hooks of ${runId}`, error);
-    onError?.(error);
-    return;
-  }
-  for (const marker of markers) {
-    // A marker whose body could not be read names no hook to scrub. Terminal
-    // cleanup leaves those alone too; deleting one here would be the purge
-    // guessing at data it cannot see.
-    if (!marker.hookId) continue;
-    try {
-      const hookPath = taggedPath(basedir, 'hooks', marker.hookId, marker.tag);
-      const hook = await readJSON(hookPath, RawEntitySchema);
-      if (!hook || hook.runId !== runId) continue;
-      hook.metadata = undefined;
-      await writeJSON(hookPath, hook, { overwrite: true });
-    } catch (error) {
-      logPurgeFailure(marker.hookId, error);
-      onError?.(error);
-    }
-  }
-}
-
-function logPurgeFailure(target: string, error: unknown): void {
-  console.warn(
-    `[world-local] Failed to purge user data for ${target}:`,
-    error instanceof Error ? error.message : error
+export function purgeRunStreams(db: Database, runId: string): void {
+  const names = db.all<{ name: string; tag: string | null }>(
+    'SELECT DISTINCT name, tag FROM stream_chunks WHERE run_id = ?',
+    runId
   );
+  db.run('DELETE FROM stream_chunks WHERE run_id = ?', runId);
+  for (const { name, tag } of names) {
+    db.run(
+      'INSERT INTO stream_chunks (name, idx, run_id, tag, data, eof) VALUES (?, 0, ?, ?, NULL, 1)',
+      name,
+      runId,
+      tag
+    );
+  }
 }

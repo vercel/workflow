@@ -70,7 +70,14 @@ describe('Run metadata getters', () => {
       expect(filtered.input).toBeUndefined();
       expect(filtered.output).toBeUndefined();
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, {
+        recursive: true,
+        force: true,
+        // Windows: world-local closes its connection to the database a moment
+        // after the last operation; until then the file cannot be deleted.
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     }
   });
 

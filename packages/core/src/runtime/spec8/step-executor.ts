@@ -56,7 +56,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../../types.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -134,7 +134,8 @@ export interface StepExecutorParams {
    * surfaces as `EntityConflictError` → `{ type: 'skipped' }`, so a handler
    * that did not win the create never runs the body. Omitted on every other
    * path, where the step already has a `step_created` and `step_started`
-   * carries no payload (the legacy contract).
+   * carries no payload (the legacy contract). See
+   * `./lazy-inline-step-start.md`.
    */
   lazyStepInput?: SerializedData;
   /**
@@ -373,7 +374,7 @@ export async function executeStep(
   // requestId as analytics `vercelId`, while computeInstanceId identifies the
   // worker that executed the step.
   const stepStartedEventParams: CreateEventParams = {
-    computeInstanceId: COMPUTE_INSTANCE_ID,
+    computeInstanceId: getComputeInstanceId(),
     ...(params.requestId ? { requestId: params.requestId } : {}),
   };
 

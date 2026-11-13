@@ -10,7 +10,7 @@ related:
   - /docs/api-reference/workflow-errors/workflow-not-registered-error
 ---
 
-This error occurs when the Workflow runtime tries to execute a workflow function that is not registered in the current deployment. When this happens, the run fails with a `RUNTIME_ERROR` error code.
+This error occurs when the Workflow runtime tries to execute a workflow function that is not registered in the current deployment. When this happens, the run fails with the `WORKFLOW_NOT_REGISTERED` error code. Runs that failed on SDK versions before this code was introduced recorded `RUNTIME_ERROR` instead.
 
 ## Error message
 

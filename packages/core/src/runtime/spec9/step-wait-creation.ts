@@ -27,7 +27,7 @@ import {
   dehydrateStepArguments,
   dehydrateStepError,
 } from '../../serialization.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   CREATION_EVENT_META_ALLOWANCE_BYTES,
   MAX_BATCH_EVENTS,
@@ -497,7 +497,7 @@ async function writeAll(
     for (const [index, chunk] of chunks.entries()) {
       const batch: BatchEventRequest[] = chunk.map((event) =>
         event.eventType === 'step_started'
-          ? { event, computeInstanceId: COMPUTE_INSTANCE_ID }
+          ? { event, computeInstanceId: getComputeInstanceId() }
           : { event }
       );
       const eventCount = params.eventCount();
@@ -590,7 +590,7 @@ async function writeAll(
     try {
       result = await writer.create(event, {
         ...(event.eventType === 'step_started'
-          ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+          ? { computeInstanceId: getComputeInstanceId() }
           : {}),
         ...(params.requestId ? { requestId: params.requestId } : {}),
         ...(eventCount !== undefined ? { eventCount } : {}),
