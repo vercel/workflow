@@ -216,8 +216,20 @@ describe
           queued: true,
           hookToken: token,
         });
-        // Resume once the hook exists (the run has suspended on it); until
-        // then the route answers with the resume's not-found error.
+        // Resume once the run has suspended on the hook and its delivery has
+        // exited: a delivery still running when the hook is received may
+        // take the resume itself (it is the run's orchestrator), which is
+        // correct but is not the inline wake under test.
+        for (let i = 0; i < 60; i++) {
+          const log = await request<RunAnswer<unknown>>(
+            `/api/inline-start/run/${started.runId}?waitMs=0`
+          );
+          if (log.events.some((e) => e.eventType === 'hook_created')) break;
+          await sleep(500);
+        }
+        await sleep(5_000);
+        // Until the hook exists the route answers with the resume's
+        // not-found error.
         let resumed: { instance: string; resumedAt: number } | undefined;
         let lastError: unknown;
         for (let i = 0; i < 60 && !resumed; i++) {

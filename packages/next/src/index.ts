@@ -751,11 +751,17 @@ export function withWorkflow(
 
     // `start()` and `resumeHook()` load `@workflow/core/inline-entry` to run
     // a run's orchestrator delivery inline (on a World that can hold queue
-    // messages). For Node.js server code it is the generated flow route, so
-    // every server Function that can start or resume a run carries the app's
-    // workflows, steps and orchestrator handler; browser and edge code keep
-    // the empty default module, as does any process `start()` never asks.
-    const inlineEntry = inlineEntryTarget(workingDir, experimentalRoutePrefix);
+    // messages). For Node.js server code in a production build it is the
+    // generated flow route, so every server Function that can start or resume
+    // a run carries the app's workflows, steps and orchestrator handler;
+    // browser and edge code keep the empty default module. Not in `next dev`:
+    // it runs on the local World, which never holds a message, and carrying
+    // the flow route in every dev compilation would only slow it down and
+    // widen what an edit recompiles.
+    const inlineEntry =
+      phase === 'phase-development-server'
+        ? undefined
+        : inlineEntryTarget(workingDir, experimentalRoutePrefix);
     // Turbopack resolves a relative alias against the project directory.
     const toTurbopackPath = (path: string) =>
       `./${relative(workingDir, path).replace(/\\/g, '/')}`;
