@@ -1,15 +1,13 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import type { Event } from '@workflow/world';
-import { createElement, type ReactNode } from 'react';
+import { createElement } from 'react';
 import { SWRConfig } from 'swr';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaginatedResult, ServerActionResult } from '~/lib/types';
 import { useEventsListData } from './use-events-list-data';
 
-// Marks rows hydrated with a key, so a test can tell which read produced them.
 vi.mock('@workflow/web-shared', () => ({
-  hydrateResourceIOAsync: async <T>(value: T, key?: Uint8Array): Promise<T> =>
-    key ? { ...value, decrypted: true } : value,
+  hydrateResourceIOAsync: async <T>(value: T): Promise<T> => value,
 }));
 
 vi.mock('~/lib/rpc-client', () => ({
@@ -23,7 +21,8 @@ import { fetchEvents } from '~/lib/rpc-client';
 type EventsResponse = ServerActionResult<PaginatedResult<Event>>;
 
 interface Props {
-  enabled?: boolean;
+  /** Whether the Events tab is selected. Defaults to true. */
+  active?: boolean;
   sortOrder?: 'asc' | 'desc';
   encryptionKey?: Uint8Array;
 }
@@ -62,14 +61,32 @@ function deferred<T>() {
 
 const ids = (events: Event[]) => events.map((e) => e.eventId);
 
-/** Renders the hook against its own SWR cache, so tests share no pages. */
+/**
+ * Renders the hook in a tab that is mounted only while `active`, under a page
+ * that stays, as the run page does. Each call gets its own SWR cache.
+ */
 function renderEventsList(initialProps: Props = {}) {
   const cache = new Map();
-  return renderHook((props: Props) => useEventsListData(env, 'run-1', props), {
-    initialProps,
-    wrapper: ({ children }: { children: ReactNode }) =>
-      createElement(SWRConfig, { value: { provider: () => cache } }, children),
-  });
+  const swrConfig = { provider: () => cache };
+  const result = {} as { current: ReturnType<typeof useEventsListData> };
+
+  function Tab(options: Omit<Props, 'active'>) {
+    result.current = useEventsListData(env, 'run-1', options);
+    return null;
+  }
+  function Page({ active = true, ...options }: Props) {
+    return createElement(
+      SWRConfig,
+      { value: swrConfig },
+      active ? createElement(Tab, options) : null
+    );
+  }
+
+  const view = render(createElement(Page, initialProps));
+  return {
+    result,
+    rerender: (props: Props) => view.rerender(createElement(Page, props)),
+  };
 }
 
 describe('useEventsListData', () => {
@@ -86,8 +103,8 @@ describe('useEventsListData', () => {
 
     const reread = deferred<EventsResponse>();
     vi.mocked(fetchEvents).mockReturnValueOnce(reread.promise);
-    rerender({ enabled: false });
-    rerender({ enabled: true });
+    rerender({ active: false });
+    rerender({ active: true });
 
     expect(fetchEvents).toHaveBeenCalledTimes(2);
     expect(ids(result.current.events)).toEqual(['event-1']);
@@ -138,8 +155,8 @@ describe('useEventsListData', () => {
     vi.mocked(fetchEvents)
       .mockResolvedValueOnce(page(['event-1'], 'reread-cursor-1'))
       .mockResolvedValueOnce(page(['event-3']));
-    rerender({ enabled: false });
-    rerender({ enabled: true });
+    rerender({ active: false });
+    rerender({ active: true });
 
     await waitFor(() =>
       expect(ids(result.current.events)).toEqual(['event-1', 'event-3'])
@@ -158,8 +175,8 @@ describe('useEventsListData', () => {
     vi.mocked(fetchEvents)
       .mockReturnValueOnce(reread.promise)
       .mockResolvedValueOnce(page(['event-2']));
-    rerender({ enabled: false });
-    rerender({ enabled: true });
+    rerender({ active: false });
+    rerender({ active: true });
 
     act(() => result.current.loadMore());
     expect(fetchEvents).toHaveBeenCalledTimes(2);
@@ -186,8 +203,8 @@ describe('useEventsListData', () => {
     );
 
     vi.mocked(fetchEvents).mockResolvedValueOnce(failure('boom'));
-    rerender({ enabled: false });
-    rerender({ enabled: true });
+    rerender({ active: false });
+    rerender({ active: true });
 
     await waitFor(() => expect(result.current.error?.message).toBe('boom'));
     expect(ids(result.current.events)).toEqual(['event-1']);
@@ -224,8 +241,8 @@ describe('useEventsListData', () => {
     const { result, rerender } = renderEventsList();
     expect(result.current.loading).toBe(true);
 
-    rerender({ enabled: false });
-    rerender({ enabled: true });
+    rerender({ active: false });
+    rerender({ active: true });
     expect(result.current.loading).toBe(true);
 
     await act(async () => firstLoad.resolve(failure('boom')));
@@ -252,29 +269,46 @@ describe('useEventsListData', () => {
     vi.mocked(fetchEvents).mockResolvedValueOnce(
       page(['desc-1'], 'desc-cursor-1')
     );
-    rerender({ sortOrder: 'desc', enabled: false });
-    rerender({ sortOrder: 'desc', enabled: true });
+    rerender({ sortOrder: 'desc', active: false });
+    rerender({ sortOrder: 'desc', active: true });
     expect(result.current.loading).toBe(true);
 
     await waitFor(() => expect(ids(result.current.events)).toEqual(['desc-1']));
     expect(fetchEvents).toHaveBeenCalledTimes(4);
   });
 
-  it('reads the loaded pages again when a decryption key arrives', async () => {
+  it('reads a restored query again when the sort order returns to it', async () => {
+    vi.mocked(fetchEvents)
+      .mockResolvedValueOnce(page(['asc-1']))
+      .mockResolvedValueOnce(page(['desc-1']));
+    const { result, rerender } = renderEventsList({ sortOrder: 'asc' });
+    await waitFor(() => expect(ids(result.current.events)).toEqual(['asc-1']));
+    rerender({ sortOrder: 'desc' });
+    await waitFor(() => expect(ids(result.current.events)).toEqual(['desc-1']));
+
+    const reread = deferred<EventsResponse>();
+    vi.mocked(fetchEvents).mockReturnValueOnce(reread.promise);
+    rerender({ sortOrder: 'asc' });
+
+    expect(ids(result.current.events)).toEqual(['asc-1']);
+    expect(result.current.loading).toBe(false);
+    expect(fetchEvents).toHaveBeenCalledTimes(3);
+
+    await act(async () => reread.resolve(page(['asc-2'])));
+    await waitFor(() => expect(ids(result.current.events)).toEqual(['asc-2']));
+  });
+
+  it('reads nothing again when a decryption key arrives', async () => {
     vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1']));
     const { result, rerender } = renderEventsList();
     await waitFor(() =>
-      expect(result.current.events).toEqual([event('event-1')])
+      expect(ids(result.current.events)).toEqual(['event-1'])
     );
 
-    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1']));
     rerender({ encryptionKey: new Uint8Array([1]) });
+    await act(async () => {});
 
-    await waitFor(() =>
-      expect(result.current.events).toEqual([
-        { ...event('event-1'), decrypted: true },
-      ])
-    );
-    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+    expect(ids(result.current.events)).toEqual(['event-1']);
   });
 });

@@ -204,22 +204,8 @@ describe('useInfiniteList', () => {
     expect(result.current.error?.message).toBe('boom');
   });
 
-  it('fetches nothing for a null key', async () => {
-    const fetchFn =
-      vi.fn<(cursor?: string) => Promise<PaginatedResult<Item>>>();
-
-    const { result } = renderHook(
-      () => useInfiniteList(null, fetchFn, getKey),
-      { wrapper: makeWrapper() }
-    );
-    await act(async () => {});
-
-    expect(fetchFn).not.toHaveBeenCalled();
-    expect(result.current.items).toEqual([]);
-    expect(result.current.isLoading).toBe(false);
-  });
-
-  it('revalidate refetches every loaded page in place', async () => {
+  it('revalidateCached refetches every cached page in place on remount', async () => {
+    const cache = new Map();
     let resolveFirstPage!: (page: PaginatedResult<Item>) => void;
     const fetchFn = vi
       .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
@@ -231,24 +217,26 @@ describe('useInfiniteList', () => {
         })
       )
       .mockResolvedValueOnce(page(['c'], { hasMore: false }));
+    const mount = () =>
+      renderHook(
+        () =>
+          useInfiniteList('k1', fetchFn, getKey, { revalidateCached: true }),
+        { wrapper: makeWrapper(cache) }
+      );
 
-    const { result } = renderHook(
-      () => useInfiniteList('k1', fetchFn, getKey),
-      { wrapper: makeWrapper() }
-    );
+    const first = mount();
     await waitFor(() =>
-      expect(result.current.items.map(getKey)).toEqual(['a'])
+      expect(first.result.current.items.map(getKey)).toEqual(['a'])
     );
     act(() => {
-      result.current.loadMore();
+      first.result.current.loadMore();
     });
     await waitFor(() =>
-      expect(result.current.items.map(getKey)).toEqual(['a', 'b'])
+      expect(first.result.current.items.map(getKey)).toEqual(['a', 'b'])
     );
 
-    act(() => {
-      result.current.revalidate();
-    });
+    first.unmount();
+    const { result } = mount();
 
     // The rows stay on screen while both pages are read again.
     expect(result.current.items.map(getKey)).toEqual(['a', 'b']);
@@ -265,20 +253,15 @@ describe('useInfiniteList', () => {
     expect(fetchFn).toHaveBeenLastCalledWith('c2');
   });
 
-  it('revalidate does nothing until a page has loaded', async () => {
+  it('revalidateCached fetches a key with nothing cached once', async () => {
     const fetchFn = vi
       .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
       .mockReturnValue(new Promise(() => {}));
 
-    const { result } = renderHook(
-      () => useInfiniteList('k1', fetchFn, getKey),
+    renderHook(
+      () => useInfiniteList('k1', fetchFn, getKey, { revalidateCached: true }),
       { wrapper: makeWrapper() }
     );
-    await waitFor(() => expect(fetchFn).toHaveBeenCalledTimes(1));
-
-    act(() => {
-      result.current.revalidate();
-    });
     await act(async () => {});
 
     expect(fetchFn).toHaveBeenCalledTimes(1);

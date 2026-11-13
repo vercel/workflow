@@ -6,7 +6,7 @@ import type {
 } from '@workflow/web-shared';
 import { hydrateResourceIOAsync } from '@workflow/web-shared';
 import type { Event } from '@workflow/world';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import {
   unwrapOrThrow,
   unwrapServerActionResult,
@@ -42,12 +42,11 @@ export function useEventsListData(
   runId: string,
   options: {
     sortOrder?: 'asc' | 'desc';
+    /** Used when hydrating exact-ID search results. */
     encryptionKey?: Uint8Array;
-    /** When false, defers fetching until enabled. Defaults to true. */
-    enabled?: boolean;
   } = {}
 ) {
-  const { sortOrder = 'asc', encryptionKey, enabled = true } = options;
+  const { sortOrder = 'asc', encryptionKey } = options;
 
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
@@ -57,37 +56,28 @@ export function useEventsListData(
     return Promise.all(rawEvents.map((ev) => hydrateResourceIOAsync(ev, key)));
   }, []);
 
+  // Rows are listed without payloads (`withData: false`), so there is nothing
+  // in them to hydrate or decrypt.
   const fetchPage = useCallback(
-    async (cursor?: string) => {
-      const page = await unwrapOrThrow(
+    (cursor?: string) =>
+      unwrapOrThrow(
         fetchEvents(env, runId, {
           cursor,
           sortOrder,
           limit: PAGE_SIZE,
           withData: false,
         })
-      );
-      return { ...page, data: await hydrateEvents(page.data) };
-    },
-    [env, runId, sortOrder, hydrateEvents]
+      ),
+    [env, runId, sortOrder]
   );
 
-  // Pages are cached per query, so re-entering the tab restores the rows it
-  // had loaded. A query seen for the first time starts empty.
-  const listKey = enabled ? `run-events:${runId}:${sortOrder}` : null;
-  const list = useInfiniteList(listKey, fetchPage, getEventId, {
-    keepPreviousData: false,
-  });
-
-  // How the rows on screen were read: the query, and whether a key was there
-  // to decrypt them. Restored rows may be stale, and rows read before the key
-  // arrived were hydrated without it, so a change reads them again in place.
-  const reading =
-    listKey && `${listKey}:${encryptionKey ? 'decrypted' : 'encrypted'}`;
-  const { revalidate } = list;
-  useEffect(() => {
-    if (reading) revalidate();
-  }, [reading, revalidate]);
+  // Rows restored from the cache may be stale. A new query starts empty.
+  const list = useInfiniteList(
+    `run-events:${runId}:${sortOrder}`,
+    fetchPage,
+    getEventId,
+    { keepPreviousData: false, revalidateCached: true }
+  );
 
   const searchByExactId = useCallback(
     async (

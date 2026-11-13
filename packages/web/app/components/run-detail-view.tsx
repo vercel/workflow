@@ -3,7 +3,6 @@ import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
-  EventListView,
   hydrateResourceIOAsync,
   type SidebarDataContextValue,
   StreamViewer,
@@ -26,6 +25,7 @@ import {
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
+import { RunEventsTab } from '~/components/run-events-tab';
 import { RunLimitGuidanceAlert } from '~/components/run-limit-guidance-alert';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
 import {
@@ -48,7 +48,6 @@ import {
 } from '~/components/ui/breadcrumb';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import { useCancellationReason } from '~/lib/client/hooks/use-cancellation-reason';
-import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
@@ -341,20 +340,8 @@ export function RunDetailView({
   const [encryptionKey, setEncryptionKey] = useState<Uint8Array | null>(null);
   encryptionKeyRef.current = encryptionKey;
 
-  // Separate event fetching for the Events tab with user-controlled sort order
+  // The Events tab's sort order, held here so it survives leaving the tab.
   const [eventsSortOrder, setEventsSortOrder] = useState<'asc' | 'desc'>('asc');
-  const {
-    events: eventsListData,
-    loading: eventsListLoading,
-    hasMore: hasMoreEventsTab,
-    loadingMore: loadingMoreEventsTab,
-    loadMore: loadMoreEventsTab,
-    searchByExactId,
-  } = useEventsListData(env, runId, {
-    sortOrder: eventsSortOrder,
-    encryptionKey: encryptionKey ?? undefined,
-    enabled: activeTab === 'events',
-  });
 
   const fetchSpanDetail = useCallback<FetchSpanDetail>(
     (selection) =>
@@ -773,21 +760,17 @@ export function RunDetailView({
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
                 <div className="h-full">
-                  <EventListView
-                    events={eventsListData}
+                  <RunEventsTab
+                    env={env}
+                    runId={runId}
                     run={run}
                     onLoadEventData={handleLoadEventData}
-                    hasMoreEvents={hasMoreEventsTab}
-                    isLoadingMoreEvents={loadingMoreEventsTab}
-                    onLoadMoreEvents={loadMoreEventsTab}
                     encryptionKey={encryptionKey ?? undefined}
-                    isLoading={eventsListLoading}
                     sortOrder={eventsSortOrder}
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
-                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>
