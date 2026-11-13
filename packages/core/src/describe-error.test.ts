@@ -4,6 +4,7 @@ import {
   SerializationError,
   StepNotRegisteredError,
   WorkflowDeploymentMismatchError,
+  WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { describe, expect, test } from 'vitest';
@@ -78,6 +79,23 @@ describe('describeError', () => {
     const result = describeError(new StepNotRegisteredError('missingStep'));
     expect(result.attribution).toBe('sdk');
     expect(result.errorCode).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+  });
+
+  test('WorkflowNotRegisteredError gets WORKFLOW_NOT_REGISTERED and a targeting hint', () => {
+    const result = describeError(new WorkflowNotRegisteredError('missingWf'));
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED);
+    expect(result.hint).toContain('does not have its workflow registered');
+  });
+
+  test('persisted WORKFLOW_NOT_REGISTERED code keeps its code and hint', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED,
+      errorName: 'WorkflowNotRegisteredError',
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED);
+    expect(result.hint).toContain('does not have its workflow registered');
   });
 
   test('REPLAY_TIMEOUT via precomputed errorCode is attributed to the SDK', () => {

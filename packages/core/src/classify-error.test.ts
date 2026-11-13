@@ -45,10 +45,19 @@ describe('classifyRunError', () => {
     ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
   });
 
-  it('classifies WorkflowNotRegisteredError as RUNTIME_ERROR', () => {
+  it('classifies WorkflowNotRegisteredError as WORKFLOW_NOT_REGISTERED', () => {
     expect(classifyRunError(new WorkflowNotRegisteredError('myWorkflow'))).toBe(
-      RUN_ERROR_CODES.RUNTIME_ERROR
+      RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED
     );
+  });
+
+  it('classifies a cross-realm WorkflowNotRegisteredError by name as WORKFLOW_NOT_REGISTERED', () => {
+    // Errors thrown inside the workflow VM are a different realm's class, so
+    // classification must rely on the name, not instanceof.
+    const err = Object.assign(new Error('is not registered'), {
+      name: 'WorkflowNotRegisteredError',
+    });
+    expect(classifyRunError(err)).toBe(RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED);
   });
 
   it('classifies WorkflowDeploymentMismatchError as DEPLOYMENT_MISMATCH', () => {
