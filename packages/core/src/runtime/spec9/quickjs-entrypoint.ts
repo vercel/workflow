@@ -60,7 +60,7 @@ import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
 import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
@@ -2129,7 +2129,7 @@ export async function runWorkflowWithQuickJS(params: {
       events.map((event) => ({
         event,
         occurredAt,
-        computeInstanceId: COMPUTE_INSTANCE_ID,
+        computeInstanceId: getComputeInstanceId(),
       })),
       {
         ...logView.snapshotParams(),
@@ -2322,7 +2322,7 @@ export async function runWorkflowWithQuickJS(params: {
   ): Promise<CallerStart> => {
     const postSentAtMs = Date.now();
     const written = await createEvent(inlineCreationEvent(step, input), {
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
       ...(requestId ? { requestId } : {}),
     });
     return {

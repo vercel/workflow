@@ -1,0 +1,62 @@
+{
+  "name": "@workflow/world-cloudflare",
+  "version": "0.0.0",
+  "description": "Experimental Workflow World for Cloudflare Workers: each run is a Durable Object that stores and runs it",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-cloudflare"
+  },
+  "keywords": [
+    "workflow",
+    "cloudflare",
+    "durable-objects"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "default": "./dist/build.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run src",
+    "e2e:build": "node e2e/build.mjs",
+    "e2e:dev": "node e2e/build.mjs && wrangler dev --config e2e/wrangler.jsonc",
+    "test:e2e": "node e2e/build.mjs && vitest run --config e2e/vitest.config.ts"
+  },
+  "dependencies": {
+    "@workflow/builders": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "ulid": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "@workflow/world-sim": "workspace:*",
+    "esbuild": "catalog:",
+    "quickjs-wasi": "3.4.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "workflow": "workspace:*",
+    "wrangler": "4.146.0"
+  }
+}

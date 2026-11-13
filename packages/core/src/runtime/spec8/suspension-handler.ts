@@ -37,7 +37,7 @@ import {
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
 import {
   absorbSkippedSlotReport,
@@ -1320,7 +1320,7 @@ export async function handleSuspension({
               // the compute-instance attribution the single claim sends via
               // CreateEventParams.
               ...(entry.kind === 'inline-started'
-                ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+                ? { computeInstanceId: getComputeInstanceId() }
                 : {}),
             })),
             // Per-write request attribution, same as the single path's
