@@ -191,7 +191,7 @@ Dynamic workflows need a World that can store the run's workflow code.
 | World | Support |
 | --- | --- |
 | [Vercel](/worlds/vercel) | Encrypted, ref-backed storage (small definitions transported inline; large definitions uploaded first). If dynamic-source storage is not enabled for the project, the backend rejects the run's creation and `start()` throws. |
-| [Local](/worlds/local) | Stored in plaintext on the run record in the local filesystem store. |
+| [Local](/worlds/local) | Stored in plaintext on the run record in the Local World's SQLite database (`world.db`). |
 | [Postgres](/worlds/postgres) | Stored in plaintext on the run row. |
 | Others | Supported when the World declares [`capabilities.dynamicWorkflowCode`](/worlds/building-a-world). |
 

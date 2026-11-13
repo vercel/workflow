@@ -79,7 +79,7 @@ These break an existing v4 implementation. Each one is a signature or module-sha
 | `events.listByCorrelationId()` requires `runId` | A correlation ID identifies a step, hook, or wait within its run, not across runs, so the lookup is scoped to one run. Pass the run that owns the correlation ID. The same applies to `analytics.events.listByCorrelationId()`. A World that paginates by event ID also needs the scope in its cursor comparison because two runs can hold the same correlation ID. |
 | `createLocalWorld()` and `createVercelWorld()` removed | Export a `createWorld()` factory from your package instead, matching the first-party Worlds. The arguments are unchanged. |
 | Worlds are injected into host bundles at build time | Selection is static rather than resolved dynamically at runtime. Verify your World still resolves after the upgrade, and that its module graph survives bundling. |
-| `@workflow/world-local` stream chunks moved | Chunks live at `streams/chunks/<streamName>/`. Files written in the old flat layout are not read back, so local development state from 4.x can be deleted. Only relevant if your World inherited that layout. |
+| `@workflow/world-local` storage moved to SQLite | The Local World stores everything, including stream chunks, in one SQLite database, `world.db`, in its data directory. JSON files written by earlier releases are not read back, so you can delete that local development state. Only relevant if your World inherited the Local World's file layout. See [Data directory layout](/worlds/local#data-directory-layout). |
 
 ## Contract changes
 
