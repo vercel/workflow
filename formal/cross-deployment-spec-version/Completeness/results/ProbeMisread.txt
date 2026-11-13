@@ -1,0 +1,13 @@
+["has4916=false target=Responder.v4x caller=6: parsed=Parsed.invoke stamp=6 runnable=false",
+ "has4916=false target=Responder.v4x caller=7: parsed=Parsed.invoke stamp=6 runnable=false",
+ "has4916=false target=Responder.v4x caller=8: parsed=Parsed.invoke stamp=6 runnable=false",
+ "has4916=false target=Responder.v5x caller=6: parsed=Parsed.health stamp=6 runnable=true",
+ "has4916=false target=Responder.v5x caller=7: parsed=Parsed.health stamp=7 runnable=true",
+ "has4916=false target=Responder.v5x caller=8: parsed=Parsed.health stamp=8 runnable=true",
+ "has4916=true target=Responder.v4x caller=6: parsed=Parsed.health stamp=3 runnable=true",
+ "has4916=true target=Responder.v4x caller=7: parsed=Parsed.health stamp=3 runnable=true",
+ "has4916=true target=Responder.v4x caller=8: parsed=Parsed.health stamp=3 runnable=true",
+ "has4916=true target=Responder.v5x caller=6: parsed=Parsed.health stamp=6 runnable=true",
+ "has4916=true target=Responder.v5x caller=7: parsed=Parsed.health stamp=7 runnable=true",
+ "has4916=true target=Responder.v5x caller=8: parsed=Parsed.health stamp=8 runnable=true"]
+exit=0

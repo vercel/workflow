@@ -1,0 +1,1174 @@
+>>> a_main_before_4327
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> a_main_before_4327__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> a_main_before_4327__CallerCap
+    Model checking completed. No error has been found.
+    1224619 states generated, 444392 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> a_main_before_4327__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1224619 states generated, 444392 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> a_main_before_4327__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1224619 states generated, 444392 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> a_main_before_4327__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> a_main_before_4327__NoBrick
+    Error: Invariant NoBrick is violated.
+    20731 states generated, 1659 distinct states found, 1222 states left on queue.
+>>> a_main_before_4327__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    73171 states generated, 31985 distinct states found, 12465 states left on queue.
+>>> a_main_before_4327__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__NoStuck
+    Error: Invariant NoStuck is violated.
+    33407 states generated, 10730 distinct states found, 6056 states left on queue.
+>>> a_main_before_4327__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    161820 states generated, 74095 distinct states found, 24038 states left on queue.
+>>> a_main_before_4327__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__SingleRunCreated
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__NoOverRaise
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__CallerCanReadResult
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    83055 states generated, 35097 distinct states found, 6328 states left on queue.
+>>> a_main_before_4327__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    166463 states generated, 57628 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    166463 states generated, 57628 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    166463 states generated, 57628 distinct states found, 0 states left on queue.
+>>> a_main_before_4327__race_cancel
+    Error: Invariant NoResurrect is violated.
+    26642 states generated, 11701 distinct states found, 6016 states left on queue.
+>>> a_main_before_4327__race_recovery
+    Error: Invariant NoResurrect is violated.
+    70371 states generated, 33122 distinct states found, 14351 states left on queue.
+>>> b_4327
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> b_4327__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> b_4327__CallerCap
+    Model checking completed. No error has been found.
+    1224619 states generated, 444392 distinct states found, 0 states left on queue.
+>>> b_4327__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> b_4327__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1224619 states generated, 444392 distinct states found, 0 states left on queue.
+>>> b_4327__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> b_4327__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1224619 states generated, 444392 distinct states found, 0 states left on queue.
+>>> b_4327__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> b_4327__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> b_4327__NoBrick
+    Error: Invariant NoBrick is violated.
+    20723 states generated, 1654 distinct states found, 1219 states left on queue.
+>>> b_4327__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    73192 states generated, 31999 distinct states found, 12470 states left on queue.
+>>> b_4327__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> b_4327__NoStuck
+    Error: Invariant NoStuck is violated.
+    33388 states generated, 10717 distinct states found, 6051 states left on queue.
+>>> b_4327__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> b_4327__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    161662 states generated, 74029 distinct states found, 24023 states left on queue.
+>>> b_4327__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> b_4327__SingleRunCreated
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> b_4327__NoOverRaise
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> b_4327__CallerCanReadResult
+    Model checking completed. No error has been found.
+    1036824 states generated, 370032 distinct states found, 0 states left on queue.
+>>> b_4327__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    9043 states generated, 4274 distinct states found, 1617 states left on queue.
+>>> b_4327__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    170166 states generated, 56242 distinct states found, 0 states left on queue.
+>>> b_4327__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    170166 states generated, 56242 distinct states found, 0 states left on queue.
+>>> b_4327__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    170166 states generated, 56242 distinct states found, 0 states left on queue.
+>>> b_4327__race_cancel
+    Error: Invariant NoResurrect is violated.
+    26667 states generated, 11707 distinct states found, 6019 states left on queue.
+>>> b_4327__race_recovery
+    Error: Invariant NoResurrect is violated.
+    70560 states generated, 33174 distinct states found, 14368 states left on queue.
+>>> c2_764_malformed
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> c2_764_malformed__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> c2_764_malformed__CallerCap
+    Model checking completed. No error has been found.
+    1416715 states generated, 520286 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> c2_764_malformed__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1416715 states generated, 520286 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> c2_764_malformed__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1416715 states generated, 520286 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> c2_764_malformed__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> c2_764_malformed__NoBrick
+    Error: Invariant NoBrick is violated.
+    25027 states generated, 1664 distinct states found, 1225 states left on queue.
+>>> c2_764_malformed__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    78120 states generated, 32593 distinct states found, 12819 states left on queue.
+>>> c2_764_malformed__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    190398 states generated, 86128 distinct states found, 27437 states left on queue.
+>>> c2_764_malformed__NoStuck
+    Error: Invariant NoStuck is violated.
+    37646 states generated, 10693 distinct states found, 6040 states left on queue.
+>>> c2_764_malformed__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    726033 states generated, 307938 distinct states found, 49940 states left on queue.
+>>> c2_764_malformed__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    168649 states generated, 76294 distinct states found, 25270 states left on queue.
+>>> c2_764_malformed__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1210910 states generated, 438524 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__SingleRunCreated
+    Model checking completed. No error has been found.
+    1210910 states generated, 438524 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__NoOverRaise
+    Model checking completed. No error has been found.
+    1210910 states generated, 438524 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    276850 states generated, 123994 distinct states found, 36108 states left on queue.
+>>> c2_764_malformed__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    11233 states generated, 5714 distinct states found, 2241 states left on queue.
+>>> c2_764_malformed__default__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    49716 states generated, 23425 distinct states found, 7167 states left on queue.
+>>> c2_764_malformed__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    266484 states generated, 91975 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    266484 states generated, 91975 distinct states found, 0 states left on queue.
+>>> c2_764_malformed__race_cancel
+    Error: Invariant NoResurrect is violated.
+    27976 states generated, 12105 distinct states found, 6356 states left on queue.
+>>> c2_764_malformed__race_recovery
+    Error: Invariant NoAvoidableBrick is violated.
+    23198 states generated, 10287 distinct states found, 5141 states left on queue.
+>>> c_4327_4366_1044
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> c_4327_4366_1044__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> c_4327_4366_1044__CallerCap
+    Model checking completed. No error has been found.
+    1412425 states generated, 520286 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> c_4327_4366_1044__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1412425 states generated, 520286 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> c_4327_4366_1044__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1412425 states generated, 520286 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> c_4327_4366_1044__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> c_4327_4366_1044__NoBrick
+    Error: Invariant NoBrick is violated.
+    20737 states generated, 1664 distinct states found, 1225 states left on queue.
+>>> c_4327_4366_1044__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    75430 states generated, 33388 distinct states found, 13056 states left on queue.
+>>> c_4327_4366_1044__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    186123 states generated, 86134 distinct states found, 27438 states left on queue.
+>>> c_4327_4366_1044__NoStuck
+    Error: Invariant NoStuck is violated.
+    33353 states generated, 10697 distinct states found, 6044 states left on queue.
+>>> c_4327_4366_1044__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    721560 states generated, 307837 distinct states found, 49891 states left on queue.
+>>> c_4327_4366_1044__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    165193 states generated, 76660 distinct states found, 25315 states left on queue.
+>>> c_4327_4366_1044__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1206620 states generated, 438524 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__SingleRunCreated
+    Model checking completed. No error has been found.
+    1206620 states generated, 438524 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__NoOverRaise
+    Model checking completed. No error has been found.
+    1206620 states generated, 438524 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    272693 states generated, 124034 distinct states found, 36096 states left on queue.
+>>> c_4327_4366_1044__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    8911 states generated, 4257 distinct states found, 1637 states left on queue.
+>>> c_4327_4366_1044__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    198012 states generated, 64315 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    198012 states generated, 64315 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    198012 states generated, 64315 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__race_cancel__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    26787 states generated, 12097 distinct states found, 6354 states left on queue.
+>>> c_4327_4366_1044__race_recovery__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    22206 states generated, 10375 distinct states found, 5180 states left on queue.
+>>> c_4327_4366_1044__race_cancel__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    102983 states generated, 46220 distinct states found, 22156 states left on queue.
+>>> c_4327_4366_1044__race_recovery__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    75617 states generated, 37099 distinct states found, 16788 states left on queue.
+>>> c_4327_4366_1044__race_cancel__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    954683 states generated, 385111 distinct states found, 135004 states left on queue.
+>>> c_4327_4366_1044__race_recovery__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    457637 states generated, 193927 distinct states found, 51055 states left on queue.
+>>> c_4327_4366_1044__race_cancel__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    26899 states generated, 12142 distinct states found, 6378 states left on queue.
+>>> c_4327_4366_1044__race_recovery__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    78564 states generated, 38383 distinct states found, 17258 states left on queue.
+>>> c_4327_4366_1044__race_cancel__SpecNeverLowered
+    Model checking completed. No error has been found.
+    5649674 states generated, 1829054 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__race_recovery__SpecNeverLowered
+    Error: Invariant SpecNeverLowered is violated.
+    456658 states generated, 193504 distinct states found, 50978 states left on queue.
+>>> c_4327_4366_1044__race_cancel__SingleRunCreated
+    Model checking completed. No error has been found.
+    5649674 states generated, 1829054 distinct states found, 0 states left on queue.
+>>> c_4327_4366_1044__race_recovery__SingleRunCreated
+    Error: Invariant SingleRunCreated is violated.
+    455676 states generated, 193244 distinct states found, 50977 states left on queue.
+>>> d_floor3_2s_resilientfix
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> d_floor3_2s_resilientfix__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> d_floor3_2s_resilientfix__CallerCap
+    Model checking completed. No error has been found.
+    1433134 states generated, 521638 distinct states found, 0 states left on queue.
+>>> d_floor3_2s_resilientfix__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> d_floor3_2s_resilientfix__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1433134 states generated, 521638 distinct states found, 0 states left on queue.
+>>> d_floor3_2s_resilientfix__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> d_floor3_2s_resilientfix__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1433134 states generated, 521638 distinct states found, 0 states left on queue.
+>>> d_floor3_2s_resilientfix__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> d_floor3_2s_resilientfix__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> d_floor3_2s_resilientfix__NoBrick
+    Error: Invariant NoBrick is violated.
+    20731 states generated, 1659 distinct states found, 1222 states left on queue.
+>>> d_floor3_2s_resilientfix__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    73855 states generated, 32481 distinct states found, 12673 states left on queue.
+>>> d_floor3_2s_resilientfix__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    262985 states generated, 119194 distinct states found, 34968 states left on queue.
+>>> d_floor3_2s_resilientfix__NoStuck
+    Error: Invariant NoStuck is violated.
+    33392 states generated, 10719 distinct states found, 6051 states left on queue.
+>>> d_floor3_2s_resilientfix__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    725310 states generated, 306865 distinct states found, 49940 states left on queue.
+>>> d_floor3_2s_resilientfix__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    162845 states generated, 75277 distinct states found, 24756 states left on queue.
+>>> d_floor3_2s_resilientfix__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1218680 states generated, 437408 distinct states found, 0 states left on queue.
+>>> d_floor3_2s_resilientfix__SingleRunCreated
+    Model checking completed. No error has been found.
+    1218680 states generated, 437408 distinct states found, 0 states left on queue.
+>>> d_floor3_2s_resilientfix__NoOverRaise
+    Model checking completed. No error has been found.
+    1218680 states generated, 437408 distinct states found, 0 states left on queue.
+>>> d_floor3_2s_resilientfix__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    270364 states generated, 122195 distinct states found, 35547 states left on queue.
+>>> d_floor3_2s_resilientfix__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    11529 states generated, 5589 distinct states found, 2098 states left on queue.
+>>> d_floor3_2s_resilientfix__default__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    42972 states generated, 19002 distinct states found, 6109 states left on queue.
+>>> d_floor3_2s_resilientfix__default__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    141418 states generated, 56151 distinct states found, 10343 states left on queue.
+>>> d_floor3_2s_resilientfix__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    254890 states generated, 84462 distinct states found, 0 states left on queue.
+>>> d_floor3_2s_resilientfix__race_cancel
+    Error: Invariant NoResurrect is violated.
+    26847 states generated, 12029 distinct states found, 6266 states left on queue.
+>>> d_floor3_2s_resilientfix__race_recovery
+    Error: Invariant NoAvoidableBrick is violated.
+    22376 states generated, 10392 distinct states found, 5149 states left on queue.
+>>> e_floor3_2s_allfixes
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> e_floor3_2s_allfixes__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> e_floor3_2s_allfixes__CallerCap
+    Model checking completed. No error has been found.
+    1693046 states generated, 635128 distinct states found, 0 states left on queue.
+>>> e_floor3_2s_allfixes__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> e_floor3_2s_allfixes__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1693046 states generated, 635128 distinct states found, 0 states left on queue.
+>>> e_floor3_2s_allfixes__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> e_floor3_2s_allfixes__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1693046 states generated, 635128 distinct states found, 0 states left on queue.
+>>> e_floor3_2s_allfixes__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> e_floor3_2s_allfixes__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> e_floor3_2s_allfixes__NoBrick
+    Error: Invariant NoBrick is violated.
+    20733 states generated, 1661 distinct states found, 1223 states left on queue.
+>>> e_floor3_2s_allfixes__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    73339 states generated, 32238 distinct states found, 12596 states left on queue.
+>>> e_floor3_2s_allfixes__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    125228 states generated, 57705 distinct states found, 20016 states left on queue.
+>>> e_floor3_2s_allfixes__NoStuck
+    Error: Invariant NoStuck is violated.
+    33392 states generated, 10718 distinct states found, 6051 states left on queue.
+>>> e_floor3_2s_allfixes__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    776869 states generated, 334741 distinct states found, 62497 states left on queue.
+>>> e_floor3_2s_allfixes__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    163113 states generated, 75341 distinct states found, 24801 states left on queue.
+>>> e_floor3_2s_allfixes__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1448668 states generated, 537750 distinct states found, 0 states left on queue.
+>>> e_floor3_2s_allfixes__SingleRunCreated
+    Model checking completed. No error has been found.
+    1448668 states generated, 537750 distinct states found, 0 states left on queue.
+>>> e_floor3_2s_allfixes__NoOverRaise
+    Model checking completed. No error has been found.
+    1448668 states generated, 537750 distinct states found, 0 states left on queue.
+>>> e_floor3_2s_allfixes__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    272593 states generated, 123382 distinct states found, 36499 states left on queue.
+>>> e_floor3_2s_allfixes__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    10568 states generated, 5135 distinct states found, 1961 states left on queue.
+>>> e_floor3_2s_allfixes__default__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    19150 states generated, 9086 distinct states found, 3136 states left on queue.
+>>> e_floor3_2s_allfixes__default__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    149704 states generated, 60519 distinct states found, 12512 states left on queue.
+>>> e_floor3_2s_allfixes__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    299974 states generated, 101498 distinct states found, 0 states left on queue.
+>>> e_floor3_2s_allfixes__race_cancel
+    Error: Invariant NoResurrect is violated.
+    28385 states generated, 12816 distinct states found, 6662 states left on queue.
+>>> e_floor3_2s_allfixes__race_recovery
+    Error: Invariant NoMixedIdentityLog is violated.
+    38584 states generated, 18605 distinct states found, 8765 states left on queue.
+>>> f_floor6_10s_allfixes
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> f_floor6_10s_allfixes__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> f_floor6_10s_allfixes__CallerCap
+    Model checking completed. No error has been found.
+    1693046 states generated, 635128 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> f_floor6_10s_allfixes__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1693046 states generated, 635128 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> f_floor6_10s_allfixes__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1693046 states generated, 635128 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> f_floor6_10s_allfixes__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> f_floor6_10s_allfixes__NoBrick
+    Error: Invariant NoBrick is violated.
+    20733 states generated, 1662 distinct states found, 1224 states left on queue.
+>>> f_floor6_10s_allfixes__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    73365 states generated, 32250 distinct states found, 12602 states left on queue.
+>>> f_floor6_10s_allfixes__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    125305 states generated, 57728 distinct states found, 20023 states left on queue.
+>>> f_floor6_10s_allfixes__NoStuck
+    Error: Invariant NoStuck is violated.
+    33398 states generated, 10724 distinct states found, 6054 states left on queue.
+>>> f_floor6_10s_allfixes__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    776051 states generated, 334386 distinct states found, 62473 states left on queue.
+>>> f_floor6_10s_allfixes__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    164239 states generated, 75797 distinct states found, 24855 states left on queue.
+>>> f_floor6_10s_allfixes__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1448668 states generated, 537750 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__SingleRunCreated
+    Model checking completed. No error has been found.
+    1448668 states generated, 537750 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__NoOverRaise
+    Model checking completed. No error has been found.
+    1448668 states generated, 537750 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    272651 states generated, 123527 distinct states found, 36568 states left on queue.
+>>> f_floor6_10s_allfixes__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    9026 states generated, 4296 distinct states found, 1632 states left on queue.
+>>> f_floor6_10s_allfixes__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    204539 states generated, 66071 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    204539 states generated, 66071 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    204539 states generated, 66071 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__race_cancel__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    55616 states generated, 25078 distinct states found, 12258 states left on queue.
+>>> f_floor6_10s_allfixes__race_recovery__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    39862 states generated, 19300 distinct states found, 9078 states left on queue.
+>>> f_floor6_10s_allfixes__race_cancel__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    52815 states generated, 23745 distinct states found, 11622 states left on queue.
+>>> f_floor6_10s_allfixes__race_recovery__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    38435 states generated, 18529 distinct states found, 8725 states left on queue.
+>>> f_floor6_10s_allfixes__race_cancel__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    656905 states generated, 269013 distinct states found, 113215 states left on queue.
+>>> f_floor6_10s_allfixes__race_recovery__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    687344 states generated, 285191 distinct states found, 77232 states left on queue.
+>>> f_floor6_10s_allfixes__race_cancel__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    27336 states generated, 12311 distinct states found, 6420 states left on queue.
+>>> f_floor6_10s_allfixes__race_recovery__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    74457 states generated, 35796 distinct states found, 16208 states left on queue.
+>>> f_floor6_10s_allfixes__race_cancel__SpecNeverLowered
+    Model checking completed. No error has been found.
+    10194560 states generated, 3331040 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__race_recovery__SpecNeverLowered
+    Model checking completed. No error has been found.
+    2357980 states generated, 908668 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__race_cancel__SingleRunCreated
+    Model checking completed. No error has been found.
+    10194560 states generated, 3331040 distinct states found, 0 states left on queue.
+>>> f_floor6_10s_allfixes__race_recovery__SingleRunCreated
+    Error: Invariant SingleRunCreated is violated.
+    687122 states generated, 285031 distinct states found, 77300 states left on queue.
+>>> g_floor6_10s_notcommitted_reread
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> g_floor6_10s_notcommitted_reread__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> g_floor6_10s_notcommitted_reread__CallerCap
+    Model checking completed. No error has been found.
+    1728610 states generated, 632438 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> g_floor6_10s_notcommitted_reread__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1728610 states generated, 632438 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> g_floor6_10s_notcommitted_reread__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1728610 states generated, 632438 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> g_floor6_10s_notcommitted_reread__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> g_floor6_10s_notcommitted_reread__NoBrick
+    Error: Invariant NoBrick is violated.
+    20723 states generated, 1654 distinct states found, 1219 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    73279 states generated, 32275 distinct states found, 12658 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    129142 states generated, 59787 distinct states found, 20813 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__NoStuck
+    Error: Invariant NoStuck is violated.
+    33349 states generated, 10701 distinct states found, 6047 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    791016 states generated, 340712 distinct states found, 63554 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    164146 states generated, 76327 distinct states found, 25420 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1486548 states generated, 538158 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__SingleRunCreated
+    Model checking completed. No error has been found.
+    1486548 states generated, 538158 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__NoOverRaise
+    Model checking completed. No error has been found.
+    1486548 states generated, 538158 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    267434 states generated, 122104 distinct states found, 36527 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    9497 states generated, 4538 distinct states found, 1714 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    216051 states generated, 69595 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    216051 states generated, 69595 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    216051 states generated, 69595 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_cancel__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    57968 states generated, 26411 distinct states found, 13073 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_recovery__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    44147 states generated, 21582 distinct states found, 10210 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_cancel__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    59372 states generated, 27063 distinct states found, 13380 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_recovery__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    45072 states generated, 22064 distinct states found, 10427 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_cancel__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    1177073 states generated, 465486 distinct states found, 179761 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_recovery__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    731766 states generated, 304088 distinct states found, 81638 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_cancel__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    26899 states generated, 12159 distinct states found, 6381 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_recovery__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    81015 states generated, 39242 distinct states found, 17863 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_cancel__SpecNeverLowered
+    Model checking completed. No error has been found.
+    10636652 states generated, 3232446 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_recovery__SpecNeverLowered
+    Model checking completed. No error has been found.
+    2604128 states generated, 980248 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_cancel__SingleRunCreated
+    Model checking completed. No error has been found.
+    10636652 states generated, 3232446 distinct states found, 0 states left on queue.
+>>> g_floor6_10s_notcommitted_reread__race_recovery__SingleRunCreated
+    Error: Invariant SingleRunCreated is violated.
+    734983 states generated, 305387 distinct states found, 81892 states left on queue.
+>>> h_floor6_10s_recommended
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> h_floor6_10s_recommended__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> h_floor6_10s_recommended__CallerCap
+    Model checking completed. No error has been found.
+    859936 states generated, 309404 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> h_floor6_10s_recommended__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    859936 states generated, 309404 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> h_floor6_10s_recommended__TargetCanReadInput
+    Model checking completed. No error has been found.
+    859936 states generated, 309404 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> h_floor6_10s_recommended__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> h_floor6_10s_recommended__NoBrick
+    Error: Invariant NoBrick is violated.
+    20709 states generated, 1640 distinct states found, 1205 states left on queue.
+>>> h_floor6_10s_recommended__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__NoStuck
+    Error: Invariant NoStuck is violated.
+    24291 states generated, 4314 distinct states found, 2670 states left on queue.
+>>> h_floor6_10s_recommended__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__NoResurrect
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__SpecNeverLowered
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__SingleRunCreated
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__NoOverRaise
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__CallerCanReadResult
+    Model checking completed. No error has been found.
+    712468 states generated, 250696 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__default__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    114390 states generated, 38163 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    114390 states generated, 38163 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    114390 states generated, 38163 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    114390 states generated, 38163 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_cancel__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    2238002 states generated, 571538 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_recovery__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    652776 states generated, 210210 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_cancel__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    2238002 states generated, 571538 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_recovery__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    652776 states generated, 210210 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_cancel__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    2238002 states generated, 571538 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_recovery__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    652776 states generated, 210210 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_cancel__NoResurrect
+    Model checking completed. No error has been found.
+    2238002 states generated, 571538 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_recovery__NoResurrect
+    Model checking completed. No error has been found.
+    652776 states generated, 210210 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_cancel__SpecNeverLowered
+    Model checking completed. No error has been found.
+    2238002 states generated, 571538 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_recovery__SpecNeverLowered
+    Model checking completed. No error has been found.
+    652776 states generated, 210210 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_cancel__SingleRunCreated
+    Model checking completed. No error has been found.
+    2238002 states generated, 571538 distinct states found, 0 states left on queue.
+>>> h_floor6_10s_recommended__race_recovery__SingleRunCreated
+    Model checking completed. No error has been found.
+    652776 states generated, 210210 distinct states found, 0 states left on queue.
+>>> h_minus_FixAtomicCreate
+    Error: Invariant NoAvoidableBrick is violated.
+    88783 states generated, 41272 distinct states found, 15999 states left on queue.
+>>> h_minus_FixAtomicCreate__race_cancel
+    Error: Invariant NoAvoidableBrick is violated.
+    692529 states generated, 256438 distinct states found, 79328 states left on queue.
+>>> h_minus_FixAtomicCreate__race_recovery
+    Error: Invariant NoAvoidableBrick is violated.
+    65165 states generated, 30881 distinct states found, 12826 states left on queue.
+>>> h_minus_FixCompressOnStamp
+    Error: Invariant CallerCanReadResult is violated.
+    200107 states generated, 92165 distinct states found, 27780 states left on queue.
+>>> h_minus_FixCompressOnStamp__race_cancel
+    Error: Invariant CallerCanReadResult is violated.
+    98444 states generated, 42659 distinct states found, 19857 states left on queue.
+>>> h_minus_FixCompressOnStamp__race_recovery
+    Error: Invariant CallerCanReadResult is violated.
+    62500 states generated, 28653 distinct states found, 12535 states left on queue.
+>>> h_minus_FixConsistentIdMode
+    Error: Invariant NoMixedIdentityLog is violated.
+    195342 states generated, 90208 distinct states found, 27236 states left on queue.
+>>> h_minus_FixConsistentIdMode__race_cancel
+    Error: Invariant NoMixedIdentityLog is violated.
+    47723 states generated, 21625 distinct states found, 10933 states left on queue.
+>>> h_minus_FixConsistentIdMode__race_recovery
+    Error: Invariant NoMixedIdentityLog is violated.
+    59306 states generated, 27328 distinct states found, 12126 states left on queue.
+>>> h_minus_FixGuardStart
+    Error: Invariant NoResurrect is violated.
+    121386 states generated, 57221 distinct states found, 20399 states left on queue.
+>>> h_minus_FixGuardStart__race_cancel
+    Error: Invariant NoResurrect is violated.
+    12631 states generated, 5241 distinct states found, 2965 states left on queue.
+>>> h_minus_FixGuardStart__race_recovery
+    Error: Invariant NoResurrect is violated.
+    34850 states generated, 16292 distinct states found, 7757 states left on queue.
+>>> h_minus_FixRecoveryAdopt
+    Model checking completed. No error has been found.
+    859936 states generated, 309404 distinct states found, 0 states left on queue.
+>>> h_minus_FixRecoveryAdopt__race_cancel
+    Model checking completed. No error has been found.
+    2238002 states generated, 571538 distinct states found, 0 states left on queue.
+>>> h_minus_FixRecoveryAdopt__race_recovery
+    Model checking completed. No error has been found.
+    652776 states generated, 210210 distinct states found, 0 states left on queue.
+>>> h_minus_FixSkipReread
+    Model checking completed. No error has been found.
+    862954 states generated, 310580 distinct states found, 0 states left on queue.
+>>> h_minus_FixSkipReread__race_cancel
+    Model checking completed. No error has been found.
+    2274758 states generated, 582616 distinct states found, 0 states left on queue.
+>>> h_minus_FixSkipReread__race_recovery
+    Model checking completed. No error has been found.
+    672812 states generated, 217046 distinct states found, 0 states left on queue.
+>>> h_minus_RaiseOnResilient
+    Error: Invariant NoAvoidableBrick is violated.
+    57386 states generated, 25752 distinct states found, 11651 states left on queue.
+>>> h_minus_RaiseOnResilient__race_cancel
+    Error: Invariant NoAvoidableBrick is violated.
+    12769 states generated, 5586 distinct states found, 3258 states left on queue.
+>>> h_minus_RaiseOnResilient__race_recovery
+    Error: Invariant NoAvoidableBrick is violated.
+    10668 states generated, 4353 distinct states found, 2417 states left on queue.
+>>> i_recommended_envdrift
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> i_recommended_envdrift__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> i_recommended_envdrift__CallerCap
+    Model checking completed. No error has been found.
+    1866344 states generated, 630126 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> i_recommended_envdrift__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1866344 states generated, 630126 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> i_recommended_envdrift__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1866344 states generated, 630126 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> i_recommended_envdrift__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> i_recommended_envdrift__NoBrick
+    Error: Invariant NoBrick is violated.
+    37515 states generated, 2795 distinct states found, 2071 states left on queue.
+>>> i_recommended_envdrift__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__NoStuck
+    Error: Invariant NoStuck is violated.
+    43681 states generated, 7411 distinct states found, 4616 states left on queue.
+>>> i_recommended_envdrift__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__NoResurrect
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__SingleRunCreated
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__NoOverRaise
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__CallerCanReadResult
+    Model checking completed. No error has been found.
+    1604172 states generated, 535000 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__default__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    228118 states generated, 73702 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    228118 states generated, 73702 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    228118 states generated, 73702 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    228118 states generated, 73702 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_cancel__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    8615386 states generated, 2125396 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_recovery__NoAvoidableBrick
+    Model checking completed. No error has been found.
+    2602520 states generated, 815814 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_cancel__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    8615386 states generated, 2125396 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_recovery__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    2602520 states generated, 815814 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_cancel__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    8615386 states generated, 2125396 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_recovery__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    2602520 states generated, 815814 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_cancel__NoResurrect
+    Model checking completed. No error has been found.
+    8615386 states generated, 2125396 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_recovery__NoResurrect
+    Model checking completed. No error has been found.
+    2602520 states generated, 815814 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_cancel__SpecNeverLowered
+    Model checking completed. No error has been found.
+    8615386 states generated, 2125396 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_recovery__SpecNeverLowered
+    Model checking completed. No error has been found.
+    2602520 states generated, 815814 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_cancel__SingleRunCreated
+    Model checking completed. No error has been found.
+    8615386 states generated, 2125396 distinct states found, 0 states left on queue.
+>>> i_recommended_envdrift__race_recovery__SingleRunCreated
+    Model checking completed. No error has been found.
+    2602520 states generated, 815814 distinct states found, 0 states left on queue.
+>>> j_4327_head29197
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> j_4327_head29197__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> j_4327_head29197__CallerCap
+    Model checking completed. No error has been found.
+    1228909 states generated, 444392 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> j_4327_head29197__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1228909 states generated, 444392 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> j_4327_head29197__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1228909 states generated, 444392 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> j_4327_head29197__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> j_4327_head29197__NoBrick
+    Error: Invariant NoBrick is violated.
+    25027 states generated, 1664 distinct states found, 1225 states left on queue.
+>>> j_4327_head29197__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    77519 states generated, 32016 distinct states found, 12472 states left on queue.
+>>> j_4327_head29197__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    1041114 states generated, 370032 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__NoStuck
+    Error: Invariant NoStuck is violated.
+    37640 states generated, 10700 distinct states found, 6047 states left on queue.
+>>> j_4327_head29197__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    1041114 states generated, 370032 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    166146 states generated, 74105 distinct states found, 24033 states left on queue.
+>>> j_4327_head29197__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1041114 states generated, 370032 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__SingleRunCreated
+    Model checking completed. No error has been found.
+    1041114 states generated, 370032 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__NoOverRaise
+    Model checking completed. No error has been found.
+    1041114 states generated, 370032 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__CallerCanReadResult
+    Model checking completed. No error has been found.
+    1041114 states generated, 370032 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    11577 states generated, 5603 distinct states found, 2126 states left on queue.
+>>> j_4327_head29197__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    231124 states generated, 77246 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__default__NoAvoidableStuck
+    Model checking completed. No error has been found.
+    231124 states generated, 77246 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    231124 states generated, 77246 distinct states found, 0 states left on queue.
+>>> j_4327_head29197__race_cancel
+    Error: Invariant NoResurrect is violated.
+    27513 states generated, 11569 distinct states found, 5954 states left on queue.
+>>> j_4327_head29197__race_recovery
+    Error: Invariant NoResurrect is violated.
+    72649 states generated, 33601 distinct states found, 14493 states left on queue.
+>>> k_4327_4366_head
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> k_4327_4366_head__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> k_4327_4366_head__CallerCap
+    Model checking completed. No error has been found.
+    1416715 states generated, 520286 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> k_4327_4366_head__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1416715 states generated, 520286 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> k_4327_4366_head__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1416715 states generated, 520286 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> k_4327_4366_head__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> k_4327_4366_head__NoBrick
+    Error: Invariant NoBrick is violated.
+    25023 states generated, 1661 distinct states found, 1223 states left on queue.
+>>> k_4327_4366_head__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    77594 states generated, 32325 distinct states found, 12737 states left on queue.
+>>> k_4327_4366_head__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    189817 states generated, 85865 distinct states found, 27360 states left on queue.
+>>> k_4327_4366_head__NoStuck
+    Error: Invariant NoStuck is violated.
+    37700 states generated, 10738 distinct states found, 6063 states left on queue.
+>>> k_4327_4366_head__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    725837 states generated, 307814 distinct states found, 49878 states left on queue.
+>>> k_4327_4366_head__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    168753 states generated, 76356 distinct states found, 25289 states left on queue.
+>>> k_4327_4366_head__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1210910 states generated, 438524 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__SingleRunCreated
+    Model checking completed. No error has been found.
+    1210910 states generated, 438524 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__NoOverRaise
+    Model checking completed. No error has been found.
+    1210910 states generated, 438524 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    276957 states generated, 124046 distinct states found, 36095 states left on queue.
+>>> k_4327_4366_head__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    11707 states generated, 5736 distinct states found, 2211 states left on queue.
+>>> k_4327_4366_head__default__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    35174 states generated, 16271 distinct states found, 5327 states left on queue.
+>>> k_4327_4366_head__default__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    153705 states generated, 61789 distinct states found, 11105 states left on queue.
+>>> k_4327_4366_head__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    271130 states generated, 91060 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__race_cancel__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    28176 states generated, 12200 distinct states found, 6398 states left on queue.
+>>> k_4327_4366_head__race_recovery__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    23312 states generated, 10324 distinct states found, 5158 states left on queue.
+>>> k_4327_4366_head__race_cancel__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    105732 states generated, 46971 distinct states found, 22497 states left on queue.
+>>> k_4327_4366_head__race_recovery__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    76677 states generated, 37016 distinct states found, 16762 states left on queue.
+>>> k_4327_4366_head__race_cancel__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    959408 states generated, 386403 distinct states found, 135283 states left on queue.
+>>> k_4327_4366_head__race_recovery__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    458631 states generated, 193837 distinct states found, 51027 states left on queue.
+>>> k_4327_4366_head__race_cancel__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    27994 states generated, 12110 distinct states found, 6357 states left on queue.
+>>> k_4327_4366_head__race_recovery__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    83864 states generated, 40099 distinct states found, 17825 states left on queue.
+>>> k_4327_4366_head__race_cancel__SpecNeverLowered
+    Model checking completed. No error has been found.
+    5650832 states generated, 1829054 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__race_recovery__SpecNeverLowered
+    Error: Invariant SpecNeverLowered is violated.
+    459477 states generated, 194273 distinct states found, 51114 states left on queue.
+>>> k_4327_4366_head__race_cancel__SingleRunCreated
+    Model checking completed. No error has been found.
+    5650832 states generated, 1829054 distinct states found, 0 states left on queue.
+>>> k_4327_4366_head__race_recovery__SingleRunCreated
+    Error: Invariant SingleRunCreated is violated.
+    457339 states generated, 193374 distinct states found, 50948 states left on queue.
+>>> m_mutant_attest_above_max
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> m_mutant_attest_above_max__NoOverStamp
+    Error: Invariant NoOverStamp is violated by the initial state:
+>>> m_mutant_attest_above_max__CallerCap
+    Model checking completed. No error has been found.
+    1309271 states generated, 485947 distinct states found, 0 states left on queue.
+>>> m_mutant_attest_above_max__CallerCapExplicit
+    Error: Invariant CallerCapExplicit is violated by the initial state:
+>>> m_mutant_attest_above_max__AttrGateMatchesStamp
+    Model checking completed. No error has been found.
+    1309271 states generated, 485947 distinct states found, 0 states left on queue.
+>>> m_mutant_attest_above_max__AttributesGateCorrect
+    Error: Invariant AttributesGateCorrect is violated by the initial state:
+>>> m_mutant_attest_above_max__TargetCanReadInput
+    Model checking completed. No error has been found.
+    1309271 states generated, 485947 distinct states found, 0 states left on queue.
+>>> m_mutant_attest_above_max__StampRunnable
+    Error: Invariant StampRunnable is violated by the initial state:
+>>> m_mutant_attest_above_max__CallerCanReadOwnStamp
+    Error: Invariant CallerCanReadOwnStamp is violated by the initial state:
+>>> m_mutant_attest_above_max__NoBrick
+    Error: Invariant NoBrick is violated.
+    20733 states generated, 1661 distinct states found, 1223 states left on queue.
+>>> m_mutant_attest_above_max__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    73338 states generated, 32391 distinct states found, 12786 states left on queue.
+>>> m_mutant_attest_above_max__NoMixedIdentityLog
+    Error: Invariant NoMixedIdentityLog is violated.
+    186620 states generated, 86562 distinct states found, 27676 states left on queue.
+>>> m_mutant_attest_above_max__NoStuck
+    Error: Invariant NoStuck is violated.
+    33412 states generated, 10738 distinct states found, 6063 states left on queue.
+>>> m_mutant_attest_above_max__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    600196 states generated, 262624 distinct states found, 49168 states left on queue.
+>>> m_mutant_attest_above_max__NoResurrect
+    Error: Invariant NoResurrect is violated.
+    166121 states generated, 77256 distinct states found, 25570 states left on queue.
+>>> m_mutant_attest_above_max__SpecNeverLowered
+    Model checking completed. No error has been found.
+    1114244 states generated, 407602 distinct states found, 0 states left on queue.
+>>> m_mutant_attest_above_max__SingleRunCreated
+    Model checking completed. No error has been found.
+    1114244 states generated, 407602 distinct states found, 0 states left on queue.
+>>> m_mutant_attest_above_max__NoOverRaise
+    Error: Invariant NoOverRaise is violated.
+    57941 states generated, 24317 distinct states found, 10505 states left on queue.
+>>> m_mutant_attest_above_max__CallerCanReadResult
+    Error: Invariant CallerCanReadResult is violated.
+    275105 states generated, 125553 distinct states found, 36589 states left on queue.
+>>> m_mutant_attest_above_max__default__NoAvoidableBrick
+    Error: Invariant NoAvoidableBrick is violated.
+    8589 states generated, 4124 distinct states found, 1607 states left on queue.
+>>> m_mutant_attest_above_max__default__NoMixedIdentityLog
+    Model checking completed. No error has been found.
+    182454 states generated, 61805 distinct states found, 0 states left on queue.
+>>> m_mutant_attest_above_max__default__NoAvoidableStuck
+    Error: Invariant NoAvoidableStuck is violated.
+    88848 states generated, 37287 distinct states found, 7952 states left on queue.
+>>> m_mutant_attest_above_max__default__CallerCanReadResult
+    Model checking completed. No error has been found.
+    182454 states generated, 61805 distinct states found, 0 states left on queue.
+>>> m_mutant_attest_above_max__race_cancel
+    Error: Invariant NoResurrect is violated.
+    26794 states generated, 12146 distinct states found, 6398 states left on queue.
+>>> m_mutant_attest_above_max__race_recovery
+    Error: Invariant NoAvoidableBrick is violated.
+    21957 states generated, 10285 distinct states found, 5162 states left on queue.
+>>> PC_firstMiss_fast
+    Model checking completed. No error has been found.
+    5488 states generated, 1821 distinct states found, 0 states left on queue.
+>>> PC_firstMiss_mid
+    Model checking completed. No error has been found.
+    8410 states generated, 2715 distinct states found, 0 states left on queue.
+>>> PC_firstMiss_mid_evict
+    Model checking completed. No error has been found.
+    11343 states generated, 2763 distinct states found, 0 states left on queue.
+>>> PC_firstMiss_mid_k19
+    Error: Invariant NoLongFallbackRun is violated.
+    8331 states generated, 2709 distinct states found, 13 states left on queue.
+>>> PC_firstMiss_never
+    Model checking completed. No error has been found.
+    1237 states generated, 247 distinct states found, 0 states left on queue.
+>>> PC_nocache_mid
+    Model checking completed. No error has been found.
+    79 states generated, 16 distinct states found, 0 states left on queue.
+>>> PC_refresh_fast
+    Model checking completed. No error has been found.
+    5473 states generated, 1816 distinct states found, 0 states left on queue.
+>>> PC_refresh_mid_io
+    Error: Temporal properties were violated.
+    6040 states generated, 1942 distinct states found, 0 states left on queue.
+>>> PC_refresh_mid_k20
+    Error: Invariant NoLongFallbackRun is violated.
+    4331 states generated, 1445 distinct states found, 63 states left on queue.
+>>> PC_refresh_mid_live
+    Error: Temporal properties were violated.
+    6040 states generated, 1942 distinct states found, 0 states left on queue.
+>>> PC_refresh_mid_sparse
+    Model checking completed. No error has been found.
+    38 states generated, 33 distinct states found, 0 states left on queue.
+wrote results/summary.txt
