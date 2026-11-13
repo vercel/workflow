@@ -47,7 +47,6 @@ const RETRYABLE_WORLD_ERROR_CODES = new Set([
 const RUNTIME_ERROR_CHECKS = [
   WorkflowRuntimeError.is,
   StepNotRegisteredError.is,
-  WorkflowNotRegisteredError.is,
   // SDK-level encryption failures (most notably AES-GCM auth-tag
   // mismatches surfacing as a native `OperationError` from
   // `AESCipherJob.onDone`) are wrapped in `RuntimeDecryptionError` at
@@ -134,6 +133,13 @@ export function classifyRunError(err: unknown): RunErrorCode {
 
   if (WorkflowDeploymentMismatchError.is(err)) {
     return RUN_ERROR_CODES.DEPLOYMENT_MISMATCH;
+  }
+
+  // A run whose workflow the executing deployment doesn't bundle gets its own
+  // code rather than the generic RUNTIME_ERROR, so dashboards can tell a
+  // targeting or build problem apart from a runtime invariant failure.
+  if (WorkflowNotRegisteredError.is(err)) {
+    return RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED;
   }
 
   // World-layer faults, both a malformed response (contract violation) and a
