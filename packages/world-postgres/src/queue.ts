@@ -345,8 +345,26 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(): string {
-    return `${resolveJobPrefix(config)}flows`;
+  function getJobQueueName(
+    deploymentId: string | undefined = config.deploymentId
+  ): string {
+    return `${resolveJobPrefix(config, deploymentId)}flows`;
+  }
+
+  /**
+   * The task of another deployment's runs, when `opts.deploymentId` names one:
+   * a pinned run's messages go to the workers of the deployment that started
+   * it, wherever they are enqueued from. `undefined` means this World's own.
+   */
+  function deploymentTask(deploymentId: string | undefined) {
+    if (
+      config.deploymentId === undefined ||
+      deploymentId === undefined ||
+      deploymentId === config.deploymentId
+    ) {
+      return undefined;
+    }
+    return getJobQueueName(deploymentId);
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
@@ -386,8 +404,8 @@ export function createQueue(
    * executor deliveries serialize with each other too, including while a
    * deployment switches `enableInvoke`.
    */
-  const executorQueueName = (runId: string) =>
-    `${getJobQueueName()}:${runId}:executor`;
+  const executorQueueName = (runId: string, task = getJobQueueName()) =>
+    `${task}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
 
   const createQueueHandler: Queue['createQueueHandler'] = (
@@ -521,7 +539,7 @@ export function createQueue(
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
-    return 'postgres';
+    return config.deploymentId ?? 'postgres';
   };
 
   const completedMessages = new Set<string>();
@@ -562,6 +580,7 @@ export function createQueue(
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
     jobKeyMode = 'preserve_run_at',
     priority,
+    task,
   }: {
     queueId: string;
     prefix?: QueuePrefix;
@@ -591,6 +610,8 @@ export function createQueue(
     jobKeyMode?: 'preserve_run_at' | 'unsafe_dedupe';
     /** Graphile priority; lower runs first. Default 0. */
     priority?: number;
+    /** Another deployment's task ({@link deploymentTask}); default this World's. */
+    task?: string;
   }) {
     const utils = workerUtils;
     if (!utils) {
@@ -604,7 +625,7 @@ export function createQueue(
 
     const runQueue = executorRunId ?? serialRunId;
     await utils.addJob(
-      executorRunId ? executorTask() : getJobQueueName(),
+      task ?? (executorRunId ? executorTask() : getJobQueueName()),
       MessageData.encode({
         id: queueId,
         ...(prefix ? { prefix } : {}),
@@ -623,7 +644,7 @@ export function createQueue(
         ...(runAt ? { runAt } : {}),
         ...(priority !== undefined ? { priority } : {}),
         maxAttempts,
-        ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
+        ...(runQueue ? { queueName: executorQueueName(runQueue, task) } : {}),
       }
     );
   }
@@ -1042,11 +1063,15 @@ export function createQueue(
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
+    const task = deploymentTask(opts?.deploymentId);
+    // Invoke mode's executor lane is this World's own; another deployment's
+    // runs are delivered on its flow task, as without invoke.
     const input =
-      invocations && prefix === ownPrefix()
+      invocations && !task && prefix === ownPrefix()
         ? executorInput(message)
         : undefined;
     await addGraphileJob({
+      task,
       queueId,
       // Kept, so the job is delivered under the queue name it was sent to
       // whichever worker takes it, rather than the worker's own prefix.

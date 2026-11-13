@@ -283,6 +283,7 @@ The defaults work for a single process on a local database, so most apps set onl
 | --- | --- | --- |
 | [`WORKFLOW_POSTGRES_URL`](#workflow_postgres_url) | `DATABASE_URL`, then `postgres://world:world@localhost:5432/world` | Database connection |
 | [`WORKFLOW_POSTGRES_JOB_PREFIX`](#workflow_postgres_job_prefix) | `workflow_` | Job name prefix, for sharing a database between apps |
+| [`WORKFLOW_POSTGRES_DEPLOYMENT_ID`](#workflow_postgres_deployment_id) | unset | Pins each run to the deployment that started it |
 | [`WORKFLOW_POSTGRES_WORKER_CONCURRENCY`](#workflow_postgres_worker_concurrency) | `50` | Concurrent jobs per process |
 | [`WORKFLOW_POSTGRES_POLL_INTERVAL_MS`](#workflow_postgres_poll_interval_ms) | `500` ms | Idle job polling |
 | [`WORKFLOW_POSTGRES_MAX_POOL_SIZE`](#workflow_postgres_max_pool_size) | `10` | Connection pool size |
@@ -311,6 +312,20 @@ Give each application that shares a database its own prefix. A World claims jobs
 
 Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. The CLI and the observability UI build their World from the environment, so a run they create, such as a re-run, is stamped with the prefix they see, and only a World with that prefix runs and recovers it.
 
+
+### `WORKFLOW_POSTGRES_DEPLOYMENT_ID`
+
+Pins every run to the deployment that started it, the way the [Vercel World](/worlds/vercel) does. Set it to a value that names one immutable build, such as a container image tag or a commit SHA: letters, digits, `.`, `-`, `_` and `@`, at most 100 characters. Default: unset.
+
+When it is set:
+
+- **Each deployment claims only its own runs.** The deployment ID becomes part of the World's job prefix (`${jobPrefix}${deploymentId}_`), so a deployment's processes claim only the jobs of runs it started. On `start()`, they re-enqueue only those runs.
+- **Messages follow the run.** A message for a run that another deployment started, such as the wake-up when a newer deployment calls `resumeHook()`, is routed to that deployment's jobs.
+- **`getDeploymentId()` returns the value,** and the World declares deployment affinity. If a delivery still reaches the wrong deployment, the runtime sends it back to the run's own deployment instead of replaying the run there.
+
+Keep at least one process of a deployment running, or able to start, until its runs finish. Nothing else claims them, so a run whose deployment is gone waits for it.
+
+Unset, every process that shares the job prefix claims every run. A run started before a deploy then continues on the new code, which must replay it the same way.
 
 ### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 

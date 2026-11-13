@@ -15,6 +15,23 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    */
   jobPrefix?: string;
   /**
+   * Pins every run to the deployment (for example, the container image
+   * version) that started it, the way Vercel deployments do.
+   *
+   * Set, it becomes part of this World's effective job prefix
+   * (`${jobPrefix}${deploymentId}_`), so each deployment's workers claim only
+   * the jobs of runs that deployment started, and startup recovery re-enqueues
+   * only those runs. A message enqueued for another deployment (a hook
+   * resumed from a newer deployment, say) is routed to that deployment's
+   * task, and the World declares `deploymentAffinity`. Keep a deployment's
+   * workers running until its runs have finished: nothing else claims them.
+   *
+   * Letters, digits, `.`, `-`, `_` and `@`; at most 100 characters. Defaults
+   * to WORKFLOW_POSTGRES_DEPLOYMENT_ID. Unset, every process sharing the
+   * `jobPrefix` claims every run, and `getDeploymentId()` reports `postgres`.
+   */
+  deploymentId?: string;
+  /**
    * namespace for queue topic prefixes (e.g. 'custom' → '__custom_wkf_workflow_').
    * defaults to WORKFLOW_QUEUE_NAMESPACE env var if not provided.
    */
@@ -63,9 +80,28 @@ const DEFAULT_JOB_PREFIX = 'workflow_';
  * from, and the one stamped on the runs this World creates. Both must come
  * from here, so that recovery only ever re-enqueues a run into the task whose
  * runner claims it.
+ *
+ * Pass `deploymentId` to resolve the prefix of another deployment sharing this
+ * World's `jobPrefix`, the task a message for one of its runs goes to.
  */
 export function resolveJobPrefix(
-  config: Pick<PostgresWorldConfig, 'jobPrefix'>
+  config: Pick<PostgresWorldConfig, 'jobPrefix' | 'deploymentId'>,
+  deploymentId: string | undefined = config.deploymentId
 ): string {
-  return config.jobPrefix || DEFAULT_JOB_PREFIX;
+  const base = config.jobPrefix || DEFAULT_JOB_PREFIX;
+  if (deploymentId === undefined) {
+    return base;
+  }
+  assertValidDeploymentId(deploymentId);
+  return `${base}${deploymentId}_`;
+}
+
+const DEPLOYMENT_ID = /^[A-Za-z0-9._@-]{1,100}$/;
+
+export function assertValidDeploymentId(deploymentId: string): void {
+  if (!DEPLOYMENT_ID.test(deploymentId)) {
+    throw new Error(
+      `Invalid Postgres World deploymentId ${JSON.stringify(deploymentId)}: use 1-100 letters, digits, ".", "-", "_" or "@"`
+    );
+  }
 }
