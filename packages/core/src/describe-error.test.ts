@@ -98,6 +98,16 @@ describe('describeError', () => {
     expect(result.hint).toContain('does not have its workflow registered');
   });
 
+  test('legacy RUNTIME_ERROR run named WorkflowNotRegisteredError gets the targeting hint', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+      errorName: 'WorkflowNotRegisteredError',
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+    expect(result.hint).toContain('does not have its workflow registered');
+  });
+
   test('REPLAY_TIMEOUT via precomputed errorCode is attributed to the SDK', () => {
     const result = describeError(undefined, RUN_ERROR_CODES.REPLAY_TIMEOUT);
     expect(result.attribution).toBe('sdk');

@@ -178,6 +178,15 @@ export function describeRunError(
       hint: CORRUPTED_EVENT_LOG_HINT,
     };
   }
+  // Runs that failed on SDKs before WORKFLOW_NOT_REGISTERED existed persisted
+  // RUNTIME_ERROR; the error name still identifies the targeting/build cause.
+  if (name === 'WorkflowNotRegisteredError') {
+    return {
+      attribution: 'sdk',
+      errorCode,
+      hint: WORKFLOW_NOT_REGISTERED_HINT,
+    };
+  }
   const byCode = CODE_DESCRIPTIONS[errorCode];
   if (byCode) {
     return { ...byCode, errorCode };
