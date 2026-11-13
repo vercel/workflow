@@ -22,7 +22,6 @@ const WORKFLOW_SERVER_SERVICE = {
 
 const RUN_ID_ARG_INDEX_BY_METHOD: Record<string, number> = {
   'world.runs.get': 0,
-  'world.runs.setAttributes': 0,
   'world.runs.experimentalSetAttributes': 0,
   'world.steps.get': 0,
   'world.events.create': 0,

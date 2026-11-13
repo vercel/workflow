@@ -40,7 +40,7 @@ Before editing, establish and report each of these:
 2. **How event IDs are minted today.** Grep for `eventId`, `ulid`, `uuid`, `nanoid`, `nextval`, `AUTO_INCREMENT`, `IDENTITY`. Find the exact line that produces the ID written to storage. Note any place an ID is chosen before the write that stores it, for example an ID planned in advance and saved in a claim record so redeliveries reuse it. That design hands out a position before the commit and needs reworking, not porting.
 3. **What settles a write race.** Read the `events.create` implementation. Note whether the ID or ordering is decided in process (read-then-write, an in-memory counter, a `Math.max` over loaded events) or in the store (unique constraint, conditional write, `INSERT ... ON CONFLICT`, a transaction).
 4. **Which `specVersion` it declares.** Grep for `specVersion`. Note whether it is a literal or an imported constant.
-5. **Which optional members exist.** Grep for `capabilities`, `analytics`, `getRuntimeDeadline`, `getEnvironment`, `createRunId`, `describeRun`, `getEncryptionKeyForRun`, `resolveLatestDeploymentId`, `cancelMany`, `setAttributes`, `experimentalSetAttributes`.
+5. **Which optional members exist.** Grep for `capabilities`, `analytics`, `getRuntimeDeadline`, `getEnvironment`, `createRunId`, `describeRun`, `getEncryptionKeyForRun`, `resolveLatestDeploymentId`, `cancelMany`. Also note any `experimentalSetAttributes`: it is deprecated and the SDK no longer calls it (attributes arrive as `attr_set` events), so do not add one; an existing one can go unless the World must still serve `workflow` 5.0.0-beta.8 through beta.14.
 6. **Whether it provisions step topics.** Grep for `'step'`, `__wkf_step`, `stepQueue`.
 7. **Whether it rejects stale writes.** Grep for `PreconditionFailedError`, `preconditionGuard`, `stateUpdatedAt`, `stateEventCount`, `stateCursor`, `412`.
 8. **Where its process-wide state lives.** Grep the World's modules for top-level `const`/`let` holding a pool, client, socket, registry, cache, ULID factory, or a log-once boolean. Note every one: these are correct in a `require()`d package and wrong in a bundled one.
@@ -284,7 +284,7 @@ These change no signature. A World ported by types alone compiles and then behav
 
 None of this is required, and the runtime routes around each absence. Report what the World is missing rather than implementing everything unprompted.
 
-`capabilities` (`hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, `dynamicWorkflowCode`, `inBandFence`), `analytics`, `analytics.events.getMany()`, `runs.setAttributes` (rename an existing `runs.experimentalSetAttributes`; the old name is deprecated but still called as a fallback), `runs.cancelMany`, `runs.waitForTerminalStatus()`, `events.createBatch()`, `streams.createWriteSession()`, `getRuntimeDeadline()`, `getEnvironment()`, `createRunId()`, `describeRun()`, `getEncryptionKeyForRun()`, `resolveLatestDeploymentId()`, `close()`.
+`capabilities` (`hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, `dynamicWorkflowCode`, `inBandFence`), `analytics`, `analytics.events.getMany()`, `runs.cancelMany`, `runs.waitForTerminalStatus()`, `events.createBatch()`, `streams.createWriteSession()`, `getRuntimeDeadline()`, `getEnvironment()`, `createRunId()`, `describeRun()`, `getEncryptionKeyForRun()`, `resolveLatestDeploymentId()`, `close()`.
 
 Four are worth raising unprompted because their absence is felt rather than reported:
 

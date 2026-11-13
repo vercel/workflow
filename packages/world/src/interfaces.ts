@@ -1,5 +1,8 @@
 import type { Analytics } from './analytics.js';
-import type { AttributeChange, SetAttributesResult } from './attributes.js';
+import type {
+  AttributeChange,
+  ExperimentalSetAttributesResult,
+} from './attributes.js';
 import type {
   BatchEventRequest,
   CreateEventBatchParams,
@@ -290,45 +293,26 @@ export interface Storage {
     ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
 
     /**
-     * Apply a batch of attribute changes to a run. Merge semantics:
-     * - `value: string` upserts the key
-     * - `value: null` removes the key
-     * - keys not listed in `changes` are untouched
+     * Apply a batch of attribute changes directly to a run's materialized
+     * `attributes`, outside the event log, and return the post-merge
+     * snapshot.
      *
-     * Returns the post-merge attribute snapshot on the run.
+     * @deprecated The current SDK never calls this method. `setAttributes()`
+     * writes `attr_set` events through `events.create`, and
+     * `start(..., { attributes })` seeds attributes on `run_created`; every
+     * World already handles both. New Worlds should not implement it.
      *
-     * Pass `options.allowReservedAttributes: true` to permit keys
-     * starting with the reserved `$` prefix. Default behavior rejects
-     * those keys so user code can't accidentally collide with
-     * framework / tooling namespaces; framework callers that own a
-     * sub-namespace flip this on.
-     *
-     * OPTIONAL. World implementations may omit this method; the SDK
-     * feature-detects its absence and no-ops with a one-time warning so
-     * third-party / community worlds keep working without adopting it.
-     * Callers prefer this method and fall back to the deprecated
-     * {@link experimentalSetAttributes} when only that one exists.
-     *
-     * This direct entity write predates the `attr_set` event type, which
-     * is how `setAttributes()` records changes on current spec versions.
-     * See `packages/core/src/attributes-mvp.md`.
-     */
-    setAttributes?(
-      runId: string,
-      changes: AttributeChange[],
-      options?: { allowReservedAttributes?: boolean }
-    ): Promise<SetAttributesResult>;
-
-    /**
-     * @deprecated Renamed to {@link setAttributes}. Implement
-     * `setAttributes` instead; callers still fall back to this method
-     * when a World provides only the old name.
+     * It remains on the interface, optional, so existing implementations keep
+     * compiling. The only callers were `workflow` 5.0.0-beta.8 through
+     * 5.0.0-beta.14, the attributes MVP, which wrote through this method. A
+     * World that may still be paired with one of those releases can keep its
+     * implementation. See `packages/core/src/attributes-mvp.md`.
      */
     experimentalSetAttributes?(
       runId: string,
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
-    ): Promise<SetAttributesResult>;
+    ): Promise<ExperimentalSetAttributesResult>;
 
     /**
      * Cancel many runs in a single operation, returning a per-run outcome

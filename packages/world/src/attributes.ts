@@ -53,10 +53,13 @@ export const AttributeChangesSchema = z
     }
   });
 
-/** The post-merge attribute snapshot returned by a World. */
-export interface SetAttributesResult {
+/**
+ * The post-merge attribute snapshot returned by the deprecated
+ * `runs.experimentalSetAttributes`.
+ *
+ * @deprecated The SDK no longer calls `runs.experimentalSetAttributes`; run
+ * attributes are written as `attr_set` events. See that method on `Storage`.
+ */
+export interface ExperimentalSetAttributesResult {
   attributes: Record<string, string>;
 }
-
-/** @deprecated Use {@link SetAttributesResult}. */
-export type ExperimentalSetAttributesResult = SetAttributesResult;

@@ -241,7 +241,7 @@ Beyond the stream and step signatures above, the interface gained:
 
 - `streams` as a namespace (see the table in step 2).
 - `analytics` — metadata-only listings for runs, steps, events, hooks, waits, and attributes.
-- attribute support on runs, including `runs.setAttributes` (the deprecated `experimentalSetAttributes` name is still called as a fallback).
+- attribute support on runs: `attr_set` events and attributes on `run_created`.
 - capability advertisement, so the runtime can gate optimizations. Unadvertised capabilities fail closed, which means an incomplete World stays correct but slower — advertise a capability only once it is genuinely implemented. Event ID allocation is not among them: it is a requirement, not a capability. A World that rejected stale writes behind the old `preconditionGuard` flag can delete that code, since the flag is gone and nothing replaced it.
 - an optional per-run event ceiling returned on run reads, which the runtime enforces.
 - optional `createRunId()` and a `region` on queue options, for worlds that place run state regionally.

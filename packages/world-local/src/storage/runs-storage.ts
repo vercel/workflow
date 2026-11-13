@@ -1,9 +1,9 @@
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import type {
   AttributeChange,
+  ExperimentalSetAttributesResult,
   ListWorkflowRunsParams,
   PaginatedResponse,
-  SetAttributesResult,
   Storage,
   WorkflowRun,
   WorkflowRunWithoutData,
@@ -55,13 +55,11 @@ export interface LocalRunsStorage {
       params?: LocalListWorkflowRunsParams
     ): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
   };
-  setAttributes(
+  experimentalSetAttributes(
     runId: string,
     changes: AttributeChange[],
     options?: { allowReservedAttributes?: boolean }
-  ): Promise<SetAttributesResult>;
-  /** @deprecated Alias of `setAttributes` for SDK versions that only call the old name. */
-  experimentalSetAttributes: LocalRunsStorage['setAttributes'];
+  ): Promise<ExperimentalSetAttributesResult>;
 }
 
 export function createRunsStorage(
@@ -80,7 +78,7 @@ export function createRunsStorage(
     );
   }) as Storage['runs']['get'];
 
-  const runsStorage: Omit<LocalRunsStorage, 'experimentalSetAttributes'> = {
+  return {
     get,
 
     /**
@@ -169,7 +167,7 @@ export function createRunsStorage(
       };
     }) as LocalRunsStorage['list'],
 
-    setAttributes: async (runId, changes, options) => {
+    experimentalSetAttributes: async (runId, changes, options) => {
       assertSafeEntityId('runId', runId);
       return db.transactAsync(() => {
         const row = store.getRun(runId);
@@ -185,10 +183,6 @@ export function createRunsStorage(
         return { attributes };
       });
     },
-  };
-  return {
-    ...runsStorage,
-    experimentalSetAttributes: runsStorage.setAttributes,
   };
 }
 

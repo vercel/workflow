@@ -8,7 +8,7 @@ import {
   BulkCancelWorkflowRunsResultSchema,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
-  type SetAttributesResult,
+  type ExperimentalSetAttributesResult,
   type GetWorkflowRunParams,
   type ListWorkflowRunsParams,
   type PaginatedResponse,
@@ -586,11 +586,11 @@ export async function cancelWorkflowRuns(
 }
 
 /**
- * Wire response schema for `setAttributes`. The backend
+ * Wire response schema for `experimentalSetAttributes`. The backend
  * returns the post-merge attribute snapshot so callers don't need to
  * issue a follow-up read.
  */
-const SetAttributesResponseSchema = z.object({
+const ExperimentalSetAttributesResponseSchema = z.object({
   attributes: z.record(z.string(), z.string()),
 });
 
@@ -604,15 +604,15 @@ const SetAttributesResponseSchema = z.object({
  * `$`-prefixed keys (framework-only; see the SDK helper for details).
  * The flag is forwarded to the server via the request body.
  *
- * The endpoint path is the wire contract with the backend and is not
- * tied to this function's name. See `packages/core/src/attributes-mvp.md`.
+ * EXPERIMENTAL: tied to the MVP write-only attributes API. See
+ * `docs/content/docs/v5/changelog/attributes-mvp.mdx`.
  */
-export async function setAttributes(
+export async function experimentalSetAttributes(
   runId: string,
   changes: AttributeChange[],
   options?: { allowReservedAttributes?: boolean },
   config?: APIConfig
-): Promise<SetAttributesResult> {
+): Promise<ExperimentalSetAttributesResult> {
   try {
     const response = await makeRequest({
       endpoint: `/v2/runs/${encodeURIComponent(runId)}/attributes`,
@@ -621,7 +621,7 @@ export async function setAttributes(
         ? { changes, allowReservedAttributes: true }
         : { changes },
       config,
-      schema: SetAttributesResponseSchema,
+      schema: ExperimentalSetAttributesResponseSchema,
     });
     return { attributes: response.attributes };
   } catch (error) {

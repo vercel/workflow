@@ -87,6 +87,22 @@ describe('setAttributes (host-side)', () => {
     );
   });
 
+  it('writes an attr_set event, not the deprecated runs.experimentalSetAttributes', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    const experimentalSetAttributes = vi.fn();
+    globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
+      name: 'test-world',
+      events: { create },
+      runs: { experimentalSetAttributes },
+    };
+
+    await runInStepContext(() => setAttributes({ phase: 'ready' }));
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(experimentalSetAttributes).not.toHaveBeenCalled();
+  });
+
   it('forwards allowReservedAttributes for step-side reserved namespace writes', async () => {
     const create = vi.fn().mockResolvedValue({});
     globals[WORLD_CACHE] = {

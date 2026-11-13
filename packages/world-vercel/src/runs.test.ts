@@ -7,7 +7,6 @@ import {
   getWorkflowRuns,
   listWorkflowRuns,
 } from './runs.js';
-import { createStorage } from './storage.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -324,45 +323,6 @@ describe('cancelWorkflowRuns', () => {
 
     // No interceptors registered — a network attempt would throw a distinct
     // "not mocked" error, so reaching here means no request was made.
-    agent.assertNoPendingInterceptors();
-  });
-});
-
-describe('runs.setAttributes', () => {
-  it('posts to the attributes endpoint under both the new and deprecated names', async () => {
-    const agent = new MockAgent();
-    agent.disableNetConnect();
-
-    const bodies: unknown[] = [];
-    agent
-      .get(ORIGIN)
-      .intercept({ path: '/api/v2/runs/wrun_a/attributes', method: 'POST' })
-      .reply(
-        200,
-        (opts: { body?: unknown }) => {
-          bodies.push(decode(new Uint8Array(opts.body as ArrayBufferLike)));
-          return encode({ attributes: { phase: 'init' } });
-        },
-        { headers: { 'content-type': 'application/cbor' } }
-      )
-      .times(2);
-
-    const storage = createStorage({ token: 'test-token', dispatcher: agent });
-    const changes = [{ key: 'phase', value: 'init' }];
-
-    await expect(
-      storage.runs.setAttributes!('wrun_a', changes)
-    ).resolves.toEqual({ attributes: { phase: 'init' } });
-    await expect(
-      storage.runs.experimentalSetAttributes!('wrun_a', changes, {
-        allowReservedAttributes: true,
-      })
-    ).resolves.toEqual({ attributes: { phase: 'init' } });
-
-    expect(bodies).toEqual([
-      { changes },
-      { changes, allowReservedAttributes: true },
-    ]);
     agent.assertNoPendingInterceptors();
   });
 });

@@ -22,6 +22,7 @@ import type {
   EventResult,
   EventsResolveData,
   EventsSubscribeOptions,
+  ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
   ListEventsParams,
@@ -29,7 +30,6 @@ import type {
   PaginatedResponse,
   ResolveData,
   SerializedData,
-  SetAttributesResult,
   StartHook,
   Step,
   StepWithoutData,
@@ -899,7 +899,7 @@ export function createRunsStorage(
     return filterRunData(parsed, resolveData);
   }) as Storage['runs']['get'];
 
-  const runsStorage: Storage['runs'] = {
+  return {
     get: getRun,
 
     /**
@@ -956,11 +956,11 @@ export function createRunsStorage(
     }) as NonNullable<Storage['runs']['getMany']>,
     list: createRunsList(drizzle),
 
-    setAttributes: async (
+    experimentalSetAttributes: async (
       runId: string,
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
-    ): Promise<SetAttributesResult> => {
+    ): Promise<ExperimentalSetAttributesResult> => {
       // Load existing attributes so the SDK-shape validator can produce
       // a precise error message (cap, duplicate keys, reserved prefix,
       // byte length). The authoritative cap enforcement happens inside
@@ -1038,9 +1038,6 @@ export function createRunsStorage(
       return { attributes: updated.attributes ?? {} };
     },
   };
-  // Deprecated alias for SDK versions that only call the old name.
-  runsStorage.experimentalSetAttributes = runsStorage.setAttributes;
-  return runsStorage;
 }
 
 function map<T, R>(obj: T | null | undefined, fn: (v: T) => R): undefined | R {
