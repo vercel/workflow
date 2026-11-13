@@ -2067,14 +2067,18 @@ function pushPipeOp(ops: Promise<unknown>[], pipe: Promise<void>): void {
   pipe.catch((err) => {
     // On paths that never await the list (a failed step, a dehydration that
     // throws, a failed `start()`), this is the only trace of the pipe's error.
-    runtimeLogger.debug('Stream pipe failed', {
-      errorName: err instanceof Error ? err.name : undefined,
-      errorMessage: err instanceof Error ? err.message : String(err),
-      cause:
-        err instanceof Error && err.cause instanceof Error
-          ? err.cause.message
-          : undefined,
-    });
+    try {
+      runtimeLogger.debug('Stream pipe failed', {
+        errorName: err instanceof Error ? err.name : undefined,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        cause:
+          err instanceof Error && err.cause instanceof Error
+            ? err.cause.message
+            : undefined,
+      });
+    } catch {
+      // Best-effort logging must not create another unhandled rejection.
+    }
   });
   ops.push(pipe);
 }
