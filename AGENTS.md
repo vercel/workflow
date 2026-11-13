@@ -548,7 +548,7 @@ When a build step generates files, add them to the package's `turbo.json` output
 The `executionContext` field on workflow runs is a flexible JSONB/CBOR object that can store arbitrary data without schema changes. It flows through all worlds (local, postgres, vercel).
 
 ### Observability data hydration
-`packages/core/src/observability.ts` contains `hydrateResourceIO` which strips certain fields (like `executionContext`) before UI display. If you need to display data from stripped fields, extract it before the stripping occurs.
+`packages/core/src/serialization-format.ts` contains `hydrateResourceIO` which strips certain fields (like `executionContext`) before UI display. If you need to display data from stripped fields, extract it before the stripping occurs.
 
 ### World packages must not hold mutable module state
 
