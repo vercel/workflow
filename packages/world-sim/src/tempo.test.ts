@@ -21,7 +21,10 @@ function scenario(partial: Partial<ScenarioSpec>): ScenarioSpec {
   return {
     name: 'test',
     workflow: { workflowId: WORKFLOW_ID },
-    limits: { maxWallMs: 1_000 },
+    // A backstop, not the subject: these scenarios end when the queue drains.
+    // The first one also pays the runtime's lazy module loads, which took
+    // 0.8-1.2 s on CI runners, so 1 s was too tight.
+    limits: { maxWallMs: 5_000 },
     ...partial,
   };
 }
