@@ -60,6 +60,7 @@ function writeFile(path: string, contents: string): void {
 
 describe('withWorkflow builder config', () => {
   const originalCwd = process.cwd();
+  const originalArgv1 = process.argv[1];
   const originalEnv = {
     PORT: process.env.PORT,
     VERCEL_DEPLOYMENT_ID: process.env.VERCEL_DEPLOYMENT_ID,
@@ -95,6 +96,8 @@ describe('withWorkflow builder config', () => {
     if (process.cwd() !== originalCwd) {
       process.chdir(originalCwd);
     }
+
+    process.argv[1] = originalArgv1;
 
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value === undefined) {
@@ -202,6 +205,24 @@ describe('withWorkflow builder config', () => {
     });
 
     expect(buildMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    '/app/node_modules/next/dist/telemetry/detached-flush.js',
+    'C:\\app\\node_modules\\next\\dist\\telemetry\\detached-flush.js',
+  ])('does not build when Next telemetry flush (%s) evaluates the config', async (script) => {
+    // `next dev` spawns this helper on exit; it reads distDir from the config
+    // in the development phase and must be able to exit afterwards.
+    process.argv[1] = script;
+
+    const nextConfig = await withWorkflow({ distDir: 'out' })(
+      'phase-development-server',
+      { defaultConfig: {} }
+    );
+
+    expect(nextConfig.distDir).toBe('out');
+    expect(getNextBuilderMock).not.toHaveBeenCalled();
+    expect(buildMock).not.toHaveBeenCalled();
   });
 
   it('does not prewarm the SWC plugin cache for the production server', async () => {
