@@ -2,10 +2,6 @@
 
 Observability Web UI Package bundled in the [Workflow SDK](https://workflow-sdk.dev/docs/observability).
 
-The Streams tab previews raw PNG, JPEG, GIF, and WebP streams and lets you
-download the original image. Text and serialized Workflow streams retain their
-existing display.
-
 ## Self-hosting
 
 > **Security notice:** The `@workflow/web` package does not include authentication or authorization.
