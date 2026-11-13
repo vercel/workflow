@@ -134,7 +134,7 @@ export WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS="30"
 
 # Optional: Seconds a running delivery's job lock may go unrenewed before
 # another process redelivers the job (default: unset, which releases only
-# spec 9 named-queue jobs of renewing holders after 300s; 30 is a good value
+# spec 9 run-lease jobs of renewing holders after 300s; 30 is a good value
 # when more than one process shares the database, see "Crash recovery")
 export WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS="30"
 ```
@@ -200,7 +200,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. A parent workflow awaiting `returnValue` of a child it started suspends on a system hook and holds no slot, but a `returnValue` polled inside a step holds one until the child run terminates, so cover the peak number of those in flight. |
 | `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
-| `jobLockStaleSeconds` | `number` | `process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`, or unset: renew every delivery and release only spec 9 named-queue jobs of renewing holders after 300 s | Seconds a running delivery's job lock may go unrenewed before another process redelivers any of this World's jobs. `0` turns renewal and the release of stale locks off. `30` is a good value when more than one process shares the database. See [Crash recovery](#crash-recovery). |
+| `jobLockStaleSeconds` | `number` | `process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`, or unset: renew every delivery and release only spec 9 run-lease jobs of renewing holders after 300 s | Seconds a running delivery's job lock may go unrenewed before another process redelivers any of this World's jobs. `0` turns renewal and the release of stale locks off. `30` is a good value when more than one process shares the database. See [Crash recovery](#crash-recovery). |
 
 ## Environment variables
 
@@ -214,7 +214,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 | `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |
-| `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job; `0` disables | unset: 300 s, spec 9 named queues only |
+| `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job; `0` disables | unset: 300 s, spec 9 run-lease jobs only |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 
@@ -338,9 +338,9 @@ and its token can be reused. If the token is never reused, the expired
 
 Graphile Worker on its own keeps a dead worker's job locked for 4 hours. A running delivery therefore renews its Graphile job lock every quarter of the stale window, and at least every 10 seconds, and every process that runs workers releases jobs whose locks have gone unrenewed for that window.
 
-By default (`jobLockStaleSeconds` unset), the window is 300 seconds and the release covers only the jobs of a spec 9 run's named queue (its orchestrator deliveries, and invoke mode's executor lane) whose holder registered as renewing. A worker registers in `workflow.workflow_job_lock_holders` (migration 0030, applied by `bootstrap`) before its delivery runs. A spec 9 run whose worker was killed mid-delivery thus continues within about 8 minutes (one and a half windows). A job held by a process on an earlier version is never released this way, so the default is safe during a rolling upgrade, and other jobs are recovered by the next `start()`, which re-enqueues active runs, or after Graphile Worker's 4 hours. Without the migration, deliveries still run and renew, but nothing registers, so nothing is released; a warning names the migration.
+By default (`jobLockStaleSeconds` unset), the window is 300 seconds and the release covers only the jobs that own a spec 9 run's delivery lease (its orchestrator deliveries, and invoke mode's executor lane) whose holder registered as renewing. A worker registers in `workflow.workflow_job_lock_holders` (migration 0030, applied by `bootstrap`) before its delivery runs. A spec 9 run whose worker was killed mid-delivery thus continues within about 8 minutes (one and a half windows). A job held by a process on an earlier version is never released this way, so the default is safe during a rolling upgrade, and other jobs are recovered by the next `start()`, which re-enqueues active runs, or after Graphile Worker's 4 hours. Without migrations 0030 and 0031, deliveries still run and renew, but nothing is released; a warning names the migration.
 
-Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to release every job of this World, whoever holds it, after that many seconds. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. In invoke mode, the release covers the run's executor queue too.
+Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to release every job of this World, whoever holds it, after that many seconds. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. In invoke mode, the release covers the run's executor jobs too.
 
 Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
 
@@ -393,16 +393,19 @@ with the same idempotency key. Handlers must still tolerate at-least-once delive
 across worker processes, restarts, or completed-message cache eviction.
 
 With invocation enabled, each Graphile worker pool registers two task
-identifiers. A task identifier selects a handler. A named queue controls which
-jobs can execute concurrently. The default job prefix produces these names:
+identifiers. A task identifier selects a handler. A run's delivery lease
+(`workflow.workflow_run_delivery_leases`, see [HOW_IT_WORKS.md](./HOW_IT_WORKS.md#serializing-a-runs-deliveries-run-leases))
+controls which jobs can execute concurrently. The default job prefix produces
+these names:
 
-| Task identifier | Work | Named queue |
+| Task identifier | Work | Run lease |
 | --- | --- | --- |
-| `workflow_flows_executor` | Start or resume workflow execution | `workflow_flows:<runId>:executor`, one queue per run |
-| `workflow_flows` | Step execution and health checks | No run-scoped named queue |
+| `workflow_flows_executor` | Start or resume workflow execution | Takes the run's lease |
+| `workflow_flows` | Step execution and health checks | None |
 
-Graphile permits one active job per run's named queue across worker processes.
-Different runs, step jobs, and health checks can execute concurrently.
+One job holds a run's lease at a time across worker processes; a delivery that
+finds it held leaves its message for the holder, which re-adds it when it
+releases. Different runs, step jobs, and health checks can execute concurrently.
 `queueConcurrency` limits the total active Graphile jobs per worker process
 across both task identifiers and defaults to **50**.
 
@@ -421,7 +424,7 @@ workflow execution request can process several invocations.
 Before processing pending inputs, the HTTP receiver verifies the execution
 request against Graphile's `jobs` view. The worker supplies the job ID, worker ID,
 and attempt through private HTTP headers. The receiver requires a locked job
-with matching metadata, the executor task identifier, and the run's named queue.
+with matching metadata and the executor task identifier, that owns the run's lease.
 Application-supplied headers cannot replace this metadata. Step jobs and health
 checks process their own work without reading pending invocation rows.
 
@@ -553,11 +556,11 @@ export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
 
 ## Spec 9 (experimental)
 
-Runs of the experimental spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`) run their orchestrator deliveries one at a time through the run's Graphile named queue, with or without invocation, and publish their keyed messages with the `unsafe_dedupe` job key mode. A worker killed mid-job leaves that named queue locked until another process releases it, by default after 300 seconds unrenewed (see [Crash recovery](#crash-recovery)). See [world-postgres on spec 9 runs](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#first-party-worlds).
+Runs of the experimental spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`) run their orchestrator deliveries one at a time under the run's delivery lease (`workflow.workflow_run_delivery_leases`, migration 0031), with or without invocation, and publish their keyed messages with the `unsafe_dedupe` job key mode. A worker killed mid-job keeps the lease, through its locked job, until another process releases the job, by default after 300 seconds unrenewed (see [Crash recovery](#crash-recovery)); the job's redelivery takes the lease back. Earlier versions used a Graphile named queue per run, whose rows Graphile never deletes and locks on every poll, so throughput fell as runs accumulated. See [world-postgres on spec 9 runs](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#first-party-worlds).
 
 - **Live event feed.** Every committed event write of a spec 9 run sends a `NOTIFY` on `workflow_run_events` after its transaction commits, and `events.subscribe` delivers the run's new events to a running orchestrator from one shared `LISTEN` connection per process, read from the table in slot order. A delivery with nothing left to run then lingers on the feed while it waits on a background step (30 seconds, `WORKFLOW_ORCHESTRATOR_LINGER_MS`) or an open hook (5 seconds), so a burst of step outcomes or hook resumes is handled by one warm delivery. The feed does not deliver a `resumeHook()` resume (a `hook_received` with a `resumeId`): it ends there, so a delivery that is only waiting stops lingering, and the resume's wake, which carries its timing, consumes and measures it. A lingering delivery holds a worker slot, so at most half of a process's `queueConcurrency` slots keep a live feed at once (none at `queueConcurrency: 1`); past that, a delivery polls the log instead of lingering. The `LISTEN` connection needs a database connection that supports sessions, as for streams.
-- **Coalescing.** When a spec 9 orchestrator delivery finishes, it takes the run's orchestrator messages that queued behind it on the named queue (waiting, due, and neither a start message nor a legacy `hookInput` resume) and runs the handler again in the same worker, up to 32 times, instead of delivering each one. A re-run reports the next `deliveryCount`, the same `attempt` and the same `invocationStartedAt`, and carries the `hookResumeTiming` of a hook wake it absorbed, so the resume it consumes is measured (`workflow.resume.total_ms`). A handoff (`{ timeoutSeconds: 0 }`) goes to the front of the run's named queue.
+- **Coalescing.** An orchestrator delivery that finds the run's lease held leaves its message on the lease and completes. When the holder finishes, it runs the handler again in the same worker for a wake left there (neither a start message nor a legacy `hookInput` resume, which are re-added as jobs instead), up to 32 times, instead of delivering each one. A re-run reports the next `deliveryCount`, the same `attempt` and the same `invocationStartedAt`, and carries the `hookResumeTiming` of a hook wake it absorbed, so the resume it consumes is measured (`workflow.resume.total_ms`). A handoff (`{ timeoutSeconds: 0 }`) passes the lease to its continuation.
 - **Delivery cap.** A spec 9 orchestrator's `{ timeoutSeconds: n > 0 }` (a redelivery after the in-band fence refused its write) carries `attempt` over, so a run refused on every pass fails with `MAX_DELIVERIES_EXCEEDED` instead of looping. A step's retry in place still starts `attempt` over.
-- **Unstamped messages.** An orchestrator message without a spec stamp (an older SDK's `resumeHook()` or `cancel()` during a rolling upgrade) is checked against the run's stored `spec_version` when a worker takes it. For a spec 9 run, it is stamped with that version and moved to the run's named queue, so it waits behind the run's live delivery instead of running beside it.
+- **Unstamped messages.** An orchestrator message without a spec stamp (an older SDK's `resumeHook()` or `cancel()` during a rolling upgrade) is checked against the run's stored `spec_version` when a worker takes it. For a spec 9 run, it is stamped with that version and re-added, so it takes the run's lease and waits for the run's live delivery instead of running beside it.
 
 Every run's keyed step messages, spec 8 included, use `unsafe_dedupe`: a step message sent again while its job is locked or in retry backoff adds no second job. With `preserve_run_at`, a spec 8 step message sent again while its job was being delivered (spec 8 republishes a delivery's step messages after a failed send) added a second job, and another worker ran the step body a second time.

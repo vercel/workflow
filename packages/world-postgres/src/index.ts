@@ -113,8 +113,8 @@ export function createWorld(
     // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
     // the hook_created branch of storage.ts.
     hookForceClaim: true,
-    // A single-orchestrator run's orchestrator deliveries share one
-    // Graphile named queue (see queue.ts), and the events storage fences
+    // A single-orchestrator run's orchestrator deliveries take one run
+    // delivery lease (see run-lease.ts), and the events storage fences
     // in-band writes and stores them at their `occurredAt` (see
     // storage.ts): the two halves of the single-writer guarantee.
     maxConcurrency: true,
