@@ -119,7 +119,7 @@ export {
   type CancelRunOptions,
   cancelRun,
   cancelRuns,
-  deleteRunsData,
+  deleteRunData,
   listStreams,
   pendingWakeUpWaits,
   type ReadStreamOptions,

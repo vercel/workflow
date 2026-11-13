@@ -95,22 +95,22 @@ missing and you get `WorkflowRunNotFoundError` instead.
 
 To delete the data of a run that has already finished, call
 [`run.deleteData()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data),
-call [`deleteRunsData()`](/docs/api-reference/workflow-api/delete-runs-data)
-for up to 100 runs at once, or run `workflow delete-data` from the
-[CLI](/docs/configuration/cli-and-web-ui#delete-data). The World deletes the
+call [`deleteRunData()`](/docs/api-reference/workflow-api/delete-run-data)
+for up to 100 runs at once, or run `workflow delete` from the
+[CLI](/docs/configuration/cli-and-web-ui#delete). The World deletes the
 same data a run started with `experimental_retention: 0` has deleted when it
 ends, and keeps the same records listed.
 
 {/* @skip-typecheck: abbreviated usage; runId and runIds are the reader's own */}
 ```typescript lineNumbers
-import { deleteRunsData, getRun } from 'workflow/api'
+import { deleteRunData, getRun } from 'workflow/api'
 
 const result = await getRun(runId).deleteData() // [!code highlight]
-const { summary, results } = await deleteRunsData(runIds) // [!code highlight]
+const { summary, results } = await deleteRunData(runIds) // [!code highlight]
 ```
 
 ```bash
-workflow delete-data wrun_... wrun_... --backend vercel
+workflow delete wrun_... wrun_... --backend vercel
 ```
 
 Only finished runs have their data deleted. A run that is still running,
@@ -124,7 +124,7 @@ throws a `RetryableError`, so the step retries on its own.
 
 Deleting run data is optional for a World to implement, and there is no
 fallback: on a World that doesn't support it, `run.deleteData()` and
-`deleteRunsData()` throw, and `workflow delete-data` exits with an error. The
+`deleteRunData()` throw, and `workflow delete` exits with an error. The
 [Local World](/worlds/local), the [Postgres World](/worlds/postgres) and the
 [Vercel World](/worlds/vercel) support it. Deleting run data doesn't change
 how a run is billed; see the

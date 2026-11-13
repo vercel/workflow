@@ -1,8 +1,8 @@
 ---
-title: deleteRunsData
+title: deleteRunData
 description: Delete the stored data of finished workflow runs in one call.
 type: reference
-summary: Use deleteRunsData to delete the inputs, outputs, streams, and hook payloads of up to 100 finished runs.
+summary: Use deleteRunData to delete the inputs, outputs, streams, and hook payloads of up to 100 finished runs.
 related:
   - /docs/observability/retention
   - /docs/api-reference/workflow-api/get-run
@@ -13,16 +13,16 @@ Deletes the stored data of up to 100 finished runs: their inputs, outputs and er
 For a single run, call [`run.deleteData()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data) instead.
 
 ```typescript lineNumbers
-import { deleteRunsData } from "workflow/api";
+import { deleteRunData } from "workflow/api";
 
 export async function POST(req: Request) {
   const { runIds } = await req.json();
-  const { summary, results } = await deleteRunsData(runIds); // [!code highlight]
+  const { summary, results } = await deleteRunData(runIds); // [!code highlight]
   return Response.json({ summary, results });
 }
 ```
 
-`deleteRunsData()` never cancels a run: a run that hasn't finished is answered `skipped` and keeps running. Cancel it first to delete its data now.
+`deleteRunData()` never cancels a run: a run that hasn't finished is answered `skipped` and keeps running. Cancel it first to delete its data now.
 
 ## API signature
 
@@ -30,8 +30,8 @@ export async function POST(req: Request) {
 
 <TSDoc
 definition={`
-import { deleteRunsData } from "workflow/api";
-export default deleteRunsData;`}
+import { deleteRunData } from "workflow/api";
+export default deleteRunData;`}
 showSections={["parameters"]}
 />
 
@@ -57,4 +57,4 @@ Deletion is idempotent, so retrying is always safe: a run that was already handl
 
 ## Errors
 
-`deleteRunsData()` throws when `runIds` is empty, contains duplicates, or has more than 100 IDs, and when the configured World doesn't support deleting run data. Send more runs in batches of 100. The World enforces the same limit.
+`deleteRunData()` throws when `runIds` is empty, contains duplicates, or has more than 100 IDs, and when the configured World doesn't support deleting run data. Send more runs in batches of 100. The World enforces the same limit.

@@ -1,5 +1,5 @@
 import readline from 'node:readline';
-import { deleteRunsData } from '@workflow/core/runtime';
+import { deleteRunData } from '@workflow/core/runtime';
 import { ThrottleError } from '@workflow/errors';
 import {
   DELETE_RUNS_DATA_MAX_RUN_IDS,
@@ -9,18 +9,18 @@ import {
 } from '@workflow/world';
 
 /** Printed when the configured World cannot delete run data. */
-export const DELETE_DATA_UNSUPPORTED_MESSAGE =
+export const DELETE_UNSUPPORTED_MESSAGE =
   'The configured World does not support deleting run data.';
 
 /**
  * Printed when a deletion needs confirming and there is no terminal to ask
  * on: a script that forgets `-y` must not look like it deleted anything.
  */
-export const DELETE_DATA_NO_TTY_MESSAGE =
+export const DELETE_NO_TTY_MESSAGE =
   'No terminal to confirm the deletion on; pass -y/--confirm to delete non-interactively.';
 
 /** How often a batch is sent in all, counting the first try. */
-export const DELETE_DATA_MAX_ATTEMPTS = 4;
+export const DELETE_MAX_ATTEMPTS = 4;
 
 /** Wait before the first retry; doubles for each one after it. */
 const RETRY_BASE_DELAY_MS = 1_000;
@@ -49,7 +49,7 @@ export function createPromptConfirm(
 
 /**
  * The run IDs in `input`, one per line or separated by any whitespace, as
- * `workflow delete-data -` reads them from stdin.
+ * `workflow delete -` reads them from stdin.
  */
 export async function readRunIds(
   input: AsyncIterable<string | Buffer>
@@ -61,7 +61,7 @@ export async function readRunIds(
   return text.split(/\s+/).filter((runId) => runId.length > 0);
 }
 
-export interface DeleteDataLogger {
+export interface DeleteLogger {
   log(message: string): void;
   warn(message: string): void;
   error(message: string): void;
@@ -70,11 +70,11 @@ export interface DeleteDataLogger {
 /**
  * The compact multi-line "Done:" summary block. Lists every outcome so the
  * counts add up to the number of runs requested; runs worth calling out are
- * additionally listed by {@link deleteDataFailureLines}. A `not_created` run
+ * additionally listed by {@link deleteFailureLines}. A `not_created` run
  * (cancelled before it was ever created) counts as deleted; `--json` keeps
  * it separate.
  */
-export function formatDeleteDataSummary(result: DeleteRunsDataResult): string {
+export function formatDeleteSummary(result: DeleteRunsDataResult): string {
   const { summary } = result;
   return [
     'Done:',
@@ -91,7 +91,7 @@ export function formatDeleteDataSummary(result: DeleteRunsDataResult): string {
  * skipped because they have not finished, runs that were not found, and
  * failures.
  */
-export function deleteDataFailureLines(result: DeleteRunsDataResult): string[] {
+export function deleteFailureLines(result: DeleteRunsDataResult): string[] {
   const lines: string[] = [];
   for (const r of result.results) {
     switch (r.outcome) {
@@ -105,7 +105,7 @@ export function deleteDataFailureLines(result: DeleteRunsDataResult): string[] {
         break;
       case 'failed':
         lines.push(
-          `  ✗ ${r.runId}: failed (${r.code}${r.retryable ? `, still failing after ${DELETE_DATA_MAX_ATTEMPTS} attempts` : ''})`
+          `  ✗ ${r.runId}: failed (${r.code}${r.retryable ? `, still failing after ${DELETE_MAX_ATTEMPTS} attempts` : ''})`
         );
         break;
     }
@@ -140,12 +140,12 @@ const defaultSleep = (ms: number) =>
  * `retryable: true`, and the whole request when the World rate-limits it
  * (after the World's `retryAfter`, when it gives one). Deletion is
  * idempotent, so a retry only finishes what an attempt left. After
- * {@link DELETE_DATA_MAX_ATTEMPTS} attempts the last answer stands.
+ * {@link DELETE_MAX_ATTEMPTS} attempts the last answer stands.
  */
 async function deleteBatchWithRetries(
   world: World,
   runIds: string[],
-  logger: DeleteDataLogger,
+  logger: DeleteLogger,
   sleep: (ms: number) => Promise<void>
 ): Promise<DeleteRunDataResult[]> {
   const resultByRunId = new Map<string, DeleteRunDataResult>();
@@ -154,7 +154,7 @@ async function deleteBatchWithRetries(
     let reason: string;
     let delayMs = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
     try {
-      const { results } = await deleteRunsData(world, pending);
+      const { results } = await deleteRunData(world, pending);
       for (const result of results) resultByRunId.set(result.runId, result);
       pending = results
         .filter((result) => result.outcome === 'failed' && result.retryable)
@@ -164,7 +164,7 @@ async function deleteBatchWithRetries(
     } catch (err) {
       if (!ThrottleError.is(err)) throw err;
       // Out of attempts: the last answer stands, if there was one.
-      if (attempt >= DELETE_DATA_MAX_ATTEMPTS && resultByRunId.size === 0) {
+      if (attempt >= DELETE_MAX_ATTEMPTS && resultByRunId.size === 0) {
         throw err;
       }
       reason = 'Rate limited';
@@ -172,18 +172,18 @@ async function deleteBatchWithRetries(
         delayMs = err.retryAfter * 1000;
       }
     }
-    if (attempt >= DELETE_DATA_MAX_ATTEMPTS) break;
+    if (attempt >= DELETE_MAX_ATTEMPTS) break;
 
     delayMs = Math.min(Math.max(delayMs, 0), RETRY_MAX_DELAY_MS);
     logger.warn(
-      `${reason}; retrying in ${Math.ceil(delayMs / 1000)}s (attempt ${attempt + 1} of ${DELETE_DATA_MAX_ATTEMPTS}).`
+      `${reason}; retrying in ${Math.ceil(delayMs / 1000)}s (attempt ${attempt + 1} of ${DELETE_MAX_ATTEMPTS}).`
     );
     await sleep(delayMs);
   }
   return runIds.map((runId) => resultByRunId.get(runId) as DeleteRunDataResult);
 }
 
-export interface DeleteDataParams {
+export interface DeleteParams {
   world: World;
   runIds: string[];
   /** When true, skip the interactive confirmation prompt. */
@@ -195,18 +195,18 @@ export interface DeleteDataParams {
    * or has not finished, not only when one failed.
    */
   strict?: boolean;
-  logger: DeleteDataLogger;
+  logger: DeleteLogger;
   /**
    * Confirmation prompt. Omitted when there is no terminal to ask on, in
    * which case an unconfirmed deletion fails with
-   * {@link DELETE_DATA_NO_TTY_MESSAGE}.
+   * {@link DELETE_NO_TTY_MESSAGE}.
    */
   promptConfirm?: (message: string) => Promise<boolean>;
   /** Waits between retries. Replaced in tests. */
   sleep?: (ms: number) => Promise<void>;
 }
 
-export interface DeleteDataOutcome {
+export interface DeleteOutcome {
   /**
    * Process exit code: 1 when the input was invalid, the deletion could not
    * be confirmed, or any run failed (or, with `strict`, was not found or not
@@ -223,9 +223,9 @@ export interface DeleteDataOutcome {
  * finished are skipped and left running. Duplicate IDs are handled once.
  * Retryable failures are retried; see {@link deleteBatchWithRetries}.
  */
-export async function performDeleteData(
-  params: DeleteDataParams
-): Promise<DeleteDataOutcome> {
+export async function performDelete(
+  params: DeleteParams
+): Promise<DeleteOutcome> {
   const { world, confirm, json, strict, logger, promptConfirm } = params;
   const sleep = params.sleep ?? defaultSleep;
   const runIds = [...new Set(params.runIds)];
@@ -237,13 +237,13 @@ export async function performDeleteData(
   // Checked before prompting: confirming a deletion the World then refuses
   // would leave the user wondering what happened.
   if (!world.runs.deleteDataMany) {
-    logger.error(DELETE_DATA_UNSUPPORTED_MESSAGE);
+    logger.error(DELETE_UNSUPPORTED_MESSAGE);
     return { exitCode: 1 };
   }
 
   if (!confirm) {
     if (!promptConfirm) {
-      logger.error(DELETE_DATA_NO_TTY_MESSAGE);
+      logger.error(DELETE_NO_TTY_MESSAGE);
       return { exitCode: 1 };
     }
     const confirmed = await promptConfirm(
@@ -271,10 +271,10 @@ export async function performDeleteData(
   if (json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } else {
-    for (const line of deleteDataFailureLines(result)) {
+    for (const line of deleteFailureLines(result)) {
       logger.warn(line);
     }
-    logger.log(`\n${formatDeleteDataSummary(result)}`);
+    logger.log(`\n${formatDeleteSummary(result)}`);
   }
 
   // Skipped, already deleted, and missing runs are valid partial outcomes;

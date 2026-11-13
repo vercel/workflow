@@ -48,7 +48,7 @@ import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
   cancelRun,
   cancelRuns,
-  deleteRunsData,
+  deleteRunData,
   pendingWakeUpWaits,
   recreateRunFromExisting,
   reenqueueRun,
@@ -1272,7 +1272,7 @@ describe('cancelRuns', () => {
   });
 });
 
-describe('deleteRunsData', () => {
+describe('deleteRunData', () => {
   const emptySummary = {
     requested: 0,
     deleted: 0,
@@ -1317,7 +1317,7 @@ describe('deleteRunsData', () => {
       events: { create: vi.fn() },
     } as unknown as World;
 
-    const result = await deleteRunsData(world, ['a', 'b']);
+    const result = await deleteRunData(world, ['a', 'b']);
 
     expect(deleteDataMany).toHaveBeenCalledTimes(1);
     expect(deleteDataMany).toHaveBeenCalledWith({ runIds: ['a', 'b'] });
@@ -1332,7 +1332,7 @@ describe('deleteRunsData', () => {
       .mockResolvedValue({ summary, results: [...results].reverse() });
     const world = { runs: { deleteDataMany } } as unknown as World;
 
-    const result = await deleteRunsData(world, ['a', 'b']);
+    const result = await deleteRunData(world, ['a', 'b']);
     expect(result.results.map((r) => r.runId)).toEqual(['a', 'b']);
   });
 
@@ -1353,7 +1353,7 @@ describe('deleteRunsData', () => {
     });
     const world = { runs: { deleteDataMany } } as unknown as World;
 
-    await expect(deleteRunsData(world, ['a'])).rejects.toThrow(
+    await expect(deleteRunData(world, ['a'])).rejects.toThrow(
       /The World did not answer the deletion of the data of run a/
     );
   });
@@ -1364,7 +1364,7 @@ describe('deleteRunsData', () => {
       events: { create: vi.fn() },
     } as unknown as World;
 
-    const error = await deleteRunsData(world, ['a']).catch((cause) => cause);
+    const error = await deleteRunData(world, ['a']).catch((cause) => cause);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(
       'The configured World does not support deleting run data.'
@@ -1377,15 +1377,15 @@ describe('deleteRunsData', () => {
     const deleteDataMany = vi.fn();
     const world = { runs: { deleteDataMany } } as unknown as World;
 
-    await expect(deleteRunsData(world, [])).rejects.toSatisfy(
+    await expect(deleteRunData(world, [])).rejects.toSatisfy(
       (error: unknown) =>
         FatalError.is(error) && /at least one run ID/.test(error.message)
     );
-    await expect(deleteRunsData(world, ['a', 'a'])).rejects.toThrow(
+    await expect(deleteRunData(world, ['a', 'a'])).rejects.toThrow(
       'unique run IDs'
     );
     await expect(
-      deleteRunsData(
+      deleteRunData(
         world,
         Array.from({ length: 101 }, (_, index) => `wrun_${index}`)
       )
@@ -1397,7 +1397,7 @@ describe('deleteRunsData', () => {
     const deleteDataMany = vi.fn().mockResolvedValue(retryableFailure);
     const world = { runs: { deleteDataMany } } as unknown as World;
 
-    await expect(deleteRunsData(world, ['a', 'b'])).resolves.toEqual(
+    await expect(deleteRunData(world, ['a', 'b'])).resolves.toEqual(
       retryableFailure
     );
   });
@@ -1406,7 +1406,7 @@ describe('deleteRunsData', () => {
     const deleteDataMany = vi.fn().mockResolvedValue(retryableFailure);
     const world = { runs: { deleteDataMany } } as unknown as World;
 
-    const error = await inStep(() => deleteRunsData(world, ['a', 'b'])).catch(
+    const error = await inStep(() => deleteRunData(world, ['a', 'b'])).catch(
       (cause) => cause
     );
     expect(RetryableError.is(error)).toBe(true);
@@ -1423,7 +1423,7 @@ describe('deleteRunsData', () => {
     const deleteDataMany = vi.fn().mockResolvedValue(answer);
     const world = { runs: { deleteDataMany } } as unknown as World;
 
-    await expect(inStep(() => deleteRunsData(world, ['a']))).resolves.toEqual(
+    await expect(inStep(() => deleteRunData(world, ['a']))).resolves.toEqual(
       answer
     );
   });
@@ -1435,7 +1435,7 @@ describe('deleteRunsData', () => {
     const world = { runs: { deleteDataMany } } as unknown as World;
 
     const before = Date.now();
-    const error = await inStep(() => deleteRunsData(world, ['a'])).catch(
+    const error = await inStep(() => deleteRunData(world, ['a'])).catch(
       (cause) => cause
     );
     expect(RetryableError.is(error)).toBe(true);
@@ -1449,7 +1449,7 @@ describe('deleteRunsData', () => {
     const deleteDataMany = vi.fn().mockRejectedValue(throttle);
     const world = { runs: { deleteDataMany } } as unknown as World;
 
-    await expect(deleteRunsData(world, ['a'])).rejects.toBe(throttle);
+    await expect(deleteRunData(world, ['a'])).rejects.toBe(throttle);
   });
 });
 

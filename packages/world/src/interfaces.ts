@@ -350,7 +350,7 @@ export interface Storage {
      * (order preserved) plus an aggregate summary. See
      * `DeleteRunDataResult` for the outcomes.
      *
-     * OPTIONAL. There is no fallback: the SDK helper `deleteRunsData` in
+     * OPTIONAL. There is no fallback: the SDK helper `deleteRunData` in
      * `@workflow/core` throws when the configured World does not implement
      * it.
      */

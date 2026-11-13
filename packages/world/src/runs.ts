@@ -335,7 +335,7 @@ export type BulkCancelWorkflowRunsResult = z.infer<
 >;
 
 /**
- * Maximum number of run IDs that a single delete-data request may carry.
+ * Maximum number of run IDs that a single delete-data (`deleteDataMany`) request may carry.
  * world-vercel enforces the same limit on its side.
  */
 export const DELETE_RUNS_DATA_MAX_RUN_IDS = 100;

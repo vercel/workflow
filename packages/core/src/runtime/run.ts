@@ -36,7 +36,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
-  deleteRunsData,
+  deleteRunData,
   isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
@@ -418,10 +418,10 @@ export class Run<TResult> {
    */
   async deleteData(): Promise<DeleteRunDataResult> {
     'use step';
-    const { results } = await deleteRunsData(await this.#lazyWorldPromise, [
+    const { results } = await deleteRunData(await this.#lazyWorldPromise, [
       this.runId,
     ]);
-    // `deleteRunsData` guarantees exactly one result, for this run.
+    // `deleteRunData` guarantees exactly one result, for this run.
     return results[0] as DeleteRunDataResult;
   }
 

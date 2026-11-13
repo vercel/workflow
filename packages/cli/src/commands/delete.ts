@@ -4,22 +4,22 @@ import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import {
   createPromptConfirm,
-  performDeleteData,
+  performDelete,
   readRunIds,
-} from '../lib/delete-data.js';
+} from '../lib/delete.js';
 import { reportActionableApiError } from '../lib/inspect/errors.js';
 import { targetFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
-export default class DeleteData extends BaseCommand {
+export default class Delete extends BaseCommand {
   static description =
     'Delete the stored data of finished workflow runs (inputs, outputs, streams, and hook payloads). The runs stay listed. This cannot be undone.';
 
   static examples = [
-    '$ workflow delete-data <run-id>',
-    '$ workflow delete-data <run-id> <run-id> <run-id>',
-    '$ workflow delete-data <run-id> -y --backend vercel',
-    '$ cat run-ids.txt | workflow delete-data - -y --strict',
+    '$ workflow delete <run-id>',
+    '$ workflow delete <run-id> <run-id> <run-id>',
+    '$ workflow delete <run-id> -y --backend vercel',
+    '$ cat run-ids.txt | workflow delete - -y --strict',
   ];
 
   // Takes any number of run IDs.
@@ -64,7 +64,7 @@ export default class DeleteData extends BaseCommand {
   };
 
   public async run(): Promise<void> {
-    const { flags, argv } = await this.parse(DeleteData);
+    const { flags, argv } = await this.parse(Delete);
     this.backend = flags.backend;
 
     const args = argv.map((arg) => String(arg));
@@ -83,7 +83,7 @@ export default class DeleteData extends BaseCommand {
       );
     }
 
-    const { exitCode } = await performDeleteData({
+    const { exitCode } = await performDelete({
       world,
       runIds,
       confirm: flags.confirm,

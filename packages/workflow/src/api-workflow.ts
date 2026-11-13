@@ -21,7 +21,7 @@ const workflowStub = (item: string) => {
 };
 
 export const getRun = () => workflowStub('getRun');
-export const deleteRunsData = () => workflowStub('deleteRunsData');
+export const deleteRunData = () => workflowStub('deleteRunData');
 export const getHookByToken = () => workflowStub('getHookByToken');
 export const resumeHook = () => workflowStub('resumeHook');
 export const resumeWebhook = () => workflowStub('resumeWebhook');

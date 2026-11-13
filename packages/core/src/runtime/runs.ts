@@ -435,21 +435,21 @@ export async function cancelRuns(
  *   support deleting run data; or if the World does not answer exactly one
  *   result per run.
  */
-export async function deleteRunsData(
+export async function deleteRunData(
   world: World,
   runIds: string[]
 ): Promise<DeleteRunsDataResult> {
   if (runIds.length === 0) {
-    throw new FatalError('deleteRunsData requires at least one run ID.');
+    throw new FatalError('deleteRunData requires at least one run ID.');
   }
   if (runIds.length > DELETE_RUNS_DATA_MAX_RUN_IDS) {
     throw new FatalError(
-      `deleteRunsData accepts at most ${DELETE_RUNS_DATA_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
+      `deleteRunData accepts at most ${DELETE_RUNS_DATA_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
     );
   }
   if (new Set(runIds).size !== runIds.length) {
     throw new FatalError(
-      'deleteRunsData requires unique run IDs (duplicates found).'
+      'deleteRunData requires unique run IDs (duplicates found).'
     );
   }
   if (!world.runs.deleteDataMany) {

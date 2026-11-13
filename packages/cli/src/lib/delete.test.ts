@@ -9,14 +9,14 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 import {
   createPromptConfirm,
-  DELETE_DATA_MAX_ATTEMPTS,
-  DELETE_DATA_NO_TTY_MESSAGE,
-  DELETE_DATA_UNSUPPORTED_MESSAGE,
-  deleteDataFailureLines,
-  formatDeleteDataSummary,
-  performDeleteData,
+  DELETE_MAX_ATTEMPTS,
+  DELETE_NO_TTY_MESSAGE,
+  DELETE_UNSUPPORTED_MESSAGE,
+  deleteFailureLines,
+  formatDeleteSummary,
+  performDelete,
   readRunIds,
-} from './delete-data.js';
+} from './delete.js';
 
 /** Collects logger output so assertions can inspect what the user saw. */
 function makeLogger() {
@@ -98,10 +98,10 @@ function worldAnswering(
 
 const noSleep = vi.fn(async (_ms: number) => {});
 
-describe('formatDeleteDataSummary', () => {
+describe('formatDeleteSummary', () => {
   it('counts every outcome, with `not_created` runs as deleted', () => {
     expect(
-      formatDeleteDataSummary({
+      formatDeleteSummary({
         summary: { ...mixedResult.summary, notCreated: 1 },
         results: [],
       })
@@ -118,9 +118,9 @@ describe('formatDeleteDataSummary', () => {
   });
 });
 
-describe('deleteDataFailureLines', () => {
+describe('deleteFailureLines', () => {
   it('calls out skipped, missing, and failed runs only', () => {
-    expect(deleteDataFailureLines(mixedResult)).toEqual([
+    expect(deleteFailureLines(mixedResult)).toEqual([
       '  ✗ wrun_c: skipped, the run has not finished (running). Cancel it first to delete its data.',
       '  ✗ wrun_d: not found',
       '  ✗ wrun_e: failed (forbidden)',
@@ -136,13 +136,13 @@ describe('readRunIds', () => {
   });
 });
 
-describe('performDeleteData', () => {
+describe('performDelete', () => {
   it('deletes the confirmed runs once, deduplicated, and exits 1 on a failure', async () => {
     const deleteDataMany = vi.fn().mockResolvedValue(mixedResult);
     const promptConfirm = vi.fn().mockResolvedValue(true);
     const { logger, logs, warns } = makeLogger();
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world: makeWorld(deleteDataMany),
       runIds: ['wrun_a', 'wrun_b', 'wrun_c', 'wrun_d', 'wrun_e', 'wrun_a'],
       confirm: false,
@@ -175,7 +175,7 @@ describe('performDeleteData', () => {
         : { runId, outcome: 'not_found' }
     );
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world,
       runIds: ['wrun_a', 'wrun_b'],
       confirm: true,
@@ -196,7 +196,7 @@ describe('performDeleteData', () => {
       }),
     ]) {
       const { world } = worldAnswering(outcomeFor);
-      const outcome = await performDeleteData({
+      const outcome = await performDelete({
         world,
         runIds: ['wrun_a'],
         confirm: true,
@@ -211,7 +211,7 @@ describe('performDeleteData', () => {
         ? deleted(runId)
         : { runId, outcome: 'already_deleted' }
     );
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world,
       runIds: ['wrun_a', 'wrun_b'],
       confirm: true,
@@ -225,7 +225,7 @@ describe('performDeleteData', () => {
     const { world, deleteDataMany } = worldAnswering();
     const runIds = Array.from({ length: 250 }, (_, i) => `wrun_${i}`);
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world,
       runIds,
       confirm: true,
@@ -258,7 +258,7 @@ describe('performDeleteData', () => {
     const sleep = vi.fn(async (_ms: number) => {});
     const { logger, warns } = makeLogger();
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world: makeWorld(deleteDataMany),
       runIds: ['wrun_a', 'wrun_b'],
       confirm: true,
@@ -279,11 +279,11 @@ describe('performDeleteData', () => {
     expect(outcome.exitCode).toBe(0);
   });
 
-  it(`gives up after ${DELETE_DATA_MAX_ATTEMPTS} attempts and exits 1`, async () => {
+  it(`gives up after ${DELETE_MAX_ATTEMPTS} attempts and exits 1`, async () => {
     const { world, deleteDataMany } = worldAnswering(retryableFailure);
     const sleep = vi.fn(async (_ms: number) => {});
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world,
       runIds: ['wrun_a'],
       confirm: true,
@@ -291,7 +291,7 @@ describe('performDeleteData', () => {
       sleep,
     });
 
-    expect(deleteDataMany).toHaveBeenCalledTimes(DELETE_DATA_MAX_ATTEMPTS);
+    expect(deleteDataMany).toHaveBeenCalledTimes(DELETE_MAX_ATTEMPTS);
     expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 2_000, 4_000]);
     expect(outcome.result?.results).toEqual([retryableFailure('wrun_a')]);
     expect(outcome.exitCode).toBe(1);
@@ -305,7 +305,7 @@ describe('performDeleteData', () => {
     const sleep = vi.fn(async (_ms: number) => {});
     const { logger, warns } = makeLogger();
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world: makeWorld(deleteDataMany),
       runIds: ['wrun_a'],
       confirm: true,
@@ -323,7 +323,7 @@ describe('performDeleteData', () => {
     const deleteDataMany = vi.fn().mockRejectedValue(throttle);
 
     await expect(
-      performDeleteData({
+      performDelete({
         world: makeWorld(deleteDataMany),
         runIds: ['wrun_a'],
         confirm: true,
@@ -331,14 +331,14 @@ describe('performDeleteData', () => {
         sleep: noSleep,
       })
     ).rejects.toBe(throttle);
-    expect(deleteDataMany).toHaveBeenCalledTimes(DELETE_DATA_MAX_ATTEMPTS);
+    expect(deleteDataMany).toHaveBeenCalledTimes(DELETE_MAX_ATTEMPTS);
   });
 
   it('does not retry an error that is not a rate limit', async () => {
     const deleteDataMany = vi.fn().mockRejectedValue(new Error('boom'));
 
     await expect(
-      performDeleteData({
+      performDelete({
         world: makeWorld(deleteDataMany),
         runIds: ['wrun_a'],
         confirm: true,
@@ -353,7 +353,7 @@ describe('performDeleteData', () => {
     const deleteDataMany = vi.fn();
     const { logger, logs } = makeLogger();
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world: makeWorld(deleteDataMany),
       runIds: ['wrun_a'],
       confirm: false,
@@ -370,7 +370,7 @@ describe('performDeleteData', () => {
     const deleteDataMany = vi.fn();
     const { logger, errors } = makeLogger();
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world: makeWorld(deleteDataMany),
       runIds: ['wrun_a'],
       confirm: false,
@@ -379,7 +379,7 @@ describe('performDeleteData', () => {
 
     // A script that forgets -y must not look like it deleted anything.
     expect(outcome).toEqual({ exitCode: 1 });
-    expect(errors).toEqual([DELETE_DATA_NO_TTY_MESSAGE]);
+    expect(errors).toEqual([DELETE_NO_TTY_MESSAGE]);
     expect(deleteDataMany).not.toHaveBeenCalled();
   });
 
@@ -389,7 +389,7 @@ describe('performDeleteData', () => {
     const { logger, logs, warns } = makeLogger();
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
     try {
-      await performDeleteData({
+      await performDelete({
         world: makeWorld(deleteDataMany),
         runIds: ['wrun_a', 'wrun_b', 'wrun_c', 'wrun_d', 'wrun_e'],
         confirm: true,
@@ -413,7 +413,7 @@ describe('performDeleteData', () => {
     const promptConfirm = vi.fn();
     const { logger, errors } = makeLogger();
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world: worldAnswering().world,
       runIds: [],
       confirm: false,
@@ -430,7 +430,7 @@ describe('performDeleteData', () => {
     const promptConfirm = vi.fn();
     const { logger, errors } = makeLogger();
 
-    const outcome = await performDeleteData({
+    const outcome = await performDelete({
       world: makeWorld(),
       runIds: ['wrun_a'],
       confirm: false,
@@ -439,7 +439,7 @@ describe('performDeleteData', () => {
     });
 
     expect(outcome).toEqual({ exitCode: 1 });
-    expect(errors).toEqual([DELETE_DATA_UNSUPPORTED_MESSAGE]);
+    expect(errors).toEqual([DELETE_UNSUPPORTED_MESSAGE]);
     expect(promptConfirm).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,6 @@
 import type { DeleteRunsDataResult } from '@workflow/world';
 import { getWorldLazy } from './get-world-lazy.js';
-import { deleteRunsData as deleteRunsDataInWorld } from './runs.js';
+import { deleteRunData as deleteRunDataInWorld } from './runs.js';
 
 /**
  * Delete the stored data of up to 100 finished runs in one call, using the
@@ -18,8 +18,8 @@ import { deleteRunsData as deleteRunsDataInWorld } from './runs.js';
  * @throws if `runIds` is empty, contains duplicates or more than 100 IDs, or
  *   if the configured World does not support deleting run data.
  */
-export async function deleteRunsData(
+export async function deleteRunData(
   runIds: string[]
 ): Promise<DeleteRunsDataResult> {
-  return deleteRunsDataInWorld(await getWorldLazy(), runIds);
+  return deleteRunDataInWorld(await getWorldLazy(), runIds);
 }

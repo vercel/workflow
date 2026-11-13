@@ -2,7 +2,7 @@
 title: CLI and Web UI
 description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
 type: reference
-summary: Configure workflow inspect, workflow cancel, workflow delete-data, workflow web, workflow health, and observability tooling.
+summary: Configure workflow inspect, workflow cancel, workflow delete, workflow web, workflow health, and observability tooling.
 related:
   - /docs/observability
   - /docs/configuration/worlds
@@ -210,22 +210,22 @@ per flag.
 
 ### `--confirm` / `-y`
 
-- Command: `workflow cancel`, `workflow delete-data`
+- Command: `workflow cancel`, `workflow delete`
 - Default: disabled
 - Skips the interactive confirmation prompt.
 
-## Delete data
+## Delete
 
-`workflow delete-data <run-id>...` deletes the stored data of finished runs: their inputs, outputs and errors, their steps' and events' payloads, their hook payloads, and their stream contents. The runs stay listed, with their payloads reading back as expired. This cannot be undone, so the command asks for confirmation unless you pass [`--confirm` / `-y`](#--confirm---y), and aborts without a terminal to ask on. Deleting run data is CLI-only: the [Web UI](#web-ui) doesn't offer it.
+`workflow delete <run-id>...` deletes the stored data of finished runs: their inputs, outputs and errors, their steps' and events' payloads, their hook payloads, and their stream contents. The runs stay listed, with their payloads reading back as expired. This cannot be undone, so the command asks for confirmation unless you pass [`--confirm` / `-y`](#--confirm---y), and aborts without a terminal to ask on. Deleting run data is CLI-only: the [Web UI](#web-ui) doesn't offer it.
 
 ```bash
-workflow delete-data wrun_... wrun_... --backend vercel
+workflow delete wrun_... wrun_... --backend vercel
 ```
 
 To delete many runs, pass `-` to read the run IDs from stdin, one per line or separated by whitespace. Reading from stdin requires `-y`.
 
 ```bash
-cat run-ids.txt | workflow delete-data - -y --strict --backend vercel
+cat run-ids.txt | workflow delete - -y --strict --backend vercel
 ```
 
 - Only finished runs have their data deleted. A run that hasn't finished is reported as skipped and keeps running; cancel it first to delete its data now.
@@ -237,7 +237,7 @@ cat run-ids.txt | workflow delete-data - -y --strict --backend vercel
 
 ### `--strict`
 
-- Command: `workflow delete-data`
+- Command: `workflow delete`
 - Default: disabled
 - Exits with `1` unless the data of every run is gone: also when a run isn't found (a mistyped ID, or a run from another project) or hasn't finished. Use it in scripts that must delete every run they name.
 
