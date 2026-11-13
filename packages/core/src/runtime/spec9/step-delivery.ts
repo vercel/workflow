@@ -14,8 +14,16 @@ export type StepDeliveryDecision =
   | { action: 'ack'; reason: 'step-terminal' | 'run-terminal' }
   /** Redeliver the same message after `timeoutSeconds`. */
   | { action: 'redeliver'; timeoutSeconds: number; reason: 'retry-after' }
-  /** Write `step_failed` for exceeding the retry budget, then acknowledge. */
-  | { action: 'fail'; attempt: number; reason: 'max-retries' }
+  /**
+   * Write `step_failed` for exceeding the retry budget, then acknowledge.
+   * `lastStartedAt` is when the attempt that left no outcome started.
+   */
+  | {
+      action: 'fail';
+      attempt: number;
+      reason: 'max-retries';
+      lastStartedAt?: Date;
+    }
   /**
    * Write `step_started` with this attempt, then run the body.
    * `firstStartedAt` is when the step's first attempt started, when the log
@@ -140,6 +148,7 @@ export function decideStepDelivery(params: {
   const { events, stepId, maxRetries, nowMs } = params;
   let starts = 0;
   let firstStartedAt: Date | undefined;
+  let lastStartedAt: Date | undefined;
   let lastStepEvent: Event | undefined;
   let lastRetrying: Event | undefined;
   for (const event of events) {
@@ -154,6 +163,7 @@ export function decideStepDelivery(params: {
       case 'step_started':
         starts++;
         firstStartedAt ??= new Date(event.createdAt);
+        lastStartedAt = new Date(event.createdAt);
         lastStepEvent = event;
         break;
       case 'step_retrying':
@@ -182,7 +192,9 @@ export function decideStepDelivery(params: {
 
   const attempt = starts + 1;
   if (attempt > maxRetries + 1) {
-    return { action: 'fail', attempt, reason: 'max-retries' };
+    return lastStartedAt
+      ? { action: 'fail', attempt, reason: 'max-retries', lastStartedAt }
+      : { action: 'fail', attempt, reason: 'max-retries' };
   }
   return firstStartedAt
     ? { action: 'run', attempt, firstStartedAt }
