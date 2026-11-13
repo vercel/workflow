@@ -2,6 +2,18 @@
  * The spec 8 (and below) delivery: several orchestrator invocations of a run
  * may write at once, steps keep entities, and the World's precondition guard
  * keeps their writes consistent. See `../delivery.ts`.
+ *
+ * Design notes for this runtime, next to it:
+ *
+ * - `../eager-processing.md`: inline step execution and incremental replay.
+ * - `./turbo-mode.md`: the fast path for a run's first delivery.
+ * - `./lazy-inline-step-start.md`: folding an inline step's `step_created`
+ *   into its `step_started`, parallel inline steps and optimistic start.
+ * - `./step-message-ownership.md`: inline step ownership and its lease.
+ * - `./batched-event-writes.md`: a suspension's writes as one batch.
+ *
+ * Read the relevant one before changing that behaviour, and update it in the
+ * same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
@@ -101,7 +113,6 @@ import {
   appendEventLog,
   getWorkflowQueueName,
   insertEventByEventId,
-  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   preconditionEventDelta,
@@ -136,8 +147,6 @@ import {
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
-  isInlineEarlyAdvanceEnabled,
-  isInlineOwnershipEnabled,
   SPEC8_EVENT_SPEC_VERSION,
 } from './constants.js';
 import { countStepStartedEvents } from './count-step-started-events.js';
@@ -1335,7 +1344,6 @@ async function runDelivery(
           // backstop. Fall through to the main loop, whose
           // dispatch table routes it to owned recovery.
           if (
-            isInlineOwnershipEnabled() &&
             hasPendingStepOwnedByMessage(
               loaded.events,
               pendingStepIds,
@@ -2487,7 +2495,6 @@ async function runDelivery(
     );
   };
 
-  const inlineEarlyAdvance = isInlineEarlyAdvanceEnabled();
   let inlineEarlyAdvances = 0;
   let inlineSlotsHeldBack = 0;
 
@@ -2818,20 +2825,18 @@ async function runDelivery(
       // A hole that is merely a write mid-commit fills in on
       // its own, so settleEventSlotGap re-reads before
       // concluding, and adopts whichever log it settled on.
-      if (isSlotGapCheckEnabled()) {
-        const settled = await settleEventSlotGap(runId, {
-          events: eventLog.events,
-          cursor: eventLog.cursor,
-        });
-        eventLog = {
-          ...settled.log,
-          type: 'ready',
-        };
-        if (settled.gap !== undefined) {
-          throw new CorruptedEventLogError(
-            `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
-          );
-        }
+      const settled = await settleEventSlotGap(runId, {
+        events: eventLog.events,
+        cursor: eventLog.cursor,
+      });
+      eventLog = {
+        ...settled.log,
+        type: 'ready',
+      };
+      if (settled.gap !== undefined) {
+        throw new CorruptedEventLogError(
+          `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+        );
       }
 
       // Completing elapsed waits refreshes the event snapshot.
@@ -3059,9 +3064,9 @@ async function runDelivery(
         // This duplicates what OTEL already captures on the
         // run/invocation span, but is collected as client
         // telemetry so the server can emit it as an
-        // UNSAMPLED, full-population metric: workflow-server's
-        // server spans are heavily sampled in production
-        // (~7%), and client spans can't be filtered by SDK
+        // UNSAMPLED, full-population metric: the backend's
+        // server spans are sampled in production, and
+        // client spans can't be filtered by SDK
         // version, so neither can serve as the dashboard's
         // exact TTFS decomposition. On a retained-VM
         // resume this measures the resume (typically ~0ms),
@@ -3713,7 +3718,6 @@ async function runDelivery(
         // delay/key selection rationale.
         const traceCarrier = await nextTraceCarrier();
         const dispatches: Promise<unknown>[] = [];
-        const inlineOwnership = isInlineOwnershipEnabled();
         const dispatchNowMs = Date.now();
         const ownedRecoverySteps: StepInvocationQueueItem[] = [];
         let backstopWakesArmed = 0;
@@ -3761,7 +3765,6 @@ async function runDelivery(
           !pendingSteps.some(
             (step) =>
               !inlineCorrelationIds.has(step.correlationId) &&
-              inlineOwnership &&
               isStepOwnershipActive(step) &&
               step.ownerMessageId === metadata.messageId
           );
@@ -3781,8 +3784,7 @@ async function runDelivery(
           ) {
             continue;
           }
-          const ownershipActive =
-            inlineOwnership && isStepOwnershipActive(step);
+          const ownershipActive = isStepOwnershipActive(step);
           if (ownershipActive && step.ownerMessageId === metadata.messageId) {
             // Owned recovery: this delivery IS the owning
             // message; re-execute the step in this
@@ -4386,21 +4388,6 @@ async function runDelivery(
         // pays the await-then-run path for the rest of that
         // one invocation, which is cheap next to the
         // alternative.
-        //
-        // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
-        // topics consumed with `maxConcurrency: 1`) would in
-        // principle waive this latch: serialized orchestrator
-        // invocations restore the single-handler guarantee for
-        // the whole delivery. The waiver is intentionally NOT
-        // taken: the env var is a runtime-process setting that
-        // cannot prove the BUILT flow trigger actually carries
-        // `maxConcurrency: 1` (it must be set at build time
-        // too, and some integrations write their own trigger
-        // config), and `capabilities.maxConcurrency` only
-        // declares queue support, not deployed configuration.
-        // Until the build emits a verifiable signal that the
-        // deployed trigger is serialized, the conservative
-        // latch stays.
         const forceOptimisticStart =
           turbo &&
           !suspensionResult.hasAttributeEvents &&
@@ -4518,6 +4505,7 @@ async function runDelivery(
               // from the existing step entity, and for
               // pre-claimed steps, whose pair already
               // carried it.
+              stateContext: replayPayloadCache?.stateContext,
               lazyStepInput: s.lazyStepInput,
               // Pre-claimed inline start: the suspension
               // batch settled this step's create + claim;
@@ -4632,10 +4620,7 @@ async function runDelivery(
           // step. The others stay tracked; the next pass neither creates,
           // queues nor recovers them (they are left out of the suspension),
           // and a later pass settles them.
-          const round = await inlineStepsInFlight.settle(
-            inlineEarlyAdvance,
-            isEarlyAdvanceOutcome
-          );
+          const round = await inlineStepsInFlight.settle(isEarlyAdvanceOutcome);
           if (round.early) {
             runtimeLogger.debug(
               'Inline step settled; replaying while sibling inline steps run',
@@ -4775,7 +4760,7 @@ async function runDelivery(
         }
 
         // Transient infrastructure failures talking to the
-        // world (workflow-server), such as an exhausted
+        // world backend, such as an exhausted
         // RetryAgent (UND_ERR_REQ_RETRY from a sustained
         // 429/503 storm), a dropped socket, a connect/DNS
         // failure, or a client timeout, must NOT fail the

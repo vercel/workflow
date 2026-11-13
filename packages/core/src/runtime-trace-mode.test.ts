@@ -14,6 +14,7 @@ import {
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { RUN_ERROR_CODES } from '@workflow/errors';
+import { setWorkflowBasePath } from '@workflow/utils';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -113,6 +114,7 @@ async function driveHandler(opts: {
   workflowCode: string;
   traceCarrier?: Record<string, string>;
   routeModuleBodyStartedAt?: number;
+  basePath?: string;
   executionContext?: WorkflowRun['executionContext'];
   persistedWorkflowName?: string;
   includeRunInput?: boolean;
@@ -224,9 +226,12 @@ async function driveHandler(opts: {
 
   const handler = workflowEntrypoint(
     opts.workflowCode,
-    opts.routeModuleBodyStartedAt === undefined
+    opts.routeModuleBodyStartedAt === undefined && opts.basePath === undefined
       ? undefined
-      : { routeModuleBodyStartedAt: opts.routeModuleBodyStartedAt }
+      : {
+          routeModuleBodyStartedAt: opts.routeModuleBodyStartedAt,
+          basePath: opts.basePath,
+        }
   );
 
   // Invoke inside an active "delivery" span so linkToCurrentContext()
@@ -442,6 +447,23 @@ describe('workflowEntrypoint trace modes', () => {
       'wrun_trace_quickjs_compile',
       undefined
     );
+  });
+
+  it('includes the base path in the flow route span http.route', async () => {
+    try {
+      const { routeSpan } = await driveHandler({
+        runId: 'wrun_trace_base_path',
+        workflowCode: simpleWorkflow,
+        basePath: '/v2/dashboard',
+      });
+
+      expect(routeSpan?.attributes['http.route']).toBe(
+        '/v2/dashboard/.well-known/workflow/v1/flow'
+      );
+    } finally {
+      // The base path is process-global; later tests expect none.
+      setWorkflowBasePath(undefined);
+    }
   });
 
   it('linked (default): nests under the flow route context with a link to the run-origin context', async () => {

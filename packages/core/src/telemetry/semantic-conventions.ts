@@ -465,7 +465,7 @@ export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
 
 /**
  * Replay passes this invocation started after one inline step settled while
- * sibling inline steps were still running (see `isInlineEarlyAdvanceEnabled`).
+ * sibling inline steps were still running.
  */
 export const WorkflowInlineEarlyAdvances = SemanticConvention<number>(
   'workflow.inline.early_advances'
@@ -535,7 +535,7 @@ export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
 );
 
 /**
- * Compute instance handling this route: the synthesized `COMPUTE_INSTANCE_ID`.
+ * Compute instance handling this route: the synthesized `getComputeInstanceId()`.
  * Uses OTEL `faas.instance` (execution-environment id, reused across
  * invocations to the same function):
  * https://opentelemetry.io/docs/specs/semconv/attributes-registry/faas/
@@ -893,6 +893,15 @@ export const StepDeliveryDecision = SemanticConvention<
 export const StepDeliveryReason = SemanticConvention<string>(
   'step.delivery.reason'
 );
+
+/**
+ * What a background step's delivery read to decide: `none` (a plain first
+ * delivery), `step_tail` (the step's latest event, which showed a retry not
+ * yet due) or `full_log` (the run's whole log).
+ */
+export const StepDeliveryLogRead = SemanticConvention<
+  'none' | 'step_tail' | 'full_log'
+>('step.delivery.log_read');
 
 /** The delay a `redeliver` delivery asked the queue for, in seconds. */
 export const StepDeliveryTimeoutSeconds = SemanticConvention<number>(

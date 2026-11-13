@@ -4,7 +4,7 @@
  * once. Whatever the interleaving, exactly one run ends up owning the token,
  * every other run's log carries the `hook_disposed{forceClaimedBy}` its
  * replay reads, and no `hook_created` ever lands behind its own disposal
- * (the ordering workflow-server guards with a ConditionCheck on the run's own
+ * (the ordering world-vercel guards with a condition on the run's own
  * marker, and postgres by journaling inside the takeover transaction).
  */
 import { promises as fs } from 'node:fs';
@@ -16,7 +16,7 @@ import {
   type Storage,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createHook, createRun, updateRun } from '../test-helpers.js';
+import { createHook, updateRun } from '../test-helpers.js';
 import { createStorage } from './index.js';
 
 describe('local World hook force-claim', () => {

@@ -9,6 +9,7 @@ import {
   type Event,
   type EventListResponse,
   type EventResult,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   type ListEventsParams,
   orchestratorRunIdOf,
   type QueueBatchResult,
@@ -143,6 +144,8 @@ export class AppendOnlyWorld {
   createCalls = 0;
   /** The params of every `events.list` call. */
   readonly listCalls: Array<Record<string, unknown>> = [];
+  /** Every `events.listByCorrelationId` call, in order. */
+  readonly correlationListCalls: Array<Record<string, unknown>> = [];
   /** Replay events served without their step input (`skipStepInputs`). */
   strippedStepInputs = 0;
   private handler:
@@ -224,6 +227,14 @@ export class AppendOnlyWorld {
        * served without `input`. The log and the created event keep it.
        */
       skipStepInputs?: boolean;
+      /**
+       * Record a resilient start's creation on its `run_started` alone, as a
+       * spec-9 World may (`isRunCreationEvent`): the `run_started` that
+       * creates the run takes the first slot with its creation data, and no
+       * `run_created` is written. The creation keeps in-band position 1 and
+       * the start takes 2, and the write reports `allocated: 1`.
+       */
+      creationOnStart?: boolean;
       /**
        * Whether a handoff (`{ timeoutSeconds: 0 }`) of `held` continues on a
        * new message instead, as world-vercel does for a message close to its
@@ -336,7 +347,7 @@ export class AppendOnlyWorld {
   private createRunFromStart(
     runId: string,
     eventData: Record<string, unknown>
-  ): void {
+  ): boolean {
     this.run = {
       runId,
       workflowName: eventData.workflowName,
@@ -348,6 +359,11 @@ export class AppendOnlyWorld {
       createdAt: new Date(),
       updatedAt: new Date(),
     } as unknown as WorkflowRun;
+    if (this.options.creationOnStart) {
+      // The run_started is appended at the first slot by the caller.
+      this.seqInBand = IN_BAND_SEQ_AT_RUN_CREATION;
+      return true;
+    }
     this.append({
       eventType: 'run_created',
       runId,
@@ -358,6 +374,7 @@ export class AppendOnlyWorld {
       },
     } as Partial<Event>);
     this.seqInBand = this.seq;
+    return false;
   }
 
   /** Append an event as an out-of-band writer would. */
@@ -869,13 +886,14 @@ export class AppendOnlyWorld {
       async create(runId: string | null, data: any, params?: any) {
         self.createCalls++;
         await self.options.beforeCreate?.(data, params);
+        let createdOnStart = false;
         if (
           !self.run &&
           runId &&
           data.eventType === 'run_started' &&
           data.eventData?.input !== undefined
         ) {
-          self.createRunFromStart(runId, data.eventData);
+          createdOnStart = self.createRunFromStart(runId, data.eventData);
         }
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
@@ -902,6 +920,10 @@ export class AppendOnlyWorld {
           event: self.responseEvent(event),
           run: self.run,
           ...self.report(params, slot),
+          // A start written at the first slot as the creation sits at a
+          // position the writer may already count as the creation's: its
+          // allocation is stated, as every World writing that shape does.
+          ...(createdOnStart ? { allocated: 1 } : {}),
         } as EventResult;
       },
       async createBatch(_runId: string, batch: BatchEventRequest[], params) {
@@ -980,10 +1002,23 @@ export class AppendOnlyWorld {
         };
       },
       async listByCorrelationId(params) {
-        const data = self.events.filter(
-          (e) => e.correlationId === params.correlationId
+        self.correlationListCalls.push({ ...(params as object) });
+        const matching = self.events.filter(
+          (e) =>
+            e.correlationId === params.correlationId &&
+            (params.runId === undefined || e.runId === params.runId)
         );
-        return { data, cursor: null, hasMore: false };
+        const ordered =
+          params.pagination?.sortOrder === 'desc'
+            ? [...matching].reverse()
+            : matching;
+        const limit = params.pagination?.limit;
+        const data = limit === undefined ? ordered : ordered.slice(0, limit);
+        return {
+          data: self.served(data, params.resolveData),
+          cursor: null,
+          hasMore: data.length < ordered.length,
+        };
       },
       ...(self.options.subscribe || self.options.subscribeFailure
         ? {

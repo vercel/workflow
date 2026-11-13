@@ -31,7 +31,7 @@ import { getStepFunction } from './private.js';
 // world.ts module (and its dynamic-import behaviour) into the flow route.
 // See `packages/core/src/runtime/get-world-lazy.ts` and the
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
-// `docs/content/docs/changelog/eager-processing.mdx`.
+// `packages/core/src/runtime/eager-processing.md`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import {
   bytesToBase64,
@@ -44,6 +44,7 @@ import {
   readAbortStreamPacket,
 } from './serialization/abort-stream.js';
 import * as clientModule from './serialization/client.js';
+import type { CodecOptions } from './serialization/codec.js';
 import {
   type CompressionMode,
   type CompressionStats,
@@ -93,7 +94,19 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
+import { recoverStateContext } from './serialization/state-recovery.js';
+import {
+  bindStateContextData,
+  STATE_REFS_FIELD,
+  StateContext,
+  stateContextForData,
+  stateContextForGlobal,
+} from './serialization/state-refs.js';
 import * as stepModule from './serialization/step.js';
+
+export { stateSourceId } from './serialization/state-refs.js';
+export { createStateResolver, type StateResolver } from './state-resolver.js';
+
 import {
   type FormatPrefix,
   isFormatPrefix,
@@ -3991,6 +4004,10 @@ export async function dehydrateWorkflowArguments(
     const compressionStats: CompressionStats = {};
     const result = await clientModule.serialize(value, key, {
       global,
+      // A run's input is read outside this run's log (by the new run before it
+      // replays, and by the dashboard), so frozen state values are written
+      // whole rather than as references to versions only this run holds.
+      stateContext: StateContext.standalone(),
       extraReducers: getStreamAndRequestReducers(
         getExternalReducers(
           global,
@@ -4069,6 +4086,9 @@ export async function dehydrateWorkflowReturnValue(
     };
     const result = await stepModule.serialize(value, key, {
       global,
+      // Read by `run.returnValue` without this run's log, so frozen state
+      // values are written whole rather than as references.
+      stateContext: StateContext.standalone(),
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
@@ -4137,13 +4157,24 @@ export async function dehydrateStepArguments(
     const guestCodeStats: GuestCodeStats = guestCodeStatsOut ?? {
       executions: [],
     };
-    const result = await stepModule.serialize(value, key, {
+    // A workflow running in a replay that reads state records (one is bound
+    // to its global) says so on a step's input, so the step knows it may
+    // write them.
+    const envelope =
+      stateContextForGlobal(global) !== undefined
+        ? markedStepInvocation(value)
+        : undefined;
+    const result = await stepModule.serialize(envelope ?? value, key, {
       global,
+      stateInput: true,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
       guestCodeStats,
     });
+    // An inline step hydrates this input in the same invocation; give it the
+    // replay's state context so its references resolve without recovery.
+    bindStateContextData(result, stateContextForGlobal(global));
     await recordCompression(compressionStats, 'serialize');
     await recordGuestCodeExecutions(guestCodeStats);
     return result;
@@ -4152,6 +4183,28 @@ export async function dehydrateStepArguments(
     const { message, hint } = formatSerializationError('step arguments', cause);
     throw new SerializationError(message, { hint, cause });
   }
+}
+
+/**
+ * A step invocation's `{ args, closureVars, thisVal }` with
+ * {@link STATE_REFS_FIELD} set, or `undefined` for anything else this
+ * serializes (hook metadata, placeholders). Only own data properties are
+ * read, so no workflow code runs.
+ */
+function markedStepInvocation(value: unknown): object | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return undefined;
+  const keys = ['args', 'closureVars', 'thisVal'] as const;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    if (!(keys as readonly string[]).includes(key)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return undefined;
+    out[key] = descriptor.value;
+  }
+  if (!('args' in out)) return undefined;
+  out[STATE_REFS_FIELD] = 1;
+  return out;
 }
 
 /**
@@ -4167,11 +4220,16 @@ export async function hydrateStepArguments(
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string,
   streamStates?: FlushableStreamState[],
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  stateContext?: StateContext
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
-  const result = await stepModule.deserialize(value, key, {
+  const options: CodecOptions = {
     global,
+    stateContext: stateContext ?? stateContextForData(value),
+    stateInput: true,
+    recoverStateContext: (data: unknown) =>
+      recoverStateContext(runId, key, data),
     extraRevivers: {
       ...getStreamAndRequestRevivers(
         getStepRevivers(
@@ -4187,7 +4245,20 @@ export async function hydrateStepArguments(
       ...extraRevivers,
     },
     compressionStats,
-  });
+  };
+  const result = await stepModule.deserialize(value, key, options);
+  // The step's output is encoded against the same context (possibly just
+  // recovered) so a state change can refer to the version it builds on, but
+  // through its own layer: an inline step shares the replay's context with the
+  // steps beside it, and none may build on another's uncommitted output (see
+  // `StateContext.forStep`). A step whose input needed none still writes its
+  // output into the run's log.
+  const outputContext = (options.stateContext ?? new StateContext()).forStep();
+  // Only a workflow that reads state records gets them back: a QuickJS run's
+  // inputs don't carry the field (see `STATE_REFS_FIELD`).
+  if ((result as Record<string, unknown> | null)?.[STATE_REFS_FIELD] !== 1)
+    outputContext.writesRecords = false;
+  bindStateContextData(result, outputContext);
   await recordCompression(compressionStats, 'deserialize');
   return result;
 }
@@ -4225,7 +4296,8 @@ export async function dehydrateStepReturnValue(
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  stateContext?: StateContext
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4247,6 +4319,7 @@ export async function dehydrateStepReturnValue(
     const compressionStats: CompressionStats = {};
     const result = await stepModule.serialize(value, key, {
       global,
+      stateContext,
       extraReducers: getStreamAndRequestReducers(
         getStepReducers(
           global,

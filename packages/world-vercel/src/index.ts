@@ -25,7 +25,7 @@ export {
   MAX_EXECUTION_CONTEXT_BYTES,
   validateRunExecutionContext,
 } from './execution-context.js';
-export { createQueue } from './queue.js';
+export { createQueue, vercelTriggerConsumerGroup } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
@@ -70,9 +70,8 @@ export function createWorld(config?: APIConfig): World {
       atomicStartHook: { active: true },
       // One orchestrator delivery per single-orchestrator run at a time: its
       // orchestrator messages carry the run id as a VQS concurrency key on
-      // the flow topic (or, under WORKFLOW_SEQUENTIAL_REPLAYS=1, go to a
-      // per-run topic consumed with `maxConcurrency: 1`; see queue.ts).
-      // Spec-8 runs keep the shared, unserialized flow topic.
+      // the flow topic (see queue.ts). Spec-8 runs keep the shared,
+      // unserialized flow topic.
       //
       // Part of the spec-9 contract rather than capabilities: the backend
       // stores an in-band event's `occurredAt` as its `createdAt` (clamped
@@ -83,6 +82,10 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // `queue()` passes `experimental_hold` to Vercel Queues' send-and-hold.
+      // Support, not configuration: a queue service with it switched off
+      // answers `not_held` / `unsupported` and delivers the message as usual.
+      experimental_queueHold: true,
       // Cached hook writes use a distinct endpoint that rejects before writing
       // when the backend cannot enforce the required deduplication contract.
       resolvedHookResume: true,
@@ -99,8 +102,8 @@ export function createWorld(config?: APIConfig): World {
       // one, which the runtime requires.
       inBandFence: true,
       // The server implements the takeover protocol behind
-      // `createHook({ experimental_force: true })` (workflow-server
-      // docs/hook-force-claim.md). Static rather than attested per lookup,
+      // `createHook({ experimental_force: true })`. Static rather than
+      // attested per lookup,
       // because the decision is made at `createHook()` time, before any
       // lookup; against a server that has it switched off (or predates it)
       // a forced creation is answered with `hook_conflict`, which the

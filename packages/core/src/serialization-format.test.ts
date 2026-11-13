@@ -1,5 +1,6 @@
 import { stringify } from 'devalue';
 import { describe, expect, it } from 'vitest';
+import { STATE_REFS_FIELD } from './serialization/state-refs.js';
 import {
   ClassInstanceRef,
   decodeFormatPrefix,
@@ -119,6 +120,18 @@ describe('hydrateData', () => {
 
     const result = hydrateData(encoded, testRevivers);
     expect(result).toEqual(original);
+  });
+
+  it("leaves out a step input's internal state-records mark", () => {
+    expect(STATE_REFS_FIELD).toBe('stateRefs');
+    const marked = makeDevlPayload({ args: [1], [STATE_REFS_FIELD]: 1 });
+    expect(hydrateData(marked, testRevivers)).toEqual({ args: [1] });
+    // Only on a step-input envelope.
+    const data = makeDevlPayload({ stateRefs: 1, other: true });
+    expect(hydrateData(data, testRevivers)).toEqual({
+      stateRefs: 1,
+      other: true,
+    });
   });
 
   it('should unflatten a legacy array (specVersion 1)', () => {
@@ -951,5 +964,34 @@ describe('observabilityRevivers', () => {
       workflowId: 'workflow//./workflows/example//myWorkflow',
     });
     expect(result).toBe('<workflow:workflow//./workflows/example//myWorkflow>');
+  });
+});
+
+describe('state records in observability hydration', () => {
+  it('shows sources and whole values as values, and references as placeholders', () => {
+    const { StateRefV1, StateSrcV1 } = observabilityRevivers;
+    expect(
+      StateRefV1({ kind: 'source', id: 'hook:1', value: { message: 'hi' } })
+    ).toEqual({ message: 'hi' });
+    expect(
+      StateRefV1({ kind: 'full', logId: 'l', version: 'v1', value: [1] })
+    ).toEqual([1]);
+    expect(StateRefV1({ kind: 'ref', logId: 'l', version: 'v2' })).toBe(
+      '<state v2>'
+    );
+    expect(
+      StateRefV1({
+        kind: 'patch',
+        logId: 'l',
+        base: 'v1',
+        version: 'v2',
+        ops: [],
+      })
+    ).toEqual({
+      '<state change from v1>': [],
+    });
+    expect(StateSrcV1(['hook:1', ['message']])).toBe(
+      '<same as hook:1.message>'
+    );
   });
 });

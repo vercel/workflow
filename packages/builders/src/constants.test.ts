@@ -1,58 +1,41 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
   getWorkflowQueueTrigger,
+  isSequentialReplaysEnabled,
 } from './constants.js';
 
 describe('getWorkflowQueueTrigger', () => {
-  let originalStrict: string | undefined;
-
-  beforeEach(() => {
-    originalStrict = process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-  });
-
   afterEach(() => {
-    if (originalStrict !== undefined) {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = originalStrict;
-    } else {
-      delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
-    }
+    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
   });
 
-  it('omits maxConcurrency by default', () => {
-    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
+  it('sets no maxConcurrency', () => {
     const trigger = getWorkflowQueueTrigger();
     expect(trigger.topic).toBe('__wkf_workflow_*');
     expect('maxConcurrency' in trigger).toBe(false);
   });
 
-  it('sets maxConcurrency: 1 when WORKFLOW_SEQUENTIAL_REPLAYS=1', () => {
+  // The removed opt-in added `maxConcurrency: 1`. A leftover setting does
+  // nothing now.
+  it('ignores a leftover WORKFLOW_SEQUENTIAL_REPLAYS=1', () => {
     process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-    const trigger = getWorkflowQueueTrigger();
-    expect(trigger).toMatchObject({
-      topic: '__wkf_workflow_*',
-      maxConcurrency: 1,
-    });
-  });
-
-  it('does not set maxConcurrency for non-"1" values', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = 'true';
-    const trigger = getWorkflowQueueTrigger();
-    expect('maxConcurrency' in trigger).toBe(false);
+    expect('maxConcurrency' in getWorkflowQueueTrigger()).toBe(false);
+    expect(isSequentialReplaysEnabled()).toBe(false);
   });
 
   it('composes with an explicit namespace option', () => {
-    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-    expect(getWorkflowQueueTrigger({ namespace: 'custom' })).toMatchObject({
-      topic: '__custom_wkf_workflow_*',
-      maxConcurrency: 1,
-    });
+    expect(getWorkflowQueueTrigger({ namespace: 'custom' })).toEqual(
+      createWorkflowQueueTrigger({ namespace: 'custom' })
+    );
+    expect(getWorkflowQueueTrigger({ namespace: 'custom' }).topic).toBe(
+      '__custom_wkf_workflow_*'
+    );
   });
 
   it('resolves WORKFLOW_QUEUE_NAMESPACE at call time', () => {
-    delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
     process.env.WORKFLOW_QUEUE_NAMESPACE = 'callns';
     try {
       expect(getWorkflowQueueTrigger().topic).toBe('__callns_wkf_workflow_*');

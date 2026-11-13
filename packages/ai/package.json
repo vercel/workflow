@@ -1,7 +1,7 @@
 {
   "name": "@workflow/ai",
-  "version": "5.0.3",
-  "description": "Workflow SDK compatible helper library for the AI SDK",
+  "version": "5.0.4",
+  "description": "Deprecated: use WorkflowAgent and WorkflowChatTransport from @ai-sdk/workflow. Workflow SDK helpers for AI SDK 6.",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -62,7 +62,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "tsc --build --clean && rm -rf docs ||:",
-    "test": "vitest run",
+    "test": "vitest run --config=../../vitest.config.ts",
     "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/v5/ai ./docs/ && cp -r ../../docs/content/docs/v5/api-reference/workflow-ai ./docs/",
     "postpack": "rm -rf docs"
   },
