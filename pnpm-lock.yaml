@@ -174,8 +174,8 @@ importers:
         specifier: ^1.5.1
         version: 1.5.1(@opentelemetry/api@1.9.1)(next@16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
       '@vercel/geistdocs':
-        specifier: 2.14.4
-        version: 2.14.4(8d4d025e532550024fb7b976f57d0615)
+        specifier: 2.15.3
+        version: 2.15.3(8d4d025e532550024fb7b976f57d0615)
       '@vercel/speed-insights':
         specifier: 1.3.1
         version: 1.3.1(@sveltejs/kit@2.70.4(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@7.3.1(svelte@5.57.3(@typescript-eslint/types@8.46.4))(vite@7.3.7(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)))(svelte@5.57.3(@typescript-eslint/types@8.46.4))(typescript@6.0.3)(vite@7.3.7(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)))(next@16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)(svelte@5.57.3(@typescript-eslint/types@8.46.4))(vue-router@4.6.3(vue@3.5.44(typescript@6.0.3)))(vue@3.5.44(typescript@6.0.3))
@@ -9179,6 +9179,10 @@ packages:
       next:
         optional: true
 
+  '@vercel/firewall@1.2.6':
+    resolution: {integrity: sha512-89ybsa2rnVNdw6RI3jGOVvqUJaBj6Umm4IagC1o3PKtr/MXxBKOLek+yyUgF0csA0O5W+dzcpdIhKxVXhgVVtA==}
+    engines: {node: '>= 20'}
+
   '@vercel/functions@3.11.1':
     resolution: {integrity: sha512-tZoePP4TRh25G5VNsWuLanANvfq0wdbvoUdabhoc8UT2QxIXj6mfoqXE4ycOm6CZyZuAN9dHqU51vuijPXjTcg==}
     engines: {node: '>= 20'}
@@ -9203,8 +9207,8 @@ packages:
       ws:
         optional: true
 
-  '@vercel/geistdocs@2.14.4':
-    resolution: {integrity: sha512-fPU0p9xbK6wd7slxd5k382h5GjGliFPaKXj8x1nmTf0H6myVHFFDYFWbj/u43iFWFDljDfILQcFoFVqRze15yA==}
+  '@vercel/geistdocs@2.15.3':
+    resolution: {integrity: sha512-5/bk8a5DS4Ee7yp52P+eVp+Z+UQeSpNsp2G6eyYReuDczVGMpcJiDmx/10YNFg3565jTs9eE/eyyo2IqfFoHzw==}
     hasBin: true
     peerDependencies:
       next: ^16.3.3
@@ -13338,6 +13342,7 @@ packages:
 
   node-abort-controller@3.1.1:
     resolution: {integrity: sha512-AGK2yQKIjRuqnc6VkX2Xj5d+QW8xZ87pa1UK6yA6ouUyuxfHuMP6umE5QK7UmTeOAymo+Zx1Fxiuw9rVx8taHQ==}
+    deprecated: This package is no longer needed on supported Node.js versions. Node.js 16+ includes AbortController and AbortSignal as built-in globals. All Node.js versions requiring this polyfill are end-of-life. Use the built-in globals instead.
 
   node-addon-api@7.1.1:
     resolution: {integrity: sha512-5m3bsyrjFWE1xf7nz7YXdN4udnVtXK6/Yfgn5qnahL6bCkf2yKt4k3nuTKAtT4r3IG8JNR2ncsIMdZuAzJjHQQ==}
@@ -15874,11 +15879,6 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
-
-  use-stick-to-bottom@1.1.1:
-    resolution: {integrity: sha512-JkDp0b0tSmv7HQOOpL1hT7t7QaoUBXkq045WWWOFDTlLGRzgIIyW7vyzOIJzY7L2XVIG7j1yUxeDj2LHm9Vwng==}
-    peerDependencies:
-      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
   use-stick-to-bottom@1.1.6:
     resolution: {integrity: sha512-z3Up8jYQGTkUCsGBnwg6/wj70KgXoW5Kz1AAc1j8MtQuYMBo6ZsdhrIXoegxa7gaMMilgQYyTohTrt3p94jHog==}
@@ -24358,6 +24358,8 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       next: 16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
 
+  '@vercel/firewall@1.2.6': {}
+
   '@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1)':
     dependencies:
       '@vercel/oidc': 4.0.8
@@ -24372,7 +24374,7 @@ snapshots:
       '@aws-sdk/credential-provider-web-identity': 3.972.88
       ws: 8.22.1
 
-  '@vercel/geistdocs@2.14.4(8d4d025e532550024fb7b976f57d0615)':
+  '@vercel/geistdocs@2.15.3(8d4d025e532550024fb7b976f57d0615)':
     dependencies:
       '@ai-sdk/react': 3.0.221(react@19.3.1)(zod@4.6.7)
       '@clack/prompts': 0.11.0
@@ -24383,8 +24385,9 @@ snapshots:
       '@types/mdx': 2.0.14
       '@types/react': 19.3.0
       '@vercel/agent-readability': 0.7.0(@sveltejs/kit@2.70.4(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@7.3.1(svelte@5.57.3(@typescript-eslint/types@8.46.4))(vite@7.3.7(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)))(svelte@5.57.3(@typescript-eslint/types@8.46.4))(typescript@6.0.3)(vite@7.3.7(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1)))(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(h3@1.15.11)(next@16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
+      '@vercel/firewall': 1.2.6
       '@vercel/oidc': 3.8.2
-      ai: 6.0.219(zod@4.6.7)
+      ai: 6.0.325(zod@4.6.7)
       class-variance-authority: 0.7.1
       clsx: 2.1.1
       commander: 14.0.3
@@ -24396,7 +24399,6 @@ snapshots:
       glob: 11.1.0
       mcp-handler: 2.2.0(@modelcontextprotocol/server@2.4.0)(next@16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
       mermaid: 11.17.2(supports-color@10.2.2)
-      motion: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       next: 16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       next-themes: 0.4.6(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       phase: 0.5.4(react@19.3.1)
@@ -24412,17 +24414,16 @@ snapshots:
       remark-stringify: 11.0.0
       sonner: 2.0.8(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       streamdown: 2.7.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(supports-color@10.2.2)
-      tailwind-merge: 3.5.0
+      tailwind-merge: 3.4.0
       tailwindcss: 4.3.5
       ts-morph: 27.0.2
       tw-animate-css: 1.4.0
       unified: 11.0.5
       unist-util-visit: 5.1.0
-      use-stick-to-bottom: 1.1.1(react@19.3.1)
+      use-stick-to-bottom: 1.1.6(react@19.3.1)
       vaul: 1.1.2(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       zod: 4.6.7
     transitivePeerDependencies:
-      - '@emotion/is-prop-valid'
       - '@fumadocs/mdx-remote'
       - '@mixedbread/sdk'
       - '@orama/core'
@@ -33572,10 +33573,6 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.3.0
-
-  use-stick-to-bottom@1.1.1(react@19.3.1):
-    dependencies:
-      react: 19.3.1
 
   use-stick-to-bottom@1.1.6(react@19.3.1):
     dependencies:
