@@ -8209,4 +8209,109 @@ describe('stream pipe ops are observed as soon as they are created (#5055)', () 
       capture.stop();
     }
   });
+
+  /**
+   * A World live read that connects, then is cut `afterMs` later, the way
+   * world-vercel's live read ends when the server cuts the connection: the
+   * body errors with undici's `TypeError: terminated`. Cancelling it first
+   * stops the cut, as cancelling a `fetch()` body closes its connection.
+   */
+  const liveReadCutAfter = (afterMs: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = vi.fn(() => clearTimeout(timer));
+    const stream = new ReadableStream<Uint8Array>({
+      type: 'bytes',
+      start(controller) {
+        timer = setTimeout(() => controller.error(terminated()), afterMs);
+      },
+      cancel,
+    } as UnderlyingByteSource);
+    return { stream, cancel };
+  };
+
+  const withLiveRead = async <T>(
+    read: ReadableStream<Uint8Array>,
+    body: (get: ReturnType<typeof vi.fn>) => Promise<T>
+  ): Promise<T> => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const world = makeMockWorld();
+    world.streams.get.mockResolvedValue(read);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+    try {
+      return await body(world.streams.get);
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
+  };
+
+  // A step that returns a `WritableStream` it created gets a readback pipe:
+  // a live read of the stream's server copy, piped into the writable. The
+  // read stays open after the step returns, and when it is cut the pipe
+  // rejects with undici's error, whose stack is entirely undici's socket
+  // close. On the failed-step path nothing ever awaits the list.
+  it("a returned WritableStream's readback, whose live read is cut after the step returns", async () => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const liveRead = liveReadCutAfter(20);
+    const capture = captureUnhandledRejections();
+    try {
+      await withLiveRead(liveRead.stream, async (get) => {
+        const ops: Promise<unknown>[] = [];
+        await dehydrateStepReturnValue(
+          { sink: new WritableStream() },
+          mockRunId,
+          key,
+          ops
+        );
+        await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+        // The step has returned. The read is cut later.
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        await settle();
+        expect(capture.messages()).toEqual([]);
+        // Whoever does await the list still sees the cut.
+        await expect(Promise.all(ops)).rejects.toThrow('terminated');
+      });
+    } finally {
+      capture.stop();
+    }
+  });
+
+  // A step that receives a workflow `AbortSignal` opens a live read of the
+  // signal's abort stream for the length of the step. That read handles its
+  // own errors: a cut after the step returns closes the read and leaves the
+  // signal as it was, whether or not the step's teardown reached the signal.
+  it.each([
+    ['cancelled when the step returns', true],
+    ['never cancelled', false],
+  ] as const)("a step's AbortSignal live read cut after the step returns (%s)", async (_label, cancel) => {
+    const liveRead = liveReadCutAfter(20);
+    const capture = captureUnhandledRejections();
+    try {
+      await withLiveRead(liveRead.stream, async (get) => {
+        const input = await dehydrateWorkflowArguments(
+          new AbortController().signal,
+          mockRunId,
+          noEncryptionKey
+        );
+        const ops: Promise<void>[] = [];
+        const signal = (await hydrateStepArguments(
+          input,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        )) as AbortSignal;
+        await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(liveRead.stream.locked).toBe(true));
+        // The step returns; its teardown cancels the readers it can reach.
+        if (cancel) cancelAbortReaders(signal);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        await settle();
+        expect(capture.messages()).toEqual([]);
+        await expect(Promise.all(ops)).resolves.toBeDefined();
+        expect(signal.aborted).toBe(false);
+        expect(liveRead.cancel).toHaveBeenCalledTimes(cancel ? 1 : 0);
+      });
+    } finally {
+      capture.stop();
+    }
+  });
 });
