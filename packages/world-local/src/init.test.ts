@@ -12,7 +12,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DataDirAccessError,
-  DataDirLayoutError,
   DataDirVersionError,
   ensureDataDir,
   formatVersion,
@@ -524,7 +523,7 @@ describe('initDataDir', () => {
   });
 });
 
-describe('initDataDir legacy flat layout', () => {
+describe('initDataDir legacy JSON layout', () => {
   let dataDir: string;
 
   beforeEach(() => {
@@ -546,85 +545,39 @@ describe('initDataDir legacy flat layout', () => {
     vi.restoreAllMocks();
   });
 
-  it.each([
-    'events',
-    'steps',
-  ])('wipes a data directory with flat %s files', async (entityDir) => {
-    mkdirSync(path.join(dataDir, entityDir));
-    writeFileSync(path.join(dataDir, entityDir, 'wrun_A-x_1.json'), '{}');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await initDataDir(dataDir);
-
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Deleting local workflow data')
-    );
-    expect(existsSync(path.join(dataDir, 'runs'))).toBe(false);
-    expect(existsSync(path.join(dataDir, entityDir))).toBe(false);
-    const packageInfo = await getPackageInfo();
-    expect(readFileSync(path.join(dataDir, 'version.txt'), 'utf-8')).toBe(
-      `${packageInfo.name}@${packageInfo.version}`
-    );
-  });
-
-  it('keeps a data directory in the per-run layout', async () => {
+  it('leaves the JSON data of earlier releases in place', async () => {
     mkdirSync(path.join(dataDir, 'events', 'wrun_A'), { recursive: true });
     writeFileSync(
       path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'),
       '{}'
     );
-    // Not an entity file, so not a sign of the old layout.
-    writeFileSync(path.join(dataDir, 'events', '.DS_Store'), '');
+    mkdirSync(path.join(dataDir, '.locks', 'runs'), { recursive: true });
+    writeFileSync(path.join(dataDir, '.locks', 'runs', 'wrun_A.terminal'), '');
+    mkdirSync(path.join(dataDir, 'streams'));
+    writeFileSync(path.join(dataDir, 'streams', 'user-notes.txt'), 'x');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await initDataDir(dataDir);
 
-    expect(warn).not.toHaveBeenCalledWith(
-      expect.stringContaining('Deleting local workflow data')
-    );
-    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
-    expect(
-      existsSync(path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'))
-    ).toBe(true);
-  });
-  it.each([
-    ['a flat event file next to per-run directories', 'wrun_A-evnt_2.json'],
-    ['a .json file this package did not write', 'notes.json'],
-  ])('refuses, without deleting, %s', async (_, stray) => {
-    mkdirSync(path.join(dataDir, 'events', 'wrun_A'), { recursive: true });
-    writeFileSync(
-      path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'),
-      '{}'
-    );
-    writeFileSync(path.join(dataDir, 'events', stray), '{}');
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const error = await initDataDir(dataDir).catch((e) => e);
-
-    expect(error).toBeInstanceOf(DataDirLayoutError);
-    expect(error.message).toContain(path.join('events', stray));
-    expect(error.message).toContain(path.resolve(dataDir));
     for (const kept of [
       path.join('runs', 'wrun_A.json'),
       path.join('events', 'wrun_A', 'wrun_A-evnt_1.json'),
-      path.join('events', stray),
+      path.join('.locks', 'runs', 'wrun_A.terminal'),
+      path.join('streams', 'user-notes.txt'),
     ]) {
       expect(existsSync(path.join(dataDir, kept))).toBe(true);
     }
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining('Deleting local workflow data')
+    );
   });
 
-  it('refuses an unrecognized file in an otherwise flat directory', async () => {
-    mkdirSync(path.join(dataDir, 'steps'));
-    writeFileSync(path.join(dataDir, 'steps', 'wrun_A-step_1.json'), '{}');
-    writeFileSync(path.join(dataDir, 'steps', 'backup.json'), '{}');
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('starts next to the JSON data, with or without a version file or database', async () => {
+    rmSync(path.join(dataDir, 'version.txt'));
+    writeFileSync(path.join(dataDir, 'world.db'), '');
 
-    await expect(initDataDir(dataDir)).rejects.toBeInstanceOf(
-      DataDirLayoutError
-    );
-    expect(existsSync(path.join(dataDir, 'steps', 'wrun_A-step_1.json'))).toBe(
-      true
-    );
+    await expect(initDataDir(dataDir)).resolves.toBeUndefined();
+    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
   });
 });
 

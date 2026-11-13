@@ -1,4 +1,5 @@
 import type { Storage } from '@workflow/world';
+import { databaseFor } from '../db/index.js';
 import { instrumentObject } from '../instrumentObject.js';
 import { createEventsStorage } from './events-storage.js';
 import { createHooksStorage } from './hooks-storage.js';
@@ -8,7 +9,7 @@ import { createStepsStorage } from './steps-storage.js';
 
 /**
  * Storage shape used inside world-local: identical to `Storage`, but `runs`
- * exposes the internal `fileIdFilter` option on `list()`. Structurally
+ * exposes the internal `ownTagOnly` option on `list()`. Structurally
  * assignable to `Storage` at public boundaries (e.g., `reenqueueActiveRuns`).
  */
 export type LocalStorage = Omit<Storage, 'runs'> & {
@@ -17,23 +18,20 @@ export type LocalStorage = Omit<Storage, 'runs'> & {
 };
 
 /**
- * Creates a complete storage implementation using the filesystem.
- * This is the main entry point that composes all storage implementations.
+ * Creates world-local's storage over the data directory's SQLite database
+ * (`<dataDir>/world.db`). All methods are instrumented with tracing spans.
  *
- * All storage methods are instrumented with tracing spans for observability.
- *
- * @param basedir - The base directory for storing workflow data
- * @returns A complete Storage implementation with tracing
+ * @param basedir - The data directory
+ * @param tag - Optional tag scoping the runs this storage creates and sees
  */
 export function createStorage(basedir: string, tag?: string): LocalStorage {
-  // Create raw storage implementations
-  const runs = createRunsStorage(basedir, tag);
-  const steps = createStepsStorage(basedir, tag);
-  const events = createEventsStorage(basedir, tag);
-  const hooks = createHooksStorage(basedir, tag);
-  const snapshots = createSnapshotsStorage(basedir);
+  const db = databaseFor(basedir);
+  const runs = createRunsStorage(db, tag);
+  const steps = createStepsStorage(db, tag);
+  const events = createEventsStorage(db, tag);
+  const hooks = createHooksStorage(db, tag);
+  const snapshots = createSnapshotsStorage(db);
 
-  // Instrument all storage methods with tracing
   // NOTE: Span names are lowercase per OTEL semantic conventions
   return {
     runs: instrumentObject('world.runs', runs),
@@ -44,6 +42,6 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
       'world.experimental_snapshots',
       snapshots
     ),
-    clearCache: () => events.clearCache(),
+    clearCache: () => {},
   };
 }

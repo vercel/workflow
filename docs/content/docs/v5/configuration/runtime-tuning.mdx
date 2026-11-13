@@ -383,14 +383,14 @@ These variables are primarily for tests, debugging, or unusual deployments.
 
 ## Spec 9 (experimental)
 
-Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below. See [Settings and behaviour on spec 9 runs](/docs/changelog/spec-9#settings-and-behaviour-on-spec-9-runs) for each one in full.
+Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below.
 
 ### `WORKFLOW_SPEC_VERSION`
 
 - Default: unset. New runs use spec version 8.
 - `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
 - `6` creates new runs on the scheme from before the [sealed log](/docs/how-it-works/event-sourcing), where each event position is allocated by the write that occupies it. Use it in an environment shared with a runtime that cannot read sealed logs yet, such as one that pins its own accepted spec range (the Python runtime). Runs below `8` cannot have their hook tokens taken over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds): a forced hook in another run gets `HookConflictError` instead.
-- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist. See [Opting in](/docs/changelog/spec-9#opting-in).
+- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist.
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 

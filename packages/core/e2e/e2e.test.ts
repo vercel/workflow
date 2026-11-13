@@ -2045,7 +2045,7 @@ describe.concurrent('e2e', () => {
 
           expect(WorkflowRunFailedError.is(error)).toBe(true);
           assert(WorkflowRunFailedError.is(error));
-          expect(error.errorCode).toBe('RUNTIME_ERROR');
+          expect(error.errorCode).toBe('WORKFLOW_NOT_REGISTERED');
           assert(error.cause instanceof Error);
           expect(error.cause.message).toContain('is not registered');
 

@@ -35,7 +35,7 @@ import {
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../../symbols.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
   unserializableStepInputPlaceholder,
@@ -820,7 +820,7 @@ describe('executeStep — request and compute provenance', () => {
     const started = calls.find((c) => c.data.eventType === 'step_started');
     expect(started?.params).toMatchObject({
       requestId: 'req_step_executor',
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
   });
 
@@ -839,7 +839,7 @@ describe('executeStep — request and compute provenance', () => {
     });
     const started = calls.find((c) => c.data.eventType === 'step_started');
     expect(started?.params).toMatchObject({
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
     expect(started?.params).not.toHaveProperty('requestId');
   });

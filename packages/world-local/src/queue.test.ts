@@ -853,10 +853,11 @@ describe('queue transport timeouts', () => {
     await vi.waitFor(() => expect(requestReceived).toBe(true));
     const closePromise = localQueue.close();
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    // close() first gives an unanswered first attempt up to a second.
     const outcome = await Promise.race([
       closePromise.then(() => 'closed' as const),
       new Promise<'timed-out'>((resolve) => {
-        timeout = setTimeout(() => resolve('timed-out'), 1_000);
+        timeout = setTimeout(() => resolve('timed-out'), 3_000);
       }),
     ]);
     clearTimeout(timeout);
@@ -865,6 +866,29 @@ describe('queue transport timeouts', () => {
       await closePromise;
     }
     expect(outcome).toBe('closed');
+  });
+
+  // A short-lived sender (`wf start`, a script) closes its World right after
+  // start() returns. The queue is in memory: aborting a first attempt that has
+  // not reached the app yet would lose the message.
+  it('close() right after queue() still delivers the message', async () => {
+    let requestReceived = false;
+    server = createServer((_request, response) => {
+      requestReceived = true;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+
+    const localQueue = createQueue({
+      baseUrl: `http://127.0.0.1:${port}`,
+    });
+    await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+    await localQueue.close();
+    expect(requestReceived).toBe(true);
   });
 
   it('redelivers when a handler exceeds an opt-in headers deadline', async () => {

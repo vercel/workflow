@@ -547,7 +547,7 @@ export const WorkflowRouteTransport = SemanticConvention<'http' | 'in-process'>(
 );
 
 /**
- * Compute instance handling this route: the synthesized `COMPUTE_INSTANCE_ID`.
+ * Compute instance handling this route: the synthesized `getComputeInstanceId()`.
  * Uses OTEL `faas.instance` (execution-environment id, reused across
  * invocations to the same function):
  * https://opentelemetry.io/docs/specs/semconv/attributes-registry/faas/

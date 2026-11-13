@@ -7,7 +7,8 @@ import { getInlineOwnershipLeaseSeconds } from './constants.js';
  * in runtime.ts (workflow#2780). Ownership state itself is derived per-replay
  * from the event log by the step consumer in step.ts and surfaced on
  * StepInvocationQueueItem; these functions interpret that state at dispatch
- * time.
+ * time. The design, and the alternatives it rejected, are in
+ * `./step-message-ownership.md`.
  */
 
 /**
