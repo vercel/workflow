@@ -16,7 +16,7 @@ export type {
   StopSleepResult,
   WorkflowRun,
 } from '@workflow/core/runtime';
-export { deleteRunData } from '@workflow/core/runtime/delete-run-data';
+export { deleteRuns } from '@workflow/core/runtime/delete-runs';
 export {
   type RunCompletedHookParams,
   type RunFailedHookParams,

@@ -1,5 +1,5 @@
 import readline from 'node:readline';
-import { deleteRunData } from '@workflow/core/runtime';
+import { deleteRuns } from '@workflow/core/runtime';
 import { ThrottleError } from '@workflow/errors';
 import {
   DELETE_RUNS_DATA_MAX_RUN_IDS,
@@ -154,7 +154,7 @@ async function deleteBatchWithRetries(
     let reason: string;
     let delayMs = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
     try {
-      const { results } = await deleteRunData(world, pending);
+      const { results } = await deleteRuns(world, pending);
       for (const result of results) resultByRunId.set(result.runId, result);
       pending = results
         .filter((result) => result.outcome === 'failed' && result.retryable)
@@ -220,7 +220,8 @@ export interface DeleteOutcome {
 /**
  * Confirm, then delete the stored data of the given finished runs, in
  * batches of {@link DELETE_RUNS_DATA_MAX_RUN_IDS}. Runs that have not
- * finished are skipped and left running. Duplicate IDs are handled once.
+ * finished are skipped and left running. Their metadata (IDs, names,
+ * statuses, timestamps, attributes) is kept. Duplicate IDs are handled once.
  * Retryable failures are retried; see {@link deleteBatchWithRetries}.
  */
 export async function performDelete(

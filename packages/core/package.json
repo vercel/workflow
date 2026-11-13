@@ -36,9 +36,9 @@
       "types": "./dist/runtime/run.d.ts",
       "default": "./dist/runtime/run.js"
     },
-    "./runtime/delete-run-data": {
-      "types": "./dist/runtime/delete-run-data.d.ts",
-      "default": "./dist/runtime/delete-run-data.js"
+    "./runtime/delete-runs": {
+      "types": "./dist/runtime/delete-runs.d.ts",
+      "default": "./dist/runtime/delete-runs.js"
     },
     "./runtime/lifecycle-hooks": {
       "types": "./dist/runtime/lifecycle-hooks.d.ts",

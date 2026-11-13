@@ -13,7 +13,7 @@ import { setupCliWorld } from '../lib/inspect/setup.js';
 
 export default class Delete extends BaseCommand {
   static description =
-    'Delete the stored data of finished workflow runs (inputs, outputs, streams, and hook payloads). The runs stay listed. This cannot be undone.';
+    'Delete the stored data of finished workflow runs (inputs, outputs, streams, and hook payloads). Metadata is not deleted: the runs, steps, events and hooks stay listed with their IDs, names, statuses, timestamps and attributes. This cannot be undone.';
 
   static examples = [
     '$ workflow delete <run-id>',

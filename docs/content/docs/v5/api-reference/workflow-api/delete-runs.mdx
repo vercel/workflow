@@ -1,28 +1,28 @@
 ---
-title: deleteRunData
+title: deleteRuns
 description: Delete the stored data of finished workflow runs in one call.
 type: reference
-summary: Use deleteRunData to delete the inputs, outputs, streams, and hook payloads of up to 100 finished runs.
+summary: Use deleteRuns to delete the inputs, outputs, streams, and hook payloads of up to 100 finished runs.
 related:
   - /docs/observability/retention
   - /docs/api-reference/workflow-api/get-run
 ---
 
-Deletes the stored data of up to 100 finished runs: their inputs, outputs and errors, their steps' and events' payloads, their hook payloads, and their stream contents. The runs stay listed, with their payloads reading back as expired. This cannot be undone. See [Data retention](/docs/observability/retention#deleting-a-finished-runs-data).
+Deletes the stored data of up to 100 finished runs: their inputs, outputs and errors, their steps' and events' payloads, their hook payloads, and their stream contents. Metadata is not deleted: the runs stay listed, and so do their steps, events and hooks, with their IDs, names, statuses, timestamps and attributes. Only the payloads go, reading back as expired. This cannot be undone. See [Data retention](/docs/observability/retention#deleting-a-finished-runs-data).
 
 For a single run, call [`run.deleteData()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data) instead.
 
 ```typescript lineNumbers
-import { deleteRunData } from "workflow/api";
+import { deleteRuns } from "workflow/api";
 
 export async function POST(req: Request) {
   const { runIds } = await req.json();
-  const { summary, results } = await deleteRunData(runIds); // [!code highlight]
+  const { summary, results } = await deleteRuns(runIds); // [!code highlight]
   return Response.json({ summary, results });
 }
 ```
 
-`deleteRunData()` never cancels a run: a run that hasn't finished is answered `skipped` and keeps running. Cancel it first to delete its data now.
+`deleteRuns()` never cancels a run: a run that hasn't finished is answered `skipped` and keeps running. Cancel it first to delete its data now.
 
 ## API signature
 
@@ -30,8 +30,8 @@ export async function POST(req: Request) {
 
 <TSDoc
 definition={`
-import { deleteRunData } from "workflow/api";
-export default deleteRunData;`}
+import { deleteRuns } from "workflow/api";
+export default deleteRuns;`}
 showSections={["parameters"]}
 />
 
@@ -57,4 +57,4 @@ Deletion is idempotent, so retrying is always safe: a run that was already handl
 
 ## Errors
 
-`deleteRunData()` throws when `runIds` is empty, contains duplicates, or has more than 100 IDs, and when the configured World doesn't support deleting run data. Send more runs in batches of 100. The World enforces the same limit.
+`deleteRuns()` throws when `runIds` is empty, contains duplicates, or has more than 100 IDs, and when the configured World doesn't support deleting run data. Send more runs in batches of 100. The World enforces the same limit.

@@ -340,9 +340,10 @@ export interface Storage {
     /**
      * Delete the stored data of many finished runs in a single operation,
      * including their inputs, outputs and errors, their steps' and events'
-     * payloads, their hook payloads, and their stream contents. The runs,
-     * steps and events themselves stay listed, with their payloads reading
-     * back as expired.
+     * payloads, their hook payloads, and their stream contents. Metadata is
+     * not deleted: the run, step, event and hook records stay listed with
+     * their IDs, names, statuses, timestamps and the run's attributes, and
+     * streams keep their names; only the payloads read back as expired.
      *
      * Only finished runs have their data deleted. A run that has not
      * finished is answered `skipped` and left untouched; the World must
@@ -350,7 +351,7 @@ export interface Storage {
      * (order preserved) plus an aggregate summary. See
      * `DeleteRunDataResult` for the outcomes.
      *
-     * OPTIONAL. There is no fallback: the SDK helper `deleteRunData` in
+     * OPTIONAL. There is no fallback: the SDK helper `deleteRuns` in
      * `@workflow/core` throws when the configured World does not implement
      * it.
      */

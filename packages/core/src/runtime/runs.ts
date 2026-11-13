@@ -410,8 +410,12 @@ export async function cancelRuns(
  * Delete the stored data of many finished runs in one call: their inputs,
  * outputs and errors, their steps' and events' payloads, their hook payloads,
  * and their stream contents, as if each had been started with
- * `experimental_retention: 0`. The runs stay listed, with their payloads
- * reading back as expired. Deletion cannot be undone.
+ * `experimental_retention: 0`. Deletion cannot be undone.
+ *
+ * Metadata is not deleted: despite the name, the runs themselves stay
+ * listed, and so do their steps, events and hooks, with their IDs, names,
+ * statuses, timestamps and the runs' attributes. Only their payloads go,
+ * reading back as expired.
  *
  * Runs that have not finished are answered `skipped` and left untouched:
  * this never cancels a run. Cancel it first (see {@link cancelRuns}) to
@@ -435,21 +439,21 @@ export async function cancelRuns(
  *   support deleting run data; or if the World does not answer exactly one
  *   result per run.
  */
-export async function deleteRunData(
+export async function deleteRuns(
   world: World,
   runIds: string[]
 ): Promise<DeleteRunsDataResult> {
   if (runIds.length === 0) {
-    throw new FatalError('deleteRunData requires at least one run ID.');
+    throw new FatalError('deleteRuns requires at least one run ID.');
   }
   if (runIds.length > DELETE_RUNS_DATA_MAX_RUN_IDS) {
     throw new FatalError(
-      `deleteRunData accepts at most ${DELETE_RUNS_DATA_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
+      `deleteRuns accepts at most ${DELETE_RUNS_DATA_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
     );
   }
   if (new Set(runIds).size !== runIds.length) {
     throw new FatalError(
-      'deleteRunData requires unique run IDs (duplicates found).'
+      'deleteRuns requires unique run IDs (duplicates found).'
     );
   }
   if (!world.runs.deleteDataMany) {

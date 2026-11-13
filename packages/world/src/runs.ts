@@ -357,7 +357,9 @@ export const DeleteRunsDataRequestSchema = z.object({
 export type DeleteRunsDataRequest = z.infer<typeof DeleteRunsDataRequestSchema>;
 
 /**
- * Per-run outcome of deleting a run's data.
+ * Per-run outcome of deleting a run's data. Deleting data never deletes the
+ * run's metadata: the run, step, event and hook records, with their IDs,
+ * names, statuses, timestamps and the run's attributes, stay.
  *
  * - `deleted`: the run's data was deleted by this request.
  * - `already_deleted`: the run's data was already gone (an earlier deletion,

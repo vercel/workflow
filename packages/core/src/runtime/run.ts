@@ -36,7 +36,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
-  deleteRunData,
+  deleteRuns,
   isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
@@ -397,8 +397,11 @@ export class Run<TResult> {
    * Deletes the stored data of the finished run: its input, output and
    * error, its steps' and events' payloads, its hook payloads, and its
    * stream contents, as if it had been started with
-   * `experimental_retention: 0`. The run stays listed, with its payloads
-   * reading back as expired. This cannot be undone.
+   * `experimental_retention: 0`. This cannot be undone.
+   *
+   * Metadata is not deleted: the run stays listed, and so do its steps,
+   * events and hooks, with their IDs, names, statuses, timestamps and the
+   * run's attributes. Only their payloads go, reading back as expired.
    *
    * Only a finished run has its data deleted. A run that has not finished
    * is answered `skipped` and left running: cancel it first (see
@@ -418,10 +421,10 @@ export class Run<TResult> {
    */
   async deleteData(): Promise<DeleteRunDataResult> {
     'use step';
-    const { results } = await deleteRunData(await this.#lazyWorldPromise, [
+    const { results } = await deleteRuns(await this.#lazyWorldPromise, [
       this.runId,
     ]);
-    // `deleteRunData` guarantees exactly one result, for this run.
+    // `deleteRuns` guarantees exactly one result, for this run.
     return results[0] as DeleteRunDataResult;
   }
 

@@ -641,7 +641,9 @@ function deleteRunDataResultFromWire(
 }
 
 /**
- * Delete the stored data of many finished runs in a single request.
+ * Delete the stored data of many finished runs in a single request. Their
+ * metadata (the run, step, event and hook records, with their IDs, names,
+ * statuses, timestamps and the runs' attributes) is kept.
  *
  * world-vercel only deletes the data of runs that have finished and answers
  * every other run `skipped`, so this never cancels anything. The request is
