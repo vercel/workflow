@@ -131,11 +131,11 @@ describe('in-band fence (world-local)', () => {
     expect(await snapshotOf(runId)).toEqual(before);
   });
 
-  it('counts an in-band write whose failure is ambiguous, so a stale writer cannot slip in', async () => {
+  it('does not advance the count when an in-band write fails: nothing was written', async () => {
     const runId = await createRun();
     const before = await snapshotOf(runId);
-    // Refused without a status: the fence cannot tell it from a write that
-    // landed and then failed, so it advances (the safe direction).
+    // A write that fails rolls back with its transaction, so it allocated
+    // nothing and the count stays.
     await storage.events
       .create(
         runId,
@@ -150,9 +150,7 @@ describe('in-band fence (world-local)', () => {
       .catch(() => undefined);
     const after = await snapshotOf(runId);
     expect(after.slots).toEqual(before.slots);
-    expect(after.snapshot?.seqInBand).toBe(
-      (before.snapshot?.seqInBand ?? 0) + 1
-    );
+    expect(after.snapshot?.seqInBand).toBe(before.snapshot?.seqInBand);
   });
 
   it('keeps the counters on every page of a paginated load', async () => {
@@ -172,31 +170,61 @@ describe('in-band fence (world-local)', () => {
     expect(first.snapshot?.seq).toBe(4);
   });
 
-  it('keeps the count on disk: a dead writer between its check and its publish is counted, and a snapshot reports the count without it', async () => {
+  it('allocates nothing for an in-band hook_received that converges on its committed resume', async () => {
     const runId = await createRun();
-    // What a writer that died after the fence accepted it, and before it
-    // finished, leaves behind.
-    await fs.mkdir(path.join(testDir, '.locks', 'runs'), { recursive: true });
-    await fs.writeFile(
-      path.join(testDir, '.locks', 'runs', `${runId}.in-band`),
-      JSON.stringify({ seqInBand: 1, pending: 1 })
+    await storage.events.create(
+      runId,
+      { eventType: 'run_started', specVersion: SPEC } as AnyEventRequest,
+      { inBand: true, expectedSeqInBand: 1 }
     );
-    expect((await snapshotOf(runId)).snapshot?.seqInBand).toBe(1);
-    // A writer at that count may have been the dead one's stale sibling: refused.
-    const error = await storage.events
-      .create(runId, attrSet('stale'), { inBand: true, expectedSeqInBand: 1 })
-      .catch((err: unknown) => err);
-    expect(InBandSupersededError.is(error)).toBe(true);
-    expect((error as InBandSupersededError).seqInBand).toBe(2);
-    expect((await snapshotOf(runId)).snapshot?.seqInBand).toBe(2);
-    await storage.events.create(runId, attrSet('next'), {
+    await storage.events.create(
+      runId,
+      {
+        eventType: 'hook_created',
+        correlationId: 'hook_1',
+        specVersion: SPEC,
+        eventData: { token: `tok-${runId}` },
+      } as AnyEventRequest,
+      { inBand: true, expectedSeqInBand: 2 }
+    );
+    const resume = {
+      eventType: 'hook_received',
+      correlationId: 'hook_1',
+      specVersion: SPEC,
+      eventData: { payload: serialized({ n: 1 }) },
+    } as AnyEventRequest;
+    const first = await storage.events.create(runId, resume, {
       inBand: true,
-      expectedSeqInBand: 2,
+      expectedSeqInBand: 3,
+      resumeId: 'resume_1',
+    });
+    expect(first.allocated).toBe(1);
+    const replay = await storage.events.create(runId, resume, {
+      inBand: true,
+      expectedSeqInBand: 4,
+      resumeId: 'resume_1',
+    });
+    expect(replay.event?.eventId).toBe(first.event?.eventId);
+    expect(replay.allocated).toBe(0);
+    const { snapshot } = await snapshotOf(runId);
+    expect(snapshot).toEqual({ seq: 4, seqInBand: 4 });
+  });
+
+  it('keeps the count in the database: another storage instance reads it', async () => {
+    const runId = await createRun();
+    await storage.events.create(runId, attrSet('one'), {
+      inBand: true,
+      expectedSeqInBand: 1,
     });
     // Another storage instance (a restart, another process) reads the same count.
     const reopened = createStorage(testDir);
     const page = await reopened.events.list({ runId });
-    expect(page.snapshot?.seqInBand).toBe(3);
+    expect(page.snapshot?.seqInBand).toBe(2);
+    const error = await reopened.events
+      .create(runId, attrSet('stale'), { inBand: true, expectedSeqInBand: 1 })
+      .catch((err: unknown) => err);
+    expect(InBandSupersededError.is(error)).toBe(true);
+    expect((error as InBandSupersededError).seqInBand).toBe(2);
   });
 
   describe('across OS processes on one data directory', () => {

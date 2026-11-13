@@ -31,8 +31,8 @@ Workflow replay exceeded maximum duration (240s) after 4 attempts
 
 ### Run on the QuickJS VM with snapshotting
 
-<Callout type="warn">
-The QuickJS engine is experimental, and its global surface differs from the default engine. Review the [differences](/docs/configuration/runtime-tuning#workflow_vm) before switching an existing deployment.
+<Callout type="info">
+This is the recommended fix for long-running workflows. Workflow code runs unchanged unless it uses one of the few globals QuickJS does not provide in workflow functions (any `Intl.*` constructor, `toLocaleString()`-style methods called with a locale, `crypto.subtle`, `WebAssembly`); those calls move into a step. See the [full list](/docs/configuration/runtime-tuning#workflow_vm).
 </Callout>
 
 Under QuickJS with snapshotting, a run restores its VM memory from a snapshot and replays only the events recorded since, so replay time stays roughly constant as the log grows. These runs are also exempt from the default [per-run event limit](/docs/errors/max-events-exceeded).

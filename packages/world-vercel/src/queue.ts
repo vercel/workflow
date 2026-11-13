@@ -10,7 +10,6 @@ import {
   ConsumerDiscoveryError,
   QueueClient,
 } from '@vercel/queue';
-import { globalSingleton } from '@workflow/utils';
 import {
   isSingleOrchestratorMessage,
   MessageId,
@@ -722,99 +721,17 @@ function getHeadersFromPayload(
 }
 
 /**
- * Resolves the physical VQS topic for a message.
+ * A flow (workflow) topic: every flow message of a workflow, orchestrator or
+ * step, spec 8 or spec 9, goes to one shared topic (`__wkf_workflow_<name>`),
+ * whose consumer has no `maxConcurrency`. A spec-9 run's orchestrator
+ * messages carry its run id as their concurrency key there (see
+ * {@link concurrencyKeyOf}), which keeps that run to one orchestrator
+ * invocation at a time; a spec-8 run's messages carry none.
  *
- * Normally this is the logical queue name: every flow message of a workflow,
- * orchestrator or step, spec 8 or spec 9, goes to one shared topic
- * (`__wkf_workflow_<name>`), whose consumer has no `maxConcurrency`. A
- * spec-9 run's orchestrator messages carry its run id as their concurrency
- * key there (see {@link concurrencyKeyOf}), which keeps that run to one
- * orchestrator invocation at a time; a spec-8 run's messages carry none.
- *
- * When `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, messages on flow (workflow)
- * topics get a payload-dependent physical topic. VQS scopes `maxConcurrency`
- * per concrete topic, so combined with `maxConcurrency: 1` on the flow
- * trigger:
- *
- * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
- *   per-run topic: at most one replay per run at a time.
- * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId`; they
- *   ride the flow topic in the combined handler model) get a per-step topic
- *   so steps keep full parallelism across a run; only redeliveries of the
- *   same step serialize.
- * - Health checks get a per-probe topic (their correlation id) so concurrent
- *   probes never queue behind one shared `…_health_check` slot.
- *
- * That applies to spec-9 runs too, and their messages are then sent without
- * a concurrency key: VQS refuses a keyed send (400) to a topic a
- * `maxConcurrency` consumer subscribes to. The per-run topic serializes the
- * run's orchestrator instead, and nothing is coalesced.
- *
- * The flow-topic match allows an optional queue namespace prefix
- * (`__<namespace>_wkf_workflow_`, see `@workflow/builders` constants) so the
- * behavior composes with `WORKFLOW_QUEUE_NAMESPACE`.
- *
- * This rewrite only serializes messages sent through this adapter (the
- * wrapper's logical `queueName` keeps handler dispatch and re-enqueues on the
- * same physical topic). A producer that computes the shared topic name itself
- * still delivers (the trigger subscribes with a wildcard), but bypasses the
- * per-run concurrency slot.
+ * The match allows an optional queue namespace prefix
+ * (`__<namespace>_wkf_workflow_`, see `@workflow/builders` constants).
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
-
-// Logged at most once per process; a field rather than a module-level `let`
-// because a bundler can put several copies of this file in one process and
-// "once" should not become once per copy (see `globalSingleton`).
-const queueLogs = globalSingleton(
-  '@workflow/world-vercel//queueLogLatches',
-  1,
-  () => ({ loggedSequentialReplays: false })
-);
-
-/**
- * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
- * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders`; world-vercel
- * must not depend on the build-time package, so the check is duplicated.
- */
-function isSequentialReplaysEnabled(): boolean {
-  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
-}
-
-function getPhysicalQueueName(
-  queueName: ValidQueueName,
-  payload: QueuePayload
-): string {
-  if (!isSequentialReplaysEnabled() || !FLOW_TOPIC_PATTERN.test(queueName)) {
-    return queueName;
-  }
-  if (!queueLogs.loggedSequentialReplays) {
-    queueLogs.loggedSequentialReplays = true;
-    // One-time breadcrumb so a half-applied configuration (env var set without
-    // a maxConcurrency-bearing flow trigger, or vice versa) is diagnosable
-    // from function logs. Must go to stderr: this code also runs inside CLI
-    // commands whose stdout is a machine-parsed JSON contract (e.g.
-    // `workflow health --json`).
-    console.warn(
-      '[workflow] WORKFLOW_SEQUENTIAL_REPLAYS=1: routing flow messages to per-run queue topics'
-    );
-  }
-  // Health checks are matched before the runId branch: a probe issued to
-  // prepare a cross-deployment `start()` carries the run id it is about to
-  // create, and must still get its per-probe topic rather than being routed to
-  // that run's serialized replay topic.
-  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
-    return `${queueName}_${payload.correlationId}`;
-  }
-  if ('runId' in payload && typeof payload.runId === 'string') {
-    // Inline step execution: full parallelism via a per-step topic.
-    if ('stepId' in payload && typeof payload.stepId === 'string') {
-      return `${queueName}_${payload.runId}_${payload.stepId}`;
-    }
-    // Orchestrator replay: serialize per run.
-    return `${queueName}_${payload.runId}`;
-  }
-  return queueName;
-}
 
 /**
  * The concurrency key of a flow message: the run id, for an orchestrator
@@ -822,17 +739,15 @@ function getPhysicalQueueName(
  * spec stamp, see `isSingleOrchestratorMessage`). VQS keeps one delivery per
  * key active and coalesces the key's other messages into it.
  *
- * `undefined` for everything else: a step message, a health check, a spec-8
- * run's message (keying it would serialize it, and turn a wake into a
- * coalesced re-run inside the running invocation), and every message under
- * `WORKFLOW_SEQUENTIAL_REPLAYS=1` (see {@link getPhysicalQueueName}).
+ * `undefined` for everything else: a step message, a health check, and a
+ * spec-8 run's message (keying it would serialize it, and turn a wake into a
+ * coalesced re-run inside the running invocation).
  */
 function concurrencyKeyOf(
   queueName: ValidQueueName,
   payload: QueuePayload
 ): string | undefined {
   if (!FLOW_TOPIC_PATTERN.test(queueName)) return undefined;
-  if (isSequentialReplaysEnabled()) return undefined;
   if (!isSingleOrchestratorMessage(payload)) return undefined;
   return orchestratorRunIdOf(payload);
 }
@@ -998,10 +913,7 @@ export function createQueue(config?: APIConfig): Queue {
     // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
-    const topic = getPhysicalQueueName(queueName, payload).replace(
-      /[^A-Za-z0-9-_]/g,
-      '-'
-    );
+    const topic = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     const concurrencyKey = concurrencyKeyOf(queueName, payload);
 
     return {
@@ -1013,8 +925,8 @@ export function createQueue(config?: APIConfig): Queue {
       // preserving Uint8Array values (workflow input in specVersion >= 2).
       wrapper: {
         payload,
-        // Keep the logical queue name so the handler and re-enqueue path
-        // resolve the same per-run physical topic on the next invocation.
+        // The queue name the message was sent to: the handler dispatches by
+        // it, and a re-enqueue sends to it again.
         queueName,
         // Store deploymentId in the message so it can be preserved when re-enqueueing
         deploymentId: opts?.deploymentId,
@@ -1158,16 +1070,6 @@ export function createQueue(config?: APIConfig): Queue {
     // every message lands in one group, so this is one request per
     // MAX_QUEUE_SEND_BATCH messages. Mixed input still works, it just costs
     // one request per distinct route.
-    //
-    // `topic` is one of those dimensions, which makes this a no-op under
-    // WORKFLOW_SEQUENTIAL_REPLAYS=1: step dispatches ride the flow topic,
-    // `getPhysicalQueueName` gives each one a per-step physical topic, and
-    // every message therefore lands in a group of its own. The fan-out still
-    // publishes correctly, just at one request per step as before, and each
-    // goes through the batch endpoint rather than `send()` — which does not
-    // map 502 `consumer_discovery_failed` to ConsumerDiscoveryError (only
-    // 503). No caller on this path classifies that error today, so nothing
-    // changes behaviorally; worth knowing before one starts.
     const groups = new Map<
       string,
       {
