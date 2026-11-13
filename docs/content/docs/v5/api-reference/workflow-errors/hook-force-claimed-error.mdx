@@ -1,15 +1,15 @@
 ---
 title: HookForceClaimedError
-description: Thrown to a hook's awaiters when another workflow run takes its token over with experimental_force.
+description: Thrown to a hook's awaiters when another workflow run takes its token over with createHook({ force: true }).
 type: reference
-summary: Catch HookForceClaimedError when a run created with experimental_force took a hook token this run was waiting on.
+summary: Catch HookForceClaimedError when a run created with createHook({ force: true }) took a hook token this run was waiting on.
 related:
   - /docs/api-reference/workflow/create-hook
   - /docs/foundations/hooks
   - /docs/errors/hook-force-claimed
 ---
 
-`HookForceClaimedError` is thrown when awaiting a hook whose token another workflow run took over with [`createHook({ experimental_force: true })`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The hook is disposed and receives no further payloads; the error names the run that now owns the token. See the [hook-force-claimed](/docs/errors/hook-force-claimed) error guide for how to react.
+`HookForceClaimedError` is thrown when awaiting a hook whose token another workflow run took over with [`createHook({ force: true })`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The hook is disposed and receives no further payloads; the error names the run that now owns the token. See the [hook-force-claimed](/docs/errors/hook-force-claimed) error guide for how to react.
 
 ```typescript lineNumbers
 import { createHook } from "workflow";

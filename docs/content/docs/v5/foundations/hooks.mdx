@@ -279,7 +279,7 @@ After disposal, the hook will no longer receive events and the async iterator wi
 
 ### Taking over a token from another run
 
-Disposing early only works when the run holding the token cooperates. When the newest run should own a token regardless, such as a redeployed bot that must replace the run still waiting on a channel, pass `experimental_force` and let the runtime perform the handoff:
+Disposing early only works when the run holding the token cooperates. When the newest run should own a token regardless, such as a redeployed bot that must replace the run still waiting on a channel, pass `force` and let the runtime perform the handoff:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -292,7 +292,7 @@ export async function channelWorkflow(channelId: string) {
 
   const hook = createHook<{ text: string }>({
     token: `channel:${channelId}`,
-    experimental_force: true, // [!code highlight]
+    force: true, // [!code highlight]
   });
 
   try {

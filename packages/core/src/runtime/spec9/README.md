@@ -1390,7 +1390,7 @@ A `hook_created` for a token another run holds is answered with a `hook_conflict
 
 #### Force-claim
 
-`createHook({ token, experimental_force: true })` takes a token from another run. The World writes `hook_disposed{forceClaimedBy}` into the victim's log and records the victim on the new hook (`claimedFrom`). The World has no queue, so the claimer's runtime wakes the victim, whose `await hook` throws `HookForceClaimedError`. A claimer that dies before that wake repays it on every replay within 24 hours of the creation. A `resumeHook()` aimed at the old hook gets `HookForceClaimedError`, looks the token up again and follows it to the new owner, up to 3 times. A legacy victim with no recorded `workflowName` gets no wake and reads the disposal on its next invocation.
+`createHook({ token, force: true })` takes a token from another run. The World writes `hook_disposed{forceClaimedBy}` into the victim's log and records the victim on the new hook (`claimedFrom`). The World has no queue, so the claimer's runtime wakes the victim, whose `await hook` throws `HookForceClaimedError`. A claimer that dies before that wake repays it on every replay within 24 hours of the creation. A `resumeHook()` aimed at the old hook gets `HookForceClaimedError`, looks the token up again and follows it to the new owner, up to 3 times. A legacy victim with no recorded `workflowName` gets no wake and reads the disposal on its next invocation.
 
 #### Terminal hook disposal
 

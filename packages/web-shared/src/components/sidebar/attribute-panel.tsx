@@ -453,7 +453,7 @@ const attributeToDisplayFn: Record<
   // Hook details
   token: (value: unknown) => String(value),
   tokenRetentionUntil: timestampWithTooltipOrNull,
-  // A force-claimed hook (`experimental_force`): the run whose token it took.
+  // A force-claimed hook (`force`): the run whose token it took.
   claimedFrom: (value: unknown) => {
     const from = value as { runId?: unknown } | undefined;
     return typeof from?.runId === 'string' ? from.runId : null;

@@ -130,7 +130,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     // `hook_received` writes sharing a `(runId, resumeId)` converge on one
     // event (the `hook_resumes` table).
     hookResumeDedup: true,
-    // `createHook({ experimental_force: true })` takes a token over in one
+    // `createHook({ force: true })` takes a token over in one
     // transaction, writing the holder's `hook_disposed`.
     hookForceClaim: true,
     // The queue delivers a single-orchestrator run's orchestrator messages

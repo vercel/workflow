@@ -39,7 +39,7 @@ export interface HookInvocationQueueItem {
   token: string;
   /** Earliest time the token can be reused after the run ends. */
   tokenRetentionUntil?: Date;
-  /** `createHook({ experimental_force })`: take the token over if held. */
+  /** `createHook({ force })`: take the token over if held. */
   force?: boolean;
   metadata?: Serializable;
   hasCreatedEvent?: boolean;

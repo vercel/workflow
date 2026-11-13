@@ -515,7 +515,7 @@ async function resumeHookImpl<T = any>(
         typeof tokenOrHook === 'string' ? tokenOrHook : tokenOrHook.token;
 
       // The hook's token can change hands while this resume is in flight
-      // (`createHook({ experimental_force: true })` in another run). The
+      // (`createHook({ force: true })` in another run). The
       // World then refuses the write to the old owner with
       // `HookForceClaimedError` — never a silent drop — and the token, looked
       // up again, names the new owner. Follow it: the same logical resume,
@@ -751,7 +751,7 @@ async function resumeHookAttempt<T = any>(
       }
     }
     // `resumeWebhook()` checked the hook it looked up; a redirect lands on a
-    // different hook, and one taken over by `createHook({ experimental_force
+    // different hook, and one taken over by `createHook({ force
     // })` is never a webhook. Same answer as the entry-point check.
     if (webhookOnly && hook.isWebhook === false) {
       const notWebhook = new HookNotFoundError(hook.token);

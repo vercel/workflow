@@ -1057,7 +1057,7 @@ export function createEventsStorage(
 
   /**
    * Refuses a `hook_received` to a disposed hook. A hook its run disposed
-   * answers not found; one another run took over (`experimental_force`) is
+   * answers not found; one another run took over (`force`) is
    * a redirect naming the token's current owner, so `resumeHook()` follows
    * the token.
    */
@@ -1083,7 +1083,7 @@ export function createEventsStorage(
   /**
    * `hook_created`: takes the hook's token, or records a `hook_conflict`
    * when another live hook holds it. A forced creation
-   * (`createHook({ experimental_force: true })`) takes the token from its
+   * (`createHook({ force: true })`) takes the token from its
    * holder in the same transaction: the holder's `hook_disposed`
    * (`forceClaimedBy`) lands in its own run's log, so a resume can never be
    * accepted for a hook that no longer holds its token.

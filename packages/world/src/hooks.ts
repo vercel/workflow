@@ -150,7 +150,7 @@ export const HookSchema = z.object({
   // is active.
   resumeCapabilities: HookResumeCapabilitiesSchema.optional(),
   // Set when this hook took its token from another run
-  // (`experimental_force`). The wake-targeting fields are the victim run's,
+  // (`force`). The wake-targeting fields are the victim run's,
   // so the claimer's runtime can publish the victim's wake without reading
   // a run it may not be able to reach; see `HookClaimedFromSchema`.
   claimedFrom: HookClaimedFromSchema.optional(),

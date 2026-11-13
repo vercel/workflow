@@ -1555,7 +1555,7 @@ describe('createWebhook', () => {
     );
   });
 
-  describe('experimental_force', () => {
+  describe('force', () => {
     const HOOK_ID = 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV';
     const forceCapable = {
       hookRetention: { active: true },
@@ -1566,7 +1566,7 @@ describe('createWebhook', () => {
       const ctx = setupWorkflowContext([]);
       ctx.worldCapabilities = forceCapable;
       const createHook = createCreateHook(ctx);
-      createHook({ token: 'shared', experimental_force: true });
+      createHook({ token: 'shared', force: true });
       const queueItem = ctx.invocationsQueue.values().next().value;
       expect(queueItem?.type).toBe('hook');
       if (queueItem?.type === 'hook') {
@@ -1590,8 +1590,8 @@ describe('createWebhook', () => {
       const ctx = setupWorkflowContext([]);
       ctx.worldCapabilities = forceCapable;
       const createHook = createCreateHook(ctx);
-      expect(() => createHook({ experimental_force: true })).toThrow(
-        /`experimental_force: true` but no `token`/
+      expect(() => createHook({ force: true })).toThrow(
+        /`force: true` but no `token`/
       );
       expect(ctx.invocationsQueue.size).toBe(0);
     });
@@ -1601,8 +1601,8 @@ describe('createWebhook', () => {
       ctx.worldCapabilities = forceCapable;
       const createHook = createCreateHook(ctx);
       expect(() =>
-        createHook({ token: 't', isWebhook: true, experimental_force: true })
-      ).toThrow(/Webhook hooks do not support `experimental_force`/);
+        createHook({ token: 't', isWebhook: true, force: true })
+      ).toThrow(/Webhook hooks do not support `force`/);
     });
 
     it.each([
@@ -1612,10 +1612,8 @@ describe('createWebhook', () => {
       const ctx = setupWorkflowContext([]);
       ctx.worldCapabilities = capabilities;
       const createHook = createCreateHook(ctx);
-      expect(() =>
-        createHook({ token: 'shared', experimental_force: true })
-      ).toThrow(
-        'The configured World does not support `experimental_force` for Hooks.'
+      expect(() => createHook({ token: 'shared', force: true })).toThrow(
+        'The configured World does not support `force` for Hooks.'
       );
       expect(ctx.invocationsQueue.size).toBe(0);
     });
@@ -1754,13 +1752,13 @@ describe('createWebhook', () => {
       ]);
       ctx.worldCapabilities = forceCapable;
       const createHook = createCreateHook(ctx);
-      const hook = createHook({ token: 'shared', experimental_force: true });
+      const hook = createHook({ token: 'shared', force: true });
       const error = await hook.then(
         () => undefined,
         (err: unknown) => err
       );
       expect(error).toBeInstanceOf(FatalError);
-      expect((error as Error).message).toContain('experimental_force');
+      expect((error as Error).message).toContain('createHook({ force: true })');
       expect((error as Error).message).toContain('wrun_victim');
       expect(HookConflictError.is(error)).toBe(false);
       await expect(hook.getConflict()).rejects.toBeInstanceOf(FatalError);
@@ -1789,7 +1787,7 @@ describe('createWebhook', () => {
       ]);
       ctx.worldCapabilities = forceCapable;
       const createHook = createCreateHook(ctx);
-      const hook = createHook({ token: 'shared', experimental_force: true });
+      const hook = createHook({ token: 'shared', force: true });
       const error = await hook.then(
         () => undefined,
         (err: unknown) => err
@@ -1801,6 +1799,57 @@ describe('createWebhook', () => {
       );
       const conflict = await hook.getConflict();
       expect(conflict?.runId).toBe('wrun_legacy_victim');
+    });
+
+    describe('deprecated `experimental_force` alias', () => {
+      it('threads `force` onto the queue item', () => {
+        const ctx = setupWorkflowContext([]);
+        ctx.worldCapabilities = forceCapable;
+        const createHook = createCreateHook(ctx);
+        createHook({ token: 'shared', experimental_force: true });
+        const queueItem = ctx.invocationsQueue.values().next().value;
+        expect(queueItem?.type).toBe('hook');
+        if (queueItem?.type === 'hook') {
+          expect(queueItem.force).toBe(true);
+        }
+      });
+
+      it('applies the same validation as `force`', () => {
+        const ctx = setupWorkflowContext([]);
+        ctx.worldCapabilities = forceCapable;
+        const createHook = createCreateHook(ctx);
+        expect(() => createHook({ experimental_force: true })).toThrow(
+          /`force: true` but no `token`/
+        );
+        expect(() =>
+          createHook({ token: 't', isWebhook: true, experimental_force: true })
+        ).toThrow(/Webhook hooks do not support `force`/);
+        expect(ctx.invocationsQueue.size).toBe(0);
+      });
+
+      it('accepts both names when they agree', () => {
+        const ctx = setupWorkflowContext([]);
+        ctx.worldCapabilities = forceCapable;
+        const createHook = createCreateHook(ctx);
+        createHook({ token: 'a', force: true, experimental_force: true });
+        createHook({ token: 'b', force: false, experimental_force: false });
+        const [forced, unforced] = [...ctx.invocationsQueue.values()];
+        expect(forced?.type === 'hook' && forced.force).toBe(true);
+        expect(unforced?.type === 'hook' && unforced.force).toBeUndefined();
+      });
+
+      it.each([
+        [{ force: true, experimental_force: false }, 'true', 'false'],
+        [{ force: false, experimental_force: true }, 'false', 'true'],
+      ])('throws when both are set and disagree (%o)', (options, force, legacy) => {
+        const ctx = setupWorkflowContext([]);
+        ctx.worldCapabilities = forceCapable;
+        const createHook = createCreateHook(ctx);
+        expect(() => createHook({ token: 'shared', ...options })).toThrow(
+          `\`createHook()\` was called with both \`force: ${force}\` and \`experimental_force: ${legacy}\`. \`experimental_force\` is a deprecated alias for \`force\`; pass only \`force\`.`
+        );
+        expect(ctx.invocationsQueue.size).toBe(0);
+      });
     });
   });
 });

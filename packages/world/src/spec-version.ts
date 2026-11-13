@@ -76,7 +76,7 @@ export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
 /**
  * Runs at this spec version or later understand an INVOLUNTARY hook disposal:
  * a `hook_disposed` carrying `forceClaimedBy`, written into the run's log by
- * another run's `createHook({ experimental_force: true })`. A reader at this
+ * another run's `createHook({ force: true })`. A reader at this
  * version rejects the hook's awaiters with `HookForceClaimedError` and settles
  * `getConflict()`; a reader below it treats the row as its own `dispose()`
  * and leaves every `await hook` pending forever — the run is not corrupted,

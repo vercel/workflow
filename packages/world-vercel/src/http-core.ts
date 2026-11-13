@@ -437,7 +437,7 @@ export function errorForResponse(
   const { retryAfter, code, url, mitigated, details } = opts;
   if (status === 409 && code === 'hook-force-claimed') {
     // A hook_received refused because the hook's token was taken over by
-    // another run (`experimental_force`). The server completed the transfer
+    // another run (`force`). The server completed the transfer
     // before answering, so a fresh by-token lookup names the claimer; the
     // event layer re-keys this with the token and `resumeHook()` follows it.
     const claimedBy =

@@ -188,7 +188,7 @@ Custom hook tokens are the recommended way to coordinate active workflow runs. U
 
 ### Open the run's start Hook
 
-A run started with [`start(workflow, args, { experimental_hook: { token } })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) already owns its token through its start Hook. Calling `createHook({ token })` with that token in the run returns a handle bound to the start Hook instead of registering a new one: it adds no step, `await hook.getConflict()` resolves `null`, and payloads resumed before the call are delivered in order. Set `metadata` and `experimental_minRetention` on `start({ experimental_hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `experimental_force` to this `createHook()` throws. Open it with `const`: disposing the handle frees the token, as for any Hook, and a later `start()` with it is then admitted as a new run (see [Take care with the start Hook's lifecycle](/docs/api-reference/workflow-api/start#take-care-with-the-start-hooks-lifecycle)). See [Receive the payloads in the workflow](/docs/foundations/idempotency#receive-the-payloads-in-the-workflow).
+A run started with [`start(workflow, args, { experimental_hook: { token } })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) already owns its token through its start Hook. Calling `createHook({ token })` with that token in the run returns a handle bound to the start Hook instead of registering a new one: it adds no step, `await hook.getConflict()` resolves `null`, and payloads resumed before the call are delivered in order. Set `metadata` and `experimental_minRetention` on `start({ experimental_hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `force` to this `createHook()` throws. Open it with `const`: disposing the handle frees the token, as for any Hook, and a later `start()` with it is then admitted as a new run (see [Take care with the start Hook's lifecycle](/docs/api-reference/workflow-api/start#take-care-with-the-start-hooks-lifecycle)). See [Receive the payloads in the workflow](/docs/foundations/idempotency#receive-the-payloads-in-the-workflow).
 
 ### Keep a token unavailable after the run ends
 
@@ -233,7 +233,7 @@ This option is experimental. Worlds can limit how long tokens are retained; see 
 
 ### Take over a token another run holds
 
-By default, a token that another active run already registered makes the new Hook reject with [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error). Set `experimental_force` when the newest run should own the token instead, for example when a fresh deployment or a restarted conversation must replace a run that is still waiting:
+By default, a token that another active run already registered makes the new Hook reject with [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error). Set `force` when the newest run should own the token instead, for example when a fresh deployment or a restarted conversation must replace a run that is still waiting:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -247,7 +247,7 @@ export async function slackChannelWorkflow(channelId: string) {
   // Whichever run for this channel started most recently owns the token.
   const hook = createHook<SlackMessage>({ // [!code highlight]
     token: `slack_messages:${channelId}`, // [!code highlight]
-    experimental_force: true, // [!code highlight]
+    force: true, // [!code highlight]
   }); // [!code highlight]
 
   for await (const message of hook) {
@@ -256,7 +256,7 @@ export async function slackChannelWorkflow(channelId: string) {
 }
 ```
 
-With `experimental_force`, this run always ends up owning the token:
+With `force`, this run always ends up owning the token:
 
 - The previous owner's Hook is disposed, recorded in that run's event log, and the previous owner is woken. If it was awaiting the Hook, that `await` rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error), which names the run that took the token. Payloads it received before the takeover stay with it; a `for await...of` loop drains them before it throws.
 - Every [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) for the token from then on reaches this run, including a call that was already in flight when the takeover happened. Callers never see the token move; a delivery aimed at the previous owner is redirected to this run inside `resumeHook()`.
@@ -266,13 +266,15 @@ With `experimental_force`, this run always ends up owning the token:
 The takeover is durable. If either run's compute fails partway through, the next request for the token completes it, so the token never ends up held by nobody or by both runs. The previous owner's wake is durable too: if the new owner's compute fails between registering the Hook and waking the previous owner, the new owner's next invocation republishes the wake, whatever else the new owner has recorded since (a step it started alongside the Hook, for example). Every invocation of the new owner within 24 hours of the takeover republishes it under the same idempotency key, which collapses the repeats into one wake; a repeat that does get through only replays the previous owner, which finds nothing new.
 
 <Callout type="info">
-A token can only be taken from a run whose runtime understands being taken from. Runs started at a Workflow spec version below 8, which includes every run started by an older SDK release, a Python SDK run, or a deployment with `WORKFLOW_SPEC_VERSION` set below 8, would never learn that their Hook was disposed. The World declines to take their token and the forced Hook rejects with the ordinary [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) instead, exactly as if `experimental_force` had not been set. Finished runs holding a retained token are taken over at any version.
+A token can only be taken from a run whose runtime understands being taken from. Runs started at a Workflow spec version below 8, which includes every run started by an older SDK release, a Python SDK run, or a deployment with `WORKFLOW_SPEC_VERSION` set below 8, would never learn that their Hook was disposed. The World declines to take their token and the forced Hook rejects with the ordinary [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) instead, exactly as if `force` had not been set. Finished runs holding a retained token are taken over at any version.
 </Callout>
 
 `hook.getConflict()` on a forced Hook resolves with `null` once the takeover succeeds: the token is this run's by construction. If the World declines the takeover because the current owner predates spec version 8, `getConflict()` behaves as it does for an ordinary conflict and resolves with that owner's `Run`. Read `hook.claimedFrom` on the value returned by [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to find out which run, if any, the token was taken from.
 
+This option was previously named `experimental_force`. That name still works as a deprecated alias for `force`; passing both with different values throws.
+
 <Callout type="warn">
-This option is experimental. It requires an explicit `token` (a generated token can never conflict) and is not accepted by `createWebhook()`. If the configured World does not support force-claiming at all, the workflow fails when registering the Hook; a World that declines a specific takeover because the current owner cannot be woken answers with `HookConflictError` instead.
+`force` requires an explicit `token` (a generated token can never conflict) and is not accepted by `createWebhook()`. If the configured World does not support force-claiming at all, the workflow fails when registering the Hook; a World that declines a specific takeover because the current owner cannot be woken answers with `HookConflictError` instead.
 
 Senders on an older SDK release are not redirected. A `resumeHook()` from a deployment that predates this option and that looked the token up inside the short handoff window gets an error (`EntityConflictError`) instead of following the token; the payload is refused, never delivered to the wrong run, and a retry resolves the new owner. Upgrade the sending deployment for the transparent redirect.
 

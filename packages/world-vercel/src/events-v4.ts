@@ -337,7 +337,7 @@ interface CreateEventV4InputBase {
   hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
-  /** hook_created: `createHook({ experimental_force })`. */
+  /** hook_created: `createHook({ force })`. */
   hookForce?: boolean;
   /** Lazy hook resume idempotency key. Set only on a `hook_received` written
    *  from a queue message's `hookInput`; routes the event through the
