@@ -1,5 +1,9 @@
 import type { Queue, Storage, World, WorldCapabilities } from '@workflow/world';
-import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
+import {
+  mintedSpecVersion,
+  orchestratorRunIdOf,
+  reenqueueActiveRuns,
+} from '@workflow/world';
 import { Pool } from 'pg';
 import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
@@ -138,13 +142,21 @@ export function createWorld(
       await queue.start();
       // Recover only this World's runs (and unstamped legacy ones): every
       // recovered run lands in this World's own task, so a run created under
-      // another `jobPrefix` would be driven by the wrong app's runner.
+      // another `jobPrefix` would be driven by the wrong app's runner. The
+      // listing leaves out runs parked on a hook or a wait (see
+      // `createRecoverableRunsList`), and each run's recovery job is keyed by
+      // the run, so a boot replaces the job an earlier boot left queued
+      // rather than adding another.
       await reenqueueActiveRuns(
         {
           ...storage.runs,
           list: createRecoverableRunsList(drizzle, jobPrefix),
         },
-        queue.queue,
+        (queueName, message, opts) =>
+          queue.queue(queueName, message, {
+            ...opts,
+            jobKey: `startup-recovery:${orchestratorRunIdOf(message)}`,
+          }),
         'world-postgres',
         config.namespace
       );

@@ -724,6 +724,78 @@ describe('postgres queue http execution', () => {
     );
   });
 
+  it('clears wake_pending when an orchestrator delivery completes', async () => {
+    const server = await startWorkflowHttpServer([]);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining('wake_pending = false'),
+      ['run_01ABC']
+    );
+  });
+
+  it('completes the delivery when wake_pending cannot be cleared', async () => {
+    const server = await startWorkflowHttpServer([]);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('wake_pending')) {
+        throw Object.assign(new Error('no such table'), { code: '42P01' });
+      }
+      return { rows: [{ exists: false }] };
+    });
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await expect(
+      getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+        { job: { attempts: 1 } }
+      )
+    ).resolves.toBeUndefined();
+  });
+
+  it('does not clear wake_pending for a step delivery', async () => {
+    const server = await startWorkflowHttpServer([]);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test-step', {
+        runId: 'run_01ABC',
+        stepId: 'step_01ABC',
+        stepName: 'test-step',
+      }),
+      { job: { attempts: 1 } }
+    );
+    expect(pool.query).not.toHaveBeenCalledWith(
+      expect.stringContaining('wake_pending = false'),
+      expect.anything()
+    );
+  });
+
+  it('uses an explicit jobKey as the graphile key without stamping the message', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await queue.queue(
+      '__wkf_workflow_test',
+      { runId: 'run_01ABC' },
+      { jobKey: 'startup-recovery:run_01ABC' }
+    );
+    const [, data, options] = vi.mocked(workerUtilsMock.addJob).mock
+      .calls[0] as [
+      string,
+      MessageData,
+      { jobKey?: string; jobKeyMode?: string },
+    ];
+    expect(data.idempotencyKey).toBeUndefined();
+    expect(options.jobKey).toBe('startup-recovery:run_01ABC');
+    expect(options.jobKeyMode).toBe('preserve_run_at');
+  });
+
   it('stamps createdAt on a new message and keeps an idempotency key off a wake', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
