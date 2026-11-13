@@ -109,11 +109,20 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         }
       },
     }),
+    // A message that a lingering delivery's re-run cannot cover (a
+    // `run.wakeUp()`, an invocation) ends the linger, so it is delivered at
+    // once instead of after the linger window.
+    onBlockedOrchestratorMessage: (runId) =>
+      interruptLiveFeed(
+        runId,
+        'An orchestrator message is waiting for this run'
+      ),
   });
-  const { clearCache: _clearStorageCache, ...storage } = createStorage(
-    mergedConfig.dataDir,
-    tag
-  );
+  const {
+    clearCache: _clearStorageCache,
+    interruptLiveFeed,
+    ...storage
+  } = createStorage(mergedConfig.dataDir, tag);
   const { clearCache: _clearStreamerCache, ...streamer } = createStreamer(
     mergedConfig.dataDir,
     tag

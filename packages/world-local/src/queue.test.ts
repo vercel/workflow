@@ -1324,6 +1324,34 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
     expect(seen[3]?.body.completeWaits).toEqual(['wait_1']);
   });
 
+  it('reports a message it cannot coalesce that queues behind a running delivery', async () => {
+    await localQueue.close();
+    const blocked: string[] = [];
+    localQueue = createQueue(
+      { baseUrl: 'http://localhost:3000' },
+      { onBlockedOrchestratorMessage: (runId) => blocked.push(runId) }
+    );
+    const { seen, release } = recordingHandler();
+    // Nothing holds the gate: not blocked.
+    await localQueue.queue(QUEUE, spec9('run_a', { completeWaits: ['w0'] }));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    // A wake its re-run covers: not reported.
+    await localQueue.queue(QUEUE, spec9('run_a'));
+    // Another run's wake-up: its gate is free.
+    await localQueue.queue(QUEUE, spec9('run_b', { completeWaits: ['w1'] }));
+    expect(blocked).toEqual([]);
+    await localQueue.queue(QUEUE, spec9('run_a', { completeWaits: ['w2'] }));
+    expect(blocked).toEqual(['run_a']);
+    release();
+    await vi.waitFor(() =>
+      expect(
+        seen.some(
+          (d) => (d.body.completeWaits as string[] | undefined)?.[0] === 'w2'
+        )
+      ).toBe(true)
+    );
+  });
+
   it(`re-runs at most ${MAX_LOCAL_COALESCED_RERUNS} times per hold, then delivers what still waits`, async () => {
     // Every delivery of the first message queues one more wake of its run.
     const { seen, release } = recordingHandler((all, body) => {

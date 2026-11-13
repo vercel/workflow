@@ -75,6 +75,7 @@ import { monotonicFactory } from 'ulid';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { CommitThenThrow, type Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
+import { createLiveFeed } from './live-feed.js';
 import { purgeRunData, purgesUserDataOnFinish } from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { startHookRecord, withStartHookId } from './start-hook.js';
@@ -150,6 +151,8 @@ type RunCreationData = {
 export type LocalEventsStorage = Storage['events'] & {
   /** Nothing to clear: kept for callers of the filesystem implementation. */
   clearCache(): void;
+  /** Ends a run's live feed subscriptions (see `createLiveFeed`). */
+  interruptLiveFeed(runId: string, reason: string): void;
 };
 
 export function createEventsStorage(
@@ -157,6 +160,7 @@ export function createEventsStorage(
   tag?: string
 ): LocalEventsStorage {
   const store = new Store(db, tag);
+  const liveFeed = createLiveFeed(store);
   const hookRetentionLimitMs = getHookRetentionLimitMs();
 
   // ------------------------------------------------------------------ hooks
@@ -1361,8 +1365,14 @@ export function createEventsStorage(
       data: AnyEventRequest,
       params?: CreateEventParams
     ) {
-      return create(runId, data, params);
+      try {
+        return await create(runId, data, params);
+      } finally {
+        liveFeed.notify(runId);
+      }
     },
+
+    subscribe: liveFeed.subscribe,
 
     async get(runId, eventId, params) {
       assertSafeEntityId('runId', runId);
@@ -1431,6 +1441,8 @@ export function createEventsStorage(
     },
 
     clearCache() {},
+
+    interruptLiveFeed: liveFeed.interrupt,
   } as LocalEventsStorage;
 }
 

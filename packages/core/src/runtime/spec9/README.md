@@ -116,7 +116,7 @@ Settings that exist only for spec 9 runs:
 
 - Default: `2000`
 - A busy orchestrator listens on the World's live event feed (`events.subscribe`) when it has one, and polls the run's log tail, so events other writers commit reach the running workflow without a queue hop. This is the poll interval while no live feed covers the run (none exists, the subscription was refused or ended, or it missed an event); otherwise [`WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`](#workflow_orchestrator_feed_poll_interval_ms) applies.
-- The poll backs off: each empty poll doubles the interval, up to 10 seconds (never below this value). An event, a failed poll, feed trouble, or a write by the delivery itself resets it. A 10-minute inline body on world-local costs about 65 reads instead of 300, and an event from another writer can arrive up to 10 seconds late. No event is lost.
+- The poll backs off: each empty poll doubles the interval, up to 10 seconds (never below this value). An event, a failed poll, feed trouble, or a write by the delivery itself resets it. A 10-minute inline body on a World without a push costs about 65 reads instead of 300, and an event from another writer can arrive up to 10 seconds late. No event is lost.
 - `0` turns polling off.
 
 #### `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`
@@ -129,7 +129,7 @@ Settings that exist only for spec 9 runs:
 
 - Default: `30000`
 - When an orchestrator has nothing left to run but the run waits on a background step (or an inline step's retry), it stays live on the event feed this long before acknowledging. Each event in that time starts another pass, and the next idle pass restarts the time, so a burst of outcomes lands on one warm invocation.
-- Only while a live feed is up (Vercel, Postgres); world-local has none and does not linger. Never past the invocation's inline-step deadline. On world-postgres at most half of a process's `queueConcurrency` slots hold a feed at once; past that a delivery polls and does not linger.
+- Only while a live feed is up (Vercel, Postgres, Local). Never past the invocation's inline-step deadline. On world-postgres at most half of a process's `queueConcurrency` slots hold a feed at once, and on world-local at most half of `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`; past that a delivery polls and does not linger.
 - `0` turns it off, for hooks too.
 
 #### `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`
@@ -200,7 +200,7 @@ Out-of-band writers get no report and wake the orchestrator instead. A hook crea
 
 On spec 9 runs, `wakeUp()` returns once the orchestrator has been asked to complete the sleeps; it writes their `wait_completed` events itself shortly after. `stoppedCount` counts sleeps asked for, not completed.
 
-The request is best-effort. It is a queue message to the orchestrator, and on the Vercel and Postgres Worlds a message arriving while an invocation of the run is live, including one lingering for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms) or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](#workflow_orchestrator_hook_linger_ms), is folded into it. That invocation only re-reads the log and never sees which sleeps to complete, so they run their full length. When no invocation is live the message completes the sleeps; the Local World holds it until the running invocation ends.
+The request is best-effort. It is a queue message to the orchestrator, and on the Vercel and Postgres Worlds a message arriving while an invocation of the run is live, including one lingering for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms) or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](#workflow_orchestrator_hook_linger_ms), is folded into it. That invocation only re-reads the log and never sees which sleeps to complete, so they run their full length. When no invocation is live the message completes the sleeps; the Local World holds it until the running invocation ends, and ends that invocation's linger so the wait is short.
 
 A durable `wakeUp()` is not planned: it would need a new out-of-band "wake requested" event and world-vercel support, and a confirm-and-resend loop was rejected. To end a sleep reliably while the run is active, resume a hook the workflow races against it.
 
@@ -208,7 +208,7 @@ In `@workflow/vitest`, `waitForSleep()` skips a sleep that `wakeUp()` already na
 
 ### First-party Worlds
 
-**world-local.** Its run gate is in-process. When a spec 9 orchestrator delivery acknowledges, it absorbs the run's orchestrator messages that queued behind it in its process and runs the handler again, up to 32 times, as world-postgres does; a handoff keeps the run's gate, and its redelivery covers them. An orchestrator message without a spec stamp is checked against the run's stored spec version, and a spec 9 run's is stamped and gated like the rest (see [world-local and world-postgres](#world-local-and-world-postgres)). It has no live feed, so orchestrators poll and never linger. Messages are sent and redelivered by the enqueuing process, so two processes sharing one data directory (an app plus a script calling `start()` or `resumeHook()`) can overlap deliveries of one run: the fence keeps the log linear, but each overlap costs a refused pass and a redelivery, which on a busy run means long refusal streaks. Keep those calls in the process serving the workflow routes. Restart recovery marks its messages (`recovery: true`), and their delivery re-sends every background step without an outcome and arms every open sleep; pass `{ queueLost: true }` to `reenqueueActiveRuns()` from `@workflow/world` for the same effect.
+**world-local.** Its run gate is in-process. When a spec 9 orchestrator delivery acknowledges, it absorbs the run's orchestrator messages that queued behind it in its process and runs the handler again, up to 32 times, as world-postgres does; a handoff keeps the run's gate, and its redelivery covers them. An orchestrator message without a spec stamp is checked against the run's stored spec version, and a spec 9 run's is stamped and gated like the rest (see [world-local and world-postgres](#world-local-and-world-postgres)). Its live feed (`events.subscribe`) pushes the events this process writes at once and checks a subscribed run's log every 50 ms for writes from other processes, so orchestrators linger as on world-postgres. A message the running delivery cannot cover with a re-run (a `run.wakeUp()`, an invocation) ends that delivery's feed when it queues behind it, so a lingering delivery acknowledges and the message is delivered at once. Messages are sent and redelivered by the enqueuing process, so two processes sharing one data directory (an app plus a script calling `start()` or `resumeHook()`) can overlap deliveries of one run: the fence keeps the log linear, but each overlap costs a refused pass and a redelivery, which on a busy run means long refusal streaks. Keep those calls in the process serving the workflow routes. Restart recovery marks its messages (`recovery: true`), and their delivery re-sends every background step without an outcome and arms every open sleep; pass `{ queueLost: true }` to `reenqueueActiveRuns()` from `@workflow/world` for the same effect.
 
 **world-postgres.** A spec 9 run's orchestrator deliveries run one at a time across processes as Graphile jobs in the run's named queue (`workflow_flows:<runId>:executor`); step jobs have no named queue and run concurrently. The fence refuses a stale orchestrator that outlived its job's lock.
 
@@ -1085,7 +1085,7 @@ Both declare the fence, mint spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set, 
 | Coalescing | When a delivery acknowledges, the run's orchestrator messages its process's queue holds behind it (not a start message carrying `runInput`, a legacy `hookInput` resume, a `run.wakeUp()` message carrying `completeWaits`, a restart's `recovery` message or an invoke request) are taken and covered by a re-run. A message another process sends reaches only the handler's gate, where it waits and is not coalesced | When a delivery acknowledges, the run's orchestrator jobs waiting behind it (due, unlocked, not a start message carrying `runInput`, not a hook resume or invoke request) are deleted and covered by a re-run. Not on invoke mode's executor lane |
 | Re-runs | Handler called again with `deliveryCount + rerun`, the same `attempt` and the same `invocationStartedAt` (`x-workflow-local-invocation-started-at`), while messages wait, up to 32 times per hold of the gate; past the cap the waiting messages are delivered as usual. A re-run carries the resume timing of the earliest hook wake it absorbed | Handler called again in the same worker with `deliveryCount + rerun`, the same `attempt` and the same `invocationStartedAt`, while it finds jobs to take, up to 32 times. Past the cap the remaining jobs are delivered as usual, so no handoff is needed. A failed re-run is retried as the original job, counted above 1 |
 | Dedupe of a keyed send | While the first message lives | While a Graphile job holds the key (`unsafe_dedupe`) for a spec 9 run's keyed sends and every run's step messages; `preserve_run_at` for a reschedule and for spec 8's other keyed sends |
-| Live event feed | None | `events.subscribe` over `LISTEN`/`NOTIFY`, at most half of a process's `queueConcurrency` slots live at once |
+| Live event feed | `events.subscribe` in process, with a 50 ms log check for other writers, at most half of `WORKFLOW_LOCAL_QUEUE_CONCURRENCY` live at once. A message the running delivery cannot coalesce ends its feed, and with it any linger | `events.subscribe` over `LISTEN`/`NOTIFY`, at most half of a process's `queueConcurrency` slots live at once |
 
 world-postgres coalesces only jobs that are due: a delayed reschedule or a timer still waiting out its delay stays queued. A start message is never coalesced, since it carries the run's input for a start whose `run_created` may not have committed yet.
 
@@ -1154,7 +1154,7 @@ sequenceDiagram
 
 #### On world-local
 
-world-local has no `createBatch` and no live-feed push (`events.subscribe`). It serializes a spec 9 run's orchestrator deliveries with an in-process per-run gate; step messages are not gated. The same run writes its four creations one at a time, polls for the background outcome while the inline bodies run, and never lingers; the step's wake, which queued behind the running delivery, is coalesced into it, and its re-run finds the outcome already consumed and acknowledges.
+world-local has no `createBatch`. It serializes a spec 9 run's orchestrator deliveries with an in-process per-run gate; step messages are not gated. The same run writes its four creations one at a time and takes the background outcome from its live feed, lingering for it if the inline bodies finish first; the step's wake, which queued behind the running delivery, is coalesced into it, and its re-run finds the outcome already consumed and acknowledges.
 
 #### One delivery's main loop
 
@@ -1246,7 +1246,7 @@ On a delivery after the run's first: 1 replay; 2 `createBatch` calls and 7 queue
 
 #### Fan-out on world-local and world-postgres
 
-Neither has `createBatch` or `queueBatch`, so the 100 creations are single in-band writes, all committed before the inline bodies start, and the 97 messages are parallel single sends. world-local then polls, never lingers, and covers the completion wakes that queue behind its delivery with re-runs ([world-local and world-postgres](#world-local-and-world-postgres)); world-postgres sees the outcomes on its live feed and covers the wakes queued behind its delivery with re-runs.
+Neither has `createBatch` or `queueBatch`, so the 100 creations are single in-band writes, all committed before the inline bodies start, and the 97 messages are parallel single sends. Both then see the outcomes on their live feeds and cover the completion wakes that queue behind their delivery with re-runs ([world-local and world-postgres](#world-local-and-world-postgres)).
 
 #### Fan-out edge cases
 
@@ -1541,7 +1541,7 @@ sequenceDiagram
     end
 ```
 
-The 5 s hook-only linger bounds how long a run that waits only on hooks drops `wakeUp()` after each wake. world-local has no `events.subscribe`, so its deliveries never linger, and `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working ([`run.wakeUp()` and `waitForSleep()`](#runwakeup-and-waitforsleep)).
+The 5 s hook-only linger bounds how long a run that waits only on hooks drops `wakeUp()` after each wake. world-local never coalesces a wake-up: one that queues behind a delivery ends that delivery's live feed, so a lingering delivery acknowledges and the wake-up is delivered at once, and `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working ([`run.wakeUp()` and `waitForSleep()`](#runwakeup-and-waitforsleep)).
 
 #### Why `wait_completed` is in-band only
 
@@ -1592,7 +1592,7 @@ The two engines implement these timer rules separately, on top of shared creator
 
 A spec 9 run has one orchestrator delivery at a time, but more than one writer: background steps, `resumeHook()` and `run.cancel()` all write out-of-band ([Out-of-band writers](#out-of-band-writers)). Each also sends a wake, but a wake for a run whose delivery is still running is folded into that delivery or queued behind it ([Queue topology](#queue-topology-handoffs-and-rotation)).
 
-The live feed lets a running delivery react to those events at once, without waiting for its own exit and the next queue hop. It runs while inline bodies run and while the delivery lingers, and every event it hands over joins the log between passes, never under a replay. It has two sources: the World's optional `events.subscribe` push (world-vercel and world-postgres), and a tail poll of `events.list` from the delivery's cursor, on every World. Both go through the same dedupe, so correctness never depends on the push: the push buys latency, the poll bounds how long a silent push failure can hide an event.
+The live feed lets a running delivery react to those events at once, without waiting for its own exit and the next queue hop. It runs while inline bodies run and while the delivery lingers, and every event it hands over joins the log between passes, never under a replay. It has two sources: the World's optional `events.subscribe` push (world-vercel, world-postgres and world-local), and a tail poll of `events.list` from the delivery's cursor, on every World. Both go through the same dedupe, so correctness never depends on the push: the push buys latency, the poll bounds how long a silent push failure can hide an event.
 
 #### The `events.subscribe` contract
 
@@ -1637,7 +1637,7 @@ The runtime polls the log tail from its cursor, each page under the orchestrator
 
 - **One dedupe.** A push and a poll page are offered the same way: events below the next expected slot are dropped, the rest held by slot, and the gap-free run from the next expected slot handed over. A push that leaves events held behind a missing slot is feed trouble; if the push never comes, the next poll hands the event over and counts as unclean.
 - **With a push.** A poll is clean when the subscription was live throughout, the poll did not fail, it handed over nothing the push had not, and nothing is held afterwards. A clean poll doubles the interval; any other poll, and any feed trouble, sets it back to 2 s and moves a later poll up to 2 s from now.
-- **Without a push** (world-local; world-postgres or world-vercel while their feed is down or refused), an empty poll doubles the interval up to 10 s. A poll that delivers an event, a failed poll, or a write the delivery commits itself sets it back to 2 s: what the delivery just wrote is what makes another writer's event likely. A 10-minute inline body costs about 65 polls rather than 300, at the price of an outcome arriving up to 10 s after it committed during a quiet stretch; no event is lost.
+- **Without a push** (a World without `events.subscribe`, or one whose feed is down or refused), an empty poll doubles the interval up to 10 s. A poll that delivers an event, a failed poll, or a write the delivery commits itself sets it back to 2 s: what the delivery just wrote is what makes another writer's event likely. A 10-minute inline body costs about 65 polls rather than 300, at the price of an outcome arriving up to 10 s after it committed during a quiet stretch; no event is lost.
 - **Idle polls inside the replay.** The VM's own idle poll, which decides when a replay has suspended, runs at most once per suspension generation and ends when the generation moves on; one poll per signal would grow with generations times pending steps (about 10^8 timers for a 1024-branch join on a lingering orchestrator).
 
 **Why the poll stays when the push is live.** Signalled failures (a refused `subscribe`, an `end` notice, a closed socket, a watchdog verdict) switch to the 2 s poll at once. The poll backs up the silent ones: a feed that stops on world-vercel's side without an `end` notice, a half-open socket during a linger (a lingering delivery makes no requests, so nothing times out), and a same-process replacement subscription that starts above the old subscriber with nothing pushed after it. The heartbeat watchdog ends the first two within 30 s and fills the third; until then, or without heartbeats, the poll delivers within 10 to 20 s instead of at the end of the delivery. How often a poll finds an event before its push (and drops to 2 s) is not yet measured.
@@ -1875,7 +1875,7 @@ It remains an opt-in, [`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`](https://workflo
 
 ### `run.wakeUp()` stays best-effort
 
-On spec 9, `run.wakeUp()` names the waits to complete on an ordinary keyed orchestrator message (`completeWaits`), and the orchestrator writes `wait_completed` in-band. A wake-up that arrives while a delivery of the run is live is folded into it and lost: the re-run reads only the log, the sleeps run their full length, and `stoppedCount` still counts the waits the call asked to complete. A wake-up is mostly used while the run is suspended on its sleeps, when the message is delivered on its own, and world-local (which never coalesces a wake-up, and never lingers) delivers it after the running delivery, so `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working.
+On spec 9, `run.wakeUp()` names the waits to complete on an ordinary keyed orchestrator message (`completeWaits`), and the orchestrator writes `wait_completed` in-band. A wake-up that arrives while a delivery of the run is live is folded into it and lost: the re-run reads only the log, the sleeps run their full length, and `stoppedCount` still counts the waits the call asked to complete. A wake-up is mostly used while the run is suspended on its sleeps, when the message is delivered on its own, and world-local (which never coalesces a wake-up, and ends a lingering delivery's feed when one queues behind it) delivers it right after the running delivery, so `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working.
 
 A keyed wake also never overlaps the running delivery; an unkeyed one could drop `completeWaits` when it lost the fence, or, when it won, make an open inline step's body run twice.
 

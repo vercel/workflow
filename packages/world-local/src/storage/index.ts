@@ -15,6 +15,8 @@ import { createStepsStorage } from './steps-storage.js';
 export type LocalStorage = Omit<Storage, 'runs'> & {
   runs: LocalRunsStorage;
   clearCache(): void;
+  /** Ends a run's live feed subscriptions. Not part of the World. */
+  interruptLiveFeed(runId: string, reason: string): void;
 };
 
 /**
@@ -28,7 +30,11 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
   const db = databaseFor(basedir);
   const runs = createRunsStorage(db, tag);
   const steps = createStepsStorage(db, tag);
-  const events = createEventsStorage(db, tag);
+  const {
+    clearCache: _clearEventsCache,
+    interruptLiveFeed,
+    ...events
+  } = createEventsStorage(db, tag);
   const hooks = createHooksStorage(db, tag);
   const snapshots = createSnapshotsStorage(db);
 
@@ -36,12 +42,13 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
   return {
     runs: instrumentObject('world.runs', runs),
     steps: instrumentObject('world.steps', steps),
-    events: instrumentObject('world.events', events),
+    events: instrumentObject('world.events', events, ['subscribe']),
     hooks: instrumentObject('world.hooks', hooks),
     experimental_snapshots: instrumentObject(
       'world.experimental_snapshots',
       snapshots
     ),
     clearCache: () => {},
+    interruptLiveFeed,
   };
 }

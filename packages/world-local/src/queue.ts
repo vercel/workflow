@@ -34,7 +34,11 @@ import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
-import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
+import {
+  LOCAL_QUEUE_CONCURRENCY,
+  resolveBaseUrl,
+  resolveDirectBaseUrl,
+} from './config.js';
 import { jsonReplacer, jsonReviver } from './db/codec.js';
 import { databaseFor } from './db/index.js';
 import { getPackageInfo } from './init.js';
@@ -150,14 +154,6 @@ export function localRetryDelayMs(failedDeliveries: number): number {
     LINEAR_RETRY_DELAY_MS * 2 ** (failedDeliveries - LINEAR_RETRY_DELIVERIES)
   );
 }
-
-// The local workers share the same Node.js process and event loop,
-// so we need to limit concurrency to avoid overwhelming the system.
-const DEFAULT_CONCURRENCY_LIMIT = 1000;
-
-const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
-  parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
-  DEFAULT_CONCURRENCY_LIMIT;
 
 /**
  * Default time-to-first-byte deadline for local queue deliveries: none. A
@@ -389,6 +385,10 @@ export function createOrchestratorGate() {
         waiters.push(waiter);
       });
     },
+    /** Whether `key`'s gate is held. */
+    isHeld(key: string): boolean {
+      return runs.has(key);
+    },
     /** Runs whose gate is held. For tests. */
     size(): number {
       return runs.size;
@@ -487,6 +487,12 @@ export function createQueue(
      * `Config.readUnstampedRunSpec`); omitted, such a message is not gated.
      */
     runSpecVersion?: (runId: string) => Promise<number | undefined>;
+    /**
+     * Called when a single-orchestrator run's orchestrator message that
+     * cannot be coalesced queues behind a running delivery of its run, which
+     * may be lingering on the live feed with nothing left to run.
+     */
+    onBlockedOrchestratorMessage?: (runId: string) => void;
   } = {}
 ): LocalQueue {
   const queueAuthKey = options.queueAuthKey ?? inMemoryQueueAuthKey;
@@ -522,7 +528,7 @@ export function createQueue(
   const httpAgent = nodeHttpAgents ? undefined : new Agent(agentOptions);
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
-  const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
+  const semaphore = new Sema(LOCAL_QUEUE_CONCURRENCY);
   // A single-orchestrator run's (spec >= 9) orchestrator deliveries go one at
   // a time, like a concurrency key on Vercel Queues: the single-writer
   // guarantee's queue half (the in-band fence is the other). Step messages,
@@ -729,6 +735,10 @@ export function createQueue(
       > => {
         let lease: OrchestratorLease | undefined;
         if (orchestratorRunKey) {
+          if (!coalescible && runGate.isHeld(orchestratorRunKey)) {
+            const id = singleOrchestratorRunIdOf(message);
+            if (id !== undefined) options.onBlockedOrchestratorMessage?.(id);
+          }
           lease = await runGate.acquire(orchestratorRunKey, {
             coalescible,
             resume: resumeOf(fields),
@@ -741,7 +751,7 @@ export function createQueue(
           // a per-message warning turns a healthy wide run into a wall of
           // output.
           debugLog(
-            `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
+            `[world-local]: concurrency limit (${LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
           );
           await semaphore.acquire();
         }
