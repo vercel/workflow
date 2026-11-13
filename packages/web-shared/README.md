@@ -33,6 +33,14 @@ and pass data + callbacks into these components. If you need world run helpers, 
 > ensure that user-supplied IDs (runId, stepId, etc.) are validated before passing them to world functions.
 > The server actions in `@workflow/web` do not include authentication. See that package's README for details on securing self-hosted deployments.
 
+## Image streams
+
+`StreamViewer` previews PNG, JPEG, GIF, and WebP chunks passed as `Uint8Array`
+values and offers a download of the original bytes. Pass raw image streams as
+one chunk after reading their bytes, before decoding them as text. The exported
+`getStreamImageType(bytes)` helper identifies these raster formats by signature.
+Unrecognized binary values continue to use the data inspector.
+
 ## Styling
 
 To detect Tailwind CSS classes correctly, you might need to configure your Next.js app

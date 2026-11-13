@@ -51,7 +51,7 @@ export function StatusBadge({
         </span>
       </span>
       {durationMs !== undefined && (
-        <span className="text-muted-foreground/70 text-xs">
+        <span className="text-gray-700 text-xs">
           ({formatDuration(durationMs)})
         </span>
       )}
