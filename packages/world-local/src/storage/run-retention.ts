@@ -5,8 +5,9 @@
  *
  * The run's own payloads are dropped in the write that makes it terminal
  * (`withRunPayloadsPurged` in `events-storage.ts`); everything else it owns
- * (step payloads, event payloads, hook metadata, stream chunks) is scrubbed
- * by `purgeRunData` in the same transaction, so a purged run is never
+ * (step payloads, event payloads, hook metadata, stream chunks, its VM
+ * snapshot) is scrubbed or deleted by `purgeRunData` in the same
+ * transaction, so a purged run is never
  * observable with any of its data left. The connection zeroes freed pages
  * (`secure_delete`), and the WAL, which still holds the old pages, is
  * checkpointed and truncated right after the purge commits.
@@ -99,6 +100,12 @@ export function purgeRunData(db: Database, runId: string): void {
   }
 
   purgeRunStreams(db, runId);
+
+  // A suspended run's VM snapshot holds its heap, and so the input and every
+  // value it computed from it; it may be stored unencrypted. A finished run
+  // is never resumed from it, and a snapshot load does not check the run's
+  // `expiredAt`, so it goes.
+  db.run('DELETE FROM snapshots WHERE run_id = ?', runId);
 }
 
 /**

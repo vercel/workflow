@@ -12,6 +12,7 @@ import {
   test,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
+import { createSnapshotsStorage } from '../src/snapshots.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
 import { createStreamer } from '../src/streamer.js';
 import { TestPool } from './pool.js';
@@ -368,6 +369,17 @@ describe('Retention ($retention: 0)', () => {
       expect(rows[0].error_code).toBe('USER_ERROR');
     });
 
+    it("deletes the run's VM snapshot", async () => {
+      const snapshots = createSnapshotsStorage(drizzle);
+      const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+      await snapshots.save(runId, new Uint8Array([42]), {
+        eventsCursor: null,
+        createdAt: new Date(),
+      });
+      await events.create(runId, { eventType: 'run_cancelled' });
+      expect(await snapshots.load(runId)).toBeNull();
+    });
+
     it('purges on run_cancelled', async () => {
       const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
       await events.create(runId, { eventType: 'run_cancelled' });
@@ -393,6 +405,25 @@ describe('Retention ($retention: 0)', () => {
    * meant as "delete my data".
    */
   describe('runs.deleteDataMany', () => {
+    it("deletes a cancelled run's VM snapshot, which holds its heap", async () => {
+      // What a suspended QuickJS run leaves behind: its heap, and with it the
+      // input, possibly unencrypted. Cancelling it from outside leaves the
+      // snapshot to the World.
+      const snapshots = createSnapshotsStorage(drizzle);
+      const { runId } = await seedRun();
+      await snapshots.save(runId, new Uint8Array([42, 42, 42]), {
+        eventsCursor: null,
+        createdAt: new Date(),
+      });
+      await events.create(runId, { eventType: 'run_cancelled' });
+      expect(await snapshots.load(runId)).not.toBeNull();
+
+      const result = await runs.deleteDataMany?.({ runIds: [runId] });
+
+      expect(result?.results).toEqual([{ runId, outcome: 'deleted' }]);
+      expect(await snapshots.load(runId)).toBeNull();
+    });
+
     it("deletes a finished run's data, keeping its rows", async () => {
       const { runId } = await seedRun();
       await events.create(runId, {

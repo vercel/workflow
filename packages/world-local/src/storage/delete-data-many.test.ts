@@ -163,6 +163,32 @@ describe('runs.deleteDataMany (world-local)', () => {
     }
   });
 
+  it("deletes a cancelled run's VM snapshot, which holds its heap", async () => {
+    // What a suspended QuickJS run leaves behind: its heap, and with it the
+    // input, possibly unencrypted. Cancelling it from outside leaves the
+    // snapshot to the World.
+    const run = await startRun();
+    const snapshots = storage.experimental_snapshots;
+    if (!snapshots) throw new Error('Expected snapshot storage');
+    await snapshots.save(run.runId, new Uint8Array([42, 42, 42]), {
+      eventsCursor: null,
+      createdAt: new Date(),
+    });
+    await storage.events.create(run.runId, {
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {},
+    } as never);
+    expect(await snapshots.load(run.runId)).not.toBeNull();
+
+    const result = await storage.runs.deleteDataMany?.({
+      runIds: [run.runId],
+    });
+
+    expect(result?.results).toEqual([{ runId: run.runId, outcome: 'deleted' }]);
+    expect(await snapshots.load(run.runId)).toBeNull();
+  });
+
   it('answers already_deleted on a second call, keeping the first expiredAt', async () => {
     const run = await finishedRun();
     await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
