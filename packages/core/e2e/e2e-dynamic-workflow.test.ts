@@ -20,8 +20,10 @@
  * then asserts on the child. Runs against every world the matrix covers —
  * Vercel, local dev/prod, and Postgres — with no per-world branching.
  *
- * The deployment must opt in with WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1;
- * without it each fixture's `start()` refuses and the test skips. A lane that
+ * The deployment must opt in with WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1
+ * (the workbench `vercel.json` files set it for the Vercel lanes); without it
+ * the test skips before starting a parent, when the deployment's health check
+ * says it has not opted in, or else when the fixture's `start()` refuses. A lane that
  * opts its server in also sets WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS=1 on the
  * runner, and there that refusal fails the test instead.
  *
@@ -48,7 +50,7 @@ import {
   TestRunner,
 } from 'vitest';
 import type { Run, start as rawStart } from '../src/runtime';
-import { getRun, getWorld } from '../src/runtime';
+import { getRun, getWorld, healthCheck } from '../src/runtime';
 import {
   getCollectedRunIds,
   getWorkflowMetadata,
@@ -219,11 +221,58 @@ async function startParentRun(
   return trackRun(getRun(runId));
 }
 
+/**
+ * Whether the deployment under test has opted in to dynamic workflows, from
+ * its queue-based health check: an opted-in deployment advertises
+ * `dynamicWorkflowVersion`, any other JSON reply omits it. Memoized: one probe
+ * per file.
+ *
+ * `undefined` when the probe cannot say (no reply, an old plain-text reply,
+ * or a Vercel lane that did not resolve the deployment ID, where the probe
+ * could reach a different deployment). The tests then run as before and
+ * `skipIfUnsupportedDeployment` decides from the parent's failure.
+ */
+let dynamicOptIn: Promise<boolean | undefined> | undefined;
+const deploymentOptedInToDynamicWorkflows = () =>
+  (dynamicOptIn ??= (async () => {
+    if (process.env.WORKFLOW_VERCEL_ENV && !process.env.VERCEL_DEPLOYMENT_ID) {
+      return undefined;
+    }
+    try {
+      const result = await healthCheck(await getWorld(), { timeout: 30_000 });
+      if (!result.healthy || result.format !== 'json') return undefined;
+      return typeof result.dynamicWorkflowVersion === 'number';
+    } catch {
+      return undefined;
+    }
+  })());
+
+/**
+ * Skip before starting anything when the deployment has not opted in.
+ *
+ * Without this the parent fixture starts, its step's `start()` refuses, and
+ * the parent fails: the test skips, but it leaves a failed run behind on the
+ * deployment for every test and lane. A lane that expects dynamic workflows
+ * fails instead, as `skipIfUnsupportedDeployment` does.
+ */
+async function skipUnlessDeploymentOptedIn(): Promise<void> {
+  if ((await deploymentOptedInToDynamicWorkflows()) !== false) return;
+  if (expectDynamicWorkflows) {
+    throw new Error(
+      'WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS=1, but the deployment health check does not advertise dynamic workflows (WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS is not set on it)'
+    );
+  }
+  TestRunner.getCurrentTest()?.context.skip(
+    'this deployment has not opted in to dynamic workflows (health check)'
+  );
+}
+
 /** Start a parent fixture and read the dynamic child it reports. */
 async function startParent(
   fixture: string,
   args: unknown[]
 ): Promise<DynamicChild> {
+  await skipUnlessDeploymentOptedIn();
   const parent = await startParentRun(fixture, args);
   try {
     return (await parent.returnValue) as DynamicChild;
