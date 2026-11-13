@@ -99,7 +99,7 @@ export default class DeleteData extends BaseCommand {
     });
 
     if (exitCode !== 0) {
-      process.exit(exitCode);
+      process.exitCode = exitCode;
     }
   }
 }
