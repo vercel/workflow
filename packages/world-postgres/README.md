@@ -333,6 +333,7 @@ and its token can be reused. If the token is never reused, the expired
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
 - A running delivery renews its job lock, and a job whose process died is redelivered by another process: a spec 9 run's orchestrator job after 300 seconds by default, any job after `jobLockStaleSeconds` when it is set (see below)
+- The Graphile named queue that serializes a run's orchestrator deliveries is reclaimed once the run can no longer be sent to (see below)
 
 ### Crash recovery
 
@@ -345,6 +346,12 @@ Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to rel
 Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
 
 Setting it is a choice to make after a rolling upgrade. Processes on an earlier version don't renew their locks, so an upgraded process would redeliver any of their deliveries that run longer than the window, and when the earlier-version process finishes such a delivery, its acknowledgement isn't fenced on the lock holder and can delete the redelivered job's row. So set it only once every process that shares the database runs a version that includes `jobLockStaleSeconds`, and set the same value on all of them. `0` turns renewal and release off entirely.
+
+### Per-run queue reclaim
+
+A spec 9 run, and invoke mode's executor lane, serialize their deliveries through a Graphile named queue of their own (`<jobPrefix>flows:<runId>:executor`). Graphile Worker never deletes a queue row, so every process that runs workers sweeps for the per-run queues it can reclaim: those holding no job, not locked, and whose run is gone from `workflow.workflow_runs` or has been terminal for five minutes. Up to 500 are reclaimed at a time, every five minutes, and a sweep that fills its batch runs again two seconds later so a backlog drains. Queues belonging to another application that shares the `graphile_worker` schema do not match the prefix and are never touched.
+
+The delete holds an `EXCLUSIVE` lock on `graphile_worker._private_job_queues` for the few milliseconds it takes. `add_job` resolves a queue name to its row id in the statement that inserts the job, and the job carries no foreign key to it, so without that lock a reclaim could leave a job whose queue is gone, which no worker admits again. The lock asks nothing of the sender, so processes on any version and other clients of the schema are equally covered. It is taken with a 500 ms `lock_timeout`: a contended sweep reclaims nothing and the next one picks the queues up.
 
 ### Experimental synchronous invocation
 
