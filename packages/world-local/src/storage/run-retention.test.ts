@@ -116,6 +116,22 @@ describe('run retention (world-local)', () => {
   // ---------------------------------------------------------------------
 
   describe("$retention: '0'", () => {
+    it("deletes the run's VM snapshot", async () => {
+      const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
+      const snapshots = storage.experimental_snapshots;
+      if (!snapshots) throw new Error('Expected snapshot storage');
+      await snapshots.save(run.runId, new Uint8Array([42]), {
+        eventsCursor: null,
+        createdAt: new Date(),
+      });
+      await storage.events.create(run.runId, {
+        eventType: 'run_cancelled',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {},
+      } as never);
+      expect(await snapshots.load(run.runId)).toBeNull();
+    });
+
     it('leaves no trace of the payloads in the database files', async () => {
       // A payload long and distinctive enough to find as raw bytes.
       const marker = 'purge-marker-'.repeat(40);

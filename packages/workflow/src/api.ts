@@ -9,11 +9,14 @@ import '@workflow/core/runtime/world-init';
 
 export type {
   CancelRunOptions,
+  DeleteRunDataResult,
+  DeleteRunsDataResult,
   Event,
   StopSleepOptions,
   StopSleepResult,
   WorkflowRun,
 } from '@workflow/core/runtime';
+export { deleteRuns } from '@workflow/core/runtime/delete-runs';
 export {
   type RunCompletedHookParams,
   type RunFailedHookParams,

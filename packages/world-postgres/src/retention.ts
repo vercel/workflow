@@ -17,7 +17,8 @@ const NULL = sql`NULL`;
  * `$retention: 0`.
  *
  * Every payload-bearing column of the run and everything hanging off it is
- * cleared, and the run's `expired_at` is stamped — that column is what the
+ * cleared, its VM snapshot (if any) is deleted, and the run's `expired_at`
+ * is stamped — that column is what the
  * CLI and the web UI gate their `<data expired>` rendering on, so without it
  * the deletion is silent and reads back as "this run had no input" rather
  * than "this run's data is gone".
@@ -59,7 +60,8 @@ export async function purgeRunUserData(
   runId: string,
   purgedAt: Date
 ): Promise<void> {
-  const { runs, steps, events, hooks, streams, invocations } = Schema;
+  const { runs, steps, events, hooks, streams, invocations, snapshots } =
+    Schema;
 
   await drizzle.transaction(async (tx) => {
     await tx
@@ -119,6 +121,12 @@ export async function purgeRunUserData(
         expiredAt: purgedAt,
       })
       .where(eq(invocations.runId, runId));
+
+    // A suspended run's VM snapshot holds its heap, and so the input and
+    // every value it computed from it; it may be stored unencrypted. A
+    // finished run is never resumed from it, and a snapshot load does not
+    // check the run's `expired_at`, so the row goes.
+    await tx.delete(snapshots).where(eq(snapshots.runId, runId));
   });
 }
 

@@ -1,0 +1,60 @@
+---
+title: deleteRuns
+description: Delete the stored data of finished workflow runs in one call.
+type: reference
+summary: Use deleteRuns to delete the inputs, outputs, streams, and hook payloads of up to 100 finished runs.
+related:
+  - /docs/observability/retention
+  - /docs/api-reference/workflow-api/get-run
+---
+
+Deletes the stored data of up to 100 finished runs: their inputs, outputs and errors, their steps' and events' payloads, their hook payloads, and their stream contents. Metadata is not deleted: the runs stay listed, and so do their steps, events and hooks, with their IDs, names, statuses, timestamps and attributes. Only the payloads go, reading back as expired. This cannot be undone. See [Data retention](/docs/observability/retention#deleting-a-finished-runs-data).
+
+For a single run, call [`run.deleteData()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data) instead.
+
+```typescript lineNumbers
+import { deleteRuns } from "workflow/api";
+
+export async function POST(req: Request) {
+  const { runIds } = await req.json();
+  const { summary, results } = await deleteRuns(runIds); // [!code highlight]
+  return Response.json({ summary, results });
+}
+```
+
+`deleteRuns()` never cancels a run: a run that hasn't finished is answered `skipped` and keeps running. Cancel it first to delete its data now.
+
+## API signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { deleteRuns } from "workflow/api";
+export default deleteRuns;`}
+showSections={["parameters"]}
+/>
+
+### Returns
+
+A summary that counts each outcome, and one result per run in the order of `runIds`. Each result has one of these outcomes:
+
+| Outcome | Meaning |
+| --- | --- |
+| `deleted` | The run's data was deleted. |
+| `already_deleted` | The run's data was already gone, from an earlier deletion or `experimental_retention: 0`. |
+| `skipped` | The run hasn't finished, so nothing was deleted. `status` is the run's status. |
+| `not_created` | The run was cancelled before it was created. What it held is deleted. |
+| `not_found` | No run has this ID. |
+| `failed` | The deletion didn't complete. `code` says why, and `retryable` says whether retrying can succeed. |
+
+## Retries
+
+Deletion is idempotent, so retrying is always safe: a run that was already handled answers `already_deleted`.
+
+- Inside a step, a `failed` result with `retryable: true`, or the World rate-limiting the request, throws a [`RetryableError`](/docs/api-reference/workflow/retryable-error) so the step retries the whole batch, after the World's requested delay when it gives one.
+- Outside a step, `failed` results are returned as they are, so retry the runs answered `failed` with `retryable: true` yourself. A rate limit throws the World's `ThrottleError`, whose `retryAfter` is the number of seconds to wait.
+
+## Errors
+
+`deleteRuns()` throws when `runIds` is empty, contains duplicates, or has more than 100 IDs, and when the configured World doesn't support deleting run data. Send more runs in batches of 100. The World enforces the same limit.

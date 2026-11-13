@@ -199,6 +199,40 @@ export async function POST(req: Request) {
 
 The options object is optional: `await run.cancel()` cancels the run without recording a reason.
 
+### Delete a finished run's data
+
+Delete the stored data of a run that has finished: its input, output and error, its steps' and events' payloads, its hook payloads, and its stream contents. Metadata is not deleted: the run stays listed, and so do its steps, events and hooks, with their IDs, names, statuses, timestamps and attributes. Only the payloads go, reading back as expired. This cannot be undone. See [Data retention](/docs/observability/retention#deleting-a-finished-runs-data).
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function POST(req: Request) {
+  const { runId } = await req.json();
+  const run = getRun(runId);
+
+  const result = await run.deleteData(); // [!code highlight]
+  switch (result.outcome) {
+    case "deleted":
+    case "already_deleted":
+    case "not_created":
+      return Response.json({ deleted: true });
+    case "skipped":
+      // The run hasn't finished. Cancel it first to delete its data now.
+      return Response.json({ deleted: false, status: result.status }, { status: 409 });
+    case "not_found":
+      return Response.json({ deleted: false }, { status: 404 });
+    case "failed":
+      // Deletion is idempotent: a retryable failure can be requested again.
+      return Response.json(
+        { deleted: false, retryable: result.retryable },
+        { status: 503 }
+      );
+  }
+}
+```
+
+`deleteData()` never cancels a run: a run that hasn't finished answers `skipped` and keeps running. It runs as a step, so inside a workflow a retryable failure throws a `RetryableError` and the step retries. It throws if the configured World doesn't support deleting run data. To delete the data of many runs in one call, use [`deleteRuns()`](/docs/api-reference/workflow-api/delete-runs).
+
 ## Spec 9 (experimental)
 
 On runs of the experimental spec 9 runtime, `wakeUp()` asks the run's orchestrator to complete the sleeps instead of completing them itself, `stoppedCount` counts the sleeps it asked to complete, and the request is best-effort while the run is active.

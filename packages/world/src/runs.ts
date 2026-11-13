@@ -333,3 +333,88 @@ export const BulkCancelWorkflowRunsResultSchema = z.object({
 export type BulkCancelWorkflowRunsResult = z.infer<
   typeof BulkCancelWorkflowRunsResultSchema
 >;
+
+/**
+ * Maximum number of run IDs that a single delete-data (`deleteDataMany`) request may carry.
+ * world-vercel enforces the same limit on its side.
+ */
+export const DELETE_RUNS_DATA_MAX_RUN_IDS = 100;
+
+/**
+ * Request payload for deleting the data of many finished runs in a single
+ * operation. `runIds` must contain 1–{@link DELETE_RUNS_DATA_MAX_RUN_IDS}
+ * unique IDs.
+ */
+export const DeleteRunsDataRequestSchema = z.object({
+  runIds: z
+    .array(z.string())
+    .min(1)
+    .max(DELETE_RUNS_DATA_MAX_RUN_IDS)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'runIds must not contain duplicates',
+    }),
+});
+export type DeleteRunsDataRequest = z.infer<typeof DeleteRunsDataRequestSchema>;
+
+/**
+ * Per-run outcome of deleting a run's data. Deleting data never deletes the
+ * run's metadata: the run, step, event and hook records, with their IDs,
+ * names, statuses, timestamps and the run's attributes, stay.
+ *
+ * - `deleted`: the run's data was deleted by this request.
+ * - `already_deleted`: the run's data was already gone (an earlier deletion,
+ *   a run started with `experimental_retention: 0`, or a World-side
+ *   expiry). Anything an earlier pass left behind is deleted too.
+ * - `skipped`: the run has not finished, so nothing was deleted; `reason` is
+ *   machine-readable (`run_not_terminal`) and `status` reports the observed
+ *   status. Cancel the run first to delete its data.
+ * - `not_created`: the ID named a run that was cancelled before it was ever
+ *   created (a `start()` with a start Hook); what it held is deleted.
+ * - `not_found`: no run exists for this ID.
+ * - `failed`: the deletion did not complete; `code` is a machine-readable
+ *   error code and `retryable` indicates whether retrying may succeed.
+ *   Deletion is idempotent, so a retry finishes what this one left.
+ *
+ * The union is closed, as bulk cancel's is: a client rejects the whole
+ * response when it meets an outcome it doesn't know. So adding an outcome is
+ * a breaking change for older clients, which would report an error for a
+ * deletion the World had already carried out (safe to retry, but
+ * misleading). Add one only alongside a client that understands it.
+ */
+export const DeleteRunDataResultSchema = z.discriminatedUnion('outcome', [
+  z.object({ runId: z.string(), outcome: z.literal('deleted') }),
+  z.object({ runId: z.string(), outcome: z.literal('already_deleted') }),
+  z.object({
+    runId: z.string(),
+    outcome: z.literal('skipped'),
+    reason: z.string(),
+    status: z.string(),
+  }),
+  z.object({ runId: z.string(), outcome: z.literal('not_created') }),
+  z.object({ runId: z.string(), outcome: z.literal('not_found') }),
+  z.object({
+    runId: z.string(),
+    outcome: z.literal('failed'),
+    code: z.string(),
+    retryable: z.boolean(),
+  }),
+]);
+export type DeleteRunDataResult = z.infer<typeof DeleteRunDataResultSchema>;
+
+/**
+ * Aggregate result of deleting the data of many runs. `results` preserves
+ * the order of the requested `runIds`; `summary` counts each outcome.
+ */
+export const DeleteRunsDataResultSchema = z.object({
+  summary: z.object({
+    requested: z.number(),
+    deleted: z.number(),
+    alreadyDeleted: z.number(),
+    skipped: z.number(),
+    notCreated: z.number(),
+    notFound: z.number(),
+    failed: z.number(),
+  }),
+  results: z.array(DeleteRunDataResultSchema),
+});
+export type DeleteRunsDataResult = z.infer<typeof DeleteRunsDataResultSchema>;

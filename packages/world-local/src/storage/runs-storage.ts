@@ -1,6 +1,9 @@
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import type {
   AttributeChange,
+  DeleteRunDataResult,
+  DeleteRunsDataRequest,
+  DeleteRunsDataResult,
   ExperimentalSetAttributesResult,
   ListWorkflowRunsParams,
   PaginatedResponse,
@@ -10,6 +13,7 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
+  DeleteRunsDataRequestSchema,
   isTerminalWorkflowRunStatus,
   validateAttributeChanges,
 } from '@workflow/world';
@@ -17,7 +21,9 @@ import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { decode } from '../db/codec.js';
 import type { Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
+import { withRunPayloadsPurged } from './events-storage.js';
 import { filterRunData } from './filters.js';
+import { purgeRunData } from './run-retention.js';
 import {
   RUN_STATUS_POLL_INTERVAL_MS,
   waitForRunTerminalSignal,
@@ -60,6 +66,7 @@ export interface LocalRunsStorage {
     changes: AttributeChange[],
     options?: { allowReservedAttributes?: boolean }
   ): Promise<ExperimentalSetAttributesResult>;
+  deleteDataMany: NonNullable<Storage['runs']['deleteDataMany']>;
 }
 
 export function createRunsStorage(
@@ -77,6 +84,34 @@ export function createRunsStorage(
       params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
     );
   }) as Storage['runs']['get'];
+
+  /**
+   * Delete one finished run's data, as a zero-retention run's is deleted when
+   * it finishes: its own payloads and its `expiredAt` boundary, and its
+   * steps', events', hooks' and streams' payloads, in one transaction. A run
+   * that has not finished is left untouched.
+   */
+  function deleteRunData(runId: string): DeleteRunDataResult {
+    const row = store.getRun(runId);
+    if (!row) return { runId, outcome: 'not_found' };
+    const { run } = row;
+    if (!isTerminalWorkflowRunStatus(run.status)) {
+      return {
+        runId,
+        outcome: 'skipped',
+        reason: 'run_not_terminal',
+        status: run.status,
+      };
+    }
+    const now = new Date();
+    const alreadyDeleted =
+      run.expiredAt !== undefined && run.expiredAt.getTime() <= now.getTime();
+    // An already deleted run keeps its first `expiredAt`; anything an
+    // earlier pass left behind is scrubbed again either way.
+    if (!alreadyDeleted) store.updateRun(withRunPayloadsPurged(run, now));
+    purgeRunData(db, runId);
+    return { runId, outcome: alreadyDeleted ? 'already_deleted' : 'deleted' };
+  }
 
   return {
     get,
@@ -182,6 +217,62 @@ export function createRunsStorage(
         store.updateRun({ ...row.run, attributes, updatedAt: new Date() });
         return { attributes };
       });
+    },
+
+    /**
+     * Delete the data of many finished runs. See
+     * `Storage['runs'].deleteDataMany`.
+     */
+    deleteDataMany: async (
+      request: DeleteRunsDataRequest
+    ): Promise<DeleteRunsDataResult> => {
+      const { runIds } = DeleteRunsDataRequestSchema.parse(request);
+      const results: DeleteRunDataResult[] = [];
+      for (const runId of runIds) {
+        try {
+          assertSafeEntityId('runId', runId);
+        } catch {
+          // No run is ever stored under an unsafe ID.
+          results.push({ runId, outcome: 'not_found' });
+          continue;
+        }
+        try {
+          results.push(await db.transactAsync(() => deleteRunData(runId)));
+        } catch (error) {
+          console.error(
+            `[world-local] Failed to delete the data of run "${runId}":`,
+            error
+          );
+          results.push({
+            runId,
+            outcome: 'failed',
+            code: 'internal_error',
+            retryable: true,
+          });
+        }
+      }
+      // The scrubbed bytes are still in the WAL until it is checkpointed.
+      if (
+        results.some(
+          (r) => r.outcome === 'deleted' || r.outcome === 'already_deleted'
+        )
+      ) {
+        db.checkpoint();
+      }
+      const count = (outcome: DeleteRunDataResult['outcome']) =>
+        results.filter((result) => result.outcome === outcome).length;
+      return {
+        summary: {
+          requested: runIds.length,
+          deleted: count('deleted'),
+          alreadyDeleted: count('already_deleted'),
+          skipped: count('skipped'),
+          notCreated: count('not_created'),
+          notFound: count('not_found'),
+          failed: count('failed'),
+        },
+        results,
+      };
     },
   };
 }

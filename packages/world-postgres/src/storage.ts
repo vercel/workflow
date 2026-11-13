@@ -16,6 +16,7 @@ import type {
   AnyEventRequest,
   AttributeChange,
   CreateEventParams,
+  DeleteRunDataResult,
   Event,
   EventListResponse,
   EventLogSnapshot,
@@ -41,6 +42,7 @@ import type {
 import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
+  DeleteRunsDataRequestSchema,
   EVENT_ID_BODY_LENGTH,
   EVENT_ID_PREFIX,
   EventSchema,
@@ -97,7 +99,10 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
-import { purgeRunUserDataIfZeroRetention } from './retention.js';
+import {
+  purgeRunUserData,
+  purgeRunUserDataIfZeroRetention,
+} from './retention.js';
 import { announceRunEvents, type RunEventsFeed } from './run-events.js';
 import {
   notifyRunTerminal,
@@ -955,6 +960,85 @@ export function createRunsStorage(
       return ids.map((id) => runsById.get(id) ?? null);
     }) as NonNullable<Storage['runs']['getMany']>,
     list: createRunsList(drizzle),
+
+    /**
+     * Delete the data of many finished runs. See
+     * `Storage['runs'].deleteDataMany`.
+     *
+     * Each finished run is cleared exactly as a zero-retention run is when
+     * it finishes (see `purgeRunUserData`), in its own transaction. Reading
+     * the status first is race-free: a terminal run never leaves its
+     * terminal state, and a run read as unfinished is left untouched.
+     */
+    deleteDataMany: (async (request) => {
+      const { runIds } = DeleteRunsDataRequestSchema.parse(request);
+      const rows = await drizzle
+        .select({
+          runId: runs.runId,
+          status: runs.status,
+          expiredAt: runs.expiredAt,
+        })
+        .from(runs)
+        .where(inArray(runs.runId, runIds));
+      const rowsById = new Map(rows.map((row) => [row.runId, row]));
+      const now = new Date();
+
+      const results = await Promise.all(
+        runIds.map(async (runId): Promise<DeleteRunDataResult> => {
+          const row = rowsById.get(runId);
+          if (!row) return { runId, outcome: 'not_found' };
+          if (!isTerminalWorkflowRunStatus(row.status)) {
+            return {
+              runId,
+              outcome: 'skipped',
+              reason: 'run_not_terminal',
+              status: row.status,
+            };
+          }
+          const alreadyDeleted =
+            row.expiredAt !== null && row.expiredAt.getTime() <= now.getTime();
+          try {
+            // Also for an already deleted run: whatever an earlier pass left
+            // behind goes too, and its original `expired_at` is kept.
+            await purgeRunUserData(
+              drizzle,
+              runId,
+              alreadyDeleted && row.expiredAt ? row.expiredAt : now
+            );
+          } catch (cause) {
+            console.error(
+              `[workflow] failed to delete the data of run "${runId}"`,
+              cause
+            );
+            return {
+              runId,
+              outcome: 'failed',
+              code: 'internal_error',
+              retryable: true,
+            };
+          }
+          return {
+            runId,
+            outcome: alreadyDeleted ? 'already_deleted' : 'deleted',
+          };
+        })
+      );
+
+      const count = (outcome: DeleteRunDataResult['outcome']) =>
+        results.filter((result) => result.outcome === outcome).length;
+      return {
+        summary: {
+          requested: runIds.length,
+          deleted: count('deleted'),
+          alreadyDeleted: count('already_deleted'),
+          skipped: count('skipped'),
+          notCreated: count('not_created'),
+          notFound: count('not_found'),
+          failed: count('failed'),
+        },
+        results,
+      };
+    }) as NonNullable<Storage['runs']['deleteDataMany']>,
 
     experimentalSetAttributes: async (
       runId: string,

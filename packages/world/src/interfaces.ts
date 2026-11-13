@@ -23,6 +23,8 @@ import type { Queue } from './queue.js';
 import type {
   BulkCancelWorkflowRunsRequest,
   BulkCancelWorkflowRunsResult,
+  DeleteRunsDataRequest,
+  DeleteRunsDataResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WaitForTerminalRunStatusParams,
@@ -334,6 +336,28 @@ export interface Storage {
     cancelMany?(
       request: BulkCancelWorkflowRunsRequest
     ): Promise<BulkCancelWorkflowRunsResult>;
+
+    /**
+     * Delete the stored data of many finished runs in a single operation,
+     * including their inputs, outputs and errors, their steps' and events'
+     * payloads, their hook payloads, and their stream contents. Metadata is
+     * not deleted: the run, step, event and hook records stay listed with
+     * their IDs, names, statuses, timestamps and the run's attributes, and
+     * streams keep their names; only the payloads read back as expired.
+     *
+     * Only finished runs have their data deleted. A run that has not
+     * finished is answered `skipped` and left untouched; the World must
+     * never cancel it. Returns a per-run outcome for each requested ID
+     * (order preserved) plus an aggregate summary. See
+     * `DeleteRunDataResult` for the outcomes.
+     *
+     * OPTIONAL. There is no fallback: the SDK helper `deleteRuns` in
+     * `@workflow/core` throws when the configured World does not implement
+     * it.
+     */
+    deleteDataMany?(
+      request: DeleteRunsDataRequest
+    ): Promise<DeleteRunsDataResult>;
   };
 
   steps: {
