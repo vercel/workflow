@@ -3961,7 +3961,9 @@ async function runDelivery(
       // An event that landed after the VM decided (a hook
       // payload, a background step's outcome) has a wake of
       // its own, but that wake would find this position
-      // already recorded as consumed. Replay it now instead.
+      // already recorded as consumed. Run it now instead, on
+      // the retained VM when it is kept: like a lingering
+      // pass, it only appends what landed since.
       if (
         log.events.some((event) => {
           const slot = eventIdToSlot(event.eventId);
@@ -3973,7 +3975,7 @@ async function runDelivery(
           );
         })
       ) {
-        return { type: 'continue', retainSession: false };
+        return { type: 'continue', retainSession: retain };
       }
       // Stay warm for what the run waits on instead of
       // leaving it to a queued wake.
