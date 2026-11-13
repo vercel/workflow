@@ -32,7 +32,8 @@
       "!**/.nitro",
       "!**/.output",
       "!**/.tanstack",
-      "!**/routeTree.gen.ts"
+      "!**/routeTree.gen.ts",
+      "!**/apm-trace-viewer/viewer/data"
     ],
     "ignoreUnknown": true
   },
