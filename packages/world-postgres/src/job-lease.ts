@@ -256,8 +256,6 @@ interface HeldJob {
   workerId: string;
   taskIdentifier: string | undefined;
   lost: boolean;
-  /** Monotonic ms at which a renewal that found the job still ours was sent. */
-  confirmedAt: number;
 }
 
 export interface JobLeases {
@@ -323,9 +321,6 @@ export function createJobLeases(
   const staleMs = staleSeconds * 1000;
   const renewIntervalMs = Math.min(10_000, Math.max(250, staleMs / 4));
   const sweepIntervalMs = Math.max(500, staleMs / 2);
-  // A delivery whose lock was last shown to be ours within this window cannot
-  // have been swept yet, and has at least this long before it could be.
-  const confirmWindowMs = staleMs / 2;
 
   // The schema Graphile Worker itself resolves when no `schema` option is
   // passed, which this World never passes.
@@ -431,7 +426,6 @@ export function createJobLeases(
   async function renewHeldJobs() {
     const jobs = [...held].filter((job) => !job.lost);
     if (jobs.length === 0) return;
-    const sentAt = now();
     try {
       const { rows } = await pool.query<RenewedRow>(renewQuery, [
         jobs.map((job) => job.id),
@@ -442,8 +436,7 @@ export function createJobLeases(
         // A job released since the query was sent was acknowledged by Graphile
         // Worker (which deletes it); it was not lost.
         if (!held.has(job)) continue;
-        if (renewed.has(holder(job.id, job.workerId))) job.confirmedAt = sentAt;
-        else markLost(job);
+        if (!renewed.has(holder(job.id, job.workerId))) markLost(job);
       }
       if (renewFailing) {
         renewFailing = false;
@@ -477,10 +470,13 @@ export function createJobLeases(
 
   async function confirm(job: HeldJob) {
     if (job.lost) throw new JobLockLostError(job.id, job.workerId);
-    if (stopped || now() - job.confirmedAt <= confirmWindowMs) return;
-    // Renewals have not shown the lock to be ours recently (a slow pool or a
-    // database outage), so show it now: a successful renewal also keeps the
-    // job from being swept before Graphile Worker acknowledges it.
+    if (stopped) return;
+    // Show the lock is still ours, however recently a renewal found it so:
+    // another process may sweep with a shorter window than this one (while
+    // `jobLockStaleSeconds` is being changed across processes, say), and the
+    // unfenced acknowledgement would then delete its successor's row. A
+    // successful renewal also keeps the job from being swept before Graphile
+    // Worker acknowledges it.
     const { rows } = await pool.query<RenewedRow>(renewQuery, [
       [job.id],
       [job.workerId],
@@ -565,10 +561,8 @@ export function createJobLeases(
           return;
         }
         // Held, and renewed, from the claim on: a registration that stalls
-        // must neither keep the lock from being renewed nor make it look
-        // more recently shown to be ours than it is, or a delivery could
-        // acknowledge, unfenced, a job that a successor holds by then.
-        const job: HeldJob = { ...identity, lost: false, confirmedAt: now() };
+        // must not keep the lock from being renewed.
+        const job: HeldJob = { ...identity, lost: false };
         held.add(job);
         scheduleRenewal();
         try {
