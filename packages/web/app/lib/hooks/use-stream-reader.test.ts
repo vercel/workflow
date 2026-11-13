@@ -206,6 +206,43 @@ describe('useStreamReader status', () => {
     expect(result.current.chunks.map(({ value }) => value)).toEqual([payload]);
   });
 
+  it('refreshes one growing image from the start while polling', async () => {
+    const partial = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4,
+    ]);
+    const complete = Uint8Array.from([...partial, 10, 0xff, 5, 6]);
+    const response = (bytes: Uint8Array, done: boolean): StreamResponse => ({
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+      cursor: 'storage-cursor',
+      done,
+    });
+    vi.mocked(readStream)
+      .mockResolvedValueOnce(response(partial, false))
+      .mockResolvedValueOnce(response(complete, true));
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'image', 'run-1', null, 'running')
+    );
+    await waitFor(() =>
+      expect(result.current.chunks.map(({ value }) => value)).toEqual([partial])
+    );
+    const id = result.current.chunks[0].id;
+    await waitFor(
+      () =>
+        expect(result.current.chunks.map(({ value }) => value)).toEqual([
+          complete,
+        ]),
+      { timeout: 5000 }
+    );
+    expect(result.current.chunks[0].id).toBe(id);
+    expect(vi.mocked(readStream).mock.calls[1][4]).toBeUndefined();
+    expect(result.current.isLive).toBe(false);
+  });
+
   it('reads a serialized frame shorter than the longest image signature', async () => {
     const payload = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,

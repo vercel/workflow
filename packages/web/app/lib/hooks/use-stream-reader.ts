@@ -161,6 +161,8 @@ export function useStreamReader(
     }
 
     let mounted = true;
+    let isImageStream = false;
+    let imageChunkId: number | undefined;
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
@@ -192,6 +194,7 @@ export function useStreamReader(
       | { encrypted: true }
       | {
           encrypted: false;
+          image: boolean;
           frameCount: number;
           cursor: string | null;
           done: boolean;
@@ -202,10 +205,10 @@ export function useStreamReader(
         streamId,
         runId,
         abortController.signal,
-        options?.cursor
+        isImageStream ? undefined : options?.cursor
       );
 
-      const skipFrames = options?.skipFrames ?? 0;
+      const skipFrames = isImageStream ? 0 : (options?.skipFrames ?? 0);
       const reader = streamResponse.body.getReader();
       const decoder = new TextDecoder();
       let buffer = new Uint8Array(0);
@@ -230,9 +233,13 @@ export function useStreamReader(
             if (encoding === 'legacy') textRemainder = decoder.decode(buffer);
           }
           if (encoding === 'image') {
+            imageChunkId ??= chunkIdRef.current++;
             frameIndex++;
             if (frameIndex > skipFrames) {
-              targetBuffer.push({ id: chunkIdRef.current++, value: buffer });
+              targetBuffer.push({
+                id: imageChunkId,
+                value: buffer,
+              });
             }
           } else if (encoding === 'unframed' && buffer.length > 0) {
             frameIndex++;
@@ -348,8 +355,10 @@ export function useStreamReader(
         buffer = buffer.slice(offset);
       }
 
+      isImageStream ||= encoding === 'image';
       return {
         encrypted: false,
+        image: isImageStream,
         frameCount: frameIndex,
         cursor: streamResponse.cursor,
         done: streamResponse.done,
@@ -406,7 +415,11 @@ export function useStreamReader(
                   serverCursorRef.current = pollResult.cursor;
                 }
                 if (newChunks.length > 0 && mounted) {
-                  setChunks((prev) => [...prev, ...newChunks]);
+                  // Images are one binary value, refreshed from the start
+                  // rather than parsed as frames after a storage cursor.
+                  setChunks((prev) =>
+                    pollResult.image ? newChunks : [...prev, ...newChunks]
+                  );
                 }
                 if (pollResult.done) {
                   setIsLive(false);
