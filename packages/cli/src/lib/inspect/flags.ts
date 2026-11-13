@@ -1,4 +1,5 @@
 import { Flags } from '@oclif/core';
+import { getDefaultBackend } from './vercel-extension.js';
 
 export const cliFlags = {
   verbose: Flags.boolean({
@@ -30,12 +31,14 @@ export const cliFlags = {
     description: 'backend to inspect',
     required: false,
     char: 'b',
-    default: 'local',
+    default: async () => getDefaultBackend(),
     env: 'WORKFLOW_TARGET_WORLD',
     helpGroup: 'Target',
     helpLabel: '-b, --backend',
     helpValue: ['local', 'vercel', '<your-package-name>'],
-    defaultHelp: 'local',
+    defaultHelp: async () => getDefaultBackend(),
+    // The default depends on the entry point, so keep it out of the manifest.
+    noCacheDefault: true,
   }),
   authToken: Flags.string({
     description:

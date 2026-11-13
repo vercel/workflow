@@ -81,6 +81,16 @@ const getWorkflowServerUrlOverride = (): string =>
 
 export interface APIConfig {
   token?: string;
+  /**
+   * Base URL of the Vercel REST API. Defaults to `https://api.vercel.com`.
+   *
+   * Point it at an API proxy that authenticates requests itself, such as the
+   * one Vercel CLI starts for its extensions and passes in `VERCEL_API`.
+   * Requests to the Vercel API then go there, and `token` becomes optional:
+   * without one they are sent without an `Authorization` header, and no
+   * ambient credential (`VERCEL_TOKEN`, OIDC) is sent in its place.
+   */
+  vercelApiUrl?: string;
   headers?: RequestInit['headers'];
   /**
    * Custom HTTP dispatcher passed to every `fetch()` call (e.g. an undici
@@ -186,6 +196,12 @@ export interface HttpConfig {
   usingProxy: boolean;
 }
 
+/** The Vercel REST API base URL for `config`, without a trailing slash. */
+export const getVercelApiUrl = (
+  config?: Pick<APIConfig, 'vercelApiUrl'>
+): string =>
+  (config?.vercelApiUrl || 'https://api.vercel.com').replace(/\/+$/, '');
+
 export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
@@ -193,7 +209,7 @@ export const getHttpUrl = (
   const defaultHost =
     getWorkflowServerUrlOverride() || 'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
-  const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
+  const defaultProxyUrl = `${getVercelApiUrl(config)}/v1/workflow`;
   // Use proxy when we have project config (for authentication via Vercel API)
   const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
   // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if override is set)
@@ -294,8 +310,11 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   if (usingProxy) {
     // The api-workflow proxy authenticates the caller with a regular Vercel
     // auth token; it does not accept OIDC. Fail loudly instead of letting
-    // an opaque 401 bubble up at request time.
-    if (!config?.token) {
+    // an opaque 401 bubble up at request time. A custom `vercelApiUrl` is an
+    // API proxy that authenticates requests itself, so it needs no token.
+    if (config?.token) {
+      headers.set('Authorization', `Bearer ${config.token}`);
+    } else if (!config?.vercelApiUrl) {
       throw new Error(
         'world-vercel: api-workflow proxy requested ' +
           `(${baseUrl}) but no Vercel auth token was provided. ` +
@@ -303,7 +322,6 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
           '`WORKFLOW_VERCEL_AUTH_TOKEN`).'
       );
     }
-    headers.set('Authorization', `Bearer ${config.token}`);
   } else {
     // Direct backend path. The bearer prefers an explicit
     // config.token (CLI / GitHub Actions runner / local dev) and falls

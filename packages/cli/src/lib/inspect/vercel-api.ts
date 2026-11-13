@@ -12,19 +12,29 @@ interface VercelTeam {
  */
 export async function fetchTeamInfo(
   teamId: string,
-  authToken: string
+  auth: {
+    /** Bearer token. Optional when `apiUrl` authenticates requests itself. */
+    token?: string;
+    /** Vercel API base URL. Defaults to `https://api.vercel.com`. */
+    apiUrl?: string;
+  }
 ): Promise<{ teamSlug: string } | null> {
   try {
     // Create an AbortController with a 5 second timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-    const response = await fetch(`https://api.vercel.com/v2/teams/${teamId}`, {
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-      },
-      signal: controller.signal,
-    });
+    const apiUrl = (auth.apiUrl || 'https://api.vercel.com').replace(
+      /\/+$/,
+      ''
+    );
+    const response = await fetch(
+      `${apiUrl}/v2/teams/${encodeURIComponent(teamId)}`,
+      {
+        headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
+        signal: controller.signal,
+      }
+    );
 
     // Clear the timeout if the request completes successfully
     clearTimeout(timeoutId);

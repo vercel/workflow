@@ -132,6 +132,30 @@ describe('fetchRunKey', () => {
     expect(result).toEqual(Buffer.from(keyBase64, 'base64'));
   });
 
+  it('fetches from a custom vercelApiUrl without an ambient token', async () => {
+    const savedToken = process.env.VERCEL_TOKEN;
+    process.env.VERCEL_TOKEN = 'ambient-token';
+    try {
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ key: null }), { status: 200 })
+      );
+
+      await fetchRunKey(deploymentId, testProjectId, testRunId, {
+        teamId: 'team_123',
+        vercelApiUrl: 'http://127.0.0.1:4321',
+      });
+
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe(
+        `http://127.0.0.1:4321/v1/workflow/run-key/${deploymentId}?projectId=${testProjectId}&runId=${testRunId}&teamId=team_123`
+      );
+      expect((init.headers as Headers).get('Authorization')).toBeNull();
+    } finally {
+      if (savedToken === undefined) delete process.env.VERCEL_TOKEN;
+      else process.env.VERCEL_TOKEN = savedToken;
+    }
+  });
+
   it('should throw on non-ok response', async () => {
     mockFetch.mockResolvedValueOnce(new Response('Not found', { status: 404 }));
 

@@ -126,6 +126,7 @@ export const setupCliWorld = async (
     // relying on createWorld() reading process.env.
     world = createVercelCliWorld({
       token: vercelEnvVars.token,
+      vercelApiUrl: vercelEnvVars.vercelApiUrl,
       projectConfig: {
         environment: vercelEnvVars.environment,
         projectId: vercelEnvVars.projectId,

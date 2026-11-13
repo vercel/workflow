@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "workflow": "./bin/run.js",
-    "wf": "./bin/run.js"
+    "wf": "./bin/run.js",
+    "vercel-workflow": "./bin/vercel-workflow.js"
   },
   "files": [
     "dist",
@@ -22,7 +23,7 @@
     "directory": "packages/cli"
   },
   "scripts": {
-    "build": "rm -f oclif.manifest.json && tsc && chmod +x bin/run.js",
+    "build": "rm -f oclif.manifest.json && tsc && chmod +x bin/run.js bin/vercel-workflow.js",
     "clean": "tsc --build --clean && rm -r dist ||:",
     "dev": "rm -f oclif.manifest.json && tsc --watch",
     "prepack": "node scripts/generate-oclif-manifest.mjs",

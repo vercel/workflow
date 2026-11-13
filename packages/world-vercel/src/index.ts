@@ -149,7 +149,8 @@ export function createWorld(config?: APIConfig): World {
       projectId,
       config?.projectConfig?.teamId,
       config?.token,
-      config?.dispatcher
+      config?.dispatcher,
+      config?.vercelApiUrl
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
     telemetry: { recordStepExecution },
