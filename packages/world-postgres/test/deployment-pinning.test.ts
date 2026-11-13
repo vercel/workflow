@@ -261,10 +261,13 @@ describe('deployment pinning', () => {
     ).toThrow(/Invalid Postgres World deploymentId/);
   });
 
-  test('bounds deploymentId by what fits its jobPrefix', () => {
-    expect(() =>
-      createWorld({ pool, jobPrefix: 'bad_', deploymentId: 'x'.repeat(77) })
-    ).not.toThrow();
+  test('bounds deploymentId by what fits its jobPrefix', async () => {
+    const longest = createWorld({
+      pool,
+      jobPrefix: 'bad_',
+      deploymentId: 'x'.repeat(77),
+    });
+    await longest.close();
     expect(() => createWorld({ pool, deploymentId: 'x'.repeat(73) })).toThrow(
       /at most 72 characters/
     );
