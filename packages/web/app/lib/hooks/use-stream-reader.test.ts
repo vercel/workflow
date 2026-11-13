@@ -247,6 +247,33 @@ describe('useStreamReader status', () => {
     expect(result.current.isLive).toBe(false);
   });
 
+  it('keeps the current image when a poll returns the same bytes', async () => {
+    const image = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4,
+    ]);
+    vi.mocked(readStream).mockImplementation(async () => ({
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(image.slice());
+          controller.close();
+        },
+      }),
+      cursor: null,
+      done: false,
+    }));
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'image', 'run-1', null, 'running')
+    );
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    const initial = result.current.chunks;
+    await waitFor(() => expect(readStream).toHaveBeenCalledTimes(2), {
+      timeout: 5000,
+    });
+    // Let the poll's state update settle before comparing identities.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(result.current.chunks).toBe(initial);
+  });
+
   it('reads a serialized frame shorter than the longest image signature', async () => {
     const payload = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,

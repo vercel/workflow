@@ -18,6 +18,19 @@ describe('getStreamImageType', () => {
   });
 
   it.each([
+    [0xc3, 0xa9, 0x00, 0x00],
+    [0xe2, 0x82, 0xac, 0x00],
+    [0xff, 0xfe, 0x80, 0x00],
+  ])('recognizes WebP whose RIFF size bytes are not ASCII: %j', (...size) => {
+    const bytes = Uint8Array.from([
+      ...encode('RIFF'),
+      ...size,
+      ...encode('WEBPVP8 '),
+    ]);
+    expect(getStreamImageType(bytes)).toBe('image/webp');
+  });
+
+  it.each([
     '',
     'PNG',
     'GIF89',

@@ -61,6 +61,19 @@ function detectEncoding(data: Uint8Array, streamId: string): StreamEncoding {
   return 'legacy';
 }
 
+function hasSameImageBytes(previous: StreamChunk[], next: StreamChunk[]) {
+  const before = previous[0]?.value;
+  const after = next[0]?.value;
+  return (
+    previous.length === 1 &&
+    next.length === 1 &&
+    before instanceof Uint8Array &&
+    after instanceof Uint8Array &&
+    before.length === after.length &&
+    before.every((byte, index) => byte === after[index])
+  );
+}
+
 export function useStreamReader(
   env: EnvMap,
   streamId: string | null,
@@ -418,9 +431,14 @@ export function useStreamReader(
                 if (newChunks.length > 0 && mounted) {
                   // Images are one binary value, refreshed from the start
                   // rather than parsed as frames after a storage cursor.
-                  setChunks((prev) =>
-                    pollResult.image ? newChunks : [...prev, ...newChunks]
-                  );
+                  // Keep the current preview when an open image stream has
+                  // no new bytes, so it isn't reloaded on every poll.
+                  setChunks((prev) => {
+                    if (!pollResult.image) return [...prev, ...newChunks];
+                    return hasSameImageBytes(prev, newChunks)
+                      ? prev
+                      : newChunks;
+                  });
                 }
                 if (pollResult.done) {
                   setIsLive(false);
