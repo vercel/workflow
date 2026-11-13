@@ -1192,8 +1192,9 @@ async function postWorkflowRunEventV4(
  * Only `step_completed`, and the narrowness is the point. Most fallback is
  * legitimate and routine:
  *
- * - `run_created` is written by `start()` from a request handler that never
- *   opens a channel, so it is always HTTP.
+ * - `run_created` is written by `start()` from a request handler that opens no
+ *   channel of its own, so it is HTTP unless an inline delivery of the same
+ *   run (in that handler) has opened one by then.
  * - `run_started` is the runtime's first write and frequently lands before the
  *   channel is registered; measured at 34% HTTP on a healthy deployment.
  * - `step_created` and `wait_created` mostly fold into `events.createBatch`,

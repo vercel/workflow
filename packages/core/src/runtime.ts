@@ -35,7 +35,10 @@ import {
   parseHealthCheckPayload,
   withHealthCheck,
 } from './runtime/helpers.js';
-import { registerInlineOrchestrator } from './runtime/inline-orchestrator.js';
+import {
+  registerInlineOrchestrator,
+  runAsOrchestratorDelivery,
+} from './runtime/inline-orchestrator.js';
 import { withRunInputs } from './runtime/invocations.js';
 import {
   authorizeQueueDelivery,
@@ -101,7 +104,6 @@ export {
   getHookByToken,
   type Hook,
   type ResumedHook,
-  type ResumeHookOptions,
   resumeHook,
   resumeWebhook,
 } from './runtime/resume-hook.js';
@@ -311,8 +313,20 @@ export function workflowEntrypoint(
   // The orchestrator's queue handler: the flow route passes it to
   // `createQueueHandler()`, and an inline delivery (see
   // `runtime/inline-orchestrator.ts`) runs a held message with it.
-  const orchestratorHandler = (worldHandlers: World): QueueHandler =>
-    withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
+  const orchestratorHandler = (worldHandlers: World): QueueHandler => {
+    const runInputs = withRunInputs(worldHandlers)(deliverFor(worldHandlers));
+    // Marks the delivery so a `start()` / `resumeHook()` made from inside it
+    // is queued rather than run inline (see `inlineGate`).
+    return (message, metadata) =>
+      runAsOrchestratorDelivery(() => runInputs(message, metadata));
+  };
+  const deliverFor =
+    (worldHandlers: World) =>
+    async (
+      ...[message_, metadata, activity]: Parameters<
+        Parameters<ReturnType<typeof withRunInputs>>[0]
+      >
+    ) => {
       // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
       // the instant this consumer began, before message parsing. Only used
       // when the message turns out to carry resume timing; taking it
@@ -641,7 +655,7 @@ export function workflowEntrypoint(
           }
         );
       });
-    });
+    };
 
   const handler = (worldHandlers: World) =>
     worldHandlers.createQueueHandler(
@@ -649,9 +663,9 @@ export function workflowEntrypoint(
       orchestratorHandler(worldHandlers)
     );
 
-  // Lets `start()` / `resumeHook()` with `experimental_inline` run this
-  // entry's orchestrator in a process that loaded it outside the flow route
-  // (an API route that imports the flow entry). Building nothing until then.
+  // Lets `start()` / `resumeHook()` run this entry's orchestrator inline in a
+  // process that loaded it outside the flow route (any route, through
+  // `@workflow/core/inline-entry`). Builds nothing until then.
   registerInlineOrchestrator(workflowPrefix, orchestratorHandler);
 
   // The handler, with the World it was built for (which declares how its

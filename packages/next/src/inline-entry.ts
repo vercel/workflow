@@ -3,13 +3,13 @@ import { join, resolve } from 'node:path';
 import { workflowRoutePrefixDirectory } from './route-prefix.js';
 
 /**
- * The module specifier an API route imports to load the app's flow entry (its
- * workflows, steps and orchestrator handler) for
- * `start(..., { experimental_inline: true })`. `withWorkflow()` aliases it to
- * the generated flow route; elsewhere it resolves to an empty module, so
+ * The module `start()` and `resumeHook()` load to run a run's orchestrator
+ * delivery inline (see `@workflow/core`'s `runtime/inline-orchestrator.ts`).
+ * `withWorkflow()` aliases it to the generated flow route for Node.js server
+ * code; elsewhere it resolves to `@workflow/core`'s empty default module, so
  * `start()` keeps queueing.
  */
-export const INLINE_ENTRY_SPECIFIER = 'workflow/next/inline';
+export const INLINE_ENTRY_SPECIFIER = '@workflow/core/inline-entry';
 
 function isDirectory(path: string): boolean {
   try {

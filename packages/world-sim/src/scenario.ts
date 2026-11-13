@@ -128,19 +128,16 @@ export interface ScenarioSpec {
   expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
   /**
-   * Options for the scenario's `start()` call, for example
-   * `{ experimental_inline: true }` to run the run's first orchestrator
-   * delivery in the starting process, through a held send (see
-   * `QueueOptions.experimental_hold`), instead of a delivery from the loop.
+   * Run on a World that can hold queue messages for their sender
+   * (`capabilities.experimental_queueHold`, as on Vercel): `start()` and the
+   * scenario's hook deliveries then run the run's orchestrator delivery in
+   * the sending call, through a held send, instead of a delivery from the
+   * loop. A held delivery's resume is not attributed to the scenario: its
+   * inline delivery is the run's orchestrator, and must stay a call point.
    */
-  startOptions?: { experimental_inline?: boolean; specVersion?: number };
-  /**
-   * Deliver hooks (`deliverHook`) with `resumeHook(..., { experimental_inline:
-   * true })`, so a held wake runs in the resuming call. Such a resume is not
-   * attributed to the scenario: its inline delivery is the run's
-   * orchestrator, and must stay a call point.
-   */
-  inlineResume?: boolean;
+  queueHold?: boolean;
+  /** Options for the scenario's `start()` call, e.g. `{ specVersion: 8 }`. */
+  startOptions?: { specVersion?: number };
   /**
    * Runtime environment variables set for this scenario only (for example a
    * runtime fast path the scenario's premise rules out), restored when it
@@ -226,7 +223,7 @@ export async function runScenario(
   // One expectation, whichever world this is. Aliased rather than read inline
   // so the outcome check and the output check below cannot drift apart.
   const expected = spec.expect;
-  const world = createSimWorld({ clock });
+  const world = createSimWorld({ clock, queueHold: spec.queueHold });
 
   const workflowId =
     typeof spec.workflow === 'string'
@@ -282,8 +279,8 @@ export async function runScenario(
       // to the `external` writer and are not themselves call points, so a
       // script that delivers a hook while holding a writer cannot trip one of
       // its own holds.
-      if (spec.inlineResume) {
-        await resumeHook(token, payload, { experimental_inline: true });
+      if (spec.queueHold) {
+        await resumeHook(token, payload);
         return;
       }
       await world.asExternal(() => resumeHook(token, payload));

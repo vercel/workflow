@@ -507,7 +507,8 @@ export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
   'workflow.dispatch.republish_skipped'
 );
 
-// Inline orchestrator delivery (`experimental_inline`)
+// Inline orchestrator delivery (`start()` / `resumeHook()` on a World that
+// can hold queue messages)
 
 /**
  * **Experimental.** What a `start()` / `resumeHook()` asked to run inline
@@ -545,8 +546,12 @@ export const WorkflowInlineNotHeldReason = SemanticConvention<
 
 // Route attributes
 
-/** The workflow runtime route being handled */
-export const WorkflowRouteType = SemanticConvention<'flow'>(
+/**
+ * The workflow runtime route being handled: `flow` for the generated flow
+ * route, `inline` for an orchestrator delivery run in the route that sent it
+ * (`workflow.inline.consume`).
+ */
+export const WorkflowRouteType = SemanticConvention<'flow' | 'inline'>(
   'workflow.route.type'
 );
 

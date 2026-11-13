@@ -20,6 +20,21 @@ import { resumeHook } from './resume-hook.js';
 import { start } from './start.js';
 import { setWorld } from './world.js';
 
+/**
+ * The flow entry `start()` loads on demand. Evaluated once per file, on the
+ * first load: it calls the hook set by then, as a generated flow route
+ * registers its handler when it is evaluated.
+ */
+const entryHook = vi.hoisted(() => ({
+  evaluations: 0,
+  onEvaluate: undefined as (() => void) | undefined,
+}));
+vi.mock('@workflow/core/inline-entry', () => {
+  entryHook.evaluations++;
+  entryHook.onEvaluate?.();
+  return {};
+});
+
 const waitUntilPromises: Promise<unknown>[] = [];
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((promise: Promise<unknown>) => {
@@ -151,6 +166,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  entryHook.onEvaluate = undefined;
   await drainWaitUntil();
   resetInlineOrchestratorsForTests();
   setWorld(undefined);
@@ -158,13 +174,13 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-describe('start({ experimental_inline })', () => {
+describe('start() inline delivery (default on a World that can hold)', () => {
   it('runs a held start message here, with the flow entry handler, as its first delivery', async () => {
     const { world, queue, consume } = fakeWorld();
     setWorld(world);
     const handler = registerHandler();
 
-    const run = await start(WORKFLOW, ['ada'], { experimental_inline: true });
+    const run = await start(WORKFLOW, ['ada']);
     await drainWaitUntil();
 
     expect(queue).toHaveBeenCalledTimes(1);
@@ -206,7 +222,7 @@ describe('start({ experimental_inline })', () => {
     setWorld(world);
     const handler = registerHandler();
 
-    await start(WORKFLOW, [], { experimental_inline: true });
+    await start(WORKFLOW, []);
     await drainWaitUntil();
 
     expect(queue).toHaveBeenCalledTimes(1);
@@ -218,29 +234,46 @@ describe('start({ experimental_inline })', () => {
     });
   });
 
-  it('sends exactly the plain message when the World cannot hold', async () => {
+  it('sends exactly the plain message, and loads nothing, when the World cannot hold', async () => {
     const { world, queue } = fakeWorld({ hold: false });
     setWorld(world);
-    const handler = registerHandler();
+    const evaluations = entryHook.evaluations;
 
-    await start(WORKFLOW, [], { experimental_inline: true });
+    await start(WORKFLOW, []);
     await drainWaitUntil();
 
     expect(queue).toHaveBeenCalledTimes(1);
     expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
     expect(queue.mock.calls[0][2]).not.toHaveProperty('idempotencyKey');
-    expect(handler).not.toHaveBeenCalled();
-    expect(spanAttributes).toMatchObject({
-      'workflow.inline.outcome': 'skipped',
-      'workflow.inline.skip_reason': 'no_capability',
-    });
+    // The flow entry was not loaded for a World that cannot hold.
+    expect(entryHook.evaluations).toBe(evaluations);
+    // No inline path existed, so nothing is recorded.
+    expect(spanAttributes).not.toHaveProperty('workflow.inline.outcome');
+  });
+
+  it('loads the flow entry on demand and runs the held message with the handler it registers', async () => {
+    const { world, consume } = fakeWorld();
+    setWorld(world);
+    const handler = vi.fn(async () => undefined);
+    // The first test in this file to load the entry, so this evaluates it.
+    expect(entryHook.evaluations).toBe(0);
+    entryHook.onEvaluate = () =>
+      registerInlineOrchestrator(PREFIX, () => handler as QueueHandler);
+
+    await start(WORKFLOW, []);
+    expect(entryHook.evaluations).toBe(1);
+    await drainWaitUntil();
+
+    expect(consume).toHaveBeenCalledWith(handler);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(spanAttributes['workflow.inline.outcome']).toBe('held');
   });
 
   it('sends exactly the plain message when no flow entry is loaded', async () => {
     const { world, queue } = fakeWorld();
     setWorld(world);
 
-    await start(WORKFLOW, [], { experimental_inline: true });
+    await start(WORKFLOW, []);
 
     expect(queue).toHaveBeenCalledTimes(1);
     expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
@@ -253,24 +286,10 @@ describe('start({ experimental_inline })', () => {
     const handler = vi.fn();
     registerInlineOrchestrator('__eve_wkf_workflow_', () => handler);
 
-    await start(WORKFLOW, [], { experimental_inline: true });
+    await start(WORKFLOW, []);
 
     expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
     expect(spanAttributes['workflow.inline.skip_reason']).toBe('no_handler');
-  });
-
-  it('does not hold without the option, even with a handler and a capable World', async () => {
-    const { world, queue } = fakeWorld();
-    setWorld(world);
-    const handler = registerHandler();
-
-    await start(WORKFLOW, []);
-    await drainWaitUntil();
-
-    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
-    expect(queue.mock.calls[0][2]).not.toHaveProperty('idempotencyKey');
-    expect(handler).not.toHaveBeenCalled();
-    expect(spanAttributes).not.toHaveProperty('workflow.inline.outcome');
   });
 
   it('honors the kill switch', async () => {
@@ -279,7 +298,7 @@ describe('start({ experimental_inline })', () => {
     setWorld(world);
     registerHandler();
 
-    await start(WORKFLOW, [], { experimental_inline: true });
+    await start(WORKFLOW, []);
 
     expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
     expect(spanAttributes['workflow.inline.skip_reason']).toBe('disabled');
@@ -292,7 +311,6 @@ describe('start({ experimental_inline })', () => {
     registerHandler();
 
     await start(WORKFLOW, [], {
-      experimental_inline: true,
       deploymentId: 'dpl_other',
     } as never);
 
@@ -309,7 +327,7 @@ describe('start({ experimental_inline })', () => {
     setWorld(world);
     registerHandler();
 
-    await start(WORKFLOW, [], { experimental_inline: true });
+    await start(WORKFLOW, []);
 
     expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
     expect(spanAttributes['workflow.inline.skip_reason']).toBe('other_region');
@@ -320,9 +338,7 @@ describe('start({ experimental_inline })', () => {
     setWorld(world);
     registerHandler();
 
-    await contextStorage.run({} as never, () =>
-      start(WORKFLOW, [], { experimental_inline: true })
-    );
+    await contextStorage.run({} as never, () => start(WORKFLOW, []));
 
     expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
     expect(spanAttributes['workflow.inline.skip_reason']).toBe('in_step');
@@ -335,7 +351,6 @@ describe('start({ experimental_inline })', () => {
     registerHandler();
 
     await start(WORKFLOW, [], {
-      experimental_inline: true,
       world: other.world,
     });
 
@@ -354,7 +369,7 @@ describe('start({ experimental_inline })', () => {
     setWorld(world);
     const handler = registerHandler();
 
-    const run = await start(WORKFLOW, [], { experimental_inline: true });
+    const run = await start(WORKFLOW, []);
     await drainWaitUntil();
 
     expect(queue).toHaveBeenCalledTimes(2);
@@ -388,7 +403,7 @@ describe('start({ experimental_inline })', () => {
     setWorld(world);
     registerHandler();
 
-    const run = await start(WORKFLOW, [], { experimental_inline: true });
+    const run = await start(WORKFLOW, []);
     expect(run.runId).toMatch(/^wrun_/);
     expect(consume).toHaveBeenCalledTimes(1);
     release();
@@ -409,7 +424,7 @@ describe('start({ experimental_inline })', () => {
       return { timeoutSeconds: 0 };
     });
 
-    await start(WORKFLOW, [], { experimental_inline: true });
+    await start(WORKFLOW, []);
     await drainWaitUntil();
 
     expect(budgets).toHaveLength(1);
@@ -438,7 +453,7 @@ describe('inlineBudgetMs', () => {
   });
 });
 
-describe('resumeHook(..., { experimental_inline })', () => {
+describe('resumeHook() inline wake', () => {
   function hookFor(deploymentId: string): Hook {
     return {
       runId: 'wrun_resumed',
@@ -473,7 +488,7 @@ describe('resumeHook(..., { experimental_inline })', () => {
     const { queue, consume } = resumeWorld(hook);
     const handler = registerHandler();
 
-    await resumeHook(hook.token, { ok: true }, { experimental_inline: true });
+    await resumeHook(hook.token, { ok: true });
     await drainWaitUntil();
 
     expect(queue).toHaveBeenCalledTimes(1);
@@ -491,7 +506,7 @@ describe('resumeHook(..., { experimental_inline })', () => {
     const { queue, consume } = resumeWorld(hook);
     registerHandler();
 
-    await resumeHook(hook.token, { ok: true }, { experimental_inline: true });
+    await resumeHook(hook.token, { ok: true });
 
     expect(queue).toHaveBeenCalledTimes(1);
     expect(queue.mock.calls[0][2]).toMatchObject({ deploymentId: 'dpl_other' });
@@ -509,14 +524,14 @@ describe('resumeHook(..., { experimental_inline })', () => {
     });
     registerHandler();
 
-    await resumeHook(hook.token, { ok: true }, { experimental_inline: true });
+    await resumeHook(hook.token, { ok: true });
 
     expect(queue).toHaveBeenCalledTimes(2);
     expect(queue.mock.calls[1][2]).not.toHaveProperty('experimental_hold');
     expect(consume).not.toHaveBeenCalled();
   });
 
-  it('keeps accepting an encryption key as the third argument', async () => {
+  it('wakes inline with an encryption key override too', async () => {
     const hook = hookFor(DEPLOYMENT);
     const { queue } = resumeWorld(hook);
     registerHandler();
@@ -528,6 +543,6 @@ describe('resumeHook(..., { experimental_inline })', () => {
 
     await resumeHook(hook.token, { ok: true }, key);
 
-    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+    expect(queue.mock.calls[0][2]).toMatchObject({ experimental_hold: true });
   });
 });

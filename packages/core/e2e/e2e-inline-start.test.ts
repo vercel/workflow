@@ -2,16 +2,16 @@ import { describe, expect, test } from 'vitest';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 
 /**
- * Vercel-specific suite for `start(..., { experimental_inline: true })` and
- * `resumeHook(..., { experimental_inline: true })`: the run's orchestrator
- * delivery runs in the API route that called them, through send-and-hold
+ * Vercel-specific suite for inline orchestrator delivery: on a World that can
+ * hold queue messages, `start()` and `resumeHook()` run the run's orchestrator
+ * delivery in the route that called them, through send-and-hold
  * (`QueueOptions.experimental_hold`), instead of a queue hop to the flow
  * route.
  *
  * The workbench fixtures (workbench/nextjs-turbopack/workflows/inline_start.ts)
- * have every step report the process it ran in. The routes
- * (app/api/inline-start/*) import `workflow/next/inline`, so their process
- * can run the workflow; a step that reports the route's process ran inline.
+ * have every step report the process it ran in. `withWorkflow()` makes the
+ * flow entry loadable from every route (app/api/inline-start/*), so a step
+ * that reports the route's process ran inline.
  *
  * Runs are read back through the deployment (app/api/inline-start/run/[runId]),
  * so the suite needs only `DEPLOYMENT_URL` and a protection bypass.
@@ -51,7 +51,7 @@ interface StepReport {
 
 interface StartAnswer {
   runId: string;
-  inline: boolean;
+  queued: boolean;
   startCalledAt: number;
   startReturnedAt: number;
   instance: string;
@@ -155,7 +155,7 @@ interface TimingValue {
 
 async function startTiming(inline: boolean, specVersion?: number) {
   const answer = await post<StartAnswer>('/api/inline-start', {
-    inline,
+    queued: !inline,
     ...(specVersion !== undefined && { specVersion }),
   });
   const read = await readRun<TimingValue>(answer.runId);
@@ -169,13 +169,16 @@ function median(values: number[]): number {
 }
 
 describe
-  .skipIf(!process.env.WORKFLOW_VERCEL_ENV)
-  .concurrent('inline start (experimental_inline)', () => {
+  // Sequential: the queued baseline sets the process-wide kill switch for
+  // the duration of its `start()` call.
+  .skipIf(!process.env.WORKFLOW_VERCEL_ENV)(
+  'inline orchestrator delivery',
+  () => {
     test.each([
       ['the default spec', undefined],
       ['spec 9 (single orchestrator)', 9],
     ])(
-      'an inline start with %s runs in the calling route, once',
+      'a start with %s runs in the calling route, once',
       { timeout: 240_000 },
       async (_label, specVersion) => {
         const { answer, read, value } = await startTiming(true, specVersion);
@@ -194,7 +197,7 @@ describe
     );
 
     test(
-      'without the option the same route queues the run',
+      'with the kill switch the same route queues the run',
       { timeout: 120_000 },
       async () => {
         const { answer, read, value } = await startTiming(false);
@@ -204,12 +207,13 @@ describe
     );
 
     test(
-      'an inline resumeHook wakes the run in the calling route, once',
+      'resumeHook wakes the run in the calling route, once',
       { timeout: 240_000 },
       async () => {
         const token = `inline-resume-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        // Queued, so the start's own delivery is not what the resume races.
         const started = await post<StartAnswer>('/api/inline-start', {
-          inline: false,
+          queued: true,
           hookToken: token,
         });
         // Resume once the hook exists (the run has suspended on it); until
@@ -290,4 +294,5 @@ describe
         }
       }
     );
-  });
+  }
+);

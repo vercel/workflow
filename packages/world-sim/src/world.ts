@@ -84,6 +84,14 @@ const MAX_HISTORY = 20_000;
 export interface SimWorldOptions {
   clock?: VirtualClock;
   deploymentId?: string;
+  /**
+   * Declare `capabilities.experimental_queueHold`, as world-vercel does: then
+   * `start()` and `resumeHook()` hold their orchestrator message and run it
+   * in the sending call (inline delivery) instead of leaving it to the
+   * delivery loop. Off by default, so a scenario's deliveries come from the
+   * loop unless it asks for this.
+   */
+  queueHold?: boolean;
 }
 
 export interface SimWorld extends World {
@@ -612,8 +620,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       maxConcurrency: true,
       inBandFence: true,
       // `queue()` holds a message for its sender (`experimental_hold`), as
-      // Vercel Queues' send-and-hold does (see queue.ts).
-      experimental_queueHold: true,
+      // Vercel Queues' send-and-hold does (see queue.ts), when asked to.
+      ...(options.queueHold && { experimental_queueHold: true }),
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()

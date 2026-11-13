@@ -43,6 +43,9 @@ import { getWorkflowQueueName } from './helpers.js';
 import { publishHookWakeWithRetry } from './hook-wake.js';
 import {
   decideInline,
+  inlineGate,
+  loadInlineEntry,
+  recordInlineGate,
   sendOrchestratorMessage,
 } from './inline-orchestrator.js';
 import { HookInvocationResultSchema } from './invocations.js';
@@ -432,14 +435,8 @@ export type ResumedHook = Hook & {
 export async function resumeHook<T = any>(
   tokenOrHook: string | ResumableHook,
   payload: T,
-  encryptionKeyOrOptions?: PayloadKey | ResumeHookOptions
+  encryptionKeyOverride?: PayloadKey
 ): Promise<ResumedHook> {
-  const options = isResumeHookOptions(encryptionKeyOrOptions)
-    ? encryptionKeyOrOptions
-    : undefined;
-  const encryptionKeyOverride = options
-    ? undefined
-    : (encryptionKeyOrOptions as PayloadKey | undefined);
   // Caller-supplied hooks never attest live capabilities. Resolved handles
   // instead require an endpoint whose write contract enforces deduplication;
   // older servers and the kill switch reject that route before writing.
@@ -451,38 +448,7 @@ export async function resumeHook<T = any>(
     payload,
     encryptionKeyOverride,
     false,
-    Date.now(),
-    false,
-    undefined,
-    options?.experimental_inline === true
-  );
-}
-
-/** Options for {@link resumeHook}. */
-export interface ResumeHookOptions {
-  /**
-   * **Experimental.** Run the woken orchestrator delivery in this process, in
-   * the request that called `resumeHook()`, instead of waiting for the queue
-   * to deliver the wake to the flow route. The same conditions as
-   * `start(..., { experimental_inline: true })` apply (a World that supports
-   * send-and-hold, the flow entry loaded in this process, a run of this
-   * deployment in this region); in every other case the wake is queued as
-   * usual. A run of another deployment is never woken inline. On a single-
-   * orchestrator run (spec 9) whose orchestrator is already running, the
-   * queue coalesces the wake into that delivery instead.
-   *
-   * @experimental
-   */
-  experimental_inline?: boolean;
-}
-
-function isResumeHookOptions(value: unknown): value is ResumeHookOptions {
-  // A PayloadKey is a CryptoKey, a SealTarget or RunPayloadKeys, none of
-  // which has this field.
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'experimental_inline' in value
+    Date.now()
   );
 }
 
@@ -562,8 +528,7 @@ async function resumeHookImpl<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   webhookOnly = false,
-  worldOverride?: World,
-  inline = false
+  worldOverride?: World
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -617,7 +582,7 @@ async function resumeHookImpl<T = any>(
       const routeState: ResumeRouteState = {
         resolvedFallback: false,
         // The inline handler drives the process's configured World.
-        inline: inline && worldOverride === undefined,
+        inline: worldOverride === undefined,
       };
       const assertResendable = (cause: unknown): void => {
         if (
@@ -768,7 +733,10 @@ async function resumeHookImpl<T = any>(
 /** State one logical resume carries across its attempts. */
 interface ResumeRouteState {
   resolvedFallback: boolean;
-  /** `experimental_inline` was requested for this resume. */
+  /**
+   * The wake may run inline here (see `inline-orchestrator.ts`): the resume
+   * drives the process's configured World.
+   */
   inline: boolean;
 }
 
@@ -1272,9 +1240,12 @@ async function resumeHookAttempt<T = any>(
         () => publishWake(),
         world.isDeploymentUnavailableError?.bind(world)
       );
-    if (routeState.inline) {
-      // `experimental_inline`: one held attempt, then (if it throws) the
-      // usual publish with its retries.
+    const inlineGateReason = routeState.inline ? inlineGate(world) : 'disabled';
+    if (routeState.inline) recordInlineGate(span, inlineGateReason);
+    if (inlineGateReason === undefined) {
+      // Inline delivery: one held attempt, then (if it throws) the usual
+      // publish with its retries.
+      await loadInlineEntry();
       await sendOrchestratorMessage({
         decision: decideInline({
           world,

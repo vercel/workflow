@@ -1,7 +1,7 @@
 import { createHook, getStepMetadata } from 'workflow';
 
 /**
- * Fixtures for `start(..., { experimental_inline: true })` (see
+ * Fixtures for inline orchestrator delivery from `start()` / `resumeHook()` (see
  * `app/api/inline-start/route.ts` and packages/core/e2e/e2e-inline-start.test.ts).
  *
  * Every step reports the process it ran in (`processInstanceId`): an inline

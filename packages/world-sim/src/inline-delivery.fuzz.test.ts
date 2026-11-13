@@ -1,7 +1,8 @@
 /**
  * Property tests for running a run's orchestrator delivery in the process
- * that sent it (`start()` / `resumeHook()` with `experimental_inline`), through
- * a held send (`QueueOptions.experimental_hold`).
+ * that sent it, which `start()` and `resumeHook()` do by default on a World
+ * that can hold queue messages, through a held send
+ * (`QueueOptions.experimental_hold`).
  *
  * Each case is a seed. It picks a workflow, a spec version, and one fault to
  * inject at a random world call the held delivery makes:
@@ -123,6 +124,8 @@ interface Case {
   /** The fault lands on the held delivery's `ordinal`-th matching call. */
   ordinal: number;
   phase: 'before' | 'after';
+  /** `WORKFLOW_INLINE_DELIVERY=0`: everything is queued, as before. */
+  killSwitch?: boolean;
 }
 
 function caseFor(seed: number): Case {
@@ -141,6 +144,7 @@ function caseFor(seed: number): Case {
     ),
     ordinal: 1 + Math.floor(next() * 12),
     phase: pick(['before', 'after'] as const),
+    killSwitch: next() < 0.1,
   };
 }
 
@@ -173,7 +177,7 @@ function faultPoint(
   return true;
 }
 
-/** Delivers the hook once it exists (inline, see `inlineResume`). */
+/** Delivers the hook once it exists (inline, see `queueHold`). */
 async function deliverHookWhenCreated(sim: Parameters<ScenarioScript>[0]) {
   if (sim.world.hooks(sim.runId).length === 0) {
     await sim.until({ eventType: 'hook_created' }, 'hook');
@@ -274,14 +278,18 @@ function scenarioFor(c: Case, script: ScenarioScript) {
       name: `inline ${c.workflow} spec ${c.specVersion} ${c.fault}@${c.ordinal}/${c.phase}`,
       workflow: { workflowId: wf.name },
       input: [...wf.input],
-      startOptions: { experimental_inline: true, specVersion: c.specVersion },
-      inlineResume: true,
+      // A World that can hold: start() and resumeHook() inline by default.
+      queueHold: true,
+      startOptions: { specVersion: c.specVersion },
       script,
       expect: { status: 'completed', output: wf.output },
       limits: { maxWallMs: 20_000 },
       // No tail poll: the held delivery sees a redelivery's writes only on
       // its own next write, which is the overlap the fence must handle.
-      env: { WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS: '0' },
+      env: {
+        WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS: '0',
+        ...(c.killSwitch && { WORKFLOW_INLINE_DELIVERY: '0' }),
+      },
     },
     { handler: workflowEntrypoint(wf.code) }
   );
@@ -323,7 +331,7 @@ const SEEDS = Number(process.env.WORLD_SIM_INLINE_FUZZ_SEEDS ?? 60);
 /** Replay one seed (`WORLD_SIM_INLINE_FUZZ_SEED=17`), printing its trace. */
 const ONLY_SEED = process.env.WORLD_SIM_INLINE_FUZZ_SEED;
 
-describe('inline orchestrator delivery (experimental_inline) under faults', () => {
+describe('inline orchestrator delivery under faults', () => {
   it('a held start runs in the sender with no queue delivery', async () => {
     const c: Case = {
       seed: 0,

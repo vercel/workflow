@@ -1,7 +1,3 @@
-// Bundles the app's flow entry (workflows, steps and the orchestrator handler)
-// into this route, so `experimental_inline` can run a run's first delivery
-// here. Compare with ../inline-start-queued, which does not import it.
-import 'workflow/next/inline';
 import { start } from 'workflow/api';
 import {
   inlineHookWorkflow,
@@ -12,36 +8,41 @@ import {
 /**
  * Starts `inlineTimingWorkflow` (or `inlineHookWorkflow` with `hookToken`)
  * and answers with when `start()` was called and returned, and this
- * process's instance ID (see `processInstanceId`).
+ * process's instance ID (see `processInstanceId`). On a World that can hold
+ * queue messages, `start()` runs the run's first orchestrator delivery in
+ * this route.
  *
- * Body: `{ inline?: boolean, specVersion?: number, hookToken?: string }`.
- * `inline: false` starts the same way without the option, from the same
- * Function, for a queued baseline.
+ * Body: `{ queued?: boolean, specVersion?: number, hookToken?: string }`.
+ * `queued: true` starts with the kill switch (`WORKFLOW_INLINE_DELIVERY=0`)
+ * set for the call, from the same Function, for a queued baseline. The switch
+ * is process-wide, so the e2e suite makes those calls one at a time.
  */
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as {
-    inline?: boolean;
+    queued?: boolean;
     specVersion?: number;
     hookToken?: string;
   };
-  const inline = body.inline !== false;
+  const options =
+    body.specVersion !== undefined ? { specVersion: body.specVersion } : {};
   const startCalledAt = Date.now();
-  const run = body.hookToken
-    ? await start(inlineHookWorkflow, [body.hookToken], {
-        experimental_inline: inline,
-        ...(body.specVersion !== undefined && {
-          specVersion: body.specVersion,
-        }),
-      })
-    : await start(inlineTimingWorkflow, [startCalledAt], {
-        experimental_inline: inline,
-        ...(body.specVersion !== undefined && {
-          specVersion: body.specVersion,
-        }),
-      });
+  const previous = process.env.WORKFLOW_INLINE_DELIVERY;
+  if (body.queued) process.env.WORKFLOW_INLINE_DELIVERY = '0';
+  let runId: string;
+  try {
+    const run = body.hookToken
+      ? await start(inlineHookWorkflow, [body.hookToken], options)
+      : await start(inlineTimingWorkflow, [startCalledAt], options);
+    runId = run.runId;
+  } finally {
+    if (body.queued) {
+      if (previous === undefined) delete process.env.WORKFLOW_INLINE_DELIVERY;
+      else process.env.WORKFLOW_INLINE_DELIVERY = previous;
+    }
+  }
   return Response.json({
-    runId: run.runId,
-    inline,
+    runId,
+    queued: body.queued === true,
     startCalledAt,
     startReturnedAt: Date.now(),
     instance: processInstanceId(),

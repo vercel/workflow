@@ -43,10 +43,6 @@
     "./internal/builtins": "./dist/internal/builtins.js",
     "./internal/class-serialization": "./dist/internal/class-serialization.js",
     "./next": "./dist/next.cjs",
-    "./next/inline": {
-      "types": "./dist/next-inline.d.ts",
-      "default": "./dist/next-inline.js"
-    },
     "./nitro": "./dist/nitro.js",
     "./nuxt": "./dist/nuxt.js",
     "./sveltekit": "./dist/sveltekit.js",

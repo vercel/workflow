@@ -1071,8 +1071,10 @@ export interface HeldQueueMessage {
    * two differences from a pushed one. `invocationStartedAt` is when the
    * enclosing queue delivery began if `consume` runs inside one, else when
    * `consume` was called; coalesced re-runs share it either way. And
-   * `requestId` is set only inside a queue delivery, so do not hold an
-   * `invoke: true` request, which needs one.
+   * `requestId` is the enclosing queue delivery's, or else the ID of the
+   * request `consume` runs in when the World can tell (world-vercel: its
+   * `x-vercel-id`), so do not hold an `invoke: true` request, which needs a
+   * queue delivery's.
    *
    * Pass the same handler the queue consumer for this message's prefix uses.
    * Call it as soon as `queue()` returns (nothing renews the hold until it

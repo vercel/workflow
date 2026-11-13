@@ -24,7 +24,6 @@ export {
   getHookByToken,
   type Hook,
   type ResumedHook,
-  type ResumeHookOptions,
   resumeHook,
   resumeWebhook,
 } from '@workflow/core/runtime/resume-hook';

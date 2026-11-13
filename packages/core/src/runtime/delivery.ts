@@ -376,7 +376,7 @@ export function hasRecordedTerminalRunEvent(
  * 2. Tiered budget derived from `world.getRuntimeDeadline()`
  * 3. Default of 2 minutes
  *
- * An inline delivery (`experimental_inline`, run in the route that called
+ * An inline delivery (run in the route that called
  * `start()` / `resumeHook()`) is further capped by what is left of that
  * route's own deadline, which is usually shorter than the flow route's, so it
  * hands off to the queue before the route is stopped.

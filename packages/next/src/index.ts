@@ -469,6 +469,22 @@ function externalizeWsNativeAccelerators(webpackConfig: {
   }
 }
 
+/**
+ * The empty default `@workflow/core/inline-entry` module, as the app resolves
+ * it (through `workflow`, or `@workflow/core` directly), or `undefined` when it
+ * cannot be found: then no alias is set and `start()` keeps queueing.
+ */
+function resolveInlineEntryDefault(workingDir: string): string | undefined {
+  for (const paths of [[workingDir], undefined]) {
+    try {
+      return require.resolve(INLINE_ENTRY_SPECIFIER, paths && { paths });
+    } catch {
+      // Try the next location.
+    }
+  }
+  return undefined;
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -733,16 +749,27 @@ export function withWorkflow(
       };
     }
 
-    // `workflow/next/inline` (for `start(..., { experimental_inline: true })`)
-    // is the generated flow route, so a route that imports it bundles the
-    // app's workflows, steps and orchestrator handler. Nothing else changes
-    // for routes that do not import it, which resolve nothing new.
+    // `start()` and `resumeHook()` load `@workflow/core/inline-entry` to run
+    // a run's orchestrator delivery inline (on a World that can hold queue
+    // messages). For Node.js server code it is the generated flow route, so
+    // every server Function that can start or resume a run carries the app's
+    // workflows, steps and orchestrator handler; browser and edge code keep
+    // the empty default module, as does any process `start()` never asks.
     const inlineEntry = inlineEntryTarget(workingDir, experimentalRoutePrefix);
-    if (inlineEntry) {
+    // Turbopack resolves a relative alias against the project directory.
+    const toTurbopackPath = (path: string) =>
+      `./${relative(workingDir, path).replace(/\\/g, '/')}`;
+    const inlineEntryDefault = resolveInlineEntryDefault(workingDir);
+    if (inlineEntry && inlineEntryDefault) {
       nextConfig.turbopack.resolveAlias = {
         ...nextConfig.turbopack.resolveAlias,
-        // Turbopack resolves a relative alias against the project directory.
-        [INLINE_ENTRY_SPECIFIER]: `./${relative(workingDir, inlineEntry).replace(/\\/g, '/')}`,
+        [INLINE_ENTRY_SPECIFIER]: {
+          // Turbopack matches these keys as resolve conditions, the most
+          // specific first: browser and edge code keep the empty default.
+          browser: toTurbopackPath(inlineEntryDefault),
+          'edge-light': toTurbopackPath(inlineEntryDefault),
+          default: toTurbopackPath(inlineEntry),
+        },
       };
     }
 
@@ -765,7 +792,11 @@ export function withWorkflow(
 
       if (args[1]?.isServer) {
         externalizeWsNativeAccelerators(webpackConfig);
-        if (inlineEntry) {
+        if (
+          inlineEntry &&
+          inlineEntryDefault &&
+          args[1]?.nextRuntime !== 'edge'
+        ) {
           webpackConfig.resolve ??= {};
           webpackConfig.resolve.alias = {
             ...webpackConfig.resolve.alias,

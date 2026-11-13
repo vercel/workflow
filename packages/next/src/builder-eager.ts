@@ -992,7 +992,7 @@ export async function getNextBuilderEager(
     }
 
     private async findAppDirectory(): Promise<string> {
-      // Shared with `withWorkflow()`, which aliases `workflow/next/inline` to
+      // Shared with `withWorkflow()`, which aliases `@workflow/core/inline-entry` to
       // the flow route generated here.
       const { dir, create } = resolveWorkflowAppDirectory(
         this.config.workingDir

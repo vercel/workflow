@@ -426,7 +426,7 @@ export interface ScenarioApi {
   expireLease(options?: { redeliver?: boolean }): number;
   /**
    * Let the hold of the run's in-flight held delivery lapse (one a sender
-   * runs itself; see `ScenarioSpec.startOptions` and
+   * runs itself; see `ScenarioSpec.queueHold` and
    * `QueueOptions.experimental_hold`), as when the sender stops renewing it:
    * the message is pending again and the queue delivers it. Without `crash`
    * the sender's delivery keeps running alongside the redelivery, which the

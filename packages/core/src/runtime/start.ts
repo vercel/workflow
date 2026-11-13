@@ -93,6 +93,9 @@ import {
 } from './helpers.js';
 import {
   decideInline,
+  inlineGate,
+  loadInlineEntry,
+  recordInlineGate,
   sendOrchestratorMessage,
 } from './inline-orchestrator.js';
 import { Run } from './run.js';
@@ -591,36 +594,6 @@ export interface StartOptionsBase {
   experimental_hook?: StartHookOptions;
 
   /**
-   * **Experimental.** Run the new run's first orchestrator delivery in this
-   * process, in the request that called `start()`, instead of waiting for
-   * the queue to deliver it to the flow route. Cuts the queue hop off the
-   * time to the first step.
-   *
-   * Takes effect only when every one of these holds; otherwise the run is
-   * queued exactly as without the option:
-   *
-   * - the World supports send-and-hold (`capabilities.experimental_queueHold`,
-   *   `@workflow/world-vercel`) and the queue holds the message for this
-   *   process;
-   * - this process loaded the app's flow entry (with Next.js,
-   *   `import 'workflow/next/inline'` in the calling route), which bundles the
-   *   app's workflows and steps into the route;
-   * - the run targets this deployment, in this function's region, and the
-   *   call is not made from inside a step;
-   * - the start is not a dynamic workflow, an `experimental_hook` start, or
-   *   one with a custom `world`;
-   * - `WORKFLOW_EXPERIMENTAL_INLINE` is not `0` (the kill switch).
-   *
-   * The delivery runs under `waitUntil`, so `start()` still returns as soon
-   * as the run is accepted. It hands off to the queue before this route's own
-   * deadline (`maxDuration`), and if this invocation dies mid-run the queue
-   * redelivers the message to the flow route once its hold lapses.
-   *
-   * @experimental
-   */
-  experimental_inline?: boolean;
-
-  /**
    * The world to use for the workflow run creation,
    * by default the world is inferred from the environment variables.
    */
@@ -954,6 +927,15 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      // Loads the app's flow entry beside the rest of the start, so its
+      // orchestrator handler is registered by the time the message is sent
+      // (see `inline-orchestrator.ts`). Only where a send could be held.
+      const inlineGateReason = inlineGate(world);
+      const inlineEntryLoad =
+        !startHook && inlineGateReason === undefined
+          ? loadInlineEntry()
+          : undefined;
+      if (!startHook) recordInlineGate(span, inlineGateReason);
       // A World that mints single-orchestrator runs must provide their fence,
       // so a misconfigured one fails before anything is read or written.
       // `mintedSpecVersion()` returns 9 only to a World that passes
@@ -1643,7 +1625,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // registered their gated pipes in `ops` and pipe only once admitted.
         flushArgumentStreams();
         span?.setAttributes(Attribute.DeploymentId(deploymentId));
-        if (opts.experimental_inline === true) {
+        if (inlineGateReason === undefined) {
           // Admission decides the run after its message is published, which
           // a hold (consumed as soon as it is taken) cannot wait for.
           span?.setAttributes({
@@ -1828,14 +1810,15 @@ export async function start<TArgs extends unknown[], TResult>(
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
       //
-      // With `experimental_inline` the message is sent with a hold, and a
-      // held message starts running here as soon as the send returns, beside
-      // the `run_created` write: its first delivery's fast path creates the
-      // run from `runInput` if that write has not landed yet (resilient
-      // start), exactly as a queue delivery that outruns it does.
-      const enqueue =
-        opts.experimental_inline === true
-          ? sendOrchestratorMessage({
+      // On a World that can hold the message for this process, it is sent
+      // with a hold, and a held message starts running here as soon as the
+      // send returns, beside the `run_created` write: its first delivery's
+      // fast path creates the run from `runInput` if that write has not
+      // landed yet (resilient start), exactly as a queue delivery that
+      // outruns it does. Everywhere else the send is the plain queued one.
+      const enqueue = inlineEntryLoad
+        ? inlineEntryLoad.then(async () =>
+            sendOrchestratorMessage({
               decision: decideInline({
                 world,
                 queueName,
@@ -1859,7 +1842,8 @@ export async function start<TArgs extends unknown[], TResult>(
                     : undefined
                 ),
             })
-          : enqueueRun();
+          )
+        : enqueueRun();
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
         enqueue,

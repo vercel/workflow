@@ -275,27 +275,9 @@ export async function POST(request: Request) {
 
 See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how the workflow claims the token with `hook.getConflict()` and how concurrent starts converge on one active owner.
 
-### Resume in the calling route
+### Where the woken delivery runs
 
-<Callout type="warning">
-Experimental and off by default, with the same requirements as [`start(..., { experimental_inline: true })`](/docs/api-reference/workflow-api/start#run-the-first-delivery-in-the-calling-route).
-</Callout>
-
-Pass `{ experimental_inline: true }` as the third argument to run the woken orchestrator delivery in the route that called `resumeHook()`, instead of waiting for the queue to deliver the wake to the flow route. The route must import the flow entry (with Next.js, `import "workflow/next/inline"`):
-
-{/* @skip-typecheck: depends on a Next.js app's generated flow route */}
-```typescript title="app/api/approve/route.ts" lineNumbers
-import "workflow/next/inline";
-import { resumeHook } from "workflow/api";
-
-export async function POST(request: Request) {
-  const { token, approved } = await request.json();
-  await resumeHook(token, { approved }, { experimental_inline: true }); // [!code highlight]
-  return Response.json({ ok: true });
-}
-```
-
-The wake is queued as usual when the run belongs to another deployment or region, or when its orchestrator is already running in another delivery (on a single-orchestrator run, that delivery picks up the resume).
+On Vercel, `resumeHook()` runs the orchestrator delivery it wakes in the route that called it, instead of waiting for the queue to deliver the wake to the flow route, under the same conditions as [`start()`](/docs/api-reference/workflow-api/start#where-the-first-delivery-runs). The wake is queued as usual when the run belongs to another deployment or region, or when its orchestrator is already running in another delivery (on a single-orchestrator run, that delivery picks up the resume). `WORKFLOW_INLINE_DELIVERY=0` turns it off.
 
 ## Related functions
 
