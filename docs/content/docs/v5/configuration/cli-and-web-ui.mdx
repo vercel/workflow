@@ -2,7 +2,7 @@
 title: CLI and Web UI
 description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
 type: reference
-summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, and observability tooling.
+summary: Configure workflow inspect, workflow start, workflow cancel, workflow web, workflow health, and observability tooling.
 related:
   - /docs/observability
   - /docs/configuration/worlds
@@ -183,6 +183,22 @@ per flag.
 - Command: `workflow inspect`
 - Default: disabled
 - Decrypts encrypted values. Triggers an audit-logged key retrieval.
+
+## Start runs
+
+`workflow start <workflow-name> [args...]` starts a new run and parses each argument as JSON. Given a run ID instead of a workflow name, it starts a new run of that run's workflow. A workflow that has never run can be started too.
+
+### `--deployment`
+
+- Command: `workflow start`
+- Default: `latest` for a workflow name, or the source run's deployment for a run ID
+- Deployment ID to start the run on, or `latest` for the newest ready deployment in `--env`. `latest` resolves the same way as [`start(..., { deploymentId: "latest" })`](/docs/api-reference/workflow-api/start#using-deploymentid-latest). Worlds without atomic deployments, such as local and Postgres, use the current deployment.
+
+### `--branch`
+
+- Command: `workflow start`
+- Default: the current git branch
+- With `--env preview`, the git branch whose newest ready deployment `latest` resolves to. The CLI prints the branch it inferred.
 
 ## Bulk cancel
 
