@@ -151,7 +151,7 @@ The half that always applies is the reader's: `noop` is not user-creatable, neve
 
 ### Spec 8 and hook token takeover
 
-Spec 8 is also a reader contract. A run stamped 8 is one whose runtime understands an *involuntary* hook disposal: a `hook_disposed` carrying `forceClaimedBy`, written into its log by another run's `createHook({ token, experimental_force: true })`. Its awaiters reject with `HookForceClaimedError` instead of hanging.
+Spec 8 is also a reader contract. A run stamped 8 is one whose runtime understands an *involuntary* hook disposal: a `hook_disposed` carrying `forceClaimedBy`, written into its log by another run's `createHook({ token, force: true })`. Its awaiters reject with `HookForceClaimedError` instead of hanging.
 
 **Declaring 8 costs a World nothing it has to build.** Takeover itself is behind `capabilities.hookForceClaim`, which fails closed: a World that does not advertise it never writes `forceClaimedBy`, and the runtime fails a forced `createHook()` at registration. Say so in the report rather than leaving the capability unmentioned.
 

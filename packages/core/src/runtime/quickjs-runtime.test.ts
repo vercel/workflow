@@ -1261,7 +1261,7 @@ describe('hook_conflict on a forced hook', () => {
     async function workflow() {
       var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({
         token: "shared",
-        experimental_force: true,
+        force: true,
       });
       var awaited;
       try {
@@ -1339,7 +1339,7 @@ describe('hook_conflict on a forced hook', () => {
     // The run holding the token predates involuntary disposal, so the World
     // would not take it: the caller gets
     // the everyday conflict and the owning run's handle, exactly as without
-    // `experimental_force`.
+    // `force`.
     const out = await runWithConflict({
       conflictingRunId: 'wrun_legacy_victim',
       forceRefusedReason,
@@ -1350,6 +1350,86 @@ describe('hook_conflict on a forced hook', () => {
       conflictingRunId: 'wrun_legacy_victim',
     });
     expect(out.conflict).toEqual({ name: 'HookConflictError', fatal: false });
+  });
+});
+
+describe('createHook force options', () => {
+  // Runs createHook with the given options literal and reports the pending
+  // hook op's `force`, or the message createHook threw. Mirrors the node:vm
+  // tests in workflow/hook.test.ts.
+  async function createWith(optionsLiteral: string) {
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        async function workflow() {
+          try {
+            var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")](${optionsLiteral});
+            await hook.getConflict();
+            return "registered";
+          } catch (error) {
+            return { message: error.message };
+          }
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      worldCapabilities: { hookForceClaim: true },
+      events: [],
+    });
+    if (result.completed) {
+      return { thrown: unwrapResult(result.completed.result) };
+    }
+    const hookOp = result.suspended!.pendingOperations.find(
+      (o) => o.type === 'hook'
+    ) as { force?: boolean } | undefined;
+    return { force: hookOp?.force };
+  }
+
+  it.each([
+    ['force', '{ token: "shared", force: true }'],
+    [
+      'the deprecated experimental_force alias',
+      '{ token: "shared", experimental_force: true }',
+    ],
+    [
+      'both names agreeing',
+      '{ token: "shared", force: true, experimental_force: true }',
+    ],
+  ])('forces with %s', async (_name, options) => {
+    expect(await createWith(options)).toEqual({ force: true });
+  });
+
+  it('does not force when neither is set', async () => {
+    expect(await createWith('{ token: "shared" }')).toEqual({ force: false });
+  });
+
+  it('applies force validation to the alias', async () => {
+    expect(await createWith('{ experimental_force: true }')).toEqual({
+      thrown: {
+        message:
+          '`createHook()` was called with `force: true` but no `token`. Force-claiming only applies to an explicit token another run may hold.',
+      },
+    });
+  });
+
+  it.each([
+    [
+      '{ token: "shared", force: true, experimental_force: false }',
+      'true',
+      'false',
+    ],
+    [
+      '{ token: "shared", force: false, experimental_force: true }',
+      'false',
+      'true',
+    ],
+  ])('throws when both are set and disagree (%s)', async (options, force, legacy) => {
+    expect(await createWith(options)).toEqual({
+      thrown: {
+        message: `\`createHook()\` was called with both \`force: ${force}\` and \`experimental_force: ${legacy}\`. \`experimental_force\` is a deprecated alias for \`force\`; pass only \`force\`.`,
+      },
+    });
   });
 });
 

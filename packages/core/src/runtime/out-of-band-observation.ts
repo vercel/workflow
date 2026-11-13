@@ -17,7 +17,7 @@ import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
  * | Writer | Event | Path-changing when |
  * |---|---|---|
  * | webhook / `resumeHook()` | `hook_received` | workflow code is waiting on that hook's next payload |
- * | another run's `createHook({ experimental_force })` | `hook_disposed` | same: it rejects waiting payload awaiters, and later awaits |
+ * | another run's `createHook({ force })` | `hook_disposed` | same: it rejects waiting payload awaiters, and later awaits |
  * | a step's `AbortController.abort()` | `hook_received` on a system hook | always: `signal.aborted` and abort listeners are read synchronously, with no `then` to observe |
  * | a child run that finished (`child-run-completion.ts`) | `hook_received` on the parent's completion hook | like a user hook: while the parent's dispatcher is waiting on it |
  * | wait timer | `wait_completed` | the wait is due (see below) |

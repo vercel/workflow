@@ -1173,7 +1173,7 @@ export async function hookSupersedeOwnerWorkflow(token: string) {
 }
 
 //////////////////////////////////////////////////////////
-// createHook({ experimental_force: true })
+// createHook({ force: true })
 
 /**
  * Owns `token` until another run takes it. Awaits one payload; when the token
@@ -1204,6 +1204,9 @@ export async function hookForceClaimVictimWorkflow(token: string) {
 /**
  * Takes `token` over and awaits one payload, but — like the victim — reports
  * a later takeover instead of failing. The middle link of a chain.
+ *
+ * Deliberately uses the deprecated `experimental_force` alias, so the e2e
+ * suite keeps covering it end to end.
  */
 export async function hookForceClaimVictimWorkflowForced(token: string) {
   'use workflow';
@@ -1236,7 +1239,7 @@ export async function hookForceClaimClaimerWorkflow(token: string) {
 
   using hook = createHook<{ message: string }>({
     token,
-    experimental_force: true,
+    force: true,
   });
   const conflict = await hook.getConflict();
   const payload = await hook;
@@ -1279,7 +1282,7 @@ export async function hookForceClaimCollectorWorkflow(
 ) {
   'use workflow';
 
-  using hook = createHook<{ n: number }>({ token, experimental_force: true });
+  using hook = createHook<{ n: number }>({ token, force: true });
   const received: number[] = [];
   for await (const payload of hook) {
     received.push(payload.n);
@@ -1322,7 +1325,7 @@ export async function hookForceClaimOwnHookWorkflow(token: string) {
   );
   using second = createHook<{ message: string }>({
     token,
-    experimental_force: true,
+    force: true,
   });
   const payload = await second;
   const firstResult = await firstOutcome;
@@ -1341,7 +1344,7 @@ export async function hookForceClaimTolerantClaimerWorkflow(token: string) {
 
   using hook = createHook<{ message: string }>({
     token,
-    experimental_force: true,
+    force: true,
   });
   try {
     const payload = await hook;

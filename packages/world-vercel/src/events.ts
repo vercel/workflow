@@ -165,7 +165,7 @@ interface SplitEventData {
     hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
-    /** `createHook({ experimental_force })`: take the token over if held. */
+    /** `createHook({ force })`: take the token over if held. */
     hookForce?: boolean;
     errorCode?: string;
     cancelReason?: string;

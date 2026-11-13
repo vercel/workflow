@@ -811,7 +811,7 @@ export interface WorldCapabilities {
   resolvedHookResume?: boolean;
 
   /**
-   * Supports `createHook({ experimental_force: true })`: a `hook_created`
+   * Supports `createHook({ force: true })`: a `hook_created`
    * carrying `eventData.force` whose token is held by another live run takes
    * the token over instead of returning `hook_conflict`. The World must:
    *
@@ -831,7 +831,7 @@ export interface WorldCapabilities {
    *
    * A World that
    * cannot give these guarantees must leave this unset; the runtime then
-   * rejects `experimental_force` at `createHook()` time.
+   * rejects `force` at `createHook()` time.
    */
   hookForceClaim?: boolean;
 

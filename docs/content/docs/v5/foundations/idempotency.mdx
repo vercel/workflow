@@ -152,7 +152,7 @@ export async function processOrder(orderId: string, note: string) {
 - `createHook({ token })` with the run's start token returns a handle bound to the start Hook. It doesn't register a new Hook, so it adds no step, and `await hook.getConflict()` resolves `null`.
 - Payloads resumed before the workflow opens the Hook are kept, and are delivered in order once it does.
 - If the workflow never opens it, the token was only an idempotency key. The run completes normally, and unread payloads are simply left unread.
-- `metadata` and `experimental_minRetention` belong on `start({ experimental_hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `experimental_force` to this `createHook()` throws.
+- `metadata` and `experimental_minRetention` belong on `start({ experimental_hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `force` to this `createHook()` throws.
 
 ### Keep the token after the run ends
 
@@ -374,7 +374,7 @@ export async function processOrder(orderId: string, confirmed: boolean) {
 }
 ```
 
-**Supersede the owner.** Create the Hook with [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) so the newest run takes the token over from the active owner. This also works for a finished run holding the token under `experimental_minRetention`:
+**Supersede the owner.** Create the Hook with [`force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) so the newest run takes the token over from the active owner. This also works for a finished run holding the token under `experimental_minRetention`:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -387,7 +387,7 @@ export async function processOrderNewestWins(orderId: string) {
 
   using request = createHook<OrderRequest>({
     token: `order:${orderId}`,
-    experimental_force: true, // [!code highlight]
+    force: true, // [!code highlight]
   });
 
   // This run now owns the token.
@@ -413,7 +413,7 @@ export async function processOrderNewestWins(orderId: string) {
 
   using request = createHook<OrderRequest>({
     token: `order:${orderId}`,
-    experimental_force: true,
+    force: true,
   });
 
   try {
@@ -432,7 +432,7 @@ export async function processOrderNewestWins(orderId: string) {
 }
 ```
 
-A run started at a Workflow spec version below 8, including runs started by older SDK releases, can't be taken from. In that case the forced Hook rejects with `HookConflictError`, as it would without `experimental_force`.
+A run started at a Workflow spec version below 8, including runs started by older SDK releases, can't be taken from. In that case the forced Hook rejects with `HookConflictError`, as it would without `force`.
 
 [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) before `start()` is only an advisory pre-check in this pattern: the lookup and `start()` are not atomic, so the workflow should still check `hook.getConflict()`.
 

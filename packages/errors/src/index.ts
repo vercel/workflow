@@ -896,7 +896,7 @@ export class HookConflictError extends WorkflowError {
 
 /**
  * Thrown from `await hook` (or the hook's async iterator) when another run
- * took this hook's token with `createHook({ token, experimental_force: true })`.
+ * took this hook's token with `createHook({ token, force: true })`.
  *
  * The hook is disposed: payloads it received before the takeover were still
  * delivered, everything after goes to the new owner, and this run's log holds

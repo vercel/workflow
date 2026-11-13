@@ -236,7 +236,7 @@ async function allocateEventId(
 
 /**
  * The refusal for a `hook_received` to a hook that no longer exists because
- * another run took its token over (`experimental_force`): a redirect, so
+ * another run took its token over (`force`): a redirect, so
  * `resumeHook()` follows the token instead of dropping the payload. The
  * evidence is the hook's own `hook_disposed{forceClaimedBy}` row, which the
  * takeover writes in the hook's run; that the token now belongs to a hook
@@ -1965,7 +1965,7 @@ function createUnfencedEventsStorage(
 
         if (!existingHook) {
           // A delivery that resolved a hook before another run took its token
-          // over (`experimental_force`) is a redirect, not a drop, whether it
+          // over (`force`) is a redirect, not a drop, whether it
           // arrives after the takeover committed (here) or races it (the
           // locked re-check in the `hook_received` branch below).
           if (data.eventType === 'hook_received') {
@@ -2960,7 +2960,7 @@ function createUnfencedEventsStorage(
           } else if (eventData.force !== true) {
             forceRefusedReason = null;
           } else {
-            // `createHook({ experimental_force: true })`: take the token over.
+            // `createHook({ force: true })`: take the token over.
             // One transaction, the same order as the world-vercel backend: the
             // victim's `hook_disposed{forceClaimedBy}` row first, then its
             // hook row deleted, then ours inserted with `claimedFrom`. The
@@ -3330,7 +3330,7 @@ function createUnfencedEventsStorage(
               .for('update')
               .limit(1);
             if (!liveHook) {
-              // Gone. If THIS hook was taken over (`experimental_force`), the
+              // Gone. If THIS hook was taken over (`force`), the
               // delivery is a redirect, not a drop; see `forceClaimRefusal`.
               const refusal = await forceClaimRefusal(
                 tx,

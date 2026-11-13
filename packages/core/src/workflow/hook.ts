@@ -74,7 +74,40 @@ function createConflictingRun(
  * options only a write could apply. Shared with the QuickJS guest's message.
  */
 export function startHookOptionsError(rejected: readonly string[]): string {
-  return `\`createHook()\` was called with this run's start token and ${rejected.map((name) => `\`${name}\``).join(', ')}, but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.`;
+  return `\`createHook()\` was called with this run's start token and ${rejected.map((name) => `\`${name}\``).join(', ')}, but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`force\` are not available for a start Hook.`;
+}
+
+/**
+ * The error `createHook()` throws when `force` and its deprecated alias
+ * `experimental_force` are both set to different values. Shared with the
+ * QuickJS guest's message.
+ */
+export function conflictingForceOptionsError(
+  force: unknown,
+  experimentalForce: unknown
+): string {
+  return `\`createHook()\` was called with both \`force: ${String(force)}\` and \`experimental_force: ${String(experimentalForce)}\`. \`experimental_force\` is a deprecated alias for \`force\`; pass only \`force\`.`;
+}
+
+/**
+ * Whether `createHook()` options ask to force-claim the token. `force` is the
+ * stable name; `experimental_force` is its deprecated alias. Either set to
+ * `true` forces; both set to different values is a mistake worth surfacing.
+ */
+export function resolveHookForce(
+  options: Pick<HookOptions, 'force' | 'experimental_force'>
+): boolean {
+  const { force, experimental_force } = options;
+  if (
+    force !== undefined &&
+    force !== null &&
+    experimental_force !== undefined &&
+    experimental_force !== null &&
+    force !== experimental_force
+  ) {
+    throw new Error(conflictingForceOptionsError(force, experimental_force));
+  }
+  return force === true || experimental_force === true;
 }
 
 /**
@@ -103,6 +136,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Hook instead of creating one: no `hook_created`, no suspension. Whether
     // this call binds depends only on the token and on earlier calls in the
     // body, so every replay decides it the same way.
+    const force = resolveHookForce(options);
+
     const startHook = ctx.startHook;
     const bindsStartHook =
       startHook !== undefined &&
@@ -118,7 +153,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         options.experimental_minRetention !== undefined &&
           'experimental_minRetention',
         options.isWebhook === true && 'isWebhook',
-        options.experimental_force === true && 'experimental_force',
+        // Name the option the caller actually passed.
+        force && (options.force === true ? 'force' : 'experimental_force'),
       ].filter((name): name is string => typeof name === 'string');
       if (rejected.length > 0) {
         throw new Error(startHookOptionsError(rejected));
@@ -143,23 +179,23 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       );
     }
 
-    if (options.experimental_force === true) {
+    if (force) {
       // A generated token is unique by construction and can never be held by
       // another run, so forcing one is a mistake worth surfacing rather than
       // a no-op worth allowing.
       if (options.token === undefined || options.token === null) {
         throw new Error(
-          '`createHook()` was called with `experimental_force: true` but no `token`. Force-claiming only applies to an explicit token another run may hold.'
+          '`createHook()` was called with `force: true` but no `token`. Force-claiming only applies to an explicit token another run may hold.'
         );
       }
       if (options.isWebhook === true) {
         throw new Error(
-          'Webhook hooks do not support `experimental_force`. Use a non-webhook `createHook()` with an explicit token.'
+          'Webhook hooks do not support `force`. Use a non-webhook `createHook()` with an explicit token.'
         );
       }
       if (ctx.worldCapabilities?.hookForceClaim !== true) {
         throw new FatalError(
-          'The configured World does not support `experimental_force` for Hooks.'
+          'The configured World does not support `force` for Hooks.'
         );
       }
     }
@@ -208,7 +244,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             correlationId,
             token,
             tokenRetentionUntil,
-            ...(options.experimental_force === true && { force: true }),
+            ...(force && { force: true }),
             metadata: options.metadata,
             isWebhook,
             ...(isSystem && { isSystem: true }),
@@ -264,7 +300,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
     let conflictErrorRef: Error | null = null;
-    // Set when another run took this hook's token (`experimental_force`):
+    // Set when another run took this hook's token (`force`):
     // the log's `hook_disposed` names it. Payloads received before the
     // takeover are still delivered; every await after them rejects with this.
     let forceClaimedErrorRef: HookForceClaimedError | null = null;
@@ -405,11 +441,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // World does not implement forcing at all (an older server, or its
         // kill switch), which is a misconfiguration worth failing loudly on.
         const forced =
-          options.experimental_force === true &&
-          conflictEvent.eventData.forceRefusedReason === undefined;
+          force && conflictEvent.eventData.forceRefusedReason === undefined;
         const conflictError: Error = forced
           ? new FatalError(
-              `createHook({ experimental_force: true }) for token "${conflictEvent.eventData.token}" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens${conflictEvent.eventData.conflictingRunId ? ` (run "${conflictEvent.eventData.conflictingRunId}" holds it)` : ''}.`
+              `createHook({ force: true }) for token "${conflictEvent.eventData.token}" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens${conflictEvent.eventData.conflictingRunId ? ` (run "${conflictEvent.eventData.conflictingRunId}" holds it)` : ''}.`
             )
           : new HookConflictError(
               conflictEvent.eventData.token,
@@ -651,7 +686,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const claimedBy = event.eventData?.forceClaimedBy;
         if (claimedBy) {
           // Not this run's disposal: another run took the token
-          // (`experimental_force`). Deliveries that landed before this row are
+          // (`force`). Deliveries that landed before this row are
           // already buffered or delivered and stay valid — the takeover is
           // ordered after them — so only the awaiters that would otherwise
           // wait for a payload that now goes elsewhere are rejected, here and

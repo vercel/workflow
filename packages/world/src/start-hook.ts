@@ -49,7 +49,7 @@ import { SerializedDataSchema } from './serialization.js';
  *   with a retention set), and the run's end frees it unless
  *   `tokenRetentionUntil` is still in the future, in which case the Hook stays
  *   readable, refuses deliveries, and holds the token until then. A forced
- *   `createHook({ experimental_force })` takes it like any Hook, even before
+ *   `createHook({ force })` takes it like any Hook, even before
  *   the workflow first opens it: the owner's log gets `hook_disposed` with
  *   `forceClaimedBy` for `startHookId(runId)`.
  * - **Atomicity.** A rejected candidate never creates a run, and neither does

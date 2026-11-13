@@ -363,6 +363,7 @@ describe('createHook with the start token (node:vm)', () => {
       `metadata: { a: 1 }`,
       `experimental_minRetention: '1h'`,
       `isWebhook: true`,
+      `force: true`,
       `experimental_force: true`,
     ]) {
       const result = await replay(
@@ -376,6 +377,8 @@ describe('createHook with the start token (node:vm)', () => {
       );
       const message = await output(result);
       expect(message).toMatch(/start token/);
+      // Names the option the caller actually passed.
+      expect(message).toContain(`\`${option.split(':')[0]}\``);
       expect(message).toMatch(
         /start\(workflow, args, \{ experimental_hook \}\)/
       );

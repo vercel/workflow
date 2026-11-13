@@ -354,7 +354,7 @@ export const hooks = schema.table(
     // so this backend leaves it null; reads fall back to runs.get.
     resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
     // Set when this hook took its token from another run
-    // (`createHook({ experimental_force })`); see the hook_created branch of
+    // (`createHook({ force })`); see the hook_created branch of
     // storage.ts. Carries the victim run's queue coordinates so the claimer's
     // runtime can wake it.
     claimedFrom: Cbor<NonNullable<Hook['claimedFrom']>>()('claimed_from'),

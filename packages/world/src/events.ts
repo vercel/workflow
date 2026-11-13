@@ -405,7 +405,7 @@ export const HookCreatedEventSchema = BaseEventSchema.extend({
     isWebhook: z.boolean().optional(),
     isSystem: z.boolean().optional(),
     /**
-     * `createHook({ experimental_force: true })`: when the token belongs to
+     * `createHook({ force: true })`: when the token belongs to
      * another live run, the World takes it over — journaling
      * `hook_disposed{forceClaimedBy}` in that run's log and re-pointing the
      * token — instead of answering `hook_conflict`. Requires the
@@ -454,7 +454,7 @@ const HookDisposedEventSchema = BaseEventSchema.extend({
       token: z.string().optional(),
       /**
        * World-written: this disposal was not the run's own. Another run
-       * took the hook's token with `experimental_force`, and this names
+       * took the hook's token with `force`, and this names
        * it. The hook consumer rejects the hook's awaiters with
        * `HookForceClaimedError` when it reads this row.
        */

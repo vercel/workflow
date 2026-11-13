@@ -98,7 +98,7 @@ export function createWorld(config?: APIConfig): World {
       // one, which the runtime requires.
       inBandFence: true,
       // The server implements the takeover protocol behind
-      // `createHook({ experimental_force: true })`. Static rather than
+      // `createHook({ force: true })`. Static rather than
       // attested per lookup,
       // because the decision is made at `createHook()` time, before any
       // lookup; against a server that has it switched off (or predates it)

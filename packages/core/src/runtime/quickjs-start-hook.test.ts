@@ -245,6 +245,7 @@ describe('createHook with the start token (QuickJS)', () => {
       `metadata: { a: 1 }`,
       `experimental_minRetention: "1h"`,
       `isWebhook: true`,
+      `force: true`,
       `experimental_force: true`,
     ]) {
       seq = 0;
@@ -259,6 +260,8 @@ describe('createHook with the start token (QuickJS)', () => {
       );
       const message = output(result) as string;
       expect(message).toMatch(/start token/);
+      // Names the option the caller actually passed.
+      expect(message).toContain(`\`${option.split(':')[0]}\``);
       expect(message).toMatch(
         /start\(workflow, args, \{ experimental_hook \}\)/
       );

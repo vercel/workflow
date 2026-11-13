@@ -188,7 +188,7 @@ export interface HookOptions {
   experimental_minRetention?: StringValue | Date | number;
 
   /**
-   * **Experimental.** Take the token over if another run currently holds it.
+   * Take the token over if another run currently holds it.
    *
    * Without this, a `token` that another active run already registered makes
    * the hook reject with `HookConflictError`. With it, this run always ends
@@ -211,7 +211,7 @@ export interface HookOptions {
    *
    * Requires an explicit `token` (a generated token can never conflict) and
    * is not available on `createWebhook()`. `createHook()` throws if the
-   * configured World does not support this experimental option.
+   * configured World does not support it.
    *
    * @example
    *
@@ -219,9 +219,16 @@ export interface HookOptions {
    * // Whichever run for this channel starts most recently owns its hook.
    * const hook = createHook<SlackMessage>({
    *   token: `slack_webhook:${channelId}`,
-   *   experimental_force: true,
+   *   force: true,
    * });
    * ```
+   */
+  force?: boolean;
+
+  /**
+   * @deprecated Use {@link HookOptions.force | `force`} instead.
+   * `experimental_force` is a deprecated alias that behaves exactly like
+   * `force`. Passing both with different values throws.
    */
   experimental_force?: boolean;
 
@@ -262,7 +269,11 @@ export interface HookOptions {
 export interface WebhookOptions
   extends Omit<
     HookOptions,
-    'token' | 'isWebhook' | 'experimental_minRetention' | 'experimental_force'
+    | 'token'
+    | 'isWebhook'
+    | 'experimental_minRetention'
+    | 'force'
+    | 'experimental_force'
   > {
   /**
    * If set to a `Response` object, the webhook will automatically

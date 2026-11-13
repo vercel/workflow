@@ -3777,7 +3777,7 @@ describe.concurrent('e2e', () => {
     }
   );
 
-  describe('createHook({ experimental_force: true })', () => {
+  describe('createHook({ force: true })', () => {
     const hookEventsOf = (events: WorkflowEvent[], hookId?: string) =>
       events.filter(
         (e) =>

@@ -1,5 +1,5 @@
 /**
- * `createHook({ experimental_force: true })` on the local World, under the
+ * `createHook({ force: true })` on the local World, under the
  * race the design has to survive: several runs forcing the same token at
  * once. Whatever the interleaving, exactly one run ends up owning the token,
  * every other run's log carries the `hook_disposed{forceClaimedBy}` its

@@ -148,7 +148,7 @@ export interface PendingHook {
   /** Earliest token reuse time, as milliseconds since the Unix epoch. */
   tokenRetentionUntil?: number;
   isWebhook: boolean;
-  /** `createHook({ experimental_force })`: take the token over if held. */
+  /** `createHook({ force })`: take the token over if held. */
   force?: boolean;
   metadata?: unknown;
   hasCreatedEvent: boolean;
@@ -795,7 +795,23 @@ if (typeof Request === "undefined") {
 globalThis.__startHookOptionsError = function(rejected) {
   return "\`createHook()\` was called with this run's start token and " +
     rejected.map(function(name) { return "\`" + name + "\`"; }).join(", ") +
-    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
+    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`force\` are not available for a start Hook.";
+};
+// Whether createHook options ask to force-claim the token: force, or its
+// deprecated alias experimental_force. Both set to different values throws.
+// Same rule and text as resolveHookForce / conflictingForceOptionsError in
+// workflow/hook.ts.
+globalThis.__resolveHookForce = function(options) {
+  var force = options.force;
+  var experimentalForce = options.experimental_force;
+  if (force !== undefined && force !== null &&
+      experimentalForce !== undefined && experimentalForce !== null &&
+      force !== experimentalForce) {
+    throw new Error("\`createHook()\` was called with both \`force: " + String(force) +
+      "\` and \`experimental_force: " + String(experimentalForce) +
+      "\`. \`experimental_force\` is a deprecated alias for \`force\`; pass only \`force\`.");
+  }
+  return force === true || experimentalForce === true;
 };
 // Hook correlation ids are minted from the run's ULID sequence, skipping the
 // one id a run must never mint: its start Hook's (see __startHook). A redraw is
@@ -815,6 +831,7 @@ globalThis.__mintHookCorrelationId = function() {
 // The promise is resolved when a hook_received event arrives.
 globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
+  var force = globalThis.__resolveHookForce(options);
   // The run's start Hook (start(workflow, args, { experimental_hook })), injected by the
   // host as __startHook, was created by the run's admission: the first
   // createHook with its token opens it (no hook_created, no suspension).
@@ -827,7 +844,8 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     if (options.metadata !== undefined) rejectedStartHookOptions.push("metadata");
     if (options.experimental_minRetention !== undefined) rejectedStartHookOptions.push("experimental_minRetention");
     if (options.isWebhook === true) rejectedStartHookOptions.push("isWebhook");
-    if (options.experimental_force === true) rejectedStartHookOptions.push("experimental_force");
+    // Name the option the caller actually passed.
+    if (force) rejectedStartHookOptions.push(options.force === true ? "force" : "experimental_force");
     if (rejectedStartHookOptions.length > 0) {
       throw new Error(globalThis.__startHookOptionsError(rejectedStartHookOptions));
     }
@@ -841,15 +859,15 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     unsupportedRetentionError.fatal = true;
     throw unsupportedRetentionError;
   }
-  if (options.experimental_force === true) {
+  if (force) {
     if (options.token === undefined || options.token === null) {
-      throw new Error('\`createHook()\` was called with \`experimental_force: true\` but no \`token\`. Force-claiming only applies to an explicit token another run may hold.');
+      throw new Error('\`createHook()\` was called with \`force: true\` but no \`token\`. Force-claiming only applies to an explicit token another run may hold.');
     }
     if (options.isWebhook === true) {
-      throw new Error('Webhook hooks do not support \`experimental_force\`. Use a non-webhook \`createHook()\` with an explicit token.');
+      throw new Error('Webhook hooks do not support \`force\`. Use a non-webhook \`createHook()\` with an explicit token.');
     }
     if (globalThis.__worldCapabilities?.hookForceClaim !== true) {
-      var unsupportedForceError = new Error('The configured World does not support \`experimental_force\` for Hooks.');
+      var unsupportedForceError = new Error('The configured World does not support \`force\` for Hooks.');
       unsupportedForceError.name = "FatalError";
       unsupportedForceError.fatal = true;
       throw unsupportedForceError;
@@ -911,7 +929,7 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     token: token,
     tokenRetentionUntil: tokenRetentionUntil,
     isWebhook: !!options.isWebhook,
-    force: options.experimental_force === true,
+    force: force,
     metadata: options.metadata,
     hasCreatedEvent: false,
   };
@@ -938,7 +956,7 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     // drained; every await after them rejects with this error. For the start
     // Hook the takeover may precede this call (__startHookForceClaimed).
     forceClaimed: bindsStartHook ? (globalThis.__startHookForceClaimed || null) : null,
-    force: options.experimental_force === true,
+    force: force,
     getConflictResolvers: [],
   };
 
@@ -3199,7 +3217,7 @@ async function processEvents(
               var forced = !!(hookState && hookState.force) && !forceRefused;
               if (forced) {
                 var FatalCls = globalThis[Symbol.for('@workflow/errors//FatalError')];
-                var forcedMessage = 'createHook({ experimental_force: true }) for token "' + token + '" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens' + (conflictingRunId ? ' (run "' + conflictingRunId + '" holds it)' : '') + '.';
+                var forcedMessage = 'createHook({ force: true }) for token "' + token + '" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens' + (conflictingRunId ? ' (run "' + conflictingRunId + '" holds it)' : '') + '.';
                 if (typeof FatalCls === 'function') {
                   err = new FatalCls(forcedMessage);
                 } else {
@@ -3295,7 +3313,7 @@ async function processEvents(
           | undefined;
         if (claimedBy && typeof claimedBy.runId === 'string') {
           // Not this run's disposal: another run took the token
-          // (experimental_force). Reject the parked awaiter, settle any
+          // (force). Reject the parked awaiter, settle any
           // getConflict awaiters (the hook was registered; it just no longer
           // holds the token), and remember the error so every later await
           // rejects too — after the buffered payloads, which landed before
