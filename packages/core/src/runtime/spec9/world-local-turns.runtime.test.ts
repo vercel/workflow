@@ -4,9 +4,10 @@
  * Each payload is resumed as soon as the previous turn's step completes (a
  * client sending its next message right away), or after a short pause.
  *
- * The test checks that with world-local's live event feed
- * (`events.subscribe`), a paused session's next message continues on the
- * retained VM instead of replaying the workflow from the log. The opt-in
+ * The tests check that with world-local's live event feed
+ * (`events.subscribe`), a session's next message continues on the retained
+ * VM instead of replaying the workflow from the log, whether it arrives after
+ * a pause or while the previous turn is finishing. The opt-in
  * benchmark compares turn latency and replays with and without the feed,
  * since a timing is not a pass/fail signal on a shared runner:
  *
@@ -201,6 +202,16 @@ describe('session-style turns on world-local (spec 9, node engine)', () => {
     // With it, only the run's first delivery replays: each message reaches
     // the lingering delivery, which continues on its retained VM.
     expect(feed.replays).toBe(1);
+  }, 60_000);
+
+  it('continues back-to-back messages on the retained VM', async () => {
+    // Each message lands while the previous turn is finishing, after the VM
+    // decided: the extra pass continues on the retained VM, and a message
+    // that lands after the delivery suspended reaches it on the feed. The
+    // run's first delivery replays; one more is slack for timing, against
+    // one replay per message without the retained VM.
+    const { replays } = await runTurns(20, true, 0);
+    expect(replays).toBeLessThanOrEqual(2);
   }, 60_000);
 
   it.runIf(process.env.WORKFLOW_LOCAL_TURNS_BENCH === '1')(
