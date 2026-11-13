@@ -507,10 +507,51 @@ export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
   'workflow.dispatch.republish_skipped'
 );
 
+// Inline orchestrator delivery (`start()` / `resumeHook()` on a World that
+// can hold queue messages)
+
+/**
+ * **Experimental.** What a `start()` / `resumeHook()` asked to run inline
+ * came to: `held` (this process runs the first orchestrator delivery),
+ * `not_held` (the queue delivers it; see `workflow.inline.not_held_reason`),
+ * `skipped` (not attempted; see `workflow.inline.skip_reason`),
+ * `hold_failed` (the held send threw and was sent again without a hold), or
+ * `no_hold_result` (the World ignored the hold).
+ */
+export const WorkflowInlineOutcome = SemanticConvention<
+  'held' | 'not_held' | 'skipped' | 'hold_failed' | 'no_hold_result'
+>('workflow.inline.outcome');
+
+/** **Experimental.** Why an inline request was not attempted. */
+export const WorkflowInlineSkipReason = SemanticConvention<
+  | 'disabled'
+  | 'no_capability'
+  | 'no_handler'
+  | 'other_deployment'
+  | 'other_region'
+  | 'in_step'
+  | 'unsupported_start'
+>('workflow.inline.skip_reason');
+
+/** **Experimental.** The queue's `not_held` reason for an inline request. */
+export const WorkflowInlineNotHeldReason = SemanticConvention<
+  | 'unsupported'
+  | 'deferred'
+  | 'lost'
+  | 'coalesced'
+  | 'concurrency_limited'
+  | 'duplicate'
+  | 'error'
+>('workflow.inline.not_held_reason');
+
 // Route attributes
 
-/** The workflow runtime route being handled */
-export const WorkflowRouteType = SemanticConvention<'flow'>(
+/**
+ * The workflow runtime route being handled: `flow` for the generated flow
+ * route, `inline` for an orchestrator delivery run in the route that sent it
+ * (`workflow.inline.consume`).
+ */
+export const WorkflowRouteType = SemanticConvention<'flow' | 'inline'>(
   'workflow.route.type'
 );
 

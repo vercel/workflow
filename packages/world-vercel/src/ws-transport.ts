@@ -961,8 +961,9 @@ export { isWsEventsTransportEnabled };
  * channel, so a code path that doesn't call this writes its events over HTTP
  * even with the transport enabled.
  *
- * Call it as early in an invocation as the run id is known, as the flow route
- * does before dispatching to the runtime. Only worth it for a caller that will
+ * Call it as early in an invocation as the run id is known, as every
+ * orchestrator delivery does before dispatching to the runtime (the flow
+ * route's, or one consumed inline in the route that sent it). Only worth it for a caller that will
  * write
  * several events: a single write does not repay a handshake, which is why
  * `start()` deliberately doesn't open one for `run_created`.

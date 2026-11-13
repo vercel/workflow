@@ -600,10 +600,13 @@ function getWorkflowNameFromQueueName(queueName: string): string | undefined {
 }
 
 /**
- * Bind this run's events channel to one invocation of the flow route. This is
- * the only pair of calls that opens one: nothing else in the SDK does, so every
- * other writer (`start()` writing `run_created` from an arbitrary request
- * handler, where a lone write would not repay a handshake) stays on HTTP.
+ * Bind this run's events channel to one orchestrator delivery: a flow-route
+ * invocation, or a held message consumed inline in the route that sent it
+ * (`experimental_hold`). This is the only pair of calls that opens one, so
+ * every other writer stays on HTTP. `start()`'s `run_created`, which a lone
+ * write would not repay a handshake for, usually does too, but when the
+ * start's message is consumed inline it can race the delivery's channel and
+ * go over it; either transport is correct.
  *
  * Both halves are no-ops on the HTTP default, and the gate is checked before the
  * import so a deployment on the default never loads `ws`.
@@ -846,6 +849,25 @@ export function resolveHoldOptions(
   };
 }
 
+/**
+ * The `x-vercel-id` of the Vercel request this code runs in, if any: read from
+ * the runtime's request context, the store `@vercel/functions`' `getContext()`
+ * reads (which that package does not export from its entry).
+ */
+function callingRequestId(): string | undefined {
+  try {
+    const context = (
+      globalThis as typeof globalThis & {
+        [key: symbol]: { get?: () => { headers?: Record<string, string> } };
+      }
+    )[Symbol.for('@vercel/request-context')]?.get?.();
+    const value = context?.headers?.['x-vercel-id']?.trim();
+    return value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type QueueFunction = (
   queueName: ValidQueueName,
   payload: QueuePayload,
@@ -1009,12 +1031,14 @@ export function createQueue(config?: APIConfig): Queue {
         // they mean there. Under an invocation context like a pushed
         // delivery's, so its coalesced re-runs share one inline budget: the
         // enclosing delivery's when it is consumed inside one, else one that
-        // starts now.
+        // starts now. Outside a queue delivery, the invocation is the request
+        // that sent the message: its `x-vercel-id` is the delivery's
+        // `requestId`, so the events it writes join that request's logs.
         consume: (handler) =>
           invocationStorage.run(
             invocationStorage.getStore() ?? {
               collectStepIds: false,
-              requestId: undefined,
+              requestId: callingRequestId(),
               stepIds: new Set(),
               startedAt: Date.now(),
             },

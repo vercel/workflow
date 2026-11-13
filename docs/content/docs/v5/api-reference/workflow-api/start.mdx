@@ -225,6 +225,39 @@ A child canceled without the SDK (by a tool that writes the cancellation to the 
 
 `returnValue` still polls when the waiting code is not the parent: a step, an API route, or another workflow handed the `Run`. It also polls for a child on another deployment (`deploymentId`) that predates the system hook, and for every child while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. A polling step holds its worker slot until the child finishes.
 
+### Where the first delivery runs
+
+On Vercel, `start()` runs the new run's first orchestrator delivery in the route that called it, right after it returns, instead of handing it to the queue for the generated flow route. The first step doesn't wait for a queue hop. The queue still backs the run up: it holds the message for the calling route ([send-and-hold](/docs/api-reference/workflow-runtime/world/queue#running-a-message-in-the-request-that-sent-it-experimental)) and delivers it to the flow route as usual if the route stops before finishing it. Nothing changes in your code:
+
+{/* @skip-typecheck: depends on an app's workflow module */}
+```typescript title="app/api/signup/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { onboardUser } from "@/workflows/onboard-user";
+
+export async function POST(request: Request) {
+  const { email } = await request.json();
+  const run = await start(onboardUser, [email]); // runs its first delivery here, after returning
+  return Response.json({ runId: run.runId });
+}
+```
+
+The route returns as soon as the run is accepted. The delivery keeps running under `waitUntil`, with the same semantics as a queue delivery: steps run inline until the workflow suspends, and longer work continues on the queue. [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) wakes a run the same way.
+
+The run is queued for the flow route instead when any of these is true:
+
+* The World can't hold queue messages (local development, Postgres), or the queue didn't hold this one.
+* The framework integration doesn't make the flow entry available to the route. Next.js and Nitro (v3, Node.js presets) do; SvelteKit, Astro, Nuxt, Nest and standalone builds queue every run for now.
+* The run targets another deployment (`deploymentId`), or its data lives in a region other than the route's.
+* `start()` runs inside a workflow, a step or another orchestrator delivery, or it's a dynamic workflow, an `experimental_hook` start, or passes its own `world`.
+* `WORKFLOW_INLINE_DELIVERY=0` is set. Use it as a kill switch.
+
+Things to know:
+
+* **Bundle size.** Every server Function that can call `start()` or `resumeHook()` carries the app's workflows and steps, the same code as the flow route, and loads it on its first start. Module-level code in your step files (clients, connection pools, env checks) runs there too.
+* **Duration.** The delivery is bounded by the calling route's `maxDuration`, not the flow route's. It hands off to the queue before the route's deadline. A step body that outlives the route is stopped with it and retried on the queue, as after any crash.
+* **Request scope.** A step that runs inline runs inside the calling request's context. With Next.js, `fetch` follows the calling segment's caching configuration.
+* **Observability.** The `workflow.start` span records `workflow.inline.outcome` (`held`, `not_held`, `skipped`, `hold_failed` or `no_hold_result`) and the reason when the run was queued. The delivery's `workflow.inline.consume` span (`workflow.route.type: inline`) is part of the calling request's trace, and its events carry that request's ID.
+
 ### Dynamic Workflow Source
 
 <Callout type="warning">

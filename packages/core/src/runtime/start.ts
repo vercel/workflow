@@ -17,6 +17,7 @@ import {
 } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type {
+  QueueOptions,
   RunRetention,
   StartHook,
   WorkflowInvokePayload,
@@ -90,6 +91,13 @@ import {
   type HealthCheckResult,
   healthCheck,
 } from './helpers.js';
+import {
+  decideInline,
+  inlineGate,
+  loadInlineEntry,
+  recordInlineGate,
+  sendOrchestratorMessage,
+} from './inline-orchestrator.js';
 import { Run } from './run.js';
 import { wakePendingStartHookHolder } from './start-hook-holder.js';
 import {
@@ -921,6 +929,15 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      // Loads the app's flow entry beside the rest of the start, so its
+      // orchestrator handler is registered by the time the message is sent
+      // (see `inline-orchestrator.ts`). Only where a send could be held.
+      const inlineGateReason = inlineGate(world);
+      const inlineEntryLoad =
+        !startHook && inlineGateReason === undefined
+          ? loadInlineEntry()
+          : undefined;
+      if (!startHook) recordInlineGate(span, inlineGateReason);
       // A World that mints single-orchestrator runs must provide their fence,
       // so a misconfigured one fails before anything is read or written.
       // `mintedSpecVersion()` returns 9 only to a World that passes
@@ -1549,7 +1566,7 @@ export async function start<TArgs extends unknown[], TResult>(
           },
           { v1Compat, inBand: false }
         );
-      const enqueueRun = () =>
+      const enqueueRun = (extra?: QueueOptions) =>
         world.queue(
           queueName,
           {
@@ -1575,6 +1592,7 @@ export async function start<TArgs extends unknown[], TResult>(
             // matching queue. Worlds without a regional dimension ignore
             // this field.
             ...(opts.region !== undefined ? { region: opts.region } : {}),
+            ...extra,
           }
         );
 
@@ -1609,6 +1627,14 @@ export async function start<TArgs extends unknown[], TResult>(
         // registered their gated pipes in `ops` and pipe only once admitted.
         flushArgumentStreams();
         span?.setAttributes(Attribute.DeploymentId(deploymentId));
+        if (inlineGateReason === undefined) {
+          // Admission decides the run after its message is published, which
+          // a hold (consumed as soon as it is taken) cannot wait for.
+          span?.setAttributes({
+            ...Attribute.WorkflowInlineOutcome('skipped'),
+            ...Attribute.WorkflowInlineSkipReason('unsupported_start'),
+          });
+        }
         let createdRunStatus: WorkflowRunStatus;
         try {
           let enqueueFailure: { error: unknown } | undefined;
@@ -1785,9 +1811,44 @@ export async function start<TArgs extends unknown[], TResult>(
       // run, the create has already succeeded above).
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
+      //
+      // On a World that can hold the message for this process, it is sent
+      // with a hold, and a held message starts running here as soon as the
+      // send returns, beside the `run_created` write: its first delivery's
+      // fast path creates the run from `runInput` if that write has not
+      // landed yet (resilient start), exactly as a queue delivery that
+      // outruns it does. Everywhere else the send is the plain queued one.
+      const enqueue = inlineEntryLoad
+        ? inlineEntryLoad.then(async () =>
+            sendOrchestratorMessage({
+              decision: decideInline({
+                world,
+                queueName,
+                runId,
+                sameDeployment: !crossDeployment,
+                // The inline handler drives the process's configured World.
+                unsupported:
+                  dynamicWorkflow !== undefined ||
+                  (opts.world !== undefined &&
+                    opts.world !== (await getWorldLazy())),
+              }),
+              runId,
+              span,
+              // One key for the held attempt and a plain resend after it
+              // throws, so a held attempt that did enqueue is not delivered
+              // twice. A fresh run ID has no other message to collide with.
+              send: (hold, inlineAttempt) =>
+                enqueueRun(
+                  inlineAttempt
+                    ? { idempotencyKey: `wkf-start-${runId}`, ...hold }
+                    : undefined
+                ),
+            })
+          )
+        : enqueueRun();
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
-        enqueueRun(),
+        enqueue,
       ]);
 
       // Queue failure is always fatal: the run was not enqueued

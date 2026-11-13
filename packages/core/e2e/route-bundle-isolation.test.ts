@@ -2,6 +2,7 @@ import {
   execFile as execFileOriginal,
   exec as execOriginal,
 } from 'child_process';
+import { readFile } from 'fs/promises';
 import path from 'path';
 import { promisify } from 'util';
 import { describe, expect, test } from 'vitest';
@@ -171,6 +172,28 @@ describe('route bundle isolation (o2flow hook.resume regression)', () => {
       // resolved inside the isolated bundle and the lookup failed cleanly.
       expect(result.status).toBe(500);
       expect(result.body).toContain('Hook not found');
+
+      // Inline orchestrator delivery: `withWorkflow()` aliases
+      // `@workflow/core/inline-entry` to the generated flow route for Node.js
+      // server code, so this ordinary route's Function can load the app's
+      // workflows, steps and orchestrator handler on demand. Its traced files
+      // include the flow route's chunk.
+      const nft = JSON.parse(
+        await readFile(`${routeBundlePath}.nft.json`, 'utf8')
+      ) as { files: string[] };
+      expect(
+        nft.files.some((file) =>
+          file.includes('_well-known_workflow_v1_flow_route')
+        ),
+        'the route Function does not carry the flow entry'
+      ).toBe(true);
+      // Browser code keeps the empty default module: no step registrations
+      // reach the client bundles.
+      const { stdout: clientHits } = await exec(
+        `grep -rl "__step_registrations\\|workbench/inline-start/instance" .next/static || true`,
+        { cwd: appPath }
+      );
+      expect(clientHits.trim()).toBe('');
     }
   );
 });

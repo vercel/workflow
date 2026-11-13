@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import {
   generatedWorkflowPathPattern,
   resolveConfiguredProjectRoot,
@@ -16,6 +16,7 @@ import {
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
+import { INLINE_ENTRY_SPECIFIER, inlineEntryTarget } from './inline-entry.js';
 import {
   joinWorkflowBasePath,
   normalizeWorkflowRoutePrefix,
@@ -468,6 +469,22 @@ function externalizeWsNativeAccelerators(webpackConfig: {
   }
 }
 
+/**
+ * The empty default `@workflow/core/inline-entry` module, as the app resolves
+ * it (through `workflow`, or `@workflow/core` directly), or `undefined` when it
+ * cannot be found: then no alias is set and `start()` keeps queueing.
+ */
+function resolveInlineEntryDefault(workingDir: string): string | undefined {
+  for (const paths of [[workingDir], undefined]) {
+    try {
+      return require.resolve(INLINE_ENTRY_SPECIFIER, paths && { paths });
+    } catch {
+      // Try the next location.
+    }
+  }
+  return undefined;
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -732,6 +749,36 @@ export function withWorkflow(
       };
     }
 
+    // `start()` and `resumeHook()` load `@workflow/core/inline-entry` to run
+    // a run's orchestrator delivery inline (on a World that can hold queue
+    // messages). For Node.js server code in a production build it is the
+    // generated flow route, so every server Function that can start or resume
+    // a run carries the app's workflows, steps and orchestrator handler;
+    // browser and edge code keep the empty default module. Not in `next dev`:
+    // it runs on the local World, which never holds a message, and carrying
+    // the flow route in every dev compilation would only slow it down and
+    // widen what an edit recompiles.
+    const inlineEntry =
+      phase === 'phase-development-server'
+        ? undefined
+        : inlineEntryTarget(workingDir, experimentalRoutePrefix);
+    // Turbopack resolves a relative alias against the project directory.
+    const toTurbopackPath = (path: string) =>
+      `./${relative(workingDir, path).replace(/\\/g, '/')}`;
+    const inlineEntryDefault = resolveInlineEntryDefault(workingDir);
+    if (inlineEntry && inlineEntryDefault) {
+      nextConfig.turbopack.resolveAlias = {
+        ...nextConfig.turbopack.resolveAlias,
+        [INLINE_ENTRY_SPECIFIER]: {
+          // Turbopack matches these keys as resolve conditions, the most
+          // specific first: browser and edge code keep the empty default.
+          browser: toTurbopackPath(inlineEntryDefault),
+          'edge-light': toTurbopackPath(inlineEntryDefault),
+          default: toTurbopackPath(inlineEntry),
+        },
+      };
+    }
+
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
     nextConfig.webpack = (...args) => {
@@ -751,6 +798,17 @@ export function withWorkflow(
 
       if (args[1]?.isServer) {
         externalizeWsNativeAccelerators(webpackConfig);
+        if (
+          inlineEntry &&
+          inlineEntryDefault &&
+          args[1]?.nextRuntime !== 'edge'
+        ) {
+          webpackConfig.resolve ??= {};
+          webpackConfig.resolve.alias = {
+            ...webpackConfig.resolve.alias,
+            [`${INLINE_ENTRY_SPECIFIER}$`]: inlineEntry,
+          };
+        }
       }
 
       return existingWebpackModify

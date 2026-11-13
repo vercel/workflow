@@ -344,6 +344,23 @@ export default {
         'workflow/workflows.mjs'
       );
 
+      // Inline orchestrator delivery: `start()` and `resumeHook()` load
+      // `@workflow/core/inline-entry` to run a run's orchestrator delivery in
+      // the route that called them (on a World that can hold queue messages).
+      // In a production Node.js build it is the combined flow handler, which
+      // Nitro bundles into the server anyway; elsewhere it keeps core's empty
+      // default and runs are queued. Dev loads `workflows.mjs` from disk, so
+      // it stays out of the bundle graph there; worker presets have no Node.
+      if (!nitro.options.dev && nitro.options.node !== false) {
+        nitro.options.alias = {
+          ...nitro.options.alias,
+          '@workflow/core/inline-entry': join(
+            nitro.options.buildDir,
+            'workflow/workflows.mjs'
+          ),
+        };
+      }
+
       // Nitro v3+ Vercel deploy: configure function rules for the combined
       // flow handler so it gets the queue triggers + max duration that the
       // workflow runtime needs. Workflow-required fields (`maxDuration`,
