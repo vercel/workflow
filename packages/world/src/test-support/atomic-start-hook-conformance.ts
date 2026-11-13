@@ -89,10 +89,19 @@ export interface AtomicStartHookConformanceOptions {
    * Whether the World compares Hook retention against the clock
    * `advanceClock` moves (its `Date.now()`), so the retention tests cross a
    * retention in virtual time instead of waiting for it. Omit for a World
-   * that compares it elsewhere (in SQL); those tests then use a few seconds
-   * of real time.
+   * that compares it elsewhere (in SQL); those tests then use
+   * `passRetention`, or a few seconds of real time without it.
    */
   retentionReadsAdvanceClock?: boolean;
+  /**
+   * Makes every stored Hook retention that ends at or before `until` read as
+   * passed, as if the clock the World compares retention against (its
+   * database's, say) had moved past `until`; later retentions must still be
+   * running. For a World whose retention clock `advanceClock` cannot move, so
+   * the retention tests cross an hour-long retention at once instead of
+   * waiting out a short one in real time.
+   */
+  passRetention?: (until: Date) => Promise<void>;
   /**
    * Leaves the state a writer that died after claiming the token but before
    * the candidate was admitted leaves behind: the claim, and no run. No
@@ -240,16 +249,23 @@ export function atomicStartHookConformance(
   }
 
   // Retention windows: in virtual time where the World reads the clock the
-  // suite moves (long, crossed at once), otherwise a few real seconds.
-  const virtualRetention =
+  // suite moves, or can pass a retention itself (long, crossed at once),
+  // otherwise a few real seconds.
+  const clockRetention =
     options.retentionReadsAdvanceClock === true &&
     options.advanceClock !== undefined;
+  const virtualRetention =
+    clockRetention || options.passRetention !== undefined;
   // Real time must cover the several writes each test makes before it
   // checks the token is still held, on a slow runner too.
   const RETENTION_MS = virtualRetention ? 3_600_000 : 10_000;
   /** Waits (or moves the clock) until `until` has passed. */
   async function passRetention(until: number): Promise<void> {
-    if (virtualRetention) {
+    if (options.passRetention) {
+      await options.passRetention(new Date(until));
+      return;
+    }
+    if (clockRetention) {
       options.advanceClock?.(until - Date.now() + 1_000);
       return;
     }
@@ -321,7 +337,7 @@ export function atomicStartHookConformance(
   describe(`atomic start Hook conformance (${options.name})`, () => {
     // A retention test may have moved the clock; put it back.
     afterEach(() => {
-      if (virtualRetention) options.advanceClock?.(0);
+      if (clockRetention) options.advanceClock?.(0);
     });
 
     test('declares the atomic start Hook capability', () => {
