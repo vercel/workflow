@@ -1,6 +1,6 @@
 {
   "name": "@workflow/cli",
-  "version": "5.0.8",
+  "version": "5.1.0",
   "description": "Command-line interface for Workflow SDK",
   "type": "module",
   "bin": {
@@ -60,13 +60,13 @@
     "@workflow/world-local": "workspace:*",
     "@workflow/world-vercel": "workspace:*",
     "boxen": "8.0.1",
-    "builtin-modules": "5.0.0",
+    "builtin-modules": "5.5.0",
     "chalk": "5.6.2",
     "chokidar": "4.0.3",
-    "date-fns": "4.1.0",
-    "dotenv": "^17.3.1",
+    "date-fns": "4.4.0",
+    "dotenv": "^17.4.2",
     "easy-table": "1.2.0",
-    "enhanced-resolve": "5.19.0",
+    "enhanced-resolve": "5.26.1",
     "esbuild": "catalog:",
     "find-up": "7.0.0",
     "mixpart": "0.0.4",
@@ -74,7 +74,7 @@
     "ora": "8.2.0",
     "terminal-link": "5.0.0",
     "tinyglobby": "0.2.17",
-    "xdg-app-paths": "5.1.0",
+    "xdg-app-paths": "5.5.1",
     "zod": "catalog:"
   }
 }

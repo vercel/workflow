@@ -756,10 +756,10 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
   });
 
   it('attests the version the World declared at creation, not a later env read', async () => {
-    // `createWorld` records what it declared; flipping the kill switch
+    // `createWorld` records what it declared; changing the setting
     // in-process afterwards must not make run_started claim more than the
     // runtime validated.
-    vi.stubEnv('WORKFLOW_SEALED_LOG', '1');
+    vi.stubEnv('WORKFLOW_SPEC_VERSION', '8');
     try {
       const meta = await postRunStartedAndCaptureMeta({
         mintedSpecVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
@@ -1503,7 +1503,10 @@ describe('attr_set eventData size limit', () => {
       );
 
     try {
-      expect(resolveWsTransport('wrun_1', config)?.transport).toBe(transport);
+      expect(resolveWsTransport('wrun_1', config)).toMatchObject({
+        kind: 'open',
+        transport,
+      });
       const result = createWorkflowRunEvent(
         'wrun_1',
         attributeEvent(8193),

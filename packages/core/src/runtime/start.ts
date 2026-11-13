@@ -172,7 +172,7 @@ export type SpecVersionSource =
  * its event log, and for a cross-deployment start that is the target, not
  * this caller. The capability probe runs inside the target and reports the
  * version the target itself mints (which already honours the target's own
- * `WORKFLOW_SPEC_VERSION` and `WORKFLOW_SEALED_LOG` settings), so that is the
+ * `WORKFLOW_SPEC_VERSION` setting), so that is the
  * answer, capped at what this caller's World mints: the caller writes
  * `run_created` and the arguments, and must never stamp a version it could
  * not have written itself. A spec 9 run therefore needs
@@ -821,6 +821,8 @@ export function start(
   options: DynamicStartOptions
 ): Promise<Run<unknown>>;
 
+// Why `start()` tolerates World storage failures while the queue is healthy,
+// and what the World contract owes it: `./resilient-start.md`.
 export async function start<TArgs extends unknown[], TResult>(
   workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata | string,
   argsOrOptions?: TArgs | StartOptions | DynamicStartOptions,

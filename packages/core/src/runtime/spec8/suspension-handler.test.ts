@@ -2119,9 +2119,6 @@ describe('handleSuspension batched fan-out', () => {
   }
 
   beforeEach(() => {
-    // No WORKFLOW_BATCH_TRANSITIONS stub: the fold is DEFAULT ON, so these
-    // tests exercising it with an unset env prove the default engages. The
-    // kill switch has its own test below.
     // Cap lazy-inline deferral at 1 so only the first step defers its
     // step_created and the rest take the eager path where the fold engages;
     // the cap interaction has its own test below.
@@ -2217,28 +2214,6 @@ describe('handleSuspension batched fan-out', () => {
         run: slotRun,
       })
     ).rejects.toMatchObject({ status: 410 });
-  });
-
-  it('keeps the single path when the kill switch disables batching', async () => {
-    vi.stubEnv('WORKFLOW_BATCH_TRANSITIONS', '0');
-    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
-      event,
-    }));
-    const createBatch = successfulCreateBatch();
-    const world = createBatchWorld(eventsCreate, createBatch);
-
-    await handleSuspension({
-      suspension: new WorkflowSuspension(
-        stepsAndWait(['s1', 's2'], 'w1'),
-        globalThis
-      ),
-      world,
-      run: slotRun,
-    });
-
-    expect(createBatch).not.toHaveBeenCalled();
-    // s1 defers; s2's eager create + the wait go out as single writes.
-    expect(eventsCreate).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the single path when the World lacks createBatch', async () => {

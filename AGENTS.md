@@ -33,6 +33,10 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
+Runs default to spec 8. The opt-in spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`, a single orchestrator per run behind the World's in-band fence) lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
+
+Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
+
 ## Development commands
 
 ### Workspace-level commands
@@ -284,10 +288,8 @@ Worlds are nonetheless worth fixing on their own merits, and neither is what
 made the lanes red: world-local defaults to **1000** in-flight deliveries (the
 comment above it says the limit exists to avoid overwhelming the process, and
 the repro script has to override it to 10), world-postgres to 50 embedded
-workers *per process*; and neither World has world-vercel's per-run replay
-serialization, which is itself opt-in there behind
-`WORKFLOW_SEQUENTIAL_REPLAYS` (vercel/workflow#2193), so a run's concurrent
-wakes each replay the whole log.
+workers *per process*; and neither World serializes a spec 8 run's replays,
+so a run's concurrent wakes each replay the whole log.
 
 world-local's storms come out clean far more often than world-postgres's, so the
 default scale says even less there: the corruption it does produce needs a
@@ -408,6 +410,10 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - When modifying package functionality, ensure corresponding README updates are included
 - Document every user-configurable environment variable in the docs.
 - Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
+- Docs pages never reference or link to source files in this repository. Design notes for maintainers live as markdown next to the code they describe (see [Workflow execution model](#workflow-execution-model)) and are referenced from source comments.
+- The docs site is public: everything under `docs/content/` is published on workflow-sdk.dev, indexed by search engines, and served to agents through site search, `llms.txt` and the docs MCP. Write it only for people who use the SDK or build a World. Design notes, RFCs, implementation references and anything else aimed at maintainers go next to the code, never into a docs page. There is no `/docs/changelog` section; release notes come from changesets (rendered at `/changelog`).
+- Preview-only tooling pages go in a docs tree's `internal/` folder with `internal: true` frontmatter, which makes production answer 404 for them, keeps them out of the sidebar, sitemap, search, `llms.txt` and chat, and marks them `noindex`. Public pages never link to them.
+- `pnpm --filter docs lint:links` (the Docs Links CI job) enforces the three rules above. When a page leaves the site, add a redirect in `docs/next.config.ts`.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
 ### Docs preview links in PR descriptions

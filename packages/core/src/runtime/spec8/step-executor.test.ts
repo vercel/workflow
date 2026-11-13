@@ -14,6 +14,10 @@ import {
   hydrateStepError,
 } from '../../serialization.js';
 import { contextStorage } from '../../step/context-storage.js';
+import {
+  getStepMetadata,
+  type StepMetadata,
+} from '../../step/get-step-metadata.js';
 import { getWritable } from '../../step/writable-stream.js';
 import {
   STREAM_NAME_SYMBOL,
@@ -797,6 +801,50 @@ describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
       'step_failed'
     );
     expect(ceilingFailures).toHaveLength(0);
+  });
+});
+
+describe('executeStep — step metadata', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it.each([
+    [undefined, 4],
+    [2, 3],
+    [0, 1],
+  ])('exposes maxAttempts for maxRetries %s as %s', async (maxRetries, maxAttempts) => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    let metadata: StepMetadata | undefined;
+    registerStepFunction(
+      stepName,
+      Object.assign(
+        async () => {
+          metadata = getStepMetadata();
+        },
+        { maxRetries }
+      )
+    );
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(metadata).toMatchObject({ attempt: 1, maxAttempts });
   });
 });
 

@@ -16,7 +16,7 @@ import {
   type Storage,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createHook, createRun, updateRun } from '../test-helpers.js';
+import { createHook, updateRun } from '../test-helpers.js';
 import { createStorage } from './index.js';
 
 describe('local World hook force-claim', () => {

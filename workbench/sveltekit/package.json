@@ -15,25 +15,25 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
   },
   "devDependencies": {
-    "@sveltejs/kit": "^2.69.1",
-    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@sveltejs/kit": "^2.70.4",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@types/lodash.chunk": "^4.2.9",
     "@workflow/world-postgres": "workspace:*",
-    "svelte": "^5.56.4",
-    "svelte-check": "^4.7.1",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
     "typescript": "^6.0.3",
-    "vite": "^8.1.3"
+    "vite": "^8.1.6"
   },
   "dependencies": {
     "@ai-sdk/workflow": "catalog:ai-sdk-v7",
-    "@node-rs/xxhash": "1.7.6",
+    "@node-rs/xxhash": "1.7.8",
     "@opentelemetry/api": "^1.9.0",
-    "@sveltejs/adapter-node": "^5.5.7",
-    "@sveltejs/adapter-vercel": "^6.3.4",
+    "@sveltejs/adapter-node": "^5.5.8",
+    "@sveltejs/adapter-vercel": "^6.3.5",
     "@swc/core": "catalog:",
-    "@vercel/otel": "^1.13.0",
+    "@vercel/otel": "^1.14.2",
     "ai": "catalog:ai-sdk-v7",
-    "exsolve": "^1.0.7",
+    "exsolve": "^1.2.0",
     "lodash.chunk": "^4.2.0",
     "workflow": "workspace:*",
     "zod": "catalog:"

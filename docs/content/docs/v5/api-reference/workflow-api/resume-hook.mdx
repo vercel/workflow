@@ -14,7 +14,7 @@ Resumes a workflow run by sending a payload to a hook identified by its token. Y
 
 It durably writes the `hook_received` event and only then publishes a workflow wake. The call resolves only after both operations succeed, in that order.
 
-`resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended. See [durable hook resume](/docs/changelog/lazy-hook-resume).
+`resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended.
 
 A run started with [`start({ experimental_hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) has its start Hook from the moment it is admitted, so `resumeHook()` with that token works right away, even before the run starts executing. Payloads sent before the workflow calls `createHook({ token })` are kept and delivered in order once it does. See [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner).
 

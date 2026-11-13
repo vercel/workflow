@@ -1,6 +1,10 @@
 /**
  * The spec 9 (single-orchestrator) delivery: one writer per run, enforced by
  * the World's in-band fence. See `../delivery.ts`.
+ *
+ * `./README.md` is the spec 9 reference: the model, the World contract,
+ * lifecycles, edge cases and the decisions behind them. Read it before
+ * changing spec 9 behaviour, and update it in the same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
@@ -113,7 +117,6 @@ import {
   type EventCreator,
   getWorkflowQueueName,
   isQueueSendFailure,
-  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   maxEventSlot,
@@ -1526,14 +1529,29 @@ async function runDelivery(
           writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
         }
       } else if (loadOutcome.status === 'rejected') {
-        // A World contract error on the log load fails the run
-        // (out-of-band, since there is no fence snapshot); any
-        // other load failure redelivers.
-        workflowRun ??= run;
-        if (await recordWorkflowSetupFailure(loadOutcome.reason)) {
-          return undefined;
+        try {
+          const error = loadOutcome.reason;
+          if (
+            !WorkflowRunNotFoundError.is(error) &&
+            !(WorkflowWorldError.is(error) && error.status === 404)
+          ) {
+            throw error;
+          }
+          // Queue delivery can beat run_created. The concurrent run read
+          // has now found the run, so reload history once before paying for
+          // a queue redelivery. Use fullLoad to adopt the real fence; a
+          // successful run read alone never authorizes an empty snapshot.
+          span?.addEvent('workflow.replay.load.not_found_retry');
+          await fullLoad();
+        } catch (error) {
+          // A World contract error fails the run (out-of-band if no fence
+          // was loaded); any other failure retains normal redelivery.
+          workflowRun ??= run;
+          if (await recordWorkflowSetupFailure(error)) {
+            return undefined;
+          }
+          throw error;
         }
-        throw loadOutcome.reason;
       }
       if (run && isTerminalWorkflowRunStatus(run.status)) {
         runtimeLogger.info('Workflow already completed or failed, skipping', {
@@ -2936,44 +2954,42 @@ async function runDelivery(
           // waits this one completed.
           if (due.length > 0) await armTimers(log.events, 'other-chains');
 
-          if (isSlotGapCheckEnabled()) {
-            // Run-ahead places an outcome at the slot its write
-            // will take, so the log can hold it above a
-            // position this delivery's writer is still about
-            // to fill (a sibling step's start queued ahead of
-            // it). That is no hole: let the speculative writes
-            // and everything queued before them commit, and
-            // fold them in, before judging the log.
-            if (
-              speculationsBySlot.size > 0 &&
-              indexOf(log.events).slotGap() !== undefined
-            ) {
-              if ((await drainRunAhead()) === 'repair') {
-                await repairRunAhead();
-              }
-              await writer.idle();
-              flushPending();
+          // Run-ahead places an outcome at the slot its write
+          // will take, so the log can hold it above a
+          // position this delivery's writer is still about
+          // to fill (a sibling step's start queued ahead of
+          // it). That is no hole: let the speculative writes
+          // and everything queued before them commit, and
+          // fold them in, before judging the log.
+          if (
+            speculationsBySlot.size > 0 &&
+            indexOf(log.events).slotGap() !== undefined
+          ) {
+            if ((await drainRunAhead()) === 'repair') {
+              await repairRunAhead();
             }
-            // A dense log, which the index answers without a pass, has
-            // nothing to settle.
-            if (indexOf(log.events).slotGap() !== undefined) {
-              const settled = await settleEventSlotGap(
-                runId,
-                { events: log.events, cursor: log.cursor },
-                { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
+            await writer.idle();
+            flushPending();
+          }
+          // A dense log, which the index answers without a pass, has
+          // nothing to settle.
+          if (indexOf(log.events).slotGap() !== undefined) {
+            const settled = await settleEventSlotGap(
+              runId,
+              { events: log.events, cursor: log.cursor },
+              { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
+            );
+            if (settled.log.events !== log.events) {
+              session = null;
+            }
+            log = {
+              events: settled.log.events,
+              cursor: settled.log.cursor,
+            };
+            if (settled.gap !== undefined) {
+              throw new CorruptedEventLogError(
+                `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
               );
-              if (settled.log.events !== log.events) {
-                session = null;
-              }
-              log = {
-                events: settled.log.events,
-                cursor: settled.log.cursor,
-              };
-              if (settled.gap !== undefined) {
-                throw new CorruptedEventLogError(
-                  `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
-                );
-              }
             }
           }
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
@@ -3487,12 +3503,15 @@ async function runDelivery(
       // Turbo: a suspension of only new inline steps starts
       // their bodies while their `step_created` commits.
       // Each body's `step_started` follows that commit, and
-      // its outcome follows the start. Anything with a
-      // background step, a wait or a step that failed to
+      // its outcome follows the start. A fan-out, with
+      // background steps beside the inline ones, does the same
+      // for its inline bodies (`optimisticFanOut` below).
+      // Anything with a wait or a step that failed to
       // serialize commits first, as without turbo.
       // A step that allows no retries starts only on a
       // durable `step_started` (see `mayRunBeforeItsStart`),
-      // so a boundary that creates one commits first.
+      // so a boundary that runs one inline commits first; a
+      // background one starts from its own message either way.
       const startsAhead = plan.steps.every((step) =>
         mayRunBeforeItsStart(step.stepName)
       );
@@ -3504,6 +3523,41 @@ async function runDelivery(
         plan.failedCount === 0 &&
         plan.waitCount === 0 &&
         plan.steps.every((step) => step.inline);
+      // Turbo: a fan-out boundary (inline steps beside background
+      // steps) starts its inline bodies while the creations commit
+      // too. The single-orchestrator guarantee that makes
+      // `optimisticCreation` safe holds whatever else the boundary
+      // creates, and each background step's message still goes out
+      // only once its own creation committed.
+      const inlinePlanned = plan.steps.filter((step) => step.inline);
+      const optimisticFanOut =
+        !optimisticCreation &&
+        turboOptimistic &&
+        mayInline &&
+        plan.failedCount === 0 &&
+        plan.waitCount === 0 &&
+        inlinePlanned.length > 0 &&
+        inlinePlanned.length < plan.steps.length &&
+        inlinePlanned.every((step) => mayRunBeforeItsStart(step.stepName));
+      /** The messages of the background steps a batch created. */
+      const backgroundMessagesOf = (
+        batch: Awaited<ReturnType<typeof plan.commit>>
+      ): StepMessageSpec[] =>
+        batch.createdSteps.flatMap((step) =>
+          step.inline
+            ? []
+            : [
+                {
+                  correlationId: step.correlationId,
+                  stepName: step.stepName,
+                  stepCreatedEventId: step.event?.eventId,
+                  ...(step.event
+                    ? { stepCreatedAt: new Date(step.event.createdAt) }
+                    : {}),
+                  input: step.input,
+                },
+              ]
+        );
       let created: Awaited<ReturnType<typeof plan.commit>>;
       let newInline: Array<
         Omit<CreatedStep, 'event'> & {
@@ -3587,6 +3641,56 @@ async function runDelivery(
           serializationBlockers: plan.serializationBlockers,
         };
         newInline = plan.steps;
+      } else if (optimisticFanOut) {
+        deferAbsorbs = true;
+        // The batches go out as on the awaited path below, and each
+        // later batch's background steps are enqueued once it
+        // committed; the ones `first` reports once it resolved.
+        const chunks = plan.commitInChunks((batch) =>
+          trackInFlightCreation(
+            enqueueStepMessages(run, backgroundMessagesOf(batch))
+          )
+        );
+        creationBatchesQueuing.add(chunks.queued);
+        void chunks.queued.then(() =>
+          creationBatchesQueuing.delete(chunks.queued)
+        );
+        trackInFlightCreation(
+          chunks.first.then((first) =>
+            enqueueStepMessages(run, backgroundMessagesOf(first))
+          )
+        );
+        trackInFlightCreation(chunks.rest);
+        // `first` resolves once every inline creation-bearing start
+        // committed, in one batch or more (inline steps come first in
+        // the plan's events, and inputs past the batch byte budget
+        // split them).
+        creationGate = chunks.first.then((first) => {
+          const inline = new Map(
+            first.createdSteps.flatMap((step) =>
+              step.inline ? [[step.correlationId, step] as const] : []
+            )
+          );
+          if (inlinePlanned.some((step) => !inline.has(step.correlationId))) {
+            // A batch item was refused after its body started.
+            // Redeliver; the next delivery loads the log and decides
+            // from it.
+            throw new WorkflowWorldError(
+              'A step_started of an inline step started ahead of its commit was not committed',
+              { status: 503 }
+            );
+          }
+          return inline;
+        });
+        creationGate.catch(() => {});
+        created = {
+          createdSteps: [],
+          failedStepCorrelationIds: new Set(),
+          createdWaits: [],
+          serializationBlockerCount: plan.serializationBlockerCount,
+          serializationBlockers: plan.serializationBlockers,
+        };
+        newInline = inlinePlanned;
       } else if (
         writer.supportsBatch &&
         plan.events.length > MAX_BATCH_EVENTS &&
@@ -3607,24 +3711,7 @@ async function runDelivery(
         // `creationsInFlight`).
         const chunks = plan.commitInChunks((batch) =>
           trackInFlightCreation(
-            enqueueStepMessages(
-              run,
-              batch.createdSteps.flatMap((step) =>
-                step.inline
-                  ? []
-                  : [
-                      {
-                        correlationId: step.correlationId,
-                        stepName: step.stepName,
-                        stepCreatedEventId: step.event?.eventId,
-                        ...(step.event
-                          ? { stepCreatedAt: new Date(step.event.createdAt) }
-                          : {}),
-                        input: step.input,
-                      },
-                    ]
-              )
-            )
+            enqueueStepMessages(run, backgroundMessagesOf(batch))
           )
         );
         creationBatchesQueuing.add(chunks.queued);
@@ -3933,6 +4020,7 @@ async function runDelivery(
             step.correlationId,
             () =>
               executeStep({
+                stateContext: replayPayloadCache?.stateContext,
                 world,
                 createEvent: async (data, params) => {
                   if (data.eventType === 'step_retrying') {

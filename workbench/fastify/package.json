@@ -16,7 +16,7 @@
     "start": "node .output/server/index.mjs"
   },
   "dependencies": {
-    "fastify": "^5.12.2",
+    "fastify": "^5.12.8",
     "nitro": "catalog:"
   },
   "devDependencies": {
@@ -25,7 +25,7 @@
     "@workflow/world-postgres": "workspace:*",
     "ai": "catalog:ai-sdk-v7",
     "lodash.chunk": "^4.2.0",
-    "openai": "^6.6.0",
+    "openai": "^6.49.0",
     "typescript": "catalog:",
     "workflow": "workspace:*",
     "zod": "catalog:"
