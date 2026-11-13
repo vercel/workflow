@@ -24,6 +24,12 @@ export const RUN_ERROR_CODES = {
   WORLD_CONTRACT_ERROR: 'WORLD_CONTRACT_ERROR',
   /** Run was delivered to a deployment other than the one it is pinned to */
   DEPLOYMENT_MISMATCH: 'DEPLOYMENT_MISMATCH',
+  /**
+   * The run's workflow is not registered in the deployment executing it
+   * (`WorkflowNotRegisteredError`), e.g. a run started with a workflowId the
+   * deployment does not bundle, or a workflow dropped by the build
+   */
+  WORKFLOW_NOT_REGISTERED: 'WORKFLOW_NOT_REGISTERED',
 } as const;
 
 export type RunErrorCode =

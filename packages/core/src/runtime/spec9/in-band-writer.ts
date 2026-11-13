@@ -157,6 +157,9 @@ export const RESILIENT_START_SNAPSHOT: EventLogSnapshot = Object.freeze({
  * (`WorldCapabilities.inBandFence`), so the writer always sends an expected
  * count. A write before any snapshot was
  * adopted is a runtime bug, and fails without reaching the World.
+ *
+ * See "The in-band fence" in `./README.md` (the spec 9 reference) for the
+ * fence's rules and how refusals are handled.
  */
 export class InBandWriter {
   private expected: number | undefined;

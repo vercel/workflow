@@ -364,6 +364,9 @@ export function isOptimisticBackgroundStartEnabled(): boolean {
  *
  * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
  * explicit `'0'` / `'false'` (case-insensitive).
+ *
+ * Design: `./spec8/turbo-mode.md` (spec 8 runs) and "Turbo" in
+ * `./spec9/README.md` (spec 9 runs).
  */
 export function isTurboEnabled(): boolean {
   const raw = process.env.WORKFLOW_TURBO;

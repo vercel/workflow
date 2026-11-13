@@ -329,9 +329,9 @@ class WsEventsTransport {
 
   /**
    * Give up this invocation's claim, dropping the socket once the last holder
-   * does. Concurrent invocations for one run share this instance (inline step
-   * executions ride the flow topic on per-step topics, so a run's steps can be
-   * separate invocations of the same container), and the first to finish must
+   * does. Concurrent invocations for one run share this instance (a run's
+   * step messages ride the flow topic unkeyed, so its steps can be separate
+   * invocations of the same container), and the first to finish must
    * not tear the socket out from under the others.
    *
    * Unbalanced calls are inert: without a matching `open` there is nothing to

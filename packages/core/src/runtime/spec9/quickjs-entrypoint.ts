@@ -11,6 +11,9 @@
  * 3. On suspension: creates events + queues steps for new pending ops
  * 4. On completion: creates run_completed
  * 5. On failure: creates run_failed
+ *
+ * This is the spec 9 QuickJS orchestrator. `./README.md` is the spec 9
+ * reference; "QuickJS differences" there lists where the two engines differ.
  */
 
 import type { Span } from '@opentelemetry/api';
@@ -3780,7 +3783,8 @@ export async function runWorkflowWithQuickJS(params: {
     // The VM serializes errors as `{ name, message, stack }`, so we
     // reconstruct a host-side Error of the correct class based on the
     // VM-side `name`: specific WorkflowRuntimeError subclasses need
-    // to be preserved so classifyRunError() tags them as RUNTIME_ERROR.
+    // to be preserved so classifyRunError() tags them with their own
+    // code (WORKFLOW_NOT_REGISTERED for WorkflowNotRegisteredError).
     const reconstructed: Error =
       result.failed.name === 'WorkflowNotRegisteredError'
         ? new WorkflowNotRegisteredError(workflowName)

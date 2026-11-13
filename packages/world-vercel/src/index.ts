@@ -70,9 +70,8 @@ export function createWorld(config?: APIConfig): World {
       atomicStartHook: { active: true },
       // One orchestrator delivery per single-orchestrator run at a time: its
       // orchestrator messages carry the run id as a VQS concurrency key on
-      // the flow topic (or, under WORKFLOW_SEQUENTIAL_REPLAYS=1, go to a
-      // per-run topic consumed with `maxConcurrency: 1`; see queue.ts).
-      // Spec-8 runs keep the shared, unserialized flow topic.
+      // the flow topic (see queue.ts). Spec-8 runs keep the shared,
+      // unserialized flow topic.
       //
       // Part of the spec-9 contract rather than capabilities: the backend
       // stores an in-band event's `occurredAt` as its `createdAt` (clamped

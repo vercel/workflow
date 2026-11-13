@@ -10,7 +10,7 @@ related:
 
 `WorkflowNotRegisteredError` is thrown when the runtime tries to execute a workflow function that is not registered in the current deployment. This is an infrastructure error, not a user code error. It typically means a run was started against a deployment that does not have this workflow (e.g., the workflow was renamed or moved), or there was a build/bundling issue.
 
-When this error occurs, the run fails with a `RUNTIME_ERROR` error code.
+When this error occurs, the run fails with the [`WORKFLOW_NOT_REGISTERED`](/docs/errors/workflow-not-registered) error code. Runs that failed on SDK versions before this code was introduced recorded `RUNTIME_ERROR` instead.
 
 ```typescript lineNumbers
 import { WorkflowNotRegisteredError } from "workflow/errors"

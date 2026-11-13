@@ -829,6 +829,8 @@ export function start(
   options: DynamicStartOptions
 ): Promise<Run<unknown>>;
 
+// Why `start()` tolerates World storage failures while the queue is healthy,
+// and what the World contract owes it: `./resilient-start.md`.
 export async function start<TArgs extends unknown[], TResult>(
   workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata | string,
   argsOrOptions?: TArgs | StartOptions | DynamicStartOptions,

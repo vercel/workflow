@@ -21,10 +21,12 @@ function scenario(partial: Partial<ScenarioSpec>): ScenarioSpec {
   return {
     name: 'test',
     workflow: { workflowId: WORKFLOW_ID },
-    // A backstop, not the subject: these scenarios end when the queue drains.
-    // The first one also pays the runtime's lazy module loads, which took
-    // 0.8-1.2 s on CI runners, so 1 s was too tight.
-    limits: { maxWallMs: 5_000 },
+    // A guard against a hang, not a timing assertion: the scenarios here end
+    // in milliseconds, but the first one in a file also loads the runtime,
+    // which on a loaded CI runner (Windows especially) has taken over 1s.
+    // Kept under vitest's 5s test timeout so a hang still reports its own
+    // diagnosis.
+    limits: { maxWallMs: 4_000 },
     ...partial,
   };
 }

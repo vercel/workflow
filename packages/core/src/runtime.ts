@@ -289,6 +289,7 @@ async function warnOnDeploymentPinningMismatch({
  *
  * The handler loops: replay workflow → execute step inline → replay → ...
  * until the workflow completes, times out, or encounters non-step suspensions.
+ * The design is described in `./runtime/eager-processing.md`.
  *
  * @param workflowCode - The workflow bundle code containing all workflow functions
  * @returns A function that can be used as a Vercel API route

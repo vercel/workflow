@@ -2,6 +2,18 @@
  * The spec 8 (and below) delivery: several orchestrator invocations of a run
  * may write at once, steps keep entities, and the World's precondition guard
  * keeps their writes consistent. See `../delivery.ts`.
+ *
+ * Design notes for this runtime, next to it:
+ *
+ * - `../eager-processing.md`: inline step execution and incremental replay.
+ * - `./turbo-mode.md`: the fast path for a run's first delivery.
+ * - `./lazy-inline-step-start.md`: folding an inline step's `step_created`
+ *   into its `step_started`, parallel inline steps and optimistic start.
+ * - `./step-message-ownership.md`: inline step ownership and its lease.
+ * - `./batched-event-writes.md`: a suspension's writes as one batch.
+ *
+ * Read the relevant one before changing that behaviour, and update it in the
+ * same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
@@ -4376,21 +4388,6 @@ async function runDelivery(
         // pays the await-then-run path for the rest of that
         // one invocation, which is cheap next to the
         // alternative.
-        //
-        // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
-        // topics consumed with `maxConcurrency: 1`) would in
-        // principle waive this latch: serialized orchestrator
-        // invocations restore the single-handler guarantee for
-        // the whole delivery. The waiver is intentionally NOT
-        // taken: the env var is a runtime-process setting that
-        // cannot prove the BUILT flow trigger actually carries
-        // `maxConcurrency: 1` (it must be set at build time
-        // too, and some integrations write their own trigger
-        // config), and `capabilities.maxConcurrency` only
-        // declares queue support, not deployed configuration.
-        // Until the build emits a verifiable signal that the
-        // deployed trigger is serialized, the conservative
-        // latch stays.
         const forceOptimisticStart =
           turbo &&
           !suspensionResult.hasAttributeEvents &&

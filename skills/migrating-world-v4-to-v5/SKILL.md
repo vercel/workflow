@@ -4,7 +4,7 @@ description: >-
   Upgrades a custom Workflow SDK World implementation from the v4 spec, or from a 5.0.0 beta, to the current v5 spec (spec version 8). Use when a package implements the `World` interface from `@workflow/world` and is moving to 5.x, or is on a 5.0.0 beta and the runtime reports `This Workflow runtime supports Worlds with spec version 6 through 8, but the configured World declares spec version N`; or when it shows event IDs that are ULIDs rather than slot positions, `Event id is not slot-numbered` at replay time, a `specVersion` the runtime refuses, `writeToStream` / `closeStream` / `readFromStream` as top-level World methods, `steps.get` or `events.listByCorrelationId` without a `runId`, a `'step'` queue kind or `__wkf_step_*` topics, a `preconditionGuard` capability, or a `createLocalWorld` / `createVercelWorld` factory.
 metadata:
   author: Vercel Inc.
-  version: '0.4.0'
+  version: '0.4.1'
 ---
 
 # Migrating a World from the v4 spec to v5
@@ -385,7 +385,7 @@ Fail the migration if any of these are true:
 
 ## Spec 9 (experimental)
 
-A World does not implement the in-band fence to migrate to v5. Spec 9 is opt-in (`WORKFLOW_SPEC_VERSION=9`), and `mintedSpecVersion()` called with no options never returns 9. A World that opts in declares `capabilities.inBandFence: true`, calls `mintedSpecVersion(process.env, { inBandFence: true })`, and tells its users to upgrade the whole fleet first and not to roll back below that release once spec 9 runs exist. See <https://workflow.dev/docs/changelog/spec-9#implementing-spec-9-in-a-world>.
+A World does not implement the in-band fence to migrate to v5. Spec 9 is opt-in (`WORKFLOW_SPEC_VERSION=9`), and `mintedSpecVersion()` called with no options never returns 9. A World that opts in declares `capabilities.inBandFence: true`, calls `mintedSpecVersion(process.env, { inBandFence: true })`, and tells its users to upgrade the whole fleet first and not to roll back below that release once spec 9 runs exist. See [Implementing spec 9 in a World](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#implementing-spec-9-in-a-world).
 
 ## Reference
 
