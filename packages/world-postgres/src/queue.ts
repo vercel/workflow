@@ -1131,6 +1131,8 @@ export function createQueue(
   }
 
   let enqueueOnlyNoted = false;
+  /** The namespace mismatch warning of `registerHandler` was said. */
+  let namespaceMismatchNoted = false;
   /**
    * Said once per process: no flow handler is registered here, so this
    * process only enqueues and runs no jobs. Expected of the CLI, the web UI
@@ -1766,15 +1768,19 @@ export function createQueue(
         );
       }
       if (
+        !namespaceMismatchNoted &&
         parsed !== ownPrefix() &&
         typeof handler[IN_PROCESS_QUEUE_HANDLER] === 'function'
       ) {
         // The route was built with another WORKFLOW_QUEUE_NAMESPACE than the
         // World's `namespace` option. Its messages are delivered, but as a
         // queue consumer's: the per-run ordering and the executor lanes are
-        // kept for this World's own prefix only.
+        // kept for this World's own prefix only. Said once per process: a
+        // route re-registers itself (a development rebuild, a worker module
+        // that registers before it starts the World).
+        namespaceMismatchNoted = true;
         console.warn(
-          `[postgres world] The flow handler is registered for queue prefix "${parsed}", but this World's namespace gives "${ownPrefix()}", so the Workflow SDK's messages are delivered as a queue consumer's, without the per-run ordering kept for the World's own prefix. Set WORKFLOW_QUEUE_NAMESPACE at build time to the World's namespace option, so both name the same prefix.`
+          `[postgres world] The flow handler is registered for queue prefix "${parsed}", but this World's namespace gives "${ownPrefix()}", so the Workflow SDK's messages are delivered as a queue consumer's, without the per-run ordering kept for the World's own prefix, and the runs this World re-enqueues at startup go to "${ownPrefix()}", which no handler here takes. Set WORKFLOW_QUEUE_NAMESPACE at build time to the World's namespace option, so both name the same prefix.`
         );
       }
       directHandlers.set(parsed, handler);

@@ -76,6 +76,9 @@ describe.skipIf(process.platform === 'win32')(
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         queue.registerHandler(sdkPrefix, flowHandler(delivered));
+        // Registered again, as a route that re-registers itself is (a
+        // development rebuild, a worker module that registers twice).
+        queue.registerHandler(sdkPrefix, flowHandler(delivered));
         await queue.start();
         const { messageId } = await queue.queue(`${sdkPrefix}test`, {
           runId: `wrun_${randomUUID()}`,
