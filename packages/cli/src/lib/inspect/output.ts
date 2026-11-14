@@ -14,8 +14,6 @@ import {
   type World,
 } from '@workflow/world';
 import chalk from 'chalk';
-
-import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
@@ -27,6 +25,7 @@ import {
   isExpiredRef,
 } from './hydration.js';
 import { stringifyJSON } from './json.js';
+import { formatRelativeTime } from './relative-time.js';
 import { resolveTimeWindow } from './time-window.js';
 import { resolveWorkflowNameFilter } from './workflow-name.js';
 
@@ -535,7 +534,7 @@ const formatTableTimestamp = (
     !opts.disableRelativeDates;
 
   if (shouldShowRelative) {
-    const relative = formatDistance(value, new Date(), { addSuffix: true });
+    const relative = formatRelativeTime(value, new Date());
     return `${isoTime} (${relative})`;
   }
 

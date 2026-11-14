@@ -27,7 +27,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "scripts": {
     "build": "nuxt-module-build prepare && nuxt-module-build build",

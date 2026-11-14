@@ -3,6 +3,11 @@
   "version": "5.2.0",
   "description": "The Workflows World interface",
   "type": "module",
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
+  ],
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",

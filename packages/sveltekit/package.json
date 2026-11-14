@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"
@@ -27,14 +29,10 @@
   },
   "dependencies": {
     "@sveltejs/load-config": "^0.2.3",
-    "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/rollup": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
-    "exsolve": "^1.2.0",
-    "fs-extra": "^11.4.1",
-    "pathe": "^2.0.3"
+    "fs-extra": "^11.4.1"
   },
   "devDependencies": {
     "@types/fs-extra": "11.0.4",

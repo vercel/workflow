@@ -359,27 +359,15 @@ importers:
 
   packages/astro:
     dependencies:
-      '@swc/core':
-        specifier: 1.15.3
-        version: 1.15.3(@swc/helpers@0.5.23)
       '@workflow/builders':
         specifier: workspace:*
         version: link:../builders
       '@workflow/rollup':
         specifier: workspace:*
         version: link:../rollup
-      '@workflow/swc-plugin':
-        specifier: workspace:*
-        version: link:../swc-plugin-workflow
       '@workflow/vite':
         specifier: workspace:*
         version: link:../vite
-      exsolve:
-        specifier: ^1.2.0
-        version: 1.2.0
-      pathe:
-        specifier: ^2.0.3
-        version: 2.0.3
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -454,9 +442,6 @@ importers:
       '@oclif/plugin-help':
         specifier: 6.2.37
         version: 6.2.37
-      '@swc/core':
-        specifier: 'catalog:'
-        version: 1.15.3(@swc/helpers@0.5.23)
       '@vercel/cli-auth':
         specifier: 0.0.1
         version: 0.0.1
@@ -469,9 +454,6 @@ importers:
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
-      '@workflow/swc-plugin':
-        specifier: workspace:*
-        version: link:../swc-plugin-workflow
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
@@ -490,42 +472,18 @@ importers:
       boxen:
         specifier: 8.0.1
         version: 8.0.1
-      builtin-modules:
-        specifier: 5.5.0
-        version: 5.5.0
       chalk:
         specifier: 5.6.2
         version: 5.6.2
-      chokidar:
-        specifier: 4.0.3
-        version: 4.0.3
-      date-fns:
-        specifier: 4.4.0
-        version: 4.4.0
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
       easy-table:
         specifier: 1.2.0
         version: 1.2.0
-      enhanced-resolve:
-        specifier: 5.26.1
-        version: 5.26.1
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.28.2
-      find-up:
-        specifier: 7.0.0
-        version: 7.0.0
-      mixpart:
-        specifier: 0.0.4
-        version: 0.0.4
       open:
         specifier: 10.2.0
         version: 10.2.0
-      ora:
-        specifier: 8.2.0
-        version: 8.2.0
       terminal-link:
         specifier: 5.0.0
         version: 5.0.0
@@ -545,6 +503,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      date-fns:
+        specifier: 4.4.0
+        version: 4.4.0
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -554,9 +515,6 @@ importers:
 
   packages/core:
     dependencies:
-      '@aws-sdk/credential-provider-web-identity':
-        specifier: 3.972.88
-        version: 3.972.88
       '@jridgewell/trace-mapping':
         specifier: 0.3.31
         version: 0.3.31
@@ -590,9 +548,6 @@ importers:
       acorn:
         specifier: 8.19.0
         version: 8.19.0
-      debug:
-        specifier: 4.4.3
-        version: 4.4.3(supports-color@10.2.2)
       devalue:
         specifier: 6.0.3
         version: 6.0.3
@@ -627,9 +582,6 @@ importers:
       '@opentelemetry/sdk-trace-base':
         specifier: 1.30.1
         version: 1.30.1(@opentelemetry/api@1.9.1)
-      '@types/debug':
-        specifier: 4.1.13
-        version: 4.1.13
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.21
@@ -850,9 +802,6 @@ importers:
 
   packages/nitro:
     dependencies:
-      '@swc/core':
-        specifier: 'catalog:'
-        version: 1.15.3(@swc/helpers@0.5.23)
       '@workflow/builders':
         specifier: workspace:*
         version: link:../builders
@@ -862,18 +811,12 @@ importers:
       '@workflow/rollup':
         specifier: workspace:*
         version: link:../rollup
-      '@workflow/swc-plugin':
-        specifier: workspace:*
-        version: link:../swc-plugin-workflow
       '@workflow/vite':
         specifier: workspace:*
         version: link:../vite
       '@workflow/web':
         specifier: workspace:*
         version: link:../web
-      exsolve:
-        specifier: 1.2.0
-        version: 1.2.0
       pathe:
         specifier: 2.0.3
         version: 2.0.3
@@ -973,30 +916,18 @@ importers:
       '@sveltejs/load-config':
         specifier: ^0.2.3
         version: 0.2.3
-      '@swc/core':
-        specifier: 'catalog:'
-        version: 1.15.3(@swc/helpers@0.5.23)
       '@workflow/builders':
         specifier: workspace:*
         version: link:../builders
       '@workflow/rollup':
         specifier: workspace:*
         version: link:../rollup
-      '@workflow/swc-plugin':
-        specifier: workspace:*
-        version: link:../swc-plugin-workflow
       '@workflow/vite':
         specifier: workspace:*
         version: link:../vite
-      exsolve:
-        specifier: ^1.2.0
-        version: 1.2.0
       fs-extra:
         specifier: ^11.4.1
         version: 11.4.1
-      pathe:
-        specifier: ^2.0.3
-        version: 2.0.3
     devDependencies:
       '@types/fs-extra':
         specifier: 11.0.4
@@ -1132,9 +1063,6 @@ importers:
       srvx:
         specifier: ^0.12.4
         version: 0.12.8
-      swr:
-        specifier: ^2.5.1
-        version: 2.5.1(react@19.3.1)
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -1259,6 +1187,9 @@ importers:
       sonner:
         specifier: 2.0.8
         version: 2.0.8(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      swr:
+        specifier: ^2.5.1
+        version: 2.5.1(react@19.3.1)
       tailwind-merge:
         specifier: 3.5.0
         version: 3.5.0
@@ -1500,9 +1431,6 @@ importers:
 
   packages/world-local:
     dependencies:
-      '@vercel/queue':
-        specifier: 'catalog:'
-        version: 0.11.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1534,6 +1462,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.21
+      '@vercel/queue':
+        specifier: 'catalog:'
+        version: 0.11.0(@opentelemetry/api@1.9.1)
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -1549,9 +1480,6 @@ importers:
 
   packages/world-postgres:
     dependencies:
-      '@vercel/queue':
-        specifier: 'catalog:'
-        version: 0.11.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1595,6 +1523,9 @@ importers:
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
+      '@vercel/queue':
+        specifier: 'catalog:'
+        version: 0.11.0(@opentelemetry/api@1.9.1)
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -12172,10 +12103,6 @@ packages:
     resolution: {integrity: sha512-2HvIEKRoqS62guEC+qBjpvRubdX910WCMuJTZ+I9yvqKU2/12eSL549HMwtabb4oupdj2sMP50k+XJfB/8JE6w==}
     engines: {node: '>=8'}
 
-  is-interactive@2.0.0:
-    resolution: {integrity: sha512-qP1vozQRI+BMOPcjFzrjXuQvdak2pHNUMZoeG2eRbiSqyvbEf/wQtEOTOX1guk6E3t36RkaqiSt8A/6YElNxLQ==}
-    engines: {node: '>=12'}
-
   is-module@1.0.0:
     resolution: {integrity: sha512-51ypPSPCoTEIN9dy5Oy+h4pShgJmPCygKfyRCISBI+JoWT/2oJvK8QPxmwv7b/p239jXrm9M1mlQbyKJ5A152g==}
 
@@ -12225,10 +12152,6 @@ packages:
   is-unicode-supported@0.1.0:
     resolution: {integrity: sha512-knxG2q4UC3u8stRGyAVJCOdxFmv5DZiRcdlIaAQXAbSfJya+OhopNotLQrstBhququ4ZpuKbDc/8S6mgXgPFPw==}
     engines: {node: '>=10'}
-
-  is-unicode-supported@1.3.0:
-    resolution: {integrity: sha512-43r2mRvz+8JRIKnWJ+3j8JtjRKZ6GmjzfaE/qiBJnikNnYv/6bagRJ1kUhNk8R5EX/GkobD+r+sfxCPJsiKBLQ==}
-    engines: {node: '>=12'}
 
   is-unicode-supported@2.1.0:
     resolution: {integrity: sha512-mE00Gnza5EEB3Ds0HfMyllZzbBrmLOX3vfWoj9A9PEnTfratQ/BcaJOuMhnkhjXvb2+FkY3VuHqtAGpTPmglFQ==}
@@ -12632,10 +12555,6 @@ packages:
   log-symbols@4.1.0:
     resolution: {integrity: sha512-8XPvpAA8uyhfteu8pIvQxpJZ7SYYdpUivZpGy6sFsBuKRY/7rQGavedeB8aK+Zkyq6upMFVL/9AW6vOYzfRyLg==}
     engines: {node: '>=10'}
-
-  log-symbols@6.0.0:
-    resolution: {integrity: sha512-i24m8rpwhmPIS4zscNzK6MSEhk0DUWa/8iYQWxhffV8jkI4Phvs3F+quL5xvS0gdQR0FyTCMMH33Y78dDTzzIw==}
-    engines: {node: '>=18'}
 
   log-update@6.1.0:
     resolution: {integrity: sha512-9ie8ItPR6tjY5uYJh8K/Zrv/RMZ5VOlOWvtZdEHYSTFKZfIBPQa9tOAEeAWhd+AnIneLJ22w5fjOYtoutpWq5w==}
@@ -13553,10 +13472,6 @@ packages:
   ora@5.4.1:
     resolution: {integrity: sha512-5b6Y85tPxZZ7QytO+BQzysW31HJku27cRIlkbAXaNx+BdcVi+LlRFmVXzeF6a7JCwJpyw5c4b+YSVImQIrBpuQ==}
     engines: {node: '>=10'}
-
-  ora@8.2.0:
-    resolution: {integrity: sha512-weP+BZ8MVNnlCm8c0Qdc1WSWq4Qn7I+9CJGm7Qali6g44e/PUzbjNqJX5NJ9ljlNMosfJvg1fKEGILklK9cwnw==}
-    engines: {node: '>=18'}
 
   os-paths@4.4.0:
     resolution: {integrity: sha512-wrAwOeXp1RRMFfQY8Sy7VaGVmPocaLwSFOYCGKSyo8qmJ+/yaafCl5BCA1IQZWqFSRBrKDYFeR9d/VyQzfH/jg==}
@@ -14927,10 +14842,6 @@ packages:
 
   std-env@4.3.0:
     resolution: {integrity: sha512-OtU/EgQ1kIm5KwqQpBC6ZEMXrZRui11w8zgfTWp8cdO9B8OaPsbA8bTHO2P+HNo1VlUTGMVBwPhydu6poeXiag==}
-
-  stdin-discarder@0.2.2:
-    resolution: {integrity: sha512-UhDfHmA92YAlNnCfhmq0VeNL5bDbiZGg7sZ2IvPsXubGkiNa9EC+tUTsjBRsYUAz87btI6/1wf4XoVvQ3uRnmQ==}
-    engines: {node: '>=18'}
 
   streamdown@2.7.1:
     resolution: {integrity: sha512-pIz4XOB+e7iyqSJABXC9PoyHifBZVQx/7U0Qo/vdOIERqGXfgEhJxkXENsuWMO8TGXkaQ5ewV9jnliK7q47T8w==}
@@ -16933,6 +16844,7 @@ snapshots:
       '@smithy/types': 4.20.0
       bowser: 2.12.1
       tslib: 2.8.1
+    optional: true
 
   '@aws-sdk/credential-provider-web-identity@3.972.88':
     dependencies:
@@ -16942,6 +16854,7 @@ snapshots:
       '@smithy/core': 3.39.0
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@aws-sdk/nested-clients@3.998.1':
     dependencies:
@@ -16953,6 +16866,7 @@ snapshots:
       '@smithy/node-http-handler': 4.14.2
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@aws-sdk/signature-v4-multi-region@3.996.51':
     dependencies:
@@ -16960,18 +16874,22 @@ snapshots:
       '@smithy/signature-v4': 5.7.5
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@aws-sdk/types@3.975.0':
     dependencies:
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@aws-sdk/xml-builder@3.972.42':
     dependencies:
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
-  '@aws/lambda-invoke-store@0.3.0': {}
+  '@aws/lambda-invoke-store@0.3.0':
+    optional: true
 
   '@babel/code-frame@7.29.7':
     dependencies:
@@ -23140,28 +23058,33 @@ snapshots:
     dependencies:
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@smithy/fetch-http-handler@5.8.1':
     dependencies:
       '@smithy/core': 3.39.0
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@smithy/node-http-handler@4.14.2':
     dependencies:
       '@smithy/core': 3.39.0
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@smithy/signature-v4@5.7.5':
     dependencies:
       '@smithy/core': 3.39.0
       '@smithy/types': 4.20.0
       tslib: 2.8.1
+    optional: true
 
   '@smithy/types@4.20.0':
     dependencies:
       tslib: 2.8.1
+    optional: true
 
   '@speed-highlight/core@1.2.15': {}
 
@@ -25519,7 +25442,8 @@ snapshots:
 
   boolbase@1.0.0: {}
 
-  bowser@2.12.1: {}
+  bowser@2.12.1:
+    optional: true
 
   boxen@8.0.1:
     dependencies:
@@ -28123,8 +28047,6 @@ snapshots:
 
   is-interactive@1.0.0: {}
 
-  is-interactive@2.0.0: {}
-
   is-module@1.0.0: {}
 
   is-node-process@1.2.0: {}
@@ -28156,8 +28078,6 @@ snapshots:
   is-stream@4.0.1: {}
 
   is-unicode-supported@0.1.0: {}
-
-  is-unicode-supported@1.3.0: {}
 
   is-unicode-supported@2.1.0: {}
 
@@ -28568,11 +28488,6 @@ snapshots:
     dependencies:
       chalk: 4.1.2
       is-unicode-supported: 0.1.0
-
-  log-symbols@6.0.0:
-    dependencies:
-      chalk: 5.6.2
-      is-unicode-supported: 1.3.0
 
   log-update@6.1.0:
     dependencies:
@@ -30750,18 +30665,6 @@ snapshots:
       strip-ansi: 6.0.1
       wcwidth: 1.0.1
 
-  ora@8.2.0:
-    dependencies:
-      chalk: 5.6.2
-      cli-cursor: 5.0.0
-      cli-spinners: 2.9.2
-      is-interactive: 2.0.0
-      is-unicode-supported: 2.1.0
-      log-symbols: 6.0.0
-      stdin-discarder: 0.2.2
-      string-width: 7.2.0
-      strip-ansi: 7.1.0
-
   os-paths@4.4.0: {}
 
   oxc-parser@0.121.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3):
@@ -32470,8 +32373,6 @@ snapshots:
   statuses@2.0.2: {}
 
   std-env@4.3.0: {}
-
-  stdin-discarder@0.2.2: {}
 
   streamdown@2.7.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(supports-color@10.2.2):
     dependencies:

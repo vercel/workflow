@@ -72,6 +72,11 @@ jobs:
       - name: Check every test file is run by turbo test or a CI lane
         run: node scripts/check-no-unrun-tests.mjs
 
+      # Compiled tests and declaration maps that point at an unpublished
+      # `src/` add weight to every install and are read by no consumer.
+      - name: Check publishable packages exclude tests and orphaned maps
+        run: node scripts/check-published-files.mjs
+
   scripts-tests:
     name: CI Scripts Tests
     runs-on: ubuntu-latest
