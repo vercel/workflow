@@ -8,8 +8,10 @@ routing itself.
 
 It does not translate any protocol. `LocalWorld.create_queue_handler`
 already reads exactly the headers `@workflow/world-local` sends and answers
-`{"ok": true}`, and both sides read `WORKFLOW_LOCAL_DATA_DIR` with byte-compatible
-file formats.
+`{"ok": true}`, and both sides read `WORKFLOW_LOCAL_DATA_DIR`. The Python
+LocalWorld uses the JSON file layout of `@workflow/world-local` 5.3.0 and
+earlier, not the SQLite `world.db` of later releases, so the CI job drives this
+app with world-local 5.3.0 (see `e2e-python` in `.github/workflows/tests.yml`).
 
 Only the *first* workflow trigger of a run arrives over HTTP. `LocalWorld.queue`
 publishes to an embedded in-process queue service, so every step invocation and
