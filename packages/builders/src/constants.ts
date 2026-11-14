@@ -84,10 +84,46 @@ export function createWorkflowEntrypointOptionsCode(options?: {
   return `, { ${fields.join(', ')} }`;
 }
 
+/**
+ * The `namespace` field of {@link createWorkflowEntrypointOptionsCode}'s
+ * output, as the options for `refreshWorkflowHandler`: the prefix a World
+ * delivers to this route.
+ */
+export function createRefreshOptionsCode(options?: { namespace?: string }) {
+  const field = createNamespaceFieldCode(options?.namespace);
+  return field ? `, { ${field} }` : '';
+}
+
+/**
+ * The `namespace: "..."` field for the options of `refreshWorkflowHandler`
+ * and `registerWorkflowHandler`, resolved while building as
+ * {@link createWorkflowEntrypointOptionsCode} resolves it, or `undefined`
+ * when no namespace is set.
+ */
+export function createNamespaceFieldCode(namespace?: string) {
+  const resolved = resolveQueueNamespace(namespace);
+  return resolved ? `namespace: ${JSON.stringify(resolved)}` : undefined;
+}
+
+/**
+ * The route exports of a generated flow route. The module imports
+ * `workflowEntrypoint` and `refreshWorkflowHandler` from `workflow/runtime`:
+ * in a process that runs as a worker for a World that delivers in process
+ * (see `registerWorkflowHandler`), each evaluation of the module outside
+ * production hands the World this evaluation's route, so a route rebuilt in
+ * development replaces the one registered at startup. In production the
+ * route is built once and registered at startup, so the module is evaluated
+ * without a side effect (a bundler that inlines `NODE_ENV` drops the call).
+ * Elsewhere the call does nothing.
+ */
 export function createWorkflowRouteHandlersCode(
-  workflowEntrypointCall: string
+  workflowEntrypointCall: string,
+  refreshOptions?: { namespace?: string }
 ) {
   return `export const POST = ${workflowEntrypointCall};
+if (process.env.NODE_ENV !== 'production') {
+  refreshWorkflowHandler(POST${createRefreshOptionsCode(refreshOptions)});
+}
 export const GET = POST;
 export const HEAD = POST;
 export const OPTIONS = POST;`;

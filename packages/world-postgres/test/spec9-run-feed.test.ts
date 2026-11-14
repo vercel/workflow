@@ -1,7 +1,11 @@
-import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { SPEC_VERSION_SINGLE_ORCHESTRATOR, type World } from '@workflow/world';
+import {
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type World,
+} from '@workflow/world';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
@@ -45,9 +49,6 @@ describe.skipIf(process.platform === 'win32')(
     let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
     let pool: TestPool;
     let world: World & { start(): Promise<void> };
-    let server: Server;
-    const oldPort = process.env.PORT;
-    const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
     /** Orchestrator deliveries (no `stepId`), by run. */
     const orchestratorDeliveries = new Map<string, number>();
 
@@ -82,50 +83,6 @@ globalThis.__private_workflows = new Map([['fanOut', fanOut]]);
       // Every step runs from its own message.
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
       const handler = workflowEntrypoint(code);
-      server = createServer(async (req, res) => {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(Buffer.from(chunk));
-        const body = Buffer.concat(chunks);
-        try {
-          const message = JSON.parse(body.toString()) as {
-            runId?: string;
-            stepId?: string;
-          };
-          if (message.runId && message.stepId === undefined) {
-            orchestratorDeliveries.set(
-              message.runId,
-              (orchestratorDeliveries.get(message.runId) ?? 0) + 1
-            );
-          }
-        } catch {}
-        try {
-          const headers = new Headers();
-          for (const [key, value] of Object.entries(req.headers)) {
-            if (value !== undefined)
-              headers.set(key, Array.isArray(value) ? value.join(',') : value);
-          }
-          const response = await handler(
-            new Request(`http://localhost${req.url}`, {
-              method: 'POST',
-              headers,
-              body,
-            })
-          );
-          res.writeHead(response.status, Object.fromEntries(response.headers));
-          res.end(Buffer.from(await response.arrayBuffer()));
-        } catch (error) {
-          res.writeHead(500);
-          res.end(String(error));
-        }
-      });
-      await new Promise<void>((resolve) =>
-        server.listen(0, '127.0.0.1', resolve)
-      );
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('No test server address');
-      process.env.PORT = String(address.port);
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
       world = createWorld({
         pool,
         // Few slots: at most half of them linger on a feed, so the steps a
@@ -134,6 +91,26 @@ globalThis.__private_workflows = new Map([['fanOut', fanOut]]);
         pollInterval: 50,
         applicationManagedShutdown: true,
       });
+      // The app's flow route, registered as the framework integrations do;
+      // counts the orchestrator deliveries (no `stepId`) on the way in.
+      world.registerHandler(
+        '__wkf_workflow_',
+        Object.assign((request: Request) => handler(request), {
+          [IN_PROCESS_QUEUE_HANDLER]: (delivery: InProcessDelivery) => {
+            const message = delivery.message as {
+              runId?: string;
+              stepId?: string;
+            };
+            if (message.runId && message.stepId === undefined) {
+              orchestratorDeliveries.set(
+                message.runId,
+                (orchestratorDeliveries.get(message.runId) ?? 0) + 1
+              );
+            }
+            return handler[IN_PROCESS_QUEUE_HANDLER]!(delivery);
+          },
+        })
+      );
       setWorld(world);
       await world.start();
       registerStepFunction('fanOutWork', async (i: number) => {
@@ -145,19 +122,9 @@ globalThis.__private_workflows = new Map([['fanOut', fanOut]]);
     afterAll(async () => {
       vi.unstubAllEnvs();
       await world?.close?.();
-      if (server) {
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
-          server.closeAllConnections();
-        });
-      }
       setWorld(undefined);
       await pool?.end();
       await container?.stop();
-      if (oldPort === undefined) delete process.env.PORT;
-      else process.env.PORT = oldPort;
-      if (oldBaseUrl === undefined) delete process.env.WORKFLOW_LOCAL_BASE_URL;
-      else process.env.WORKFLOW_LOCAL_BASE_URL = oldBaseUrl;
     });
 
     async function startRun(): Promise<string> {

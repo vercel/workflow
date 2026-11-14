@@ -1,4 +1,3 @@
-import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
@@ -63,9 +62,6 @@ describe.skipIf(process.platform === 'win32')(
     let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
     let pool: TestPool;
     let world: World & { start(): Promise<void> };
-    let server: Server;
-    const oldPort = process.env.PORT;
-    const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
     const spanExporter = new InMemorySpanExporter();
     const tracerProvider = new BasicTracerProvider();
 
@@ -104,43 +100,14 @@ globalThis.__private_workflows = new Map([['resumed', resumed]]);
       vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '20000');
       vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '20000');
       const handler = workflowEntrypoint(code);
-      server = createServer(async (req, res) => {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(Buffer.from(chunk));
-        try {
-          const headers = new Headers();
-          for (const [key, value] of Object.entries(req.headers)) {
-            if (value !== undefined)
-              headers.set(key, Array.isArray(value) ? value.join(',') : value);
-          }
-          const response = await handler(
-            new Request(`http://localhost${req.url}`, {
-              method: 'POST',
-              headers,
-              body: Buffer.concat(chunks),
-            })
-          );
-          res.writeHead(response.status, Object.fromEntries(response.headers));
-          res.end(Buffer.from(await response.arrayBuffer()));
-        } catch (error) {
-          res.writeHead(500);
-          res.end(String(error));
-        }
-      });
-      await new Promise<void>((resolve) =>
-        server.listen(0, '127.0.0.1', resolve)
-      );
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('No test server address');
-      process.env.PORT = String(address.port);
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
       world = createWorld({
         pool,
         queueConcurrency: 4,
         pollInterval: 50,
         applicationManagedShutdown: true,
       });
+      // The app's flow route, registered as the framework integrations do.
+      world.registerHandler('__wkf_workflow_', handler);
       setWorld(world);
       await world.start();
       registerStepFunction('ttrAfterResume', async (value: string) => value);
@@ -149,21 +116,11 @@ globalThis.__private_workflows = new Map([['resumed', resumed]]);
     afterAll(async () => {
       vi.unstubAllEnvs();
       await world?.close?.();
-      if (server) {
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
-          server.closeAllConnections();
-        });
-      }
       setWorld(undefined);
       await tracerProvider.shutdown();
       otelTrace.disable();
       await pool?.end();
       await container?.stop();
-      if (oldPort === undefined) delete process.env.PORT;
-      else process.env.PORT = oldPort;
-      if (oldBaseUrl === undefined) delete process.env.WORKFLOW_LOCAL_BASE_URL;
-      else process.env.WORKFLOW_LOCAL_BASE_URL = oldBaseUrl;
     });
 
     it('measures a resume that lands while the delivery lingers on the feed', async () => {

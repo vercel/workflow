@@ -1,5 +1,5 @@
 import { getWorkflowPort } from '@workflow/utils/get-port';
-import { createWorld as createLocalTestWorld } from '@workflow/world-local';
+import { IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,14 +35,6 @@ vi.mock('@workflow/utils/get-port', () => ({
   getWorkflowPort: vi.fn(),
 }));
 
-vi.mock('@workflow/world-local', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@workflow/world-local')>();
-  return {
-    ...actual,
-    createWorld: vi.fn(actual.createWorld),
-  };
-});
-
 vi.mock('./storage.js', () => ({
   createRunsStorage: vi.fn(),
   createRecoverableRunsList: vi.fn(),
@@ -76,9 +68,6 @@ describe('re-enqueue active runs on start', () => {
     stop: vi.fn(),
     promise: Promise.resolve(),
   };
-  const localWorldClose = vi.fn();
-  const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
-  const createQueueHandler = vi.fn(() => wrappedHandler);
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
     end: vi.fn(),
@@ -129,10 +118,6 @@ describe('re-enqueue active runs on start', () => {
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue(runnerMock as any);
-    vi.mocked(createLocalTestWorld).mockReturnValue({
-      createQueueHandler,
-      close: localWorldClose,
-    } as any);
     vi.mocked(createEventsStorage).mockReturnValue({} as any);
     vi.mocked(createHooksStorage).mockReturnValue({} as any);
     vi.mocked(createStepsStorage).mockReturnValue({} as any);
@@ -179,8 +164,19 @@ describe('re-enqueue active runs on start', () => {
     await world.close();
   });
 
+  /** The app's flow route, registered as the framework integrations do. */
+  function asWorker<T extends { registerHandler: Function }>(world: T): T {
+    world.registerHandler(
+      '__wkf_workflow_',
+      Object.assign(async () => Response.json({ ok: true }), {
+        [IN_PROCESS_QUEUE_HANDLER]: async () => undefined,
+      })
+    );
+    return world;
+  }
+
   it('keeps automatic shutdown in createWorld() by default', async () => {
-    const world = createWorld();
+    const world = asWorker(createWorld());
     await world.start();
 
     expect(run).toHaveBeenCalledWith(
@@ -193,7 +189,7 @@ describe('re-enqueue active runs on start', () => {
   it('lets createWorld() environment configuration use application-managed shutdown', async () => {
     process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN = '1';
 
-    const world = createWorld();
+    const world = asWorker(createWorld());
     await world.start();
 
     expect(run).toHaveBeenCalledWith(
@@ -374,7 +370,9 @@ describe('re-enqueue active runs on start', () => {
     runnerMock.promise = new Promise<void>((resolve) => {
       resolveRunnerFinished = resolve;
     });
-    const world = createWorld({ connectionString: 'postgres://test' });
+    const world = asWorker(
+      createWorld({ connectionString: 'postgres://test' })
+    );
     await world.start();
     const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
     const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
@@ -411,7 +409,9 @@ describe('re-enqueue active runs on start', () => {
     runnerMock.promise = new Promise<void>((resolve) => {
       resolveRunnerFinished = resolve;
     });
-    const world = createWorld({ connectionString: 'postgres://test' });
+    const world = asWorker(
+      createWorld({ connectionString: 'postgres://test' })
+    );
     await world.start();
 
     const closePromise = world.close();
@@ -432,7 +432,9 @@ describe('re-enqueue active runs on start', () => {
     runnerMock.promise = new Promise<void>((_resolve, reject) => {
       rejectRunnerFinished = reject;
     });
-    const world = createWorld({ connectionString: 'postgres://test' });
+    const world = asWorker(
+      createWorld({ connectionString: 'postgres://test' })
+    );
     await world.start();
     const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
     const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
@@ -445,16 +447,17 @@ describe('re-enqueue active runs on start', () => {
 
     await expect(closePromise).resolves.toBeUndefined();
     expect(workerUtilsMock.release).toHaveBeenCalledOnce();
-    expect(localWorldClose).toHaveBeenCalledOnce();
     expect(streamer?.close).toHaveBeenCalledOnce();
     expect(internalPool?.end).toHaveBeenCalledOnce();
   });
 
   it('allows close to be retried after queue cleanup fails', async () => {
-    localWorldClose
+    vi.mocked(workerUtilsMock.release)
       .mockRejectedValueOnce(new Error('transient local shutdown error'))
       .mockResolvedValueOnce(undefined);
-    const world = createWorld({ connectionString: 'postgres://test' });
+    const world = asWorker(
+      createWorld({ connectionString: 'postgres://test' })
+    );
     await world.start();
     const streamer = vi.mocked(createStreamer).mock.results.at(-1)?.value;
     const internalPool = vi.mocked(Pool).mock.results.at(-1)?.value;
@@ -467,8 +470,7 @@ describe('re-enqueue active runs on start', () => {
 
     await expect(world.close()).resolves.toBeUndefined();
     expect(runnerMock.stop).toHaveBeenCalledOnce();
-    expect(workerUtilsMock.release).toHaveBeenCalledOnce();
-    expect(localWorldClose).toHaveBeenCalledTimes(2);
+    expect(workerUtilsMock.release).toHaveBeenCalledTimes(2);
     expect(streamer?.close).toHaveBeenCalledOnce();
     expect(internalPool?.end).toHaveBeenCalledOnce();
   });

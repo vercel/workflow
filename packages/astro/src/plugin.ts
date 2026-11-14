@@ -4,7 +4,66 @@ import { type AstroConfig, createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
-import { LocalBuilder, VercelBuilder } from './builder.js';
+import {
+  ASTRO_WORKER_FILE_NAME,
+  LocalBuilder,
+  VercelBuilder,
+} from './builder.js';
+
+/** The worker module's path in the pages directory; see `LocalBuilder`. */
+function workerModulePath(srcDir: string): string {
+  return join(srcDir, 'pages/.well-known/workflow/v1', ASTRO_WORKER_FILE_NAME);
+}
+
+/**
+ * Whether `WORKFLOW_TARGET_WORLD` selects a first-party World that delivers
+ * over HTTP or by subscription (the Local and Vercel Worlds, under any of
+ * their spellings), or none at all (the Local World by default). Such a
+ * World takes no flow route and is not built at boot.
+ */
+function isHttpDeliveringTarget(target: string | undefined): boolean {
+  return (
+    !target ||
+    target === 'local' ||
+    target === 'vercel' ||
+    target === '@workflow/world-local' ||
+    target === '@workflow/world-vercel'
+  );
+}
+
+/**
+ * The production worker entry: `dist/server/workflow-worker.mjs`, a second
+ * entry of the server build whose `startWorkflowWorker()` a start script
+ * calls before the server entry, to run the process as a worker for a World
+ * that delivers in process (the Postgres World). Astro has no production
+ * startup hook (the Node adapter loads even middleware on the first
+ * request), so the entry is how a copy of the app that serves no web traffic
+ * runs jobs. Emitted as a chunk of the SSR build so it shares the route's
+ * modules with the server entry.
+ */
+function workerEntryPlugin(workerPath: string) {
+  let ssr = false;
+  return {
+    name: 'workflow:astro-worker-entry',
+    configResolved(config: { build?: { ssr?: boolean | string } }) {
+      ssr = Boolean(config.build?.ssr);
+    },
+    buildStart(this: {
+      emitFile: (file: {
+        type: 'chunk';
+        id: string;
+        fileName: string;
+      }) => string;
+    }) {
+      if (!ssr) return;
+      this.emitFile({
+        type: 'chunk',
+        id: workerPath,
+        fileName: 'workflow-worker.mjs',
+      });
+    },
+  };
+}
 
 export interface WorkflowPluginOptions {
   /**
@@ -22,6 +81,7 @@ export function workflowPlugin(
   let builderOptions: Partial<AstroConfig> = {
     sourcemap: options.sourcemap,
   };
+  let workerPath: string | undefined;
   const enqueue = createBuildQueue();
 
   return {
@@ -32,6 +92,7 @@ export function workflowPlugin(
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
         const srcDir = fileURLToPath(config.srcDir);
+        workerPath = workerModulePath(srcDir);
         builderOptions = {
           workingDir: fileURLToPath(config.root),
           dirs: [join(srcDir, 'pages'), join(srcDir, 'workflows')],
@@ -55,7 +116,8 @@ export function workflowPlugin(
             workflowHotUpdatePlugin({
               builder,
               enqueue,
-            }) as any
+            }) as any,
+            workerEntryPlugin(workerPath) as any
           );
         }
         updateConfig({
@@ -63,6 +125,37 @@ export function workflowPlugin(
             plugins: vitePlugins,
           },
         });
+      },
+      // The development server: run it as a worker when the World delivers
+      // in process, as the production worker entry does, since Astro has no
+      // startup hook of its own for an app to do so. The Local and Vercel
+      // Worlds never take the route and are not built at boot (they are on
+      // the first request); any other World is asked, as the Nest and Nitro
+      // integrations do. Registering decides: it succeeds only on a World
+      // that delivers in process, and only then is the World started here.
+      // The handler loads the route on every delivery, so edits take effect
+      // without a restart.
+      'astro:server:setup': async ({
+        server,
+      }: HookParameters<'astro:server:setup'>) => {
+        if (process.env.VERCEL_DEPLOYMENT_ID || !workerPath) return;
+        if (isHttpDeliveringTarget(process.env.WORKFLOW_TARGET_WORLD)) return;
+        try {
+          const worker = (await server.ssrLoadModule(workerPath)) as {
+            registerWorkflowWorker: () => Promise<boolean>;
+            startWorkflowWorker: () => Promise<void>;
+          };
+          if (await worker.registerWorkflowWorker()) {
+            await worker.startWorkflowWorker();
+          }
+        } catch (error) {
+          console.error(
+            '[workflow] Could not register the flow route with the World; a ' +
+              'World that delivers in process (the Postgres World) runs no ' +
+              'worker in this process until it is registered.',
+            error instanceof Error ? error.message : error
+          );
+        }
       },
       'astro:build:done': async () => {
         if (process.env.VERCEL_DEPLOYMENT_ID) {

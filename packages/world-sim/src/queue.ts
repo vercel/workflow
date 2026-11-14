@@ -35,6 +35,7 @@ import {
   type QueueOptions,
   type QueuePayload,
   type QueuePrefix,
+  readQueueDeliveryHeaders,
   singleOrchestratorRunIdOf,
   ValidQueueName,
 } from '@workflow/world';
@@ -224,12 +225,11 @@ export function createSimQueue(opts: {
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return async (req: Request) => {
-      const queueName = req.headers.get('x-vqs-queue-name');
-      const messageId = req.headers.get('x-vqs-message-id');
-      const attempt = Number(req.headers.get('x-vqs-message-attempt'));
-      const deliveryCount = Number(
-        req.headers.get('x-vqs-message-delivery-count') ?? attempt
-      );
+      const headers = readQueueDeliveryHeaders(req.headers);
+      const queueName = headers.queueName ?? null;
+      const messageId = headers.messageId ?? null;
+      const attempt = Number(headers.attempt);
+      const deliveryCount = Number(headers.deliveryCount ?? attempt);
       if (!queueName || !messageId || !Number.isFinite(attempt)) {
         return Response.json(
           { error: 'Missing required headers' },

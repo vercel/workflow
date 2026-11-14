@@ -1122,15 +1122,7 @@ export interface QueueResult {
 /** The handler {@link Queue.createQueueHandler} runs for each delivery. */
 export type QueueHandler = (
   message: unknown,
-  meta: {
-    attempt: number;
-    deliveryCount?: number;
-    createdAt?: Date;
-    queueName: ValidQueueName;
-    messageId: MessageId;
-    requestId?: string;
-    invocationStartedAt?: number;
-  }
+  meta: QueueDeliveryMeta
 ) => Promise<unknown>;
 
 /**
@@ -1173,12 +1165,195 @@ export interface InvokeOptions {
  *   app's own processes, which share the key through the data directory, not
  *   any request from localhost. Temporary: it goes away once the Local
  *   World's queue no longer delivers back to the app over its own routes.
- * - `'skip'`: the runtime does not check. Only for a World whose platform
- *   guarantees that only its queue reaches the route, as Vercel's does;
- *   world-postgres declares it until its messages are delivered in-process
- *   (https://github.com/vercel/workflow/issues/5258).
+ * - `'allow'`: the route accepts HTTP and the runtime does not check. Only
+ *   for a World whose platform guarantees that only its queue reaches the
+ *   route, as Vercel's does. `'skip'` is this mode's earlier spelling,
+ *   accepted and deprecated.
+ * - `'deny'`: the route refuses every HTTP delivery (the `?__health` probe
+ *   still answers). The World's queue delivers the
+ *   Workflow SDK's messages inside the app's own process: the app hands the
+ *   World its flow route with {@link Queue.registerHandler} when it starts
+ *   (the framework integrations do, through `registerWorkflowHandler()` from
+ *   `workflow/runtime`), the World runs a worker only in a process that did,
+ *   and delivers to the route's in-process entry
+ *   ({@link IN_PROCESS_QUEUE_HANDLER}). A request that reaches the route over
+ *   HTTP is refused with a 403 whose body carries `code: "QUEUE_ROUTE_DENIED"`,
+ *   before any run is touched. Unlike the 401 of `'loopback'` (a missing or
+ *   wrong key, which a sender retries once it reloaded the key), the 403 is
+ *   final: the route never accepts an HTTP delivery, and a sender must not
+ *   retry it.
+ *   world-postgres declares it. `WORKFLOW_QUEUE_AUTH=off` makes the route
+ *   accept HTTP again, as an emergency override only (a rolling upgrade whose
+ *   old workers still deliver over HTTP); it is refused while dynamic
+ *   workflows are enabled.
  */
-export type QueueAuthMode = 'loopback' | 'skip';
+// TODO(#5427): the model is `'deny'` for pull-based Worlds (the World's
+// worker runs in the app's process and the route refuses HTTP deliveries)
+// and
+// `'allow'` for Worlds whose route accepts HTTP because the platform
+// protects it (Vercel Queues). A World on an external push-based queue (SQS,
+// Cloudflare Queues) fits neither: stage 3 adds a signing mode, in which the
+// World signs each delivery and `authorizeQueueDelivery()` in @workflow/core
+// verifies it before touching any run. Add the mode here and its check there.
+export type QueueAuthMode =
+  | 'loopback'
+  | 'allow'
+  | 'deny'
+  // TODO: remove 'skip' in SDK v6, when the mode becomes required.
+  /** @deprecated The earlier spelling of `'allow'`; behaves the same. */
+  | 'skip';
+
+/**
+ * What a World tells the handler about a delivery: see
+ * {@link Queue.createQueueHandler} for each field.
+ */
+export interface QueueDeliveryMeta {
+  attempt: number;
+  deliveryCount?: number;
+  createdAt?: Date;
+  queueName: ValidQueueName;
+  messageId: MessageId;
+  requestId?: string;
+  invocationStartedAt?: number;
+}
+
+/**
+ * One delivery handed to a flow route's in-process entry
+ * ({@link IN_PROCESS_QUEUE_HANDLER}): the decoded message and its metadata,
+ * as the World would otherwise have put on the wire.
+ */
+export interface InProcessDelivery {
+  message: unknown;
+  meta: QueueDeliveryMeta;
+  /**
+   * Aborted when the World stops waiting for this delivery (its shutdown,
+   * or the deadline it gives a delivery), as a request's signal is for a
+   * delivery over HTTP. The World releases the job then. The Workflow SDK's
+   * flow route does not act on it, as it does not on a request's signal: a
+   * delivery it accepted runs to completion. A handler of the World's own
+   * (a queue consumer's) may watch it to stop early.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * The property under which the Workflow SDK's flow route handler (the
+ * `POST` export of the generated flow route, built by `workflowEntrypoint()`
+ * in `@workflow/core`) exposes its in-process entry: the runtime's handler
+ * itself, taking the message and its metadata directly, without the HTTP
+ * request shape or the checks that only a request from the network needs
+ * (the queue auth check of {@link QueueAuthMode}). No HTTP request can
+ * reach it: it is a property of the handler object, which a World gets only
+ * when the app registers the route with {@link Queue.registerHandler}, in
+ * the app's own process.
+ *
+ * A World whose queue runs in the app's process delivers to
+ * `handler[IN_PROCESS_QUEUE_HANDLER]` when it is set, and resolves to what
+ * the runtime's handler returned (`undefined`, `{ timeoutSeconds }` for a
+ * redelivery request, the result of an invoke message), or rejects with what
+ * it threw. A handler without the entry (a queue consumer's own, or a flow
+ * route built by an earlier SDK) is called with the request a route serving
+ * `createQueueHandler` would get.
+ */
+export const IN_PROCESS_QUEUE_HANDLER: unique symbol = Symbol.for(
+  '@workflow/world//inProcessQueueHandler'
+);
+
+/** See {@link IN_PROCESS_QUEUE_HANDLER}. */
+export type InProcessQueueHandler = (
+  delivery: InProcessDelivery
+) => Promise<unknown>;
+
+/**
+ * The headers a self-hosted World's queue puts on a delivery it sends over
+ * HTTP (the Local World's loopback to the app's flow route, a Postgres
+ * World's delivery to a consumer's own route), read back by the World's
+ * `createQueueHandler`. A private wire shape between a World's sender and
+ * its receiver; the runtime reads only the handler's `meta`.
+ */
+export const QUEUE_DELIVERY_HEADERS = {
+  queueName: 'x-workflow-queue-name',
+  messageId: 'x-workflow-message-id',
+  attempt: 'x-workflow-message-attempt',
+  deliveryCount: 'x-workflow-message-delivery-count',
+  createdAt: 'x-workflow-message-created-at',
+} as const;
+
+/**
+ * The names an earlier release used for {@link QUEUE_DELIVERY_HEADERS},
+ * copied from Vercel Queues. A receiver reads them for one release, so a
+ * sender on the earlier release (an old CLI next to a new app, an old worker
+ * during a rolling upgrade) is still understood, and a sender sends both
+ * sets for one release, so an old receiver still understands it.
+ */
+export const LEGACY_QUEUE_DELIVERY_HEADERS = {
+  queueName: 'x-vqs-queue-name',
+  messageId: 'x-vqs-message-id',
+  attempt: 'x-vqs-message-attempt',
+  deliveryCount: 'x-vqs-message-delivery-count',
+  createdAt: 'x-vqs-message-created-at',
+} as const;
+
+type QueueDeliveryHeaderField = keyof typeof QUEUE_DELIVERY_HEADERS;
+
+/**
+ * The delivery headers for `meta`, under both the current and the legacy
+ * names (see {@link LEGACY_QUEUE_DELIVERY_HEADERS}).
+ */
+export function queueDeliveryHeaders(meta: {
+  queueName: string;
+  messageId: string;
+  attempt: number | string;
+  deliveryCount?: number | string;
+  createdAt?: string;
+}): Record<string, string> {
+  const values: Partial<Record<QueueDeliveryHeaderField, string>> = {
+    queueName: meta.queueName,
+    messageId: meta.messageId,
+    attempt: String(meta.attempt),
+    ...(meta.deliveryCount !== undefined
+      ? { deliveryCount: String(meta.deliveryCount) }
+      : {}),
+    ...(meta.createdAt !== undefined ? { createdAt: meta.createdAt } : {}),
+  };
+  const headers: Record<string, string> = {};
+  for (const [field, value] of Object.entries(values) as [
+    QueueDeliveryHeaderField,
+    string,
+  ][]) {
+    headers[QUEUE_DELIVERY_HEADERS[field]] = value;
+    headers[LEGACY_QUEUE_DELIVERY_HEADERS[field]] = value;
+  }
+  return headers;
+}
+
+/**
+ * The delivery headers of a request, by field: the current name when
+ * present, else the legacy one. Values are the raw header strings; the
+ * receiver validates them.
+ */
+export function readQueueDeliveryHeaders(
+  headers: Pick<Headers, 'get'>
+): Partial<Record<QueueDeliveryHeaderField, string>> {
+  const read: Partial<Record<QueueDeliveryHeaderField, string>> = {};
+  for (const field of Object.keys(
+    QUEUE_DELIVERY_HEADERS
+  ) as QueueDeliveryHeaderField[]) {
+    const value =
+      headers.get(QUEUE_DELIVERY_HEADERS[field]) ??
+      headers.get(LEGACY_QUEUE_DELIVERY_HEADERS[field]);
+    if (value !== null) read[field] = value;
+  }
+  return read;
+}
+
+/**
+ * A request handler a World's queue delivers to ({@link Queue.registerHandler}),
+ * optionally carrying its in-process entry ({@link IN_PROCESS_QUEUE_HANDLER}).
+ */
+export type QueueRouteHandler = ((req: Request) => Promise<Response>) & {
+  [IN_PROCESS_QUEUE_HANDLER]?: InProcessQueueHandler;
+};
 
 export interface Queue {
   getDeploymentId(): Promise<string>;
@@ -1189,7 +1364,8 @@ export interface Queue {
    * checked. The mode becomes required in SDK v6.
    *
    * `WORKFLOW_QUEUE_AUTH=off` turns the check off for `'loopback'` Worlds (a
-   * trusted network), except while dynamic workflows are enabled.
+   * trusted network) and makes a `'deny'` World's route accept HTTP (an
+   * emergency override), except while dynamic workflows are enabled.
    */
   queueAuthMode?: QueueAuthMode;
 
@@ -1385,11 +1561,12 @@ export interface Queue {
    * Keyed by the exact prefix: registering `__wkf_workflow_` also takes the
    * Workflow SDK's own messages. A queue consumer other than the Workflow SDK
    * uses a prefix of its own, `__{namespace}_wkf_workflow_`.
+   *
+   * A handler that carries an in-process entry ({@link IN_PROCESS_QUEUE_HANDLER},
+   * as the Workflow SDK's flow route does) is delivered to through that entry,
+   * with the message and its metadata rather than a request.
    */
-  registerHandler?(
-    prefix: QueuePrefix,
-    handler: (req: Request) => Promise<Response>
-  ): void;
+  registerHandler?(prefix: QueuePrefix, handler: QueueRouteHandler): void;
 
   /**
    * Optional. The route (a path on the app's base URL, such as

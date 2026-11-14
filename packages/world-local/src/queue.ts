@@ -19,6 +19,8 @@ import {
   parseQueueRoute,
   type Queue,
   QueuePrefix,
+  queueDeliveryHeaders,
+  readQueueDeliveryHeaders,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorRunIdOf,
   ValidQueueName,
@@ -758,8 +760,8 @@ export function createQueue(
       const MAX_LOCAL_HANDOFFS = 10_000;
       // Number of times the message has actually reached a handler (returned
       // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
-      // not the loop counter, is the attempt the handler sees via
-      // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
+      // not the loop counter, is the attempt the handler sees in the
+      // delivery headers, which it counts against MAX_QUEUE_DELIVERIES.
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
       let delivery = 0;
@@ -815,15 +817,20 @@ export function createQueue(
           // health checks and in-process deliveries carry it too. A reader
           // with no key file yet sends none, and is refused.
           const sentKey = await queueAuthKey.current();
+          // The delivery's metadata, under the current header names and the
+          // earlier release's (see `queueDeliveryHeaders`), so an app on the
+          // earlier release still reads it.
           const headers: Record<string, string> = {
             ...callerHeaders,
             'content-type': 'application/json',
             ...(sentKey !== undefined && { [QUEUE_AUTH_HEADER]: sentKey }),
-            'x-vqs-queue-name': queueName,
-            'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(delivery + 1 - handoffs - reruns),
-            'x-vqs-message-delivery-count': String(delivery + 1),
-            'x-vqs-message-created-at': createdAt,
+            ...queueDeliveryHeaders({
+              queueName,
+              messageId,
+              attempt: delivery + 1 - handoffs - reruns,
+              deliveryCount: delivery + 1,
+              createdAt,
+            }),
             ...(orchestratorRunKey && {
               [INVOCATION_STARTED_AT_HEADER]: String(holdStartedAt),
             }),
@@ -1108,18 +1115,17 @@ export function createQueue(
     return { messageId };
   };
 
+  // The delivery's metadata, read from the current header names or the
+  // earlier release's (see `readQueueDeliveryHeaders`), so a sender on the
+  // earlier release (an old CLI next to a new app) is still understood.
   const HeaderParser = z.object({
-    'x-vqs-queue-name': ValidQueueName,
-    'x-vqs-message-id': MessageId,
-    'x-vqs-message-attempt': z.coerce.number(),
-    // Sent by world-postgres, whose `attempt` restarts on a reschedule.
-    'x-vqs-message-delivery-count': z.coerce
-      .number()
-      .int()
-      .positive()
-      .optional(),
+    queueName: ValidQueueName,
+    messageId: MessageId,
+    attempt: z.coerce.number(),
+    // `attempt` restarts on a reschedule; this keeps counting.
+    deliveryCount: z.coerce.number().int().positive().optional(),
     // Absent on a delivery from a sender that predates it.
-    'x-vqs-message-created-at': z.iso.datetime().optional(),
+    createdAt: z.iso.datetime().optional(),
     // See `INVOCATION_STARTED_AT_HEADER`; absent from an older sender.
     [INVOCATION_STARTED_AT_HEADER]: z.coerce
       .number()
@@ -1130,7 +1136,11 @@ export function createQueue(
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return async (req) => {
-      const headers = HeaderParser.safeParse(Object.fromEntries(req.headers));
+      const headers = HeaderParser.safeParse({
+        ...readQueueDeliveryHeaders(req.headers),
+        [INVOCATION_STARTED_AT_HEADER]:
+          req.headers.get(INVOCATION_STARTED_AT_HEADER) ?? undefined,
+      });
 
       if (!headers.success || !req.body) {
         return Response.json(
@@ -1143,11 +1153,9 @@ export function createQueue(
         );
       }
 
-      const queueName = headers.data['x-vqs-queue-name'];
-      const messageId = headers.data['x-vqs-message-id'];
-      const attempt = headers.data['x-vqs-message-attempt'];
-      const deliveryCountHeader = headers.data['x-vqs-message-delivery-count'];
-      const createdAtHeader = headers.data['x-vqs-message-created-at'];
+      const { queueName, messageId, attempt } = headers.data;
+      const deliveryCountHeader = headers.data.deliveryCount;
+      const createdAtHeader = headers.data.createdAt;
 
       if (!queueName.startsWith(prefix)) {
         return Response.json(

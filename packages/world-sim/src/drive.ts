@@ -17,7 +17,10 @@ import {
   getQueueAuthKey,
   QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
-import { isSingleOrchestratorMessage } from '@workflow/world';
+import {
+  isSingleOrchestratorMessage,
+  queueDeliveryHeaders,
+} from '@workflow/world';
 import { encodeMessage, type QueuedMessage } from './queue.js';
 import type { PendingMessageView } from './types.js';
 import type { SimWorld } from './world.js';
@@ -229,12 +232,12 @@ async function deliverHoldingLease(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-vqs-queue-name': message.queueName,
-        'x-vqs-message-id': message.messageId,
-        'x-vqs-message-attempt': String(
-          message.deliveries - (message.handoffs ?? 0)
-        ),
-        'x-vqs-message-delivery-count': String(message.deliveries),
+        ...queueDeliveryHeaders({
+          queueName: message.queueName,
+          messageId: message.messageId,
+          attempt: message.deliveries - (message.handoffs ?? 0),
+          deliveryCount: message.deliveries,
+        }),
         // The simulated queue runs in the route's process, as world-local's.
         [QUEUE_AUTH_HEADER]: getQueueAuthKey(),
       },

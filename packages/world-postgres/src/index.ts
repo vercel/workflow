@@ -139,6 +139,12 @@ export function createWorld(
       // Recover only this World's runs (and unstamped legacy ones): every
       // recovered run lands in this World's own task, so a run created under
       // another `jobPrefix` would be driven by the wrong app's runner.
+      // TODO(#5442): a run that recorded no queue namespace is re-enqueued
+      // under this World's `namespace` option. When the registered flow
+      // handler's prefix differs from it (the route was built with another
+      // WORKFLOW_QUEUE_NAMESPACE; `registerHandler` warns), no handler here
+      // takes those runs. Recover them under the registered handler's prefix
+      // instead: pass its namespace as the fallback when one is registered.
       await reenqueueActiveRuns(
         {
           ...storage.runs,

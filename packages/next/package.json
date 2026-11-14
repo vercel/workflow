@@ -38,6 +38,7 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "ignore": "7.0.14",
     "semver": "catalog:",
     "watchpack": "2.6.4"

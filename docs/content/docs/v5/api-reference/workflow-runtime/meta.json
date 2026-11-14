@@ -7,6 +7,7 @@
     "set-world",
     "get-world-handlers",
     "workflow-entrypoint",
+    "register-workflow-handler",
     "health-check"
   ]
 }

@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
@@ -10,7 +9,13 @@ import {
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  type QueueRouteHandler,
+  SPEC_VERSION_CURRENT,
+  type World,
+} from '@workflow/world';
 import { encode } from 'cbor-x';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -87,13 +92,14 @@ describe.skipIf(process.platform === 'win32')(
     let pool: Pool;
     let world: World & { start(): Promise<void> };
     let secondWorker: World;
-    let server: Server;
     let transport: ReturnType<typeof createInvocations>;
     const active = new Map<string, number>();
     const maximum = new Map<string, number>();
-    const overrides = new Map<string, (req: Request) => Promise<Response>>();
-    const oldPort = process.env.PORT;
-    const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
+    /** A test's own handler for a run's deliveries, in place of the runtime's. */
+    const overrides = new Map<
+      string,
+      (delivery: InProcessDelivery) => Promise<unknown>
+    >();
 
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -111,54 +117,46 @@ describe.skipIf(process.platform === 'win32')(
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
-      const handler = workflowEntrypoint(code);
-      server = createServer(async (req, res) => {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(Buffer.from(chunk));
-        const body = Buffer.concat(chunks);
-        const payload = JSON.parse(body.toString());
-        const runId = payload.stepId ? undefined : payload.runId;
-        if (runId) {
-          const count = (active.get(runId) ?? 0) + 1;
-          active.set(runId, count);
-          maximum.set(runId, Math.max(count, maximum.get(runId) ?? 0));
+      const route = workflowEntrypoint(code);
+      const entry = route[IN_PROCESS_QUEUE_HANDLER];
+      if (!entry) throw new Error('the flow route has no in-process entry');
+      // The app's flow route as each worker registers it, counting the
+      // deliveries of a run that are in flight at once, with a test's
+      // override for a run taking the delivery instead.
+      const handler: QueueRouteHandler = Object.assign(
+        (req: Request) => route(req),
+        {
+          [IN_PROCESS_QUEUE_HANDLER]: async (delivery: InProcessDelivery) => {
+            const payload = delivery.message as {
+              runId: string;
+              stepId?: string;
+              invoke?: boolean;
+            };
+            // Counts the run's orchestrator deliveries in flight at once: a
+            // job's delivery. An invoke input is fed to the run inside its
+            // delivery (`executeWithInputs`), and a step runs on its own.
+            const runId =
+              payload.stepId || payload.invoke ? undefined : payload.runId;
+            if (runId) {
+              const count = (active.get(runId) ?? 0) + 1;
+              active.set(runId, count);
+              maximum.set(runId, Math.max(count, maximum.get(runId) ?? 0));
+            }
+            try {
+              return await (overrides.get(payload.runId) ?? entry)(delivery);
+            } finally {
+              if (runId) active.set(runId, (active.get(runId) ?? 1) - 1);
+            }
+          },
         }
-        try {
-          const headers = new Headers();
-          for (const [key, value] of Object.entries(req.headers)) {
-            if (value !== undefined)
-              headers.set(key, Array.isArray(value) ? value.join(',') : value);
-          }
-          const response = await (overrides.get(payload.runId) ?? handler)(
-            new Request(`http://localhost${req.url}`, {
-              method: 'POST',
-              headers,
-              body,
-            })
-          );
-          res.writeHead(response.status, Object.fromEntries(response.headers));
-          res.end(Buffer.from(await response.arrayBuffer()));
-        } catch (error) {
-          res.writeHead(500);
-          res.end(String(error));
-        } finally {
-          if (runId) active.set(runId, (active.get(runId) ?? 1) - 1);
-        }
-      });
-      await new Promise<void>((resolve) =>
-        server.listen(0, '127.0.0.1', resolve)
       );
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('No test server address');
-      process.env.PORT = String(address.port);
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
       world = createWorld({
         pool,
         enableInvoke: true,
         queueConcurrency: 4,
         applicationManagedShutdown: true,
       });
+      world.registerHandler('__wkf_workflow_', handler);
       setWorld(world);
       await world.start();
       // Two real Graphile runner instances compete for the same task/queue.
@@ -168,6 +166,7 @@ describe.skipIf(process.platform === 'win32')(
         queueConcurrency: 4,
         applicationManagedShutdown: true,
       });
+      secondWorker.registerHandler?.('__wkf_workflow_', handler);
       await secondWorker.start?.();
       transport = createInvocations(pool);
       registerStepFunction('invokeSendHook', async (token: string) => {
@@ -180,17 +179,7 @@ describe.skipIf(process.platform === 'win32')(
       await transport?.close();
       await secondWorker?.close?.();
       await world?.close?.();
-      if (server) {
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
-          server.closeAllConnections();
-        });
-      }
       setWorld(undefined);
-      if (oldPort === undefined) delete process.env.PORT;
-      else process.env.PORT = oldPort;
-      if (oldBaseUrl === undefined) delete process.env.WORKFLOW_LOCAL_BASE_URL;
-      else process.env.WORKFLOW_LOCAL_BASE_URL = oldBaseUrl;
       await pool?.end();
       await container?.stop();
     });
@@ -213,6 +202,30 @@ describe.skipIf(process.platform === 'win32')(
       });
       await world.queue(`__wkf_workflow_${name}`, { runId });
       return runId;
+    }
+
+    /**
+     * Waits until no delivery of the run is in flight and its executor job
+     * is gone. The in-process entry returns when the runtime's handler does,
+     * while the queue's executor lane may still be draining the run's input
+     * feed before it completes the job; an input injected in that window
+     * would be fed to the run rather than wait for the test.
+     */
+    async function quiescent(runId: string) {
+      await until(
+        async () => active.get(runId) ?? 0,
+        (count) => count === 0
+      );
+      await until(
+        async () =>
+          (
+            await pool.query<{ n: number }>(
+              'SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE queue_name = $1',
+              [`workflow_flows:${runId}:executor`]
+            )
+          ).rows[0].n,
+        (n) => n === 0
+      );
     }
 
     async function hook(token: string) {
@@ -258,10 +271,7 @@ describe.skipIf(process.platform === 'win32')(
       const token = randomUUID();
       const runId = await start('oneHook', [token]);
       await hook(token);
-      await until(
-        async () => active.get(runId) ?? 0,
-        (count) => count === 0
-      );
+      await quiescent(runId);
       const original = world.events.create;
       const write = vi
         .spyOn(world.events, 'create')
@@ -303,15 +313,12 @@ describe.skipIf(process.platform === 'win32')(
       await seedTransportRun(runId);
       const requestId = randomUUID();
       let deliveries = 0;
-      overrides.set(
-        runId,
-        world.createQueueHandler('__wkf_workflow_', async (message) => {
-          if ((message as { invoke?: boolean }).invoke) {
-            deliveries++;
-            throw error;
-          }
-        })
-      );
+      overrides.set(runId, async ({ message }) => {
+        if ((message as { invoke?: boolean }).invoke) {
+          deliveries++;
+          throw error;
+        }
+      });
       try {
         for (let attempt = 0; attempt < 2; attempt++) {
           const restored = await world.invoke!(
@@ -359,15 +366,12 @@ describe.skipIf(process.platform === 'win32')(
       const runId = `wrun_${ulid()}`;
       await seedTransportRun(runId);
       let deliveries = 0;
-      overrides.set(
-        runId,
-        world.createQueueHandler('__wkf_workflow_', async (message) => {
-          if ((message as { invoke?: boolean }).invoke) {
-            if (++deliveries === 1) throw failure;
-            return { status: 'accepted' };
-          }
-        })
-      );
+      overrides.set(runId, async ({ message }) => {
+        if ((message as { invoke?: boolean }).invoke) {
+          if (++deliveries === 1) throw failure;
+          return { status: 'accepted' };
+        }
+      });
       try {
         if (!world.invoke) throw new Error('Invocation unavailable');
         const result = world.invoke(
@@ -610,23 +614,20 @@ describe.skipIf(process.platform === 'win32')(
       const release = Promise.withResolvers<void>();
       let calls = 0;
       let lateWrite = false;
-      overrides.set(
-        runId,
-        world.createQueueHandler('__wkf_workflow_', async () => {
-          calls++;
-          if (calls !== 1) return;
-          entered.resolve();
-          await release.promise;
-          // This write is intentionally NOT fenced by the earlier HTTP admission
-          // check. The test records the limitation, rather than claiming safety.
-          await world.events.create(runId, {
-            eventType: 'hook_received',
-            correlationId: hookId,
-            eventData: { token, payload: new Uint8Array([1]) },
-          });
-          lateWrite = true;
-        })
-      );
+      overrides.set(runId, async () => {
+        calls++;
+        if (calls !== 1) return;
+        entered.resolve();
+        await release.promise;
+        // This write is intentionally NOT fenced by the earlier HTTP admission
+        // check. The test records the limitation, rather than claiming safety.
+        await world.events.create(runId, {
+          eventType: 'hook_received',
+          correlationId: hookId,
+          eventData: { token, payload: new Uint8Array([1]) },
+        });
+        lateWrite = true;
+      });
       const utils = await makeWorkerUtils({ pgPool: pool });
       try {
         await world.queue('__wkf_workflow_oneHook', { runId });
@@ -673,10 +674,7 @@ describe.skipIf(process.platform === 'win32')(
       const runId = await start('oneHook', [token]);
       const target = await hook(token);
       if (!target) throw new Error('Missing hook');
-      await until(
-        async () => active.get(runId) ?? 0,
-        (count) => count === 0
-      );
+      await quiescent(runId);
       const payload = await dehydrateStepReturnValue(
         'once',
         runId,
@@ -1024,10 +1022,7 @@ describe.skipIf(process.platform === 'win32')(
       const runId = await start('oneHook', [token]);
       const target = await hook(token);
       if (!target) throw new Error('Missing hook');
-      await until(
-        async () => active.get(runId) ?? 0,
-        (count) => count === 0
-      );
+      await quiescent(runId);
       const payload = await dehydrateStepReturnValue(
         'recovered',
         runId,

@@ -1,4 +1,3 @@
-import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
@@ -86,9 +85,6 @@ describe.skipIf(process.platform === 'win32')(
     describe('a spec 8 run whose step messages are sent again while their bodies run', () => {
       let world: World & { start(): Promise<void> };
       let secondWorker: World;
-      let server: Server;
-      const oldPort = process.env.PORT;
-      const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
       const bodies: number[] = [];
       /** Sends each step message again exactly as first sent, by step. */
       const resends = new Map<string, () => Promise<unknown>>();
@@ -107,43 +103,6 @@ globalThis.__private_workflows = new Map([['resent8', resent8]]);
 
       beforeAll(async () => {
         const handler = workflowEntrypoint(code);
-        server = createServer(async (req, res) => {
-          const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(Buffer.from(chunk));
-          try {
-            const headers = new Headers();
-            for (const [key, value] of Object.entries(req.headers)) {
-              if (value !== undefined)
-                headers.set(
-                  key,
-                  Array.isArray(value) ? value.join(',') : value
-                );
-            }
-            const response = await handler(
-              new Request(`http://localhost${req.url}`, {
-                method: 'POST',
-                headers,
-                body: Buffer.concat(chunks),
-              })
-            );
-            res.writeHead(
-              response.status,
-              Object.fromEntries(response.headers)
-            );
-            res.end(Buffer.from(await response.arrayBuffer()));
-          } catch (error) {
-            res.writeHead(500);
-            res.end(String(error));
-          }
-        });
-        await new Promise<void>((resolve) =>
-          server.listen(0, '127.0.0.1', resolve)
-        );
-        const address = server.address();
-        if (!address || typeof address === 'string')
-          throw new Error('No test server address');
-        process.env.PORT = String(address.port);
-        process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
         world = createWorld({
           pool,
           queueConcurrency: 2,
@@ -159,6 +118,8 @@ globalThis.__private_workflows = new Map([['resent8', resent8]]);
           }
           return send(name, message, opts);
         };
+        // The app's flow route, registered as the framework integrations do.
+        world.registerHandler('__wkf_workflow_', handler);
         setWorld(world);
         await world.start();
         // A second process's workers, idle, to take a second job.
@@ -168,6 +129,8 @@ globalThis.__private_workflows = new Map([['resent8', resent8]]);
           pollInterval: 50,
           applicationManagedShutdown: true,
         });
+        // The second process is a worker too: it registers the same route.
+        secondWorker.registerHandler('__wkf_workflow_', handler);
         await secondWorker.start?.();
         registerStepFunction('dedupeOnce8', async (n: number) => {
           bodies.push(n);
@@ -212,18 +175,7 @@ globalThis.__private_workflows = new Map([['resent8', resent8]]);
       afterAll(async () => {
         await secondWorker?.close?.();
         await world?.close?.();
-        if (server) {
-          await new Promise<void>((resolve) => {
-            server.close(() => resolve());
-            server.closeAllConnections();
-          });
-        }
         setWorld(undefined);
-        if (oldPort === undefined) delete process.env.PORT;
-        else process.env.PORT = oldPort;
-        if (oldBaseUrl === undefined)
-          delete process.env.WORKFLOW_LOCAL_BASE_URL;
-        else process.env.WORKFLOW_LOCAL_BASE_URL = oldBaseUrl;
       });
 
       it('runs each step body once', async () => {

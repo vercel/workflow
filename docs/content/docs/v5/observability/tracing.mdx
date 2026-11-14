@@ -38,7 +38,8 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | Span name | Kind | Emitted when |
 | --- | --- | --- |
 | `workflow.start <name>` | internal | `start()` is called in your application code |
-| `workflow.execute <name>` | consumer (root) | a queue delivery invokes the workflow; replay, orchestration, and inline steps run under it |
+| `workflow.route.flow` | server (HTTP) / internal (in process); the root of the invocation's trace | a queue delivery reaches the flow route: as an HTTP request to `/.well-known/workflow/v1/flow`, or in process from a World that delivers that way (the Postgres World), with `workflow.route.transport` saying which; the `workflow.execute` span sits under it |
+| `workflow.execute <name>` | consumer | a queue delivery invokes the workflow; under the delivery's `workflow.route.flow` span in `linked` mode (see [Trace shape](#trace-shape-one-trace-per-invocation)); replay, orchestration, and inline steps run under it |
 | `step.execute <name>` | internal (inline) / consumer + root (queue-delivered) | a step function executes |
 | `workflow.lifecycle.onRunCompleted` / `workflow.lifecycle.onRunFailed` | internal | registered lifecycle handlers observe a persisted terminal transition; includes parameter hydration, handler execution, and the failure-cause stream drain |
 | `http <method>` | client | the SDK calls the workflow backend (event reads/writes) |
@@ -64,6 +65,7 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 | `workflow.trace.mode` | The active trace mode (`linked` or `continuous`). |
 | `workflow.trace.propagated` | Whether the invocation received trace context from the queue message. |
 | `workflow.queue.overhead_ms` | Time between the message being enqueued and the handler starting: queue dwell plus any cold start. |
+| `workflow.route.transport` | On `workflow.route.flow`: `http` for a request to the route, `in-process` for a delivery a World ran in the app's process. An in-process span carries `messaging.destination.name`, `messaging.message.id`, `workflow.delivery.attempt` and `workflow.delivery.count` where an HTTP span carries `http.request.method` and `http.response.status_code`. |
 | `workflow.stream.name` | The stream name, on stream write/read spans. |
 | `workflow.stream.operation` | The stream operation: `write`, `write_multi`, `close`, `read`, or `flush`. |
 | `workflow.stream.write.chunk_rtt` | Time between emission of a chunk to the wire, and receiving the `ack` message for that chunk. Also stamped on `workflow.stream.flush` (the batch's write RPC duration, network included). |
@@ -75,7 +77,7 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 
 A single workflow run can span hours or days across many separate function invocations: every `sleep()` wake-up, hook resume, retry, and queued step continuation is a new queue delivery. Stitching all of that into one trace produces giant, slow-loading traces that most tracing backends truncate.
 
-Instead, the SDK creates **one bounded trace per invocation**. Each `workflow.execute` (or background `step.execute`) span starts a new trace root and attaches two **span links**:
+Instead, the SDK creates **one bounded trace per invocation**. Each delivery starts a new trace, rooted at its `workflow.route.flow` span (a server span for an HTTP delivery, an internal span for an in-process one; a World that delivers in process starts it from an empty context, so no span active in the process when the worker started becomes its parent), and the `workflow.execute` (or background `step.execute`) span under it attaches two **span links**:
 
 - a link to the **enqueue site**, the span that queued the message which triggered this invocation, and
 - a link to the **run origin**, the trace in which `start()` was originally called.

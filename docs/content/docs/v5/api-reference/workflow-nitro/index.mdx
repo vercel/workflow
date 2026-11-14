@@ -25,6 +25,7 @@ When enabled, the module:
 - Transforms `"use workflow"` and `"use step"` directives during bundling.
 - Builds the workflow, step, and webhook bundles, and rebuilds them on file changes in development.
 - Registers the workflow runtime routes under `/.well-known/workflow/v1/`.
+- Hands the flow route to the World when the server boots, through a server plugin, when the configured World delivers in process (`WORKFLOW_TARGET_WORLD` names the [Postgres World](/worlds/postgres), or a module whose World declares `queueAuthMode: 'deny'`); the Local and Vercel Worlds are not built at boot, and the plugin is not added on Vercel deploys. Starting the World stays with your own plugin.
 - Serves a redirect to the local observability dashboard at `/_workflow` in development.
 - Configures function rules for Vercel Functions (queue triggers and `maxDuration`) on the workflow routes when deploying to Vercel.
 - Uses Nitro's `workspaceDir` as the workflow project root so monorepo apps can import sibling workspace packages without extra workflow config.

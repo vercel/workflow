@@ -1,11 +1,13 @@
 import {
+  LEGACY_QUEUE_DELIVERY_HEADERS,
+  QUEUE_DELIVERY_HEADERS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   ValidQueueName,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { createIdFactory } from './ids.js';
-import { createSimQueue } from './queue.js';
+import { createSimQueue, encodeMessage } from './queue.js';
 
 const TOPIC = ValidQueueName.parse('__wkf_workflow_workflow//./w//demo');
 
@@ -202,5 +204,85 @@ describe('sim queue: one orchestrator delivery per run', () => {
     });
     await expect(queue.acquireLease(spec8)).resolves.toBeUndefined();
     queue.releaseLease(lease);
+  });
+});
+
+describe('sim queue: receiving a delivery over HTTP', () => {
+  const payload = { runId: 'wrun_a' };
+  const names = {
+    current: QUEUE_DELIVERY_HEADERS,
+    legacy: LEGACY_QUEUE_DELIVERY_HEADERS,
+  };
+
+  async function receive(
+    headers: Record<string, string>
+  ): Promise<{ status: number; meta: unknown[] }> {
+    const { queue } = setup();
+    const meta: unknown[] = [];
+    const handler = queue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, delivered) => {
+        meta.push(delivered);
+        return undefined;
+      }
+    );
+    const response = await handler(
+      new Request('http://sim.test/flow', {
+        method: 'POST',
+        headers,
+        body: encodeMessage(payload),
+      })
+    );
+    return { status: response.status, meta };
+  }
+
+  it.each([
+    'current',
+    'legacy',
+  ] as const)('reads the %s header names', async (set) => {
+    const h = names[set];
+    const { status, meta } = await receive({
+      [h.queueName]: TOPIC,
+      [h.messageId]: 'msg_01HZ0000000000000000000000',
+      [h.attempt]: '2',
+      [h.deliveryCount]: '3',
+    });
+    expect(status).toBe(200);
+    expect(meta).toEqual([
+      {
+        queueName: TOPIC,
+        messageId: 'msg_01HZ0000000000000000000000',
+        attempt: 2,
+        deliveryCount: 3,
+      },
+    ]);
+  });
+
+  it('prefers the current names when a sender sends both sets', async () => {
+    const { meta } = await receive({
+      [names.current.queueName]: TOPIC,
+      [names.current.messageId]: 'msg_01HZ0000000000000000000000',
+      [names.current.attempt]: '2',
+      [names.current.deliveryCount]: '4',
+      // The earlier names carry different values: none of them may win.
+      [names.legacy.queueName]: '__wkf_workflow_other',
+      [names.legacy.messageId]: 'msg_01HZ1111111111111111111111',
+      [names.legacy.attempt]: '7',
+      [names.legacy.deliveryCount]: '9',
+    });
+    expect(meta).toEqual([
+      {
+        queueName: TOPIC,
+        messageId: 'msg_01HZ0000000000000000000000',
+        attempt: 2,
+        deliveryCount: 4,
+      },
+    ]);
+  });
+
+  it('answers 400 to a delivery without the headers', async () => {
+    const { status, meta } = await receive({});
+    expect(status).toBe(400);
+    expect(meta).toEqual([]);
   });
 });
