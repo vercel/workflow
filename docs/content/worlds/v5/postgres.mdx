@@ -505,7 +505,7 @@ export default createWorld({
 });
 ```
 
-Options passed to `createWorld()` take precedence over the environment variables above. If you pass `namespace`, set `WORKFLOW_QUEUE_NAMESPACE` to the same value when you build: the flow route registers with the World under the prefix it was built with, and a World whose namespace names another prefix delivers the SDK's messages as a queue consumer's, without the per-run ordering it keeps for its own, and warns once at startup. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
+Options passed to `createWorld()` take precedence over the environment variables above. If you pass `namespace`, set `WORKFLOW_QUEUE_NAMESPACE` to the same value when you build: the flow route registers with the World under the prefix it was built with, and a World whose namespace names another prefix delivers the SDK's messages as a queue consumer's, without the per-run ordering it keeps for its own, and warns once at startup. Known limitation: on `start()`, a run that recorded no queue namespace is re-enqueued under the World's namespace, which no handler in the process takes when the two differ; runs that recorded one go back to it. Export the World from a module and point `WORKFLOW_TARGET_WORLD` at that module:
 
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"
