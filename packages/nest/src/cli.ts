@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInit } from './init.js';
 import { parseModuleType as parseModuleTypeRaw } from './parse-module-type.js';
-import { findMissingSwcBuilderPackages } from './swc-builder-deps.js';
-import { hasWorkflowPlugin, mergeSwcrc, serializeSwcrc } from './swcrc.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -62,7 +61,8 @@ Build options:
                          optional logger transports, ...)
 
 'init' writes the .swcrc settings the Workflow SWC plugin needs, preserving any
-other configuration already in the file. 'build' generates the workflow bundles
+other configuration already in the file, and warns when @swc/cli or @swc/core
+is missing or @swc/core is not 1.15.x. 'build' generates the workflow bundles
 for local dev, and on Vercel (or with --vercel) the full Build Output including
 the queue-consumer function VQS discovers.
 `);
@@ -81,60 +81,13 @@ function parseModuleType(args: string[]): 'es6' | 'commonjs' {
   return result;
 }
 
-function handleInit(args: string[]): void {
-  const swcrcPath = resolve(process.cwd(), '.swcrc');
-  const forceMode = args.includes('--force');
-  const moduleType = parseModuleType(args);
-
-  const existingContent = existsSync(swcrcPath)
-    ? readFileSync(swcrcPath, 'utf-8')
-    : undefined;
-
-  if (existingContent !== undefined && !forceMode) {
-    if (hasWorkflowPlugin(existingContent)) {
-      console.log('✓ .swcrc already configured with workflow plugin');
-      console.log('  Run with --force to refresh the resolved plugin path');
-      process.exit(0);
-    }
-    console.log(
-      '⚠ .swcrc already exists without the workflow plugin. Run with --force ' +
-        'to add it; your other settings are preserved.'
-    );
-    process.exit(1);
-  }
-
-  const pluginPath = resolveSwcPluginPath();
-  const { config, merged } = mergeSwcrc(
-    existingContent,
-    pluginPath,
-    moduleType
-  );
-
-  writeFileSync(swcrcPath, serializeSwcrc(config));
-  if (merged) {
-    console.log('✓ Updated .swcrc with workflow plugin configuration');
-    console.log('  Existing SWC settings were preserved');
-  } else {
-    console.log('✓ Created .swcrc with workflow plugin configuration');
-  }
-  console.log(`  Plugin path: ${pluginPath}`);
-
-  const missing = findMissingSwcBuilderPackages(process.cwd());
-  if (missing.length > 0) {
-    console.log(
-      `\n⚠ ${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} ` +
-        'not installed. The NestJS SWC builder needs @swc/cli and @swc/core ' +
-        'as dev dependencies:'
-    );
-    console.log('  npm i -D @swc/cli @swc/core');
-  }
-
-  console.log('\nNext steps:');
-  console.log(
-    '1. Ensure nest-cli.json has: "compilerOptions": { "builder": "swc" }'
-  );
-  console.log('2. Add .swcrc to .gitignore (it contains absolute paths)');
-  console.log('3. Run: nest build');
+function handleInit(args: string[]): number {
+  return runInit({
+    workingDir: process.cwd(),
+    moduleType: parseModuleType(args),
+    force: args.includes('--force'),
+    pluginPath: resolveSwcPluginPath,
+  });
 }
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -332,8 +285,7 @@ async function main() {
   }
 
   if (command === 'init') {
-    handleInit(args);
-    process.exit(0);
+    process.exit(handleInit(args));
   }
 
   if (command === 'build') {

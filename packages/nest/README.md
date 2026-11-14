@@ -10,13 +10,15 @@ npm install @workflow/nest
 pnpm add @workflow/nest
 ```
 
-You also need to install the SWC packages required by NestJS's SWC builder:
+You also need to install the SWC packages required by NestJS's SWC builder. `@swc/core` is pinned to 1.15.x because the Workflow SWC plugin does not run on `@swc/core` 1.16 yet:
 
 ```bash
-npm install -D @swc/cli @swc/core
+npm install -D @swc/cli @swc/core@~1.15.18
 # or
-pnpm add -D @swc/cli @swc/core
+pnpm add -D @swc/cli @swc/core@~1.15.18
 ```
+
+Don't upgrade `@swc/core` past 1.15 (for example with `pnpm update --latest`, Dependabot or Renovate) until the Workflow SWC plugin supports 1.16; `npx @workflow/nest init` warns if the installed version isn't 1.15.x.
 
 <a id="quick-start"></a>
 
