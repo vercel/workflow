@@ -2,4 +2,4 @@
 '@workflow/web': patch
 ---
 
-Bind the production web server to loopback by default, allow opting into another address with HOST, and warn when listening beyond loopback.
+Bind the standalone web server to `127.0.0.1` by default. Set `HOST` to listen on another address; a notice is printed when it is not loopback.

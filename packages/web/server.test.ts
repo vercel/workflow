@@ -51,10 +51,10 @@ afterAll(async () => {
 });
 
 describe('production server listener', () => {
-  it.each([
+  it.each<[string | undefined, string | RegExp, boolean]>([
     [undefined, '127.0.0.1', false],
     ['', '127.0.0.1', false],
-    ['127.0.0.2', '127.0.0.2', false],
+    ['localhost', /^(127\.0\.0\.1|::1)$/, false],
     ['0.0.0.0', '0.0.0.0', true],
   ])('binds with HOST=%s', async (host, address, warning) => {
     const env: NodeJS.ProcessEnv = { ...process.env, PORT: '0' };
@@ -66,7 +66,11 @@ describe('production server listener', () => {
       { env, timeout: 10_000 }
     );
     const listener = JSON.parse(stdout.trim().split('\n').at(-1) ?? 'null');
-    expect(listener.address).toBe(address);
+    if (typeof address === 'string') {
+      expect(listener.address).toBe(address);
+    } else {
+      expect(listener.address).toMatch(address);
+    }
     expect(listener.port).toBeGreaterThan(0);
     expect(stderr.includes('no built-in authentication')).toBe(warning);
   });
