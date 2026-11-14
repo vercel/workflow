@@ -1,3 +1,4 @@
+import '../../test-utils/vercel-request-context.js';
 import { runInNewContext } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import { FatalError, WorkflowRunFailedError } from '@workflow/errors';
