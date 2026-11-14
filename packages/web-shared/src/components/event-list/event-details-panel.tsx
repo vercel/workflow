@@ -10,6 +10,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { hydrateResourceIOWithKey } from '../../lib/hydration';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -242,14 +243,14 @@ function EventDetailsBody({
   );
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Load (or reload once decryption is available) the full payload.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the event or key changes
+  // Load the full payload. Arriving at a key does not re-run this: decryption
+  // opens the payload already in hand, below.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load once per event
   useEffect(() => {
-    if (!onLoadEventData || (inlineIsComplete && !encryptionKey)) return;
-    if (data !== null && !encryptionKey) return;
+    if (!onLoadEventData || inlineIsComplete || data !== null) return;
     let cancelled = false;
     setLoadError(null);
-    if (data === null) setLoading(true);
+    setLoading(true);
     onLoadEventData(event)
       .then((loaded) => {
         if (cancelled || loaded == null) return;
@@ -268,7 +269,27 @@ function EventDetailsBody({
     return () => {
       cancelled = true;
     };
-  }, [event.eventId, encryptionKey]);
+  }, [event.eventId]);
+
+  // Open the payload already on screen when the run key arrives. Markers keep
+  // their ciphertext and the event type names the sealed fields, so this needs
+  // no request. Refetching here is what used to render the ciphertext with live
+  // inline Decrypt buttons until the second response landed. If the key does not
+  // open it, the markers stay put.
+  const encrypted = hasEncryptedValues(data);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opens the current payload once per key
+  useEffect(() => {
+    if (!encryptionKey || !encrypted) return;
+    let alive = true;
+    hydrateResourceIOWithKey({ ...event, eventData: data }, encryptionKey)
+      .then((hydrated) => {
+        if (alive) setData(hydrated.eventData);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [encryptionKey, encrypted]);
 
   const timingTotal = segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
@@ -310,9 +331,7 @@ function EventDetailsBody({
         <PayloadView
           data={data}
           eventType={event.eventType}
-          decrypt={
-            !encryptionKey && hasEncryptedValues(data) ? decrypt : undefined
-          }
+          decrypt={encrypted ? decrypt : undefined}
         />
       ) : loading || loadError ? (
         <Collapsible defaultOpen label="Payload">
