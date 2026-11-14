@@ -36,7 +36,7 @@ import {
   type HeldMessage,
 } from '../../test-support/append-only-world.js';
 import { expectAcknowledged } from '../../test-support/orchestrator-harness.js';
-import { setWorld } from '../world.js';
+import { getWorld, setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -268,6 +268,77 @@ describe.each([
     expect(listsBeforeRunStarted).toEqual([0]);
     expect(bodies).toBe(1);
     expect(world.events.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it('loads the log before run_started on a first delivery under WORKFLOW_TURBO=0', async () => {
+    process.env.WORKFLOW_TURBO = '0';
+    const { world, start, listsBeforeRunStarted } = await candidate('accept');
+
+    const result = await world.deliver(start);
+    await world.runUntilIdle();
+
+    expectAcknowledged(world, result, start);
+    expect(listsBeforeRunStarted).toHaveLength(1);
+    expect(listsBeforeRunStarted[0]).toBeGreaterThan(0);
+    expect(world.events.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it('sets up again from a full load when the first delivery’s run_started conflicts', async () => {
+    // The run moved past its creation behind this delivery's back: the
+    // fast path's run_started is refused as a conflict, and nothing landed.
+    const { world, start, listsBeforeRunStarted } = await candidate(
+      'accept',
+      0,
+      {
+        when: 'before-commit',
+        error: () => new EntityConflictError('already started'),
+      }
+    );
+    const info = vi.spyOn(runtimeLogger, 'info');
+
+    const result = await world.deliver(start);
+    await world.runUntilIdle();
+
+    expectAcknowledged(world, result, start);
+    expect(info).toHaveBeenCalledWith(
+      expect.stringMatching(/run_started refused, setting up again/),
+      expect.objectContaining({ reason: 'conflict' })
+    );
+    // The retried run_started (the refused one never reached the World)
+    // came after a load, and the restart happened once.
+    expect(listsBeforeRunStarted).toHaveLength(1);
+    expect(listsBeforeRunStarted[0]).toBeGreaterThan(0);
+    expect(bodies).toBe(1);
+    const types = world.events.map((e) => e.eventType);
+    expect(types.filter((t) => t === 'run_started')).toHaveLength(1);
+    expect(types).toContain('run_completed');
+  });
+
+  it('creates the run before re-routing a first delivery that reached the wrong deployment', async () => {
+    const { world, start } = await candidate('admit-on-run-started');
+    // The message lands on a deployment other than the run's.
+    setWorld({
+      ...(await getWorld()),
+      capabilities: { inBandFence: true, deploymentAffinity: true },
+      getDeploymentId: async () => 'dpl_elsewhere',
+    } as never);
+    const before = world.queueCalls.length;
+
+    const result = await world.deliver(start);
+
+    expectAcknowledged(world, result, start);
+    expect(bodies).toBe(0);
+    // run_started created and admitted the run here, so the plain wake sent
+    // to the run's own deployment finds it.
+    const types = world.events.map((e) => e.eventType);
+    expect(types).toContain('run_started');
+    expect(types).not.toContain('run_failed');
+    const rerouted = world.queueCalls
+      .slice(before)
+      .filter((call) => (call.message as { runId?: string }).runId);
+    expect(rerouted).toHaveLength(1);
+    expect(rerouted[0]?.opts).toMatchObject({ deploymentId: 'dpl_test' });
+    expect(rerouted[0]?.message).not.toHaveProperty('runInput');
   });
 
   it('carries the start Hook request and the public key on run_started', async () => {
@@ -636,11 +707,18 @@ describe.each([
       opens,
       engine
     );
+    const info = vi.spyOn(runtimeLogger, 'info');
 
     const result = await world.deliver(start);
     await world.runUntilIdle();
 
     expectAcknowledged(world, result, start);
+    // This World counts the seeded hook_received as in-band, so the fast
+    // path's run_started is fenced and setup restarts from a full load.
+    expect(info).toHaveBeenCalledWith(
+      expect.stringMatching(/run_started refused, setting up again/),
+      expect.objectContaining({ reason: 'fence' })
+    );
     expect(await outputOf(world, runId)).toEqual({
       conflict: null,
       message: 'early',

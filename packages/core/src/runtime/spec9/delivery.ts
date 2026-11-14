@@ -666,8 +666,10 @@ async function runDelivery(
    * message, which turbo never takes (see `admitsTurboStart`): it writes
    * `run_started` before loading the log, instead of loading it twice.
    * A restart in place has written it already, so takes the normal path.
+   * `WORKFLOW_TURBO=0` disables it with turbo, so every delivery loads first.
    */
   let startHookFirstDelivery =
+    isTurboEnabled() &&
     !turbo &&
     runInput?.startHook !== undefined &&
     !prefetchedRun &&
@@ -676,6 +678,9 @@ async function runDelivery(
     !incomingStepId &&
     !hookInput &&
     !waitContinuation;
+  if (startHookFirstDelivery) {
+    span?.setAttributes(Attribute.WorkflowStartHookFirstDelivery(true));
+  }
   /**
    * Turbo only: settles once the backgrounded `run_started`
    * landed, and rejects with its error if it failed. Every
@@ -1487,6 +1492,27 @@ async function runDelivery(
     } as WorkflowRun;
   }
 
+  /**
+   * The setup's deployment-affinity guard. Its re-queued copy is a plain wake
+   * (plus this delivery's hook resume), so it runs only once the run exists.
+   * The log is loaded, so the orchestrator's own DEPLOYMENT_MISMATCH failure
+   * is written in-band.
+   */
+  function guardRunDeployment(
+    run: WorkflowRun
+  ): Promise<DeploymentAffinityOutcome> {
+    return guardDeployment(
+      run,
+      async () => ({
+        ...(await replayMessage()),
+        ...(hookInput ? { hookInput } : {}),
+        ...(hookResumeTiming ? { hookResumeTiming } : {}),
+      }),
+      undefined,
+      writeInBand
+    );
+  }
+
   async function orchestrate(): Promise<
     { timeoutSeconds: number } | undefined
   > {
@@ -1615,21 +1641,14 @@ async function runDelivery(
       assert(log, 'The event log is loaded before setup');
       // AUTHORITATIVE deployment-affinity protection, before
       // this delivery writes anything (`run_started` included)
-      // and before replay or inline step execution.
+      // and before replay or inline step execution. A start Hook
+      // candidate's first delivery runs it after `run_started`
+      // instead (see below): until then the run may not exist,
+      // and its re-queued wake carries no `runInput` to create it.
       if (
         run &&
-        (await guardDeployment(
-          run,
-          async () => ({
-            ...(await replayMessage()),
-            ...(hookInput ? { hookInput } : {}),
-            ...(hookResumeTiming ? { hookResumeTiming } : {}),
-          }),
-          undefined,
-          // The log is loaded, so the orchestrator's own
-          // DEPLOYMENT_MISMATCH failure is written in-band.
-          writeInBand
-        )) !== 'continue'
+        !startHookFirstDelivery &&
+        (await guardRunDeployment(run)) !== 'continue'
       ) {
         return undefined;
       }
@@ -1674,6 +1693,18 @@ async function runDelivery(
               writer.isSuperseded ||
               EntityConflictError.is(err))
           ) {
+            const reason = EntityConflictError.is(err) ? 'conflict' : 'fence';
+            span?.setAttributes(
+              Attribute.WorkflowStartHookFirstDeliveryFallback(reason)
+            );
+            runtimeLogger.info(
+              'Start Hook first delivery: run_started refused, setting up again from a full load',
+              {
+                workflowRunId: runId,
+                reason,
+                message: err instanceof Error ? err.message : String(err),
+              }
+            );
             restartInPlace();
             return await orchestrate();
           }
@@ -1692,6 +1723,16 @@ async function runDelivery(
         // The log now holds the run's own start (and, after a
         // resilient start, its creation).
         await fullLoad();
+        // The deployment check the start Hook first delivery
+        // skipped: the run exists now, so a re-queued wake on
+        // its own deployment needs no `runInput`.
+        if (
+          startHookFirstDelivery &&
+          run &&
+          (await guardRunDeployment(run)) !== 'continue'
+        ) {
+          return undefined;
+        }
       } else {
         // A redelivery of a candidate's first message whose
         // `run_started` committed but whose answer was lost (a 503

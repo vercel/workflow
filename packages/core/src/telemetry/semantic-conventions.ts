@@ -322,6 +322,22 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
 /** Whether this workflow invocation is using the turbo first-delivery path */
 export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
 
+/**
+ * Whether this delivery is a start Hook candidate's first delivery, which
+ * writes `run_started` before loading the log
+ */
+export const WorkflowStartHookFirstDelivery = SemanticConvention<boolean>(
+  'workflow.start_hook.first_delivery'
+);
+
+/**
+ * Why a start Hook candidate's first delivery fell back to a full load after
+ * its `run_started` was refused (`fence` or `conflict`)
+ */
+export const WorkflowStartHookFirstDeliveryFallback = SemanticConvention<
+  'fence' | 'conflict'
+>('workflow.start_hook.first_delivery.fallback');
+
 /** The delivery found nothing new since the last consumed position. */
 export const WorkflowNoopDelivery = SemanticConvention<boolean>(
   'workflow.noop_delivery'
