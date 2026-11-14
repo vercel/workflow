@@ -33,6 +33,7 @@ import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
 import { z } from 'zod/v4';
+import type { BlockedRuns } from './blocked-runs.js';
 import type { Config } from './config.js';
 import {
   LOCAL_QUEUE_CONCURRENCY,
@@ -271,6 +272,10 @@ export function createRunGate() {
         if (tails.get(runId) === tail) tails.delete(runId);
       };
     },
+    /** Whether `runId`'s gate is held. */
+    isHeld(runId: string): boolean {
+      return tails.has(runId);
+    },
     /** Runs with a delivery in flight or waiting. For tests. */
     size(): number {
       return tails.size;
@@ -488,11 +493,13 @@ export function createQueue(
      */
     runSpecVersion?: (runId: string) => Promise<number | undefined>;
     /**
-     * Called when a single-orchestrator run's orchestrator message that
-     * cannot be coalesced queues behind a running delivery of its run, which
-     * may be lingering on the live feed with nothing left to run.
+     * Marked while a single-orchestrator run's orchestrator message that
+     * cannot be coalesced waits behind a running delivery of its run, which
+     * may be lingering on the live feed with nothing left to run. Both the
+     * sending gate and the handler's gate (a message from another process)
+     * mark it.
      */
-    onBlockedOrchestratorMessage?: (runId: string) => void;
+    blockedRuns?: BlockedRuns;
   } = {}
 ): LocalQueue {
   const queueAuthKey = options.queueAuthKey ?? inMemoryQueueAuthKey;
@@ -548,6 +555,11 @@ export function createQueue(
   // serves the workflow routes. Separate from `runGate`, which a sender holds
   // while it delivers to its own process's handler.
   const handlerRunGate = createRunGate();
+  /** Marks a message's run blocked (see `options.blockedRuns`). */
+  const blockRun = (message: unknown): (() => void) | undefined => {
+    const runId = singleOrchestratorRunIdOf(message);
+    return runId === undefined ? undefined : options.blockedRuns?.block(runId);
+  };
   // One line for the first queue auth refusal, then at most one a minute
   // with a count, however many messages are refused.
   const logAuthRefusal = createLogLimiter();
@@ -735,14 +747,18 @@ export function createQueue(
       > => {
         let lease: OrchestratorLease | undefined;
         if (orchestratorRunKey) {
-          if (!coalescible && runGate.isHeld(orchestratorRunKey)) {
-            const id = singleOrchestratorRunIdOf(message);
-            if (id !== undefined) options.onBlockedOrchestratorMessage?.(id);
+          const unblock =
+            !coalescible && runGate.isHeld(orchestratorRunKey)
+              ? blockRun(message)
+              : undefined;
+          try {
+            lease = await runGate.acquire(orchestratorRunKey, {
+              coalescible,
+              resume: resumeOf(fields),
+            });
+          } finally {
+            unblock?.();
           }
-          lease = await runGate.acquire(orchestratorRunKey, {
-            coalescible,
-            resume: resumeOf(fields),
-          });
           if (!lease) return 'coalesced';
         }
         if (!semaphore.tryAcquire()) {
@@ -1176,10 +1192,21 @@ export function createQueue(
       );
       const invocationStartedAt = headers.data[INVOCATION_STARTED_AT_HEADER];
       const orchestratorRunId = singleOrchestratorRunIdOf(body);
-      const releaseRun =
-        orchestratorRunId === undefined
-          ? undefined
-          : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
+      let releaseRun: (() => void) | undefined;
+      if (orchestratorRunId !== undefined) {
+        const key = `${prefix}${orchestratorRunId}`;
+        // A message from another process waits here, not at `runGate`.
+        const unblock =
+          handlerRunGate.isHeld(key) &&
+          !isCoalescible(body as Record<string, unknown>)
+            ? blockRun(body)
+            : undefined;
+        try {
+          releaseRun = await handlerRunGate.acquire(key);
+        } finally {
+          unblock?.();
+        }
+      }
       try {
         const result = await handler(body, {
           attempt,

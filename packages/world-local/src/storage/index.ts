@@ -1,4 +1,5 @@
 import type { Storage } from '@workflow/world';
+import type { BlockedRuns } from '../blocked-runs.js';
 import { databaseFor } from '../db/index.js';
 import { instrumentObject } from '../instrumentObject.js';
 import { createEventsStorage } from './events-storage.js';
@@ -15,8 +16,8 @@ import { createStepsStorage } from './steps-storage.js';
 export type LocalStorage = Omit<Storage, 'runs'> & {
   runs: LocalRunsStorage;
   clearCache(): void;
-  /** Ends a run's live feed subscriptions. Not part of the World. */
-  interruptLiveFeed(runId: string, reason: string): void;
+  /** Ends every live feed subscription. Not part of the World. */
+  closeLiveFeed(): void;
 };
 
 /**
@@ -25,16 +26,22 @@ export type LocalStorage = Omit<Storage, 'runs'> & {
  *
  * @param basedir - The data directory
  * @param tag - Optional tag scoping the runs this storage creates and sees
+ * @param options.blockedRuns - Runs whose live feed subscriptions end, and
+ *   are refused, while a message waits for them (see `BlockedRuns`)
  */
-export function createStorage(basedir: string, tag?: string): LocalStorage {
+export function createStorage(
+  basedir: string,
+  tag?: string,
+  options: { blockedRuns?: BlockedRuns } = {}
+): LocalStorage {
   const db = databaseFor(basedir);
   const runs = createRunsStorage(db, tag);
   const steps = createStepsStorage(db, tag);
   const {
     clearCache: _clearEventsCache,
-    interruptLiveFeed,
+    closeLiveFeed,
     ...events
-  } = createEventsStorage(db, tag);
+  } = createEventsStorage(db, tag, options);
   const hooks = createHooksStorage(db, tag);
   const snapshots = createSnapshotsStorage(db);
 
@@ -49,6 +56,6 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
       snapshots
     ),
     clearCache: () => {},
-    interruptLiveFeed,
+    closeLiveFeed,
   };
 }

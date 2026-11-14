@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Event, Storage } from '@workflow/world';
 import { eventIdToSlot } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createBlockedRuns } from '../blocked-runs.js';
 import { databaseFor } from '../db/index.js';
 import { createStorage } from '../storage.js';
 import { createRun, createStep } from '../test-helpers.js';
@@ -130,10 +131,9 @@ describe('events.subscribe (world-local)', () => {
 
     it('refuses a subscription past the cap through onError, never synchronously', async () => {
       const run = await newRun();
-      const feed = createLiveFeed(
-        new Store(databaseFor(testDir), undefined),
-        1
-      );
+      const feed = createLiveFeed(new Store(databaseFor(testDir), undefined), {
+        maxLiveSubscriptions: 1,
+      });
       const first = errorsOf();
       const unsubscribeFirst = feed.subscribe(run.runId, 0, () => {}, first);
       const second = errorsOf();
@@ -166,10 +166,9 @@ describe('events.subscribe (world-local)', () => {
 
     it('refuses every subscription when the cap is 0', async () => {
       const run = await newRun();
-      const feed = createLiveFeed(
-        new Store(databaseFor(testDir), undefined),
-        0
-      );
+      const feed = createLiveFeed(new Store(databaseFor(testDir), undefined), {
+        maxLiveSubscriptions: 0,
+      });
       const { errors, onError } = errorsOf();
       feed.subscribe(run.runId, 0, () => {}, { onError });
       await until(() => errors.length === 1);
@@ -177,33 +176,145 @@ describe('events.subscribe (world-local)', () => {
     });
   });
 
-  it('interrupt ends a run’s subscriptions through onError, and only that run’s', async () => {
+  describe('blocked runs', () => {
+    it('ends a run’s subscriptions when it becomes blocked, and only that run’s', async () => {
+      const run = await newRun();
+      const other = await newRun();
+      const blockedRuns = createBlockedRuns();
+      const feed = createLiveFeed(new Store(databaseFor(testDir), undefined), {
+        blockedRuns,
+      });
+      const errors: unknown[] = [];
+      const otherErrors: unknown[] = [];
+      const received: Event[] = [];
+      feed.subscribe(run.runId, 0, (event) => received.push(event), {
+        onError: (error) => errors.push(error),
+      });
+      const unsubscribeOther = feed.subscribe(other.runId, 0, () => {}, {
+        onError: (error) => otherErrors.push(error),
+      });
+      await until(() => received.length > 0);
+      const unblock = blockedRuns.block(run.runId);
+      expect(String(errors[0])).toContain('waiting for this run');
+      const count = received.length;
+      await createStep(storage, run.runId, {
+        stepId: 'step_after',
+        stepName: 'a',
+        input: new Uint8Array(),
+      });
+      feed.notify(run.runId);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(received).toHaveLength(count);
+      expect(errors).toHaveLength(1);
+      expect(otherErrors).toHaveLength(0);
+      unblock();
+      unsubscribeOther();
+    });
+
+    it('refuses a subscription while its run is blocked, and accepts it once unblocked', async () => {
+      const run = await newRun();
+      const blockedRuns = createBlockedRuns();
+      const feed = createLiveFeed(new Store(databaseFor(testDir), undefined), {
+        blockedRuns,
+      });
+      const unblockFirst = blockedRuns.block(run.runId);
+      const unblockSecond = blockedRuns.block(run.runId);
+      const refused: unknown[] = [];
+      feed.subscribe(run.runId, 0, () => {}, {
+        onError: (error) => refused.push(error),
+      });
+      await until(() => refused.length === 1);
+      expect(String(refused[0])).toContain('waiting for this run');
+
+      // Still blocked while either waiting message holds it.
+      unblockFirst();
+      unblockFirst();
+      const stillRefused: unknown[] = [];
+      feed.subscribe(run.runId, 0, () => {}, {
+        onError: (error) => stillRefused.push(error),
+      });
+      await until(() => stillRefused.length === 1);
+
+      unblockSecond();
+      const errors: unknown[] = [];
+      const received: Event[] = [];
+      const unsubscribe = feed.subscribe(
+        run.runId,
+        0,
+        (event) => received.push(event),
+        { onError: (error) => errors.push(error) }
+      );
+      await until(() => received.length > 0);
+      expect(errors).toHaveLength(0);
+      unsubscribe();
+    });
+  });
+
+  it('close ends every subscription, refuses new ones and stops reading', async () => {
     const run = await newRun();
-    const other = await newRun();
-    const feed = createLiveFeed(new Store(databaseFor(testDir), undefined), 4);
+    const store = new Store(databaseFor(testDir), undefined);
+    const feed = createLiveFeed(store);
     const errors: unknown[] = [];
-    const otherErrors: unknown[] = [];
     const received: Event[] = [];
     feed.subscribe(run.runId, 0, (event) => received.push(event), {
       onError: (error) => errors.push(error),
     });
-    const unsubscribeOther = feed.subscribe(other.runId, 0, () => {}, {
-      onError: (error) => otherErrors.push(error),
-    });
     await until(() => received.length > 0);
-    feed.interrupt(run.runId, 'a message is waiting');
-    expect(String(errors[0])).toContain('a message is waiting');
-    const count = received.length;
-    await createStep(storage, run.runId, {
-      stepId: 'step_after',
-      stepName: 'a',
-      input: new Uint8Array(),
+    feed.close();
+    expect(String(errors[0])).toContain('closed');
+    const refused: unknown[] = [];
+    feed.subscribe(run.runId, 0, () => {}, {
+      onError: (error) => refused.push(error),
     });
-    feed.notify(run.runId);
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(received).toHaveLength(count);
-    expect(errors).toHaveLength(1);
-    expect(otherErrors).toHaveLength(0);
-    unsubscribeOther();
+    await until(() => refused.length === 1);
+    let reads = 0;
+    const topSeqs = store.topSeqs.bind(store);
+    store.topSeqs = (runIds) => {
+      reads++;
+      return topSeqs(runIds);
+    };
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(reads).toBe(0);
+  });
+
+  it('pushes an event this storage appends to another run’s log', async () => {
+    const holder = await newRun();
+    const claimer = await newRun();
+    const token = `force-claim-${Date.now()}`;
+    await storage.events.create(holder.runId, {
+      eventType: 'hook_created',
+      correlationId: 'hook_holder',
+      eventData: { token },
+    } as never);
+    const { data: before } = await storage.events.list({
+      runId: holder.runId,
+    });
+    const top = Math.max(...slots(before).map(Number));
+    const received: Event[] = [];
+    const unsubscribe = storage.events.subscribe!(holder.runId, top, (event) =>
+      received.push(event)
+    );
+    // The claimer takes the token over, writing the holder's
+    // `hook_disposed`: pushed by the time the claimer's write returns, not
+    // left to the next tail check.
+    await storage.events.create(claimer.runId, {
+      eventType: 'hook_created',
+      correlationId: 'hook_claimer',
+      eventData: { token, force: true },
+    } as never);
+    unsubscribe();
+    expect(received.map((event) => event.eventType)).toContain('hook_disposed');
+  });
+
+  it('reads the tops of more runs than one query binds', async () => {
+    const run = await newRun();
+    const store = new Store(databaseFor(testDir), undefined);
+    const runIds = [
+      ...Array.from({ length: 1_200 }, (_, i) => `wrun_missing_${i}`),
+      run.runId,
+    ];
+    const tops = store.topSeqs(runIds);
+    expect([...tops.keys()]).toEqual([run.runId]);
+    expect(tops.get(run.runId)).toBe(store.topSeq(run.runId));
   });
 });
