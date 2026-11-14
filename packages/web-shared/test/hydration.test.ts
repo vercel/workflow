@@ -9,7 +9,6 @@ import { describe, expect, it } from 'vitest';
 import {
   getWebRevivers,
   hasEncryptedFields,
-  hydrateEventDataWithKey,
   hydrateResourceIO,
   hydrateResourceIOAsync,
   hydrateResourceIOWithKey,
@@ -271,40 +270,5 @@ describe('front hydration — encrypted compressed payloads', () => {
 
     const decrypted = await hydrateResourceIOWithKey(hydrated, rawKey);
     expect(decrypted.eventData.input).toEqual(input);
-  });
-
-  it('decrypts eventData a panel already holds, without fetching the event again', async () => {
-    const cryptoKey = await importKey(rawKey);
-    const output = { total: 42, note: 'front encrypted event payload' };
-    const wire = await dehydrateStepReturnValue(
-      output,
-      runId,
-      cryptoKey,
-      [],
-      globalThis,
-      false,
-      false,
-      true
-    );
-
-    expect(formatPrefix(wire)).toBe('encr');
-
-    // What the panel holds: eventData hydrated without a key, so the encrypted
-    // field is a marker that keeps its ciphertext.
-    const hydrated = hydrateResourceIO({
-      eventId: 'evnt_test',
-      eventType: 'step_completed',
-      eventData: { result: wire },
-    });
-    const eventData = hydrated.eventData as { result: unknown };
-    expect(isEncryptedMarker(eventData.result)).toBe(true);
-
-    // The run key alone opens it: same payload, no second request.
-    const decrypted = (await hydrateEventDataWithKey(
-      'step_completed',
-      eventData,
-      rawKey
-    )) as { result: unknown };
-    expect(decrypted.result).toEqual(output);
   });
 });

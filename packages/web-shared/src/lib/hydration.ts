@@ -607,25 +607,6 @@ export async function hydrateResourceIOAsync<T>(
 }
 
 /**
- * Decrypt the serialized fields of an `eventData` object that is already
- * hydrated for display.
- *
- * Hydrating without a key leaves encrypted fields as display markers that keep
- * their ciphertext, and the event type names the fields that carry serialized
- * data. Those two are everything decryption needs, so collecting the run key is
- * enough to open the payload a panel is already showing — the event does not
- * have to be fetched again.
- */
-export async function hydrateEventDataWithKey(
-  eventType: string,
-  eventData: unknown,
-  key: Uint8Array
-): Promise<unknown> {
-  const hydrated = await hydrateResourceIOAsync({ eventType, eventData }, key);
-  return (hydrated as { eventData: unknown }).eventData;
-}
-
-/**
  * Check whether a hydrated resource (event, step, run, etc.) contains any
  * encrypted display markers. Inspects the standard top-level fields
  * (`input`, `output`, `error`, `metadata`) as well as the event-type-specific

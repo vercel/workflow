@@ -10,7 +10,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
-import { hydrateEventDataWithKey } from '../../lib/hydration';
+import { hydrateResourceIOWithKey } from '../../lib/hydration';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -274,19 +274,19 @@ function EventDetailsBody({
 
   // Open the encrypted fields of that payload when the run key arrives. The
   // markers keep their ciphertext and the event type names the fields that
-  // carry serialized data, so this stays on the client. Fetching the event
-  // again here is what used to leave the panel rendering the ciphertext with
-  // live inline Decrypt buttons until a second request landed.
+  // carry serialized data, so this stays on the client. Refetching the event
+  // here is what used to leave the panel rendering the ciphertext with live
+  // inline Decrypt buttons until a second request landed.
   const encrypted = hasEncryptedValues(data);
   // biome-ignore lint/correctness/useExhaustiveDependencies: opens the current payload once per key
   useEffect(() => {
     if (!encryptionKey || !encrypted || data == null) return;
     let cancelled = false;
-    hydrateEventDataWithKey(event.eventType, data, encryptionKey)
+    hydrateResourceIOWithKey({ ...event, eventData: data }, encryptionKey)
       .then((decrypted) => {
         if (cancelled) return;
-        setData(decrypted);
-        onCacheEventData(event.eventId, decrypted);
+        setData(decrypted.eventData);
+        onCacheEventData(event.eventId, decrypted.eventData);
       })
       .catch(() => {
         if (!cancelled) setDecryptFailed(true);

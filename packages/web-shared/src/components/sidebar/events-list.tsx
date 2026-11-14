@@ -3,12 +3,7 @@
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
-import { hasEncryptedValues } from '../../lib/event-list-model';
-import {
-  hasEncryptedFields,
-  hydrateEventDataWithKey,
-  isExpiredMarker,
-} from '../../lib/hydration';
+import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
@@ -113,27 +108,14 @@ function EventItem({
     void loadEventData(false);
   }, [isLoading, loadEventData]);
 
-  // When the run key arrives and this event was previously expanded, open the
-  // payload already loaded instead of fetching it again. The markers keep their
-  // ciphertext, so decryption stays on the client and the row never falls back
-  // to ciphertext with live inline decrypt controls.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: opens the loaded payload once per key
+  // When the encryption key changes and this event was previously expanded,
+  // re-load the data so it gets decrypted
   useLayoutEffect(() => {
     if (!encryptionKey || !wasExpandedRef.current) return;
-    const current = loadedDataRef.current;
-    if (current == null || !hasEncryptedValues(current)) return;
-    let cancelled = false;
-    hydrateEventDataWithKey(event.eventType, current, encryptionKey)
-      .then((decrypted) => {
-        if (cancelled) return;
-        loadedDataRef.current = decrypted;
-        setLoadedData(decrypted);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [encryptionKey]);
+    loadedDataRef.current = null;
+    setLoadedData(null);
+    void loadEventData(true);
+  }, [encryptionKey, loadEventData]);
 
   const rowNotice = isDuplicate
     ? DUPLICATE_EVENT_MESSAGE
