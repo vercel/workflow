@@ -35,13 +35,14 @@ import {
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../../symbols.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
   unserializableStepInputPlaceholder,
 } from '../unserializable-step.js';
 import { setWorld } from '../world.js';
 import {
+  exceededMaxRetriesMessage,
   executeStep,
   failStepForExhaustedRetries,
   type StepEventWriter,
@@ -247,6 +248,20 @@ describe('executeStep', () => {
         eventData: expect.objectContaining({ attempt: 2 }),
       }),
     ]);
+  });
+
+  it('names the attempt that left no outcome in the exhausted-retries message', () => {
+    const startedAt = new Date('2026-01-02T03:04:05.678Z');
+    const message = exceededMaxRetriesMessage('exec_ok', 0, {
+      attempt: 1,
+      startedAt,
+    });
+    expect(message.startsWith(exceededMaxRetriesMessage('exec_ok', 0))).toBe(
+      true
+    );
+    expect(message).toContain(
+      `attempt 1 started at ${startedAt.toISOString()}`
+    );
   });
 });
 
@@ -820,7 +835,7 @@ describe('executeStep — request and compute provenance', () => {
     const started = calls.find((c) => c.data.eventType === 'step_started');
     expect(started?.params).toMatchObject({
       requestId: 'req_step_executor',
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
   });
 
@@ -839,7 +854,7 @@ describe('executeStep — request and compute provenance', () => {
     });
     const started = calls.find((c) => c.data.eventType === 'step_started');
     expect(started?.params).toMatchObject({
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
     expect(started?.params).not.toHaveProperty('requestId');
   });

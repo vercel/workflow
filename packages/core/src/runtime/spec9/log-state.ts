@@ -37,6 +37,11 @@ export interface InlineStepSpec {
   attempt: number;
   firstStartedAt?: Date;
   /**
+   * When the step's latest attempt started, for an attempt after one that
+   * left no outcome. Reported if that attempt exhausted the retry budget.
+   */
+  lastStartedAt?: Date;
+  /**
    * The step's creation-bearing `step_started`, when the orchestrator wrote
    * it (its creation batch). The executor then writes no start.
    */
@@ -66,6 +71,8 @@ export interface LogStepState {
   starts: number;
   /** When the step's first attempt started. */
   firstStartedAt?: Date;
+  /** When the step's latest attempt started. */
+  lastStartedAt?: Date;
   terminal: boolean;
   /** The step's last event is a `step_retrying`. */
   lastIsRetrying: boolean;
@@ -145,6 +152,7 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
       case 'step_started':
         step.starts++;
         step.firstStartedAt ??= new Date(event.createdAt);
+        step.lastStartedAt = new Date(event.createdAt);
         step.lastIsRetrying = false;
         break;
       case 'step_retrying':

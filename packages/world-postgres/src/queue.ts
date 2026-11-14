@@ -295,6 +295,9 @@ export function createQueue(
     dataDir: undefined,
     port,
     queueAuthKey: 'read',
+    // This World's runs are in Postgres, not in the Local World's storage,
+    // and its worker resolves an unstamped orchestrator message itself.
+    readUnstampedRunSpec: false,
   });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
@@ -1548,7 +1551,7 @@ export function createQueue(
       // fib(6) produces ~24 concurrent polling steps at peak, and at
       // concurrency=10 (the previous default) it would deadlock on the
       // default Postgres setup. See packages/core/src/runtime/run.ts and
-      // docs/content/docs/changelog/eager-processing.mdx for context.
+      // packages/core/src/runtime/eager-processing.md for context.
       concurrency: config.queueConcurrency || 50,
       logger: graphileLogger,
       ...(config.applicationManagedShutdown === true && {

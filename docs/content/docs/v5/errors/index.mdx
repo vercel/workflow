@@ -25,6 +25,7 @@ When a workflow run fails, its `errorCode` identifies the failure category. You 
 | `STREAM_ERROR` | Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure rather than an error in workflow code. |
 | `WORLD_CONTRACT_ERROR` | A World returned data that violated the SDK contract and could not be retried safely. This usually indicates a World implementation bug. |
 | [`DEPLOYMENT_MISMATCH`](/docs/errors/deployment-mismatch) | A run was delivered to a deployment other than the one it is pinned to, and automatic re-routing did not recover it. |
+| [`WORKFLOW_NOT_REGISTERED`](/docs/errors/workflow-not-registered) | The deployment executing the run does not have the run's workflow registered, usually because the run targeted a deployment where the workflow was renamed, moved, or removed, or the build did not bundle it. |
 
 For guidance on catching failures, retry behavior, and inspecting `WorkflowRunFailedError`, see [Errors and retries](/docs/foundations/errors-and-retries).
 

@@ -43,7 +43,7 @@ export function ErrorCard({
             <AlertCircle className="h-4 w-4 shrink-0" />
             <span className="font-medium text-label-14">{title}</span>
           </div>
-          <div className="flex items-center gap-1.5 opacity-70">
+          <div className="flex items-center gap-1.5 text-red-800">
             <span className="text-label-12">Click to show details</span>
             <ChevronDown
               className={cn(

@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Folder, Node, Root } from 'fumadocs-core/page-tree';
 import GithubSlugger from 'github-slugger';
@@ -398,6 +398,120 @@ async function checkLinks() {
   await checkStaticAppLinks();
   checkSectionCards(v4Pages, v5Pages);
   await checkMetaEntriesResolve();
+  await checkPublicSiteContent([
+    ...v4Pages,
+    ...v5Pages,
+    ...worldsV4Pages,
+    ...worldsV5Pages,
+  ]);
+}
+
+/**
+ * The docs site is public and user-facing (see AGENTS.md, "The docs site is
+ * public"). Keep maintainer material off it:
+ *   - no `changelog/` section in the docs trees. Release notes come from the
+ *     packages' CHANGELOG.md at `/changelog`, and design notes live as
+ *     markdown next to the code they describe. Docs pages link neither to the
+ *     old `/docs/changelog` URLs nor to those notes on GitHub;
+ *   - every page under an `internal/` folder declares `internal: true`, which
+ *     makes it preview-only (see `lib/geistdocs/visibility.ts`);
+ *   - a public page never links to an internal one, which 404s in production.
+ */
+async function checkPublicSiteContent(pages: LoadedPage[]) {
+  const errors: { sourcePath: string; reason: string }[] = [];
+
+  for (const contentRoot of ['content/docs', 'content/worlds']) {
+    for (const dir of await findDirs(
+      join(DOCS_DIR, contentRoot),
+      'changelog'
+    )) {
+      errors.push({
+        sourcePath: relative(DOCS_DIR, dir),
+        reason:
+          'docs trees have no changelog section: put design notes next to the code they describe, and release notes in a changeset',
+      });
+    }
+  }
+
+  const internalUrls = new Set(
+    pages.filter(isInternalPage).map(({ page }) => stripVersion(page.url))
+  );
+  for (const loaded of pages) {
+    for (const reason of publicSiteViolations(loaded, internalUrls)) {
+      errors.push({ sourcePath: loaded.page.absolutePath, reason });
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error('\nMaintainer-only content on the public docs site:');
+    for (const error of errors) {
+      console.error(`- ${error.sourcePath}: ${error.reason}`);
+    }
+    process.exitCode = 1;
+  }
+}
+
+function publicSiteViolations(
+  loaded: LoadedPage,
+  internalUrls: Set<string>
+): string[] {
+  const reasons: string[] = [];
+  const internal = isInternalPage(loaded);
+  if (/[\\/]internal[\\/]/.test(loaded.page.absolutePath) && !internal) {
+    reasons.push('pages under internal/ must set `internal: true` frontmatter');
+  }
+  for (const href of getSitePathHrefs(loaded.raw)) {
+    const path = stripVersion(href.replace(/\.md$/, ''));
+    if (/^\/docs\/changelog(\/|$)/.test(path)) {
+      reasons.push(
+        `${href}: the docs changelog section was retired (design notes live next to the code)`
+      );
+    } else if (!internal && internalUrls.has(path)) {
+      reasons.push(`${href}: links to an internal (preview-only) page`);
+    }
+  }
+  for (const [href] of loaded.raw.matchAll(DESIGN_NOTE_LINK_RE)) {
+    reasons.push(
+      `${href}: docs pages do not link to design notes in the repository`
+    );
+  }
+  return reasons;
+}
+
+// A markdown file under `packages/` on GitHub: a design note or a package
+// README's internals, not something a docs reader acts on.
+const DESIGN_NOTE_LINK_RE =
+  /https:\/\/github\.com\/vercel\/workflow\/blob\/[^/\s)]+\/packages\/[^\s)#"']+\.md\b/g;
+
+// Frontmatter is read from the raw source, as for `manualCards`: the lint's
+// page data does not carry it.
+function isInternalPage({ raw }: LoadedPage): boolean {
+  const frontmatter = raw.match(/^---\n([\s\S]*?)\n---/)?.[1];
+  return frontmatter ? /^internal:\s*true\s*$/m.test(frontmatter) : false;
+}
+
+function stripVersion(url: string): string {
+  return url.replace(/^\/v4(?=\/)/, '');
+}
+
+/** Site-relative link targets (`/docs/...`, `/v4/...`, `/worlds/...`), path only. */
+function getSitePathHrefs(raw: string): string[] {
+  const hrefs: string[] = [];
+  const re =
+    /(?:\]\(|\[[^\]\n]+\]:\s*|(?:href|src)=["'])(\/(?:v4\/)?(?:docs|worlds)[^\s)"'#?]*)/g;
+  for (const match of raw.matchAll(re)) hrefs.push(match[1]);
+  return hrefs;
+}
+
+async function findDirs(dir: string, name: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const full = join(dir, entry.name);
+    if (entry.name === name) out.push(full);
+    out.push(...(await findDirs(full, name)));
+  }
+  return out;
 }
 
 /**

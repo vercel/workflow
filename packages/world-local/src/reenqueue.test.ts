@@ -77,9 +77,12 @@ describe('re-enqueue active runs on start', () => {
     await world2.start();
 
     // Wait for async queue processing to complete
-    await vi.waitFor(() => {
-      expect(receivedRunIds).toHaveLength(2);
-    });
+    await vi.waitFor(
+      () => {
+        expect(receivedRunIds).toHaveLength(2);
+      },
+      { timeout: 20_000 }
+    );
 
     expect(receivedRunIds).toContain(pendingRun.runId);
     expect(receivedRunIds).toContain(runningRun.runId);
@@ -124,9 +127,12 @@ describe('re-enqueue active runs on start', () => {
 
     await world2.start();
 
-    await vi.waitFor(() => {
-      expect(namespacedRunIds).toEqual([pendingRun.runId]);
-    });
+    await vi.waitFor(
+      () => {
+        expect(namespacedRunIds).toEqual([pendingRun.runId]);
+      },
+      { timeout: 20_000 }
+    );
     expect(unnamespacedRunIds).toHaveLength(0);
 
     await world2.close();
@@ -163,14 +169,17 @@ describe('re-enqueue active runs on start', () => {
 
     await world2.start();
 
-    await vi.waitFor(() => {
-      expect(received.agent).toEqual([
-        `__agent_wkf_workflow_workflow//agent//session ${agentRun.runId}`,
-      ]);
-      expect(received.workflow).toEqual([
-        `__wkf_workflow_myWorkflow ${workflowRun.runId}`,
-      ]);
-    });
+    await vi.waitFor(
+      () => {
+        expect(received.agent).toEqual([
+          `__agent_wkf_workflow_workflow//agent//session ${agentRun.runId}`,
+        ]);
+        expect(received.workflow).toEqual([
+          `__wkf_workflow_myWorkflow ${workflowRun.runId}`,
+        ]);
+      },
+      { timeout: 20_000 }
+    );
 
     await world2.close();
   });
@@ -240,9 +249,12 @@ describe('re-enqueue active runs on start', () => {
 
     await restartedWorld0.start();
 
-    await vi.waitFor(() => {
-      expect(receivedRunIds).toEqual([run0.runId]);
-    });
+    await vi.waitFor(
+      () => {
+        expect(receivedRunIds).toEqual([run0.runId]);
+      },
+      { timeout: 20_000 }
+    );
 
     expect(receivedRunIds).not.toContain(run1.runId);
 
@@ -282,9 +294,12 @@ describe('re-enqueue active runs on start', () => {
 
     await devWorld.start();
 
-    await vi.waitFor(() => {
-      expect(receivedRunIds).toEqual([untaggedRun.runId]);
-    });
+    await vi.waitFor(
+      () => {
+        expect(receivedRunIds).toEqual([untaggedRun.runId]);
+      },
+      { timeout: 20_000 }
+    );
     // The tagged run must never be re-enqueued: the untagged world cannot read
     // it back, so run_started would fail with "did not return the run entity".
     expect(receivedRunIds).not.toContain(taggedRun.runId);
@@ -345,9 +360,12 @@ describe('re-enqueue active runs on start', () => {
 
     await restartedWorld0.start();
 
-    await vi.waitFor(() => {
-      expect(receivedRunIds).toHaveLength(taggedRunIds.length);
-    });
+    await vi.waitFor(
+      () => {
+        expect(receivedRunIds).toHaveLength(taggedRunIds.length);
+      },
+      { timeout: 20_000 }
+    );
 
     expect(new Set(receivedRunIds)).toEqual(new Set(taggedRunIds));
     for (const runId of otherRunIds) {
