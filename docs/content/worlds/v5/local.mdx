@@ -38,55 +38,114 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The Local World requires no configuration, but you can customize its behavior through environment variables or programmatically through `createWorld()`.
+The Local World requires no configuration, but you can customize its behavior through environment variables or programmatically through `createWorld()` (see [Programmatic configuration](#programmatic-configuration)).
+
+**Common**
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| [`WORKFLOW_LOCAL_DATA_DIR`](#workflow_local_data_dir) | `.workflow-data/` | Where the workflow database is stored |
+| [`PORT`](#port) | auto-detected | App port that queue messages are delivered to |
+| [`WORKFLOW_LOCAL_BASE_URL`](#workflow_local_base_url) | `http://localhost:{port}` | Base URL override for HTTPS or custom hostnames |
+
+**Advanced**
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth) | `on` | Flow route accepts only the app's own deliveries |
+| [`WORKFLOW_LOCAL_QUEUE_CONCURRENCY`](#workflow_local_queue_concurrency) | `1000` | Concurrent queue message handlers |
+| [`WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`](#workflow_local_queue_max_visibility) | unlimited | Longest a queue message stays hidden |
+| [`WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`](#workflow_local_headers_timeout_ms) | `0` ms (no deadline) | Hung delivery detection |
+| [`WORKFLOW_LOCAL_BODY_TIMEOUT_MS`](#workflow_local_body_timeout_ms) | `0` ms (no deadline) | Stalled response detection |
+| [`WORKFLOW_NODE_HTTP`](#workflow_node_http) | disabled | Deliveries through Node's built-in HTTP modules |
+| [`WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`](#workflow_local_recover_active_runs) | `true` | Re-enqueues active runs on start |
+| [`WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS`](#workflow_local_sqlite_keep_connections) | `1`; `brief` on Windows | How long the database connection stays open |
+| [`WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`](#workflow_local_hook_retention_limit_days) | `30` days | Maximum hook retention |
+| [`WORKFLOW_STREAM_FLUSH_INTERVAL_MS`](#workflow_stream_flush_interval_ms) | `0` ms | Stream write batching |
 
 ### `WORKFLOW_LOCAL_DATA_DIR`
 
-Directory for the workflow database, `world.db` (SQLite). Default: `.workflow-data/`
+- Default: `.workflow-data/`
+- Factory option: `dataDir`
+
+Directory for the workflow database, `world.db` (SQLite). See [Data directory layout](#data-directory-layout).
 
 ### `PORT`
 
-The application dev server port. Used to deliver workflow queue messages to the combined flow route. Default: auto-detected
+- Default: auto-detected
+- Factory option: `port`
+
+The application dev server port. Used to deliver workflow queue messages to the combined flow route.
 
 ### `WORKFLOW_LOCAL_BASE_URL`
 
-Full base URL override for HTTPS or custom hostnames. Default: `http://localhost:{port}`
+- Default: `http://localhost:{port}`
+- Factory option: `baseUrl`
+
+Full base URL override for HTTPS or custom hostnames.
+
+Change it when: the app is served over HTTPS or on a custom hostname.
 
 Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 ### `WORKFLOW_QUEUE_AUTH`
 
-Whether the flow route accepts only deliveries sent by the app's own processes. Default: `on`. Every delivery carries the app's queue key, and the route refuses a request without it with a `401` and touches no run.
+- Default: `on`
 
-The key is a random value in the file `queue-auth-key` in the [data directory](#data-directory-layout). The app writes a new one each time it starts, when it first uses its World and before it sends anything, so a restart needs no wait. A script that calls `start()` with the same data directory writes a new key the same way, and the app accepts it. The CLI and the web UI only read the key, so point them at the app's data directory (`WORKFLOW_LOCAL_DATA_DIR`). Several app processes on one data directory (PM2 with `-i N`, `node:cluster`, Nitro's `node-cluster` preset) end up on the newest key in the file.
+Whether the flow route accepts only deliveries sent by the app's own processes.
 
-A refused delivery is retried at once when the key in the file has changed, and otherwise a few times with a short backoff, then logged once and given up; its run is left as it was. Keep the CLI and the web UI on the same release as the app's `@workflow/world-local`: an older one sends no key. Set `off` on the app to accept deliveries from a process that cannot read its data directory, on a trusted machine only. `off` is refused while dynamic workflows are enabled. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+Change it when: a process that cannot read the app's data directory has to send deliveries, on a trusted machine only. Set `off` on the app. `off` is refused while dynamic workflows are enabled.
+
+Every delivery carries the app's queue key, and the route refuses a request without it with a `401` and touches no run. The key is kept in the [data directory](#data-directory-layout), so point the CLI and the web UI at the app's data directory (`WORKFLOW_LOCAL_DATA_DIR`), and keep them on the same release as the app's `@workflow/world-local`: an older one sends no key.
+
+A refused delivery is retried at once when the key in the file has changed, and otherwise a few times with a short backoff, then logged once and given up; its run is left as it was. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
 
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
-Maximum number of concurrent queue message handlers. Default: `1000`
+- Default: `1000`
+
+Maximum number of concurrent queue message handlers.
 
 ### `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`
 
-Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
+- Default: unlimited
+
+Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run.
 
 ### `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`
 
-Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `0` (no deadline).
+- Default: `0` (no deadline)
 
-A delivery executes inline steps before the handler responds, so a deadline shorter than your longest step redelivers a healthy delivery while it is still running and executes the same step again. Set this only if you would rather a hung handler be redelivered, and set it above the longest inline work you expect.
+Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message.
+
+Change it when: you would rather a hung handler be redelivered. Set it above the longest inline work you expect.
+
+A delivery executes inline steps before the handler responds, so a deadline shorter than your longest step redelivers a healthy delivery while it is still running and executes the same step again.
 
 ### `WORKFLOW_LOCAL_BODY_TIMEOUT_MS`
 
-Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `0` (no deadline). The same caution as `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS` applies.
+- Default: `0` (no deadline)
+
+Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message.
+
+The same caution as [`WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`](#workflow_local_headers_timeout_ms) applies.
 
 ### `WORKFLOW_NODE_HTTP`
 
-Whether queue deliveries go out through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library this World normally uses. Default: disabled. Set to `1` to switch to Node's modules. Socket pooling, keep-alive, and both timeouts above apply either way. See [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) for what else changes.
+- Default: disabled
+
+Whether queue deliveries go out through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library this World normally uses. Set to `1` to switch to Node's modules.
+
+Socket pooling, keep-alive, and both timeouts above apply either way. See [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) for what else changes.
 
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
-Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
+- Default: `true`
+- Factory option: `recoverActiveRuns`
+
+Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched.
+
+Change it when: several processes or workers run workflows on one data directory. Turn recovery off, or give each one its own `tag` (see [Programmatic configuration](#programmatic-configuration)).
 
 The Local World's queue is in memory, so a restart loses the messages runs had queued. Recovery re-enqueues each run, and that delivery re-arms the run's wait timers (a `sleep()` or a timeout): a spec 8 run suspends on its open waits again, and the recovery marker on the message makes a single-orchestrator (spec 9) delivery send the run's step messages and wait timers again. As a backstop, recovery also sends each recovered run a wake for every open wait due within about 24.8 days (the queue's longest timer), due when the wait is.
 
@@ -94,19 +153,32 @@ Recovery also hands back to the queue any step that was running inline when the 
 
 If you turn recovery off and re-enqueue runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it.
 
-A step counts as abandoned only if it started before the Local World loaded in the current process or worker thread. Steps started since then are never released, so runs this process picks up during or after recovery are not affected, and calling `releaseOrphanedSteps()` late is safe. Recovery assumes that nothing else is running workflows on the same data directory and `tag`. That includes an earlier worker thread of the same process: some dev servers reload into a new worker thread, and until the old one stops, the new one may dispatch a step the old one is still running, so the step can run twice. If several processes or workers run workflows on one data directory, turn recovery off or give each one its own `tag`.
+A step counts as abandoned only if it started before the Local World loaded in the current process or worker thread. Steps started since then are never released, so runs this process picks up during or after recovery are not affected, and calling `releaseOrphanedSteps()` late is safe. Recovery assumes that nothing else is running workflows on the same data directory and `tag`. That includes an earlier worker thread of the same process: some dev servers reload into a new worker thread, and until the old one stops, the new one may dispatch a step the old one is still running, so the step can run twice.
 
 ### `WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS`
 
-How long a process keeps its connection to `world.db` open between operations. `1` keeps it until it has been idle for a few seconds (the default, except on Windows). `brief` closes it once a burst of operations ends (the default on Windows, where an open database file cannot be deleted, so the data directory stays removable while the app runs). `0` opens and closes a connection for every operation, which is slower; the repository's own tests use it on Windows because they delete their data directory right after using it.
+- Default: `1`, except on Windows, where it is `brief`
+
+How long a process keeps its connection to `world.db` open between operations.
+
+`1` keeps it until it has been idle for a few seconds. `brief` closes it once a burst of operations ends; it is the default on Windows, where an open database file cannot be deleted, so the data directory stays removable while the app runs. `0` opens and closes a connection for every operation, which is slower; the repository's own tests use it on Windows because they delete their data directory right after using it.
 
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
-Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during local development.
+- Default: `30`
+
+Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days.
+
+Change it when: your production World uses a different limit. Set the same limit so oversized values fail during local development.
 
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
-Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group, trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
+- Default: `0` (dispatch immediately)
+- Factory option: `streamFlushIntervalMs`
+
+Group-commit window, in milliseconds, for the leading chunk of an idle stream.
+
+A positive value holds the first chunk up to that long to collect a group, trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
 
 ### Programmatic configuration
 
@@ -169,7 +241,7 @@ Earlier releases stored one JSON file per entity (`runs/`, `events/`, `steps/`, 
 
 The database needs a filesystem that supports SQLite's shared-memory file. A data directory on a network filesystem (NFS, SMB), or shared between a host and a container through a VM-backed mount, is not supported when more than one machine or VM writes to it.
 
-The data directory also holds the app's queue key, `queue-auth-key` (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)). The file is readable and writable only by its owner (mode `0600`); Windows does not enforce that mode the same way, and the file gets the directory's permissions. The World writes a `.gitignore` containing `*` into the data directory when it has none, so neither the key nor the run data is committed, and never replaces one that is already there.
+The data directory also holds the app's queue key, `queue-auth-key` (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)), a random value. The app writes a new one each time it starts, when it first uses its World and before it sends anything, so a restart needs no wait. A script that calls `start()` with the same data directory writes a new key the same way, and the app accepts it. The CLI and the web UI only read the key. Several app processes on one data directory (PM2 with `-i N`, `node:cluster`, Nitro's `node-cluster` preset) end up on the newest key in the file. The file is readable and writable only by its owner (mode `0600`); Windows does not enforce that mode the same way, and the file gets the directory's permissions. The World writes a `.gitignore` containing `*` into the data directory when it has none, so neither the key nor the run data is committed, and never replaces one that is already there.
 
 ## Limitations
 

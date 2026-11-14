@@ -279,10 +279,17 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 The defaults work for a single process on a local database, so most apps set only `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL`. You can set every option through environment variables, or programmatically through `createWorld()` (see [Programmatic configuration](#programmatic-configuration)).
 
-| Variable | Default | Controls |
+**Common**
+
+| Variable | Default | What it does |
 | --- | --- | --- |
 | [`WORKFLOW_POSTGRES_URL`](#workflow_postgres_url) | `DATABASE_URL`, then `postgres://world:world@localhost:5432/world` | Database connection |
 | [`WORKFLOW_POSTGRES_JOB_PREFIX`](#workflow_postgres_job_prefix) | `workflow_` | Job name prefix, for sharing a database between apps |
+
+**Advanced**
+
+| Variable | Default | What it does |
+| --- | --- | --- |
 | [`WORKFLOW_POSTGRES_WORKER_CONCURRENCY`](#workflow_postgres_worker_concurrency) | `50` | Concurrent jobs per process |
 | [`WORKFLOW_POSTGRES_POLL_INTERVAL_MS`](#workflow_postgres_poll_interval_ms) | `500` ms | Idle job polling |
 | [`WORKFLOW_POSTGRES_MAX_POOL_SIZE`](#workflow_postgres_max_pool_size) | `10` | Connection pool size |
@@ -293,82 +300,133 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`](#workflow_postgres_hook_retention_limit_days) | `30` days | Maximum hook retention |
 | [`WORKFLOW_QUEUE_NAMESPACE`](#workflow_queue_namespace) | unset | Queue topic namespace |
 | [`WORKFLOW_STREAM_FLUSH_INTERVAL_MS`](#workflow_stream_flush_interval_ms) | `0` ms | Stream write batching |
-| [`WORKFLOW_POSTGRES_INVOKE`](#experimental-invocation-delivery) | off | Experimental: hook resumes only |
+
+**Experimental**
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| [`WORKFLOW_POSTGRES_INVOKE`](#experimental-invocation-delivery) | off | Invocation delivery, for hook resumes only |
 
 ### `WORKFLOW_POSTGRES_URL`
 
+- Default: `DATABASE_URL`, then `postgres://world:world@localhost:5432/world`
+- Factory option: `connectionString`
+
 PostgreSQL connection string used by the runtime World.
 
-Precedence: `WORKFLOW_POSTGRES_URL` > `DATABASE_URL` > `postgres://world:world@localhost:5432/world`
-
-The `bootstrap` migration command uses the same precedence.
+Precedence: `WORKFLOW_POSTGRES_URL` > `DATABASE_URL` > `postgres://world:world@localhost:5432/world`. The `bootstrap` migration command uses the same precedence.
 
 ### `WORKFLOW_POSTGRES_JOB_PREFIX`
 
-Prefix for graphile-worker queue job names. Default: `workflow_`
+- Default: `workflow_`
+- Factory option: `jobPrefix`
 
-Give each application that shares a database its own prefix. A World claims jobs only under its own prefix and stamps that prefix on every run it creates. On `start()`, it re-enqueues only the active runs stamped with its prefix, so restarting one application does not hand another application's runs to its worker. `WORKFLOW_QUEUE_NAMESPACE` does not separate applications that share a database.
+Prefix for graphile-worker queue job names.
+
+Change it when: more than one application shares the database. Give each one its own prefix.
+
+A World claims jobs only under its own prefix and stamps that prefix on every run it creates. On `start()`, it re-enqueues only the active runs stamped with its prefix, so restarting one application does not hand another application's runs to its worker. `WORKFLOW_QUEUE_NAMESPACE` does not separate applications that share a database.
 
 Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. The CLI and the observability UI build their World from the environment, so a run they create, such as a re-run, is stamped with the prefix they see, and only a World with that prefix runs and recovers it.
 
-
 ### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 
-Number of concurrent workers polling for jobs. Default: `50`.
+- Default: `50`
+- Factory option: `queueConcurrency`
 
-A parent workflow awaiting `childRun.returnValue` of a child it started does not hold a worker slot: it suspends on a system hook the child resumes when it finishes (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)). A `returnValue` that falls back to polling still does, for example one awaited inside a step, or any await while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. Each of those holds a worker slot until its child run terminates, so raise this ceiling above the peak number of such polls in flight.
+Number of concurrent workers polling for jobs.
+
+Change it when: more `returnValue` polls can be in flight at once than this ceiling allows. Raise it above the peak.
+
+A parent workflow awaiting `childRun.returnValue` of a child it started does not hold a worker slot: it suspends on a system hook the child resumes when it finishes (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)). A `returnValue` that falls back to polling still does, for example one awaited inside a step, or any await while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. Each of those holds a worker slot until its child run terminates.
 
 ### `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
 
-Milliseconds between idle job fetches per worker. Each worker polls on its own, so an idle process runs about `queueConcurrency × 1000 / pollInterval` fetches per second. Default: `500`.
+- Default: `500`
+- Factory option: `pollInterval`
+
+Milliseconds between idle job fetches per worker.
+
+Each worker polls on its own, so an idle process runs about `queueConcurrency × 1000 / pollInterval` fetches per second.
 
 ### `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
 
-Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: the `pg` default (`10`).
+- Default: the `pg` default (`10`)
+- Factory option: `maxPoolSize`
 
-For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
+Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool.
+
+Change it when: you raise worker concurrency. Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
 
 ### `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`
 
-Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
+- Default: unset (`false`)
+- Factory option: `applicationManagedShutdown`
+
+Whether the application, instead of Graphile Worker, coordinates shutdown. Set to `1` to enable.
+
+Change it when: the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. See [Application-managed shutdown](#application-managed-shutdown).
 
 ### `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`
 
-Maximum time in milliseconds a queue delivery waits for the workflow handler to begin responding before the delivery is failed and Graphile Worker redelivers the message. Default: `0` (no deadline).
+- Default: `0` (no deadline)
 
-A delivery executes the workflow body inline, so the handler responds only once that work is done. A deadline shorter than your longest inline step declares a healthy delivery crashed and redelivers it while the original is still running, executing the same steps twice. Set this only if you would rather a hung handler be redelivered than hold its worker slot until the process restarts, and set it above the longest inline work you expect.
+Maximum time in milliseconds a queue delivery waits for the workflow handler to begin responding before the delivery is failed and Graphile Worker redelivers the message.
+
+Change it when: you would rather a hung handler be redelivered than hold its worker slot until the process restarts. Set it above the longest inline work you expect.
+
+A delivery executes the workflow body inline, so the handler responds only once that work is done. A deadline shorter than your longest inline step declares a healthy delivery crashed and redelivers it while the original is still running, executing the same steps twice.
 
 ### `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`
 
-Maximum gap in milliseconds between response body chunks from the workflow handler before the delivery is failed and redelivered. Default: `0` (no deadline). The same caution as `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` applies.
+- Default: `0` (no deadline)
+
+Maximum gap in milliseconds between response body chunks from the workflow handler before the delivery is failed and redelivered.
+
+The same caution as [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](#workflow_postgres_headers_timeout_ms) applies.
 
 ### `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
 
-Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery. Default: unset (see below). `30` is a good value when more than one process shares the database. Programmatic option: `jobLockStaleSeconds`.
+- Default: unset (see below)
+- Factory option: `jobLockStaleSeconds`
+
+Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery.
+
+Change it when: more than one process shares the database, once every one of them runs a version that includes this option. `30` is a good value. Use the same value on every process that shares the database.
 
 A running delivery renews its lock every quarter of the window, and at least every 10 seconds. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows (about 45 seconds at `30`), instead of after Graphile Worker's fixed 4 hour stale-lock reset or the next restart.
 
 Unset, every delivery still renews its lock, and its worker registers as renewing in `workflow.workflow_job_lock_holders` (migration 0030, which `bootstrap` applies). Then only the jobs of a spec 9 run's named queue (its orchestrator deliveries, and invoke mode's executor lane) are released, after 300 seconds unrenewed, and only those whose holder registered. A spec 9 run whose worker was killed therefore continues within about 8 minutes (one and a half windows) instead of 4 hours. A job held by a process on an earlier version, which does not register, is never released this way, so the default is safe during a rolling upgrade. `0` turns renewal and release off.
 
-Use the same value on every process that shares the database, and keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a pool connection. A delivery whose renewals stall past the window is redelivered while it still runs.
+Keep the value well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a pool connection. A delivery whose renewals stall past the window is redelivered while it still runs.
 
 Setting it releases every job of this World, whoever holds it, so set it only after a rolling upgrade has finished. A process on an earlier version doesn't renew its locks, so a process that has this set would redeliver any of that process's deliveries that run longer than the window. When the earlier-version process then finishes such a delivery, its acknowledgement, which isn't fenced on the lock holder, can delete the redelivered job's row, and the redelivery loses its retry.
 
-To set it, use `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` (or `jobLockStaleSeconds: 30`) on every process that shares the database, once all of them run a version that includes this option.
-
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 
-Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.
+- Default: `30`
+
+Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days.
+
+Change it when: your production World uses a different limit. Set the same limit so oversized values fail during development.
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
 
-Queue topic namespace shared by build output and the Postgres World. Default: unset.
+- Default: unset
+- Factory option: `namespace`
+
+Queue topic namespace shared by build output and the Postgres World.
 
 For example, `custom` changes the queue topic prefix from `__wkf_workflow_` to `__custom_wkf_workflow_`. The value must be lowercase alphanumeric and start with a letter.
 
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
-Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group, trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
+- Default: `0` (dispatch immediately)
+- Factory option: `streamFlushIntervalMs`
+
+Group-commit window, in milliseconds, for the leading chunk of an idle stream.
+
+A positive value holds the first chunk up to that long to collect a group, trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
 
 ## Upgrading
 
