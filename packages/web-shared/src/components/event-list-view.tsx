@@ -20,7 +20,6 @@ import {
 } from '../lib/event-list-model';
 import type {
   ExactIdSearchResult,
-  ExactWorkflowSearchId,
   ExactWorkflowSearchIdKind,
 } from '../lib/exact-event-search-id';
 import { EventDetailsPanel } from './event-list/event-details-panel';
@@ -97,34 +96,8 @@ function EventListViewInner({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // Selecting an event marks every event of the same step, hook, wait or run.
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>();
-  const [relatedKey, setRelatedKey] = useState<string | undefined>();
-
-  // An exact-ID search marks the entity it found and scrolls to the top.
-  const handleExactResult = useCallback(
-    (result: { id: ExactWorkflowSearchId; events: Event[] } | null) => {
-      if (!result) {
-        setRelatedKey(undefined);
-        return;
-      }
-      setRelatedKey(
-        result.id.kind === 'event'
-          ? (getEventEntity(result.events[0]).key ?? undefined)
-          : result.id.id
-      );
-      virtuosoRef.current?.scrollToIndex({
-        index: 0,
-        align: 'start',
-        behavior: 'smooth',
-      });
-    },
-    []
-  );
-  const { query, setQuery, search } = useEventSearch({
-    onExactIdSearch,
-    onExactResult: handleExactResult,
-  });
+  const { query, setQuery, search } = useEventSearch(onExactIdSearch);
   const exactEvents = getExactSearchEvents(search);
   const isExactSearchActive = exactEvents !== null;
 
@@ -168,21 +141,25 @@ function EventListViewInner({
     [rows, isExactSearchActive, lookups]
   );
 
-  const selectEvent = useCallback((event: Event | undefined) => {
-    setSelectedEventId(event?.eventId);
-    setRelatedKey(event ? (getEventEntity(event).key ?? undefined) : undefined);
+  const toggleSelectedEvent = useCallback((event: Event) => {
+    setSelectedEventId((id) =>
+      id === event.eventId ? undefined : event.eventId
+    );
   }, []);
-  const toggleSelectedEvent = useCallback(
-    (event: Event) => {
-      selectEvent(event.eventId === selectedEventId ? undefined : event);
-    },
-    [selectedEventId, selectEvent]
-  );
   const selectedRow = useMemo(() => {
     if (!selectedEventId) return undefined;
     const event = knownEvents.find((e) => e.eventId === selectedEventId);
     return event ? buildEventRow(event, lookups) : undefined;
   }, [selectedEventId, knownEvents, lookups]);
+
+  // Every event of the step, hook, wait or run an exact-ID search found is
+  // marked; with no search result, those of the selected event's.
+  const relatedKey =
+    search.status === 'ok'
+      ? search.id.kind === 'event'
+        ? getEventEntity(search.events[0]).key
+        : search.id.id
+      : (selectedRow?.entity.key ?? null);
 
   // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
@@ -212,7 +189,7 @@ function EventListViewInner({
           ? 0
           : Math.min(Math.max(selectedIndex + delta, 0), rows.length - 1);
       const next = rows[nextIndex].event;
-      selectEvent(next);
+      setSelectedEventId(next.eventId);
       const itemIndex = listItems.findIndex(
         (item) =>
           item.kind === 'event' && item.row.event.eventId === next.eventId
@@ -228,7 +205,7 @@ function EventListViewInner({
           ?.focus();
       });
     },
-    [selectedIndex, selectEvent, rows, listItems]
+    [selectedIndex, rows, listItems]
   );
 
   // With no listed row selected, Up/Down or J/K select the first one. Once a
@@ -340,8 +317,7 @@ function EventListViewInner({
                         selectedIndex === -1 ? item.index === 0 : isSelected
                       }
                       isRelated={
-                        relatedKey !== undefined &&
-                        row.entity.key === relatedKey
+                        relatedKey !== null && row.entity.key === relatedKey
                       }
                       onSelect={toggleSelectedEvent}
                       showSeparateEventOccurrenceTimestamps={
@@ -391,7 +367,7 @@ function EventListViewInner({
                   ? () => moveSelection(1)
                   : undefined
               }
-              onClose={() => selectEvent(undefined)}
+              onClose={() => setSelectedEventId(undefined)}
             />
           ) : null}
         </div>
