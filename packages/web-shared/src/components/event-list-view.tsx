@@ -384,16 +384,6 @@ function EventListViewInner({
               }
               onCacheEventData={cacheEventData}
               encryptionKey={encryptionKey}
-              decrypt={
-                onDecrypt
-                  ? {
-                      onDecrypt,
-                      isDecrypting,
-                      isDecryptDisabled,
-                      decryptDisabledReason,
-                    }
-                  : undefined
-              }
               width={panelWidth}
               onPrev={selectedIndex > 0 ? () => moveSelection(-1) : undefined}
               onNext={
