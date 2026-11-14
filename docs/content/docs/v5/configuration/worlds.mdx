@@ -107,6 +107,13 @@ The Local World is the default outside Vercel and is intended for development.
 - Default: `true`
 - Re-enqueues pending and running local runs when the World starts. Set the environment variable to `0` or `false` to skip recovery; the factory option wins when both are set.
 
+### `WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS`
+
+- Factory option: none
+- Default: `1`, except on Windows, where it is `brief`
+- How long a process keeps its connection to the Local World's SQLite database (`world.db`) open between operations.
+- `1` keeps the connection until it has been idle for a few seconds. `brief` closes it once a burst of operations ends, so the data directory stays removable while the app runs. `0` opens and closes a connection for every operation, which is slower. Any other value uses the default.
+
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
 - Factory option: none
