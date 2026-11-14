@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -58,12 +59,12 @@ afterEach(() => {
 });
 
 describe('supported @swc/core line', () => {
-  const UPDATE_TOGETHER =
-    'update SUPPORTED_SWC_CORE_LINE and SWC_CORE_INSTALL_SPEC in ' +
+  const PINS =
+    'SUPPORTED_SWC_CORE_LINE and SWC_CORE_INSTALL_SPEC in ' +
     'packages/nest/src/swc-builder-deps.ts, and the pinned @swc/core version ' +
     'in docs/content/docs/v4/getting-started/nestjs.mdx, ' +
     'docs/content/docs/v5/getting-started/nestjs.mdx and ' +
-    'packages/nest/README.md, together';
+    'packages/nest/README.md';
 
   it('matches the @swc/core that @workflow/nest and its SWC plugin are built against', () => {
     // The catalog version @workflow/nest depends on and @workflow/swc-plugin
@@ -75,7 +76,11 @@ describe('supported @swc/core line', () => {
     const { version } = JSON.parse(readFileSync(packageJson, 'utf-8'));
     expect(
       isSupportedSwcCoreVersion(version),
-      `@workflow/nest depends on @swc/core ${version}, but SUPPORTED_SWC_CORE_LINE is ${SUPPORTED_SWC_CORE_LINE}: ${UPDATE_TOGETHER}`
+      `@workflow/nest depends on @swc/core ${version}, but ` +
+        `SUPPORTED_SWC_CORE_LINE is ${SUPPORTED_SWC_CORE_LINE}. Only if the ` +
+        'Workflow SWC plugin has been rebuilt for the new @swc/core line, ' +
+        `update ${PINS} together. Otherwise, revert the @swc/core catalog ` +
+        'bump in pnpm-workspace.yaml.'
     ).toBe(true);
   });
 
@@ -84,7 +89,25 @@ describe('supported @swc/core line', () => {
       SWC_CORE_INSTALL_SPEC.startsWith(
         `@swc/core@~${SUPPORTED_SWC_CORE_LINE}.`
       ),
-      `SWC_CORE_INSTALL_SPEC (${SWC_CORE_INSTALL_SPEC}) is not on SUPPORTED_SWC_CORE_LINE (${SUPPORTED_SWC_CORE_LINE}): ${UPDATE_TOGETHER}`
+      `SWC_CORE_INSTALL_SPEC (${SWC_CORE_INSTALL_SPEC}) is not on ` +
+        `SUPPORTED_SWC_CORE_LINE (${SUPPORTED_SWC_CORE_LINE}): update ${PINS} ` +
+        'together.'
+    ).toBe(true);
+  });
+
+  it.each([
+    'docs/content/docs/v4/getting-started/nestjs.mdx',
+    'docs/content/docs/v5/getting-started/nestjs.mdx',
+    'packages/nest/README.md',
+  ])('%s installs SWC_CORE_INSTALL_SPEC', (file) => {
+    const content = readFileSync(
+      fileURLToPath(new URL(`../../../${file}`, import.meta.url)),
+      'utf-8'
+    );
+    expect(
+      content.includes(SWC_CORE_INSTALL_SPEC),
+      `${file} does not contain ${SWC_CORE_INSTALL_SPEC}: update ${PINS} ` +
+        'together.'
     ).toBe(true);
   });
 });
