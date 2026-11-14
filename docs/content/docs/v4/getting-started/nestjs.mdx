@@ -97,6 +97,8 @@ Install the required SWC packages. `@swc/core` is pinned to 1.15.x because the W
 npm i -D @swc/cli @swc/core@~1.15.18
 ```
 
+Don't upgrade `@swc/core` past 1.15 (for example with `pnpm update --latest`, Dependabot or Renovate) until the Workflow SWC plugin supports 1.16.
+
 Ensure your `nest-cli.json` has SWC as the builder:
 
 ```json title="nest-cli.json" lineNumbers

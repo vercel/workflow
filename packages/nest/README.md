@@ -18,6 +18,8 @@ npm install -D @swc/cli @swc/core@~1.15.18
 pnpm add -D @swc/cli @swc/core@~1.15.18
 ```
 
+Don't upgrade `@swc/core` past 1.15 (for example with `pnpm update --latest`, Dependabot or Renovate) until the Workflow SWC plugin supports 1.16; `npx @workflow/nest init` warns if the installed version isn't 1.15.x.
+
 <a id="quick-start"></a>
 
 ## Quick start
