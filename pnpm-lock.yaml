@@ -2745,6 +2745,9 @@ importers:
       '@workflow/vitest':
         specifier: workspace:*
         version: link:../../packages/vitest
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../../packages/world
       immer:
         specifier: 10.1.1
         version: 10.1.1

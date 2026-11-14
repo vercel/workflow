@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
-import { formatRunUsageSummary, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  formatRunUsageSummary,
+  formatStepCreationNote,
+  formatStepEventsBreakdown,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { databaseFor } from '../db/index.js';
 import { createWorld } from '../index.js';
@@ -101,6 +107,18 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(usage.dataWritten.byEntity.step).toBeGreaterThan(0);
     expect(usage.dataWritten.byEntity.hook).toBe(0);
     expect(usage.dataWritten.byEntity.stream).toBe(0);
+    expect(usage.stepEvents).toEqual({
+      steps: 1,
+      events: 3,
+      byType: {
+        created: 1,
+        started: 1,
+        completed: 1,
+        failed: 0,
+        retrying: 0,
+        other: 0,
+      },
+    });
     expect(formatRunUsageSummary(usage)).toBe('6 billable events · 0 retries');
   });
 
@@ -131,6 +149,12 @@ describe('experimental_usage.getRun (world-local)', () => {
       name: CHARGE,
       events: 5,
       retries: 1,
+    });
+    expect(usage.stepEvents.byType).toMatchObject({
+      created: 1,
+      started: 2,
+      completed: 1,
+      retrying: 1,
     });
     expect(formatRunUsageSummary(usage)).toBe(
       '8 billable events · 1 retry (+2 events)'
@@ -229,6 +253,11 @@ describe('experimental_usage.getRun (world-local)', () => {
     // 2 × retrying, failed.
     expect(usage.events).toBe(3 + 7);
     expect(usage.retries).toEqual({ count: 2, events: 4 });
+    expect(usage.stepEvents).toMatchObject({
+      steps: 1,
+      events: 7,
+      byType: { created: 1, started: 3, retrying: 2, failed: 1, completed: 0 },
+    });
     expect(formatRunUsageSummary(usage)).toBe(
       '10 billable events · 2 retries (+4 events)'
     );
@@ -258,8 +287,9 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(after.dataWritten.bytes).toBeGreaterThan(before.dataWritten.bytes);
   });
 
-  it('names a step that has no step_created event from its row', async () => {
-    // A lazy (inline) start creates the step on step_started.
+  it('counts a spec 8 lazy start with the step_created it writes', async () => {
+    // Spec 8 records a lazily started inline step's creation as a synthetic
+    // step_created, so the log still shows three events.
     const runId = await startRun();
     await storage.events.create(runId, {
       eventType: 'step_started',
@@ -267,10 +297,83 @@ describe('experimental_usage.getRun (world-local)', () => {
       correlationId: 'step_inline',
       eventData: { stepName: EMAIL, input: bytes(8) },
     } as never);
+    await updateStep(storage, runId, 'step_inline', 'step_completed', {
+      result: bytes(8),
+    });
 
     const usage = await usageOf(runId);
-    const span = usage.eventsBySpan.find((s) => s.kind === 'step');
-    expect(span?.name).toBe(EMAIL);
+    expect(usage.stepEvents).toMatchObject({
+      steps: 1,
+      events: 3,
+      byType: { created: 1, started: 1, completed: 1 },
+    });
+  });
+
+  it('counts a spec 9 run that mixes inline and queued steps', async () => {
+    // A spec 9 inline step is created by its first step_started: no
+    // step_created. A queued step keeps its step_created.
+    const run = await createRun(
+      storage,
+      { deploymentId: 'dpl_test', workflowName: WORKFLOW, input: bytes(4) },
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
+    const runId = run.runId;
+    const event = (e: Record<string, unknown>) =>
+      storage.events.create(runId, {
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        ...e,
+      } as never);
+    for (const id of ['step_i1', 'step_i2']) {
+      await event({
+        eventType: 'step_started',
+        correlationId: id,
+        eventData: { stepName: EMAIL, input: bytes(8) },
+      });
+      await event({
+        eventType: 'step_completed',
+        correlationId: id,
+        eventData: { result: bytes(8) },
+      });
+    }
+    await event({
+      eventType: 'step_created',
+      correlationId: 'step_q1',
+      eventData: { stepName: CHARGE, input: bytes(8) },
+    });
+    await event({ eventType: 'step_started', correlationId: 'step_q1' });
+    await event({
+      eventType: 'step_completed',
+      correlationId: 'step_q1',
+      eventData: { result: bytes(8) },
+    });
+
+    const usage = await usageOf(runId);
+    const listed = await listAllEvents(runId);
+    expect(listed.filter((e) => e.eventType === 'step_created')).toHaveLength(
+      1
+    );
+    expect(usage.stepEvents).toEqual({
+      steps: 3,
+      events: 7,
+      byType: {
+        created: 1,
+        started: 3,
+        completed: 3,
+        failed: 0,
+        retrying: 0,
+        other: 0,
+      },
+    });
+    // The inline steps are named from their rows.
+    expect(usage.eventsBySpan).toContainEqual(
+      expect.objectContaining({ kind: 'step', name: EMAIL, events: 4 })
+    );
+    expect(formatStepEventsBreakdown(usage)).toBe(
+      '3 steps wrote 7 events: 1 created, 3 started, 3 completed'
+    );
+    expect(formatStepCreationNote(usage)).toBe(
+      '2 steps have no created event: they ran inline, and their first started event created them.'
+    );
   });
 
   it('counts sleeps and attributes', async () => {

@@ -16,7 +16,9 @@ Where the events come from
   audit2              3     8%
   5 other spans      14    38%
 
-Each step writes 3 events (created, started, completed); each retry adds 2.
+How events are counted
+  10 steps wrote 32 events: 10 created, 11 started, 10 completed, 1 retry marker.
+  Each retry adds 2: a retry marker, and the step starting again.
 
 Data written
   Run        818 B
@@ -121,5 +123,17 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
   },
   "runId": "wrun_<RUN_ID>",
   "status": "completed",
+  "stepEvents": {
+    "byType": {
+      "completed": 10,
+      "created": 10,
+      "failed": 0,
+      "other": 0,
+      "retrying": 1,
+      "started": 11,
+    },
+    "events": 32,
+    "steps": 10,
+  },
 }
 `;

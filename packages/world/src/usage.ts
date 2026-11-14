@@ -26,10 +26,11 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
 export const WORKFLOW_PRICING_DOCS_URL =
   'https://vercel.com/docs/workflows/pricing';
 
-/** A step that succeeds first time writes created, started and completed. */
-export const EVENTS_PER_STEP = 3;
-
-/** Each retry writes `step_retrying` and runs the step again (`step_started`). */
+/**
+ * Each retry writes `step_retrying` and runs the step again (`step_started`).
+ * True on every spec: what differs between specs is a step's *creation*,
+ * which {@link RunUsage.stepEvents} reports as the run wrote it.
+ */
 export const EVENTS_PER_RETRY = 2;
 
 /** How many spans the summaries list before collapsing the rest. */
@@ -81,6 +82,14 @@ export interface RunUsage {
     /** Events the retries added: {@link EVENTS_PER_RETRY} each. */
     events: number;
   };
+  /**
+   * The run's step events by type, as its log holds them. How many events a
+   * step writes depends on how it ran: a step dispatched to the queue writes
+   * `step_created`, `step_started` and `step_completed`; on spec 9 a step
+   * the orchestrator runs inline has no `step_created` (its first
+   * `step_started` creates it), so it writes two. One run can mix both.
+   */
+  stepEvents: RunUsageStepEvents;
   /** Sorted by events, most first. */
   eventsBySpan: RunUsageSpan[];
   /** Workflow Data Written, in bytes. */
@@ -99,6 +108,34 @@ export interface RunUsage {
   } | null;
 }
 
+/** The step event types {@link RunUsageStepEvents} counts. */
+export type RunUsageStepEventType =
+  | 'created'
+  | 'started'
+  | 'completed'
+  | 'failed'
+  | 'retrying';
+
+export const RUN_USAGE_STEP_EVENT_TYPES: readonly RunUsageStepEventType[] = [
+  'created',
+  'started',
+  'completed',
+  'failed',
+  'retrying',
+];
+
+export interface RunUsageStepEvents {
+  /** Steps in the log (one per step id; one call of a step function). */
+  steps: number;
+  /** All their events; the step spans' events add up to it. */
+  events: number;
+  /**
+   * `step_created`, `step_started`, ... counts. `other` holds step event
+   * types this build does not know, so the counts always add up to `events`.
+   */
+  byType: Record<RunUsageStepEventType | 'other', number>;
+}
+
 /**
  * One aggregate row: the events of one type in a run's log, with their
  * stored size. Step events go in {@link RunUsageStepGroup} instead.
@@ -113,7 +150,17 @@ export interface RunUsageEventGroup {
 export interface RunUsageStepGroup {
   /** `null` when the step's row is missing. */
   stepName: string | null;
+  /** Steps (step ids) with this name. */
+  steps: number;
   events: number;
+  /** `step_created` events among them. */
+  created: number;
+  /** `step_started` events among them. */
+  started: number;
+  /** `step_completed` events among them. */
+  completed: number;
+  /** `step_failed` events among them. */
+  failed: number;
   /** `step_retrying` events among them. */
   retries: number;
   bytes: number;
@@ -196,7 +243,36 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     const { kind, name } = spanOf(group.eventType, input.workflowName);
     add(kind, name, toCount(group.events), 0, toCount(group.bytes));
   }
+  const stepEvents: RunUsageStepEvents = {
+    steps: 0,
+    events: 0,
+    byType: {
+      created: 0,
+      started: 0,
+      completed: 0,
+      failed: 0,
+      retrying: 0,
+      other: 0,
+    },
+  };
   for (const group of input.stepGroups) {
+    const counts = {
+      created: toCount(group.created),
+      started: toCount(group.started),
+      completed: toCount(group.completed),
+      failed: toCount(group.failed),
+      retrying: toCount(group.retries),
+    };
+    const total = toCount(group.events);
+    if (total <= 0) continue;
+    stepEvents.steps += toCount(group.steps);
+    stepEvents.events += total;
+    let known = 0;
+    for (const type of RUN_USAGE_STEP_EVENT_TYPES) {
+      stepEvents.byType[type] += counts[type];
+      known += counts[type];
+    }
+    stepEvents.byType.other += Math.max(0, total - known);
     add(
       'step',
       group.stepName || UNKNOWN_STEP_NAME,
@@ -222,6 +298,7 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     events,
     billableEvents: events,
     retries: { count: retries, events: retries * EVENTS_PER_RETRY },
+    stepEvents,
     eventsBySpan,
     dataWritten: {
       bytes: byEntity.run + byEntity.step + byEntity.hook + byEntity.stream,
@@ -290,6 +367,51 @@ export function formatRunUsageSummary(usage: RunUsage): string {
   const retries = plural(usage.retries.count, 'retry', 'retries');
   if (usage.retries.count === 0) return `${billable} · ${retries}`;
   return `${billable} · ${retries} (+${formatUsageEvents(usage.retries.events)})`;
+}
+
+const STEP_EVENT_LABELS: Record<
+  RunUsageStepEventType | 'other',
+  [one: string, many: string]
+> = {
+  created: ['created', 'created'],
+  started: ['started', 'started'],
+  completed: ['completed', 'completed'],
+  failed: ['failed', 'failed'],
+  retrying: ['retry marker', 'retry markers'],
+  other: ['other', 'other'],
+};
+
+/**
+ * How the run's step events add up, from its own counts:
+ * `5 steps wrote 14 events: 2 created, 7 started, 5 completed, 2 retry markers`.
+ * `null` when no step ran.
+ */
+export function formatStepEventsBreakdown(usage: RunUsage): string | null {
+  const { steps, events, byType } = usage.stepEvents;
+  if (events <= 0) return null;
+  const parts = ([...RUN_USAGE_STEP_EVENT_TYPES, 'other'] as const).flatMap(
+    (type) => {
+      const count = byType[type];
+      if (count <= 0) return [];
+      const [one, many] = STEP_EVENT_LABELS[type];
+      return [`${count.toLocaleString('en-US')} ${count === 1 ? one : many}`];
+    }
+  );
+  return `${plural(steps, 'step', 'steps')} wrote ${formatUsageEvents(events)}: ${parts.join(', ')}`;
+}
+
+/**
+ * Why some steps have no `created` event, when that is so: they ran inline
+ * on a spec 9 run, where a step's first `step_started` creates it. `null`
+ * when every step has one.
+ */
+export function formatStepCreationNote(usage: RunUsage): string | null {
+  const { steps, byType } = usage.stepEvents;
+  const missing = steps - byType.created;
+  if (missing <= 0) return null;
+  return missing === steps
+    ? 'No step has a created event: each ran inline, and its first started event created it.'
+    : `${plural(missing, 'step has', 'steps have')} no created event: they ran inline, and their first started event created them.`;
 }
 
 export interface CollapsedUsageSpans {

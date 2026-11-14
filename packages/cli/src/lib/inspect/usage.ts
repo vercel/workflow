@@ -1,8 +1,9 @@
 import {
   collapseUsageSpans,
   EVENTS_PER_RETRY,
-  EVENTS_PER_STEP,
   formatRunUsageSummary,
+  formatStepCreationNote,
+  formatStepEventsBreakdown,
   formatUsageBytes,
   formatUsageEvents,
   formatUsageShare,
@@ -80,9 +81,14 @@ export function formatRunUsageText(usage: RunUsage): string {
     }
   }
 
+  const stepBreakdown = formatStepEventsBreakdown(usage);
+  const stepCreationNote = formatStepCreationNote(usage);
   lines.push('');
+  lines.push('How events are counted');
+  if (stepBreakdown) lines.push(`  ${stepBreakdown}.`);
+  if (stepCreationNote) lines.push(`  ${stepCreationNote}`);
   lines.push(
-    `Each step writes ${EVENTS_PER_STEP} events (created, started, completed); each retry adds ${EVENTS_PER_RETRY}.`
+    `  Each retry adds ${EVENTS_PER_RETRY}: a retry marker, and the step starting again.`
   );
 
   lines.push('');

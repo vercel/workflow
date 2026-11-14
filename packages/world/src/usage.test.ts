@@ -4,14 +4,44 @@ import {
   collapseUsageSpans,
   EVENTS_PER_RETRY,
   formatRunUsageSummary,
+  formatStepCreationNote,
+  formatStepEventsBreakdown,
   formatUsageBytes,
   formatUsageShare,
   type RunUsageAggregates,
   type RunUsageSpan,
+  type RunUsageStepGroup,
   usageSpanLabel,
 } from './usage.js';
 
 const WORKFLOW = 'workflow//./src/w//wf';
+
+/** A step group; `events` defaults to the sum of its per-type counts. */
+const stepGroup = (
+  stepName: string | null,
+  fields: Partial<Omit<RunUsageStepGroup, 'stepName'>>
+): RunUsageStepGroup => {
+  const counts = {
+    steps: 0,
+    created: 0,
+    started: 0,
+    completed: 0,
+    failed: 0,
+    retries: 0,
+    bytes: 0,
+    ...fields,
+  };
+  return {
+    stepName,
+    events:
+      counts.created +
+      counts.started +
+      counts.completed +
+      counts.failed +
+      counts.retries,
+    ...counts,
+  };
+};
 
 const aggregates = (
   overrides: Partial<RunUsageAggregates> = {}
@@ -40,8 +70,22 @@ describe('buildRunUsage', () => {
           { eventType: 'hook_received', events: 2, bytes: 70 },
         ],
         stepGroups: [
-          { stepName: 'step//a', events: 8, retries: 1, bytes: 400 },
-          { stepName: 'step//b', events: 3, retries: 0, bytes: 90 },
+          // Two calls, one retried: 2 + 3 + 2 + 1.
+          stepGroup('step//a', {
+            steps: 2,
+            created: 2,
+            started: 3,
+            completed: 2,
+            retries: 1,
+            bytes: 400,
+          }),
+          stepGroup('step//b', {
+            steps: 1,
+            created: 1,
+            started: 1,
+            completed: 1,
+            bytes: 90,
+          }),
         ],
         streamBytes: 1234,
       })
@@ -98,7 +142,9 @@ describe('buildRunUsage', () => {
   it('names a step without a row, and keeps an empty run at zero', () => {
     const usage = buildRunUsage(
       aggregates({
-        stepGroups: [{ stepName: null, events: 2, retries: 0, bytes: 1 }],
+        stepGroups: [
+          stepGroup(null, { steps: 1, started: 1, completed: 1, bytes: 1 }),
+        ],
       })
     );
     expect(usage.eventsBySpan[0]).toMatchObject({
@@ -137,7 +183,7 @@ describe('usage formatting', () => {
   it('summarizes billable events and retries', () => {
     const one = buildRunUsage(
       aggregates({
-        stepGroups: [{ stepName: 's', events: 1, retries: 1, bytes: 0 }],
+        stepGroups: [stepGroup('s', { steps: 1, retries: 1 })],
       })
     );
     expect(formatRunUsageSummary(one)).toBe(
@@ -145,7 +191,7 @@ describe('usage formatting', () => {
     );
     const many = buildRunUsage(
       aggregates({
-        stepGroups: [{ stepName: 's', events: 1234, retries: 3, bytes: 0 }],
+        stepGroups: [stepGroup('s', { steps: 1, events: 1234, retries: 3 })],
       })
     );
     expect(formatRunUsageSummary(many)).toBe(
@@ -173,6 +219,154 @@ describe('usage formatting', () => {
     [1, '100%'],
   ])('formats a share of %d as %s', (share, text) => {
     expect(formatUsageShare(share)).toBe(text);
+  });
+});
+
+describe('step events by type', () => {
+  it('adds up the step groups, and keeps unknown types in other', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('step//a', {
+            steps: 2,
+            created: 2,
+            started: 3,
+            completed: 1,
+            failed: 1,
+            retries: 1,
+          }),
+          // A step event type this build does not know.
+          stepGroup('step//b', {
+            steps: 1,
+            events: 4,
+            created: 1,
+            started: 1,
+            completed: 1,
+          }),
+        ],
+      })
+    );
+    expect(usage.stepEvents).toEqual({
+      steps: 3,
+      events: 12,
+      byType: {
+        created: 3,
+        started: 4,
+        completed: 2,
+        failed: 1,
+        retrying: 1,
+        other: 1,
+      },
+    });
+    expect(
+      Object.values(usage.stepEvents.byType).reduce((a, b) => a + b, 0)
+    ).toBe(usage.stepEvents.events);
+    expect(
+      usage.eventsBySpan
+        .filter((span) => span.kind === 'step')
+        .reduce((sum, span) => sum + span.events, 0)
+    ).toBe(usage.stepEvents.events);
+  });
+
+  it('explains a spec 8 run: every step has a created event', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('step//a', {
+            steps: 5,
+            created: 5,
+            started: 7,
+            completed: 5,
+            retries: 2,
+          }),
+        ],
+      })
+    );
+    expect(formatStepEventsBreakdown(usage)).toBe(
+      '5 steps wrote 19 events: 5 created, 7 started, 5 completed, 2 retry markers'
+    );
+    expect(formatStepCreationNote(usage)).toBeNull();
+  });
+
+  it('explains a spec 9 run whose steps all ran inline (no created)', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('step//a', { steps: 5, started: 5, completed: 5 }),
+        ],
+      })
+    );
+    expect(usage.stepEvents.byType.created).toBe(0);
+    expect(formatStepEventsBreakdown(usage)).toBe(
+      '5 steps wrote 10 events: 5 started, 5 completed'
+    );
+    expect(formatStepCreationNote(usage)).toBe(
+      'No step has a created event: each ran inline, and its first started event created it.'
+    );
+  });
+
+  it('explains a spec 9 run that mixes inline and queued steps', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          // 2 queued (created) and 3 inline; one retried twice.
+          stepGroup('step//a', {
+            steps: 5,
+            created: 2,
+            started: 7,
+            completed: 4,
+            failed: 1,
+            retries: 2,
+          }),
+        ],
+      })
+    );
+    expect(formatStepEventsBreakdown(usage)).toBe(
+      '5 steps wrote 16 events: 2 created, 7 started, 4 completed, 1 failed, 2 retry markers'
+    );
+    expect(formatStepCreationNote(usage)).toBe(
+      '3 steps have no created event: they ran inline, and their first started event created them.'
+    );
+    expect(usage.retries).toEqual({ count: 2, events: 4 });
+  });
+
+  it('uses the singular for one step and one marker', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('step//a', {
+            steps: 1,
+            started: 2,
+            completed: 1,
+            retries: 1,
+          }),
+        ],
+      })
+    );
+    expect(formatStepEventsBreakdown(usage)).toBe(
+      '1 step wrote 4 events: 2 started, 1 completed, 1 retry marker'
+    );
+    expect(formatStepCreationNote(usage)).toBe(
+      'No step has a created event: each ran inline, and its first started event created it.'
+    );
+  });
+
+  it('says nothing when no step ran', () => {
+    const usage = buildRunUsage(aggregates());
+    expect(usage.stepEvents).toEqual({
+      steps: 0,
+      events: 0,
+      byType: {
+        created: 0,
+        started: 0,
+        completed: 0,
+        failed: 0,
+        retrying: 0,
+        other: 0,
+      },
+    });
+    expect(formatStepEventsBreakdown(usage)).toBeNull();
+    expect(formatStepCreationNote(usage)).toBeNull();
   });
 });
 

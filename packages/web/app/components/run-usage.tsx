@@ -1,8 +1,9 @@
 import {
   collapseUsageSpans,
   EVENTS_PER_RETRY,
-  EVENTS_PER_STEP,
   formatRunUsageSummary,
+  formatStepCreationNote,
+  formatStepEventsBreakdown,
   formatUsageBytes,
   formatUsageEvents,
   formatUsageShare,
@@ -206,6 +207,8 @@ export function RunUsagePanel({
   }
 
   const top = usage.eventsBySpan[0];
+  const stepBreakdown = formatStepEventsBreakdown(usage);
+  const stepCreationNote = formatStepCreationNote(usage);
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-3xl space-y-8 py-6">
@@ -253,10 +256,10 @@ export function RunUsagePanel({
             How events are counted
           </summary>
           <ul className="list-disc space-y-1 px-10 pb-4 text-copy-13 text-gray-900">
-            <li>
-              Each step writes {EVENTS_PER_STEP} events: created, started and
-              completed.
-            </li>
+            {stepBreakdown && (
+              <li data-testid="run-usage-step-breakdown">{stepBreakdown}.</li>
+            )}
+            {stepCreationNote && <li>{stepCreationNote}</li>}
             <li>
               Each retry adds {EVENTS_PER_RETRY}: a retry marker, and the step
               starting again.

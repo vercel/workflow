@@ -2,7 +2,7 @@
  * Per-run usage (`world.experimental_usage`), computed from aggregate
  * queries over the run's rows. Nothing here decodes an event: the log is
  * grouped and summed inside SQLite, which returns one row per event type
- * and one per step name, however long the log is. Measured on one laptop
+ * and one per step name, however long the log is. Measured on one devbox
  * core: 10,000 events with 2 KB payloads in under 200 ms; 3,000 events
  * holding 175 MB of payloads in about 1 s (reading the bytes dominates).
  *
@@ -42,19 +42,33 @@ const EVENT_GROUPS_SQL = `
 `;
 
 /**
- * Step events grouped by step name. The log is grouped by step first, so
- * each step's row is looked up (by primary key) and its name extracted
- * once per step, not once per event. The name comes from the step's row
- * because a spec 9 inline step has no `step_created` event to carry it.
+ * Step events grouped by step name, with a count per event type. The log is
+ * grouped by step first, so each step's row is looked up (by primary key)
+ * and its name extracted once per step, not once per event. The name comes
+ * from the step's row because a spec 9 inline step has no `step_created`
+ * event to carry it.
+ *
+ * The per-type counts are columns of the same pass over the step events:
+ * a comparison per row on `event_type`, which the row already holds, so
+ * they add no read of the events (whose rows carry the payloads).
  */
 const STEP_GROUPS_SQL = `
   SELECT json_extract(s.doc, '$.stepName') AS step_name,
+         COUNT(*) AS steps,
          SUM(e.events) AS events,
+         SUM(e.created) AS created,
+         SUM(e.started) AS started,
+         SUM(e.completed) AS completed,
+         SUM(e.failed) AS failed,
          SUM(e.retries) AS retries,
          SUM(e.bytes) AS bytes
   FROM (
     SELECT correlation_id,
            COUNT(*) AS events,
+           SUM(event_type = 'step_created') AS created,
+           SUM(event_type = 'step_started') AS started,
+           SUM(event_type = 'step_completed') AS completed,
+           SUM(event_type = 'step_failed') AS failed,
            SUM(event_type = 'step_retrying') AS retries,
            SUM(length(CAST(doc AS BLOB))) AS bytes
     FROM events
@@ -91,7 +105,12 @@ export function createUsageStorage(db: Database, tag?: string): UsageStorage {
         }>(EVENT_GROUPS_SQL, runId);
         const steps = db.all<{
           step_name: string | null;
+          steps: number;
           events: number;
+          created: number;
+          started: number;
+          completed: number;
+          failed: number;
           retries: number;
           bytes: number | null;
         }>(STEP_GROUPS_SQL, runId);
@@ -118,7 +137,12 @@ export function createUsageStorage(db: Database, tag?: string): UsageStorage {
         stepGroups: aggregates.steps.map(
           (row): RunUsageStepGroup => ({
             stepName: row.step_name,
+            steps: Number(row.steps),
             events: Number(row.events),
+            created: Number(row.created),
+            started: Number(row.started),
+            completed: Number(row.completed),
+            failed: Number(row.failed),
             retries: Number(row.retries),
             bytes: Number(row.bytes ?? 0),
           })

@@ -27,14 +27,47 @@ function bigRun(overrides: Partial<RunUsage> = {}): RunUsage {
         { eventType: 'hook_received', events: 1, bytes: 80 },
       ],
       stepGroups: [
-        { stepName: step('chargeCard'), events: 902, retries: 1, bytes: 9000 },
-        { stepName: step('sendEmail'), events: 150, retries: 0, bytes: 3000 },
-        ...['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n) => ({
-          stepName: step(n),
-          events: 21 - n.charCodeAt(0) + 97,
+        // 300 queued calls, one retried: 300 + 301 + 300 + 1.
+        {
+          stepName: step('chargeCard'),
+          steps: 300,
+          events: 902,
+          created: 300,
+          started: 301,
+          completed: 300,
+          failed: 0,
+          retries: 1,
+          bytes: 9000,
+        },
+        {
+          stepName: step('sendEmail'),
+          steps: 50,
+          events: 150,
+          created: 50,
+          started: 50,
+          completed: 50,
+          failed: 0,
           retries: 0,
-          bytes: 100,
-        })),
+          bytes: 3000,
+        },
+        // 21 down to 15 events each, as a spec 9 run writes them: queued
+        // calls write 3, inline calls 2 (no created). 38 queued, 6 inline.
+        ...['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n) => {
+          const events = 21 - n.charCodeAt(0) + 97;
+          const inline = [0, 2, 1][events % 3];
+          const queued = (events - 2 * inline) / 3;
+          return {
+            stepName: step(n),
+            steps: queued + inline,
+            events,
+            created: queued,
+            started: queued + inline,
+            completed: queued + inline,
+            failed: 0,
+            retries: 0,
+            bytes: 100,
+          };
+        }),
       ],
       streamBytes: 2500,
     }),
@@ -104,9 +137,14 @@ describe('RunUsagePanel', () => {
     const details = screen
       .getByText('How events are counted')
       .closest('details');
-    expect(details?.textContent).toContain(
-      'Each step writes 3 events: created, started and completed.'
+    // From the run's own counts, not a fixed number per step.
+    expect(screen.getByTestId('run-usage-step-breakdown').textContent).toBe(
+      '394 steps wrote 1,178 events: 388 created, 395 started, 394 completed, 1 retry marker.'
     );
+    expect(details?.textContent).toContain(
+      '6 steps have no created event: they ran inline, and their first started event created them.'
+    );
+    expect(details?.textContent).not.toContain('Each step writes 3 events');
     expect(details?.textContent).toContain('Each retry adds 2');
   });
 
@@ -163,6 +201,34 @@ describe('RunUsagePanel', () => {
     expect(screen.getByTestId('run-usage-summary')).toBeTruthy();
   });
 
+  it('leaves out the creation note when every step has a created event', () => {
+    const usage = buildRunUsage({
+      runId: 'wrun_1',
+      status: 'completed',
+      workflowName: WORKFLOW,
+      eventGroups: [],
+      stepGroups: [
+        {
+          stepName: step('a'),
+          steps: 2,
+          events: 6,
+          created: 2,
+          started: 2,
+          completed: 2,
+          failed: 0,
+          retries: 0,
+          bytes: 0,
+        },
+      ],
+      streamBytes: 0,
+    });
+    render(<RunUsagePanel usage={usage} error={null} />);
+    expect(screen.getByTestId('run-usage-step-breakdown').textContent).toBe(
+      '2 steps wrote 6 events: 2 created, 2 started, 2 completed.'
+    );
+    expect(document.body.textContent).not.toContain('no created event');
+  });
+
   it('renders a run with no events', () => {
     const empty = buildRunUsage({
       runId: 'wrun_1',
@@ -177,5 +243,6 @@ describe('RunUsagePanel', () => {
       '0 billable events · 0 retries'
     );
     expect(screen.queryByTestId('run-usage-driver')).toBeNull();
+    expect(screen.queryByTestId('run-usage-step-breakdown')).toBeNull();
   });
 });

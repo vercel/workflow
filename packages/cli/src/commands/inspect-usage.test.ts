@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '@oclif/core';
-import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type World,
+} from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setJsonMode } from '../lib/config/log.js';
@@ -209,6 +213,65 @@ describe('workflow inspect run <id> --usage', () => {
       retries: { count: 1, events: 2 },
     });
     expect(JSON.parse(normalize(stdout, runId))).toMatchSnapshot();
+  });
+
+  it("explains a spec 9 run's inline steps from its own counts", async () => {
+    const event = (
+      runId: string | null,
+      e: Record<string, unknown>
+    ): ReturnType<World['events']['create']> =>
+      world.events.create(runId, {
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        ...e,
+      } as never);
+    const { run } = await event(null, {
+      eventType: 'run_created',
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: WORKFLOW,
+        input: bytes(4),
+      },
+    });
+    const runId = run!.runId;
+    // Two inline calls (created by their step_started) and one queued.
+    for (const id of ['step_i1', 'step_i2']) {
+      await event(runId, {
+        eventType: 'step_started',
+        correlationId: id,
+        eventData: { stepName: EMAIL, input: bytes(8) },
+      });
+      await event(runId, {
+        eventType: 'step_completed',
+        correlationId: id,
+        eventData: { result: bytes(8) },
+      });
+    }
+    await event(runId, {
+      eventType: 'step_created',
+      correlationId: 'step_q1',
+      eventData: { stepName: CHARGE, input: bytes(8) },
+    });
+    await event(runId, { eventType: 'step_started', correlationId: 'step_q1' });
+    await event(runId, {
+      eventType: 'step_completed',
+      correlationId: 'step_q1',
+      eventData: { result: bytes(8) },
+    });
+
+    const { stdout } = await runInspect([
+      'run',
+      runId,
+      '--usage',
+      '--backend',
+      'local',
+    ]);
+    expect(stdout).toContain(
+      '3 steps wrote 7 events: 1 created, 3 started, 3 completed.'
+    );
+    expect(stdout).toContain(
+      '2 steps have no created event: they ran inline, and their first started event created them.'
+    );
+    expect(stdout).not.toContain('Each step writes 3 events');
   });
 
   it('fails on a run the backend does not have', async () => {
