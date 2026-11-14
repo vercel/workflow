@@ -242,7 +242,6 @@ function EventDetailsBody({
     data === null && !!onLoadEventData && !!event.correlationId
   );
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [decryptFailed, setDecryptFailed] = useState(false);
 
   // Load the full payload. Arriving at a key does not re-run this: decryption
   // opens the payload already in hand, below.
@@ -272,27 +271,23 @@ function EventDetailsBody({
     };
   }, [event.eventId]);
 
-  // Open the encrypted fields of that payload when the run key arrives. The
-  // markers keep their ciphertext and the event type names the fields that
-  // carry serialized data, so this stays on the client. Refetching the event
-  // here is what used to leave the panel rendering the ciphertext with live
-  // inline Decrypt buttons until a second request landed.
+  // Open the payload already on screen when the run key arrives. Markers keep
+  // their ciphertext and the event type names the sealed fields, so this needs
+  // no request. Refetching here is what used to render the ciphertext with live
+  // inline Decrypt buttons until the second response landed. If the key does not
+  // open it, the markers stay put.
   const encrypted = hasEncryptedValues(data);
   // biome-ignore lint/correctness/useExhaustiveDependencies: opens the current payload once per key
   useEffect(() => {
-    if (!encryptionKey || !encrypted || data == null) return;
-    let cancelled = false;
+    if (!encryptionKey || !encrypted) return;
+    let alive = true;
     hydrateResourceIOWithKey({ ...event, eventData: data }, encryptionKey)
-      .then((decrypted) => {
-        if (cancelled) return;
-        setData(decrypted.eventData);
-        onCacheEventData(event.eventId, decrypted.eventData);
+      .then((hydrated) => {
+        if (alive) setData(hydrated.eventData);
       })
-      .catch(() => {
-        if (!cancelled) setDecryptFailed(true);
-      });
+      .catch(() => {});
     return () => {
-      cancelled = true;
+      alive = false;
     };
   }, [encryptionKey, encrypted]);
 
@@ -336,17 +331,7 @@ function EventDetailsBody({
         <PayloadView
           data={data}
           eventType={event.eventType}
-          decrypt={
-            decrypt && encrypted && !decryptFailed
-              ? {
-                  ...decrypt,
-                  // While a key is held, the payload is on its way to plaintext:
-                  // keep the banner up rather than render live decrypt controls
-                  // over ciphertext.
-                  isDecrypting: decrypt.isDecrypting || !!encryptionKey,
-                }
-              : undefined
-          }
+          decrypt={encrypted ? decrypt : undefined}
         />
       ) : loading || loadError ? (
         <Collapsible defaultOpen label="Payload">

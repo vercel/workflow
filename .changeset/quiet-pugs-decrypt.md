@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Decrypt an event payload from the run key alone instead of refetching the event, so the payload view goes from "Decrypting…" straight to plaintext rather than flashing inline Decrypt buttons over ciphertext.
+Decrypt an event payload with the run key instead of refetching the event, so the payload view keeps the encrypted banner up until the plaintext is ready rather than drawing inline Decrypt buttons over ciphertext.
