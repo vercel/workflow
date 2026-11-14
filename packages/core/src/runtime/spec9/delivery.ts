@@ -1697,15 +1697,14 @@ async function runDelivery(
             startHookFirstDelivery &&
             (OrchestratorSupersededError.is(err) || writer.isSuperseded)
           ) {
-            const reason = 'fence';
             span?.setAttributes(
-              Attribute.WorkflowStartHookFirstDeliveryFallback(reason)
+              Attribute.WorkflowStartHookFirstDeliveryFallback('fence')
             );
             runtimeLogger.info(
               'Start Hook first delivery: run_started refused, setting up again from a full load',
               {
                 workflowRunId: runId,
-                reason,
+                reason: 'fence',
                 message: err instanceof Error ? err.message : String(err),
               }
             );
