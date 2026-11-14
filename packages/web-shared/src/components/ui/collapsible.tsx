@@ -191,6 +191,8 @@ type CollapsibleProps = {
   disabled?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /** Controls at the right of the header while open, e.g. a copy button. */
+  actions?: ReactNode;
 };
 
 /**
@@ -205,14 +207,23 @@ export function Collapsible({
   disabled,
   defaultOpen,
   onOpenChange,
+  actions,
 }: CollapsibleProps) {
   return (
     <CollapsibleRoot
       disabled={disabled}
       defaultOpen={defaultOpen}
       onOpenChange={onOpenChange}
+      className={actions ? 'relative' : undefined}
     >
       <CollapsibleTrigger>{label}</CollapsibleTrigger>
+      {actions ? (
+        // A sibling of the trigger, laid over the right end of its row (h-9),
+        // so a click on an action does not toggle the section.
+        <div className="absolute top-0 right-0 flex h-9 items-center gap-1">
+          {actions}
+        </div>
+      ) : null}
       {children != null && <CollapsibleContent>{children}</CollapsibleContent>}
     </CollapsibleRoot>
   );
