@@ -314,11 +314,14 @@ describe.each([
     expect(types).toContain('run_completed');
   });
 
-  it('creates the run before re-routing a first delivery that reached the wrong deployment', async () => {
-    const { world, start } = await candidate('admit-on-run-started');
+  it('creates the run before re-routing a first delivery that reached the wrong deployment, and the wake completes it there', async () => {
+    const { world, start, runStartedData } = await candidate(
+      'admit-on-run-started'
+    );
+    const ownDeployment = await getWorld();
     // The message lands on a deployment other than the run's.
     setWorld({
-      ...(await getWorld()),
+      ...ownDeployment,
       capabilities: { inBandFence: true, deploymentAffinity: true },
       getDeploymentId: async () => 'dpl_elsewhere',
     } as never);
@@ -339,6 +342,18 @@ describe.each([
     expect(rerouted).toHaveLength(1);
     expect(rerouted[0]?.opts).toMatchObject({ deploymentId: 'dpl_test' });
     expect(rerouted[0]?.message).not.toHaveProperty('runInput');
+
+    // The wake reaches the run's own deployment, which finds the run and
+    // finishes it without writing run_started again.
+    setWorld(ownDeployment);
+    await world.runUntilIdle();
+
+    expect(bodies).toBe(1);
+    expect(runStartedData).toHaveLength(1);
+    const finalTypes = world.events.map((e) => e.eventType);
+    expect(finalTypes.filter((t) => t === 'run_started')).toHaveLength(1);
+    expect(finalTypes).toContain('run_completed');
+    expect(finalTypes).not.toContain('run_failed');
   });
 
   it('carries the start Hook request and the public key on run_started', async () => {
