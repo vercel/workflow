@@ -580,6 +580,12 @@ Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo: every delivery then loads 
 
 Turbo is client-side and needs no World changes. A World with `createBatch` saves the separate `step_started` write; one without it gets the start as its own write, chained behind `step_created`.
 
+### A start Hook candidate's first delivery
+
+Turbo never takes a `start({ experimental_hook })` candidate: its `run_started` may refuse it, so nothing may run before that write returns. Its first delivery (same conditions as turbo's, but for the candidate) still skips the load that would come before `run_started`, since that log can hold only the run's creation and out-of-band writes (a `hook_received` from `resumeHook()`), neither of which moves the in-band count. It starts the writer from `IN_BAND_SEQ_AT_RUN_CREATION` as turbo does, awaits `run_started` (which admits or refuses the candidate, and creates the run if `run_created` has not landed), and loads the log once, after it. That saves a read on every candidate's first delivery, and that delivery can no longer race `run_created`: a read before it would find no log and be retried.
+
+If the count was wrong because the run has moved past its creation (an earlier delivery started it and the queue reports this one as its first), `run_started` is refused by the fence or as a conflict, nothing is written, and the delivery restarts in place on the normal path, which decides from a full load.
+
 ### `maxRetries: 0` is at most once per live owner
 
 A background step keeps one queue message for its whole life and retries in place on it. Any delivery other than a plain first delivery reads the log before running the body.

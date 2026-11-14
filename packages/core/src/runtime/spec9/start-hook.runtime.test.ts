@@ -91,11 +91,14 @@ async function candidate(
   const runId = `wrun_${ulid()}`;
   const input = await dehydrateWorkflowArguments([1], runId, undefined, []);
   const runStartedData: Record<string, unknown>[] = [];
-  const world = new AppendOnlyWorld({
+  /** How many `events.list` calls preceded each `run_started`. */
+  const listsBeforeRunStarted: number[] = [];
+  const world: AppendOnlyWorld = new AppendOnlyWorld({
     fence: true,
     async beforeCreate(data) {
       if (data.eventType !== 'run_started') return;
       runStartedData.push(data.eventData ?? {});
+      listsBeforeRunStarted.push(world.listCalls.length);
       // Slow admission: anything that does not wait for it gets ahead.
       if (holdRunStartedMs) {
         await new Promise((r) => setTimeout(r, holdRunStartedMs));
@@ -200,7 +203,7 @@ async function candidate(
       startHook: { token: TOKEN },
     },
   });
-  return { world, start, runStartedData };
+  return { world, start, runStartedData, listsBeforeRunStarted };
 }
 
 /** The non-first deliveries a candidate's message can take. */
@@ -250,6 +253,21 @@ describe.each([
       expect.stringMatching(/another run owns the token/),
       expect.objectContaining({ conflictingRunId: 'wrun_owner' })
     );
+  });
+
+  it.each([
+    ['admitted by run_created', 'accept'],
+    ['admitted by its own run_started', 'admit-on-run-started'],
+  ] as const)('writes run_started before reading the log on a first delivery (%s)', async (_, decision) => {
+    const { world, start, listsBeforeRunStarted } = await candidate(decision);
+
+    const result = await world.deliver(start);
+    await world.runUntilIdle();
+
+    expectAcknowledged(world, result, start);
+    expect(listsBeforeRunStarted).toEqual([0]);
+    expect(bodies).toBe(1);
+    expect(world.events.map((e) => e.eventType)).toContain('run_completed');
   });
 
   it('carries the start Hook request and the public key on run_started', async () => {

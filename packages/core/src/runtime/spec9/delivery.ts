@@ -662,6 +662,21 @@ async function runDelivery(
     !waitContinuation;
   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
   /**
+   * The first delivery of a `start({ experimental_hook })` candidate's first
+   * message, which turbo never takes (see `admitsTurboStart`): it writes
+   * `run_started` before loading the log, instead of loading it twice.
+   * A restart in place has written it already, so takes the normal path.
+   */
+  let startHookFirstDelivery =
+    !turbo &&
+    runInput?.startHook !== undefined &&
+    !prefetchedRun &&
+    metadata.attempt === 1 &&
+    (metadata.deliveryCount ?? 1) === 1 &&
+    !incomingStepId &&
+    !hookInput &&
+    !waitContinuation;
+  /**
    * Turbo only: settles once the backgrounded `run_started`
    * landed, and rejects with its error if it failed. Every
    * in-band write queues behind `run_started` in `writer`,
@@ -1350,6 +1365,7 @@ async function runDelivery(
     logBehind = false;
     passConsumedSlot = 0;
     turbo = false;
+    startHookFirstDelivery = false;
     turboOptimistic = false;
     turboStartLanded = undefined;
     turboRunStarted = undefined;
@@ -1437,18 +1453,22 @@ async function runDelivery(
     // Observed by every gated write; this only keeps an
     // early failure from surfacing as unhandled.
     runReadyBarrier.catch(() => {});
+    return synthesizedRun(input);
+  }
+
+  /**
+   * The run as `run_started` will have made it, from the first message's
+   * `runInput`. Seed attributes ride in `runInput` (they live on
+   * `run_created`, not in `attr_set` events), so the snapshot carries them
+   * although the log is not loaded. This holds while attributes are
+   * write-only inside a workflow: an in-workflow read API would have to read
+   * this snapshot, not replay `run_created`/`attr_set`, or it would see no
+   * seed attributes on this delivery only. A dynamic run's code rides the
+   * message for the same reason; without it (too large to send inline)
+   * `resolveWorkflowCodeForRun` reads it from the run.
+   */
+  function synthesizedRun(input: RunInput): WorkflowRun {
     const now = new Date();
-    // The run as `run_started` will have made it. Seed
-    // attributes ride in `runInput` (they live on
-    // `run_created`, not in `attr_set` events), so the
-    // snapshot carries them although the log is not loaded.
-    // This holds while attributes are write-only inside a
-    // workflow: an in-workflow read API would have to read
-    // this snapshot, not replay `run_created`/`attr_set`, or
-    // it would see no seed attributes on this delivery only.
-    // A dynamic run's code rides the message for the same
-    // reason; without it (too large to send inline)
-    // `resolveWorkflowCodeForRun` reads it from the run.
     return {
       runId,
       status: 'running',
@@ -1505,52 +1525,70 @@ async function runDelivery(
         return undefined;
       }
     } else {
-      // --- Run setup: full load (with the fence snapshot) ---
-      const [loadOutcome, runOutcome] = await Promise.allSettled([
-        fullLoad(),
-        prefetchedRun ?? world.runs.get(runId, { resolveData: 'none' }),
-      ]);
-      run =
-        runOutcome.status === 'fulfilled'
-          ? (runOutcome.value as WorkflowRun)
-          : undefined;
-      if (!run) {
-        if (!runInput) {
-          throw runOutcome.status === 'rejected'
-            ? runOutcome.reason
-            : new WorkflowRuntimeError(`Workflow run "${runId}" not found`);
-        }
-        // Resilient start: `run_created` never landed, and this
-        // first delivery carries what the World needs to create
-        // the run from `run_started`. A load that failed left no
-        // snapshot; the run holds no in-band position yet.
+      if (startHookFirstDelivery && runInput) {
+        // --- Run setup: a start-hook candidate's first delivery ---
+        // Its `run_started` decides admission (and creates the run if
+        // `run_created` has not landed), and the log is loaded after it, so
+        // it is loaded once instead of twice. A load before it can hold only
+        // the run's creation and out-of-band writes (`hook_received` from
+        // `resumeHook()`), which do not move the in-band count: the count is
+        // the one right after the run's creation, as in turbo. When the run
+        // has moved past that, `run_started` is refused and setup runs again
+        // from a full load (see the fallback beside it).
+        writer.adoptSnapshot({
+          seq: FIRST_EVENT_SLOT,
+          seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+        });
         log = { events: [], cursor: null };
-        if (!writer.hasSnapshot) {
-          writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
-        }
-      } else if (loadOutcome.status === 'rejected') {
-        try {
-          const error = loadOutcome.reason;
-          if (
-            !WorkflowRunNotFoundError.is(error) &&
-            !(WorkflowWorldError.is(error) && error.status === 404)
-          ) {
+        run = synthesizedRun(runInput);
+      } else {
+        // --- Run setup: full load (with the fence snapshot) ---
+        const [loadOutcome, runOutcome] = await Promise.allSettled([
+          fullLoad(),
+          prefetchedRun ?? world.runs.get(runId, { resolveData: 'none' }),
+        ]);
+        run =
+          runOutcome.status === 'fulfilled'
+            ? (runOutcome.value as WorkflowRun)
+            : undefined;
+        if (!run) {
+          if (!runInput) {
+            throw runOutcome.status === 'rejected'
+              ? runOutcome.reason
+              : new WorkflowRuntimeError(`Workflow run "${runId}" not found`);
+          }
+          // Resilient start: `run_created` never landed, and this
+          // first delivery carries what the World needs to create
+          // the run from `run_started`. A load that failed left no
+          // snapshot; the run holds no in-band position yet.
+          log = { events: [], cursor: null };
+          if (!writer.hasSnapshot) {
+            writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
+          }
+        } else if (loadOutcome.status === 'rejected') {
+          try {
+            const error = loadOutcome.reason;
+            if (
+              !WorkflowRunNotFoundError.is(error) &&
+              !(WorkflowWorldError.is(error) && error.status === 404)
+            ) {
+              throw error;
+            }
+            // Queue delivery can beat run_created. The concurrent run read
+            // has now found the run, so reload history once before paying for
+            // a queue redelivery. Use fullLoad to adopt the real fence; a
+            // successful run read alone never authorizes an empty snapshot.
+            span?.addEvent('workflow.replay.load.not_found_retry');
+            await fullLoad();
+          } catch (error) {
+            // A World contract error fails the run (out-of-band if no fence
+            // was loaded); any other failure retains normal redelivery.
+            workflowRun ??= run;
+            if (await recordWorkflowSetupFailure(error)) {
+              return undefined;
+            }
             throw error;
           }
-          // Queue delivery can beat run_created. The concurrent run read
-          // has now found the run, so reload history once before paying for
-          // a queue redelivery. Use fullLoad to adopt the real fence; a
-          // successful run read alone never authorizes an empty snapshot.
-          span?.addEvent('workflow.replay.load.not_found_retry');
-          await fullLoad();
-        } catch (error) {
-          // A World contract error fails the run (out-of-band if no fence
-          // was loaded); any other failure retains normal redelivery.
-          workflowRun ??= run;
-          if (await recordWorkflowSetupFailure(error)) {
-            return undefined;
-          }
-          throw error;
         }
       }
       if (run && isTerminalWorkflowRunStatus(run.status)) {
@@ -1625,6 +1663,19 @@ async function runDelivery(
           // answers; every other error keeps its handling below.
           if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
             return undefined;
+          }
+          // The start-hook fast path assumed the log held only the run's
+          // creation. A fence refusal or a conflict says the run has moved
+          // past it (an earlier delivery started it): nothing was written,
+          // so set up again from a full load, which decides from the log.
+          if (
+            startHookFirstDelivery &&
+            (OrchestratorSupersededError.is(err) ||
+              writer.isSuperseded ||
+              EntityConflictError.is(err))
+          ) {
+            restartInPlace();
+            return await orchestrate();
           }
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info('Run already finished during setup, skipping', {
