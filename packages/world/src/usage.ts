@@ -1,3 +1,5 @@
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
+import { isSealedNoopEvent } from './event-metadata.js';
 import type { WorkflowRunStatus } from './runs.js';
 import { isTerminalWorkflowRunStatus } from './runs.js';
 
@@ -155,11 +157,6 @@ function entityOf(kind: RunUsageSpanKind): RunUsageEntity {
   return kind === 'wait' ? 'run' : kind;
 }
 
-/** Whether an event type is a placeholder rather than an event. */
-export function isUsagePlaceholderEventType(eventType: string): boolean {
-  return eventType === 'noop';
-}
-
 /** Builds the usage shape from a World's aggregate rows. */
 export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   const spans = new Map<string, RunUsageSpan>();
@@ -194,7 +191,8 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   };
 
   for (const group of input.eventGroups) {
-    if (isUsagePlaceholderEventType(group.eventType)) continue;
+    // Sealed-log placeholders are rows of the log, not events.
+    if (isSealedNoopEvent(group)) continue;
     const { kind, name } = spanOf(group.eventType, input.workflowName);
     add(kind, name, toCount(group.events), 0, toCount(group.bytes));
   }
@@ -238,6 +236,23 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
 
 function plural(count: number, one: string, many: string): string {
   return `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`;
+}
+
+/**
+ * A span's name as the trace shows it: the step or workflow function's short
+ * name (`chargeCard` for `step//./src/order//chargeCard`). Hooks and sleeps
+ * are already named `hook` and `sleep`.
+ */
+export function usageSpanLabel(
+  span: Pick<RunUsageSpan, 'kind' | 'name'>
+): string {
+  if (span.kind === 'step') {
+    return parseStepName(span.name)?.shortName || span.name;
+  }
+  if (span.kind === 'run') {
+    return parseWorkflowName(span.name)?.shortName || span.name;
+  }
+  return span.name;
 }
 
 /** `1,234 events`. */

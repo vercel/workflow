@@ -8,6 +8,7 @@ import {
   formatUsageShare,
   type RunUsageAggregates,
   type RunUsageSpan,
+  usageSpanLabel,
 } from './usage.js';
 
 const WORKFLOW = 'workflow//./src/w//wf';
@@ -172,6 +173,19 @@ describe('usage formatting', () => {
     [1, '100%'],
   ])('formats a share of %d as %s', (share, text) => {
     expect(formatUsageShare(share)).toBe(text);
+  });
+});
+
+describe('usageSpanLabel', () => {
+  it.each([
+    ['step', 'step//./src/workflows/order//chargeCard', 'chargeCard'],
+    ['step', 'step//./src/jobs/order//default', 'order'],
+    ['run', 'workflow//./src/workflows/order//processOrder', 'processOrder'],
+    ['step', '(unknown step)', '(unknown step)'],
+    ['hook', 'hook', 'hook'],
+    ['wait', 'sleep', 'sleep'],
+  ] as const)('labels a %s span %s as %s', (kind, name, label) => {
+    expect(usageSpanLabel({ kind, name })).toBe(label);
   });
 });
 

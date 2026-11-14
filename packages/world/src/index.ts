@@ -242,9 +242,9 @@ export {
   formatUsageBytes,
   formatUsageEvents,
   formatUsageShare,
-  isUsagePlaceholderEventType,
   RUN_USAGE_ENTITIES,
   USAGE_SPANS_SHOWN,
+  usageSpanLabel,
   WORKFLOW_PRICING_DOCS_URL,
 } from './usage.js';
 export type * from './waits.js';

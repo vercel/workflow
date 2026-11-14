@@ -1,4 +1,3 @@
-import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   collapseUsageSpans,
   EVENTS_PER_RETRY,
@@ -10,23 +9,12 @@ import {
   RUN_USAGE_ENTITIES,
   type RunUsage,
   type RunUsageEntity,
-  type RunUsageSpan,
+  usageSpanLabel,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import { AlertCircle, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
 import { Skeleton } from './ui/skeleton';
-
-/** A span's name as the trace shows it: the function's short name. */
-export function usageSpanLabel(span: Pick<RunUsageSpan, 'kind' | 'name'>) {
-  if (span.kind === 'step') {
-    return parseStepName(span.name)?.shortName || span.name;
-  }
-  if (span.kind === 'run') {
-    return parseWorkflowName(span.name)?.shortName || span.name;
-  }
-  return span.name;
-}
 
 const ENTITY_LABELS: Record<RunUsageEntity, string> = {
   run: 'Run',
