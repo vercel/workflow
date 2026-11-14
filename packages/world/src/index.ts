@@ -232,5 +232,22 @@ export {
   validateUlidTimestamp,
   workflowRunIdSchema,
 } from './ulid.js';
+export type * from './usage.js';
+export {
+  buildRunUsage,
+  collapseUsageSpans,
+  EVENTS_PER_RETRY,
+  formatRunUsageSummary,
+  formatStepCreationNote,
+  formatStepEventsBreakdown,
+  formatUsageBytes,
+  formatUsageEvents,
+  formatUsageShare,
+  RUN_USAGE_ENTITIES,
+  RUN_USAGE_STEP_EVENT_TYPES,
+  USAGE_SPANS_SHOWN,
+  usageSpanLabel,
+  WORKFLOW_PRICING_DOCS_URL,
+} from './usage.js';
 export type * from './waits.js';
 export { WaitSchema, WaitStatusSchema } from './waits.js';

@@ -42,6 +42,7 @@ import type {
   Step,
   StepWithoutData,
 } from './steps.js';
+import type { RunUsage } from './usage.js';
 
 export interface StreamWriteSession {
   /**
@@ -651,6 +652,27 @@ export interface Storage {
      * @param runId - The workflow run ID
      */
     delete(runId: string): Promise<void>;
+  };
+
+  /**
+   * Per-run usage (events, retries, data written) for observability
+   * surfaces: the web UI's Usage tab and `workflow inspect run --usage`.
+   *
+   * @experimental OPTIONAL, and its shape (`RunUsage`) may change without a
+   * major version bump. Only world-local implements it today; consumers
+   * feature-detect (`world.experimental_usage?.…`) and show nothing when it
+   * is absent.
+   *
+   * Implementations must count the run's whole log, not a page of it, and
+   * must not read every event to do so.
+   */
+  experimental_usage?: {
+    /**
+     * Usage of one run, read from one consistent view of its log.
+     * Rejects with `WorkflowRunNotFoundError` for a run this World does not
+     * see.
+     */
+    getRun(runId: string): Promise<RunUsage>;
   };
 }
 

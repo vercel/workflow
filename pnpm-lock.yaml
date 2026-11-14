@@ -1429,6 +1429,9 @@ importers:
 
   packages/world:
     dependencies:
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       ulid:
         specifier: 'catalog:'
         version: 3.0.2
@@ -2739,9 +2742,15 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.21
+      '@workflow/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
       '@workflow/vitest':
         specifier: workspace:*
         version: link:../../packages/vitest
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../../packages/world
       immer:
         specifier: 10.1.1
         version: 10.1.1

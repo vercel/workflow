@@ -22,6 +22,7 @@ import {
   showEvent,
   showHook,
   showRun,
+  showRunUsage,
   showStep,
   showStream,
 } from '../lib/inspect/output.js';
@@ -43,6 +44,7 @@ export default class Inspect extends BaseCommand {
     '$ workflow inspect hooks',
     '$ workflow inspect hook hook_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect sleeps --runId=run_01K5WAJZ8W367CV2RFKDSDNWB8',
+    '$ workflow inspect run wrun_01K5WAJZ8W367CV2RFKDSDNWB8 --usage',
   ];
 
   async catch(error: any) {
@@ -184,6 +186,14 @@ export default class Inspect extends BaseCommand {
       helpGroup: 'Display',
       helpLabel: '--decrypt',
     }),
+    usage: Flags.boolean({
+      description:
+        "show a run's usage: events, retries, and data written (only for `inspect run <id>`; local backend)",
+      required: false,
+      default: false,
+      helpGroup: 'Display',
+      helpLabel: '--usage',
+    }),
     all: Flags.boolean({
       description:
         'follow cursors to the last page and print every row (steps, events, and sleeps); --limit sets the page size',
@@ -226,6 +236,8 @@ export default class Inspect extends BaseCommand {
         withData: flags.withData,
         all: flags.all,
         interactive: flags.interactive,
+        usage: flags.usage,
+        decrypt: flags.decrypt,
       });
       if ('error' in bounded) {
         this.logError(bounded.error);
@@ -266,7 +278,9 @@ export default class Inspect extends BaseCommand {
       const options = toInspectOptions(flags, attributes);
 
       if (resource === 'run') {
-        if (id) {
+        if (id && options.usage) {
+          await showRunUsage(world, id, options);
+        } else if (id) {
           await showRun(world, id, options);
         } else {
           await listRuns(world, options);
@@ -391,6 +405,9 @@ export function toInspectOptions(
     backend: flags.backend,
     interactive: flags.interactive,
     all: flags.all,
+    // Only set when passed, so the options every other command builds are
+    // unchanged.
+    ...(flags.usage ? { usage: true } : {}),
   };
 }
 

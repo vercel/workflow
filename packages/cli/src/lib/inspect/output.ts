@@ -28,6 +28,7 @@ import {
 } from './hydration.js';
 import { stringifyJSON } from './json.js';
 import { resolveTimeWindow } from './time-window.js';
+import { formatRunUsageText } from './usage.js';
 import { resolveWorkflowNameFilter } from './workflow-name.js';
 
 /**
@@ -911,6 +912,38 @@ export const showRun = async (
       }
       logger.log(runWithHydratedIO);
     }
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+};
+
+/**
+ * `inspect run <id> --usage`: the run's usage, the shape the web UI's Usage
+ * tab reads. Only Worlds that implement `experimental_usage` (world-local
+ * today) have it; elsewhere this fails rather than printing the run.
+ */
+export const showRunUsage = async (
+  world: World,
+  runId: string,
+  opts: InspectCLIOptions = {}
+) => {
+  if (!world.experimental_usage) {
+    logger.error(
+      'Run usage is only available for the local backend so far. Run `workflow inspect run <id> --usage --backend local` against a local data directory.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const usage = await world.experimental_usage.getRun(runId);
+    if (opts.json) {
+      showJson(usage);
+      return;
+    }
+    logger.log(formatRunUsageText(usage));
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
       process.exit(1);

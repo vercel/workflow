@@ -154,6 +154,33 @@ export function validateAllScope(
   return undefined;
 }
 
+/**
+ * Validate that `--usage` was given to `inspect run <id>`, the one command
+ * that prints it. Elsewhere the flag would parse and be dropped, and the
+ * command's normal output would read as an answer. `--withData` and
+ * `--decrypt` change the run's payload view, which `--usage` does not print.
+ */
+export function validateUsageScope(
+  resource: string,
+  hasId: boolean,
+  usage: boolean,
+  opensWebUi = false,
+  withData = false,
+  decrypt = false
+): string | undefined {
+  if (!usage) return undefined;
+  if (opensWebUi) {
+    return "--usage prints here and cannot be forwarded to the web UI; open the run's Usage tab there instead, or drop --url/--web.";
+  }
+  if (resource !== 'run' || !hasId) {
+    return "--usage shows one run's usage. Usage: `workflow inspect run <run-id> --usage`.";
+  }
+  if (withData || decrypt) {
+    return '--usage prints counts and sizes, not payloads; drop --withData/--decrypt.';
+  }
+  return undefined;
+}
+
 /** Flags {@link validateInspectFlags} checks, as `inspect` parsed them. */
 export interface InspectFlagBounds {
   /** Normalized resource, e.g. `run`, `steps` → `step`. */
@@ -169,6 +196,8 @@ export interface InspectFlagBounds {
   withData?: boolean;
   all?: boolean;
   interactive?: boolean;
+  usage?: boolean;
+  decrypt?: boolean;
 }
 
 /**
@@ -208,6 +237,14 @@ export function validateInspectFlags(
       flags.hasId,
       flags.runId !== undefined,
       flags.opensWebUi
+    ) ??
+    validateUsageScope(
+      flags.resource,
+      flags.hasId,
+      Boolean(flags.usage),
+      flags.opensWebUi,
+      Boolean(flags.withData),
+      Boolean(flags.decrypt)
     );
   if (error) return { error };
 

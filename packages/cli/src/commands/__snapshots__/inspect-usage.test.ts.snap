@@ -1,0 +1,139 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`workflow inspect run <id> --usage > prints a readable summary 1`] = `
+"Usage for wrun_<RUN_ID> (completed)
+
+37 billable events · 1 retry (+2 events)
+
+Where the events come from
+  sendEmail drives 24% of this run's events (9 events).
+
+  Span           Events  Share  Retries
+  sendEmail           9    24%
+  chargeCard          5    14%        1
+  audit0              3     8%
+  audit1              3     8%
+  audit2              3     8%
+  5 other spans      14    38%
+
+How events are counted
+  10 steps wrote 32 events: 10 created, 11 started, 10 completed, 1 retry marker.
+  Each retry adds 2: a retry marker, and the step starting again.
+
+Data written
+  Run        818 B
+  Steps    9.19 KB
+  Hooks      638 B
+  Streams  2.05 KB
+  Total    12.7 KB
+
+Not your final bill. See pricing: https://vercel.com/docs/workflows/pricing"
+`;
+
+exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with --json 1`] = `
+{
+  "billableEvents": 37,
+  "dataRetained": null,
+  "dataWritten": {
+    "byEntity": {
+      "hook": 638,
+      "run": 818,
+      "step": 9189,
+      "stream": 2048,
+    },
+    "bytes": 12693,
+  },
+  "events": 37,
+  "eventsBySpan": [
+    {
+      "events": 9,
+      "kind": "step",
+      "name": "step//./src/workflows/order//sendEmail",
+      "retries": 0,
+      "share": 0.24324324324324326,
+    },
+    {
+      "events": 5,
+      "kind": "step",
+      "name": "step//./src/workflows/order//chargeCard",
+      "retries": 1,
+      "share": 0.13513513513513514,
+    },
+    {
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit0",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit1",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit2",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit3",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit4",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit5",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "events": 3,
+      "kind": "run",
+      "name": "workflow//./src/workflows/order//processOrder",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "events": 2,
+      "kind": "hook",
+      "name": "hook",
+      "retries": 0,
+      "share": 0.05405405405405406,
+    },
+  ],
+  "inProgress": false,
+  "retries": {
+    "count": 1,
+    "events": 2,
+  },
+  "runId": "wrun_<RUN_ID>",
+  "status": "completed",
+  "stepEvents": {
+    "byType": {
+      "completed": 10,
+      "created": 10,
+      "failed": 0,
+      "other": 0,
+      "retrying": 1,
+      "started": 11,
+    },
+    "events": 32,
+    "steps": 10,
+  },
+}
+`;

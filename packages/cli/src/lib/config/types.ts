@@ -41,4 +41,6 @@ export type InspectCLIOptions = {
   all?: boolean;
   /** When true, decrypt encrypted values (triggers audit-logged key retrieval) */
   decrypt?: boolean;
+  /** `inspect run <id> --usage`: print the run's usage instead of the run. */
+  usage?: boolean;
 };
