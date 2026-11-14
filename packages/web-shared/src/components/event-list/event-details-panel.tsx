@@ -10,6 +10,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { hydrateEventDataWithKey } from '../../lib/hydration';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -241,15 +242,16 @@ function EventDetailsBody({
     data === null && !!onLoadEventData && !!event.correlationId
   );
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [decryptFailed, setDecryptFailed] = useState(false);
 
-  // Load (or reload once decryption is available) the full payload.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the event or key changes
+  // Load the full payload. Arriving at a key does not re-run this: decryption
+  // opens the payload already in hand, below.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load once per event
   useEffect(() => {
-    if (!onLoadEventData || (inlineIsComplete && !encryptionKey)) return;
-    if (data !== null && !encryptionKey) return;
+    if (!onLoadEventData || inlineIsComplete || data !== null) return;
     let cancelled = false;
     setLoadError(null);
-    if (data === null) setLoading(true);
+    setLoading(true);
     onLoadEventData(event)
       .then((loaded) => {
         if (cancelled || loaded == null) return;
@@ -268,7 +270,31 @@ function EventDetailsBody({
     return () => {
       cancelled = true;
     };
-  }, [event.eventId, encryptionKey]);
+  }, [event.eventId]);
+
+  // Open the encrypted fields of that payload when the run key arrives. The
+  // markers keep their ciphertext and the event type names the fields that
+  // carry serialized data, so this stays on the client. Fetching the event
+  // again here is what used to leave the panel rendering the ciphertext with
+  // live inline Decrypt buttons until a second request landed.
+  const encrypted = hasEncryptedValues(data);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opens the current payload once per key
+  useEffect(() => {
+    if (!encryptionKey || !encrypted || data == null) return;
+    let cancelled = false;
+    hydrateEventDataWithKey(event.eventType, data, encryptionKey)
+      .then((decrypted) => {
+        if (cancelled) return;
+        setData(decrypted);
+        onCacheEventData(event.eventId, decrypted);
+      })
+      .catch(() => {
+        if (!cancelled) setDecryptFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [encryptionKey, encrypted]);
 
   const timingTotal = segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
@@ -311,7 +337,15 @@ function EventDetailsBody({
           data={data}
           eventType={event.eventType}
           decrypt={
-            !encryptionKey && hasEncryptedValues(data) ? decrypt : undefined
+            decrypt && encrypted && !decryptFailed
+              ? {
+                  ...decrypt,
+                  // While a key is held, the payload is on its way to plaintext:
+                  // keep the banner up rather than render live decrypt controls
+                  // over ciphertext.
+                  isDecrypting: decrypt.isDecrypting || !!encryptionKey,
+                }
+              : undefined
           }
         />
       ) : loading || loadError ? (

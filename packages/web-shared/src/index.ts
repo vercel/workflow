@@ -49,6 +49,7 @@ export {
   extractStreamIds,
   getWebRevivers,
   hasEncryptedFields,
+  hydrateEventDataWithKey,
   hydrateResourceIO,
   hydrateResourceIOAsync,
   hydrateResourceIOWithKey,
