@@ -24,7 +24,7 @@ import { isRetryableWorldError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { type Logger, runtimeLogger } from './logger.js';
 import { afterRunFailed } from './runtime/after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
+import { getComputeInstanceId } from './runtime/compute-instance.js';
 import { getMaxQueueDeliveries } from './runtime/constants.js';
 import type { Orchestrator } from './runtime/delivery.js';
 import {
@@ -95,6 +95,10 @@ export {
   type HealthCheckResult,
   healthCheck,
 } from './runtime/helpers.js';
+export {
+  type PrecompiledQuickJSModules,
+  setPrecompiledQuickJSModules,
+} from './runtime/quickjs-precompiled.js';
 export {
   getHookByToken,
   type Hook,
@@ -284,6 +288,7 @@ async function warnOnDeploymentPinningMismatch({
  *
  * The handler loops: replay workflow → execute step inline → replay → ...
  * until the workflow completes, times out, or encounters non-step suspensions.
+ * The design is described in `./runtime/eager-processing.md`.
  *
  * @param workflowCode - The workflow bundle code containing all workflow functions
  * @returns A function that can be used as a Vercel API route
@@ -679,7 +684,7 @@ export function workflowEntrypoint(
         kind: spanKind,
         attributes: {
           ...Attribute.WorkflowRouteType('flow'),
-          ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
+          ...Attribute.FaasInstance(getComputeInstanceId()),
           ...Attribute.WorkflowRouteHandlerCached(handlerCached),
           ...Attribute.WorkflowRouteInvocationCount(invocationCount),
           ...Attribute.WorkflowRouteEntrypointAgeMs(

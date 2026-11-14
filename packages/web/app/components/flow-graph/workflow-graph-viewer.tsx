@@ -167,7 +167,7 @@ export function ParallelGroupComponent({ data }: { data: ParallelGroupData }) {
           left: 12,
           fontSize: 11,
           fontWeight: 600,
-          color: 'rgba(59, 130, 246, 0.8)',
+          color: 'var(--ds-blue-800)',
           textTransform: 'uppercase',
           letterSpacing: '0.5px',
           pointerEvents: 'none',

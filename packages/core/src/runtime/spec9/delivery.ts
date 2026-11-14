@@ -1,6 +1,10 @@
 /**
  * The spec 9 (single-orchestrator) delivery: one writer per run, enforced by
  * the World's in-band fence. See `../delivery.ts`.
+ *
+ * `./README.md` is the spec 9 reference: the model, the World contract,
+ * lifecycles, edge cases and the decisions behind them. Read it before
+ * changing spec 9 behaviour, and update it in the same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
@@ -74,7 +78,7 @@ import {
   type WorkflowSessionRebase,
 } from '../../workflow.js';
 import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
@@ -2693,7 +2697,7 @@ async function runDelivery(
           event,
           occurredAt,
           ...(event.eventType === 'step_started'
-            ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+            ? { computeInstanceId: getComputeInstanceId() }
             : {}),
         })),
         {
@@ -3865,6 +3869,9 @@ async function runDelivery(
             ...(step.firstStartedAt
               ? { firstStartedAt: step.firstStartedAt }
               : {}),
+            ...(step.lastStartedAt
+              ? { lastStartedAt: step.lastStartedAt }
+              : {}),
           });
         }
       }
@@ -4092,6 +4099,9 @@ async function runDelivery(
                 attempt: step.attempt,
                 ...(step.firstStartedAt
                   ? { firstStartedAt: step.firstStartedAt }
+                  : {}),
+                ...(step.lastStartedAt
+                  ? { lastStartedAt: step.lastStartedAt }
                   : {}),
                 input,
                 ...(step.started ? { started: step.started } : {}),

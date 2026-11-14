@@ -59,7 +59,7 @@ vi.mock('./quickjs-runtime.js', async (importOriginal) => {
  */
 async function simulateProcessRestart() {
   // A new process has none of the dead one's in-flight step executions.
-  globalSingleton('@workflow/core//stepSingleFlight', 1, () => ({
+  globalSingleton('@workflow/core//stepSingleFlight', 2, () => ({
     inFlight: new Map(),
   })).inFlight.clear();
   // ...and loaded world-local after the dead process wrote its stamps.
@@ -305,13 +305,12 @@ describe('world-local restart recovery of a run suspended on queued work', () =>
     ].map((specVersion) => ({ ...row, specVersion }))
   );
 
-  // Spec 9 only: a spec 8 run replays its timers on its own. The sleep
-  // outlasts the window within which any suspending spec 9 delivery arms a
-  // wait's timer whatever its chain, so only the recovery marker arms it.
+  // The sleep outlasts the window within which any suspending spec 9
+  // delivery arms a wait's timer whatever its chain, so only recovery wakes
+  // it: the recovery marker on spec 9, and on either spec the wake
+  // world-local sends for each open wait, due when the wait is.
   it.each(
-    rows.filter(
-      ({ specVersion }) => specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR
-    )
+    rows
   )('completes a run that was sleeping when the process exited ($engine, spec $specVersion)', async ({
     workflowVm,
     specVersion,

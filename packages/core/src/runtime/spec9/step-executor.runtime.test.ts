@@ -140,13 +140,20 @@ describe.each([
 
     expect(result).toBeUndefined();
     expect(bodyRuns).toBe(0);
-    expect(eventsOf(world, 'step_started')).toHaveLength(MAX_RETRIES + 1);
+    const starts = eventsOf(world, 'step_started');
+    expect(starts).toHaveLength(MAX_RETRIES + 1);
     const failed = eventsOf(world, 'step_failed');
     expect(failed).toHaveLength(1);
     expect(data(failed[0])).toMatchObject({ attempt: MAX_RETRIES + 2 });
     await world.runUntilIdle();
-    expect(await runResult(world, runId)).toBe(
-      `failed: ${exceededMaxRetriesMessage(STEP, MAX_RETRIES)}`
-    );
+    // The message names the attempt that died, since no error from its body
+    // exists to report.
+    const lastStart = starts.at(-1)!;
+    const message = exceededMaxRetriesMessage(STEP, MAX_RETRIES, {
+      attempt: MAX_RETRIES + 1,
+      startedAt: new Date(lastStart.createdAt),
+    });
+    expect(message).toContain(new Date(lastStart.createdAt).toISOString());
+    expect(await runResult(world, runId)).toBe(`failed: ${message}`);
   });
 });
