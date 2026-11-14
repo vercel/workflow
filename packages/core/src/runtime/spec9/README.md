@@ -574,11 +574,23 @@ Writes waiting on the barrier fail instead of writing, so a refused start leaves
 
 #### Turbo configuration
 
-Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo: every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
+Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo and a start Hook candidate's skipped first load (which `WORKFLOW_START_HOOK_LOAD_ONCE=0` disables on its own): every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
 
 `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or `false`) keeps turbo's backgrounded `run_started` and skipped load, and makes the first delivery's inline bodies wait for their start to commit. No other value does anything: outside turbo's first delivery there is no optimistic inline start, because only that delivery is known to have no other orchestrator.
 
 Turbo is client-side and needs no World changes. A World with `createBatch` saves the separate `step_started` write; one without it gets the start as its own write, chained behind `step_created`.
+
+### A start Hook candidate's first delivery
+
+Turbo never takes a `start({ experimental_hook })` candidate: its `run_started` may refuse it, so nothing may run before that write returns. Its first delivery (same conditions as turbo's, but for the candidate) still skips the load that would come before `run_started`, since that log can hold only the run's creation and out-of-band writes (a `hook_received` from `resumeHook()`), neither of which moves the in-band count. It starts the writer from `IN_BAND_SEQ_AT_RUN_CREATION` as turbo does, awaits `run_started` (which admits or refuses the candidate, and creates the run if `run_created` has not landed), and loads the log once, after it. That saves a read on every candidate's first delivery, and that delivery can no longer race `run_created`: a read before it would find no log and be retried.
+
+The deployment-affinity guard runs after `run_started` on this path, not before it as on the normal path. Until `run_started` returns the run may not exist, and the guard's re-queued copy is a plain wake without `runInput`, so a message misrouted before `run_created` landed would reach the run's own deployment unable to create the run. As under turbo, the misrouted delivery writes `run_started` (admitting or refusing the candidate) and then hands the run off.
+
+If the count was wrong because the run has moved past its creation (an earlier delivery started it and the queue reports this one as its first, or the run ended in-band), `run_started` is refused by the fence, nothing is written, and the delivery restarts in place on the normal path, which decides from a full load. It restarts at most once, logs the restart, and sets `workflow.start_hook.first_delivery.fallback` (`fence`) on the delivery's span; `workflow.start_hook.first_delivery` marks a delivery that took the path.
+
+Every World checks the fence before any entity condition, so a conflict or an expiry on this `run_started` got past the fence: the run ended out-of-band (a cancel) before anything started it. The delivery acknowledges it as "already finished" without a load, as the normal path does.
+
+`WORKFLOW_START_HOOK_LOAD_ONCE=0` (or `false`) disables this path alone, leaving turbo on; such a delivery then loads the log before `run_started`, as on the normal path. `WORKFLOW_TURBO=0` disables it along with turbo.
 
 ### `maxRetries: 0` is at most once per live owner
 

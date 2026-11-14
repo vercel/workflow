@@ -86,6 +86,7 @@ import {
   getReplayDivergenceMaxRetries,
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
+  isStartHookLoadOnceEnabled,
   isTurboEnabled,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
@@ -661,6 +662,27 @@ async function runDelivery(
     !hookInput &&
     !waitContinuation;
   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
+  /**
+   * The first delivery of a `start({ experimental_hook })` candidate's first
+   * message, which turbo never takes (see `admitsTurboStart`): it writes
+   * `run_started` before loading the log, instead of loading it twice.
+   * A restart in place has written it already, so takes the normal path.
+   * `WORKFLOW_START_HOOK_LOAD_ONCE=0` disables it alone, and
+   * `WORKFLOW_TURBO=0` with turbo, so such a delivery loads first.
+   */
+  let startHookFirstDelivery =
+    isStartHookLoadOnceEnabled() &&
+    !turbo &&
+    runInput?.startHook !== undefined &&
+    !prefetchedRun &&
+    metadata.attempt === 1 &&
+    (metadata.deliveryCount ?? 1) === 1 &&
+    !incomingStepId &&
+    !hookInput &&
+    !waitContinuation;
+  if (startHookFirstDelivery) {
+    span?.setAttributes(Attribute.WorkflowStartHookFirstDelivery(true));
+  }
   /**
    * Turbo only: settles once the backgrounded `run_started`
    * landed, and rejects with its error if it failed. Every
@@ -1350,6 +1372,7 @@ async function runDelivery(
     logBehind = false;
     passConsumedSlot = 0;
     turbo = false;
+    startHookFirstDelivery = false;
     turboOptimistic = false;
     turboStartLanded = undefined;
     turboRunStarted = undefined;
@@ -1437,18 +1460,22 @@ async function runDelivery(
     // Observed by every gated write; this only keeps an
     // early failure from surfacing as unhandled.
     runReadyBarrier.catch(() => {});
+    return synthesizedRun(input);
+  }
+
+  /**
+   * The run as `run_started` will have made it, from the first message's
+   * `runInput`. Seed attributes ride in `runInput` (they live on
+   * `run_created`, not in `attr_set` events), so the snapshot carries them
+   * although the log is not loaded. This holds while attributes are
+   * write-only inside a workflow: an in-workflow read API would have to read
+   * this snapshot, not replay `run_created`/`attr_set`, or it would see no
+   * seed attributes on this delivery only. A dynamic run's code rides the
+   * message for the same reason; without it (too large to send inline)
+   * `resolveWorkflowCodeForRun` reads it from the run.
+   */
+  function synthesizedRun(input: RunInput): WorkflowRun {
     const now = new Date();
-    // The run as `run_started` will have made it. Seed
-    // attributes ride in `runInput` (they live on
-    // `run_created`, not in `attr_set` events), so the
-    // snapshot carries them although the log is not loaded.
-    // This holds while attributes are write-only inside a
-    // workflow: an in-workflow read API would have to read
-    // this snapshot, not replay `run_created`/`attr_set`, or
-    // it would see no seed attributes on this delivery only.
-    // A dynamic run's code rides the message for the same
-    // reason; without it (too large to send inline)
-    // `resolveWorkflowCodeForRun` reads it from the run.
     return {
       runId,
       status: 'running',
@@ -1465,6 +1492,27 @@ async function runDelivery(
       createdAt: now,
       updatedAt: now,
     } as WorkflowRun;
+  }
+
+  /**
+   * The setup's deployment-affinity guard. Its re-queued copy is a plain wake
+   * (plus this delivery's hook resume), so it runs only once the run exists.
+   * The log is loaded, so the orchestrator's own DEPLOYMENT_MISMATCH failure
+   * is written in-band.
+   */
+  function guardRunDeployment(
+    run: WorkflowRun
+  ): Promise<DeploymentAffinityOutcome> {
+    return guardDeployment(
+      run,
+      async () => ({
+        ...(await replayMessage()),
+        ...(hookInput ? { hookInput } : {}),
+        ...(hookResumeTiming ? { hookResumeTiming } : {}),
+      }),
+      undefined,
+      writeInBand
+    );
   }
 
   async function orchestrate(): Promise<
@@ -1505,52 +1553,70 @@ async function runDelivery(
         return undefined;
       }
     } else {
-      // --- Run setup: full load (with the fence snapshot) ---
-      const [loadOutcome, runOutcome] = await Promise.allSettled([
-        fullLoad(),
-        prefetchedRun ?? world.runs.get(runId, { resolveData: 'none' }),
-      ]);
-      run =
-        runOutcome.status === 'fulfilled'
-          ? (runOutcome.value as WorkflowRun)
-          : undefined;
-      if (!run) {
-        if (!runInput) {
-          throw runOutcome.status === 'rejected'
-            ? runOutcome.reason
-            : new WorkflowRuntimeError(`Workflow run "${runId}" not found`);
-        }
-        // Resilient start: `run_created` never landed, and this
-        // first delivery carries what the World needs to create
-        // the run from `run_started`. A load that failed left no
-        // snapshot; the run holds no in-band position yet.
+      if (startHookFirstDelivery && runInput) {
+        // --- Run setup: a start-hook candidate's first delivery ---
+        // Its `run_started` decides admission (and creates the run if
+        // `run_created` has not landed), and the log is loaded after it, so
+        // it is loaded once instead of twice. A load before it can hold only
+        // the run's creation and out-of-band writes (`hook_received` from
+        // `resumeHook()`), which do not move the in-band count: the count is
+        // the one right after the run's creation, as in turbo. When the run
+        // has moved past that, `run_started` is refused and setup runs again
+        // from a full load (see the fallback beside it).
+        writer.adoptSnapshot({
+          seq: FIRST_EVENT_SLOT,
+          seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+        });
         log = { events: [], cursor: null };
-        if (!writer.hasSnapshot) {
-          writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
-        }
-      } else if (loadOutcome.status === 'rejected') {
-        try {
-          const error = loadOutcome.reason;
-          if (
-            !WorkflowRunNotFoundError.is(error) &&
-            !(WorkflowWorldError.is(error) && error.status === 404)
-          ) {
+        run = synthesizedRun(runInput);
+      } else {
+        // --- Run setup: full load (with the fence snapshot) ---
+        const [loadOutcome, runOutcome] = await Promise.allSettled([
+          fullLoad(),
+          prefetchedRun ?? world.runs.get(runId, { resolveData: 'none' }),
+        ]);
+        run =
+          runOutcome.status === 'fulfilled'
+            ? (runOutcome.value as WorkflowRun)
+            : undefined;
+        if (!run) {
+          if (!runInput) {
+            throw runOutcome.status === 'rejected'
+              ? runOutcome.reason
+              : new WorkflowRuntimeError(`Workflow run "${runId}" not found`);
+          }
+          // Resilient start: `run_created` never landed, and this
+          // first delivery carries what the World needs to create
+          // the run from `run_started`. A load that failed left no
+          // snapshot; the run holds no in-band position yet.
+          log = { events: [], cursor: null };
+          if (!writer.hasSnapshot) {
+            writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
+          }
+        } else if (loadOutcome.status === 'rejected') {
+          try {
+            const error = loadOutcome.reason;
+            if (
+              !WorkflowRunNotFoundError.is(error) &&
+              !(WorkflowWorldError.is(error) && error.status === 404)
+            ) {
+              throw error;
+            }
+            // Queue delivery can beat run_created. The concurrent run read
+            // has now found the run, so reload history once before paying for
+            // a queue redelivery. Use fullLoad to adopt the real fence; a
+            // successful run read alone never authorizes an empty snapshot.
+            span?.addEvent('workflow.replay.load.not_found_retry');
+            await fullLoad();
+          } catch (error) {
+            // A World contract error fails the run (out-of-band if no fence
+            // was loaded); any other failure retains normal redelivery.
+            workflowRun ??= run;
+            if (await recordWorkflowSetupFailure(error)) {
+              return undefined;
+            }
             throw error;
           }
-          // Queue delivery can beat run_created. The concurrent run read
-          // has now found the run, so reload history once before paying for
-          // a queue redelivery. Use fullLoad to adopt the real fence; a
-          // successful run read alone never authorizes an empty snapshot.
-          span?.addEvent('workflow.replay.load.not_found_retry');
-          await fullLoad();
-        } catch (error) {
-          // A World contract error fails the run (out-of-band if no fence
-          // was loaded); any other failure retains normal redelivery.
-          workflowRun ??= run;
-          if (await recordWorkflowSetupFailure(error)) {
-            return undefined;
-          }
-          throw error;
         }
       }
       if (run && isTerminalWorkflowRunStatus(run.status)) {
@@ -1577,21 +1643,14 @@ async function runDelivery(
       assert(log, 'The event log is loaded before setup');
       // AUTHORITATIVE deployment-affinity protection, before
       // this delivery writes anything (`run_started` included)
-      // and before replay or inline step execution.
+      // and before replay or inline step execution. A start Hook
+      // candidate's first delivery runs it after `run_started`
+      // instead (see below): until then the run may not exist,
+      // and its re-queued wake carries no `runInput` to create it.
       if (
         run &&
-        (await guardDeployment(
-          run,
-          async () => ({
-            ...(await replayMessage()),
-            ...(hookInput ? { hookInput } : {}),
-            ...(hookResumeTiming ? { hookResumeTiming } : {}),
-          }),
-          undefined,
-          // The log is loaded, so the orchestrator's own
-          // DEPLOYMENT_MISMATCH failure is written in-band.
-          writeInBand
-        )) !== 'continue'
+        !startHookFirstDelivery &&
+        (await guardRunDeployment(run)) !== 'continue'
       ) {
         return undefined;
       }
@@ -1626,6 +1685,32 @@ async function runDelivery(
           if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
             return undefined;
           }
+          // The start-hook fast path assumed the log held only the run's
+          // creation. A fence refusal says the run has moved past it (an
+          // earlier delivery started it, or the run ended in-band): nothing
+          // was written, so set up again from a full load, which decides from
+          // the log. Every World checks the fence before any entity
+          // condition, so a conflict or an expiry that got past the fence
+          // means the run ended out-of-band before it started (a cancel), and
+          // takes the same acknowledgement below as on the normal path.
+          if (
+            startHookFirstDelivery &&
+            (OrchestratorSupersededError.is(err) || writer.isSuperseded)
+          ) {
+            span?.setAttributes(
+              Attribute.WorkflowStartHookFirstDeliveryFallback('fence')
+            );
+            runtimeLogger.info(
+              'Start Hook first delivery: run_started refused, setting up again from a full load',
+              {
+                workflowRunId: runId,
+                reason: 'fence',
+                message: err instanceof Error ? err.message : String(err),
+              }
+            );
+            restartInPlace();
+            return await orchestrate();
+          }
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info('Run already finished during setup, skipping', {
               workflowRunId: runId,
@@ -1641,6 +1726,16 @@ async function runDelivery(
         // The log now holds the run's own start (and, after a
         // resilient start, its creation).
         await fullLoad();
+        // The deployment check the start Hook first delivery
+        // skipped: the run exists now, so a re-queued wake on
+        // its own deployment needs no `runInput`.
+        if (
+          startHookFirstDelivery &&
+          run &&
+          (await guardRunDeployment(run)) !== 'continue'
+        ) {
+          return undefined;
+        }
       } else {
         // A redelivery of a candidate's first message whose
         // `run_started` committed but whose answer was lost (a 503

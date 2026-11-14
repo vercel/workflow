@@ -426,6 +426,12 @@ Everything above describes spec 8 runs, the default. The experimental spec 9 run
 - Default: unset
 - `1` or `true` starts a background step's body before its `step_started` commits. Use only when background step bodies are idempotent.
 
+### `WORKFLOW_START_HOOK_LOAD_ONCE`
+
+- Default: enabled
+- On the first delivery of a run started with `start({ experimental_hook })`, writes `run_started` before loading the event log, so the log is loaded once instead of twice.
+- Set `0` or `false` to disable it while keeping [`WORKFLOW_TURBO`](#workflow_turbo). `WORKFLOW_TURBO=0` disables it too.
+
 ### `WORKFLOW_RUN_AHEAD_DEPTH`
 
 - Default: `10`
