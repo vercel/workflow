@@ -5,6 +5,7 @@ import type {
   WorldCapabilities,
 } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
+import { createBlockedRuns } from './blocked-runs.js';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
@@ -95,6 +96,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     mergedConfig.dataDir,
     mergedConfig.queueAuthKey ?? 'regenerate'
   );
+  const blockedRuns = createBlockedRuns();
   const queue = createQueue(mergedConfig, {
     queueAuthKey,
     // Read on demand, once storage exists: only for an orchestrator message
@@ -109,11 +111,16 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         }
       },
     }),
+    // A message that a lingering delivery's re-run cannot cover (a
+    // `run.wakeUp()`, an invocation) ends the run's live feed, so the
+    // delivery stops lingering and the message is delivered at once.
+    blockedRuns,
   });
-  const { clearCache: _clearStorageCache, ...storage } = createStorage(
-    mergedConfig.dataDir,
-    tag
-  );
+  const {
+    clearCache: _clearStorageCache,
+    closeLiveFeed,
+    ...storage
+  } = createStorage(mergedConfig.dataDir, tag, { blockedRuns });
   const { clearCache: _clearStreamerCache, ...streamer } = createStreamer(
     mergedConfig.dataDir,
     tag
@@ -255,6 +262,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       return releaseOrphanedSteps(storage, runId);
     },
     async close() {
+      // Lingering deliveries end, and nothing reads the database after.
+      closeLiveFeed();
       await queue.close();
       // The key is written behind createWorld(): never leave that write in
       // flight past close() (a caller may remove the directory next).

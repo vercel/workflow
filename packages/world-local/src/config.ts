@@ -11,6 +11,15 @@ const getDataDirFromEnv = () => {
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
 
+// The local workers share the same Node.js process and event loop,
+// so we need to limit concurrency to avoid overwhelming the system.
+const DEFAULT_CONCURRENCY_LIMIT = 1000;
+
+/** How many queue deliveries this process runs at once. */
+export const LOCAL_QUEUE_CONCURRENCY =
+  parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
+  DEFAULT_CONCURRENCY_LIMIT;
+
 const getBaseUrlFromEnv = () => {
   return process.env.WORKFLOW_LOCAL_BASE_URL;
 };
