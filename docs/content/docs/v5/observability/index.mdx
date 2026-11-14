@@ -49,6 +49,8 @@ In the runs table, select one or more runs and choose **Cancel** to cancel the b
 
 In a run's **Streams** tab, a byte stream that carries a PNG, JPEG, GIF, or WebP image is shown as an image preview, with a **Download Image** button for the original bytes.
 
+On the Local World, a run's header shows its **Events** (every event in its log, not only the ones the page has loaded) and its **Storage**. Selecting **Storage**, or the **Usage** tab, shows where the run's events come from (each step function's events, share, and retries) and the data it wrote by entity, counted the way [Workflow pricing](https://vercel.com/docs/workflows/pricing) counts them. It is an estimate from your local data directory, not a bill. `npx workflow inspect run <run_id> --usage` prints the same numbers, and `--json` prints them as JSON.
+
 To share a link to a specific run without opening a browser, use the `--url`
 flag. It prints the dashboard deep link to stdout and exits (no browser, no
 local server), which is useful for scripts, PR comments, or automation. Add `--json` to
