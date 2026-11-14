@@ -86,7 +86,9 @@ async function candidate(
    * `false`: a World that ignores `startHook`, which echoes it neither on
    * `run_started` nor on `runs.get`.
    */
-  echo = true
+  echo = true,
+  /** Answer in-band writes with an incomplete skipped-slot report. */
+  reportIncomplete = false
 ) {
   const runId = `wrun_${ulid()}`;
   const input = await dehydrateWorkflowArguments([1], runId, undefined, []);
@@ -95,6 +97,7 @@ async function candidate(
   const listsBeforeRunStarted: number[] = [];
   const world: AppendOnlyWorld = new AppendOnlyWorld({
     fence: true,
+    reportIncomplete,
     async beforeCreate(data) {
       if (data.eventType !== 'run_started') return;
       runStartedData.push(data.eventData ?? {});
@@ -266,6 +269,40 @@ describe.each([
 
     expectAcknowledged(world, result, start);
     expect(listsBeforeRunStarted).toEqual([0]);
+    expect(bodies).toBe(1);
+    expect(world.events.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it.each([
+    ['admitted by run_created', 'accept'],
+    ['admitted by its own run_started', 'admit-on-run-started'],
+  ] as const)('reads no log on a first delivery whose run_started report covers it (%s)', async (_, decision) => {
+    const { world, start } = await candidate(decision);
+
+    const result = await world.deliver(start);
+
+    expectAcknowledged(world, result, start);
+    expect(world.listCalls).toHaveLength(0);
+    expect(bodies).toBe(1);
+    await world.runUntilIdle();
+    expect(world.events.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it('loads the log after a first delivery’s run_started when its report stops short', async () => {
+    const { world, start, listsBeforeRunStarted } = await candidate(
+      'accept',
+      0,
+      undefined,
+      true,
+      true
+    );
+
+    const result = await world.deliver(start);
+
+    expectAcknowledged(world, result, start);
+    expect(listsBeforeRunStarted).toEqual([0]);
+    expect(world.listCalls.length).toBeGreaterThan(0);
+    await world.runUntilIdle();
     expect(bodies).toBe(1);
     expect(world.events.map((e) => e.eventType)).toContain('run_completed');
   });

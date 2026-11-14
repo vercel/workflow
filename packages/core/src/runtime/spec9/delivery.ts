@@ -1565,7 +1565,13 @@ async function runDelivery(
           seq: FIRST_EVENT_SLOT,
           seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
         });
-        log = { events: [], cursor: null };
+        // Holding the run's creation, as turbo does, makes `run_started`'s
+        // skipped-slot report bring whatever landed between them, so the
+        // write leaves the log whole and nothing is read after it.
+        log = {
+          events: [turboRunCreatedEvent(runId, runInput)],
+          cursor: null,
+        };
         run = synthesizedRun(runInput);
       } else {
         // --- Run setup: full load (with the fence snapshot) ---
@@ -1721,8 +1727,10 @@ async function runDelivery(
           return undefined;
         }
         // The log now holds the run's own start (and, after a
-        // resilient start, its creation).
-        await fullLoad();
+        // resilient start, its creation). A start Hook candidate's first
+        // delivery folded it in with the write's report; a report that
+        // stopped short, or left a hole, still needs the load.
+        if (!startHookFirstDelivery || logBehind) await fullLoad();
         // The deployment check the start Hook first delivery
         // skipped: the run exists now, so a re-queued wake on
         // its own deployment needs no `runInput`.
