@@ -12,8 +12,8 @@ import {
   buildListItems,
   getEmptyMessage,
   getEventEntity,
-  getExactSearchEvents,
   getFooterLabel,
+  getListSource,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
@@ -97,30 +97,26 @@ function EventListViewInner({
 
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>();
   const { query, setQuery, search } = useEventSearch(onExactIdSearch);
-  const exactEvents = getExactSearchEvents(search);
-  const isExactSearchActive = exactEvents !== null;
+  const list = getListSource(search, { events, hasMore: hasMoreEvents });
 
-  // Rows come from the list on display: the exact-search results, else the
-  // loaded page. Names and timings come from every event on hand.
-  const displayedEvents = exactEvents ?? events;
+  // Rows come from the list's source; names and timings from every event on
+  // hand.
   const sortedEvents = useMemo(
-    () => sortEventsByTime(displayedEvents ?? [], sortOrder),
-    [displayedEvents, sortOrder]
+    () => sortEventsByTime(list.events, sortOrder),
+    [list.events, sortOrder]
   );
   const knownEvents = useMemo(
-    () => mergeEventsById(events ?? [], exactEvents ?? []),
-    [events, exactEvents]
+    () => mergeEventsById(events ?? [], list.events),
+    [events, list.events]
   );
 
   // Events every replay reads past as repeats. A page short of the whole log,
   // or an exact-ID search, cannot answer that question, so both classify
   // nothing (see findDuplicateEventIds).
+  const isCompleteHistory = list.isLog && !list.hasMore;
   const duplicateEventIds = useMemo(
-    () =>
-      findDuplicateEventIds(events ?? [], {
-        isCompleteHistory: !hasMoreEvents && !isExactSearchActive,
-      }),
-    [events, hasMoreEvents, isExactSearchActive]
+    () => findDuplicateEventIds(events ?? [], { isCompleteHistory }),
+    [events, isCompleteHistory]
   );
 
   const lookups = useMemo(
@@ -134,10 +130,10 @@ function EventListViewInner({
   const listItems = useMemo(
     () =>
       buildListItems(rows, {
-        showGaps: !isExactSearchActive,
+        showGaps: list.isLog,
         hookNameMap: lookups.names.hookNameMap,
       }),
-    [rows, isExactSearchActive, lookups]
+    [rows, list.isLog, lookups]
   );
 
   const toggleSelectedEvent = useCallback((event: Event) => {
@@ -290,14 +286,9 @@ function EventListViewInner({
                     : item.row.event.eventId;
                 }}
                 endReached={() => {
-                  if (
-                    isExactSearchActive ||
-                    !hasMoreEvents ||
-                    isLoadingMoreEvents
-                  ) {
-                    return;
+                  if (list.hasMore && !isLoadingMoreEvents) {
+                    void onLoadMoreEvents?.();
                   }
-                  void onLoadMoreEvents?.();
                 }}
                 components={{ Footer: () => <div className="h-2" /> }}
                 itemContent={(i: number) => {
@@ -336,7 +327,7 @@ function EventListViewInner({
                   hasMoreEvents,
                 })}
               </span>
-              {!isExactSearchActive && hasMoreEvents && (
+              {list.hasMore && (
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="pointer-events-auto">
                     <LoadMoreButton

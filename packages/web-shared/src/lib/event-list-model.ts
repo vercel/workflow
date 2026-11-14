@@ -627,18 +627,30 @@ export type EventSearchState =
 const NO_EVENTS: Event[] = [];
 
 /**
- * The events an exact-ID search settled on, which replace the loaded page in
- * the list; null while no exact search has settled.
+ * The events the list shows: the run's log, which pages in more as it
+ * scrolls, or the events a settled exact-ID search found in its place.
  */
-export function getExactSearchEvents(search: EventSearchState): Event[] | null {
+export function getListSource(
+  search: EventSearchState,
+  log: { events: Event[] | null; hasMore: boolean }
+): {
+  events: Event[];
+  hasMore: boolean;
+  /** The run's log, not a search result. */
+  isLog: boolean;
+} {
   switch (search.status) {
     case 'ok':
-      return search.events;
+      return { events: search.events, hasMore: false, isLog: false };
     case 'not_found':
     case 'error':
-      return NO_EVENTS;
+      return { events: NO_EVENTS, hasMore: false, isLog: false };
     default:
-      return null;
+      return {
+        events: log.events ?? NO_EVENTS,
+        hasMore: log.hasMore,
+        isLog: true,
+      };
   }
 }
 
