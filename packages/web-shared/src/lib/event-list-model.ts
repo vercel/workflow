@@ -220,7 +220,7 @@ function getEventName(entity: EventEntity, names: EventNames): string {
 // ──────────────────────────────────────────────────────────────────────────
 
 export type TimingSegment = {
-  kind: 'queued' | 'failed' | 'backoff' | 'ok' | 'running';
+  kind: 'queued' | 'failed' | 'backoff' | 'ok';
   label: string;
   ms: number;
 };
@@ -233,88 +233,29 @@ export interface EventTiming {
    */
   eventDurations: Map<string, number>;
   /**
-   * Entity key → time from created to the first start. Retries emit more
-   * `step_started` events; they do not move it. Zero when no created event
-   * precedes the first start.
-   */
-  queued: Map<string, number>;
-  /**
-   * Step correlationId → queued, attempt and backoff segments of positive
-   * length. Measured from the events on hand, so a partially loaded log may
-   * give a partial breakdown.
+   * Entity key → a step's queued, attempt and backoff segments of positive
+   * length; none for other entities. Queued runs from created to the first
+   * start, which retries do not move. Measured from the events on hand, so a
+   * partially loaded log may give a partial breakdown.
    */
   stepSegments: Map<string, TimingSegment[]>;
 }
 
-/** Event types that close an attempt, a wait or the run. */
-const CLOSING_EVENT_TYPES = new Set<string>([
-  'step_completed',
-  'step_failed',
-  'step_retrying',
-  'run_completed',
-  'run_failed',
-  'run_cancelled',
-  'wait_completed',
-]);
-
-interface StepClock {
-  attempt: number;
-  attemptStart?: number;
+/** One entity's created time, open attempt, wait or run, and step segments. */
+interface Clock {
+  createdAt?: number;
+  openedAt?: number;
   backoffStart?: number;
+  attempt: number;
   segments: TimingSegment[];
 }
 
-function advanceStepClock(
-  clock: StepClock,
-  eventType: string,
-  ts: number,
-  createdAt: number | undefined
-): void {
-  switch (eventType) {
-    case 'step_started':
-      if (clock.attempt === 0 && createdAt !== undefined) {
-        clock.segments.push({
-          kind: 'queued',
-          label: 'Queued',
-          ms: ts - createdAt,
-        });
-      }
-      if (clock.backoffStart !== undefined) {
-        clock.segments.push({
-          kind: 'backoff',
-          label: 'Backoff',
-          ms: ts - clock.backoffStart,
-        });
-        clock.backoffStart = undefined;
-      }
-      clock.attempt += 1;
-      clock.attemptStart = ts;
-      break;
-    case 'step_retrying':
-      if (clock.attemptStart !== undefined) {
-        clock.segments.push({
-          kind: 'failed',
-          label: `Attempt ${clock.attempt} · failed`,
-          ms: ts - clock.attemptStart,
-        });
-      }
-      clock.attemptStart = undefined;
-      clock.backoffStart = ts;
-      break;
-    case 'step_completed':
-    case 'step_failed':
-      if (clock.attemptStart !== undefined) {
-        const failed = eventType === 'step_failed';
-        clock.segments.push({
-          kind: failed ? 'failed' : 'ok',
-          label: `Attempt ${clock.attempt} · ${failed ? 'failed' : 'ok'}`,
-          ms: ts - clock.attemptStart,
-        });
-      }
-      clock.attemptStart = undefined;
-      break;
-  }
-}
+/** The outcome of the step attempt each of these event types closes. */
+const ATTEMPT_OUTCOME: Record<string, 'ok' | 'failed'> = {
+  step_completed: 'ok',
+  step_failed: 'failed',
+  step_retrying: 'failed',
+};
 
 /**
  * Measures every entity in one chronological pass, so the result does not
@@ -334,67 +275,82 @@ export function buildEventTiming(
     .filter((event) => !duplicateEventIds.has(event.eventId))
     .sort((a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b));
 
-  const createdAt = new Map<string, number>();
-  const openedAt = new Map<string, number>();
-  const stepClocks = new Map<string, StepClock>();
+  const clocks = new Map<string, Clock>();
   const eventDurations = new Map<string, number>();
-  const queued = new Map<string, number>();
 
   for (const event of chronological) {
-    const entity = getEventEntity(event);
-    if (entity.key === null) continue;
-    const key = entity.key;
+    const { key } = getEventEntity(event);
+    if (key === null) continue;
     const ts = getEffectiveEventTime(event);
     const type: string = event.eventType;
+    let clock = clocks.get(key);
+    if (!clock) {
+      clock = { attempt: 0, segments: [] };
+      clocks.set(key, clock);
+    }
 
     switch (type) {
       case 'step_created':
       case 'run_created':
-        if (!createdAt.has(key)) createdAt.set(key, ts);
+        clock.createdAt ??= ts;
         break;
       case 'step_started':
+        if (clock.attempt === 0 && clock.createdAt !== undefined) {
+          clock.segments.push({
+            kind: 'queued',
+            label: 'Queued',
+            ms: ts - clock.createdAt,
+          });
+        }
+        if (clock.backoffStart !== undefined) {
+          clock.segments.push({
+            kind: 'backoff',
+            label: 'Backoff',
+            ms: ts - clock.backoffStart,
+          });
+          clock.backoffStart = undefined;
+        }
+        clock.attempt += 1;
+        clock.openedAt = ts;
+        break;
       case 'run_started':
-        if (!queued.has(key)) queued.set(key, ts - (createdAt.get(key) ?? ts));
-        openedAt.set(key, ts);
-        break;
       case 'wait_created':
-        openedAt.set(key, ts);
+        clock.openedAt = ts;
         break;
-    }
-
-    if (CLOSING_EVENT_TYPES.has(type)) {
-      const start = openedAt.get(key);
-      if (start !== undefined) eventDurations.set(event.eventId, ts - start);
-    }
-
-    if (entity.kind === 'step') {
-      let clock = stepClocks.get(key);
-      if (!clock) {
-        clock = { attempt: 0, segments: [] };
-        stepClocks.set(key, clock);
+      case 'step_completed':
+      case 'step_failed':
+      case 'step_retrying':
+      case 'run_completed':
+      case 'run_failed':
+      case 'run_cancelled':
+      case 'wait_completed': {
+        if (type === 'step_retrying') clock.backoffStart = ts;
+        if (clock.openedAt === undefined) break;
+        const ms = ts - clock.openedAt;
+        clock.openedAt = undefined;
+        eventDurations.set(event.eventId, ms);
+        const outcome = ATTEMPT_OUTCOME[type];
+        if (outcome) {
+          clock.segments.push({
+            kind: outcome,
+            label: `Attempt ${clock.attempt} · ${outcome}`,
+            ms,
+          });
+        }
+        break;
       }
-      advanceStepClock(clock, type, ts, createdAt.get(key));
     }
   }
 
   const stepSegments = new Map<string, TimingSegment[]>();
-  for (const [key, clock] of stepClocks) {
+  for (const [key, clock] of clocks) {
     stepSegments.set(
       key,
       clock.segments.filter((segment) => segment.ms > 0)
     );
   }
 
-  return { eventDurations, queued, stepSegments };
-}
-
-/** The timing breakdown shown for a step event; empty for anything else. */
-export function getStepSegments(
-  entity: EventEntity,
-  timing: EventTiming
-): TimingSegment[] {
-  if (entity.kind !== 'step' || entity.key === null) return [];
-  return timing.stepSegments.get(entity.key) ?? [];
+  return { eventDurations, stepSegments };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -536,6 +492,8 @@ export interface EventListRow {
   message: string;
   /** Why the row is struck through, when it is. */
   notice?: string;
+  /** The step's queued, attempt and backoff breakdown; empty for other events. */
+  segments: TimingSegment[];
   durationMs?: number;
   sinceStartMs?: number;
   /** The event repeats a class already in the log, so the runtime ignored it. */
@@ -549,9 +507,12 @@ export function buildEventRow(
   const entity = getEventEntity(event);
   const isDuplicate = lookups.duplicateEventIds.has(event.eventId);
   const name = getEventName(entity, lookups.names);
+  const segments =
+    entity.key === null
+      ? []
+      : (lookups.timing.stepSegments.get(entity.key) ?? []);
   const message = getEventMessage(event, {
-    queuedMs:
-      entity.key === null ? undefined : lookups.timing.queued.get(entity.key),
+    queuedMs: segments.find((segment) => segment.kind === 'queued')?.ms,
     isDuplicate,
   });
   const notice = isDuplicate
@@ -567,6 +528,7 @@ export function buildEventRow(
     name,
     message,
     notice,
+    segments,
     durationMs: lookups.timing.eventDurations.get(event.eventId),
     sinceStartMs:
       lookups.runStartMs === undefined

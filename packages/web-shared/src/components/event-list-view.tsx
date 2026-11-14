@@ -14,7 +14,6 @@ import {
   getEventEntity,
   getExactSearchEvents,
   getFooterLabel,
-  getStepSegments,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
@@ -353,7 +352,6 @@ function EventListViewInner({
           {selectedRow ? (
             <EventDetailsPanel
               row={selectedRow}
-              segments={getStepSegments(selectedRow.entity, lookups.timing)}
               onLoadEventData={onLoadEventData}
               cachedEventData={
                 eventDataCacheRef.current.get(selectedRow.event.eventId) ?? null

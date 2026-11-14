@@ -96,7 +96,6 @@ const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
   failed: 'bg-amber-700',
   backoff: 'bg-amber-300',
   ok: 'bg-green-700',
-  running: 'bg-blue-700',
 };
 
 function PayloadView({
@@ -200,8 +199,6 @@ function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
 
 interface EventDetailsBodyProps {
   row: EventListRow;
-  /** The step's queued, attempt and backoff breakdown; empty for other events. */
-  segments: TimingSegment[];
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
   cachedEventData: unknown | null;
   onCacheEventData: (eventId: string, data: unknown) => void;
@@ -214,7 +211,6 @@ interface EventDetailsBodyProps {
  */
 function EventDetailsBody({
   row,
-  segments,
   onLoadEventData,
   cachedEventData,
   onCacheEventData,
@@ -262,7 +258,7 @@ function EventDetailsBody({
     };
   }, [event.eventId, encryptionKey]);
 
-  const timingTotal = segments.reduce((sum, s) => sum + s.ms, 0);
+  const timingTotal = row.segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
   const createdAt = new Date(event.createdAt);
   const structuredError = extractStructuredError(data, event.eventType);
@@ -281,7 +277,7 @@ function EventDetailsBody({
             </span>
           }
         >
-          <TimingBreakdown segments={segments} />
+          <TimingBreakdown segments={row.segments} />
         </Collapsible>
       ) : row.durationMs !== undefined ? (
         <Collapsible defaultOpen label="Timing">

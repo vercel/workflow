@@ -29,6 +29,13 @@ function ev(
   } as unknown as Event;
 }
 
+/** The queued segment of a step's breakdown: created to its first start. */
+function queuedMs(events: Event[], stepId: string): number | undefined {
+  return buildEventTiming(events)
+    .stepSegments.get(stepId)
+    ?.find((segment) => segment.kind === 'queued')?.ms;
+}
+
 describe('buildEventTiming → queued duration', () => {
   it('uses the first step_started, not the last, for steps with retries', () => {
     const events: Event[] = [
@@ -40,9 +47,8 @@ describe('buildEventTiming → queued duration', () => {
       ev('step_completed', 'step-1', '2026-01-01T00:00:11.000Z'),
     ];
 
-    const { queued } = buildEventTiming(events);
     // 1s between step_created and the first step_started.
-    expect(queued.get('step-1')).toBe(1000);
+    expect(queuedMs(events, 'step-1')).toBe(1000);
   });
 
   it('handles events in descending order (newest first)', () => {
@@ -55,8 +61,8 @@ describe('buildEventTiming → queued duration', () => {
     ];
     const descending = [...ascending].reverse();
 
-    expect(buildEventTiming(ascending).queued.get('step-1')).toBe(1000);
-    expect(buildEventTiming(descending).queued.get('step-1')).toBe(1000);
+    expect(queuedMs(ascending, 'step-1')).toBe(1000);
+    expect(queuedMs(descending, 'step-1')).toBe(1000);
   });
 
   it('still works for a step with a single start (no retry)', () => {
@@ -66,7 +72,7 @@ describe('buildEventTiming → queued duration', () => {
       ev('step_completed', 'step-2', '2026-01-01T00:00:02.000Z'),
     ];
 
-    expect(buildEventTiming(events).queued.get('step-2')).toBe(500);
+    expect(queuedMs(events, 'step-2')).toBe(500);
   });
 
   it('prefers occurredAt over createdAt when measuring durations', () => {
@@ -92,18 +98,19 @@ describe('buildEventTiming → queued duration', () => {
       completed,
     ];
 
-    const timing = buildEventTiming(events);
-    expect(timing.queued.get('step-occurred')).toBe(250);
-    expect(timing.eventDurations.get(completed.eventId)).toBe(750);
+    expect(queuedMs(events, 'step-occurred')).toBe(250);
+    expect(buildEventTiming(events).eventDurations.get(completed.eventId)).toBe(
+      750
+    );
   });
 
-  it('falls back to the started time when no created event is seen', () => {
+  it('has no queued time when no created event is seen', () => {
     const events: Event[] = [
       ev('step_started', 'step-3', '2026-01-01T00:00:05.000Z'),
       ev('step_completed', 'step-3', '2026-01-01T00:00:06.000Z'),
     ];
 
-    expect(buildEventTiming(events).queued.get('step-3')).toBe(0);
+    expect(queuedMs(events, 'step-3')).toBeUndefined();
   });
 });
 
@@ -131,5 +138,26 @@ describe('buildEventTiming → retried step', () => {
       { kind: 'backoff', label: 'Backoff', ms: 5000 },
       { kind: 'ok', label: 'Attempt 2 · ok', ms: 500 },
     ]);
+  });
+});
+
+describe('buildEventTiming → waits and the run', () => {
+  it('measures each from the event that opened it', () => {
+    const waitCompleted = ev(
+      'wait_completed',
+      'wait-1',
+      '2026-01-01T00:00:04.000Z'
+    );
+    const runCompleted = ev('run_completed', null, '2026-01-01T00:00:05.000Z');
+    const { eventDurations } = buildEventTiming([
+      ev('run_created', null, '2026-01-01T00:00:00.000Z'),
+      ev('run_started', null, '2026-01-01T00:00:01.000Z'),
+      ev('wait_created', 'wait-1', '2026-01-01T00:00:02.000Z'),
+      waitCompleted,
+      runCompleted,
+    ]);
+
+    expect(eventDurations.get(waitCompleted.eventId)).toBe(2000);
+    expect(eventDurations.get(runCompleted.eventId)).toBe(4000);
   });
 });
