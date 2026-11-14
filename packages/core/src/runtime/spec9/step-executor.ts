@@ -48,10 +48,13 @@ import { contextStorage } from '../../step/context-storage.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { recordStepExecutionDuration, trace } from '../../telemetry.js';
 import {
+  getErrorMessage,
   getErrorName,
   getErrorStack,
+  type NormalizedUnknownError,
   normalizeUnknownError,
   promoteAbortErrorToFatal,
+  toPlainError,
 } from '../../types.js';
 import { getComputeInstanceId } from '../compute-instance.js';
 import {
@@ -1002,20 +1005,55 @@ export async function executeStep(
       const normalizedStack =
         normalizedError.stack || getErrorStack(effectiveErr) || '';
 
-      if (effectiveErr instanceof Error) {
-        span?.recordException?.(effectiveErr);
+      const thrown =
+        'unwrapped' in normalizedError
+          ? promoteAbortErrorToFatal(normalizedError.unwrapped)
+          : effectiveErr;
+
+      const dehydrateFailure = async (
+        value: unknown,
+        fallback: NormalizedUnknownError
+      ) => {
+        const key = await getEncryptionKey();
+        const dehydrate = (error: unknown) =>
+          dehydrateStepError(
+            error,
+            workflowRunId,
+            key,
+            [],
+            globalThis,
+            compression
+          );
+        try {
+          return await dehydrate(value);
+        } catch (error) {
+          const plain = await dehydrate(toPlainError(value, fallback)).catch(
+            () => {
+              throw error;
+            }
+          );
+          stepLogger.warn(
+            'Step error could not be serialized, recording it as plain errors',
+            { workflowRunId, stepName, message: getErrorMessage(error) }
+          );
+          return plain;
+        }
+      };
+
+      if (thrown instanceof Error) {
+        span?.recordException?.(thrown);
       }
 
-      const isFatal = FatalError.is(effectiveErr);
+      const isFatal = FatalError.is(thrown);
 
       span?.setAttributes({
-        ...Attribute.StepErrorName(getErrorName(effectiveErr)),
+        ...Attribute.StepErrorName(getErrorName(thrown)),
         ...Attribute.StepErrorMessage(normalizedError.message),
-        ...Attribute.ErrorType(getErrorName(effectiveErr)),
+        ...Attribute.ErrorType(getErrorName(thrown)),
         ...Attribute.ErrorCategory(
           isFatal
             ? 'fatal'
-            : RetryableError.is(effectiveErr)
+            : RetryableError.is(thrown)
               ? 'retryable'
               : 'transient'
         ),
@@ -1043,6 +1081,7 @@ export async function executeStep(
 
       const writeFailed = async (
         error: unknown,
+        fallback: NormalizedUnknownError,
         attributes: Parameters<NonNullable<typeof span>['setAttributes']>[0]
       ): Promise<StepExecutionResult> => {
         try {
@@ -1054,14 +1093,7 @@ export async function executeStep(
               eventData: {
                 stepName,
                 attempt,
-                error: await dehydrateStepError(
-                  error,
-                  workflowRunId,
-                  await getEncryptionKey(),
-                  [],
-                  globalThis,
-                  compression
-                ),
+                error: await dehydrateFailure(error, fallback),
                 ...latencyEventData,
               },
             },
@@ -1084,10 +1116,14 @@ export async function executeStep(
           'Encountered FatalError while executing step, bubbling up to parent workflow',
           { workflowRunId, stepName, errorStack: normalizedStack }
         );
-        if (types.isNativeError(effectiveErr) && normalizedStack) {
-          setErrorStack(effectiveErr, normalizedStack);
+        if (types.isNativeError(thrown) && normalizedStack) {
+          setErrorStack(thrown, normalizedStack);
         }
-        return writeFailed(effectiveErr, Attribute.StepFatalError(true));
+        return writeFailed(
+          thrown,
+          { ...normalizedError, stack: normalizedStack },
+          Attribute.StepFatalError(true)
+        );
       }
 
       span?.setAttributes({
@@ -1095,11 +1131,15 @@ export async function executeStep(
         ...Attribute.StepMaxRetries(maxRetries),
       });
 
-      const wrapExhausted = (message: string): FatalError => {
+      const writeExhausted = (message: string) => {
         const wrappedError = new FatalError(message);
-        (wrappedError as Error).cause = err;
+        (wrappedError as Error).cause = thrown;
         if (normalizedStack) wrappedError.stack = normalizedStack;
-        return wrappedError;
+        return writeFailed(
+          wrappedError,
+          { name: wrappedError.name, message, stack: normalizedStack },
+          Attribute.StepRetryExhausted(true)
+        );
       };
 
       if (attempt >= maxRetries + 1) {
@@ -1113,36 +1153,30 @@ export async function executeStep(
             errorStack: normalizedStack,
           }
         );
-        return writeFailed(
-          wrapExhausted(
-            `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`
-          ),
-          Attribute.StepRetryExhausted(true)
+        return writeExhausted(
+          `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`
         );
       }
 
-      const retryAt = RetryableError.is(err)
-        ? new Date(err.retryAfter)
+      const retryAt = RetryableError.is(thrown)
+        ? new Date(thrown.retryAfter)
         : new Date(Date.now() + 1000);
       if (params.retryOutlivesMessage?.(retryAt.getTime())) {
         stepLogger.error(
           'Step retry would outlive its queue message, failing the step',
           { workflowRunId, stepName, attempt, retryAt: retryAt.toISOString() }
         );
-        return writeFailed(
-          wrapExhausted(
-            `Step "${stepName}" could not be retried: its next attempt at ${retryAt.toISOString()} is past the retention of its queue message: ${normalizedError.message}`
-          ),
-          Attribute.StepRetryExhausted(true)
+        return writeExhausted(
+          `Step "${stepName}" could not be retried: its next attempt at ${retryAt.toISOString()} is past the retention of its queue message: ${normalizedError.message}`
         );
       }
 
-      if (RetryableError.is(err)) {
+      if (RetryableError.is(thrown)) {
         stepLogger.info('Encountered RetryableError, step will be retried', {
           workflowRunId,
           stepName,
           attempt,
-          message: err.message,
+          message: thrown.message,
         });
       } else {
         stepLogger.info('Encountered Error, step will be retried', {
@@ -1153,8 +1187,8 @@ export async function executeStep(
         });
       }
 
-      if (types.isNativeError(err) && normalizedStack) {
-        setErrorStack(err, normalizedStack);
+      if (types.isNativeError(thrown) && normalizedStack) {
+        setErrorStack(thrown, normalizedStack);
       }
       let retrying: EventResult;
       try {
@@ -1165,14 +1199,10 @@ export async function executeStep(
           eventData: {
             stepName,
             attempt,
-            error: await dehydrateStepError(
-              err,
-              workflowRunId,
-              await getEncryptionKey(),
-              [],
-              globalThis,
-              compression
-            ),
+            error: await dehydrateFailure(thrown, {
+              ...normalizedError,
+              stack: normalizedStack,
+            }),
             retryAfter: retryAt,
           },
         });

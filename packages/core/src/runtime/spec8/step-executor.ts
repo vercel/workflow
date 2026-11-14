@@ -51,10 +51,13 @@ import { contextStorage } from '../../step/context-storage.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { recordStepExecutionDuration, trace } from '../../telemetry.js';
 import {
+  getErrorMessage,
   getErrorName,
   getErrorStack,
+  type NormalizedUnknownError,
   normalizeUnknownError,
   promoteAbortErrorToFatal,
+  toPlainError,
 } from '../../types.js';
 import { getComputeInstanceId } from '../compute-instance.js';
 import {
@@ -1347,20 +1350,55 @@ export async function executeStep(
       const normalizedStack =
         normalizedError.stack || getErrorStack(effectiveErr) || '';
 
-      if (effectiveErr instanceof Error) {
-        span?.recordException?.(effectiveErr);
+      const thrown =
+        'unwrapped' in normalizedError
+          ? promoteAbortErrorToFatal(normalizedError.unwrapped)
+          : effectiveErr;
+
+      const dehydrateFailure = async (
+        value: unknown,
+        fallback: NormalizedUnknownError
+      ) => {
+        const key = await getEncryptionKey();
+        const dehydrate = (error: unknown) =>
+          dehydrateStepError(
+            error,
+            workflowRunId,
+            key,
+            [],
+            globalThis,
+            compression
+          );
+        try {
+          return await dehydrate(value);
+        } catch (error) {
+          const plain = await dehydrate(toPlainError(value, fallback)).catch(
+            () => {
+              throw error;
+            }
+          );
+          stepLogger.warn(
+            'Step error could not be serialized, recording it as plain errors',
+            { workflowRunId, stepName, message: getErrorMessage(error) }
+          );
+          return plain;
+        }
+      };
+
+      if (thrown instanceof Error) {
+        span?.recordException?.(thrown);
       }
 
-      const isFatal = FatalError.is(effectiveErr);
+      const isFatal = FatalError.is(thrown);
 
       span?.setAttributes({
-        ...Attribute.StepErrorName(getErrorName(effectiveErr)),
+        ...Attribute.StepErrorName(getErrorName(thrown)),
         ...Attribute.StepErrorMessage(normalizedError.message),
-        ...Attribute.ErrorType(getErrorName(effectiveErr)),
+        ...Attribute.ErrorType(getErrorName(thrown)),
         ...Attribute.ErrorCategory(
           isFatal
             ? 'fatal'
-            : RetryableError.is(effectiveErr)
+            : RetryableError.is(thrown)
               ? 'retryable'
               : 'transient'
         ),
@@ -1385,8 +1423,8 @@ export async function executeStep(
         // error preserves it for consumers. `types.isNativeError()` works
         // across VM realms (a workflow-thrown error is an instance of the
         // VM's Error class, not the host's).
-        if (types.isNativeError(effectiveErr) && normalizedStack) {
-          setErrorStack(effectiveErr, normalizedStack);
+        if (types.isNativeError(thrown) && normalizedStack) {
+          setErrorStack(thrown, normalizedStack);
         }
         try {
           await createEvent(
@@ -1396,14 +1434,10 @@ export async function executeStep(
               correlationId: stepId,
               eventData: {
                 stepName,
-                error: await dehydrateStepError(
-                  effectiveErr,
-                  workflowRunId,
-                  await getEncryptionKey(),
-                  [],
-                  globalThis,
-                  compression
-                ),
+                error: await dehydrateFailure(thrown, {
+                  ...normalizedError,
+                  stack: normalizedStack,
+                }),
                 ...latencyEventData,
               },
             },
@@ -1459,7 +1493,7 @@ export async function executeStep(
         // error while the original failure remains recoverable from
         // `err.cause` after hydration.
         const wrappedError = new FatalError(errorMessage);
-        (wrappedError as Error).cause = err;
+        (wrappedError as Error).cause = thrown;
         if (normalizedStack) wrappedError.stack = normalizedStack;
         try {
           await createEvent(
@@ -1469,14 +1503,11 @@ export async function executeStep(
               correlationId: stepId,
               eventData: {
                 stepName,
-                error: await dehydrateStepError(
-                  wrappedError,
-                  workflowRunId,
-                  await getEncryptionKey(),
-                  [],
-                  globalThis,
-                  compression
-                ),
+                error: await dehydrateFailure(wrappedError, {
+                  name: wrappedError.name,
+                  message: errorMessage,
+                  stack: normalizedStack,
+                }),
                 ...latencyEventData,
               },
             },
@@ -1506,12 +1537,12 @@ export async function executeStep(
       }
 
       // Retries remaining
-      if (RetryableError.is(err)) {
+      if (RetryableError.is(thrown)) {
         stepLogger.info('Encountered RetryableError, step will be retried', {
           workflowRunId,
           stepName,
           attempt: currentAttempt,
-          message: err.message,
+          message: thrown.message,
         });
       } else {
         stepLogger.info('Encountered Error, step will be retried', {
@@ -1525,8 +1556,8 @@ export async function executeStep(
       // Apply the normalized stack to the thrown value so it survives
       // serialization. See the FatalError site above for why we use
       // `types.isNativeError` instead of `err instanceof Error`.
-      if (types.isNativeError(err) && normalizedStack) {
-        setErrorStack(err, normalizedStack);
+      if (types.isNativeError(thrown) && normalizedStack) {
+        setErrorStack(thrown, normalizedStack);
       }
       try {
         await createEvent({
@@ -1535,15 +1566,11 @@ export async function executeStep(
           correlationId: stepId,
           eventData: {
             stepName,
-            error: await dehydrateStepError(
-              err,
-              workflowRunId,
-              await getEncryptionKey(),
-              [],
-              globalThis,
-              compression
-            ),
-            ...(RetryableError.is(err) && { retryAfter: err.retryAfter }),
+            error: await dehydrateFailure(thrown, {
+              ...normalizedError,
+              stack: normalizedStack,
+            }),
+            ...(RetryableError.is(thrown) && { retryAfter: thrown.retryAfter }),
           },
         });
       } catch (stepRetryErr) {
@@ -1564,8 +1591,8 @@ export async function executeStep(
 
       const timeoutSeconds = Math.max(
         1,
-        RetryableError.is(err)
-          ? Math.ceil((+err.retryAfter.getTime() - Date.now()) / 1000)
+        RetryableError.is(thrown)
+          ? Math.ceil((+thrown.retryAfter.getTime() - Date.now()) / 1000)
           : 1
       );
 
