@@ -24,8 +24,8 @@ type QueueAuthWorld = Pick<World, 'queueAuthMode'>;
 
 /**
  * Whether `world`'s flow route is checked at all. Opt-in: only a World that
- * declares `'loopback'` is; `'skip'` and a World that declares nothing are
- * not.
+ * declares `'loopback'` is; `'allow'` (or its earlier spelling `'skip'`) and
+ * a World that declares nothing are not.
  */
 function isLoopbackChecked(world: Pick<World, 'queueAuthMode'>): boolean {
   return world.queueAuthMode === 'loopback';

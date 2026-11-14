@@ -151,7 +151,7 @@ async function queueAuthModeOf(server: Server): Promise<string | null> {
  * Skips the running test unless the server's World declares
  * `queueAuthMode: 'loopback'`, the mode whose flow route is key-checked. A
  * World that declares `'deny'` (world-postgres) refuses HTTP outright (see
- * `skipUnlessDenied`); one that declares `'skip'` (world-vercel) or nothing
+ * `skipUnlessDenied`); one that declares `'allow'` (world-vercel) or nothing
  * (opt-in) leaves the route unchecked, so there is no refusal to assert.
  */
 async function skipUnlessKeyChecked(
@@ -609,7 +609,7 @@ export function queueAuth(world: string) {
   // the shape of `wf start` / `wf start <runId>` ('read') and of a script that
   // calls start() ('regenerate'): the app completes the run.
   // world-local only: it is the World whose processes share a key through the
-  // data directory; world-postgres declares 'skip'.
+  // data directory; world-postgres declares 'deny'.
   for (const mode of ['read', 'regenerate'] as const) {
     test.skipIf(world !== 'local')(
       mode === 'read'

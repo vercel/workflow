@@ -152,7 +152,7 @@ describe('the flow route in-process entry', () => {
   });
 
   it('shares one runtime handler with the route', async () => {
-    const { route, entry, createQueueHandler } = installWorld('skip');
+    const { route, entry, createQueueHandler } = installWorld('allow');
     await entry(inProcess());
     await route(delivery());
     await entry(inProcess());

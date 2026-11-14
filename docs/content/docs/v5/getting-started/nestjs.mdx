@@ -620,7 +620,7 @@ The workflow routes authenticate their own callers, so letting them past an
 application guard exposes nothing: on the Local World a queue delivery carries
 the World's key or is refused, on the Postgres World the flow route refuses
 every HTTP request, on the Vercel World only Vercel Queues reaches the route
-(`queueAuthMode: 'skip'`), and webhook tokens are single-use secrets.
+(`queueAuthMode: 'allow'`), and webhook tokens are single-use secrets.
 
 Interceptors and exception filters are safe to leave in place. The handlers
 write through `@Res()`, so the exact status and body the workflow runtime

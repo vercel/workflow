@@ -85,6 +85,8 @@ describe('isQueueAuthEnforced', () => {
     ['loopback', true],
     // Opt-in: a World that declares nothing is not checked.
     [undefined, false],
+    ['allow', false],
+    // The earlier spelling of 'allow'.
     ['skip', false],
     // A denied route is not key-checked: it takes no HTTP at all.
     ['deny', false],
@@ -123,6 +125,7 @@ describe('isQueueRouteDenied', () => {
   it.each<[QueueAuthMode | undefined, boolean]>([
     ['deny', true],
     ['loopback', false],
+    ['allow', false],
     ['skip', false],
     [undefined, false],
   ])('mode %s: denied=%s by default', (mode, denied) => {
@@ -177,7 +180,10 @@ describe('authorizeQueueDelivery', () => {
     ).toBe(reason);
   });
 
-  it("does not check a World that declares 'skip'", async () => {
+  it("does not check a World that declares 'allow', nor its earlier spelling 'skip'", async () => {
+    expect(
+      await authorizeQueueDelivery({ queueAuthMode: 'allow' }, delivery())
+    ).toBeUndefined();
     expect(
       await authorizeQueueDelivery({ queueAuthMode: 'skip' }, delivery())
     ).toBe(undefined);
@@ -244,19 +250,19 @@ describe('logQueueAuthSetting', () => {
     expect(warn.mock.calls[1]?.[1]).toEqual({ routesSinceLastLog: 2 });
   });
 
-  it('gives a loopback or skip World no such warning', () => {
+  it('gives a loopback or allow World no such warning', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn');
     logQueueAuthSetting({ queueAuthMode: 'loopback' });
-    logQueueAuthSetting({ queueAuthMode: 'skip' });
+    logQueueAuthSetting({ queueAuthMode: 'allow' });
     expect(warn).not.toHaveBeenCalledWith(undeclaredWarning, expect.anything());
   });
 
-  it('is silent by default and for skip Worlds', () => {
+  it('is silent by default and for allow Worlds', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn');
     const error = vi.spyOn(runtimeLogger, 'error');
     logQueueAuthSetting({ queueAuthMode: 'loopback' });
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
-    logQueueAuthSetting({ queueAuthMode: 'skip' });
+    logQueueAuthSetting({ queueAuthMode: 'allow' });
     expect(warn).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
   });
@@ -611,7 +617,7 @@ describe('workflowEntrypoint queue auth', () => {
     expect(routed).toHaveLength(0);
   });
 
-  it("WORKFLOW_QUEUE_AUTH=off makes a 'deny' route accept HTTP exactly as 'skip' does", async () => {
+  it("WORKFLOW_QUEUE_AUTH=off makes a 'deny' route accept HTTP exactly as 'allow' does", async () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
     const { routed, route } = installWorld('deny');
@@ -623,8 +629,8 @@ describe('workflowEntrypoint queue auth', () => {
     expect(routed).toHaveLength(1);
   });
 
-  it("hands every request to the handler of a 'skip' World", async () => {
-    const { routed, route } = installWorld('skip');
+  it("hands every request to the handler of an 'allow' World", async () => {
+    const { routed, route } = installWorld('allow');
 
     expect((await route(delivery())).status).toBe(200);
     expect(routed).toHaveLength(1);

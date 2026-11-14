@@ -497,7 +497,7 @@ describe('WorkflowModule world lifecycle', () => {
   });
 
   it('does not load the bundle or register on a World that delivers over HTTP or by subscription', async () => {
-    for (const mode of ['loopback', 'skip', undefined]) {
+    for (const mode of ['loopback', 'allow', undefined]) {
       rmSync(appDir, { recursive: true, force: true });
       appDir = writeHostApp(mode);
       writeFlowBundle(appDir);

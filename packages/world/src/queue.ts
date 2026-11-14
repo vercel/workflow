@@ -1165,8 +1165,10 @@ export interface InvokeOptions {
  *   app's own processes, which share the key through the data directory, not
  *   any request from localhost. Temporary: it goes away once the Local
  *   World's queue no longer delivers back to the app over its own routes.
- * - `'skip'`: the runtime does not check. Only for a World whose platform
- *   guarantees that only its queue reaches the route, as Vercel's does.
+ * - `'allow'`: the route accepts HTTP and the runtime does not check. Only
+ *   for a World whose platform guarantees that only its queue reaches the
+ *   route, as Vercel's does. `'skip'` is this mode's earlier spelling,
+ *   accepted and deprecated.
  * - `'deny'`: the route takes no HTTP at all. The World's queue delivers the
  *   Workflow SDK's messages inside the app's own process: the app hands the
  *   World its flow route with {@link Queue.registerHandler} when it starts
@@ -1183,7 +1185,20 @@ export interface InvokeOptions {
  *   old workers still deliver over HTTP); it is refused while dynamic
  *   workflows are enabled.
  */
-export type QueueAuthMode = 'loopback' | 'skip' | 'deny';
+// TODO(#5427): the model is `'deny'` for pull-based Worlds (the World's
+// worker runs in the app's process and the route takes no HTTP) and
+// `'allow'` for Worlds whose route accepts HTTP because the platform
+// protects it (Vercel Queues). A World on an external push-based queue (SQS,
+// Cloudflare Queues) fits neither: stage 3 adds a signing mode, in which the
+// World signs each delivery and `authorizeQueueDelivery()` in @workflow/core
+// verifies it before touching any run. Add the mode here and its check there.
+export type QueueAuthMode =
+  | 'loopback'
+  | 'allow'
+  | 'deny'
+  // TODO: remove 'skip' in SDK v6, when the mode becomes required.
+  /** @deprecated The earlier spelling of `'allow'`; behaves the same. */
+  | 'skip';
 
 /**
  * What a World tells the handler about a delivery: see

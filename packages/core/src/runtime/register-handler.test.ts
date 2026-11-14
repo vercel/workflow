@@ -61,7 +61,7 @@ describe('registerWorkflowHandler', () => {
 
   it.each<QueueAuthMode | undefined>([
     'loopback',
-    'skip',
+    'allow',
     undefined,
   ])('does nothing on a World in mode %s, which delivers over HTTP or by subscription', async (mode) => {
     const registerHandler = installWorld(mode);
