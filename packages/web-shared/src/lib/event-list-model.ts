@@ -363,8 +363,7 @@ export type EventLevel = 'default' | 'warning' | 'error' | 'muted';
  * Rows are tinted by level. Only events that need attention get color;
  * everything else stays neutral.
  */
-export function getEventLevel(event: Event, isDuplicate: boolean): EventLevel {
-  if (isDuplicate || isSealedNoopEvent(event)) return 'muted';
+function getEventLevel(event: Event): EventLevel {
   switch (event.eventType) {
     case 'step_failed':
     case 'run_failed':
@@ -382,21 +381,14 @@ export function getEventLevel(event: Event, isDuplicate: boolean): EventLevel {
  * (input, result, error, payload) are stripped by `resolveData: 'none'`, so
  * the summary only uses the scalar fields every event keeps.
  */
-export function getEventMessage(
-  event: Event,
-  ctx: { queuedMs?: number; isDuplicate: boolean }
-): string {
-  if (ctx.isDuplicate) return 'duplicate, ignored on replay';
-  if (isSealedNoopEvent(event)) return 'sealed slot, never observed by the run';
+function getEventMessage(event: Event, queuedMs?: number): string {
   const data = (event.eventData ?? {}) as Record<string, unknown>;
   const attempt = typeof data.attempt === 'number' ? data.attempt : undefined;
 
   switch (event.eventType) {
     case 'step_started':
       if (attempt && attempt > 1) return `attempt ${attempt}`;
-      return ctx.queuedMs
-        ? `queued ${formatDurationPrecise(ctx.queuedMs)}`
-        : '';
+      return queuedMs ? `queued ${formatDurationPrecise(queuedMs)}` : '';
     case 'step_retrying': {
       const retryAt = formatClock(data.retryAfter);
       const head = attempt ? `attempt ${attempt} failed` : 'attempt failed';
@@ -496,8 +488,6 @@ export interface EventListRow {
   segments: TimingSegment[];
   durationMs?: number;
   sinceStartMs?: number;
-  /** The event repeats a class already in the log, so the runtime ignored it. */
-  isDuplicate: boolean;
 }
 
 export function buildEventRow(
@@ -505,36 +495,41 @@ export function buildEventRow(
   lookups: EventListLookups
 ): EventListRow {
   const entity = getEventEntity(event);
-  const isDuplicate = lookups.duplicateEventIds.has(event.eventId);
-  const name = getEventName(entity, lookups.names);
   const segments =
     entity.key === null
       ? []
       : (lookups.timing.stepSegments.get(entity.key) ?? []);
-  const message = getEventMessage(event, {
-    queuedMs: segments.find((segment) => segment.kind === 'queued')?.ms,
-    isDuplicate,
-  });
-  const notice = isDuplicate
-    ? DUPLICATE_EVENT_MESSAGE
+  // An event the runtime ignores is muted and struck through, and says why.
+  const ignored = lookups.duplicateEventIds.has(event.eventId)
+    ? {
+        message: 'duplicate, ignored on replay',
+        notice: DUPLICATE_EVENT_MESSAGE,
+      }
     : isSealedNoopEvent(event)
-      ? SEALED_EVENT_MESSAGE
-      : undefined;
+      ? {
+          message: 'sealed slot, never observed by the run',
+          notice: SEALED_EVENT_MESSAGE,
+        }
+      : null;
   return {
     event,
     entity,
-    level: getEventLevel(event, isDuplicate),
+    level: ignored ? 'muted' : getEventLevel(event),
     resource: getEventResource(event, entity),
-    name,
-    message,
-    notice,
+    name: getEventName(entity, lookups.names),
+    message:
+      ignored?.message ??
+      getEventMessage(
+        event,
+        segments.find((segment) => segment.kind === 'queued')?.ms
+      ),
+    notice: ignored?.notice,
     segments,
     durationMs: lookups.timing.eventDurations.get(event.eventId),
     sinceStartMs:
       lookups.runStartMs === undefined
         ? undefined
         : getEffectiveEventTime(event) - lookups.runStartMs,
-    isDuplicate,
   };
 }
 

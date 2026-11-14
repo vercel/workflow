@@ -271,10 +271,7 @@ export function EventRow({
       <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
         <ResourceIcon
           resource={row.resource}
-          isErrored={
-            event.eventType === 'step_failed' ||
-            event.eventType === 'run_failed'
-          }
+          isErrored={level === 'error'}
           isCancelled={event.eventType === 'run_cancelled'}
         />
         {name ? (
