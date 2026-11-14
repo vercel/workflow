@@ -46,7 +46,8 @@ function isQueueAuthOff(): boolean {
 }
 
 /**
- * Whether the flow route refuses every HTTP request: the World declares
+ * Whether the flow route refuses every HTTP delivery (the `?__health` probe
+ * is answered before this check): the World declares
  * `'deny'` (it delivers in process; the route has no caller over HTTP, in
  * any process, whether or not this one registered the handler), and the
  * emergency override is not in force.
@@ -143,7 +144,7 @@ export function logQueueAuthSetting(
           `${QUEUE_AUTH_ENV}=off is refused because dynamic workflows are enabled ` +
             '(WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS). ' +
             (denies
-              ? 'The flow route still accepts no HTTP request: a delivery over HTTP is refused with a 403.'
+              ? 'The flow route still refuses HTTP deliveries: a delivery over HTTP is refused with a 403.'
               : 'Queue deliveries are still authenticated: a delivery that does not carry the app’s queue key is refused with a 401.'),
           { routesSinceLastLog }
         )
@@ -192,7 +193,7 @@ export function logQueueAuthSetting(
 
 /**
  * Why a delivery was refused: it carried no key, or not the app's
- * (`'loopback'`), or the route accepts no HTTP at all (`'deny'`).
+ * (`'loopback'`), or the route refuses HTTP deliveries (`'deny'`).
  */
 export type QueueAuthRefusalReason = 'no-key' | 'wrong-key' | 'denied';
 
@@ -229,7 +230,7 @@ export async function authorizeQueueDelivery(
       response: Response.json(
         {
           error:
-            'This route accepts no HTTP requests: the World delivers workflow messages in process',
+            'This route refuses HTTP deliveries: the World delivers workflow messages in process',
           code: QUEUE_ROUTE_DENIED_CODE,
         },
         { status: 403 }
@@ -271,8 +272,8 @@ export function createQueueAuthRefusalLogger(): (
       denialLog().limit((refusedSinceLastLog) => {
         runtimeLogger.warn(
           'Refused an HTTP request to the flow route with a 403: this World ' +
-            'delivers workflow messages in process, and the route accepts no HTTP ' +
-            'request. No run was touched. During a rolling upgrade the sender is ' +
+            'delivers workflow messages in process, and the route refuses HTTP ' +
+            'deliveries. No run was touched. During a rolling upgrade the sender is ' +
             'usually a worker on an earlier release, which still delivers over ' +
             'HTTP: each of its deliveries is refused and retried, and every retry ' +
             'counts toward the attempt limit, until that worker is drained. Drain ' +

@@ -771,7 +771,7 @@ export function workflowEntrypoint(
 
         // Before the handler reads the body or touches any run: a request
         // that does not carry the app's queue key, or any request when the
-        // route takes no HTTP, is refused and dropped (see
+        // route refuses HTTP deliveries, is refused and dropped (see
         // `authorizeQueueDelivery`). Covers every delivery to this route,
         // health checks and invocations included.
         const refusal = await authorizeQueueDelivery(route.world, req);

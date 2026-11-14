@@ -4682,7 +4682,8 @@ describe.concurrent('e2e', () => {
     }
   );
 
-  // The Postgres World delivers in process, so its flow route takes no HTTP:
+  // The Postgres World delivers in process, so its flow route refuses HTTP
+  // deliveries:
   // a forged delivery is refused with a 403 before any run is touched, while
   // the app's own worker keeps running jobs (the rest of this suite).
   test.skipIf(

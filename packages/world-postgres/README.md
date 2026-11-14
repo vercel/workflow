@@ -15,7 +15,7 @@ An embedded worker and workflow system backed by PostgreSQL for multi-host self-
 
 ## Security
 
-### The queue route takes no HTTP
+### The queue route refuses HTTP deliveries
 
 The World delivers workflow messages inside the app's process: a graphile-worker
 runner in every process that registered the workflow route with the World

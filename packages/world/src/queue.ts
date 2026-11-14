@@ -1169,7 +1169,8 @@ export interface InvokeOptions {
  *   for a World whose platform guarantees that only its queue reaches the
  *   route, as Vercel's does. `'skip'` is this mode's earlier spelling,
  *   accepted and deprecated.
- * - `'deny'`: the route takes no HTTP at all. The World's queue delivers the
+ * - `'deny'`: the route refuses every HTTP delivery (the `?__health` probe
+ *   still answers). The World's queue delivers the
  *   Workflow SDK's messages inside the app's own process: the app hands the
  *   World its flow route with {@link Queue.registerHandler} when it starts
  *   (the framework integrations do, through `registerWorkflowHandler()` from
@@ -1179,14 +1180,16 @@ export interface InvokeOptions {
  *   HTTP is refused with a 403 whose body carries `code: "QUEUE_ROUTE_DENIED"`,
  *   before any run is touched. Unlike the 401 of `'loopback'` (a missing or
  *   wrong key, which a sender retries once it reloaded the key), the 403 is
- *   final: the route never accepts HTTP, and a sender must not retry it.
+ *   final: the route never accepts an HTTP delivery, and a sender must not
+ *   retry it.
  *   world-postgres declares it. `WORKFLOW_QUEUE_AUTH=off` makes the route
  *   accept HTTP again, as an emergency override only (a rolling upgrade whose
  *   old workers still deliver over HTTP); it is refused while dynamic
  *   workflows are enabled.
  */
 // TODO(#5427): the model is `'deny'` for pull-based Worlds (the World's
-// worker runs in the app's process and the route takes no HTTP) and
+// worker runs in the app's process and the route refuses HTTP deliveries)
+// and
 // `'allow'` for Worlds whose route accepts HTTP because the platform
 // protects it (Vercel Queues). A World on an external push-based queue (SQS,
 // Cloudflare Queues) fits neither: stage 3 adds a signing mode, in which the

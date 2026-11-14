@@ -88,7 +88,7 @@ describe('isQueueAuthEnforced', () => {
     ['allow', false],
     // The earlier spelling of 'allow'.
     ['skip', false],
-    // A denied route is not key-checked: it takes no HTTP at all.
+    // A denied route is not key-checked: it refuses HTTP deliveries.
     ['deny', false],
   ])('mode %s: enforced=%s by default', (mode, enforced) => {
     expect(isQueueAuthEnforced({ queueAuthMode: mode })).toBe(enforced);
@@ -202,7 +202,7 @@ describe('authorizeQueueDelivery', () => {
       );
       expect(refusal && isQueueAuthRefusal(refusal.response)).toBe(false);
       await expect(refusal?.response.json()).resolves.toEqual({
-        error: expect.stringContaining('accepts no HTTP requests'),
+        error: expect.stringContaining('refuses HTTP deliveries'),
         code: QUEUE_ROUTE_DENIED_CODE,
       });
     }
@@ -314,7 +314,7 @@ describe('logQueueAuthSetting', () => {
     vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
     logQueueAuthSetting({ queueAuthMode: 'deny' });
     expect(error).toHaveBeenCalledWith(
-      expect.stringContaining('still accepts no HTTP request'),
+      expect.stringContaining('still refuses HTTP deliveries'),
       { routesSinceLastLog: 1 }
     );
   });

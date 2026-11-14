@@ -1754,7 +1754,8 @@ export function createQueue(
   return {
     // The Workflow SDK's messages are delivered in process, to the flow
     // handler the app registered (`registerHandler`), never over HTTP, so the
-    // flow route takes no HTTP at all, in every process: a process that was
+    // flow route refuses every HTTP delivery (the `?__health` probe still
+    // answers), in every process: a process that was
     // never handed the route still serves it, and an HTTP request to it
     // could run a forged delivery there. The database credentials control
     // who can enqueue.
@@ -1771,10 +1772,10 @@ export function createQueue(
       ) {
         // The SDK's messages go to the route's in-process entry only; a
         // request built for a handler without one would be refused by the
-        // route itself (the flow route takes no HTTP). Refusing here, at
+        // route itself (the flow route refuses HTTP deliveries). Refusing here, at
         // startup, says so once instead of failing every delivery.
         throw new Error(
-          "[postgres world] The flow handler registered for the Workflow SDK's queue has no in-process entry (IN_PROCESS_QUEUE_HANDLER from @workflow/world), so the World cannot deliver to it: the flow route takes no HTTP. Hand the World the generated flow route through registerWorkflowHandler() from workflow/runtime, which the framework integrations call when the app starts."
+          "[postgres world] The flow handler registered for the Workflow SDK's queue has no in-process entry (IN_PROCESS_QUEUE_HANDLER from @workflow/world), so the World cannot deliver to it: the flow route refuses HTTP deliveries. Hand the World the generated flow route through registerWorkflowHandler() from workflow/runtime, which the framework integrations call when the app starts."
         );
       }
       if (
