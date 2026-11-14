@@ -1,11 +1,13 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -15,6 +17,7 @@ import {
   devInstallCommand,
   inspectSwcBuilderPackages,
   isSupportedSwcCoreVersion,
+  SUPPORTED_SWC_CORE_LINE,
   SWC_CORE_INSTALL_SPEC,
 } from './swc-builder-deps.js';
 
@@ -52,6 +55,38 @@ function createApp(): string {
 afterEach(() => {
   if (appDir) rmSync(appDir, { recursive: true, force: true });
   appDir = undefined;
+});
+
+describe('supported @swc/core line', () => {
+  const UPDATE_TOGETHER =
+    'update SUPPORTED_SWC_CORE_LINE and SWC_CORE_INSTALL_SPEC in ' +
+    'packages/nest/src/swc-builder-deps.ts, and the pinned @swc/core version ' +
+    'in docs/content/docs/v4/getting-started/nestjs.mdx, ' +
+    'docs/content/docs/v5/getting-started/nestjs.mdx and ' +
+    'packages/nest/README.md, together';
+
+  it('matches the @swc/core that @workflow/nest and its SWC plugin are built against', () => {
+    // The catalog version @workflow/nest depends on and @workflow/swc-plugin
+    // peers on. If it moves to another minor, `init` would tell users on a
+    // working version to install one the plugin no longer runs on.
+    const packageJson = createRequire(import.meta.url).resolve(
+      '@swc/core/package.json'
+    );
+    const { version } = JSON.parse(readFileSync(packageJson, 'utf-8'));
+    expect(
+      isSupportedSwcCoreVersion(version),
+      `@workflow/nest depends on @swc/core ${version}, but SUPPORTED_SWC_CORE_LINE is ${SUPPORTED_SWC_CORE_LINE}: ${UPDATE_TOGETHER}`
+    ).toBe(true);
+  });
+
+  it('installs a version on the supported line', () => {
+    expect(
+      SWC_CORE_INSTALL_SPEC.startsWith(
+        `@swc/core@~${SUPPORTED_SWC_CORE_LINE}.`
+      ),
+      `SWC_CORE_INSTALL_SPEC (${SWC_CORE_INSTALL_SPEC}) is not on SUPPORTED_SWC_CORE_LINE (${SUPPORTED_SWC_CORE_LINE}): ${UPDATE_TOGETHER}`
+    ).toBe(true);
+  });
 });
 
 describe('isSupportedSwcCoreVersion', () => {
