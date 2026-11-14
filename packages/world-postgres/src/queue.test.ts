@@ -1753,41 +1753,59 @@ describe('postgres queue http execution', () => {
     expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
   });
 
-  it('holds the run gate until a timed-out in-process handler settles', async () => {
-    process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '100';
+  it('keeps the run gate held after a delivery is abandoned at its deadline, until its handler settles', async () => {
+    // Deterministic: the deadline is modeled by aborting the delivery's
+    // signal (the headers deadline is composed into the same signal, see
+    // `deliverySignal`; that composition has its own test above), and the
+    // first handler settles only when the test says so.
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     const first = Promise.withResolvers<void>();
-    const entry = vi.fn(async () => {
-      // The first delivery outlives its deadline; the handler keeps running.
-      if (entry.mock.calls.length === 1) await first.promise;
-      return undefined;
-    });
+    const entered: string[] = [];
     queue.registerHandler(
       '__wkf_workflow_',
-      Object.assign(async () => Response.json({ ok: true }), {
-        [IN_PROCESS_QUEUE_HANDLER]: entry,
+      withEntry(async ({ meta }) => {
+        entered.push(String(meta.messageId));
+        // The first delivery outlives its deadline; the handler keeps running.
+        if (entered.length === 1) await first.promise;
       })
     );
     await queue.start();
-    const message = () =>
-      buildMessageData('__wkf_workflow_test', {
-        runId: 'run_01ABC',
-        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-      });
-    await expect(
-      getTaskHandler('workflow_flows')(message(), { job: { attempts: 1 } })
-    ).rejects.toMatchObject({ name: 'AbortError' });
+    const message = (id: string) =>
+      buildMessageData(
+        '__wkf_workflow_test',
+        {
+          runId: 'run_01ABC',
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+        { messageId: MessageId.parse(id) }
+      );
+    const task = getTaskHandler('workflow_flows');
 
-    // The redelivery waits at the gate while the first handler still runs,
-    // rather than replaying the run next to it.
-    const second = getTaskHandler('workflow_flows')(message(), {
-      job: { attempts: 2 },
+    // A enters the handler and holds the run gate.
+    const deadlineA = new AbortController();
+    const a = task(message('msg_01A'), {
+      abortSignal: deadlineA.signal,
+      job: { attempts: 1 },
     });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(entry).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(entered).toEqual(['msg_01A']));
+    // Its deadline passes: the delivery is abandoned (the job goes back to
+    // Graphile), while its handler is still running.
+    deadlineA.abort();
+    await expect(a).rejects.toMatchObject({ name: 'AbortError' });
+
+    // The redelivery of the same run waits at the gate: after every pending
+    // microtask and I/O callback has had its turn, the handler has still
+    // been entered once.
+    const b = task(message('msg_01B'), { job: { attempts: 2 } });
+    for (let i = 0; i < 5; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(entered).toEqual(['msg_01A']);
+
+    // The first handler settles: the gate is released and B runs.
     first.resolve();
-    await expect(second).resolves.toBeUndefined();
-    expect(entry).toHaveBeenCalledTimes(2);
+    await expect(b).resolves.toBeUndefined();
+    expect(entered).toEqual(['msg_01A', 'msg_01B']);
   });
 
   it('warns once when the app process publishes without a registered flow handler, and not for the CLI or a script', async () => {
