@@ -468,7 +468,7 @@ at most 10 seconds for its locks; if a long transaction holds them,
 
 ### Startup hooks that only start the World
 
-A worker runs only in a process that handed the World its flow route (see [Run the worker when your server starts](#run-the-worker-when-your-server-starts)). An app whose startup hook only calls `world.start()` runs no worker: runs are created and stay `pending`, and `start()` logs a warning once in that process saying so. Use the hook for your framework.
+A worker runs only in a process that handed the World its flow route (see [Run the worker when your server starts](#run-the-worker-when-your-server-starts)). An app whose startup hook only calls `world.start()`, or never ran, runs no worker: runs are created and stay `pending`, and the World logs a warning once in that process saying so, on `start()` or on the first publish from a process with a listening server (the CLI and scripts publish quietly). Use the hook for your framework.
 
 ### Rolling upgrades
 

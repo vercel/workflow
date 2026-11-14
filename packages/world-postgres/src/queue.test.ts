@@ -1797,8 +1797,9 @@ describe('postgres queue http execution', () => {
         String(call[0]).includes('only enqueues')
       );
     try {
-      // The CLI, the web UI or a plain script: enqueue-only is expected, and
-      // a publish says nothing.
+      // The CLI or a plain script, nothing listening: enqueue-only is
+      // expected, and a publish says nothing.
+      expect(process.getActiveResourcesInfo()).not.toContain('TCPServerWrap');
       const script = buildQueue({ connectionString: 'postgres://test' }, pool);
       await script.queue('__wkf_workflow_test', { runId: 'run_01A' });
       expect(notes()).toHaveLength(0);
@@ -1823,6 +1824,39 @@ describe('postgres queue http execution', () => {
       expect(notes()).toHaveLength(1);
     } finally {
       vi.unstubAllEnvs();
+      warn.mockRestore();
+    }
+  });
+
+  it('warns once when any listening server publishes without a registered flow handler', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const notes = () =>
+      warn.mock.calls.filter((call) =>
+        String(call[0]).includes('only enqueues')
+      );
+    try {
+      // A Nitro, Nest, SvelteKit or Astro server whose startup hook never
+      // registered the route: no framework marker, but a listening socket.
+      expect(process.env.NEXT_RUNTIME).toBeUndefined();
+      const server = createServer();
+      createdServers.push(server);
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', resolve)
+      );
+      const app = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await app.queue('__wkf_workflow_test', { runId: 'run_01E' });
+      await app.queue('__wkf_workflow_test', { runId: 'run_01F' });
+      expect(notes()).toHaveLength(1);
+
+      // The same server, once the route is registered: a worker, quiet.
+      const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
+      worker.registerHandler(
+        '__wkf_workflow_',
+        withEntry(async () => undefined)
+      );
+      await worker.queue('__wkf_workflow_test', { runId: 'run_01G' });
+      expect(notes()).toHaveLength(1);
+    } finally {
       warn.mockRestore();
     }
   });

@@ -1148,14 +1148,20 @@ export function createQueue(
   }
 
   /**
-   * Whether this process is an application server rather than the CLI, the
-   * web UI or a script: the Next.js server sets NEXT_RUNTIME. Such a process
-   * is expected to have registered the flow route; when it publishes without
-   * one, runs would stay pending with nothing said, since the worker module
-   * that would have called `start()` was left out of its build.
+   * Whether this process is an application server rather than the CLI or a
+   * script: it has a socket listening for connections (any framework's
+   * server, once it is up), or it is the Next.js server (NEXT_RUNTIME, set
+   * before the server listens). Such a process is expected to have
+   * registered the flow route; when it publishes without one, runs would
+   * stay pending with nothing said, since its startup hook never ran or the
+   * worker module was left out of its build. The web UI is a server too,
+   * and is told once that it only enqueues, which is what it does.
    */
   function isApplicationServer(): boolean {
-    return process.env.NEXT_RUNTIME === 'nodejs';
+    return (
+      process.env.NEXT_RUNTIME === 'nodejs' ||
+      process.getActiveResourcesInfo().includes('TCPServerWrap')
+    );
   }
 
   async function start(): Promise<void> {
@@ -1201,7 +1207,11 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await ensureStarted();
-    if (isApplicationServer()) noteEnqueueOnly();
+    // Cheap checks first: the resource scan runs only until the note is made
+    // or a flow handler is registered.
+    if (!enqueueOnlyNoted && !hasFlowHandler() && isApplicationServer()) {
+      noteEnqueueOnly();
+    }
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
