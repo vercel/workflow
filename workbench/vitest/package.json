@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@workflow/cli": "workspace:*",
     "@workflow/vitest": "workspace:*",
     "@workflow/world": "workspace:*",
     "immer": "10.1.1",
