@@ -57,6 +57,7 @@ import {
   type JobLeasePolicy,
   resolveJobLeasePolicy,
 } from './job-lease.js';
+import { isJsonMode, operatorLog } from './logger.js';
 import { MessageData } from './message.js';
 import { createDeliveryHandler, createRunGate } from './queue-handler.js';
 
@@ -95,7 +96,6 @@ export function serializeGraphileMeta(meta: unknown): string {
 }
 
 function createGraphileLogger() {
-  const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
   const isVerbose = () => Boolean(process.env.DEBUG);
 
   return new Logger(() => (level: string, message: string, meta?: unknown) => {
@@ -1085,8 +1085,8 @@ export function createQueue(
           RUNNER_RETRY_BASE_MS * 2 ** (runnerRetryAttempt - 1),
           RUNNER_RETRY_MAX_MS
         );
-        console.error(
-          `[postgres world] Failed to start Graphile Worker after the flow handler was registered; retrying in ${delayMs} ms (attempt ${runnerRetryAttempt}). Until it starts, this process runs no jobs.`,
+        operatorLog.error(
+          `Failed to start Graphile Worker after the flow handler was registered; retrying in ${delayMs} ms (attempt ${runnerRetryAttempt}). Until it starts, this process runs no jobs.`,
           error
         );
         runnerRetry = setTimeout(() => {
@@ -1142,8 +1142,8 @@ export function createQueue(
   function noteEnqueueOnly(): void {
     if (closing || enqueueOnlyNoted || hasFlowHandler()) return;
     enqueueOnlyNoted = true;
-    console.warn(
-      '[postgres world] No flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), that the app was built for this World (a Next.js app inlines the worker import at build time: build with WORKFLOW_TARGET_WORLD set to this package), and follow the Postgres World docs, "Run the worker when your server starts".'
+    operatorLog.warn(
+      'No flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), that the app was built for this World (a Next.js app inlines the worker import at build time: build with WORKFLOW_TARGET_WORLD set to this package), and follow the Postgres World docs, "Run the worker when your server starts" (https://workflow-sdk.dev/worlds/postgres#run-the-worker-when-your-server-starts). A server of your own registers the built flow route with registerWorkflowHandler() before it calls start(): see its tab there and "Startup hooks that only start the World" on the same page.'
     );
   }
 
@@ -1157,11 +1157,22 @@ export function createQueue(
    * worker module was left out of its build. The web UI is a server too,
    * and is told once that it only enqueues, which is what it does.
    */
+  /** Decided once: see `isApplicationServer`. */
+  let notApplicationServer = false;
   function isApplicationServer(): boolean {
-    return (
+    if (notApplicationServer) return false;
+    if (
       process.env.NEXT_RUNTIME === 'nodejs' ||
       process.getActiveResourcesInfo().includes('TCPServerWrap')
-    );
+    ) {
+      return true;
+    }
+    // Latched, so an enqueue-only process (the CLI, a script) does not scan
+    // its handles on every publish. A server that publishes before it
+    // listens is therefore not told; its startup hook is where the route is
+    // registered anyway.
+    notApplicationServer = true;
+    return false;
   }
 
   async function start(): Promise<void> {
@@ -1790,8 +1801,8 @@ export function createQueue(
         // route re-registers itself (a development rebuild, a worker module
         // that registers before it starts the World).
         namespaceMismatchNoted = true;
-        console.warn(
-          `[postgres world] The flow handler is registered for queue prefix "${parsed}", but this World's namespace gives "${ownPrefix()}", so the Workflow SDK's messages are delivered as a queue consumer's, without the per-run ordering kept for the World's own prefix, and the runs this World re-enqueues at startup go to "${ownPrefix()}", which no handler here takes. Set WORKFLOW_QUEUE_NAMESPACE at build time to the World's namespace option, so both name the same prefix.`
+        operatorLog.warn(
+          `The flow handler is registered for queue prefix "${parsed}", but this World's namespace gives "${ownPrefix()}", so the Workflow SDK's messages are delivered as a queue consumer's, without the per-run ordering kept for the World's own prefix, and the runs this World re-enqueues at startup go to "${ownPrefix()}", which no handler here takes. Set WORKFLOW_QUEUE_NAMESPACE at build time to the World's namespace option, so both name the same prefix.`
         );
       }
       directHandlers.set(parsed, handler);
