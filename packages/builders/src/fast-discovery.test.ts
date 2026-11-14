@@ -104,6 +104,27 @@ describe('fast workflow discovery', () => {
     );
   });
 
+  it('exposes the result of the last finished discovery', async () => {
+    const workflowFile = join(testRoot, 'src', 'workflow.ts');
+    writeFile(
+      workflowFile,
+      `export async function run() {\n  'use workflow';\n}\n`
+    );
+    const builder = createBuilder(testRoot);
+
+    expect(builder.getSettledDiscoveredEntries()).toBeUndefined();
+
+    const discovered = await builder.discoverEntriesPublic(
+      [workflowFile],
+      join(testRoot, 'out')
+    );
+
+    expect(builder.getSettledDiscoveredEntries()).toBe(discovered);
+    expect(discovered.discoveredWorkflows).toEqual(
+      new Set([normalize(workflowFile)])
+    );
+  });
+
   it('discovers relative JS imports whose basename includes .step', async () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const workflowFile = join(testRoot, 'src', 'hello.step.js');
