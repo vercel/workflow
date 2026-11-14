@@ -172,6 +172,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `run_completed` | Transitions the run to `completed` state with the workflow's return value. |
 | `run_failed` | Transitions the run to `failed` state with error details and optional error code. |
 | `run_cancelled` | Transitions the run to `cancelled` state. Can be triggered from `pending` or `running` states. |
+| `attr_set` | Records attribute changes on the run, one event per [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call. Contains the changes and their writer. A write from the workflow body carries a correlation ID; a write from a step body does not. Does not change the run's state. |
 
 ### Step events
 
@@ -207,7 +208,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 
 ### How fast a log grows
 
-Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events; a retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two, and a hook at least two.
+Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events on spec 8 runs and as a background step on spec 9 runs; an inline step on a spec 9 run contributes two, because its first `step_started` creates it and no `step_created` is written (see [Spec 9](#spec-9-experimental)). A retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two, and a hook at least two.
 
 A run's log is capped — the [Vercel World](/worlds/vercel#per-run-limits) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. Replay reads the whole log, so a run gets slower as it grows and is worth splitting well before it fails: split into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. Runs on the QuickJS VM with snapshotting resume from a snapshot instead of replaying the whole log, and are exempt from the ceiling; see [max-events-exceeded](/docs/errors/max-events-exceeded). How much the growth costs depends on how often the run replays; [Steps and long runs](/docs/performance#steps-and-long-runs) shows how step-to-step overhead changes through a 1,020-step run.
 
