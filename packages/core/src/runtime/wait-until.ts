@@ -1,4 +1,19 @@
+/**
+ * Where the Vercel runtime publishes the current request's context, the one
+ * place `@vercel/functions`' `waitUntil` reads it from.
+ */
+const VERCEL_REQUEST_CONTEXT = Symbol.for('@vercel/request-context');
+
+/**
+ * Extends the current request's lifetime until `promise` settles, on Vercel.
+ *
+ * Elsewhere (a local World, a self-hosted server) no request context exists
+ * and `@vercel/functions`' `waitUntil` does nothing, so its module is not
+ * loaded: evaluating all of `@vercel/functions` costs tens of milliseconds of
+ * a process's first `start()`.
+ */
 export function waitUntil(promise: Promise<unknown>): void {
+  if (!(VERCEL_REQUEST_CONTEXT in globalThis)) return;
   void import('@vercel/functions').then(({ waitUntil }) => {
     waitUntil(promise);
   });
