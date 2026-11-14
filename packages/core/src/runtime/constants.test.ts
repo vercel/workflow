@@ -6,6 +6,7 @@ import {
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
   isOptimisticBackgroundStartEnabled,
+  isStartHookLoadOnceEnabled,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
   MAX_QUEUE_DELIVERIES,
@@ -222,5 +223,35 @@ describe('isOptimisticBackgroundStartEnabled', () => {
   it.each(['0', 'false', 'yes'])('is off for %s', (value) => {
     vi.stubEnv('WORKFLOW_OPTIMISTIC_BACKGROUND_START', value);
     expect(isOptimisticBackgroundStartEnabled()).toBe(false);
+  });
+});
+
+describe('isStartHookLoadOnceEnabled', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is on unless set', () => {
+    vi.stubEnv('WORKFLOW_START_HOOK_LOAD_ONCE', '');
+    vi.stubEnv('WORKFLOW_TURBO', '');
+    expect(isStartHookLoadOnceEnabled()).toBe(true);
+  });
+
+  it.each(['0', 'false', 'FALSE'])('is off for %s', (value) => {
+    vi.stubEnv('WORKFLOW_START_HOOK_LOAD_ONCE', value);
+    vi.stubEnv('WORKFLOW_TURBO', '');
+    expect(isStartHookLoadOnceEnabled()).toBe(false);
+  });
+
+  it.each(['1', 'true', 'yes'])('is on for %s', (value) => {
+    vi.stubEnv('WORKFLOW_START_HOOK_LOAD_ONCE', value);
+    vi.stubEnv('WORKFLOW_TURBO', '');
+    expect(isStartHookLoadOnceEnabled()).toBe(true);
+  });
+
+  it('is off under WORKFLOW_TURBO=0, whatever it is set to', () => {
+    vi.stubEnv('WORKFLOW_START_HOOK_LOAD_ONCE', '1');
+    vi.stubEnv('WORKFLOW_TURBO', '0');
+    expect(isStartHookLoadOnceEnabled()).toBe(false);
   });
 });

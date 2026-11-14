@@ -374,6 +374,26 @@ export function isTurboEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
+/**
+ * Whether a spec 9 `start({ experimental_hook })` candidate's first delivery
+ * writes `run_started` before loading the event log, and so loads it once
+ * instead of twice. Turbo never takes such a candidate, so this is its own
+ * first-delivery shortcut.
+ *
+ * Reads `process.env.WORKFLOW_START_HOOK_LOAD_ONCE` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive), which
+ * turns off this path alone and leaves turbo as it is. `WORKFLOW_TURBO=0`
+ * turns it off too.
+ *
+ * Design: "A start Hook candidate's first delivery" in `./spec9/README.md`.
+ */
+export function isStartHookLoadOnceEnabled(): boolean {
+  if (!isTurboEnabled()) return false;
+  const raw = process.env.WORKFLOW_START_HOOK_LOAD_ONCE;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
 /** Environment variable that opts a deployment into dynamic workflows. */
 export const DYNAMIC_WORKFLOWS_ENV = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
 

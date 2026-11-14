@@ -17,6 +17,7 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   startHookId,
@@ -219,6 +220,7 @@ const nonFirst: [string, (held: HeldMessage) => HeldMessage][] = [
 beforeEach(() => {
   bodies = 0;
   delete process.env.WORKFLOW_TURBO;
+  delete process.env.WORKFLOW_START_HOOK_LOAD_ONCE;
 });
 
 afterEach(() => {
@@ -270,8 +272,12 @@ describe.each([
     expect(world.events.map((e) => e.eventType)).toContain('run_completed');
   });
 
-  it('loads the log before run_started on a first delivery under WORKFLOW_TURBO=0', async () => {
-    process.env.WORKFLOW_TURBO = '0';
+  it.each([
+    ['WORKFLOW_TURBO', '0'],
+    ['WORKFLOW_START_HOOK_LOAD_ONCE', '0'],
+    ['WORKFLOW_START_HOOK_LOAD_ONCE', 'false'],
+  ] as const)('loads the log before run_started on a first delivery under %s=%s', async (name, value) => {
+    process.env[name] = value;
     const { world, start, listsBeforeRunStarted } = await candidate('accept');
 
     const result = await world.deliver(start);
@@ -283,35 +289,36 @@ describe.each([
     expect(world.events.map((e) => e.eventType)).toContain('run_completed');
   });
 
-  it('sets up again from a full load when the first delivery’s run_started conflicts', async () => {
-    // The run moved past its creation behind this delivery's back: the
-    // fast path's run_started is refused as a conflict, and nothing landed.
-    const { world, start, listsBeforeRunStarted } = await candidate(
-      'accept',
-      0,
-      {
-        when: 'before-commit',
-        error: () => new EntityConflictError('already started'),
-      }
-    );
-    const info = vi.spyOn(runtimeLogger, 'info');
+  it('sets up again from a full load when the run moved past its creation behind a first delivery', async () => {
+    const { world, start, runStartedData, listsBeforeRunStarted } =
+      await candidate('accept');
+    await world.deliver(start);
+    await world.runUntilIdle();
+    expect(bodies).toBe(1);
 
-    const result = await world.deliver(start);
+    // The queue hands the same first message over again, reporting it as a
+    // first delivery: the fast path's run_started is fenced (the run's own
+    // start and completion moved the in-band count), and nothing lands.
+    const info = vi.spyOn(runtimeLogger, 'info');
+    const listsBefore = world.listCalls.length;
+    const again = world.enqueue(QUEUE, start.message);
+    const result = await world.deliver(again);
     await world.runUntilIdle();
 
-    expectAcknowledged(world, result, start);
+    expectAcknowledged(world, result, again);
     expect(info).toHaveBeenCalledWith(
       expect.stringMatching(/run_started refused, setting up again/),
-      expect.objectContaining({ reason: 'conflict' })
+      expect.objectContaining({ reason: 'fence' })
     );
-    // The retried run_started (the refused one never reached the World)
-    // came after a load, and the restart happened once.
-    expect(listsBeforeRunStarted).toHaveLength(1);
-    expect(listsBeforeRunStarted[0]).toBeGreaterThan(0);
+    // The fenced run_started came before any read; the restart read the log
+    // and found the run finished, so it wrote no second run_started.
+    expect(runStartedData).toHaveLength(2);
+    expect(listsBeforeRunStarted[1]).toBe(listsBefore);
+    expect(world.listCalls.length).toBeGreaterThan(listsBefore);
     expect(bodies).toBe(1);
     const types = world.events.map((e) => e.eventType);
     expect(types.filter((t) => t === 'run_started')).toHaveLength(1);
-    expect(types).toContain('run_completed');
+    expect(types.filter((t) => t === 'run_completed')).toHaveLength(1);
   });
 
   it('creates the run before re-routing a first delivery that reached the wrong deployment, and the wake completes it there', async () => {
@@ -397,7 +404,7 @@ describe.each([
   });
 
   it('keeps the ordinary handling of a run that already finished', async () => {
-    const { world, start } = await candidate('finished');
+    const { world, start, listsBeforeRunStarted } = await candidate('finished');
     const info = vi.spyOn(runtimeLogger, 'info');
 
     const result = await world.deliver(start);
@@ -405,6 +412,14 @@ describe.each([
     expectAcknowledged(world, result, start);
     expect(info).toHaveBeenCalledWith(
       'Run already finished during setup, skipping',
+      expect.anything()
+    );
+    // A conflict got past the fence, so the run ended out-of-band: the
+    // first delivery acknowledges without reading the log or restarting.
+    expect(listsBeforeRunStarted).toEqual([0]);
+    expect(world.listCalls).toHaveLength(0);
+    expect(info).not.toHaveBeenCalledWith(
+      expect.stringMatching(/run_started refused, setting up again/),
       expect.anything()
     );
   });
@@ -619,10 +634,15 @@ describe.each([
  * into its start Hook: the log holds `run_created` (carrying the start Hook)
  * and a `hook_received` for `startHookId(runId)` while the run is still
  * pending, and the first orchestrator message is still queued.
+ *
+ * `resumeHook()` writes the `hook_received` out-of-band, so a World leaves the
+ * in-band count at the run's creation. `payloadInBand` instead counts it as
+ * in-band, as no World does, which fences the first delivery's `run_started`.
  */
 async function admittedWithEarlyPayload(
   code: string,
-  engine: 'node' | 'quickjs'
+  engine: 'node' | 'quickjs',
+  { payloadInBand = false }: { payloadInBand?: boolean } = {}
 ) {
   const runId = `wrun_${ulid()}`;
   const hookId = startHookId(runId);
@@ -662,7 +682,16 @@ async function admittedWithEarlyPayload(
       },
     },
   ] as unknown as Event[];
-  const world = new AppendOnlyWorld({ fence: true });
+  /** How many `events.list` calls preceded each `run_started`. */
+  const listsBeforeRunStarted: number[] = [];
+  const world: AppendOnlyWorld = new AppendOnlyWorld({
+    fence: true,
+    async beforeCreate(data) {
+      if (data.eventType === 'run_started') {
+        listsBeforeRunStarted.push(world.listCalls.length);
+      }
+    },
+  });
   world.seedLog(
     {
       runId,
@@ -677,6 +706,7 @@ async function admittedWithEarlyPayload(
     } as any,
     events
   );
+  if (!payloadInBand) world.seqInBand = IN_BAND_SEQ_AT_RUN_CREATION;
   setWorld(world.asWorld());
   await workflowEntrypoint(code)(new Request('https://example.test'));
   const start = world.enqueue(QUEUE, {
@@ -691,7 +721,7 @@ async function admittedWithEarlyPayload(
       startHook: { token: TOKEN },
     },
   });
-  return { world, start, runId, hookId };
+  return { world, start, runId, hookId, listsBeforeRunStarted };
 }
 
 async function outputOf(world: AppendOnlyWorld, runId: string) {
@@ -709,7 +739,10 @@ describe.each([
   'node',
   'quickjs',
 ] as const)('start Hook deliveries to a pending run on the single-orchestrator engine (%s)', (engine) => {
-  it('delivers a payload resumed while the run was pending once the body opens the start Hook', async () => {
+  it.each([
+    ['out-of-band, as every World writes it', false],
+    ['counted in-band', true],
+  ] as const)('delivers a payload resumed while the run was pending once the body opens the start Hook (%s)', async (_, payloadInBand) => {
     const opens = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
       async function workflow(n) {
         const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
@@ -718,22 +751,36 @@ describe.each([
         return { conflict, message: payload.message };
       }
       ;globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
-    const { world, start, runId, hookId } = await admittedWithEarlyPayload(
-      opens,
-      engine
-    );
+    const { world, start, runId, hookId, listsBeforeRunStarted } =
+      await admittedWithEarlyPayload(opens, engine, { payloadInBand });
     const info = vi.spyOn(runtimeLogger, 'info');
 
     const result = await world.deliver(start);
     await world.runUntilIdle();
 
     expectAcknowledged(world, result, start);
-    // This World counts the seeded hook_received as in-band, so the fast
-    // path's run_started is fenced and setup restarts from a full load.
-    expect(info).toHaveBeenCalledWith(
-      expect.stringMatching(/run_started refused, setting up again/),
-      expect.objectContaining({ reason: 'fence' })
-    );
+    const fellBack = expect.objectContaining({ reason: 'fence' });
+    if (payloadInBand) {
+      // The hook_received moved the in-band count, so the fast path's
+      // run_started is fenced and setup restarts from a full load, whose
+      // run_started follows a read.
+      expect(info).toHaveBeenCalledWith(
+        expect.stringMatching(/run_started refused, setting up again/),
+        fellBack
+      );
+      expect(listsBeforeRunStarted).toHaveLength(2);
+      expect(listsBeforeRunStarted[0]).toBe(0);
+      expect(listsBeforeRunStarted[1]).toBeGreaterThan(0);
+    } else {
+      // The hook_received left the count at the run's creation: run_started
+      // lands at it before any read, and the one load after it picks up the
+      // early payload.
+      expect(info).not.toHaveBeenCalledWith(
+        expect.stringMatching(/run_started refused, setting up again/),
+        expect.anything()
+      );
+      expect(listsBeforeRunStarted).toEqual([0]);
+    }
     expect(await outputOf(world, runId)).toEqual({
       conflict: null,
       message: 'early',

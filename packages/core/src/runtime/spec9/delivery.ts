@@ -86,6 +86,7 @@ import {
   getReplayDivergenceMaxRetries,
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
+  isStartHookLoadOnceEnabled,
   isTurboEnabled,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
@@ -666,10 +667,11 @@ async function runDelivery(
    * message, which turbo never takes (see `admitsTurboStart`): it writes
    * `run_started` before loading the log, instead of loading it twice.
    * A restart in place has written it already, so takes the normal path.
-   * `WORKFLOW_TURBO=0` disables it with turbo, so every delivery loads first.
+   * `WORKFLOW_START_HOOK_LOAD_ONCE=0` disables it alone, and
+   * `WORKFLOW_TURBO=0` with turbo, so such a delivery loads first.
    */
   let startHookFirstDelivery =
-    isTurboEnabled() &&
+    isStartHookLoadOnceEnabled() &&
     !turbo &&
     runInput?.startHook !== undefined &&
     !prefetchedRun &&
@@ -1684,16 +1686,18 @@ async function runDelivery(
             return undefined;
           }
           // The start-hook fast path assumed the log held only the run's
-          // creation. A fence refusal or a conflict says the run has moved
-          // past it (an earlier delivery started it): nothing was written,
-          // so set up again from a full load, which decides from the log.
+          // creation. A fence refusal says the run has moved past it (an
+          // earlier delivery started it, or the run ended in-band): nothing
+          // was written, so set up again from a full load, which decides from
+          // the log. Every World checks the fence before any entity
+          // condition, so a conflict or an expiry that got past the fence
+          // means the run ended out-of-band before it started (a cancel), and
+          // takes the same acknowledgement below as on the normal path.
           if (
             startHookFirstDelivery &&
-            (OrchestratorSupersededError.is(err) ||
-              writer.isSuperseded ||
-              EntityConflictError.is(err))
+            (OrchestratorSupersededError.is(err) || writer.isSuperseded)
           ) {
-            const reason = EntityConflictError.is(err) ? 'conflict' : 'fence';
+            const reason = 'fence';
             span?.setAttributes(
               Attribute.WorkflowStartHookFirstDeliveryFallback(reason)
             );
