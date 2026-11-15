@@ -24,3 +24,25 @@ export function compact<T extends object>(obj: T) {
   }
   return value;
 }
+
+/**
+ * Clones client connection configuration while preserving non-enumerable
+ * properties such as `password` from `pg.Pool`, optionally applying overrides.
+ */
+export function cloneClientConfig<T extends object>(
+  options: T,
+  overrides?: Record<string, unknown>
+): T {
+  const config = Object.defineProperties(
+    {},
+    Object.getOwnPropertyDescriptors(options)
+  ) as T;
+  if (overrides) {
+    for (const [key, descriptor] of Object.entries(
+      Object.getOwnPropertyDescriptors(overrides)
+    )) {
+      Object.defineProperty(config, key, descriptor);
+    }
+  }
+  return config;
+}
