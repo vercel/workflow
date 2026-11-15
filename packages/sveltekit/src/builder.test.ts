@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -35,5 +35,40 @@ describe('SvelteKitBuilder', () => {
     expect(builder.externalPackages).toEqual(
       expect.arrayContaining(['#lib', '#lib/*'])
     );
+  });
+
+  it("leaves every key of the app's package.json imports to Vite", async () => {
+    await writeFile(
+      join(workingDir, 'package.json'),
+      JSON.stringify({
+        imports: { '#db': './src/db.ts', '#lib/*': './src/lib/*' },
+      })
+    );
+
+    const builder = new TestBuilder({ workingDir });
+
+    expect(builder.externalPackages).toEqual(
+      expect.arrayContaining(['#db', '#lib/*'])
+    );
+    expect(
+      builder.externalPackages?.filter((pkg) => pkg === '#lib/*')
+    ).toHaveLength(1);
+  });
+
+  it('builds the externals without a package.json imports field', async () => {
+    expect(() => new TestBuilder({ workingDir })).not.toThrow();
+
+    await writeFile(join(workingDir, 'package.json'), '{}');
+    expect(new TestBuilder({ workingDir }).externalPackages).toEqual([
+      '$env/*',
+      '$lib',
+      '$lib/*',
+      '$app/*',
+      '#lib',
+      '#lib/*',
+    ]);
+
+    await writeFile(join(workingDir, 'package.json'), 'not json');
+    expect(() => new TestBuilder({ workingDir })).not.toThrow();
   });
 });

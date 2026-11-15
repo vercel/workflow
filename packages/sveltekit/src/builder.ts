@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
@@ -32,13 +32,19 @@ export class SvelteKitBuilder extends BaseBuilder {
     ];
     const projectRoot = config.projectRoot ?? resolveProjectRoot(workingDir);
     const routesDir = resolve(workingDir, config.routesDir ?? 'src/routes');
+    const externalPackages = [
+      ...new Set([
+        ...SVELTEKIT_VIRTUAL_MODULES,
+        ...readSubpathImports(workingDir),
+      ]),
+    ];
     super({
       ...createBaseBuilderConfig({
         workingDir,
         projectRoot,
         dirs,
         watch: config.watch,
-        externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+        externalPackages,
         sourcemap: config.sourcemap,
       }),
       ...config,
@@ -47,7 +53,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       workingDir,
       projectRoot,
       moduleSpecifierRoot: config.moduleSpecifierRoot ?? workingDir,
-      externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+      externalPackages,
     });
     this.#routesDir = routesDir;
   }
@@ -195,6 +201,28 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
   private async loadRoutesDirectory(): Promise<string> {
     await assertDirectory(this.#routesDir);
     return this.#routesDir;
+  }
+}
+
+/**
+ * Keys of the app's package.json `imports` field. SvelteKit 3 recommends
+ * subpath imports for custom aliases, so they are left to Vite like `$lib`.
+ */
+function readSubpathImports(workingDir: string): string[] {
+  try {
+    const { imports } = JSON.parse(
+      readFileSync(join(workingDir, 'package.json'), 'utf-8')
+    ) as { imports?: unknown };
+    if (
+      typeof imports !== 'object' ||
+      imports === null ||
+      Array.isArray(imports)
+    ) {
+      return [];
+    }
+    return Object.keys(imports).filter((key) => key.startsWith('#'));
+  } catch {
+    return [];
   }
 }
 
