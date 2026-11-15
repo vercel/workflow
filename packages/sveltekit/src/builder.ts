@@ -15,6 +15,8 @@ const SVELTEKIT_VIRTUAL_MODULES = [
   '$lib', // Exact $lib import
   '$lib/*', // All $lib subpaths
   '$app/*', // All $app subpaths
+  '#lib', // Exact #lib import (SvelteKit 3 package.json subpath import)
+  '#lib/*', // All #lib subpaths
 ];
 
 export class SvelteKitBuilder extends BaseBuilder {
