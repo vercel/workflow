@@ -458,7 +458,14 @@ describe('postgres streamer listenChannel credentials', () => {
 
       vi.mocked(Client)
         .mockReset()
-        .mockImplementation(() => fakeClient as any);
+        .mockImplementation(
+          class {
+            constructor() {
+              // biome-ignore lint/correctness/noConstructorReturn: fake client instance
+              return fakeClient as any;
+            }
+          } as any
+        );
 
       const pool = { options: poolOptions } as any;
       const sub = await listenChannel(pool, 'test_channel', async () => {});
