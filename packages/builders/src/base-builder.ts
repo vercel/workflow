@@ -45,6 +45,7 @@ import {
 } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
+import { assertWorkflowStepsAreRegistered } from './step-registration-check.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
@@ -1780,6 +1781,25 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       await unlink(tempWorkflowOutfile);
     } catch {
       // Ignore cleanup errors
+    }
+
+    // Every step the workflow bundle can call has to be registered by the
+    // steps bundle, or each call fails at runtime with "Step ... is not
+    // registered in the current deployment". A step file that discovery
+    // missed builds without a warning otherwise, and on Vercel it only
+    // shows up when a run calls the step.
+    try {
+      assertWorkflowStepsAreRegistered({
+        workflowsManifest: workflowsResult.manifest,
+        stepsManifest,
+        warn: (message) => console.warn(chalk.yellow(message)),
+      });
+    } catch (error) {
+      await Promise.all([
+        stepsContext?.dispose(),
+        workflowsResult.interimBundleCtx?.dispose(),
+      ]);
+      throw error;
     }
 
     // 3. Generate combined route file

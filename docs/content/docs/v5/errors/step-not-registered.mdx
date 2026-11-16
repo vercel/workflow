@@ -26,6 +26,21 @@ Workflow runs are pegged to a specific deployment, so this error is not caused b
 
 This is an **infrastructure error**, not a user code error.
 
+## Build-time check
+
+The build checks that every step workflow code can call is registered in the steps bundle, and fails before anything is deployed when one is not:
+
+```text
+Workflow code can call 1 step that is not registered in the steps bundle.
+Every call would fail at runtime with "Step ... is not registered in the
+current deployment":
+  - doWork in workflows/order.ts (step//./workflows/order//doWork)
+```
+
+The workflow bundle compiled the function as a step, but its file was not discovered as a step file. Check that `"use step"` is the first statement of the function body. If it is, please [report the file](https://github.com/vercel/workflow/issues), because the build should have found it.
+
+As a last resort, set `WORKFLOW_ALLOW_UNREGISTERED_STEPS=1` to downgrade the build failure to a warning. Calls to the listed steps still fail at runtime.
+
 ## Common causes
 
 ### Build tooling issue
