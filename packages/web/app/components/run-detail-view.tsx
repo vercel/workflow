@@ -754,7 +754,7 @@ export function RunDetailView({
 
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
-                <div className="h-full">
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <RunEventsTab
                     env={env}
                     runId={runId}
@@ -765,7 +765,6 @@ export function RunDetailView({
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
-                    hasEncryptedData={hasEncryptedData}
                   />
                 </div>
               </ErrorBoundary>
