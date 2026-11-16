@@ -112,23 +112,21 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="h-full">
-        <div className="flex h-full min-w-0 items-center pl-4 pr-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <ResourceIcon
-              resource={span.resource}
-              isErrored={isErrored}
-              isCancelled={isCancelled}
-            />
-            <span className="min-w-0 text-label-14">
-              <MiddleTruncate value={span.name} />
-            </span>
-          </div>
-          <div className="ml-2 shrink-0">
-            <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDurationPrecise(durationMs)}
-            </span>
-          </div>
+      <div className="flex h-full min-w-0 items-center pl-4 pr-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ResourceIcon
+            resource={span.resource}
+            isErrored={isErrored}
+            isCancelled={isCancelled}
+          />
+          <span className="min-w-0 text-label-14">
+            <MiddleTruncate value={span.name} />
+          </span>
+        </div>
+        <div className="ml-2 shrink-0">
+          <span className="text-label-14 text-gray-900 tabular-nums">
+            {formatDurationPrecise(durationMs)}
+          </span>
         </div>
       </div>
     </li>

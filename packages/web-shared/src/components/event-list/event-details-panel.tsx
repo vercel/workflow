@@ -390,11 +390,6 @@ export function EventDetailsPanel({
       onClose={onClose}
     >
       {onViewInTrace ? (
-        // The panel can be narrower than the label, so the label gives way
-        // first: it ellipsizes inside the button instead of spilling past its
-        // border and being cut off by the panel edge. `pt-1` keeps the button's
-        // border and focus ring, both painted outside its box, from being
-        // clipped by the top of the scrolling body.
         <div className="flex px-4 pt-1 pb-2">
           <Button
             variant="secondary"

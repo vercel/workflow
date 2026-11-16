@@ -163,9 +163,6 @@ function TraceViewerContent({
 
   const reducedMotion = useReducedMotion();
 
-  // The span the viewer opens on (View in Trace, a shared link) blinks once,
-  // via `[data-span-landing]` in styles.css. Clearing the flag after the blink
-  // keeps a row selected later, or scrolled out and back, from replaying it.
   const [isLanding, setIsLanding] = useState(activeSpanId !== null);
   useEffect(() => {
     const timer = setTimeout(() => setIsLanding(false), 1000);

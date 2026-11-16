@@ -714,7 +714,6 @@
   max-width: calc(1200px + 48px);
 }
 
-/* The span the trace viewer opens on blinks once; see TraceViewerContent. */
 @keyframes wf-span-flash {
   0%,
   44%,
