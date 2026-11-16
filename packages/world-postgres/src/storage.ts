@@ -3005,6 +3005,8 @@ function createUnfencedEventsStorage(
             // learn which run row to lock; if the hook row, once locked, no
             // longer names that owner, the token changed hands in between and
             // the transaction restarts from the top, bounded.
+            const OWNER_CHANGED = Symbol('owner changed before lock');
+            const ROW_GONE = Symbol('row gone before lock');
             const takeoverAttempt = () =>
               drizzle.transaction(async (tx) => {
                 const [candidate] = await tx
@@ -3044,13 +3046,13 @@ function createUnfencedEventsStorage(
                   // `hook_conflict`. Restart instead: the next attempt's
                   // unlocked read finds the new owner, or finds no row if the
                   // token really is free.
-                  return { restart: 'row-gone' as const };
+                  throw ROW_GONE;
                 }
                 if (
                   victim.runId !== candidate.runId ||
                   victim.hookId !== candidate.hookId
                 ) {
-                  return { restart: 'owner-changed' as const };
+                  throw OWNER_CHANGED;
                 }
                 if (
                   victim.runId === effectiveRunId &&
@@ -3160,7 +3162,17 @@ function createUnfencedEventsStorage(
                   );
                 }
                 return { inserted, claimedFrom, journaled, journaledEventData };
-              }, SLOT_INSERT_TRANSACTION);
+              }, SLOT_INSERT_TRANSACTION).catch((err: unknown) => {
+                // A fenced write nests this transaction in a savepoint. Roll
+                // it back before retrying so its row locks are released too.
+                if (err === OWNER_CHANGED) {
+                  return { restart: 'owner-changed' as const };
+                }
+                if (err === ROW_GONE) {
+                  return { restart: 'row-gone' as const };
+                }
+                throw err;
+              });
             // Every restart means the token changed hands in between (see
             // `TakeoverRestartReason`); the bound only stops a pathological
             // storm.
