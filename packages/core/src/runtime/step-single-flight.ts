@@ -20,23 +20,40 @@ import { runtimeLogger } from '../logger.js';
 // residual the doc above scopes out.
 const singleFlight = globalSingleton(
   '@workflow/core//stepSingleFlight',
-  1,
-  () => ({ inFlight: new Map<string, Promise<unknown>>() })
+  2,
+  () => ({ inFlight: new Map<string, InFlightExecution>() })
 );
+
+interface InFlightExecution {
+  settlement: Promise<unknown>;
+  /** The winner's `winnerState`, handed to each loser's `loserResult`. */
+  state: unknown;
+}
+
+/** A settled winner, as a loser's `loserResult` sees it. */
+export interface SingleFlightWinner<R, S> {
+  settled: R;
+  state: S;
+}
 
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
  * already in flight in this process; a loser gets `loserResult()` once the
  * winner settled, unless `rerunAfter(winner)` says the winner ran nothing, in
  * which case the loser re-enters and tries the step itself.
+ *
+ * `winnerState` is kept with this call's execution if it wins, and each loser's
+ * `loserResult` gets it with the winner's result (`undefined` when the winner
+ * rejected). A loser may mutate it, to coordinate with the other losers.
  */
-export async function runSingleFlight<R>(
+export async function runSingleFlight<R, S = undefined>(
   runId: string,
   correlationId: string,
   execute: () => Promise<R>,
-  loserResult: () => R,
+  loserResult: (winner: SingleFlightWinner<R, S> | undefined) => R | Promise<R>,
   logLevel: 'debug' | 'warn' = 'warn',
-  rerunAfter?: (winner: R) => boolean
+  rerunAfter?: (winner: R) => boolean,
+  winnerState?: S
 ): Promise<R> {
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
@@ -47,9 +64,12 @@ export async function runSingleFlight<R>(
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
     );
-    let winner: { settled: R } | undefined;
+    let winner: SingleFlightWinner<R, S> | undefined;
     try {
-      winner = { settled: (await existing) as R };
+      winner = {
+        settled: (await existing.settlement) as R,
+        state: existing.state as S,
+      };
     } catch {
       // The winner failed (typically a transient world error). A failure
       // never makes the loser rerun: the winner's own message redelivers.
@@ -63,14 +83,15 @@ export async function runSingleFlight<R>(
         execute,
         loserResult,
         logLevel,
-        rerunAfter
+        rerunAfter,
+        winnerState
       );
     }
-    return loserResult();
+    return loserResult(winner);
   }
 
   const promise = execute();
-  singleFlight.inFlight.set(key, promise);
+  singleFlight.inFlight.set(key, { settlement: promise, state: winnerState });
   try {
     return await promise;
   } finally {

@@ -47,6 +47,8 @@ in: open `/_workflow` while `nitro dev` is running. No separate command is requi
 
 In the runs table, select one or more runs and choose **Cancel** to cancel the batch in a single request. Runs that fail with a retryable error stay selected so you can retry them.
 
+In a run's **Streams** tab, a byte stream that carries a PNG, JPEG, GIF, or WebP image is shown as an image preview, with a **Download Image** button for the original bytes.
+
 To share a link to a specific run without opening a browser, use the `--url`
 flag. It prints the dashboard deep link to stdout and exits (no browser, no
 local server), which is useful for scripts, PR comments, or automation. Add `--json` to

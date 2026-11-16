@@ -120,6 +120,9 @@ export WORKFLOW_POSTGRES_URL="postgres://username:password@localhost:5432/databa
 # Optional: Job prefix for queue operations
 export WORKFLOW_POSTGRES_JOB_PREFIX="myapp"
 
+# Optional: Pin each run to the deployment that started it (an image tag or commit SHA)
+export WORKFLOW_POSTGRES_DEPLOYMENT_ID="v1.2.3"
+
 # Optional: Worker concurrency (default: 10)
 export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="10"
 
@@ -197,6 +200,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
 | `pool`             | `pg.Pool` | Not applicable                                                                         | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it, and the World adds no `'error'` listeners to it (see above). |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX` or `'workflow_'`                            | Optional prefix for queue job names. Use a distinct prefix per application sharing a database. |
+| `deploymentId`     | `string`  | `process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ID`                                           | Pins each run to the deployment that started it: each deployment claims and recovers only its own runs, and messages for another deployment's runs are routed to it. |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. A parent workflow awaiting `returnValue` of a child it started suspends on a system hook and holds no slot, but a `returnValue` polled inside a step holds one until the child run terminates, so cover the peak number of those in flight. |
 | `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
@@ -209,6 +213,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_TARGET_WORLD`                | Set to `"@workflow/world-postgres"` to use this world | -                                               |
 | `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `DATABASE_URL` or `'postgres://world:world@localhost:5432/world'` |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names, and the scope of startup recovery | `workflow_`                                     |
+| `WORKFLOW_POSTGRES_DEPLOYMENT_ID`      | Pins each run to the deployment that started it | unset |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
 | `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`   | Milliseconds between idle job fetches per worker             | `500`                                           |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
