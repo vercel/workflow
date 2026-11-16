@@ -163,12 +163,6 @@ function TraceViewerContent({
 
   const reducedMotion = useReducedMotion();
 
-  const [flashSpanId, setFlashSpanId] = useState(activeSpanId);
-  useEffect(() => {
-    const timer = setTimeout(() => setFlashSpanId(null), 1000);
-    return () => clearTimeout(timer);
-  }, []);
-
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
@@ -537,7 +531,6 @@ function TraceViewerContent({
             <EventList
               spans={trace.spans}
               activeSpanId={activeSpanId}
-              flashSpanId={flashSpanId}
               searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
             />
@@ -565,7 +558,6 @@ function TraceViewerContent({
               viewEnd={viewport.end}
               markers={timeMarkers}
               selectedId={activeSpanId}
-              flashSpanId={flashSpanId}
               searchResult={searchResult}
               onSelect={handleSelectSpan}
               onRevealTime={handleRevealTime}
