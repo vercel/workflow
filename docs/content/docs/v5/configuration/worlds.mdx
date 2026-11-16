@@ -373,7 +373,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
 - Set `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
 - Only `0` turns it off; other values, including `false`, are ignored.
-- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled, which takes the whole HTTP/2 path away.
+- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled (which takes the whole HTTP/2 path away) or when a custom `dispatcher` is passed to `createWorld()` (its own settings apply).
 
 ### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
 

@@ -380,13 +380,13 @@ Set these only when a tool outside Vercel cannot infer the project, team, token,
 
 The Vercel environment to target: `production`, `preview`, or a custom environment's slug.
 
-See [Environment variables](#environment-variables) for how a custom environment is resolved.
+The CLI flag accepts only `production` or `preview`, so a custom environment's slug works from your own script but not from the CLI (see [Environment variables](#environment-variables)).
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
 - Default: `VERCEL_TOKEN`, then your Vercel CLI login
 - Factory option: `token`
-- CLI flag: `--authToken`
+- CLI flag: `--authToken` or `-a`
 
 Vercel API authentication token.
 
@@ -411,6 +411,7 @@ Vercel team ID.
 ### `WORKFLOW_VERCEL_PROJECT_NAME`
 
 - Default: inferred when possible
+- Factory option: `projectConfig.projectName`
 
 Vercel project name/slug, used for dashboard links.
 
@@ -512,7 +513,7 @@ Lets concurrent event-log requests share one HTTP/2 connection instead of one co
 
 Change it when: HTTP/2 turns out to be at fault for event delivery problems. `0` is the kill switch.
 
-Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled, which takes the whole HTTP/2 path away.
+Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled (which takes the whole HTTP/2 path away) or when a custom `dispatcher` is passed to `createWorld()` (its own settings apply).
 
 ### `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`
 
