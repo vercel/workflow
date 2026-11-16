@@ -301,24 +301,28 @@ describe('a session parked across deliveries', () => {
     expect(coldReplays.count).toBe(replays);
   });
 
-  it('loads and replays the whole log when another orchestrator wrote in-band meanwhile', async () => {
+  it('resumes a stale parked VM over the events another orchestrator wrote', async () => {
     const { world, runId, start } = await setupOrchestratorRun(
       sessionWorkflow,
       []
     );
     await world.deliver(start);
-    const startLoads = fullLoadsOf(world);
     await send(world, runId, 'a');
-    // An overlapping orchestrator elsewhere took an in-band position after
-    // this process parked its VM.
-    world.seqInBand++;
-
+    // Another process handles 'b': it has no parked VM, so it loads the
+    // whole log, and this process's VM falls behind the run's in-band count.
+    const thisProcess = await getWorld();
+    const stale = takeParkedSession(thisProcess, runId);
+    expect(stale).toBeDefined();
     await send(world, runId, 'b');
+    takeParkedSession(thisProcess, runId);
+    parkSession(thisProcess, runId, stale!);
+    const loads = fullLoadsOf(world);
+
     await send(world, runId, 'c');
 
     expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
     expect(echoes).toBe(3);
-    expect(fullLoadsOf(world)).toBe(startLoads + 1);
+    expect(fullLoadsOf(world)).toBe(loads);
   });
 
   it('replays the log a refused cursor read from the start without reading it again', async () => {

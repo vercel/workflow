@@ -808,7 +808,9 @@ async function runDelivery(
   // first full load.
   let log: LoadedEventLog | undefined;
   /** A parked session this delivery resumes; see {@link resumeParkedLoad}. */
-  let resumedSession: WorkflowSession | null = null;
+  let resumedParked:
+    | { session: WorkflowSession; crossedWrites: boolean }
+    | undefined;
   /**
    * What each write reads of the log (its ids, highest slot and whether it
    * has a hole), kept up to date as events are merged so that a write costs
@@ -1150,55 +1152,57 @@ async function runDelivery(
    * Reads what landed since `entry` parked, in the writer's queue as a full
    * load reads, and adopts the read's fence snapshot.
    *
-   * - `resume`: the snapshot still matches, so no other orchestrator wrote
-   *   in-band meanwhile, and the VM and its log still describe the run.
+   * - `resume`: the read continues the VM's log. It includes whatever another
+   *   orchestrator decided since the park (`crossedWrites`: the snapshot's
+   *   in-band count moved past the parked one), and the VM replays that like
+   *   any read event.
    * - `reloaded`: the World refused the cursor, so the read is the whole log
    *   with a full load's snapshot. The delivery uses it as its full load.
-   * - `stale`: another orchestrator wrote in-band; nothing is adopted and the
-   *   delivery does the full load.
+   * - `unread`: the read carried no snapshot. Nothing is adopted, and the
+   *   delivery's full load reports the World's contract error as it does on
+   *   any delivery.
    */
   const readSinceParked = (
     entry: ParkedSession
   ): Promise<
-    { type: 'resume' | 'reloaded'; page: LoadedEventLog } | { type: 'stale' }
+    | { type: 'resume'; page: LoadedEventLog; crossedWrites: boolean }
+    | { type: 'reloaded'; page: LoadedEventLog }
+    | { type: 'unread' }
   > =>
     writer.exclusive(async () => {
       const page = await loadWorkflowRunEvents(runId, entry.cursor, {
         specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         incrementalSnapshot: true,
       });
-      if (page.reloadedFromStart) {
-        // Without a snapshot the full load reports the World's contract
-        // error as it does on any delivery.
-        if (page.snapshot === undefined) return { type: 'stale' };
-        writer.adoptSnapshot(page.snapshot);
-        return { type: 'reloaded', page };
-      }
-      if (page.snapshot?.seqInBand !== entry.expectedSeqInBand) {
-        return { type: 'stale' };
-      }
+      if (page.snapshot === undefined) return { type: 'unread' };
       writer.adoptSnapshot(page.snapshot);
-      return { type: 'resume', page };
+      if (page.reloadedFromStart) return { type: 'reloaded', page };
+      return {
+        type: 'resume',
+        page,
+        crossedWrites: page.snapshot.seqInBand !== entry.expectedSeqInBand,
+      };
     });
   /**
    * Run setup for a parked session: its log extended by what
    * {@link readSinceParked} read, and its VM resumed by the first pass. A
-   * stale one takes the full load, and a read from the start is one.
+   * read with no snapshot takes the full load, and a read from the start is
+   * one.
    */
   const resumeParkedLoad = async (
     entry: ParkedSession,
     read: Awaited<ReturnType<typeof readSinceParked>>
   ): Promise<LoadedEventLog> => {
     // The ceiling the full load this replaces would have reported.
-    if (read.type !== 'stale' && read.page.maxEvents !== undefined) {
+    if (read.type !== 'unread' && read.page.maxEvents !== undefined) {
       maxEventsLimit = clampMaxEvents(read.page.maxEvents);
     }
     if (read.type !== 'resume') {
       runtimeLogger.debug(
-        'Parked session is stale; replaying the whole log instead',
+        'Parked session cannot continue from its cursor; replaying the whole log instead',
         { workflowRunId: runId, reason: read.type }
       );
-      if (read.type === 'stale') return fullLoad();
+      if (read.type === 'unread') return fullLoad();
       for (const event of read.page.events) {
         prepareReplayEvent(event);
       }
@@ -1215,7 +1219,10 @@ async function runDelivery(
     indexOf(log.events).merge(read.page.events);
     // As a full load: the log can hold events above the snapshot.
     writer.observeSlot(indexOf(log.events).maxSlot() ?? 0);
-    resumedSession = entry.session;
+    resumedParked = {
+      session: entry.session,
+      crossedWrites: read.crossedWrites,
+    };
     span?.setAttributes(Attribute.WorkflowParkedSessionResumed(true));
     return log;
   };
@@ -2512,8 +2519,15 @@ async function runDelivery(
       }
     }
 
-    let session: WorkflowSession | null = resumedSession;
-    resumedSession = null;
+    let session: WorkflowSession | null = resumedParked?.session ?? null;
+    /**
+     * Set while the VM a delivery in this process parked has not yet got
+     * past its first pass here. That pass is the one a parked VM's state can
+     * differ from a cold replay's in, so a divergence on it is the VM's, not
+     * the log's (see the divergence handling below).
+     */
+    let parkedPass = resumedParked;
+    resumedParked = undefined;
     const continuedHookIds = new Set<string>();
 
     // Inline steps run as background work of this delivery,
@@ -3620,6 +3634,9 @@ async function runDelivery(
         }
 
         let replayStart = 0;
+        // This pass is the parked VM's first here, until it declines.
+        let onParked = parkedPass;
+        parkedPass = undefined;
         try {
           await repairRunAheadIfDue();
           flushPending();
@@ -3779,6 +3796,7 @@ async function runDelivery(
             session !== null && workflowResult.type !== 'replay';
           if (workflowResult.type === 'replay') {
             session = null;
+            onParked = undefined;
             const compiled = startWorkflowCompile(workflowRun);
             assert(
               compiled || dynamicWorkflowScripts,
@@ -3969,6 +3987,27 @@ async function runDelivery(
               }
             );
             throw err;
+          }
+          if (ReplayDivergenceError.is(err) && onParked) {
+            // The parked VM, not the log, disagreed with what was read: a
+            // cold replay of the same log decides, and only its divergence
+            // counts against the recovery budget.
+            runLogger.warn(
+              'Parked VM diverged from the log; replaying it from cold',
+              {
+                divergenceEventId: err.eventId,
+                crossedWrites: onParked.crossedWrites,
+                errorMessage: err.message,
+              }
+            );
+            span?.setAttributes(Attribute.WorkflowParkedSessionDiverged(true));
+            await settleRunAhead();
+            if (runAheadFailure !== undefined) throw runAheadFailure;
+            if (runAheadRepair) await repairRunAhead();
+            session = null;
+            pendingRebase = undefined;
+            await fullLoad();
+            continue;
           }
           if (ReplayDivergenceError.is(err)) {
             const recovery = recordDivergence(err);
