@@ -2,10 +2,11 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
+  render as renderRaw,
   screen,
   waitFor,
 } from '@testing-library/react';
+import { TooltipProvider } from '@workflow/web-shared';
 import { buildRunUsage, type RunUsage } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useRunUsage } from '~/lib/client/hooks/use-run-usage';
@@ -81,6 +82,11 @@ const skeletons = (container: HTMLElement) =>
   container.querySelectorAll('.animate-pulse').length;
 
 beforeEach(() => vi.mocked(fetchRunUsage).mockReset());
+
+/** The app's root provides tooltips; so does each test. */
+const render = (ui: React.ReactElement) =>
+  renderRaw(ui, { wrapper: TooltipProvider });
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -149,7 +155,7 @@ describe('a failed first usage read on a finished run', () => {
     );
     expect(screen.getByTestId('run-usage-storage').textContent).toBe('2 KB');
     expect(screen.getByTestId('run-usage-summary').textContent).toBe(
-      '1,234 billable events · 0 retries'
+      '1,234 events · 0 retries'
     );
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(fetchRunUsage).toHaveBeenCalledTimes(2);

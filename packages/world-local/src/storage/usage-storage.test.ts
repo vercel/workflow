@@ -100,8 +100,22 @@ describe('experimental_usage.getRun (world-local)', () => {
     });
     // A tie is broken by name.
     expect(usage.eventsBySpan).toEqual([
-      { kind: 'step', name: CHARGE, events: 3, share: 0.5, retries: 0 },
-      { kind: 'run', name: WORKFLOW, events: 3, share: 0.5, retries: 0 },
+      {
+        kind: 'step',
+        name: CHARGE,
+        events: 3,
+        share: 0.5,
+        retries: 0,
+        calls: 1,
+      },
+      {
+        kind: 'run',
+        name: WORKFLOW,
+        events: 3,
+        share: 0.5,
+        retries: 0,
+        calls: 1,
+      },
     ]);
     expect(usage.dataWritten.byEntity.run).toBeGreaterThan(0);
     expect(usage.dataWritten.byEntity.step).toBeGreaterThan(0);
@@ -119,7 +133,7 @@ describe('experimental_usage.getRun (world-local)', () => {
         other: 0,
       },
     });
-    expect(formatRunUsageSummary(usage)).toBe('6 billable events · 0 retries');
+    expect(formatRunUsageSummary(usage)).toBe('6 events · 0 retries');
   });
 
   it('counts one retry as two extra events on its step', async () => {
@@ -156,9 +170,7 @@ describe('experimental_usage.getRun (world-local)', () => {
       completed: 1,
       retrying: 1,
     });
-    expect(formatRunUsageSummary(usage)).toBe(
-      '8 billable events · 1 retry (+2 events)'
-    );
+    expect(formatRunUsageSummary(usage)).toBe('8 events · 1 retry');
   });
 
   it('counts the whole log of a run past the first page of 200 events', async () => {
@@ -216,6 +228,7 @@ describe('experimental_usage.getRun (world-local)', () => {
       events: 3,
       share: 3 / 5,
       retries: 0,
+      calls: 1,
     });
     expect(byEntity.stream).toBe(1500);
     // The hook's payloads are stored base64-encoded inside its events.
@@ -258,9 +271,7 @@ describe('experimental_usage.getRun (world-local)', () => {
       events: 7,
       byType: { created: 1, started: 3, retrying: 2, failed: 1, completed: 0 },
     });
-    expect(formatRunUsageSummary(usage)).toBe(
-      '10 billable events · 2 retries (+4 events)'
-    );
+    expect(formatRunUsageSummary(usage)).toBe('10 events · 2 retries');
   });
 
   it('reads an in-progress run as it grows', async () => {
@@ -374,6 +385,52 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(formatStepCreationNote(usage)).toBe(
       '2 steps have no created event: they ran inline, and their first started event created them.'
     );
+  });
+
+  it('counts the calls of each span: steps, distinct hooks and sleeps', async () => {
+    const runId = await startRun();
+    for (let i = 0; i < 3; i++) await runStep(runId, `step_${i}`, CHARGE);
+    await runStep(runId, 'step_e', EMAIL);
+    for (const hookId of ['hook_1', 'hook_2']) {
+      await createHook(storage, runId, {
+        hookId,
+        token: `token-${runId}-${hookId}`,
+      });
+      // A hook received twice is still one hook.
+      for (let i = 0; i < 2; i++) {
+        await storage.events.create(runId, {
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hookId,
+          eventData: { payload: bytes(4) },
+        });
+      }
+    }
+    for (const waitId of ['wait_1', 'wait_2', 'wait_3']) {
+      await storage.events.create(runId, {
+        eventType: 'wait_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: waitId,
+        eventData: { resumeAt: new Date(Date.now() + 1000) },
+      });
+    }
+
+    const usage = await usageOf(runId);
+    const calls = Object.fromEntries(
+      usage.eventsBySpan.map((span) => [
+        span.kind === 'step' ? span.name : span.kind,
+        span.calls,
+      ])
+    );
+    expect(calls).toEqual({
+      [CHARGE]: 3,
+      [EMAIL]: 1,
+      run: 1,
+      hook: 2,
+      wait: 3,
+    });
+    expect(usage.billed).toBe(false);
+    expect(usage.workflowName).toBe(WORKFLOW);
   });
 
   it('counts sleeps and attributes', async () => {

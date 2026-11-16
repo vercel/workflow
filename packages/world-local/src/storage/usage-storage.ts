@@ -110,6 +110,19 @@ const STEP_GROUPS_SQL = `
 `;
 
 /**
+ * The hooks and sleeps a range of positions names, for their span's call
+ * counts (`calls`). Event type and correlation id are columns: no doc is
+ * read.
+ */
+const HOOK_AND_WAIT_IDS_SQL = `
+  SELECT DISTINCT correlation_id, substr(event_type, 1, 5) AS kind
+  FROM events
+  WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3
+    AND correlation_id IS NOT NULL
+    AND (substr(event_type, 1, 5) = 'hook_' OR substr(event_type, 1, 5) = 'wait_')
+`;
+
+/**
  * A step's name, from its row: a spec 9 inline step has no `step_created`
  * event to carry it. Looked up once per step.
  */
@@ -162,6 +175,8 @@ interface RunCounts {
   eventTypes: Map<string, { events: number; bytes: number }>;
   /** By step id. */
   steps: Map<string, StepCount>;
+  hookIds: Set<string>;
+  waitIds: Set<string>;
 }
 
 const newCounts = (): RunCounts => ({
@@ -169,6 +184,8 @@ const newCounts = (): RunCounts => ({
   finished: false,
   eventTypes: new Map(),
   steps: new Map(),
+  hookIds: new Set(),
+  waitIds: new Set(),
 });
 
 /** Adds the rows in `(from, to]` to `counts`. One statement each: atomic. */
@@ -233,6 +250,16 @@ function countRange(
     step.failed += Number(row.failed);
     step.retries += Number(row.retries);
     step.bytes += Number(row.bytes ?? 0);
+  }
+  for (const row of db.all<{ correlation_id: string; kind: string }>(
+    HOOK_AND_WAIT_IDS_SQL,
+    runId,
+    from,
+    to
+  )) {
+    (row.kind === 'hook_' ? counts.hookIds : counts.waitIds).add(
+      row.correlation_id
+    );
   }
   counts.countedSeq = to;
 }
@@ -433,6 +460,10 @@ export function createUsageStorage(
       streamBytes: snapshot.streamBytes,
       dataPurged: snapshot.dataPurged,
       savedDataWritten: snapshot.savedDataWritten,
+      calls: { hook: counts.hookIds.size, wait: counts.waitIds.size },
+      // Local runs are not billed: the UI and CLI say what the run would
+      // count as on Vercel instead.
+      billed: false,
       // world-local has no plan retention to multiply by.
       // TODO: confirm with the pricing owners that local runs hide it.
       dataRetained: null,

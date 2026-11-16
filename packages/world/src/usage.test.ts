@@ -3,17 +3,26 @@ import {
   buildRunUsage,
   collapseUsageSpans,
   EVENTS_PER_RETRY,
+  formatBillableNote,
   formatDataPurgedNote,
+  formatDataWrittenHeading,
+  formatEventCountingLines,
+  formatEventCountingNote,
+  formatLocalDataWrittenNote,
   formatRunUsageSummary,
   formatStepCreationNote,
   formatStepEventsBreakdown,
   formatUsageBytes,
+  formatUsageFooter,
   formatUsageShare,
+  RUN_EVENTS_NOTE,
   type RunUsageAggregates,
   type RunUsageSpan,
   type RunUsageStepGroup,
+  usageBiggestDriver,
   usageEntityOfEventType,
   usageSpanLabel,
+  usageSpanTree,
 } from './usage.js';
 
 const WORKFLOW = 'workflow//./src/w//wf';
@@ -156,7 +165,7 @@ describe('buildRunUsage', () => {
 
     const empty = buildRunUsage(aggregates());
     expect(empty).toMatchObject({ events: 0, eventsBySpan: [] });
-    expect(formatRunUsageSummary(empty)).toBe('0 billable events · 0 retries');
+    expect(formatRunUsageSummary(empty)).toBe('0 events · 0 retries');
   });
 
   it('ignores malformed counts rather than producing NaN', () => {
@@ -182,23 +191,90 @@ describe('buildRunUsage', () => {
 });
 
 describe('usage formatting', () => {
-  it('summarizes billable events and retries', () => {
+  it('summarizes a local run without calling its events billable', () => {
     const one = buildRunUsage(
       aggregates({
         stepGroups: [stepGroup('s', { steps: 1, retries: 1 })],
       })
     );
-    expect(formatRunUsageSummary(one)).toBe(
-      '1 billable event · 1 retry (+2 events)'
+    expect(one.billed).toBe(false);
+    expect(one.billableEvents).toBe(1);
+    expect(formatRunUsageSummary(one)).toBe('1 event · 1 retry');
+    expect(formatBillableNote(one)).toBe(
+      'On Vercel, this run would count as 1 billable event.'
     );
     const many = buildRunUsage(
       aggregates({
         stepGroups: [stepGroup('s', { steps: 1, events: 1234, retries: 3 })],
       })
     );
-    expect(formatRunUsageSummary(many)).toBe(
-      '1,234 billable events · 3 retries (+6 events)'
+    expect(formatRunUsageSummary(many)).toBe('1,234 events · 3 retries');
+    expect(formatBillableNote(many)).toBe(
+      'On Vercel, this run would count as 1,234 billable events.'
     );
+  });
+
+  it('calls a billed run’s events billable, with no Vercel note', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        billed: true,
+        stepGroups: [stepGroup('s', { steps: 1, events: 12, retries: 2 })],
+      })
+    );
+    expect(usage.billed).toBe(true);
+    expect(formatRunUsageSummary(usage)).toBe('12 billable events · 2 retries');
+    expect(formatBillableNote(usage)).toBeNull();
+    expect(formatUsageFooter(usage)).toBe('Not your final bill.');
+    expect(formatDataWrittenHeading(usage)).toBe('Data written');
+    expect(formatLocalDataWrittenNote(usage)).toBeNull();
+    expect(formatEventCountingLines(usage).at(-1)).toBe(
+      'Every event in the log is billable today. The count covers the whole run, not only the events loaded on this page.'
+    );
+  });
+
+  it('words a local run’s footer, storage and counting lines as not billed', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('s', {
+            steps: 2,
+            created: 2,
+            started: 3,
+            completed: 2,
+            retries: 1,
+          }),
+        ],
+      })
+    );
+    expect(formatUsageFooter(usage)).toBe(
+      "Local runs aren't billed. Counted from this run's log in your local data directory."
+    );
+    expect(formatDataWrittenHeading(usage)).toBe('Data written (local)');
+    expect(formatLocalDataWrittenNote(usage)).toBe(
+      'Data this run wrote to your local data directory. Vercel measures Data Written in its own storage, so the number on Vercel will differ.'
+    );
+    expect(formatEventCountingLines(usage)).toEqual([
+      '2 steps wrote 8 events: 2 created, 3 started, 2 completed, 1 retry marker.',
+      'Each retry adds 2: a retry marker, and the step starting again.',
+      'The run writes its own: created, started, and completed or failed. A sleep writes 2, a hook at least 2.',
+      'On Vercel, every event in the log is billable. The count covers the whole run, not only the events loaded on this page.',
+    ]);
+    // The CLI's two lines are lines of the web UI's list.
+    for (const line of formatEventCountingNote(usage)) {
+      expect(formatEventCountingLines(usage)).toContain(line);
+    }
+  });
+
+  it('says what the run writes in the CLI note when no step ran', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [{ eventType: 'run_created', events: 1, bytes: 1 }],
+      })
+    );
+    expect(formatEventCountingNote(usage)).toEqual([
+      'The run writes its own: created, started, and completed or failed. A sleep writes 2, a hook at least 2.',
+      'Each retry adds 2: a retry marker, and the step starting again.',
+    ]);
   });
 
   it.each([
@@ -443,6 +519,116 @@ describe('a run whose data was deleted when it finished', () => {
   });
 });
 
+describe('the span tree', () => {
+  const tree = (overrides: Partial<RunUsageAggregates> = {}) =>
+    buildRunUsage(
+      aggregates({
+        workflowName: WORKFLOW,
+        eventGroups: [
+          { eventType: 'run_created', events: 1, bytes: 1 },
+          { eventType: 'run_started', events: 1, bytes: 1 },
+          { eventType: 'run_completed', events: 1, bytes: 1 },
+          { eventType: 'wait_created', events: 2, bytes: 1 },
+          { eventType: 'wait_completed', events: 2, bytes: 1 },
+          { eventType: 'hook_created', events: 1, bytes: 1 },
+          { eventType: 'hook_received', events: 3, bytes: 1 },
+        ],
+        stepGroups: [
+          stepGroup('step//./src/w//small', {
+            steps: 1,
+            created: 1,
+            started: 1,
+            completed: 1,
+          }),
+          stepGroup('step//./src/w//big', {
+            steps: 4,
+            created: 4,
+            started: 5,
+            completed: 4,
+            retries: 1,
+          }),
+          ...['a', 'b', 'c', 'd', 'e'].map((n) =>
+            stepGroup(`step//./src/w//${n}`, {
+              steps: 1,
+              created: 1,
+              started: 1,
+              completed: 1,
+            })
+          ),
+        ],
+        ...overrides,
+      })
+    );
+
+  it('puts the workflow first, steps biggest first, built-in rows last', () => {
+    const usage = tree();
+    const t = usageSpanTree(usage);
+    expect(t.workflow).toEqual({ label: 'wf', events: usage.events });
+    expect(t.steps.map((row) => row.label)).toEqual([
+      'big',
+      'a',
+      'b',
+      'c',
+      'd',
+    ]);
+    expect(t.steps[0]).toMatchObject({ calls: 4, retries: 1, events: 14 });
+    // Steps only fold into "+ N other steps".
+    expect(t.otherSteps).toMatchObject({ steps: 2, events: 6, calls: 2 });
+    expect(t.builtIns.map((row) => [row.label, row.events, row.calls])).toEqual(
+      [
+        ['Run start & finish', 3, 1],
+        ['Sleeps', 4, 2],
+        ['Hooks', 4, 1],
+      ]
+    );
+    expect(t.builtIns[0].note).toBe(RUN_EVENTS_NOTE);
+    expect(t.showBuiltInLabel).toBe(true);
+  });
+
+  it('labels the built-in rows only when sleeps or hooks exist', () => {
+    const usage = tree({
+      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 1 }],
+    });
+    const t = usageSpanTree(usage);
+    expect(t.builtIns.map((row) => row.label)).toEqual(['Run start & finish']);
+    expect(t.showBuiltInLabel).toBe(false);
+  });
+
+  it('names the biggest step in the callout, never a built-in row', () => {
+    // The hooks write more events than any step.
+    const usage = tree({
+      eventGroups: [
+        { eventType: 'run_created', events: 1, bytes: 1 },
+        { eventType: 'hook_received', events: 50, bytes: 1 },
+      ],
+    });
+    expect(usage.eventsBySpan[0].kind).toBe('hook');
+    expect(usageBiggestDriver(usage)).toMatchObject({
+      kind: 'step',
+      name: 'step//./src/w//big',
+    });
+    expect(usageBiggestDriver(tree({ stepGroups: [] }))).toBeNull();
+  });
+
+  it('counts calls: steps per name, distinct sleeps and hooks, one run', () => {
+    const usage = tree({ calls: { hook: 2, wait: 5 } });
+    const calls = Object.fromEntries(
+      usage.eventsBySpan.map((span) => [
+        `${span.kind}:${span.name}`,
+        span.calls,
+      ])
+    );
+    expect(calls['step:step//./src/w//big']).toBe(4);
+    expect(calls['run:workflow//./src/w//wf']).toBe(1);
+    expect(calls['hook:hook']).toBe(2);
+    expect(calls['wait:sleep']).toBe(5);
+    // Without distinct counts, the *_created events stand in.
+    const fallback = tree();
+    expect(fallback.eventsBySpan.find((s) => s.kind === 'wait')?.calls).toBe(2);
+    expect(fallback.eventsBySpan.find((s) => s.kind === 'hook')?.calls).toBe(1);
+  });
+});
+
 describe('usageSpanLabel', () => {
   it.each([
     ['step', 'step//./src/workflows/order//chargeCard', 'chargeCard'],
@@ -464,6 +650,7 @@ describe('collapseUsageSpans', () => {
       events: 10 - i,
       share: 0.1,
       retries: i === 7 ? 2 : 0,
+      calls: 1,
     }));
 
   it('folds spans past the limit into one row', () => {
@@ -474,6 +661,7 @@ describe('collapseUsageSpans', () => {
       events: 5 + 4 + 3,
       share: expect.closeTo(0.3),
       retries: 2,
+      calls: 3,
     });
   });
 

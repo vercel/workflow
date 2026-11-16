@@ -71,6 +71,8 @@ function stepEventsTheTextClaims(
       if (!eventType) throw new Error(`Unknown label in ${part}`);
       byEventType[eventType] = toNumber(count);
     }
+    // The note on steps without a created event, when the text has it (the
+    // web UI does; the CLI's two-line note leaves it to the Usage tab).
     const note = text.match(/([\d,]+) steps? ha(?:s|ve) no created event/);
     const none = /No step has a created event/.test(text);
     return {
@@ -81,7 +83,7 @@ function stepEventsTheTextClaims(
         ? toNumber(note[1])
         : none
           ? toNumber(breakdown[1])
-          : 0,
+          : undefined,
     };
   }
   const fixed = text.match(
@@ -118,9 +120,7 @@ async function runAndCheck(options?: { specVersion: number }) {
   // The paragraph that explains the count, as printed.
   const explained = text
     .split('\n\n')
-    .filter((paragraph) =>
-      /How events are counted|Each step writes/.test(paragraph)
-    )
+    .filter((paragraph) => /steps? wrote|Each step writes/.test(paragraph))
     .join('\n');
   console.log(
     `spec ${specVersion}: ${events.length} events, ${stepLog.length} of them step events in the log\n${explained}`

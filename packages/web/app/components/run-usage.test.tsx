@@ -1,11 +1,22 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render as renderRaw,
+  screen,
+} from '@testing-library/react';
+import { TooltipProvider } from '@workflow/web-shared';
 import {
   buildRunUsage,
+  formatEventCountingLines,
   type RunUsage,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RunUsageHeaderStats, RunUsagePanel } from './run-usage';
+
+/** The app's root provides tooltips; so does each test. */
+const render = (ui: React.ReactElement) =>
+  renderRaw(ui, { wrapper: TooltipProvider });
 
 afterEach(cleanup);
 
@@ -103,6 +114,44 @@ describe('RunUsageHeaderStats', () => {
     expect(onOpenUsage).toHaveBeenCalledTimes(1);
   });
 
+  it('explains a local run’s Storage in a tooltip', async () => {
+    // Radix measures the tooltip; jsdom has no ResizeObserver.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    render(
+      <RunUsageHeaderStats
+        usage={bigRun()}
+        error={null}
+        onOpenUsage={() => {}}
+      />
+    );
+    // The label stays "Storage".
+    const label = screen.getByTestId('run-usage-storage-label');
+    expect(label.textContent).toBe('Storage');
+    fireEvent.focus(label);
+    expect((await screen.findByRole('tooltip')).textContent).toBe(
+      'Data this run wrote to your local data directory. Vercel measures Data Written in its own storage, so the number on Vercel will differ.'
+    );
+  });
+
+  it('has no local tooltip on a billed run', () => {
+    render(
+      <RunUsageHeaderStats
+        usage={bigRun({ billed: true })}
+        error={null}
+        onOpenUsage={() => {}}
+      />
+    );
+    expect(screen.queryByTestId('run-usage-storage-label')).toBeNull();
+    expect(screen.getByText('Storage')).toBeTruthy();
+  });
+
   it('shows placeholders until the count arrives', () => {
     render(
       <RunUsageHeaderStats
@@ -117,49 +166,143 @@ describe('RunUsageHeaderStats', () => {
 });
 
 describe('RunUsagePanel', () => {
-  it('summarizes billable events and retries', () => {
+  it('summarizes a local run without calling its events billable', () => {
     render(<RunUsagePanel usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-summary').textContent).toBe(
-      '1,183 billable events · 1 retry (+2 events)'
+      '1,183 events · 1 retry'
+    );
+    expect(screen.getByTestId('run-usage-billable-note').textContent).toBe(
+      'On Vercel, this run would count as 1,183 billable events.'
+    );
+    expect(document.body.textContent).not.toMatch(/\d billable events ·/);
+  });
+
+  it('calls a billed run’s events billable', () => {
+    render(<RunUsagePanel usage={bigRun({ billed: true })} error={null} />);
+    expect(screen.getByTestId('run-usage-summary').textContent).toBe(
+      '1,183 billable events · 1 retry'
+    );
+    expect(screen.queryByTestId('run-usage-billable-note')).toBeNull();
+    expect(screen.getByTestId('run-usage-footer').textContent).toBe(
+      'Not your final bill.'
+    );
+    expect(screen.getByTestId('run-usage-data-heading').textContent).toBe(
+      'Data written'
     );
   });
 
-  it('calls out the biggest driver and collapses the long tail', () => {
+  it('lists the workflow, its steps biggest first, then the built-in rows', () => {
     render(<RunUsagePanel usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-driver').textContent).toBe(
       "chargeCard drives 76% of this run's events (902 events, 1 retry)."
     );
-    const rows = screen.getAllByTestId('run-usage-span');
-    expect(rows.map((row) => row.firstElementChild?.textContent)).toEqual([
+    const spans = () =>
+      screen
+        .getAllByTestId('run-usage-span')
+        .map((row) => row.getAttribute('data-span'));
+    expect(spans()).toEqual([
+      'workflow',
       'chargeCard',
       'sendEmail',
       'a',
       'b',
       'c',
+      'Run start & finish',
+      'Hooks',
     ]);
-    expect(rows[0].textContent).toContain('1 retry');
-    expect(rows[1].textContent).not.toContain('retry');
+    const rows = screen.getAllByTestId('run-usage-span');
+    // The workflow row: its name, a tag and the run's events; no share.
+    expect(rows[0].textContent).toBe('processOrderworkflow1,183');
+    expect(rows[1].textContent).toContain('1 retry');
+    expect(rows[1].textContent).toContain('×300');
+    expect(rows[2].textContent).not.toContain('retry');
+    expect(screen.getByTestId('run-usage-built-in-label').textContent).toBe(
+      'Built-in'
+    );
 
-    // d, e, f, g, processOrder, hook.
-    fireEvent.click(screen.getByRole('button', { name: '6 other spans' }));
-    expect(screen.getAllByTestId('run-usage-span')).toHaveLength(11);
-    expect(screen.queryByRole('button', { name: /other spans/ })).toBeNull();
+    // Only steps fold: d, e, f, g.
+    fireEvent.click(screen.getByRole('button', { name: '+ 4 other steps' }));
+    expect(spans()).toEqual([
+      'workflow',
+      'chargeCard',
+      'sendEmail',
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+      'f',
+      'g',
+      'Run start & finish',
+      'Hooks',
+    ]);
+    expect(screen.queryByRole('button', { name: /other steps/ })).toBeNull();
   });
 
-  it('explains how events are counted', () => {
-    render(<RunUsagePanel usage={bigRun()} error={null} />);
-    const details = screen
-      .getByText('How events are counted')
-      .closest('details');
-    // From the run's own counts, not a fixed number per step.
-    expect(screen.getByTestId('run-usage-step-breakdown').textContent).toBe(
+  it('never names a built-in row in the callout, and has none without steps', () => {
+    const hooksHeavy = buildRunUsage({
+      runId: 'wrun_1',
+      status: 'completed',
+      workflowName: WORKFLOW,
+      eventGroups: [
+        { eventType: 'run_created', events: 1, bytes: 1 },
+        { eventType: 'hook_received', events: 90, bytes: 1 },
+      ],
+      stepGroups: [
+        {
+          stepName: step('tiny'),
+          steps: 1,
+          events: 3,
+          created: 1,
+          started: 1,
+          completed: 1,
+          failed: 0,
+          retries: 0,
+          bytes: 1,
+        },
+      ],
+      streamBytes: 0,
+    });
+    const { unmount } = render(
+      <RunUsagePanel usage={hooksHeavy} error={null} />
+    );
+    expect(screen.getByTestId('run-usage-driver').textContent).toMatch(
+      /^tiny drives/
+    );
+    unmount();
+    const noSteps = buildRunUsage({
+      runId: 'wrun_1',
+      status: 'completed',
+      workflowName: WORKFLOW,
+      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 1 }],
+      stepGroups: [],
+      streamBytes: 0,
+    });
+    render(<RunUsagePanel usage={noSteps} error={null} />);
+    expect(screen.queryByTestId('run-usage-driver')).toBeNull();
+    // Only the run's own events: no "Built-in" label.
+    expect(screen.queryByTestId('run-usage-built-in-label')).toBeNull();
+  });
+
+  it('explains how events are counted with the shared lines', () => {
+    const usage = bigRun();
+    render(<RunUsagePanel usage={usage} error={null} />);
+    const items = screen
+      .getByTestId('run-usage-counting')
+      .querySelectorAll('li');
+    // The same lines the CLI draws from: one formatter in @workflow/world.
+    expect([...items].map((li) => li.textContent)).toEqual(
+      formatEventCountingLines(usage)
+    );
+    expect(items[0].textContent).toBe(
       '394 steps wrote 1,178 events: 388 created, 395 started, 394 completed, 1 retry marker.'
     );
-    expect(details?.textContent).toContain(
+    expect(items[1].textContent).toBe(
       '6 steps have no created event: they ran inline, and their first started event created them.'
     );
-    expect(details?.textContent).not.toContain('Each step writes 3 events');
-    expect(details?.textContent).toContain('Each retry adds 2');
+    expect(items[items.length - 1].textContent).toBe(
+      'On Vercel, every event in the log is billable. The count covers the whole run, not only the events loaded on this page.'
+    );
   });
 
   it('lists data written by entity with a total, and hides retention locally', () => {
@@ -185,9 +328,14 @@ describe('RunUsagePanel', () => {
     );
   });
 
-  it('says it is not the final bill and links to pricing', () => {
+  it('says local runs are not billed, and links to pricing', () => {
     render(<RunUsagePanel usage={bigRun()} error={null} />);
-    expect(screen.getByText('Not your final bill.')).toBeTruthy();
+    expect(screen.getByTestId('run-usage-footer').textContent).toBe(
+      "Local runs aren't billed. Counted from this run's log in your local data directory."
+    );
+    expect(screen.getByTestId('run-usage-data-heading').textContent).toBe(
+      'Data written (local)'
+    );
     expect(
       screen.getByRole('link', { name: 'See pricing →' }).getAttribute('href')
     ).toBe(WORKFLOW_PRICING_DOCS_URL);
@@ -237,9 +385,9 @@ describe('RunUsagePanel', () => {
       streamBytes: 0,
     });
     render(<RunUsagePanel usage={usage} error={null} />);
-    expect(screen.getByTestId('run-usage-step-breakdown').textContent).toBe(
-      '2 steps wrote 6 events: 2 created, 2 started, 2 completed.'
-    );
+    expect(
+      screen.getByTestId('run-usage-counting').querySelector('li')?.textContent
+    ).toBe('2 steps wrote 6 events: 2 created, 2 started, 2 completed.');
     expect(document.body.textContent).not.toContain('no created event');
   });
 
@@ -294,9 +442,11 @@ describe('RunUsagePanel', () => {
     });
     render(<RunUsagePanel usage={empty} error={null} />);
     expect(screen.getByTestId('run-usage-summary').textContent).toBe(
-      '0 billable events · 0 retries'
+      '0 events · 0 retries'
     );
     expect(screen.queryByTestId('run-usage-driver')).toBeNull();
-    expect(screen.queryByTestId('run-usage-step-breakdown')).toBeNull();
+    expect(screen.getByTestId('run-usage-counting').textContent).not.toContain(
+      'steps wrote'
+    );
   });
 });

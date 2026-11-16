@@ -28,7 +28,7 @@ import {
 } from './hydration.js';
 import { stringifyJSON } from './json.js';
 import { resolveTimeWindow } from './time-window.js';
-import { formatRunUsageText } from './usage.js';
+import { formatRunUsageText, usageTextColor } from './usage.js';
 import { resolveWorkflowNameFilter } from './workflow-name.js';
 
 /**
@@ -943,7 +943,7 @@ export const showRunUsage = async (
       showJson(usage);
       return;
     }
-    logger.log(formatRunUsageText(usage));
+    logger.log(formatRunUsageText(usage, { color: usageTextColor() }));
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
       process.exit(1);

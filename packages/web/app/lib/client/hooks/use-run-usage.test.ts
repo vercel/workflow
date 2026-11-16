@@ -14,6 +14,8 @@ const env = {};
 const usage = (runId: string, events: number): RunUsage => ({
   runId,
   status: 'running',
+  workflowName: 'workflow//./src/w//wf',
+  billed: false,
   inProgress: true,
   events,
   billableEvents: events,

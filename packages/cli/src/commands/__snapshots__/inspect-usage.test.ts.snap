@@ -1,38 +1,43 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`workflow inspect run <id> --usage > prints a readable summary 1`] = `
-"Usage for wrun_<RUN_ID> (completed)
+"processOrder  wrun_<RUN_ID>  ● completed
 
-37 billable events · 1 retry (+2 events)
+Events        37  (1 retry)
+Data written  12.7 KB (local)
+On Vercel     37 billable events
 
-Where the events come from
-  sendEmail drives 24% of this run's events (9 events).
+NAME                          EVENTS  SHARE
+processOrder  workflow            37
+├─ sendEmail  ×3                   9    24%  ██░░░░░░░░
+├─ chargeCard  ×1  ↻ 1 retry       5    14%  █░░░░░░░░░
+├─ audit0  ×1                      3     8%  █░░░░░░░░░
+├─ audit1  ×1                      3     8%  █░░░░░░░░░
+├─ audit2  ×1                      3     8%  █░░░░░░░░░
+├─ + 3 more steps                  9    24%
+├─ Run start & finish              3     8%
+└─ Hooks  ×1                       2     5%
+TOTAL                             37   100%
 
-  Span           Events  Share  Retries
-  sendEmail           9    24%
-  chargeCard          5    14%        1
-  audit0              3     8%
-  audit1              3     8%
-  audit2              3     8%
-  5 other spans      14    38%
+10 steps wrote 32 events: 10 created, 11 started, 10 completed, 1 retry marker.
+Each retry adds 2: a retry marker, and the step starting again.
 
-How events are counted
-  10 steps wrote 32 events: 10 created, 11 started, 10 completed, 1 retry marker.
-  Each retry adds 2: a retry marker, and the step starting again.
+DATA WRITTEN (LOCAL)     SIZE
+Run                     818 B
+Steps                 9.19 KB
+Hooks                   638 B
+Streams               2.05 KB
+TOTAL                 12.7 KB
 
-Data written
-  Run        818 B
-  Steps    9.19 KB
-  Hooks      638 B
-  Streams  2.05 KB
-  Total    12.7 KB
-
-Not your final bill. See pricing: https://vercel.com/docs/workflows/pricing"
+Local runs aren't billed. Counted from this run's log in your local data directory.
+See pricing: https://vercel.com/docs/workflows/pricing
+Open the Usage tab: npx workflow web · Machine-readable: --json"
 `;
 
 exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with --json 1`] = `
 {
   "billableEvents": 37,
+  "billed": false,
   "dataPurged": false,
   "dataRetained": null,
   "dataWritten": {
@@ -48,6 +53,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
   "events": 37,
   "eventsBySpan": [
     {
+      "calls": 3,
       "events": 9,
       "kind": "step",
       "name": "step//./src/workflows/order//sendEmail",
@@ -55,6 +61,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.24324324324324326,
     },
     {
+      "calls": 1,
       "events": 5,
       "kind": "step",
       "name": "step//./src/workflows/order//chargeCard",
@@ -62,6 +69,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.13513513513513514,
     },
     {
+      "calls": 1,
       "events": 3,
       "kind": "step",
       "name": "step//./src/workflows/order//audit0",
@@ -69,6 +77,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.08108108108108109,
     },
     {
+      "calls": 1,
       "events": 3,
       "kind": "step",
       "name": "step//./src/workflows/order//audit1",
@@ -76,6 +85,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.08108108108108109,
     },
     {
+      "calls": 1,
       "events": 3,
       "kind": "step",
       "name": "step//./src/workflows/order//audit2",
@@ -83,6 +93,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.08108108108108109,
     },
     {
+      "calls": 1,
       "events": 3,
       "kind": "step",
       "name": "step//./src/workflows/order//audit3",
@@ -90,6 +101,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.08108108108108109,
     },
     {
+      "calls": 1,
       "events": 3,
       "kind": "step",
       "name": "step//./src/workflows/order//audit4",
@@ -97,6 +109,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.08108108108108109,
     },
     {
+      "calls": 1,
       "events": 3,
       "kind": "step",
       "name": "step//./src/workflows/order//audit5",
@@ -104,6 +117,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.08108108108108109,
     },
     {
+      "calls": 1,
       "events": 3,
       "kind": "run",
       "name": "workflow//./src/workflows/order//processOrder",
@@ -111,6 +125,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "share": 0.08108108108108109,
     },
     {
+      "calls": 1,
       "events": 2,
       "kind": "hook",
       "name": "hook",
@@ -137,5 +152,6 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
     "events": 32,
     "steps": 10,
   },
+  "workflowName": "workflow//./src/workflows/order//processOrder",
 }
 `;

@@ -269,8 +269,10 @@ describe('workflow inspect run <id> --usage', () => {
     expect(stdout).toContain(
       '3 steps wrote 7 events: 1 created, 3 started, 3 completed.'
     );
+    // The CLI prints the two-line note; the web UI's Usage tab has the rest,
+    // including why 2 steps have no created event.
     expect(stdout).toContain(
-      '2 steps have no created event: they ran inline, and their first started event created them.'
+      'Each retry adds 2: a retry marker, and the step starting again.'
     );
     expect(stdout).not.toContain('Each step writes 3 events');
   });
@@ -310,7 +312,7 @@ describe('workflow inspect run <id> --usage', () => {
       "This run's data was deleted when it finished; sizes show what it wrote."
     );
     // The 50 KB input, as written (base64 inside the event), not what is left.
-    expect(stdout).toMatch(/Total\s+6\d\.\d KB/);
+    expect(stdout).toMatch(/TOTAL\s+6\d\.\d KB/);
   });
 
   it('has no purge note for a run that kept its data', async () => {
@@ -323,6 +325,84 @@ describe('workflow inspect run <id> --usage', () => {
       'local',
     ]);
     expect(stdout).not.toContain('was deleted');
+  });
+
+  describe('color', () => {
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escapes
+    const ANSI = /\u001b\[/;
+    const asTerminal = (isTTY: boolean) => {
+      const original = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+      Object.defineProperty(process.stdout, 'isTTY', {
+        value: isTTY,
+        configurable: true,
+      });
+      return () => {
+        if (original) Object.defineProperty(process.stdout, 'isTTY', original);
+        else delete (process.stdout as { isTTY?: boolean }).isTTY;
+      };
+    };
+
+    it('colors the summary on a terminal', async () => {
+      const runId = await seedRun();
+      vi.stubEnv('NO_COLOR', undefined as never);
+      vi.stubEnv('TERM', 'xterm-256color');
+      const restore = asTerminal(true);
+      try {
+        const { stdout } = await runInspect([
+          'run',
+          runId,
+          '--usage',
+          '--backend',
+          'local',
+        ]);
+        expect(stdout).toMatch(ANSI);
+      } finally {
+        restore();
+      }
+    });
+
+    it.each([
+      ['piped', false, {}],
+      ['NO_COLOR', true, { NO_COLOR: '1' }],
+      ['TERM=dumb', true, { TERM: 'dumb' }],
+    ])('prints plain text when %s', async (_label, tty, env) => {
+      const runId = await seedRun();
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      const restore = asTerminal(tty);
+      try {
+        const { stdout } = await runInspect([
+          'run',
+          runId,
+          '--usage',
+          '--backend',
+          'local',
+        ]);
+        expect(stdout).toContain('processOrder');
+        expect(stdout).not.toMatch(ANSI);
+      } finally {
+        restore();
+      }
+    });
+
+    it('keeps --json pure JSON on a terminal', async () => {
+      const runId = await seedRun();
+      const restore = asTerminal(true);
+      try {
+        const { stdout } = await runInspect([
+          'run',
+          runId,
+          '--usage',
+          '--json',
+          '--backend',
+          'local',
+        ]);
+        expect(stdout).not.toMatch(ANSI);
+        expect(() => JSON.parse(stdout)).not.toThrow();
+        expect(JSON.parse(stdout)).toMatchObject({ billed: false });
+      } finally {
+        restore();
+      }
+    });
   });
 
   it('fails on a run the backend does not have', async () => {

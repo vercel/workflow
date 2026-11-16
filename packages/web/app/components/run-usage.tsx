@@ -1,22 +1,32 @@
-import { Button } from '@workflow/web-shared';
 import {
-  collapseUsageSpans,
-  EVENTS_PER_RETRY,
+  Button,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
+import {
+  formatBillableNote,
   formatDataPurgedNote,
+  formatDataWrittenHeading,
+  formatEventCountingLines,
+  formatLocalDataWrittenNote,
   formatRunUsageSummary,
-  formatStepCreationNote,
-  formatStepEventsBreakdown,
   formatUsageBytes,
   formatUsageEvents,
+  formatUsageFooter,
   formatUsageShare,
   RUN_USAGE_ENTITIES,
   type RunUsage,
   type RunUsageEntity,
+  type UsageSpanTreeRow,
+  usageBiggestDriver,
   usageSpanLabel,
+  usageSpanTree,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
-import { AlertCircle, ChevronRight, RotateCw } from 'lucide-react';
-import { useState } from 'react';
+import { AlertCircle, ChevronRight, HelpCircle, RotateCw } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
+import { cn } from '~/lib/utils';
 import { Skeleton } from './ui/skeleton';
 
 const ENTITY_LABELS: Record<RunUsageEntity, string> = {
@@ -29,23 +39,44 @@ const ENTITY_LABELS: Record<RunUsageEntity, string> = {
 function RetryBadge({ retries }: { retries: number }) {
   if (retries <= 0) return null;
   return (
-    <span className="inline-flex items-center rounded-full border border-amber-400 bg-amber-100 px-2 py-0.5 text-label-12 text-amber-900">
+    <span className="inline-flex items-center whitespace-nowrap rounded-full border border-amber-400 bg-amber-100 px-2 py-0.5 text-label-12 text-amber-900">
       {retries === 1 ? '1 retry' : `${retries} retries`}
     </span>
   );
 }
 
-function ShareBar({ share }: { share: number }) {
+function ShareBar({
+  share,
+  muted = false,
+}: {
+  share: number;
+  muted?: boolean;
+}) {
   return (
     <div
       className="h-1.5 w-full min-w-16 rounded-full bg-gray-alpha-200"
       aria-hidden="true"
     >
       <div
-        className="h-1.5 rounded-full bg-blue-700"
+        className={cn(
+          'h-1.5 rounded-full',
+          muted ? 'bg-gray-500' : 'bg-blue-700'
+        )}
         style={{ width: `${Math.max(0, Math.min(1, share)) * 100}%` }}
       />
     </div>
+  );
+}
+
+/** The standard single tooltip, on whatever it wraps. */
+function Hint({ text, children }: { text: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        <p>{text}</p>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -85,6 +116,7 @@ export function RunUsageHeaderStats({
   const failedTitle = failed
     ? `Could not read this run's usage: ${error.message}`
     : undefined;
+  const localNote = usage ? formatLocalDataWrittenNote(usage) : null;
   return (
     <>
       <div className="flex flex-col gap-1">
@@ -106,7 +138,19 @@ export function RunUsageHeaderStats({
         )}
       </div>
       <div className="flex flex-col gap-1">
-        <div className="text-xs text-muted-foreground">Storage</div>
+        {localNote ? (
+          <Hint text={localNote}>
+            <div
+              className="text-xs text-muted-foreground cursor-help flex items-center gap-1"
+              data-testid="run-usage-storage-label"
+            >
+              Storage
+              <HelpCircle className="w-3 h-3" />
+            </div>
+          </Hint>
+        ) : (
+          <div className="text-xs text-muted-foreground">Storage</div>
+        )}
         {usage || failed ? (
           <button
             type="button"
@@ -127,79 +171,175 @@ export function RunUsageHeaderStats({
   );
 }
 
+function CallsTag({ calls }: { calls: number }) {
+  if (calls <= 0) return null;
+  return <span className="ml-2 text-label-12 text-gray-700">×{calls}</span>;
+}
+
+function SpanRow({
+  row,
+  name,
+  muted = false,
+  label,
+}: {
+  row: Pick<UsageSpanTreeRow, 'events' | 'share' | 'retries'>;
+  name: ReactNode;
+  muted?: boolean;
+  label: string;
+}) {
+  return (
+    <tr
+      className="border-b border-gray-alpha-200"
+      data-testid="run-usage-span"
+      data-span={label}
+    >
+      <td
+        className={cn(
+          'py-2 pr-4 pl-6',
+          muted ? 'text-gray-900' : 'font-mono text-gray-1000'
+        )}
+      >
+        {name}
+      </td>
+      <td
+        className={cn(
+          'py-2 pr-4 text-right tabular-nums',
+          muted && 'text-gray-900'
+        )}
+      >
+        {row.events.toLocaleString('en-US')}
+      </td>
+      <td className="hidden py-2 pr-4 sm:table-cell">
+        <ShareBar share={row.share} muted={muted} />
+      </td>
+      <td className="py-2 pr-4 text-right tabular-nums text-gray-900">
+        {formatUsageShare(row.share)}
+      </td>
+      <td className="py-2">
+        <RetryBadge retries={row.retries} />
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * The workflow, its steps (biggest first, the rest folded into "+ N other
+ * steps"), then the built-in rows: the run's own events, sleeps and hooks.
+ */
 function SpansTable({ usage }: { usage: RunUsage }) {
   const [expanded, setExpanded] = useState(false);
-  const { shown, other } = collapseUsageSpans(usage.eventsBySpan);
-  const rows = expanded ? usage.eventsBySpan : shown;
+  const tree = usageSpanTree(
+    usage,
+    expanded ? Number.POSITIVE_INFINITY : undefined
+  );
   return (
-    <table className="w-full text-copy-13">
-      <thead>
-        <tr className="text-label-12 text-gray-900 border-b border-gray-alpha-400">
-          <th className="py-2 pr-4 text-left font-medium">Span</th>
-          <th className="py-2 pr-4 text-right font-medium">Events</th>
-          <th className="py-2 pr-4 w-1/3">
-            <span className="sr-only">Share of events</span>
-          </th>
-          <th className="py-2 pr-4 text-right font-medium">Share</th>
-          <th className="py-2 text-left font-medium">
-            <span className="sr-only">Retries</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((span) => (
+    <div className="overflow-x-auto">
+      <table className="w-full text-copy-13">
+        <thead>
+          <tr className="text-label-12 text-gray-900 border-b border-gray-alpha-400">
+            <th className="py-2 pr-4 text-left font-medium">Span</th>
+            <th className="py-2 pr-4 text-right font-medium">Events</th>
+            <th className="hidden py-2 pr-4 w-1/3 sm:table-cell">
+              <span className="sr-only">Share of events</span>
+            </th>
+            <th className="py-2 pr-4 text-right font-medium">Share</th>
+            <th className="py-2 text-left font-medium">
+              <span className="sr-only">Retries</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
           <tr
-            key={`${span.kind}:${span.name}`}
             className="border-b border-gray-alpha-200"
             data-testid="run-usage-span"
+            data-span="workflow"
           >
-            <td
-              className="py-2 pr-4 font-mono text-gray-1000"
-              title={span.name}
-            >
-              {usageSpanLabel(span)}
+            <td className="py-2 pr-4 font-mono font-medium text-gray-1000">
+              {tree.workflow.label}
+              <span className="ml-2 rounded border border-gray-alpha-400 px-1.5 py-0.5 font-sans text-label-12 font-normal text-gray-900">
+                workflow
+              </span>
             </td>
-            <td className="py-2 pr-4 text-right tabular-nums">
-              {span.events.toLocaleString('en-US')}
+            <td className="py-2 pr-4 text-right tabular-nums font-medium">
+              {tree.workflow.events.toLocaleString('en-US')}
             </td>
-            <td className="py-2 pr-4">
-              <ShareBar share={span.share} />
-            </td>
-            <td className="py-2 pr-4 text-right tabular-nums text-gray-900">
-              {formatUsageShare(span.share)}
-            </td>
-            <td className="py-2">
-              <RetryBadge retries={span.retries} />
-            </td>
+            <td className="hidden sm:table-cell" />
+            <td colSpan={2} />
           </tr>
-        ))}
-        {other && !expanded && (
-          <tr className="border-b border-gray-alpha-200">
-            <td className="py-2 pr-4">
-              <button
-                type="button"
-                className="text-gray-900 hover:text-gray-1000 underline decoration-dotted underline-offset-2"
-                onClick={() => setExpanded(true)}
+          {tree.steps.map((row) => (
+            <SpanRow
+              key={`step:${row.label}`}
+              label={row.label}
+              row={row}
+              name={
+                <>
+                  {row.label}
+                  <CallsTag calls={row.calls} />
+                </>
+              }
+            />
+          ))}
+          {tree.otherSteps && (
+            <tr className="border-b border-gray-alpha-200">
+              <td className="py-2 pr-4 pl-6">
+                <button
+                  type="button"
+                  className="text-gray-900 hover:text-gray-1000 underline decoration-dotted underline-offset-2"
+                  onClick={() => setExpanded(true)}
+                >
+                  + {tree.otherSteps.steps} other steps
+                </button>
+              </td>
+              <td className="py-2 pr-4 text-right tabular-nums">
+                {tree.otherSteps.events.toLocaleString('en-US')}
+              </td>
+              <td className="hidden py-2 pr-4 sm:table-cell">
+                <ShareBar share={tree.otherSteps.share} />
+              </td>
+              <td className="py-2 pr-4 text-right tabular-nums text-gray-900">
+                {formatUsageShare(tree.otherSteps.share)}
+              </td>
+              <td className="py-2">
+                <RetryBadge retries={tree.otherSteps.retries} />
+              </td>
+            </tr>
+          )}
+          {tree.showBuiltInLabel && (
+            <tr>
+              <td
+                colSpan={5}
+                className="pt-3 pb-1 pl-6 text-label-12 text-gray-700"
+                data-testid="run-usage-built-in-label"
               >
-                {other.spans} other spans
-              </button>
-            </td>
-            <td className="py-2 pr-4 text-right tabular-nums">
-              {other.events.toLocaleString('en-US')}
-            </td>
-            <td className="py-2 pr-4">
-              <ShareBar share={other.share} />
-            </td>
-            <td className="py-2 pr-4 text-right tabular-nums text-gray-900">
-              {formatUsageShare(other.share)}
-            </td>
-            <td className="py-2">
-              <RetryBadge retries={other.retries} />
-            </td>
-          </tr>
-        )}
-      </tbody>
-    </table>
+                Built-in
+              </td>
+            </tr>
+          )}
+          {tree.builtIns.map((row) => (
+            <SpanRow
+              key={`${row.kind}:${row.label}`}
+              label={row.label}
+              row={row}
+              muted
+              name={
+                row.note ? (
+                  <Hint text={row.note}>
+                    <span className="cursor-help underline decoration-dotted underline-offset-2">
+                      {row.label}
+                    </span>
+                  </Hint>
+                ) : (
+                  <>
+                    {row.label}
+                    <CallsTag calls={row.calls} />
+                  </>
+                )
+              }
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -218,7 +358,7 @@ function Section({
   );
 }
 
-/** The Usage tab: where a run's billable events and data come from. */
+/** The Usage tab: where a run's events and data come from. */
 export function RunUsagePanel({
   usage,
   error,
@@ -261,13 +401,12 @@ export function RunUsagePanel({
     );
   }
 
-  const top = usage.eventsBySpan[0];
-  const stepBreakdown = formatStepEventsBreakdown(usage);
-  const stepCreationNote = formatStepCreationNote(usage);
+  const driver = usageBiggestDriver(usage);
+  const billableNote = formatBillableNote(usage);
   const purgedNote = formatDataPurgedNote(usage);
   return (
     <div className="h-full overflow-auto">
-      <div className="mx-auto max-w-3xl space-y-8 py-6">
+      <div className="max-w-3xl space-y-8 py-6">
         <section className="space-y-1">
           <p
             className="text-heading-20 text-gray-1000"
@@ -275,6 +414,14 @@ export function RunUsagePanel({
           >
             {formatRunUsageSummary(usage)}
           </p>
+          {billableNote && (
+            <p
+              className="text-copy-13 text-gray-900"
+              data-testid="run-usage-billable-note"
+            >
+              {billableNote}
+            </p>
+          )}
           {usage.inProgress && (
             <p className="text-copy-13 text-gray-900">
               This run has not finished; its usage can still grow.
@@ -287,21 +434,23 @@ export function RunUsagePanel({
           )}
         </section>
 
-        {top && (
+        {usage.eventsBySpan.length > 0 && (
           <Section title="Where the events come from">
-            <div
-              className="rounded-md border border-blue-400 bg-blue-100 px-4 py-3 text-copy-13 text-blue-900"
-              data-testid="run-usage-driver"
-            >
-              <span className="font-mono font-medium">
-                {usageSpanLabel(top)}
-              </span>{' '}
-              drives {formatUsageShare(top.share)} of this run's events (
-              {formatUsageEvents(top.events)}
-              {top.retries > 0 &&
-                `, ${top.retries === 1 ? '1 retry' : `${top.retries} retries`}`}
-              ).
-            </div>
+            {driver && (
+              <div
+                className="rounded-md border border-blue-400 bg-blue-100 px-4 py-3 text-copy-13 text-blue-900"
+                data-testid="run-usage-driver"
+              >
+                <span className="font-mono font-medium">
+                  {usageSpanLabel(driver)}
+                </span>{' '}
+                drives {formatUsageShare(driver.share)} of this run's events (
+                {formatUsageEvents(driver.events)}
+                {driver.retries > 0 &&
+                  `, ${driver.retries === 1 ? '1 retry' : `${driver.retries} retries`}`}
+                ).
+              </div>
+            )}
             <SpansTable usage={usage} />
           </Section>
         )}
@@ -311,23 +460,13 @@ export function RunUsagePanel({
             <ChevronRight className="h-4 w-4 text-gray-700 transition-transform group-open:rotate-90" />
             How events are counted
           </summary>
-          <ul className="list-disc space-y-1 px-10 pb-4 text-copy-13 text-gray-900">
-            {stepBreakdown && (
-              <li data-testid="run-usage-step-breakdown">{stepBreakdown}.</li>
-            )}
-            {stepCreationNote && <li>{stepCreationNote}</li>}
-            <li>
-              Each retry adds {EVENTS_PER_RETRY}: a retry marker, and the step
-              starting again.
-            </li>
-            <li>
-              The run writes its own: created, started, and completed or failed.
-              A sleep writes 2, a hook at least 2.
-            </li>
-            <li>
-              Every event in the log is billable today. The count covers the
-              whole run, not only the events loaded on this page.
-            </li>
+          <ul
+            className="list-disc space-y-1 px-10 pb-4 text-copy-13 text-gray-900"
+            data-testid="run-usage-counting"
+          >
+            {formatEventCountingLines(usage).map((line) => (
+              <li key={line}>{line}</li>
+            ))}
           </ul>
         </details>
 
@@ -343,8 +482,11 @@ export function RunUsagePanel({
           <table className="w-full text-copy-13">
             <thead>
               <tr className="text-label-12 text-gray-900 border-b border-gray-alpha-400">
-                <th className="py-2 pr-4 text-left font-medium">
-                  Data written
+                <th
+                  className="py-2 pr-4 text-left font-medium"
+                  data-testid="run-usage-data-heading"
+                >
+                  {formatDataWrittenHeading(usage)}
                 </th>
                 <th className="py-2 text-right font-medium">Size</th>
               </tr>
@@ -393,11 +535,14 @@ export function RunUsagePanel({
         </Section>
 
         <footer className="flex items-center justify-between gap-4 border-t border-gray-alpha-400 pt-4 text-copy-13 text-gray-900">
-          <span>
-            <span className="font-medium text-gray-1000">
-              Not your final bill.
-            </span>{' '}
-            Counted from this run's log in your local data directory.
+          <span data-testid="run-usage-footer">
+            {usage.billed ? (
+              <span className="font-medium text-gray-1000">
+                {formatUsageFooter(usage)}
+              </span>
+            ) : (
+              formatUsageFooter(usage)
+            )}
           </span>
           <a
             href={WORKFLOW_PRICING_DOCS_URL}
