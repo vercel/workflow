@@ -10,15 +10,13 @@ export async function register() {
     // resolve `fs` (breaks this workbench's webpack build).
     const { registerE2eLifecycleHooks } = await import('./lifecycle-hooks-e2e');
     registerE2eLifecycleHooks();
-    // The Postgres World delivers in process: this process is a worker. The
-    // generated module hands the flow route to the World and starts it. The
-    // constant is inlined by `withWorkflow` from the World the app is built
-    // for, so a build for another World carries none of this.
-    if (process.env.WORKFLOW_IN_PROCESS_WORKER === '1') {
-      const { startWorkflowWorker } = await import(
-        './app/.well-known/workflow/v1/flow/worker'
-      );
-      await startWorkflowWorker();
+    // The Postgres World runs its jobs in this process. start() is all it
+    // needs: it sends one health check to the app's own flow route, which
+    // hands itself to the World when it answers.
+    if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+      const { getWorld } = await import('workflow/runtime');
+      const world = await getWorld();
+      await world.start?.();
     }
   }
   registerOTel({

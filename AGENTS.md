@@ -269,7 +269,7 @@ One difference affects how you read a local result: in CI each replay gets its
 own Fluid invocation, while here every replay
 of every run shares one Next.js process. world-postgres gives that process 50
 embedded Graphile Worker slots (the harness process only enqueues: a worker
-runs only where the app registered its flow route), and approximately 100
+runs only where the app started the World), and approximately 100
 replays in one heap saturates GC. Measured on a 12-core laptop, all 14
 attempts came back
 `stuck` with the server at 6.4 GB RSS and Postgres idle. The script therefore

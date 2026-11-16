@@ -2,6 +2,7 @@ import {
   type BaseBuilder,
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
+  refreshInProcessWorkerRoute,
 } from '@workflow/builders';
 import type { HotUpdateOptions, Plugin } from 'vite';
 
@@ -38,7 +39,16 @@ export function workflowHotUpdatePlugin(
   const { builder, enqueue } = options;
 
   // Default enqueue runs the function directly
-  const runBuild = enqueue ?? ((fn: () => Promise<void>) => fn());
+  const runBuildDirect = enqueue ?? ((fn: () => Promise<void>) => fn());
+  // After a rebuild, a World that delivers in process (the Postgres World)
+  // is handed the rebuilt flow route: the dev server evaluates it only on a
+  // request to it (see `refreshInProcessWorkerRoute`). Not awaited, so the
+  // HMR update is not held up by it.
+  let port: number | undefined;
+  const runBuild = async (fn: () => Promise<void>) => {
+    await runBuildDirect(fn);
+    void refreshInProcessWorkerRoute({ port });
+  };
 
   // Vite calls `hotUpdate` once per environment (`client`, `ssr`, and any a
   // framework adds, such as Nitro's `nitro`) for the same file change, awaiting
@@ -65,6 +75,12 @@ export function workflowHotUpdatePlugin(
 
   return {
     name: 'workflow:hot-update',
+    configureServer(server) {
+      server.httpServer?.once('listening', () => {
+        const address = server.httpServer?.address();
+        if (address && typeof address === 'object') port = address.port;
+      });
+    },
     async hotUpdate(ctx: HotUpdateOptions) {
       // Resolve builder (supports both direct instance and getter function)
       const resolvedBuilder =

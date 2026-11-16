@@ -30,11 +30,7 @@ describe('createWrappedWorkflowRouteCode', () => {
       file,
       `export const calls = [];
 export const served = [];
-export const refreshed = [];
 const entry = Symbol.for(${JSON.stringify(IN_PROCESS_QUEUE_HANDLER.description)});
-function refreshWorkflowHandler(route, options) {
-  refreshed.push({ route, options });
-}
 function workflowEntrypoint(code, options) {
   calls.push({ code, options });
   const route = async (req) => {
@@ -47,9 +43,8 @@ function workflowEntrypoint(code, options) {
 const workflowCode = 'code';
 ${
   // As the SvelteKit and Astro builders do: the generated route's POST line is
-  // replaced, and its refreshWorkflowHandler(POST) line stays.
+  // replaced.
   `export const POST = workflowEntrypoint(workflowCode, { namespace: "ns" });
-refreshWorkflowHandler(POST);
 export const GET = POST;`.replace(
     /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
     (_match, options = '') =>
@@ -86,9 +81,8 @@ export const GET = POST;`.replace(
     expect(mod.POST[IN_PROCESS_QUEUE_HANDLER]).toBe('in-process entry');
   });
 
-  it('hands POST to the World again on evaluation, once', async () => {
+  it('keeps the other route exports pointing at the wrapped POST', async () => {
     const mod = await load();
-    expect(mod.refreshed).toEqual([{ route: mod.POST, options: undefined }]);
     expect(mod.GET).toBe(mod.POST);
   });
 

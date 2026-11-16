@@ -6,14 +6,13 @@
 
 async function main() {
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    // The worker entry the Workflow integration emits with the server build:
-    // hands the flow route to the World and starts it, so this process runs
-    // the jobs in process.
-    console.log('Starting the Workflow worker...');
-    const { startWorkflowWorker } = await import(
-      '../dist/server/workflow-worker.mjs'
-    );
-    await startWorkflowWorker();
+    console.log('Starting Postgres World...');
+    const { getWorld } = await import('workflow/runtime');
+    const world = await getWorld();
+    if (world.start) {
+      console.log('Starting World workers...');
+      await world.start();
+    }
   }
 
   // Now start the Astro server

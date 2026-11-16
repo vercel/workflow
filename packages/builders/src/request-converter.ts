@@ -15,11 +15,13 @@ async function normalizeRequest(request) {
 
 /**
  * The flow route of a framework whose route handlers take `{ request }`
- * (SvelteKit, Astro): one `workflowEntrypoint()` for the module's lifetime,
- * served through `normalizeRequest`, and exposing that entrypoint's
- * in-process entry on the exported `POST` so a World handed the module's
- * `POST` (`registerHandler`) delivers in process, as it does with the
- * generated route of every other framework. `workflowEntrypointCall` is the
+ * (SvelteKit, Astro): one `workflowEntrypoint()` for the module's lifetime
+ * (the route a World that delivers in process is handed, so one per
+ * evaluation, not one per request), served through `normalizeRequest`, and
+ * exposing that entrypoint's in-process entry on the exported `POST` so a
+ * World handed the module's `POST` (`registerWorkflowHandler`) delivers in
+ * process, as it does with the generated route of every other framework.
+ * `workflowEntrypointCall` is the
  * `workflowEntrypoint(...)` expression; `trailer` is appended as is.
  */
 export function createWrappedWorkflowRouteCode(

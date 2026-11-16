@@ -34,6 +34,7 @@ import type { Orchestrator } from './runtime/delivery.js';
 import {
   getQueueOverhead,
   handleHealthCheckMessage,
+  isHealthCheckRequest,
   memoizeEncryptionKey,
   parseHealthCheckPayload,
   withHealthCheck,
@@ -45,6 +46,10 @@ import {
   logQueueAuthSetting,
   type QueueAuthRefusalReason,
 } from './runtime/queue-auth.js';
+import {
+  refreshWorkflowRoute,
+  registerRequestedWorkflowRoute,
+} from './runtime/register-handler.js';
 import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
@@ -107,7 +112,6 @@ export {
 } from './runtime/quickjs-precompiled.js';
 export {
   type RegisterWorkflowHandlerOptions,
-  refreshWorkflowHandler,
   registerWorkflowHandler,
 } from './runtime/register-handler.js';
 export {
@@ -839,12 +843,33 @@ export function workflowEntrypoint(
     return otel ? otel.context.with(otel.ROOT_CONTEXT, deliver) : deliver();
   };
 
-  const route: QueueRouteHandler = withHealthCheck(serve);
+  const serveWithHealthCheck = withHealthCheck(serve);
+  const route: QueueRouteHandler = async (req: Request) => {
+    // `world.start()` of a World that delivers in process sends one health
+    // check to the app's own flow route: the framework loads this module to
+    // answer it, and the route hands itself to the World before answering,
+    // so the World's worker runs here (see `registerRequestedWorkflowRoute`,
+    // which does nothing unless `start()` asked for the route in this
+    // process). Awaited, so the World sees the route registered by the time
+    // its health check returns. `includes` first, so a request that is not a
+    // health check costs no URL parse.
+    if (
+      req.method !== 'OPTIONS' &&
+      req.url.includes('__health') &&
+      isHealthCheckRequest(req)
+    ) {
+      await registerRequestedWorkflowRoute(route, { namespace });
+    }
+    return serveWithHealthCheck(req);
+  };
   // Not enumerable: a copy of the route made by spreading it keeps serving
   // HTTP, and only a World handed the route itself finds the entry.
   Object.defineProperty(route, IN_PROCESS_QUEUE_HANDLER, {
     value: deliverInProcess,
     enumerable: false,
   });
+  // A route rebuilt in development replaces the one the World was handed;
+  // nothing happens in a process whose World has no flow route.
+  refreshWorkflowRoute(route, { namespace });
   return route;
 }

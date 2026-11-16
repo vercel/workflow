@@ -22,8 +22,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run --config=../../vitest.config.ts src"
+    "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
     "@swc/core": "1.15.3",
@@ -38,7 +37,6 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "astro": "7.4.7",
-    "typescript": "catalog:",
-    "vitest": "catalog:"
+    "typescript": "catalog:"
   }
 }

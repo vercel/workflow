@@ -1,7 +1,20 @@
-import type { BaseBuilder } from '@workflow/builders';
-import type { HotUpdateOptions } from 'vite';
-import { describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import {
+  type BaseBuilder,
+  refreshInProcessWorkerRoute,
+} from '@workflow/builders';
+import type { HotUpdateOptions, ViteDevServer } from 'vite';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { workflowHotUpdatePlugin } from './hot-update.js';
+
+vi.mock('@workflow/builders', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@workflow/builders')>()),
+  refreshInProcessWorkerRoute: vi.fn(async () => {}),
+}));
+
+afterEach(() => {
+  vi.mocked(refreshInProcessWorkerRoute).mockClear();
+});
 
 const WORKFLOW_SOURCE = `export async function flow() {\n  'use workflow';\n}\n`;
 
@@ -80,5 +93,48 @@ describe('workflowHotUpdatePlugin', () => {
     await hotUpdate(change('/app/workflows/b.ts', 1_000));
 
     expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it('hands the rebuilt flow route to a World that delivers in process, after the build, on the dev server port', async () => {
+    const order: string[] = [];
+    const build = vi.fn(async () => {
+      order.push('build');
+    });
+    vi.mocked(refreshInProcessWorkerRoute).mockImplementation(async () => {
+      order.push('refresh');
+    });
+    const plugin = workflowHotUpdatePlugin({
+      builder: { build } as unknown as BaseBuilder,
+    });
+    const httpServer = Object.assign(new EventEmitter(), {
+      address: () => ({ port: 5173, address: '::', family: 'IPv6' }),
+    });
+    (plugin.configureServer as (server: ViteDevServer) => void)({
+      httpServer,
+    } as unknown as ViteDevServer);
+    httpServer.emit('listening');
+
+    await (plugin.hotUpdate as (ctx: HotUpdateOptions) => Promise<unknown>)({
+      type: 'update',
+      file: '/app/workflows/flow.ts',
+      timestamp: 1_000,
+      modules: [],
+      read: async () => WORKFLOW_SOURCE,
+      server: {},
+    } as unknown as HotUpdateOptions);
+
+    expect(order).toEqual(['build', 'refresh']);
+    expect(refreshInProcessWorkerRoute).toHaveBeenCalledExactlyOnceWith({
+      port: 5173,
+    });
+  });
+
+  it('does not hand over a route when nothing was rebuilt', async () => {
+    const { build, hotUpdate, change } = setup();
+    await hotUpdate({
+      ...change('/app/styles.css', 1_000),
+    } as HotUpdateOptions);
+    expect(build).not.toHaveBeenCalled();
+    expect(refreshInProcessWorkerRoute).not.toHaveBeenCalled();
   });
 });

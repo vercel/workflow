@@ -1563,9 +1563,9 @@ describe('postgres queue http execution', () => {
       expect(
         warnings.filter((w) => w.includes('WORKFLOW_QUEUE_NAMESPACE'))
       ).toEqual([]);
-      expect(warnings.filter((w) => w.includes('only enqueues'))).toHaveLength(
-        1
-      );
+      // Not told it only enqueues while start()'s health check to the flow
+      // route is still trying to get the route.
+      expect(warnings.filter((w) => w.includes('runs no jobs'))).toEqual([]);
     } finally {
       warn.mockRestore();
     }
@@ -1822,15 +1822,23 @@ describe('postgres queue http execution', () => {
       await script.queue('__wkf_workflow_test', { runId: 'run_01A' });
       expect(notes()).toHaveLength(0);
 
-      // The app's server process (a Next.js build made for another World
-      // dropped the worker module, so nothing registered the route or called
-      // start()): the first publish says why runs will stay pending, once.
+      // The app's server process, which never called start(): the first
+      // publish says why runs will stay pending, once.
       vi.stubEnv('NEXT_RUNTIME', 'nodejs');
       const app = buildQueue({ connectionString: 'postgres://test' }, pool);
       await app.queue('__wkf_workflow_test', { runId: 'run_01B' });
       await app.queue('__wkf_workflow_test', { runId: 'run_01C' });
       expect(notes()).toHaveLength(1);
-      expect(String(notes()[0][0])).toMatch(/built for this World/);
+      expect(String(notes()[0][0])).toMatch(
+        /call world\.start\(\) when the server starts/
+      );
+
+      // An app server that called start() is told by start()'s health check
+      // instead, which is still trying to get the route here.
+      const started = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await started.start();
+      await started.queue('__wkf_workflow_test', { runId: 'run_01E' });
+      expect(notes()).toHaveLength(1);
 
       // A worker process publishes quietly.
       const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
@@ -1879,36 +1887,47 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('notes once that a process without the flow handler only enqueues', async () => {
+  it('says once when start() could not get the flow route, and not in a worker', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const notes = () =>
       warn.mock.calls.filter((call) =>
-        String(call[0]).includes('only enqueues')
+        String(call[0]).includes('runs no jobs')
       );
     try {
+      // Nothing answers start()'s health check: no port is found.
       const enqueuer = buildQueue(
         { connectionString: 'postgres://test' },
-        pool
+        pool,
+        { startHealthCheckWindowMs: 200 }
       );
       await enqueuer.start();
       await enqueuer.start();
+      await vi.waitFor(() => expect(notes()).toHaveLength(1));
+      // Says what was tried and what to check: the URL, the SDK release,
+      // and the docs.
+      const note = String(notes()[0][0]);
+      expect(note).toMatch(/did not succeed within 200 ms/);
+      expect(note).toMatch(/the port the app listens on was not found/);
+      expect(note).toMatch(/WORKFLOW_LOCAL_BASE_URL/);
+      expect(note).toMatch(/same release as @workflow\/world-postgres/);
+      expect(note).toMatch(/Start the World when your server starts/);
+      // Later publishes say nothing more.
+      await enqueuer.queue('__wkf_workflow_test', { runId: 'run_01A' });
       expect(notes()).toHaveLength(1);
-      // Says what to check: the SDK release, and the startup hook docs.
-      expect(String(notes()[0][0])).toMatch(
-        /same release as @workflow\/world-postgres/
-      );
-      expect(String(notes()[0][0])).toMatch(
-        /Run the worker when your server starts/
-      );
-      expect(String(notes()[0][0])).toMatch(/built for this World/);
 
-      const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
+      const worker = buildQueue({ connectionString: 'postgres://test' }, pool, {
+        startHealthCheckWindowMs: 200,
+      });
       worker.registerHandler(
         '__wkf_workflow_',
         withEntry(async () => undefined)
       );
+      // A process that already has the route sends no health check.
+      const probes = vi.mocked(getWorkflowPort).mock.calls.length;
       await worker.start();
+      await new Promise((resolve) => setTimeout(resolve, 400));
       expect(notes()).toHaveLength(1);
+      expect(vi.mocked(getWorkflowPort).mock.calls.length).toBe(probes);
     } finally {
       warn.mockRestore();
     }

@@ -18,10 +18,10 @@ An embedded worker and workflow system backed by PostgreSQL for multi-host self-
 ### The queue route refuses HTTP deliveries
 
 The World delivers workflow messages inside the app's process: a graphile-worker
-runner in every process that registered the workflow route with the World
-(`registerWorkflowHandler()` from `workflow/runtime`, which the framework
-integrations call when the app starts) runs each job by calling that route's
-handler directly. The flow route, `POST /.well-known/workflow/v1/flow`, has no
+runner in every process that started the World runs each job by calling the
+app's workflow route directly. `world.start()` gets the route by sending one
+health check to the app's own flow route, which hands itself to the World when
+it answers. The flow route, `POST /.well-known/workflow/v1/flow`, has no
 caller over HTTP, so the World declares `queueAuthMode: 'deny'` and the runtime
 refuses every HTTP request to it with a `403` and `code: "QUEUE_ROUTE_DENIED"`,
 before reading the body or touching any run. Who can enqueue is decided by the

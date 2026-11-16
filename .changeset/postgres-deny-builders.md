@@ -2,4 +2,4 @@
 "@workflow/builders": minor
 ---
 
-Generated flow routes call `refreshWorkflowHandler(POST)` when evaluated outside production, so a route rebuilt in development replaces the one registered at startup. Add `createWorkflowWorkerModuleCode()` (the module a startup hook imports to run the process as a worker) and `createWrappedWorkflowRouteCode()` for frameworks whose handlers take `{ request }`.
+Add `createWrappedWorkflowRouteCode()` for frameworks whose route handlers take `{ request }`, and `refreshInProcessWorkerRoute()`, which a development rebuild calls so a World that delivers in process is handed the rebuilt flow route.

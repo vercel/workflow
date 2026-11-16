@@ -12,7 +12,7 @@ related:
 
 Hands the app's flow route (the `POST` export of the generated workflow route, built by [`workflowEntrypoint()`](/docs/api-reference/workflow-runtime/workflow-entrypoint)) to the World, for a World whose queue delivers the Workflow SDK's messages inside the app's own process, such as the [Postgres World](/worlds/postgres). From then on the World runs its worker in this process and delivers each message to the route's in-process entry, never over HTTP. On any other World the call does nothing and resolves to `false`.
 
-The framework integrations call it for you when the app starts: Nitro (and the frameworks built on it) and Nest do it themselves, and the Next.js, SvelteKit and Astro builds generate a worker module whose `startWorkflowWorker()` calls it and then starts the World. Reach for it directly only in a custom server.
+Apps do not need to call it. `world.start()` sends one health check to the app's own flow route, and the route hands itself to the World when it answers (see [Start the World when your server starts](/worlds/postgres#start-the-world-when-your-server-starts)). Reach for it only in a process that runs the flow route without serving it over HTTP, where that health check cannot reach the route.
 
 ```typescript lineNumbers
 import { getWorld, registerWorkflowHandler } from "workflow/runtime";
@@ -24,7 +24,7 @@ await registerWorkflowHandler(POST); // [!code highlight]
 await world.start?.();
 ```
 
-Call it before `world.start()`, so that a copy of the app that serves no web traffic still runs jobs from the moment it starts. A registration after `start()` works too: the World starts its worker then.
+Call it before or after `world.start()`: the World starts its worker once both have happened, and `start()` sends no health check when the route is already registered.
 
 ## API signature
 
@@ -44,7 +44,6 @@ showSections={["parameters"]}
 
 - `route`: the generated flow route's `POST` export. It carries the in-process entry the World delivers to.
 - `options.namespace`: the queue namespace the route was built with (`WORKFLOW_QUEUE_NAMESPACE` when unset), which names the prefix the World delivers to the route.
-- `options.reloads`: `true` when `route` loads the current flow route on every delivery, as the generated worker modules do on a development server that rebuilds the route when a workflow file changes. A rebuilt route module then does not replace the registered handler when it is evaluated.
 
 ### Returns
 

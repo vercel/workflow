@@ -84,8 +84,7 @@ async function writeWorkflowRuntimeStub(workingDir: string): Promise<void> {
   );
   await write(
     join(packageDir, 'runtime.js'),
-    'export function workflowEntrypoint() { return async function POST() { return new Response(null, { status: 204 }); }; }\n' +
-      'export function refreshWorkflowHandler() {}\n'
+    'export function workflowEntrypoint() { return async function POST() { return new Response(null, { status: 204 }); }; }\n'
   );
 }
 

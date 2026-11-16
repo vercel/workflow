@@ -10,6 +10,9 @@ import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
+  globalSingleton,
+  IN_PROCESS_WORKER_STATE,
+  type InProcessWorkerState,
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
@@ -132,6 +135,17 @@ const graphileLogger = createGraphileLogger();
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
+/**
+ * How long `start()` keeps sending its health check to the app's own flow
+ * route (see `requestFlowRoute`): the server may not listen yet when its
+ * startup hook calls `start()`, and a development server compiles the route
+ * on the first request to it. Each attempt waits up to
+ * `START_HEALTH_CHECK_ATTEMPT_MS` for the answer, and attempts are spaced by
+ * a backoff from 100 ms up to 2 s.
+ */
+const START_HEALTH_CHECK_WINDOW_MS = 120_000;
+const START_HEALTH_CHECK_ATTEMPT_MS = 60_000;
+const START_HEALTH_CHECK_MAX_DELAY_MS = 2_000;
 /** Backoff for a runner start that failed after the handler was registered. */
 const RUNNER_RETRY_BASE_MS = 1_000;
 const RUNNER_RETRY_MAX_MS = 30_000;
@@ -366,6 +380,8 @@ export function createQueue(
   internal?: {
     /** The `'named-queues'` default window, in place of 300 seconds. */
     defaultJobLockStaleSeconds?: number;
+    /** How long `start()` keeps trying its health check, in place of 120 seconds. */
+    startHealthCheckWindowMs?: number;
   }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
@@ -1143,7 +1159,7 @@ export function createQueue(
     if (closing || enqueueOnlyNoted || hasFlowHandler()) return;
     enqueueOnlyNoted = true;
     operatorLog.warn(
-      'No flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), that the app was built for this World (a Next.js app inlines the worker import at build time: build with WORKFLOW_TARGET_WORLD set to this package), and follow the Postgres World docs, "Run the worker when your server starts" (https://workflow-sdk.dev/worlds/postgres#run-the-worker-when-your-server-starts). A server of your own registers the built flow route with registerWorkflowHandler() before it calls start(): see its tab there and "Startup hooks that only start the World" on the same page.'
+      'No flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that called world.start(): start() sends a health check to the app\'s own flow route, which hands itself to the World. If this process is the app and should run jobs, call world.start() when the server starts, and check that workflow and @workflow/core are on the same release as @workflow/world-postgres. See the Postgres World docs, "Start the World when your server starts" (https://workflow-sdk.dev/worlds/postgres#start-the-world-when-your-server-starts).'
     );
   }
 
@@ -1177,9 +1193,119 @@ export function createQueue(
 
   async function start(): Promise<void> {
     await ensureStarted();
-    // An app whose startup hook still only calls `start()` learns why its
-    // runs stay pending.
-    noteEnqueueOnly();
+    // This process is the app (only the app calls `start()`): get its flow
+    // route, so the worker runs here.
+    if (!hasFlowHandler()) requestFlowRoute();
+  }
+
+  /** The health check of `requestFlowRoute`, while it runs. */
+  let flowRouteRequest: Promise<void> | null = null;
+  /** Aborts that health check on `close()`. */
+  let flowRouteRequestAbort: AbortController | null = null;
+  /**
+   * Gets the app's flow route without any startup code in the app: marks
+   * this process as the one that wants the route (`requested`, in the worker
+   * state `@workflow/core` reads), then sends one health check to the app's
+   * own flow route (`?__health`). The framework loads the route module to
+   * answer it, and the route, seeing `requested`, hands itself to the World
+   * (`registerHandler`) before it answers, which starts the runner. In the
+   * background: the server usually does not listen yet when its startup hook
+   * calls `start()`, so a check that cannot connect is retried, with a
+   * backoff, for up to two minutes. Once per process; `close()` stops it.
+   */
+  function requestFlowRoute(): void {
+    if (flowRouteRequest || closing) return;
+    globalSingleton<InProcessWorkerState>(
+      IN_PROCESS_WORKER_STATE.name,
+      IN_PROCESS_WORKER_STATE.shapeVersion,
+      () => ({ requested: false, registered: false, route: undefined })
+    ).requested = true;
+    const abort = new AbortController();
+    flowRouteRequestAbort = abort;
+    flowRouteRequest = sendStartHealthCheck(abort.signal)
+      .catch((error) => {
+        if (!closing) {
+          operatorLog.error(
+            'The health check start() sends to the flow route failed.',
+            error
+          );
+        }
+      })
+      .finally(() => {
+        flowRouteRequestAbort = null;
+      });
+  }
+
+  async function sendStartHealthCheck(signal: AbortSignal): Promise<void> {
+    const windowMs =
+      internal?.startHealthCheckWindowMs ?? START_HEALTH_CHECK_WINDOW_MS;
+    const deadline = Date.now() + windowMs;
+    let delayMs = 100;
+    let lastFailure: unknown;
+    while (!closing && !hasFlowHandler()) {
+      // Resolved on each attempt: the port a server listens on is found
+      // only once it listens.
+      const baseUrl = await getExecutionBaseUrl().catch(() => undefined);
+      if (baseUrl) {
+        const url = createWorkflowUrl(baseUrl, { type: 'health' });
+        try {
+          const response = await fetch(url, {
+            // Every framework's flow route answers POST.
+            method: 'POST',
+            signal: AbortSignal.any([
+              signal,
+              AbortSignal.timeout(START_HEALTH_CHECK_ATTEMPT_MS),
+            ]),
+          });
+          await response.body?.cancel().catch(() => {});
+          if (hasFlowHandler() || closing) return;
+          if (response.ok) {
+            // The route answered without registering: the URL reaches
+            // another process, or a runtime that predates this mechanism.
+            noteRouteNotRegistered(
+              `${url} answered the health check, but the flow route did not register in this process.`
+            );
+            return;
+          }
+          lastFailure = `${url} answered ${response.status}`;
+        } catch (error) {
+          if (closing) return;
+          lastFailure = error;
+        }
+      } else {
+        lastFailure = 'the port the app listens on was not found';
+      }
+      if (Date.now() + delayMs > deadline) {
+        noteRouteNotRegistered(
+          `The health check to the app's own flow route did not succeed within ${windowMs >= 1000 ? `${Math.round(windowMs / 1000)} s` : `${windowMs} ms`} (last: ${lastFailure instanceof Error ? lastFailure.message : String(lastFailure)}).`
+        );
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          // One listener per wait, removed again, so a long retry does not
+          // pile listeners up on the signal.
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        }, delayMs);
+        timer.unref?.();
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      delayMs = Math.min(delayMs * 2, START_HEALTH_CHECK_MAX_DELAY_MS);
+    }
+  }
+
+  /** Said once: `start()` could not get the flow route. */
+  function noteRouteNotRegistered(reason: string): void {
+    if (closing || enqueueOnlyNoted || hasFlowHandler()) return;
+    enqueueOnlyNoted = true;
+    operatorLog.warn(
+      `${reason} This process runs no jobs until the flow route registers, so runs stay pending. start() sends a health check to the app's own flow route at its base URL (WORKFLOW_LOCAL_BASE_URL when set, else http://localhost on PORT or the port this process listens on), and the route registers itself when it answers. Check that the app serves the flow route at that URL, and that workflow and @workflow/core are on the same release as @workflow/world-postgres. See the Postgres World docs, "Start the World when your server starts" (https://workflow-sdk.dev/worlds/postgres#start-the-world-when-your-server-starts).`
+    );
   }
 
   /**
@@ -1220,7 +1346,13 @@ export function createQueue(
     await ensureStarted();
     // Cheap checks first: the resource scan runs only until the note is made
     // or a flow handler is registered.
-    if (!enqueueOnlyNoted && !hasFlowHandler() && isApplicationServer()) {
+    // A process that called `start()` is told by its health check instead.
+    if (
+      !enqueueOnlyNoted &&
+      !flowRouteRequest &&
+      !hasFlowHandler() &&
+      isApplicationServer()
+    ) {
       noteEnqueueOnly();
     }
     const { prefix, id: queueId } = parseQueueName(queue);
@@ -1816,6 +1948,9 @@ export function createQueue(
     start,
     async close() {
       closing = true;
+      flowRouteRequestAbort?.abort();
+      await flowRouteRequest;
+      flowRouteRequest = null;
       if (runnerRetry) {
         clearTimeout(runnerRetry);
         runnerRetry = null;

@@ -2,4 +2,4 @@
 "@workflow/world-postgres": minor
 ---
 
-The warning that a process publishes without a registered flow handler is logged by any application server (a process with a listening socket), not only a Next.js one; the CLI and scripts stay quiet.
+Warn once when `start()` could not get the flow route (its health check did not succeed, or the URL answered without the route registering), and once when an application server publishes without having called `start()`; the CLI and scripts stay quiet.

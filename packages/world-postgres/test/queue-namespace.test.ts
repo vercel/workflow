@@ -151,7 +151,10 @@ describe.skipIf(process.platform === 'win32')(
           queueConcurrency: 2,
           applicationManagedShutdown: true,
         },
-        pool
+        pool,
+        // Nothing serves the flow route here, so start()'s health check
+        // gives up quickly and says so.
+        { startHealthCheckWindowMs: 300 }
       );
       const served: string[] = [];
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -176,11 +179,11 @@ describe.skipIf(process.platform === 'win32')(
         );
         expect(job.rows).toHaveLength(1);
         expect(job.rows[0].locked_by).toBeNull();
-        // Told once that it only enqueues, as any process without the flow
-        // handler is.
+        // Told once that it runs no jobs, as any process whose start() did
+        // not get the flow route is.
         expect(
           warn.mock.calls.filter((call) =>
-            String(call[0]).includes('only enqueues')
+            String(call[0]).includes('runs no jobs')
           )
         ).toHaveLength(1);
       } finally {

@@ -16,28 +16,20 @@ export interface RegisterWorkflowHandlerOptions {
    * when unset), which names the prefix the World delivers to the route.
    */
   namespace?: string;
-  /**
-   * `true` when `route` loads the current flow route on every delivery (a
-   * development server rebuilds the route when a workflow file changes, and
-   * the handler imports the rebuilt module), so a route module evaluated
-   * later must not replace it: {@link refreshWorkflowHandler} does nothing
-   * for the rest of the process.
-   */
-  reloads?: boolean;
 }
 
 /**
- * Hands the app's flow route (the `POST` export of the generated flow route,
- * built by `workflowEntrypoint()`) to the World, for a World whose queue
- * delivers in the app's own process (`queueAuthMode: 'deny'`, such as
- * world-postgres): from then on the World runs its worker in this process
- * and delivers the Workflow SDK's messages to the route's in-process entry,
- * never over HTTP. On any other World it does nothing.
+ * Hands the app's flow route (the route built by `workflowEntrypoint()`) to
+ * the World, for a World whose queue delivers in the app's own process
+ * (`queueAuthMode: 'deny'`, such as world-postgres): from then on the World
+ * runs its worker in this process and delivers the Workflow SDK's messages
+ * to the route's in-process entry, never over HTTP. On any other World it
+ * does nothing. Returns whether the route was registered.
  *
- * Call it when the app starts, before `world.start()`, so that a worker
- * copy of the app that serves no web traffic still runs jobs; the framework
- * integrations do. A registration after `start()` works too: the World
- * starts its worker then. Returns whether the route was registered.
+ * Apps do not need to call it: `world.start()` sends one health check to the
+ * app's own flow route, and the route registers itself when it answers it
+ * (see {@link registerRequestedWorkflowRoute}). It is for a process that runs
+ * the flow route without serving it over HTTP.
  */
 export async function registerWorkflowHandler(
   route: QueueRouteHandler,
@@ -56,47 +48,67 @@ export async function registerWorkflowHandler(
   );
   const state = workerState();
   state.registered = true;
-  if (options?.reloads) state.reloads = true;
+  state.route = route;
   return true;
 }
 
 /**
- * Whether this process runs as a worker: `registerWorkflowHandler` handed
- * a flow route to the World. On `globalThis`, shared by every copy of this
- * module a bundler makes (Next.js evaluates the generated route in a layer
- * of its own, apart from `instrumentation.ts`).
+ * The worker state, on `globalThis`: shared by every copy of this module a
+ * bundler makes and by the World, which sets `requested` in `start()`.
  */
 const workerState = () =>
   globalSingleton<InProcessWorkerState>(
     IN_PROCESS_WORKER_STATE.name,
     IN_PROCESS_WORKER_STATE.shapeVersion,
-    () => ({
-      registered: false,
-      /** The registered handler reloads the route itself; see `reloads`. */
-      reloads: false,
-    })
+    () => ({ requested: false, registered: false, route: undefined })
   );
 
 /**
- * Called by the generated flow route each time its module is evaluated. In a
- * process that runs as a worker it hands the World this evaluation's route,
- * replacing the one registered at startup: in development the route module is
- * rebuilt when a workflow file changes, and the handler registered at startup
- * would otherwise keep running the code it was built from. Anywhere else (a
- * process that is not a worker, a build) it does nothing, so evaluating the
- * route has no side effect, and neither does it when the registered handler
- * reloads the route itself (`reloads`). Never rejects: a failure is logged.
+ * Called by the flow route when it answers a health check. When
+ * `world.start()` of a World that delivers in process asked for the route in
+ * this process (`requested`), the route hands itself to the World, unless it
+ * is already the registered one. This is how the World gets the route:
+ * `start()` sends one health check to the app's own flow route, the
+ * framework loads the route module to answer it, and the route registers
+ * itself before it answers. A health check reaching a process that did not
+ * call `start()` changes nothing. Never rejects: a failure is logged.
  */
-export function refreshWorkflowHandler(
+export async function registerRequestedWorkflowRoute(
   route: QueueRouteHandler,
-  options?: Pick<RegisterWorkflowHandlerOptions, 'namespace'>
+  options?: RegisterWorkflowHandlerOptions
+): Promise<void> {
+  const state = workerState();
+  if (!state.requested || state.route === route) return;
+  await registerLogged(route, options);
+}
+
+/**
+ * Called by `workflowEntrypoint()` for each route it builds. In a process
+ * whose World already has a flow route, a newly built one replaces it: a
+ * development server rebuilds the route module when a workflow file changes,
+ * and the World would otherwise keep running the code it was handed first.
+ * Anywhere else (a process that is not a worker, a build) it does nothing,
+ * so building a route has no side effect. Never rejects: a failure is logged.
+ */
+export function refreshWorkflowRoute(
+  route: QueueRouteHandler,
+  options?: RegisterWorkflowHandlerOptions
 ): void {
   const state = workerState();
-  if (!state.registered || state.reloads) return;
-  registerWorkflowHandler(route, options).catch((error) => {
+  if (!state.registered || state.route === route) return;
+  void registerLogged(route, options);
+}
+
+async function registerLogged(
+  route: QueueRouteHandler,
+  options?: RegisterWorkflowHandlerOptions
+): Promise<void> {
+  try {
+    await registerWorkflowHandler(route, options);
+  } catch (error) {
     console.error(
-      '[workflow] Failed to re-register the flow route with the World:',
+      '[workflow] Failed to register the flow route with the World:',
       error
     );
-  });
+  }
 }
