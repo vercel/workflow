@@ -12,7 +12,7 @@ interface RunEventsTabProps
     | 'onSortOrderChange'
     | 'onDecrypt'
     | 'isDecrypting'
-    | 'hasEncryptedData'
+    | 'onViewInTrace'
   > {
   env: EnvMap;
   runId: string;
