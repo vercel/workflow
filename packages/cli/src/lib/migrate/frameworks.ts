@@ -1,3 +1,4 @@
+import { cloudflareWorkflowsFramework } from './cloudflare-workflows/index.js';
 import type { MigrationFramework } from './framework.js';
 import { inngestFramework } from './inngest/index.js';
 import { temporalFramework } from './temporal/index.js';
@@ -7,4 +8,5 @@ import { temporalFramework } from './temporal/index.js';
 export const FRAMEWORKS: Record<string, MigrationFramework<any>> = {
   [inngestFramework.id]: inngestFramework,
   [temporalFramework.id]: temporalFramework,
+  [cloudflareWorkflowsFramework.id]: cloudflareWorkflowsFramework,
 };

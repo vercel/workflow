@@ -325,13 +325,22 @@ export function migrateProject(
   // Pass 2: type the parameters the codemod added from their call sites.
   const typedFiles = [...pending.keys()].filter(isTypeScriptFile);
   if (typedFiles.length) {
-    const program2 = project.program();
-    const checker = program2.getTypeChecker();
-    for (const file of typedFiles) {
-      const sf = program2.getSourceFile(file);
-      if (!sf) continue;
-      const next = inferParameterTypes(ts, sf, checker);
-      if (next !== sf.text) project.write(file, next);
+    // Rounds: a type that still contains `any` waits for the parameters it
+    // depends on, and the last round takes whatever is left.
+    const rounds = 3;
+    for (let round = 0; round < rounds; round++) {
+      const program2 = project.program();
+      const checker = program2.getTypeChecker();
+      let pendingMarks = false;
+      for (const file of typedFiles) {
+        const sf = program2.getSourceFile(file);
+        if (!sf) continue;
+        const next = inferParameterTypes(ts, sf, checker, round < rounds - 1);
+        if (next !== sf.text) project.write(file, next);
+        if (next.includes(INFER_MARK) || next.includes(REST_INFER_MARK))
+          pendingMarks = true;
+      }
+      if (!pendingMarks) break;
     }
 
     // Pass 3: keep only the annotations the checker accepts.
@@ -382,7 +391,13 @@ export function migrateProject(
 export function inferParameterTypes(
   ts: typeof TS,
   sf: TS.SourceFile,
-  checker: TS.TypeChecker
+  checker: TS.TypeChecker,
+  /**
+   * Leave a parameter whose type still contains `any` for a later round:
+   * the `any` can come from another generated parameter that is not typed
+   * yet (a step result that depends on an untyped step input).
+   */
+  deferAny = false
 ): string {
   const text = sf.text;
   if (!text.includes(INFER_MARK) && !text.includes(REST_INFER_MARK))
@@ -467,6 +482,7 @@ export function inferParameterTypes(
       } else {
         const arg = call?.arguments[index];
         const printed = arg && typeOf(arg, declaration);
+        if (deferAny && printed && /\bany\b/.test(printed)) continue;
         if (printed === 'any') annotation = ': any';
         else if (printed) annotation = `: ${TYPE_START}${printed}${TYPE_END}`;
       }
