@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -119,6 +120,45 @@ describe('runInit', () => {
     rmSync(join(appDir, 'package-lock.json'));
     writeFileSync(join(appDir, 'pnpm-lock.yaml'), '');
     expect(init().output).toContain('\n  pnpm add -D @swc/core@~1.15.18\n');
+  });
+
+  it('warns in an npm workspace whose root @nestjs/cli loads @swc/core 1.16, with a fix for the root', () => {
+    // The app follows the docs (@swc/core 1.15), but `nest build` runs the
+    // root @nestjs/cli, which loads the root's @swc/cli and @swc/core 1.16.
+    createApp({ cli: '0.8.1', core: '1.15.47' });
+    const root = appDir;
+    rmSync(join(root, 'package-lock.json'));
+    const app = join(root, 'apps', 'api');
+    mkdirSync(app, { recursive: true });
+    renameSync(join(root, 'node_modules'), join(app, 'node_modules'));
+    writeFileSync(join(app, 'package.json'), '{"name":"api"}');
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'root', workspaces: ['apps/*'] })
+    );
+    writeFileSync(join(root, 'package-lock.json'), '{}');
+    const rootModules = join(root, 'node_modules');
+    installFake(rootModules, '@nestjs/cli', '12.0.13');
+    installFake(rootModules, '@swc/cli', '0.8.2');
+    installFake(rootModules, '@swc/core', '1.16.22');
+
+    const lines: string[] = [];
+    const code = runInit({
+      workingDir: app,
+      moduleType: 'es6',
+      force: false,
+      pluginPath: () => PLUGIN_PATH,
+      log: (message) => lines.push(message),
+    });
+    const output = lines.join('\n');
+    expect(code).toBe(0);
+    expect(existsSync(join(app, '.swcrc'))).toBe(true);
+    expect(output).toContain('@swc/core 1.16.22 is installed');
+    expect(output).toContain(join(rootModules, '@swc', 'core'));
+    expect(output).toContain(
+      `through @nestjs/cli in ${root}, outside this app`
+    );
+    expect(output).toContain('\n  cd ../.. && npm i -D @swc/core@~1.15.18\n');
   });
 
   it('warns when .swcrc is already configured (the `init` from the docs, run twice)', () => {

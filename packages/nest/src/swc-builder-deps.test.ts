@@ -274,6 +274,170 @@ describe('inspectSwcBuilderPackages', () => {
   });
 });
 
+/**
+ * An npm (or yarn 1) workspace as `npm i` lays it out: the root declares
+ * @nestjs/cli and @swc/core 1.16, and the app follows the docs with 1.15.
+ * Everything the root declares is hoisted to the root `node_modules`.
+ */
+function npmWorkspace() {
+  const root = createApp();
+  writeFileSync(
+    join(root, 'package.json'),
+    JSON.stringify({ name: 'root', workspaces: ['apps/*'] })
+  );
+  const rootModules = join(root, 'node_modules');
+  installFake(rootModules, '@nestjs/cli', '12.0.13');
+  installFake(rootModules, '@swc/cli', '0.8.2');
+  const rootCore = installFake(rootModules, '@swc/core', '1.16.22');
+  const app = join(root, 'apps', 'api');
+  mkdirSync(app, { recursive: true });
+  writeFileSync(join(app, 'package.json'), '{"name":"api"}');
+  installFake(join(app, 'node_modules'), '@swc/cli', '0.8.1');
+  const appCore = installFake(
+    join(app, 'node_modules'),
+    '@swc/core',
+    '1.15.47'
+  );
+  return { root, app, rootCore, appCore };
+}
+
+/**
+ * The same workspace under pnpm: packages live in the root's `.pnpm` store
+ * and every `node_modules` entry is a symlink. The root @nestjs/cli's
+ * @swc/cli and @swc/core peers are linked to the root's 1.16 copy.
+ */
+function pnpmWorkspace() {
+  const root = createApp();
+  writeFileSync(join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n");
+  const store = join(root, 'node_modules', '.pnpm');
+  const core = (version: string) =>
+    installFake(
+      join(store, `@swc+core@${version}`, 'node_modules'),
+      '@swc/core',
+      version
+    );
+  const core116 = core('1.16.22');
+  const core115 = core('1.15.47');
+  const cli = (version: string, coreDir: string, coreVersion: string) => {
+    const modules = join(
+      store,
+      `@swc+cli@${version}_@swc+core@${coreVersion}`,
+      'node_modules'
+    );
+    link(modules, '@swc/core', coreDir);
+    return installFake(modules, '@swc/cli', version);
+  };
+  const cli116 = cli('0.8.2', core116, '1.16.22');
+  const cli115 = cli('0.8.1', core115, '1.15.47');
+  const nestModules = join(
+    store,
+    '@nestjs+cli@12.0.13_@swc+cli@0.8.2_@swc+core@1.16.22',
+    'node_modules'
+  );
+  const nestCli = installFake(nestModules, '@nestjs/cli', '12.0.13');
+  link(nestModules, '@swc/cli', cli116);
+  link(nestModules, '@swc/core', core116);
+  link(join(root, 'node_modules'), '@nestjs/cli', nestCli);
+  const app = join(root, 'apps', 'api');
+  mkdirSync(app, { recursive: true });
+  writeFileSync(join(app, 'package.json'), '{"name":"api"}');
+  link(join(app, 'node_modules'), '@swc/cli', cli115);
+  link(join(app, 'node_modules'), '@swc/core', core115);
+  return { root, app, core116, core115, store };
+}
+
+describe('inspectSwcBuilderPackages in workspaces', () => {
+  it('reports the 1.16 @swc/core the root @nestjs/cli loads, not the app 1.15 (npm workspace)', () => {
+    const { root, app, rootCore } = npmWorkspace();
+    expect(inspectSwcBuilderPackages(app)).toEqual({
+      cli: true,
+      core: { state: 'unsupported', version: '1.16.22', path: rootCore },
+      outside: {
+        dir: root,
+        relative: '../..',
+        workspaceRoot: true,
+        yarnBerry: false,
+      },
+    });
+  });
+
+  it('reports the 1.16 @swc/core the root @nestjs/cli loads, not the app 1.15 (pnpm workspace)', () => {
+    const { root, app, core116 } = pnpmWorkspace();
+    expect(inspectSwcBuilderPackages(app)).toEqual({
+      cli: true,
+      core: { state: 'unsupported', version: '1.16.22', path: core116 },
+      outside: {
+        dir: root,
+        relative: '../..',
+        workspaceRoot: true,
+        yarnBerry: false,
+      },
+    });
+  });
+
+  it('uses the app @nestjs/cli when the app has its own (pnpm workspace)', () => {
+    const { app, store, core115 } = pnpmWorkspace();
+    const nestModules = join(
+      store,
+      '@nestjs+cli@12.0.13_@swc+cli@0.8.1_@swc+core@1.15.47',
+      'node_modules'
+    );
+    const nestCli = installFake(nestModules, '@nestjs/cli', '12.0.13');
+    link(nestModules, '@swc/cli', join(app, 'node_modules', '@swc', 'cli'));
+    link(join(app, 'node_modules'), '@nestjs/cli', nestCli);
+    expect(inspectSwcBuilderPackages(app)).toEqual({
+      cli: true,
+      core: { state: 'supported', version: '1.15.47', path: core115 },
+    });
+  });
+
+  it('falls back to the app @swc/cli when the root @nestjs/cli cannot reach one', () => {
+    const { root, app, appCore } = npmWorkspace();
+    rmSync(join(root, 'node_modules', '@swc'), { recursive: true });
+    expect(inspectSwcBuilderPackages(app)).toEqual({
+      cli: true,
+      core: { state: 'supported', version: '1.15.47', path: appCore },
+    });
+  });
+
+  it('points the fix at the root @nestjs/cli when no @swc/cli is installed', () => {
+    const { root, app } = npmWorkspace();
+    rmSync(join(root, 'node_modules', '@swc'), { recursive: true });
+    rmSync(join(app, 'node_modules'), { recursive: true });
+    expect(inspectSwcBuilderPackages(app)).toMatchObject({
+      cli: false,
+      core: { state: 'missing' },
+      outside: { dir: root, relative: '../..' },
+    });
+  });
+
+  it('tells the user to pin @swc/core where @nestjs/cli is installed (npm workspace)', () => {
+    const { root, app } = npmWorkspace();
+    const message = describeSwcBuilderProblems(
+      inspectSwcBuilderPackages(app),
+      'npm'
+    );
+    expect(message).toContain('@swc/core 1.16.22 is installed');
+    expect(message).toContain(
+      `\`nest build\` loads them through @nestjs/cli in ${root}, outside this app`
+    );
+    expect(message?.split('\n').at(-1)).toBe(
+      '  cd ../.. && npm i -D @swc/core@~1.15.18'
+    );
+  });
+
+  it('tells the user to pin @swc/core where @nestjs/cli is installed (pnpm workspace)', () => {
+    const { app } = pnpmWorkspace();
+    const message = describeSwcBuilderProblems(
+      inspectSwcBuilderPackages(app),
+      'pnpm'
+    );
+    expect(message?.split('\n').at(-1)).toBe(
+      '  cd ../.. && pnpm add -D -w @swc/core@~1.15.18'
+    );
+  });
+});
+
 describe('detectPackageManager', () => {
   it.each([
     ['pnpm-lock.yaml', 'pnpm'],
@@ -373,5 +537,29 @@ describe('devInstallCommand', () => {
     ['bun', 'bun add -d @swc/core@~1.15.18'],
   ] as const)('%s', (manager, command) => {
     expect(devInstallCommand(manager, [SWC_CORE_INSTALL_SPEC])).toBe(command);
+  });
+});
+
+describe('devInstallCommand at a workspace root', () => {
+  it.each([
+    ['npm', {}, 'cd ../.. && npm i -D @swc/core@~1.15.18'],
+    ['pnpm', {}, 'cd ../.. && pnpm add -D -w @swc/core@~1.15.18'],
+    ['yarn', {}, 'cd ../.. && yarn add -D -W @swc/core@~1.15.18'],
+    ['yarn', { yarnBerry: true }, 'cd ../.. && yarn add -D @swc/core@~1.15.18'],
+    ['bun', {}, 'cd ../.. && bun add -d @swc/core@~1.15.18'],
+  ] as const)('%s %o', (manager, extra, command) => {
+    expect(
+      devInstallCommand(manager, [SWC_CORE_INSTALL_SPEC], {
+        cd: '../..',
+        workspaceRoot: true,
+        ...extra,
+      })
+    ).toBe(command);
+  });
+
+  it('quotes a folder the shell would split', () => {
+    expect(
+      devInstallCommand('npm', ['@swc/cli'], { cd: "../my app's root" })
+    ).toBe(`cd '../my app'\\''s root' && npm i -D @swc/cli`);
   });
 });

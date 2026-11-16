@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'pathe';
+import { dirname, join, relative, resolve } from 'pathe';
 
 /**
  * The `@swc/core` minor line the Workflow SWC plugin runs on. On any other
@@ -30,21 +30,50 @@ export interface SwcBuilderStatus {
   cli: boolean;
   /** The `@swc/core` that `@swc/cli` loads when `nest build` runs. */
   core: SwcCoreStatus;
+  /**
+   * Set when `nest build` loads the SWC packages from outside the
+   * application: `@nestjs/cli` is installed in another folder (a workspace
+   * root, say), and SWC packages installed in the application do not reach
+   * it. Fixes have to be installed there.
+   */
+  outside?: OutsideInstall;
+}
+
+export interface OutsideInstall {
+  /** The folder whose `node_modules` holds `@nestjs/cli`. */
+  dir: string;
+  /** `dir` relative to the application, for a `cd` the user can paste. */
+  relative: string;
+  /** `dir` is a workspace root, where pnpm needs `-w` and yarn 1 `-W`. */
+  workspaceRoot: boolean;
+  /** `dir` uses Yarn 2+ (it has a `.yarnrc.yml`), which takes no `-W`. */
+  yarnBerry: boolean;
 }
 
 export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
 
+interface FoundPackage {
+  /** Real path of the package's `package.json`. */
+  packageJson: string;
+  /**
+   * The folder whose `node_modules` holds the package (before following
+   * symlinks), or `null` under Yarn PnP, which has no `node_modules`.
+   */
+  installDir: string | null;
+}
+
 /**
- * Return the `package.json` path of `pkg` as Node would resolve it from a
- * module in `fromDir`, or `null` when it is not installed.
+ * Find `pkg` as Node would resolve it from a module in `fromDir`, or return
+ * `null` when it is not installed.
  */
-function findPackageJson(pkg: string, fromDir: string): string | null {
+function findPackage(pkg: string, fromDir: string): FoundPackage | null {
   // Yarn PnP has no node_modules to walk.
   if (process.versions.pnp) {
     try {
-      return createRequire(join(fromDir, 'noop.js')).resolve(
+      const packageJson = createRequire(join(fromDir, 'noop.js')).resolve(
         `${pkg}/package.json`
       );
+      return { packageJson, installDir: null };
     } catch {
       return null;
     }
@@ -54,10 +83,24 @@ function findPackageJson(pkg: string, fromDir: string): string | null {
   let dir = resolve(fromDir);
   while (true) {
     const candidate = join(dir, 'node_modules', pkg, 'package.json');
-    if (existsSync(candidate)) return realpathSync(candidate);
+    if (existsSync(candidate)) {
+      return { packageJson: realpathSync(candidate), installDir: dir };
+    }
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
+  }
+}
+
+function isWorkspaceRoot(dir: string): boolean {
+  if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return true;
+  try {
+    const { workspaces } = JSON.parse(
+      readFileSync(join(dir, 'package.json'), 'utf-8')
+    );
+    return workspaces !== undefined;
+  } catch {
+    return false;
   }
 }
 
@@ -80,31 +123,55 @@ export function isSupportedSwcCoreVersion(version: string): boolean {
 /**
  * Inspect the SWC packages the NestJS CLI's SWC builder uses for `workingDir`.
  *
- * `@swc/core` is resolved the way `nest build` loads it: from `@swc/cli` when
- * the application has it, otherwise from `workingDir`. Never from
- * `@workflow/nest`, whose own `@swc/core` dependency is a different copy
- * whenever the application installs another version.
+ * They are resolved the way `nest build` loads them: `@nestjs/cli` requires
+ * `@swc/cli` from its own location, and `@swc/cli` requires `@swc/core` from
+ * its own. Without `@nestjs/cli`, or when `@swc/cli` cannot be reached from
+ * it, `@swc/cli` is resolved from `workingDir`. `@swc/core` is never taken
+ * from `@workflow/nest`, whose own dependency is a different copy whenever
+ * the application installs another version.
  */
 export function inspectSwcBuilderPackages(
   workingDir: string
 ): SwcBuilderStatus {
-  const cliPackageJson = findPackageJson('@swc/cli', workingDir);
-  const corePackageJson = findPackageJson(
+  const appDir = resolve(workingDir);
+  const nestCli = findPackage('@nestjs/cli', appDir);
+  const cliViaNest = nestCli
+    ? findPackage('@swc/cli', dirname(nestCli.packageJson))
+    : null;
+  const cli = cliViaNest ?? findPackage('@swc/cli', appDir);
+  const core = findPackage(
     '@swc/core',
-    cliPackageJson ? dirname(cliPackageJson) : workingDir
+    cli ? dirname(cli.packageJson) : appDir
   );
-  if (!corePackageJson) {
-    return { cli: cliPackageJson !== null, core: { state: 'missing' } };
-  }
-  const version = readVersion(corePackageJson);
-  return {
-    cli: cliPackageJson !== null,
-    core: {
+
+  // Where a fix has to go: next to @nestjs/cli when nest build resolves the
+  // SWC packages through it, or would have to.
+  const installDir =
+    nestCli?.installDir && (cliViaNest || !cli) ? nestCli.installDir : appDir;
+  const outside: OutsideInstall | undefined =
+    installDir === appDir
+      ? undefined
+      : {
+          dir: installDir,
+          relative: relative(appDir, installDir),
+          workspaceRoot: isWorkspaceRoot(installDir),
+          yarnBerry: existsSync(join(installDir, '.yarnrc.yml')),
+        };
+
+  const status: SwcBuilderStatus = {
+    cli: cli !== null,
+    core: { state: 'missing' },
+    ...(outside ? { outside } : {}),
+  };
+  if (core) {
+    const version = readVersion(core.packageJson);
+    status.core = {
       state: isSupportedSwcCoreVersion(version) ? 'supported' : 'unsupported',
       version,
-      path: dirname(corePackageJson),
-    },
-  };
+      path: dirname(core.packageJson),
+    };
+  }
+  return status;
 }
 
 const LOCKFILES: ReadonlyArray<readonly [string, PackageManager]> = [
@@ -139,17 +206,36 @@ export function detectPackageManager(
   return 'npm';
 }
 
+export interface InstallTarget {
+  /** Run the command in this folder (relative to the application). */
+  cd?: string;
+  /** The folder is a workspace root: pnpm needs `-w`, yarn 1 `-W`. */
+  workspaceRoot?: boolean;
+  /** The folder uses Yarn 2+, which has no `-W`. */
+  yarnBerry?: boolean;
+}
+
+function shellQuote(path: string): string {
+  return /^[\w./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
+}
+
 export function devInstallCommand(
   manager: PackageManager,
-  packages: readonly string[]
+  packages: readonly string[],
+  target: InstallTarget = {}
 ): string {
-  const prefix = {
+  let prefix = {
     npm: 'npm i -D',
     pnpm: 'pnpm add -D',
     yarn: 'yarn add -D',
     bun: 'bun add -d',
   }[manager];
-  return `${prefix} ${packages.join(' ')}`;
+  if (target.workspaceRoot && manager === 'pnpm') prefix += ' -w';
+  if (target.workspaceRoot && manager === 'yarn' && !target.yarnBerry) {
+    prefix += ' -W';
+  }
+  const command = `${prefix} ${packages.join(' ')}`;
+  return target.cd ? `cd ${shellQuote(target.cd)} && ${command}` : command;
 }
 
 /**
@@ -189,6 +275,24 @@ export function describeSwcBuilderProblems(
     install.push(SWC_CORE_INSTALL_SPEC);
   }
   if (install.length === 0) return null;
-  lines.push('  Fix it with:', `  ${devInstallCommand(manager, install)}`);
+  const { outside } = status;
+  if (outside) {
+    lines.push(
+      `  \`nest build\` loads them through @nestjs/cli in ${outside.dir}, ` +
+        'outside this app, so SWC packages installed in this app do not ' +
+        'reach it. Install them there instead.'
+    );
+  }
+  const target: InstallTarget = outside
+    ? {
+        cd: outside.relative,
+        workspaceRoot: outside.workspaceRoot,
+        yarnBerry: outside.yarnBerry,
+      }
+    : {};
+  lines.push(
+    '  Fix it with:',
+    `  ${devInstallCommand(manager, install, target)}`
+  );
   return lines.join('\n');
 }
