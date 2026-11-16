@@ -251,16 +251,95 @@ Runs started on Inngest keep running on Inngest. Move new work to the Workflow S
 3. Keep business-level idempotency across both: a duplicate request should not start a Workflow run for work an Inngest run already does. `start({ experimental_hook: { token } })` with the same business key you used for Inngest `idempotency` covers the Workflow side.
 4. Once no Inngest runs are left, delete the `serve()` route, the client and the `inngest` dependency. Keep protecting the endpoints that start or resume runs the way you protected the ones that sent events, and point dashboards and alerts at the Workflow SDK's [observability](/docs/observability).
 
-### Inngest features without a direct Workflow SDK equivalent
+### Flow control, schedules and failure handling
 
-Each row is an Inngest capability the Workflow SDK does not replicate one-to-one, paired with how to cover it on the Workflow SDK side:
+Inngest configures these on the function, and its event bus applies them before a run starts. The Workflow SDK has no event bus between the sender and the run, so you build each one where it belongs. A [start token](/docs/foundations/idempotency#run-idempotency) on `start()` keeps duplicate or excess work from ever becoming a run. A hook, a `sleep()` or a step inside the run handles the rest:
 
-| Inngest feature | How to cover it with the Workflow SDK |
+| Inngest | With the Workflow SDK |
 | --- | --- |
-| Flow control (concurrency, throttling, debounce, rate limiting, batching, priority) | No direct function-level analog; enforce limits inside steps or debounce at the publisher before `start()` |
-| Cron / scheduled functions | Trigger from Vercel Cron or a system cron calling `start()` |
-| Event-bus fan-out by name match | Replace with explicit `start()` calls per target workflow |
-| `onFailure` handler | Wrap the workflow body in `try`/`catch`, call a cleanup step in `catch`, then rethrow |
+| `rateLimit: { key, limit: 1, period }` | A start token per key, retained for the period. A second start before the period has passed throws `HookConflictError`; skip it. See [Rate limit](#rate-limit). |
+| `debounce: { key, period }` | One run per key and window that waits out the window, then reads the current state in a step. See [Debounce](#debounce). |
+| `batchEvents: { maxSize, timeout, key }` | The same shape as debounce: store each event where a step can read it, such as a table keyed by the batch key, start one run per window, and read the whole batch in a step once the window ends. |
+| `concurrency: { key, limit: 1 }` where overlapping runs can be dropped | The `singleton: { mode: 'skip' }` row in [Concept mapping](#concept-mapping): a start token with no retention. |
+| `concurrency` where runs wait their turn | Native per-key locks are in development (see the [concurrency controls discussion](https://github.com/vercel/workflow/discussions/301)). Until they ship, keep the lock you use today inside the steps that need it, and make those steps safe to repeat. |
+| `throttle` | For a downstream API's limit, throw `RetryableError` with the provider's `retryAfter` from the step. See [Rate Limiting & Retries](/cookbook/common-patterns/rate-limiting). Native rate limiting inside runs is in development alongside locks. |
+| `priority` | No equivalent. Runs start in the order `start()` is called. |
+| Cron triggers | [Vercel Schedules](https://vercel.com/docs/schedules/workflows). A schedule publishes to a queue topic, and its consumer calls `start()` with the occurrence's `executionId` in the start token, so a redelivered occurrence never starts a second run. Schedules take an IANA `timezone` and also run in Preview branches and custom environments. |
+| Several functions triggered by one event | One `start()` per target workflow where the event is sent, each with its own start token, such as `` `${targetName}:${event.id}` ``. A retried send then never starts a target twice. |
+| `onFailure` | [`registerLifecycleHooks({ onRunFailed })`](/docs/api-reference/workflow-api/register-lifecycle-hooks) reports failed runs from one place, for example to Slack or Sentry. It is best-effort. Where a workflow must compensate, also wrap its body in `try`/`catch`, call a cleanup step in `catch`, then rethrow. |
+
+#### Rate limit
+
+Inngest's `rateLimit` drops events once the limit for a key is reached in the period. A start token retained for the period does the same for `limit: 1`. The token stays taken until the period has passed since the accepted start, and for as long as that run is still running:
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { HookConflictError } from "workflow/errors";
+declare function syncAccount(accountId: string): Promise<void>; // @setup
+
+// Inngest: rateLimit: { key: "event.data.accountId", limit: 1, period: "1m" }
+export async function requestSync(accountId: string) {
+  try {
+    await start(syncAccount, [accountId], {
+      experimental_hook: {
+        token: `sync-account:${accountId}`,
+        experimental_minRetention: "1m", // [!code highlight]
+      },
+    });
+    return { started: true };
+  } catch (error) {
+    if (HookConflictError.is(error)) return { started: false }; // rate-limited
+    throw error;
+  }
+}
+```
+
+To limit by fixed windows instead, put the window number in the token, as in `` `sync-account:${accountId}:${Math.floor(Date.now() / 60_000)}` ``. For `limit: n`, try `n` tokens per window (`:0` to `:n-1`) and skip when all of them are taken.
+
+#### Debounce
+
+Inngest's `debounce` runs once, with the last event, after events for a key stop arriving for the period. When the run can read the current state itself, one run per key and window gives the same result with the fewest runs and events. The first event in a window starts the run, and every later event in that window is refused at `start()`, so it never becomes a run:
+
+```typescript title="lib/pack-changed.ts" lineNumbers
+import { start } from "workflow/api";
+import { HookConflictError } from "workflow/errors";
+import { refreshPack } from "@/workflows/refresh-pack";
+
+const WINDOW_MS = 3 * 60_000; // Inngest: debounce: { key: "event.data.packId", period: "3m" }
+
+// Call after writing the change to the database.
+export async function packChanged(packId: string) {
+  const windowEnd = (Math.floor(Date.now() / WINDOW_MS) + 1) * WINDOW_MS;
+  try {
+    await start(refreshPack, [packId, windowEnd], {
+      experimental_hook: { token: `refresh-pack:${packId}:${windowEnd}` }, // [!code highlight]
+    });
+  } catch (error) {
+    if (!HookConflictError.is(error)) throw error; // this window already has a run
+  }
+}
+```
+
+```typescript title="workflows/refresh-pack.ts" lineNumbers
+import { sleep } from "workflow";
+declare function loadAndPublishPack(packId: string): Promise<void>; // @setup
+
+export async function refreshPack(packId: string, windowEnd: number) {
+  "use workflow";
+
+  await sleep(new Date(windowEnd + 10_000)); // the window, plus a margin for late starts
+  await refreshFromDatabase(packId);
+}
+
+async function refreshFromDatabase(packId: string) {
+  "use step";
+  await loadAndPublishPack(packId); // reads the pack's current state
+}
+```
+
+An event that is refused wrote its change before it picked its window, so before that window ended. The run reads the database only after the window and the margin, so it sees every change in its window. If the run has already finished, the token is free again and the late event starts a new run, which reads the change too. The difference from Inngest is the timing: a key that keeps receiving events runs once per window instead of waiting for a quiet period, so set the window to the longest delay you can accept.
+
+When the run needs the events themselves rather than the current state, store each event before calling `start()`, as for `batchEvents`, and read the window's events in the step.
 
 ---
 *Compiled from public documentation. Inngest tier names and pricing vary across sources; verify against [inngest.com/pricing](https://www.inngest.com/pricing). Not based on head-to-head benchmarks.*

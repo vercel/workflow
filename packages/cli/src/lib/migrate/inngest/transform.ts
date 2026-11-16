@@ -113,15 +113,15 @@ const STEP_METHODS = new Set([
 /** Inngest function options and what to do about them. */
 const CONFIG_GUIDANCE: Record<string, string> = {
   concurrency:
-    'Inngest `concurrency` has no function-level equivalent. Limit concurrency where you call start(), or inside the steps that need it.',
+    'Inngest `concurrency` has no function-level equivalent yet (native locks are in development). With limit 1 where overlapping runs can be dropped, start with experimental_hook: { token } and skip on HookConflictError; otherwise keep your existing lock inside the steps that need it.',
   throttle:
-    'Inngest `throttle` has no function-level equivalent. Throttle where you call start().',
+    'Inngest `throttle` has no function-level equivalent. For a downstream limit, throw RetryableError with retryAfter from the step; otherwise throttle where you call start().',
   rateLimit:
-    'Inngest `rateLimit` has no function-level equivalent. Rate-limit where you call start().',
+    'Inngest `rateLimit` maps to a start token per key retained for the period: start(workflow, [event], { experimental_hook: { token: key, experimental_minRetention: period } }), skipping on HookConflictError.',
   debounce:
-    'Inngest `debounce` has no function-level equivalent. Debounce where you call start(), for example with a hook keyed by the debounce key.',
+    'Inngest `debounce` maps to one run per key and window: start with experimental_hook: { token: `${key}:${windowEnd}` }, skip on HookConflictError, and have the run sleep until the window ends and read the current state in a step.',
   batchEvents:
-    'Inngest `batchEvents` has no equivalent. Batch events before calling start(), or start one run per event.',
+    'Inngest `batchEvents` has no equivalent. Store each event, start one run per batch key and window (like debounce), and read the batch in a step once the window ends; or start one run per event.',
   priority:
     'Inngest `priority` has no equivalent. Runs start in the order start() is called.',
   timeouts:
@@ -129,7 +129,7 @@ const CONFIG_GUIDANCE: Record<string, string> = {
   cancelOn:
     'Inngest `cancelOn` has no declarative equivalent. Call getRun(runId).cancel() where you sent the cancel event, or race the work against a hook and pass an AbortSignal into the steps.',
   onFailure:
-    'Inngest `onFailure` has no declarative equivalent. Wrap the workflow body in try/catch and call a cleanup step in the catch block, then rethrow.',
+    'Inngest `onFailure` has no declarative equivalent. Report failed runs with registerLifecycleHooks({ onRunFailed }) from workflow/api; where the workflow must compensate, wrap its body in try/catch, call a cleanup step in the catch block, then rethrow.',
   middleware:
     'Inngest middleware does not run in the Workflow SDK. Move what it did into steps.',
   singleton:
@@ -541,7 +541,7 @@ export function transformInngestFile(
     }
     for (const trigger of fn.triggers) {
       if (trigger.kind === 'cron') {
-        const message = `Inngest ran this function on the cron schedule ${trigger.value}. Call start(${workflowName}, [...]) from a scheduled job (for example a Vercel Cron Job route) to keep the schedule.`;
+        const message = `Inngest ran this function on the cron schedule ${trigger.value}. Point a Vercel Schedule at a queue topic whose consumer calls start(${workflowName}, [...]) with the occurrence's executionId in an experimental_hook token (https://vercel.com/docs/schedules/workflows).`;
         configTodos.push(message);
         fnNotes.push({ severity: 'todo', line: line(call), message });
       }

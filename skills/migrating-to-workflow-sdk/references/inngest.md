@@ -42,9 +42,13 @@ When you cannot run it (the prompt only contains code), apply the same rules by 
 | `singleton: { key, mode: 'cancel' }` | on `HookConflictError`, `await getRun(error.conflictingRunId).cancel()` and start again; no retention, because a retained token stays refused after a cancel |
 | `cancelOn` | `getRun(runId).cancel()` where the cancel event was sent, or an `AbortController` whose signal is passed into steps; see `references/shared-patterns.md` -> `## Cancellation` |
 | `runId` / `attempt` / `logger` | `getWorkflowMetadata().workflowRunId` / `getStepMetadata().attempt - 1` (Workflow counts from 1) / `console` |
-| `onFailure` | `try`/`catch` around the workflow body, a cleanup step in `catch`, then rethrow |
-| concurrency, throttle, rateLimit, debounce, batchEvents, priority | no function-level equivalent; enforce at the caller of `start()` or inside steps, and say so in `## Open Questions` |
-| cron trigger | a scheduled job (Vercel Cron, system cron) calling `start()` |
+| `onFailure` | `registerLifecycleHooks({ onRunFailed })` (from `workflow/api`, registered once per process, e.g. in `instrumentation.ts`) for alerting; where the workflow must compensate, also `try`/`catch` around the body, a cleanup step in `catch`, then rethrow |
+| `rateLimit: { key, limit: 1, period }` | `start()` with `experimental_hook: { token: key, experimental_minRetention: period }`; skip on `HookConflictError`. For fixed windows put `Math.floor(Date.now() / periodMs)` in the token; for `limit: n` try `n` slot tokens |
+| `debounce: { key, period }` | one run per key and window: the token is `${key}:${windowEnd}` (no retention), the run does `sleep(new Date(windowEnd + margin))` and then reads current state in a step; skip on `HookConflictError`. Senders write their change before `start()`. Runs once per window rather than after a quiet period: note that in `## Open Questions` if the timing matters |
+| `batchEvents` | as debounce, but each event is stored first (a table keyed by the batch key) and the step reads the window's events |
+| `concurrency` that waits its turn, `throttle`, `priority` | no equivalent yet (native locks and in-run rate limiting are in development); keep the existing lock inside the steps that need it, use `RetryableError` with `retryAfter` for downstream limits, and say so in `## Open Questions`. `concurrency: { limit: 1 }` that can drop overlap is the `singleton` skip row |
+| cron trigger | a Vercel Schedule targeting a queue topic whose consumer calls `start()` with ``experimental_hook: { token: `${name}:${message.executionId}`, experimental_minRetention: '7 days' }`` and returns on `HookConflictError` (https://vercel.com/docs/schedules/workflows); schedules take a `timezone` |
+| several functions on one event | one `start()` per target where the event is sent, each with token `${targetName}:${event.id}` |
 
 ## One owner per token
 
