@@ -164,12 +164,19 @@ function ownValue(object: Dict, key: string): unknown {
   return Object.hasOwn(object, key) ? object[key] : undefined;
 }
 function setOwn(object: Dict, key: string, value: unknown): void {
-  Object.defineProperty(object, key, {
-    value,
-    enumerable: true,
-    writable: true,
-    configurable: true,
-  });
+  // Assignment is much cheaper than `defineProperty`, but assigning a key the
+  // object inherits, such as `__proto__`, can reach its prototype instead of
+  // creating own data.
+  if (!Object.hasOwn(object, key) && key in object) {
+    Object.defineProperty(object, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  } else {
+    object[key] = value;
+  }
 }
 function copyObject(object: Dict): Dict {
   const copy: Dict =
@@ -178,66 +185,107 @@ function copyObject(object: Dict): Dict {
   return copy;
 }
 
-/** Copies only the containers on each changed path; everything else stays shared. */
+/**
+ * Copies only the containers on each changed path; everything else stays
+ * shared. A container copied earlier in the same `applyStateOps` call is
+ * reachable from nothing but the value being built, so later changes update
+ * it in place instead of copying it again.
+ */
 function updateIn(
   value: unknown,
   path: StatePath,
   at: number,
-  update: (value: unknown) => unknown
+  update: (value: unknown) => unknown,
+  fresh: WeakSet<object>
 ): unknown {
   if (at === path.length) return update(value);
   const key = path[at] as string | number;
   if (Array.isArray(value)) {
-    const copy = value.slice();
-    copy[Number(key)] = updateIn(value[Number(key)], path, at + 1, update);
+    const copy = fresh.has(value) ? value : value.slice();
+    fresh.add(copy);
+    copy[Number(key)] = updateIn(
+      value[Number(key)],
+      path,
+      at + 1,
+      update,
+      fresh
+    );
     return copy;
   }
   if (!isPlainObject(value))
     throw new Error('State change does not match its base');
-  const copy = copyObject(value);
+  const copy = fresh.has(value) ? value : copyObject(value);
+  fresh.add(copy);
   setOwn(
     copy,
     String(key),
-    updateIn(ownValue(value, String(key)), path, at + 1, update)
+    updateIn(ownValue(value, String(key)), path, at + 1, update, fresh)
   );
   return copy;
 }
 
 /** @internal */
 export function applyStateOps(base: unknown, ops: readonly StateOp[]): unknown {
+  const fresh = new WeakSet<object>();
   let value = base;
   for (const change of ops) {
     if (change.op === 'set')
-      value = updateIn(value, change.path, 0, () => change.value);
+      value = updateIn(value, change.path, 0, () => change.value, fresh);
     else if (change.op === 'append')
-      value = updateIn(value, change.path, 0, (array) => {
-        if (!Array.isArray(array))
-          throw new Error('State append does not match its base');
-        return [...array, ...change.items];
-      });
+      value = updateIn(
+        value,
+        change.path,
+        0,
+        (array) => {
+          if (!Array.isArray(array))
+            throw new Error('State append does not match its base');
+          if (fresh.has(array)) {
+            for (const item of change.items) array.push(item);
+            return array;
+          }
+          const grown = [...array, ...change.items];
+          fresh.add(grown);
+          return grown;
+        },
+        fresh
+      );
     else if (change.op === 'order')
-      value = updateIn(value, change.path, 0, (object) => {
-        if (
-          !isPlainObject(object) ||
-          change.keys.length !== Object.keys(object).length ||
-          !change.keys.every((key) => Object.hasOwn(object, key))
-        )
-          throw new Error('State key order does not match its base');
-        const copy: Dict =
-          Object.getPrototypeOf(object) === null ? Object.create(null) : {};
-        for (const key of change.keys) setOwn(copy, key, object[key]);
-        return copy;
-      });
+      value = updateIn(
+        value,
+        change.path,
+        0,
+        (object) => {
+          if (
+            !isPlainObject(object) ||
+            change.keys.length !== Object.keys(object).length ||
+            !change.keys.every((key) => Object.hasOwn(object, key))
+          )
+            throw new Error('State key order does not match its base');
+          const copy: Dict =
+            Object.getPrototypeOf(object) === null ? Object.create(null) : {};
+          for (const key of change.keys) setOwn(copy, key, object[key]);
+          fresh.add(copy);
+          return copy;
+        },
+        fresh
+      );
     else {
       const parent = change.path.slice(0, -1);
       const key = change.path[change.path.length - 1] as string | number;
-      value = updateIn(value, parent, 0, (object) => {
-        if (!isPlainObject(object))
-          throw new Error('State delete does not match its base');
-        const copy = copyObject(object);
-        delete copy[String(key)];
-        return copy;
-      });
+      value = updateIn(
+        value,
+        parent,
+        0,
+        (object) => {
+          if (!isPlainObject(object))
+            throw new Error('State delete does not match its base');
+          const copy = fresh.has(object) ? object : copyObject(object);
+          fresh.add(copy);
+          delete copy[String(key)];
+          return copy;
+        },
+        fresh
+      );
     }
   }
   return value;
