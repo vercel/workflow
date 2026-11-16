@@ -223,15 +223,16 @@ export function RunDetailView({
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
+  const initialSelectedSpanId = searchParams.get('spanId') ?? undefined;
 
   const setActiveTab = useCallback(
     (tab: Tab) => {
       // When switching away from streams tab, clear streamId so
       // useStreamReader stops fetching/polling in the background.
       if (tab !== 'streams') {
-        updateSearchParams({ tab, streamId: null });
+        updateSearchParams({ tab, streamId: null, spanId: null });
       } else {
-        updateSearchParams({ tab });
+        updateSearchParams({ tab, spanId: null });
       }
     },
     [updateSearchParams]
@@ -247,7 +248,7 @@ export function RunDetailView({
   // Handler for clicking on stream refs in the trace viewer
   const handleStreamClick = useCallback(
     (streamId: string) => {
-      updateSearchParams({ tab: 'streams', streamId });
+      updateSearchParams({ tab: 'streams', streamId, spanId: null });
     },
     [updateSearchParams]
   );
@@ -747,6 +748,7 @@ export function RunDetailView({
                     onLoadMore={loadMoreTraceData}
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
+                    initialSelectedSpanId={initialSelectedSpanId}
                   />
                 </div>
               </ErrorBoundary>
@@ -754,7 +756,7 @@ export function RunDetailView({
 
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
-                <div className="h-full">
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <RunEventsTab
                     env={env}
                     runId={runId}
@@ -765,7 +767,9 @@ export function RunDetailView({
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
-                    hasEncryptedData={hasEncryptedData}
+                    onViewInTrace={(spanId) =>
+                      updateSearchParams({ tab: 'trace', spanId })
+                    }
                   />
                 </div>
               </ErrorBoundary>
