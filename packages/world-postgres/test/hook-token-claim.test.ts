@@ -192,20 +192,94 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
     }
   });
 
-  // A forced `createHook()` (wire field `eventData.force`) takes the
-  // token over instead of conflicting. Racing forced and unforced claims
-  // still leave one row for the token, owned by a forced claimer.
+  // A forced `createHook()` (wire field `eventData.force`) takes the token
+  // over instead of conflicting. However the claims interleave, every forced
+  // claimer gets `hook_created`, never a plain `hook_conflict` (the runtime
+  // reads that as a World that cannot force-claim and fails the run), and the
+  // claims form one chain: each forced claimer but the last is disposed by
+  // the next one, which records whom it took the token from.
+  type ClaimResult = Awaited<ReturnType<typeof claimAtOnce>>[number];
+  const forceClaimedFrom = (r: ClaimResult) =>
+    (r.event?.eventData as { forceClaimedFrom?: { runId: string } })
+      ?.forceClaimedFrom?.runId;
+
+  /** Who took each run's Hook, from its `hook_disposed{forceClaimedBy}`. */
+  async function takenBy(runIds: string[]): Promise<Map<string, string>> {
+    const takers = new Map<string, string>();
+    for (const runId of runIds) {
+      const log = (await events.list({ runId, pagination: { limit: 1000 } }))
+        .data;
+      const takeovers = log.flatMap((e) => {
+        const by = (e.eventData as { forceClaimedBy?: { runId: string } })
+          ?.forceClaimedBy?.runId;
+        return e.eventType === 'hook_disposed' && by ? [by] : [];
+      });
+      expect(takeovers.length).toBeLessThanOrEqual(1);
+      if (takeovers[0]) takers.set(runId, takeovers[0]);
+    }
+    return takers;
+  }
+
+  async function forcedChain(
+    token: string,
+    runIds: string[],
+    results: ClaimResult[],
+    victim?: string
+  ) {
+    for (const r of results) {
+      expect(r.event?.eventData).not.toHaveProperty('forceRefusedReason');
+    }
+    const rows = await hookRows(token);
+    expect(rows).toHaveLength(1);
+    const owner = rows[0].run_id;
+
+    const registered = runIds.filter(
+      (_, i) => results[i].event?.eventType === 'hook_created'
+    );
+    const takers = await takenBy(victim ? [victim, ...runIds] : runIds);
+    // Every registered claimer's Hook but the owner's was taken over, and
+    // each takeover's `hook_created` names the run it took the token from.
+    for (const runId of registered) {
+      expect(takers.has(runId)).toBe(runId !== owner);
+    }
+    for (const [from, to] of takers) {
+      expect(forceClaimedFrom(results[runIds.indexOf(to)])).toBe(from);
+    }
+
+    // The chain starts at the victim, or at the one claim that found the
+    // token free (no `forceClaimedFrom`), and runs through every registered
+    // claimer to the owner.
+    const fresh = registered.filter(
+      (runId) => !forceClaimedFrom(results[runIds.indexOf(runId)])
+    );
+    expect(fresh).toHaveLength(victim ? 0 : 1);
+    const chain = [victim ?? fresh[0]];
+    for (let next = takers.get(chain[0]); next; next = takers.get(next)) {
+      chain.push(next);
+    }
+    expect(chain.at(-1)).toBe(owner);
+    expect(new Set(chain)).toEqual(
+      new Set(victim ? [victim, ...registered] : registered)
+    );
+    return owner;
+  }
+
+  async function holdToken(token: string): Promise<string> {
+    const runId = await runningRun();
+    await events.create(
+      runId,
+      event('hook_created', {
+        correlationId: `hook_${ulid()}`,
+        eventData: { token },
+      })
+    );
+    return runId;
+  }
+
   test('forced and unforced claims racing on a live token leave one owner, a forced claimer', async () => {
     for (let round = 0; round < ROUNDS; round++) {
       const token = `force-${ulid()}`;
-      const victim = await runningRun();
-      await events.create(
-        victim,
-        event('hook_created', {
-          correlationId: `hook_${ulid()}`,
-          eventData: { token },
-        })
-      );
+      const victim = await holdToken(token);
       const runIds = await Promise.all(
         Array.from({ length: CLAIMANTS }, runningRun)
       );
@@ -214,16 +288,62 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
       const results = await claimAtOnce(token, runIds, forced);
 
       results.forEach((r, i) => {
-        // Every forced claimer ends registered (as the victim or a previous
-        // claimer of a chain); an unforced one always finds an owner.
+        // An unforced claim always finds an owner.
         expect(r.event?.eventType).toBe(
           forced(i) ? 'hook_created' : 'hook_conflict'
         );
       });
-      const rows = await hookRows(token);
-      expect(rows).toHaveLength(1);
-      const ownerIndex = runIds.indexOf(rows[0].run_id);
-      expect(forced(ownerIndex)).toBe(true);
+      const owner = await forcedChain(token, runIds, results, victim);
+      expect(forced(runIds.indexOf(owner))).toBe(true);
+    }
+  });
+
+  // More forced claimers at once than a takeover used to be allowed restarts.
+  test('forced claims from many runs on a live token all register and form one chain', async () => {
+    for (let round = 0; round < ROUNDS; round++) {
+      const token = `force-all-${ulid()}`;
+      const victim = await holdToken(token);
+      const runIds = await Promise.all(
+        Array.from({ length: CLAIMANTS }, runningRun)
+      );
+
+      const results = await claimAtOnce(token, runIds, () => true);
+
+      for (const r of results) expect(r.event?.eventType).toBe('hook_created');
+      await forcedChain(token, runIds, results, victim);
+    }
+  });
+
+  test('forced claims from many runs on a fresh token all register and form one chain', async () => {
+    for (let round = 0; round < ROUNDS; round++) {
+      const token = `force-fresh-${ulid()}`;
+      const runIds = await Promise.all(
+        Array.from({ length: CLAIMANTS }, runningRun)
+      );
+
+      const results = await claimAtOnce(token, runIds, () => true);
+
+      for (const r of results) expect(r.event?.eventType).toBe('hook_created');
+      await forcedChain(token, runIds, results);
+    }
+  });
+
+  test('forced claims from many runs on a token released by a finished run all register and form one chain', async () => {
+    for (let round = 0; round < ROUNDS; round++) {
+      const token = `force-released-${ulid()}`;
+      const previous = await holdToken(token);
+      await events.create(
+        previous,
+        event('run_completed', { eventData: { output: new Uint8Array([2]) } })
+      );
+      const runIds = await Promise.all(
+        Array.from({ length: CLAIMANTS }, runningRun)
+      );
+
+      const results = await claimAtOnce(token, runIds, () => true);
+
+      for (const r of results) expect(r.event?.eventType).toBe('hook_created');
+      await forcedChain(token, runIds, results);
     }
   });
 });
