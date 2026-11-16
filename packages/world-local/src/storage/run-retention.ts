@@ -20,6 +20,12 @@ import {
 } from '@workflow/world';
 import { decode, encode } from '../db/codec.js';
 import type { Database } from '../db/index.js';
+import {
+  DOC_BYTES_SQL,
+  EntityBytes,
+  measureStreamBytes,
+  savePurgedUsage,
+} from './purged-usage.js';
 
 export function purgesUserDataOnFinish(
   attributes: Record<string, string> | undefined
@@ -34,7 +40,14 @@ export function purgesUserDataOnFinish(
   return retention.mode === 'none';
 }
 
-/** Scrubs a finished run's user data. Runs inside a transaction. */
+/**
+ * Scrubs a finished run's user data. Runs inside a transaction.
+ *
+ * First it saves what the run wrote (`savePurgedUsage`): deleting the data
+ * saves on Data Retained, not Data Written. The event sizes come from the
+ * pass that scrubs the events (the rows are read before any is rewritten),
+ * so the only extra read is the run's stream bytes, from their index.
+ */
 export function purgeRunData(db: Database, runId: string): void {
   for (const row of db.all<{ step_id: string; doc: string }>(
     'SELECT step_id, doc FROM steps WHERE run_id = ?',
@@ -52,10 +65,26 @@ export function purgeRunData(db: Database, runId: string): void {
     );
   }
 
-  for (const row of db.all<{ seq: number; doc: string }>(
-    'SELECT seq, doc FROM events WHERE run_id = ?',
+  const written = new EntityBytes();
+  let lastSeq = 0;
+  const events = db.all<{
+    seq: number;
+    event_type: string;
+    doc: string;
+    bytes: number;
+  }>(
+    `SELECT seq, event_type, doc, ${DOC_BYTES_SQL} AS bytes
+     FROM events WHERE run_id = ?`,
     runId
-  )) {
+  );
+  for (const row of events) {
+    written.add(row.event_type, row.bytes);
+    lastSeq = Math.max(lastSeq, Number(row.seq));
+  }
+  written.byEntity.stream = measureStreamBytes(db, runId);
+  savePurgedUsage(db, runId, { seq: lastSeq, byEntity: written.byEntity });
+
+  for (const row of events) {
     const event = decode<Event & { eventData?: Record<string, unknown> }>(
       row.doc
     );

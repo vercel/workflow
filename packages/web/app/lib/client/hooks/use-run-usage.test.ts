@@ -34,7 +34,9 @@ const usage = (runId: string, events: number): RunUsage => ({
   dataWritten: {
     bytes: 0,
     byEntity: { run: 0, step: 0, hook: 0, stream: 0 },
+    source: 'log',
   },
+  dataPurged: false,
   dataRetained: null,
 });
 

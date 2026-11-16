@@ -8,20 +8,30 @@
  *
  * Data written is what the run's rows hold in `world.db`: each event as
  * stored (its payloads included) and each stream chunk. A run started with
- * zero retention (`$retention: '0'`) has had its payloads purged once it
- * finished, so it reports what is left.
+ * zero retention (`$retention: '0'`) has its payloads deleted when it
+ * finishes; the purge saves the sizes first (`purged-usage.ts`), and those
+ * are reported, plus anything written after. A run purged before the sizes
+ * were saved reports what is left, marked as such.
  */
 
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   buildRunUsage,
+  isTerminalWorkflowRunStatus,
   type RunUsage,
+  type RunUsageEntity,
   type RunUsageEventGroup,
   type RunUsageStepGroup,
   type WorkflowRunStatus,
 } from '@workflow/world';
 import type { Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
+import {
+  DOC_BYTES_SQL,
+  EntityBytes,
+  measureStreamBytes,
+  readPurgedUsage,
+} from './purged-usage.js';
 import { tagClause, tagParams } from './store.js';
 
 export interface UsageStorage {
@@ -35,7 +45,7 @@ const IS_STEP_EVENT = `event_type LIKE 'step\\_%' ESCAPE '\\'`;
 const EVENT_GROUPS_SQL = `
   SELECT event_type,
          COUNT(*) AS events,
-         SUM(length(CAST(doc AS BLOB))) AS bytes
+         SUM(${DOC_BYTES_SQL}) AS bytes
   FROM events
   WHERE run_id = ? AND NOT (${IS_STEP_EVENT})
   GROUP BY event_type
@@ -70,7 +80,7 @@ const STEP_GROUPS_SQL = `
            SUM(event_type = 'step_completed') AS completed,
            SUM(event_type = 'step_failed') AS failed,
            SUM(event_type = 'step_retrying') AS retries,
-           SUM(length(CAST(doc AS BLOB))) AS bytes
+           SUM(${DOC_BYTES_SQL}) AS bytes
     FROM events
     WHERE run_id = ?1 AND ${IS_STEP_EVENT}
     GROUP BY correlation_id
@@ -79,11 +89,51 @@ const STEP_GROUPS_SQL = `
   GROUP BY step_name
 `;
 
-const STREAM_BYTES_SQL = `
-  SELECT COALESCE(SUM(length(data)), 0) AS bytes
-  FROM stream_chunks
-  WHERE run_id = ?
+/** Events written after a log position, by type: a purged run's late writes. */
+const EVENTS_AFTER_SQL = `
+  SELECT event_type, SUM(${DOC_BYTES_SQL}) AS bytes
+  FROM events
+  WHERE run_id = ? AND seq > ?
+  GROUP BY event_type
 `;
+
+/**
+ * Whether a finished run's data was deleted when it finished
+ * (`withRunPayloadsPurged` stamps `expiredAt`). Only asked of a finished run
+ * with no saved sizes: the doc is parsed, so a running run skips it.
+ */
+const PURGED_RUN_SQL = `
+  SELECT json_extract(doc, '$.expiredAt') IS NOT NULL AS purged
+  FROM runs WHERE run_id = ?
+`;
+
+/**
+ * Data written by a run whose data was deleted when it finished: what the
+ * purge saved, plus what was written after it. Rows up to the saved position
+ * are counted in the saved sizes and not again; the purge deleted the
+ * stream chunks it measured, so the chunks there now came after it.
+ */
+function purgedDataWritten(
+  db: Database,
+  runId: string
+): Record<RunUsageEntity, number> | null {
+  const saved = readPurgedUsage(db, runId);
+  if (!saved) return null;
+  const late = new EntityBytes();
+  for (const row of db.all<{ event_type: string; bytes: number | null }>(
+    EVENTS_AFTER_SQL,
+    runId,
+    saved.seq
+  )) {
+    late.add(row.event_type, Number(row.bytes ?? 0));
+  }
+  return {
+    run: saved.byEntity.run + late.byEntity.run,
+    step: saved.byEntity.step + late.byEntity.step,
+    hook: saved.byEntity.hook + late.byEntity.hook,
+    stream: saved.byEntity.stream + measureStreamBytes(db, runId),
+  };
+}
 
 export function createUsageStorage(db: Database, tag?: string): UsageStorage {
   return {
@@ -114,12 +164,20 @@ export function createUsageStorage(db: Database, tag?: string): UsageStorage {
           retries: number;
           bytes: number | null;
         }>(STEP_GROUPS_SQL, runId);
-        const streams = db.get<{ bytes: number }>(STREAM_BYTES_SQL, runId);
+        const savedDataWritten = purgedDataWritten(db, runId) ?? undefined;
+        const dataPurged =
+          savedDataWritten !== undefined ||
+          (isTerminalWorkflowRunStatus(run.status as WorkflowRunStatus) &&
+            Number(
+              db.get<{ purged: number }>(PURGED_RUN_SQL, runId)?.purged
+            ) === 1);
         return {
           run,
           events,
           steps,
-          streamBytes: Number(streams?.bytes ?? 0),
+          streamBytes: measureStreamBytes(db, runId),
+          dataPurged,
+          savedDataWritten,
         };
       });
       if (!aggregates) throw new WorkflowRunNotFoundError(runId);
@@ -148,6 +206,8 @@ export function createUsageStorage(db: Database, tag?: string): UsageStorage {
           })
         ),
         streamBytes: aggregates.streamBytes,
+        dataPurged: aggregates.dataPurged,
+        savedDataWritten: aggregates.savedDataWritten,
         // world-local has no plan retention to multiply by.
         // TODO: confirm with the pricing owners that local runs hide it.
         dataRetained: null,

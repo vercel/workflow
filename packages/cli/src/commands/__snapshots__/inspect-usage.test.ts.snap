@@ -33,6 +33,7 @@ Not your final bill. See pricing: https://vercel.com/docs/workflows/pricing"
 exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with --json 1`] = `
 {
   "billableEvents": 37,
+  "dataPurged": false,
   "dataRetained": null,
   "dataWritten": {
     "byEntity": {
@@ -42,6 +43,7 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
       "stream": 2048,
     },
     "bytes": 12693,
+    "source": "log",
   },
   "events": 37,
   "eventsBySpan": [

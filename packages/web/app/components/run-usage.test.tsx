@@ -243,6 +243,46 @@ describe('RunUsagePanel', () => {
     expect(document.body.textContent).not.toContain('no created event');
   });
 
+  it('says when a run’s data was deleted and its sizes are what it wrote', () => {
+    const usage = buildRunUsage({
+      runId: 'wrun_1',
+      status: 'completed',
+      workflowName: WORKFLOW,
+      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 40 }],
+      stepGroups: [],
+      streamBytes: 0,
+      dataPurged: true,
+      savedDataWritten: { run: 300_000, step: 300_000, hook: 0, stream: 0 },
+    });
+    render(<RunUsagePanel usage={usage} error={null} />);
+    expect(screen.getByTestId('run-usage-purged-note').textContent).toBe(
+      "This run's data was deleted when it finished; sizes show what it wrote."
+    );
+    expect(screen.getByTestId('run-usage-total').textContent).toBe('600 KB');
+  });
+
+  it('says when a purged run’s sizes are only what is left', () => {
+    const usage = buildRunUsage({
+      runId: 'wrun_1',
+      status: 'completed',
+      workflowName: WORKFLOW,
+      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 40 }],
+      stepGroups: [],
+      streamBytes: 0,
+      dataPurged: true,
+    });
+    render(<RunUsagePanel usage={usage} error={null} />);
+    expect(screen.getByTestId('run-usage-purged-note').textContent).toBe(
+      "This run's data was deleted when it finished, before its sizes were kept; sizes show what is left."
+    );
+  });
+
+  it('has no purge note for a run that kept its data', () => {
+    render(<RunUsagePanel usage={bigRun()} error={null} />);
+    expect(screen.queryByTestId('run-usage-purged-note')).toBeNull();
+    expect(document.body.textContent).not.toContain('was deleted');
+  });
+
   it('renders a run with no events', () => {
     const empty = buildRunUsage({
       runId: 'wrun_1',

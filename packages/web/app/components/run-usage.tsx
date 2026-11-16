@@ -2,6 +2,7 @@ import { Button } from '@workflow/web-shared';
 import {
   collapseUsageSpans,
   EVENTS_PER_RETRY,
+  formatDataPurgedNote,
   formatRunUsageSummary,
   formatStepCreationNote,
   formatStepEventsBreakdown,
@@ -263,6 +264,7 @@ export function RunUsagePanel({
   const top = usage.eventsBySpan[0];
   const stepBreakdown = formatStepEventsBreakdown(usage);
   const stepCreationNote = formatStepCreationNote(usage);
+  const purgedNote = formatDataPurgedNote(usage);
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto max-w-3xl space-y-8 py-6">
@@ -330,6 +332,14 @@ export function RunUsagePanel({
         </details>
 
         <Section title="Storage">
+          {purgedNote && (
+            <p
+              className="text-copy-13 text-gray-900"
+              data-testid="run-usage-purged-note"
+            >
+              {purgedNote}
+            </p>
+          )}
           <table className="w-full text-copy-13">
             <thead>
               <tr className="text-label-12 text-gray-900 border-b border-gray-alpha-400">

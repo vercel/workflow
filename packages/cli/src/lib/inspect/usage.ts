@@ -1,6 +1,7 @@
 import {
   collapseUsageSpans,
   EVENTS_PER_RETRY,
+  formatDataPurgedNote,
   formatRunUsageSummary,
   formatStepCreationNote,
   formatStepEventsBreakdown,
@@ -101,6 +102,8 @@ export function formatRunUsageText(usage: RunUsage): string {
   for (const line of table(storageRows, ['left', 'right'])) {
     lines.push(`  ${line}`);
   }
+  const purgedNote = formatDataPurgedNote(usage);
+  if (purgedNote) lines.push(`  ${purgedNote}`);
   if (usage.dataRetained) {
     lines.push('');
     lines.push(

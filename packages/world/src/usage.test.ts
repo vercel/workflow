@@ -3,6 +3,7 @@ import {
   buildRunUsage,
   collapseUsageSpans,
   EVENTS_PER_RETRY,
+  formatDataPurgedNote,
   formatRunUsageSummary,
   formatStepCreationNote,
   formatStepEventsBreakdown,
@@ -11,6 +12,7 @@ import {
   type RunUsageAggregates,
   type RunUsageSpan,
   type RunUsageStepGroup,
+  usageEntityOfEventType,
   usageSpanLabel,
 } from './usage.js';
 
@@ -367,6 +369,77 @@ describe('step events by type', () => {
     });
     expect(formatStepEventsBreakdown(usage)).toBeNull();
     expect(formatStepCreationNote(usage)).toBeNull();
+  });
+});
+
+describe('a run whose data was deleted when it finished', () => {
+  const purgedRun = (overrides: Partial<RunUsageAggregates>) =>
+    buildRunUsage(
+      aggregates({
+        eventGroups: [{ eventType: 'run_created', events: 1, bytes: 40 }],
+        stepGroups: [
+          stepGroup('s', {
+            steps: 1,
+            created: 1,
+            started: 1,
+            completed: 1,
+            bytes: 60,
+          }),
+        ],
+        ...overrides,
+      })
+    );
+
+  it('reports the saved sizes, not the rows left', () => {
+    const usage = purgedRun({
+      dataPurged: true,
+      savedDataWritten: { run: 4000, step: 9000, hook: 0, stream: 2500 },
+    });
+    expect(usage.dataPurged).toBe(true);
+    expect(usage.dataWritten).toEqual({
+      bytes: 15_500,
+      byEntity: { run: 4000, step: 9000, hook: 0, stream: 2500 },
+      source: 'saved-at-purge',
+    });
+    // Counts do not depend on the data.
+    expect(usage.events).toBe(4);
+    expect(formatDataPurgedNote(usage)).toBe(
+      "This run's data was deleted when it finished; sizes show what it wrote."
+    );
+  });
+
+  it('reports what is left when no sizes were saved, and says so', () => {
+    const usage = purgedRun({ dataPurged: true });
+    expect(usage.dataWritten).toEqual({
+      bytes: 100,
+      byEntity: { run: 40, step: 60, hook: 0, stream: 0 },
+      source: 'left-after-purge',
+    });
+    expect(formatDataPurgedNote(usage)).toBe(
+      "This run's data was deleted when it finished, before its sizes were kept; sizes show what is left."
+    );
+  });
+
+  it('ignores saved sizes on a run that kept its data', () => {
+    const usage = purgedRun({
+      savedDataWritten: { run: 1, step: 1, hook: 1, stream: 1 },
+    });
+    expect(usage.dataPurged).toBe(false);
+    expect(usage.dataWritten).toEqual({
+      bytes: 100,
+      byEntity: { run: 40, step: 60, hook: 0, stream: 0 },
+      source: 'log',
+    });
+    expect(formatDataPurgedNote(usage)).toBeNull();
+  });
+
+  it('maps event types to the entities the World saves them under', () => {
+    expect(usageEntityOfEventType('run_completed')).toBe('run');
+    expect(usageEntityOfEventType('attr_set')).toBe('run');
+    expect(usageEntityOfEventType('wait_created')).toBe('run');
+    expect(usageEntityOfEventType('step_completed')).toBe('step');
+    expect(usageEntityOfEventType('hook_received')).toBe('hook');
+    expect(usageEntityOfEventType('noop')).toBeNull();
   });
 });
 

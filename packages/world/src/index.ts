@@ -237,6 +237,7 @@ export {
   buildRunUsage,
   collapseUsageSpans,
   EVENTS_PER_RETRY,
+  formatDataPurgedNote,
   formatRunUsageSummary,
   formatStepCreationNote,
   formatStepEventsBreakdown,
@@ -246,6 +247,7 @@ export {
   RUN_USAGE_ENTITIES,
   RUN_USAGE_STEP_EVENT_TYPES,
   USAGE_SPANS_SHOWN,
+  usageEntityOfEventType,
   usageSpanLabel,
   WORKFLOW_PRICING_DOCS_URL,
 } from './usage.js';

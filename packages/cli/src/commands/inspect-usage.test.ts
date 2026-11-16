@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '@oclif/core';
 import {
+  RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
@@ -272,6 +273,56 @@ describe('workflow inspect run <id> --usage', () => {
       '2 steps have no created event: they ran inline, and their first started event created them.'
     );
     expect(stdout).not.toContain('Each step writes 3 events');
+  });
+
+  it('says when a run’s data was deleted, with the sizes it wrote', async () => {
+    const { run } = await create(null, {
+      eventType: 'run_created',
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: WORKFLOW,
+        input: bytes(50_000),
+        attributes: { [RETENTION_ATTRIBUTE]: '0' },
+        allowReservedAttributes: true,
+      },
+    });
+    const runId = run!.runId;
+    await create(runId, { eventType: 'run_started' });
+    await step(runId, 'step_charge', CHARGE);
+    await create(runId, {
+      eventType: 'step_completed',
+      correlationId: 'step_charge',
+      eventData: { result: bytes(8) },
+    });
+    await create(runId, {
+      eventType: 'run_completed',
+      eventData: { output: bytes(4) },
+    });
+
+    const { stdout } = await runInspect([
+      'run',
+      runId,
+      '--usage',
+      '--backend',
+      'local',
+    ]);
+    expect(stdout).toContain(
+      "This run's data was deleted when it finished; sizes show what it wrote."
+    );
+    // The 50 KB input, as written (base64 inside the event), not what is left.
+    expect(stdout).toMatch(/Total\s+6\d\.\d KB/);
+  });
+
+  it('has no purge note for a run that kept its data', async () => {
+    const runId = await seedRun();
+    const { stdout } = await runInspect([
+      'run',
+      runId,
+      '--usage',
+      '--backend',
+      'local',
+    ]);
+    expect(stdout).not.toContain('was deleted');
   });
 
   it('fails on a run the backend does not have', async () => {

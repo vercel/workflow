@@ -96,7 +96,21 @@ export interface RunUsage {
   dataWritten: {
     bytes: number;
     byEntity: Record<RunUsageEntity, number>;
+    /**
+     * Where the sizes come from: the run's rows as they are (`log`); for a
+     * run whose data was deleted when it finished, the sizes saved before
+     * the deletion plus anything written after (`saved-at-purge`), or, when
+     * none were saved (a run purged before the sizes were kept), what is
+     * left of it (`left-after-purge`).
+     */
+    source: RunUsageDataWrittenSource;
   };
+  /**
+   * The run's data was deleted when it finished (`experimental_retention:
+   * 0`). Its event counts are unaffected; see `dataWritten.source` for
+   * whether its sizes are what it wrote.
+   */
+  dataPurged: boolean;
   /**
    * Workflow Data Retained: data written times the retention period.
    * `null` where there is no plan retention to multiply by (world-local).
@@ -107,6 +121,11 @@ export interface RunUsage {
     retentionMonths: number;
   } | null;
 }
+
+export type RunUsageDataWrittenSource =
+  | 'log'
+  | 'saved-at-purge'
+  | 'left-after-purge';
 
 /** The step event types {@link RunUsageStepEvents} counts. */
 export type RunUsageStepEventType =
@@ -175,6 +194,14 @@ export interface RunUsageAggregates {
   stepGroups: RunUsageStepGroup[];
   streamBytes: number;
   dataRetained?: RunUsage['dataRetained'];
+  /**
+   * The run's data was deleted when it finished. With `savedDataWritten`,
+   * those are its sizes (what it wrote); without, the rows' sizes are
+   * reported as what is left.
+   */
+  dataPurged?: boolean;
+  /** Data written by entity, saved before the run's data was deleted. */
+  savedDataWritten?: Record<RunUsageEntity, number>;
 }
 
 const UNKNOWN_STEP_NAME = '(unknown step)';
@@ -199,9 +226,20 @@ function toCount(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function entityOf(kind: RunUsageSpanKind): RunUsageEntity {
-  // A sleep has no payload of its own; its few bytes are the run's.
-  return kind === 'wait' ? 'run' : kind;
+/**
+ * The entity Data Written reports an event's bytes under, or `null` for a
+ * placeholder (not an event). Shared with the World, which adds up the same
+ * entities when it saves a purged run's sizes.
+ */
+export function usageEntityOfEventType(
+  eventType: string
+): RunUsageEntity | null {
+  if (isSealedNoopEvent({ eventType })) return null;
+  if (eventType.startsWith('step_')) return 'step';
+  if (eventType.startsWith('hook_')) return 'hook';
+  // run_*, attr_set, sleeps (no payload of their own) and any event type
+  // this build does not know yet.
+  return 'run';
 }
 
 /** Builds the usage shape from a World's aggregate rows. */
@@ -219,6 +257,7 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   const add = (
     kind: RunUsageSpanKind,
     name: string,
+    entity: RunUsageEntity,
     count: number,
     retryCount: number,
     bytes: number
@@ -234,14 +273,15 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     span.retries += retryCount;
     events += count;
     retries += retryCount;
-    byEntity[entityOf(kind)] += bytes;
+    byEntity[entity] += bytes;
   };
 
   for (const group of input.eventGroups) {
     // Sealed-log placeholders are rows of the log, not events.
-    if (isSealedNoopEvent(group)) continue;
+    const entity = usageEntityOfEventType(group.eventType);
+    if (!entity) continue;
     const { kind, name } = spanOf(group.eventType, input.workflowName);
-    add(kind, name, toCount(group.events), 0, toCount(group.bytes));
+    add(kind, name, entity, toCount(group.events), 0, toCount(group.bytes));
   }
   const stepEvents: RunUsageStepEvents = {
     steps: 0,
@@ -276,6 +316,7 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     add(
       'step',
       group.stepName || UNKNOWN_STEP_NAME,
+      'step',
       toCount(group.events),
       toCount(group.retries),
       toCount(group.bytes)
@@ -300,11 +341,33 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     retries: { count: retries, events: retries * EVENTS_PER_RETRY },
     stepEvents,
     eventsBySpan,
-    dataWritten: {
-      bytes: byEntity.run + byEntity.step + byEntity.hook + byEntity.stream,
-      byEntity,
-    },
+    dataWritten: dataWrittenOf(input, byEntity),
+    dataPurged: input.dataPurged === true,
     dataRetained: input.dataRetained ?? null,
+  };
+}
+
+function dataWrittenOf(
+  input: RunUsageAggregates,
+  measured: Record<RunUsageEntity, number>
+): RunUsage['dataWritten'] {
+  const saved = input.dataPurged ? input.savedDataWritten : undefined;
+  const byEntity = saved
+    ? {
+        run: toCount(saved.run),
+        step: toCount(saved.step),
+        hook: toCount(saved.hook),
+        stream: toCount(saved.stream),
+      }
+    : measured;
+  return {
+    bytes: byEntity.run + byEntity.step + byEntity.hook + byEntity.stream,
+    byEntity,
+    source: !input.dataPurged
+      ? 'log'
+      : saved
+        ? 'saved-at-purge'
+        : 'left-after-purge',
   };
 }
 
@@ -367,6 +430,17 @@ export function formatRunUsageSummary(usage: RunUsage): string {
   const retries = plural(usage.retries.count, 'retry', 'retries');
   if (usage.retries.count === 0) return `${billable} · ${retries}`;
   return `${billable} · ${retries} (+${formatUsageEvents(usage.retries.events)})`;
+}
+
+/**
+ * For a run whose data was deleted when it finished: what its sizes show.
+ * `null` for a run whose data is kept.
+ */
+export function formatDataPurgedNote(usage: RunUsage): string | null {
+  if (!usage.dataPurged) return null;
+  return usage.dataWritten.source === 'saved-at-purge'
+    ? "This run's data was deleted when it finished; sizes show what it wrote."
+    : "This run's data was deleted when it finished, before its sizes were kept; sizes show what is left.";
 }
 
 const STEP_EVENT_LABELS: Record<

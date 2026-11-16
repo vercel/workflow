@@ -19,6 +19,7 @@ import {
 import { createQueue, type DirectHandler } from './queue.js';
 import { createQueueAuthKey } from './queue-auth-key.js';
 import { backstopWakeDelaySeconds } from './recovery-wake.js';
+import { deletePurgedUsage } from './storage/purged-usage.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -281,11 +282,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           ]) {
             db.run(`DELETE FROM ${table}`);
           }
+          deletePurgedUsage(db);
           return;
         }
         // Only this tag's data: its runs and everything they own, and its
         // streams.
         const runs = 'SELECT run_id FROM runs WHERE tag = ?';
+        deletePurgedUsage(db, { runIdsSql: runs, params: [tag] });
         for (const table of [
           'events',
           'steps',
