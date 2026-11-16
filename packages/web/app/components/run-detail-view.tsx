@@ -218,8 +218,7 @@ export function RunDetailView({
   // Empty env object - server actions read from process.env
   const env: EnvMap = useMemo(() => ({}), []);
 
-  // Read tab, streamId and spanId from URL search params (graph tab is hidden
-  // for now)
+  // Read tab and streamId from URL search params (graph tab is hidden for now)
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
@@ -254,13 +253,6 @@ export function RunDetailView({
       } else {
         updateSearchParams({ tab, spanId: null });
       }
-    },
-    [updateSearchParams]
-  );
-
-  const handleViewInTrace = useCallback(
-    (spanId: string) => {
-      updateSearchParams({ tab: 'trace', spanId });
     },
     [updateSearchParams]
   );
@@ -801,7 +793,9 @@ export function RunDetailView({
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     onExactIdSearch={searchByExactId}
-                    onViewInTrace={handleViewInTrace}
+                    onViewInTrace={(spanId) =>
+                      updateSearchParams({ tab: 'trace', spanId })
+                    }
                   />
                 </div>
               </ErrorBoundary>
