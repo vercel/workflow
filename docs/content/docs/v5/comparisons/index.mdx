@@ -1,8 +1,8 @@
 ---
 title: Comparisons
-description: 'How the Workflow SDK compares to other durable execution, workflow, and AI-agent frameworks: Temporal, Cloudflare Workflows, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.'
+description: 'How the Workflow SDK compares to other durable execution, workflow, and AI-agent frameworks: Temporal, Cloudflare Workflows, Cloudflare Durable Objects, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.'
 type: overview
-summary: Side-by-side comparisons of the Workflow SDK against Temporal, Cloudflare Workflows, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.
+summary: Side-by-side comparisons of the Workflow SDK against Temporal, Cloudflare Workflows, Cloudflare Durable Objects, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.
 related:
   - /docs/foundations/workflows-and-steps
   - /docs/how-it-works/event-sourcing
@@ -30,6 +30,7 @@ These comparisons are compiled from each product's public documentation and are 
 | **Workflow SDK** | Durable functions SDK | Event-log + deterministic replay | ✅ Apache-2.0: self-host (Postgres) or Vercel | TypeScript (Python beta) |
 | [Temporal](/docs/comparisons/workflow-sdk-vs-temporal) | Durable execution platform | Event-sourced replay | ✅ MIT server: self-host or Temporal Cloud | Go, Java, TypeScript, Python, .NET, PHP, Ruby |
 | [Cloudflare Workflows](/docs/comparisons/workflow-sdk-vs-cloudflare-workflows) | Durable execution engine | Step-result memoization + replay | ❌ Cloudflare-only | TypeScript (Python beta) |
+| [Cloudflare Durable Objects](/docs/comparisons/workflow-sdk-vs-cloudflare-durable-objects) | Stateful actors with storage, alarms and WebSockets | Transactional per-object storage | ❌ Cloudflare-only | TypeScript / JavaScript |
 | [AWS Step Functions](/docs/comparisons/workflow-sdk-vs-aws-step-functions) | Managed state-machine orchestrator | Declarative ASL state machine | ❌ AWS-only | ASL JSON (tasks: any language) |
 | [AWS Bedrock AgentCore](/docs/comparisons/workflow-sdk-vs-aws-agentcore) | AI-agent hosting platform | Not durable execution (ephemeral sessions) | ❌ AWS-only | Python, Node.js |
 | [Inngest](/docs/comparisons/workflow-sdk-vs-inngest) | Durable functions / event platform | Step-result memoization | ◑ SSPL: self-host (community/best-effort) or SaaS | TypeScript (Python/Go pre-1.0) |
@@ -43,6 +44,9 @@ These comparisons are compiled from each product's public documentation and are 
     </Card>
     <Card href="/docs/comparisons/workflow-sdk-vs-cloudflare-workflows" title="vs Cloudflare Workflows">
         A durable engine on Workers and Durable Objects. Both replay; they handle versioning and encryption differently.
+    </Card>
+    <Card href="/docs/comparisons/workflow-sdk-vs-cloudflare-durable-objects" title="vs Cloudflare Durable Objects">
+        Per-entity actors such as chat rooms and sessions. Each becomes one durable run, with hooks for incoming messages and streams for outgoing ones.
     </Card>
     <Card href="/docs/comparisons/workflow-sdk-vs-aws-step-functions" title="vs AWS Step Functions">
         Declarative ASL JSON state machines compared with plain TypeScript control flow.
@@ -65,5 +69,9 @@ Each deep dive includes a concept-mapping section for moving an existing system.
 npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
 ```
 
-For Inngest, start with the codemod, which lifts every `step.run()` closure into a `"use step"` function and lists the variables each one captured: `npx workflow migrate inngest`. See [Run the codemod](/docs/comparisons/workflow-sdk-vs-inngest#run-the-codemod).
+For Inngest, Temporal and Cloudflare Workflows, start with the codemod. It turns each step, activity or `step.do()` callback into a `"use step"` function and lists the variables each one captured:
+
+- `npx workflow migrate inngest`: see [the Inngest guide](/docs/comparisons/workflow-sdk-vs-inngest#run-the-codemod).
+- `npx workflow migrate temporal`: see [the Temporal guide](/docs/comparisons/workflow-sdk-vs-temporal#run-the-codemod).
+- `npx workflow migrate cloudflare-workflows`: see [the Cloudflare Workflows guide](/docs/comparisons/workflow-sdk-vs-cloudflare-workflows#run-the-codemod).
 </Callout>

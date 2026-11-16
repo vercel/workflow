@@ -16,13 +16,13 @@ import { plural, summarize } from '../lib/migrate/summary.js';
 
 export default class Migrate extends BaseCommand {
   static description =
-    'Migrate code from another durable-execution framework to the Workflow SDK. Supports Inngest: functions become "use workflow" functions, and each step.run() closure is lifted into a "use step" function that takes the variables it captured as arguments.';
+    'Migrate code from another durable-execution framework to the Workflow SDK: Inngest, Temporal or Cloudflare Workflows. Functions become "use workflow" functions, and each step or activity becomes a "use step" function that takes the variables it captured as arguments. What needs a decision is left as a TODO(workflow-migrate) comment.';
 
   static examples = [
     '$ workflow migrate inngest',
-    '$ workflow migrate inngest src/inngest',
-    '$ workflow migrate inngest --dry-run',
-    '$ workflow migrate inngest --report inngest-migration.md',
+    '$ workflow migrate temporal src/workflows',
+    '$ workflow migrate cloudflare-workflows --dry-run',
+    '$ workflow migrate inngest --report migration.md',
   ];
 
   static strict = false;
@@ -150,7 +150,7 @@ export default class Migrate extends BaseCommand {
       this.log(chalk.bold(report.file));
       for (const fn of report.functions) {
         this.log(
-          `  ${chalk.cyan(fn.workflowName)}${fn.sourceId ? chalk.dim(` (was ${fn.sourceId})`) : ''}`
+          `  ${chalk.cyan(fn.workflowName)}${fn.sourceId && fn.sourceId !== fn.workflowName ? chalk.dim(` (was ${fn.sourceId})`) : ''}`
         );
         for (const step of fn.steps) {
           const captured = step.captured.length
