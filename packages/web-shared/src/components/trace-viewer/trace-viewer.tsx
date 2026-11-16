@@ -373,16 +373,6 @@ function TraceViewerContent({
 
   const { altHeld } = useAltHeld();
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        handleClearActiveSpan();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleClearActiveSpan]);
-
   const timelineRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<TimelineHover | null>(null);
 
