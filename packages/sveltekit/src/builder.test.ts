@@ -101,4 +101,13 @@ describe('SvelteKitBuilder', () => {
 
     expectDefaultExternals(new TestBuilder({ workingDir }));
   });
+
+  it('ignores imports keys with more than one wildcard', async () => {
+    // esbuild rejects such external patterns and Node ignores such keys.
+    await writePackageJson(
+      JSON.stringify({ imports: { '#lib/*/x/*': './src/lib/*/x/*' } })
+    );
+
+    expectDefaultExternals(new TestBuilder({ workingDir }));
+  });
 });

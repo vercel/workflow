@@ -207,6 +207,13 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
 /**
  * Keys of the app's package.json `imports` field. SvelteKit 3 recommends
  * subpath imports for custom aliases, so they are left to Vite like `$lib`.
+ *
+ * Keys that do not start with `#` or that have more than one `*` are ignored:
+ * Node ignores them too, and esbuild fails the build on an external pattern
+ * with more than one wildcard.
+ *
+ * The file is read once, when the builder is created, so a key added while
+ * the dev server is running takes effect after a restart.
  */
 function readSubpathImports(workingDir: string): string[] {
   try {
@@ -220,7 +227,9 @@ function readSubpathImports(workingDir: string): string[] {
     ) {
       return [];
     }
-    return Object.keys(imports).filter((key) => key.startsWith('#'));
+    return Object.keys(imports).filter(
+      (key) => key.startsWith('#') && key.split('*').length <= 2
+    );
   } catch {
     return [];
   }
