@@ -1,5 +1,9 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 import { workflow as viteWorkflow } from './vite.js';
@@ -116,6 +120,130 @@ describe('@workflow/nitro virtual handlers', () => {
         `import { POST } from "/tmp/.nitro/workflow/${buildPath}";`
       );
     }
+  });
+});
+
+describe('@workflow/nitro worker plugin', () => {
+  const dirs: string[] = [];
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await Promise.all(
+      dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))
+    );
+  });
+
+  /**
+   * Generates the worker plugin for a production build and runs it against a
+   * stub `workflow/runtime` whose World declares `queueAuthMode`, recording
+   * what the plugin registered.
+   */
+  async function runPlugin(queueAuthMode: string | undefined) {
+    const dir = await mkdtemp(join(tmpdir(), 'nitro-worker-plugin-'));
+    dirs.push(dir);
+    const nitro = createNitroStub({ routing: false });
+    nitro.options.buildDir = dir;
+    await nitroModule.setup(nitro);
+    await mkdir(join(dir, 'workflow'), { recursive: true });
+    await writeFile(
+      join(dir, 'workflow', 'workflows.mjs'),
+      'export const POST = async () => new Response(null);\n'
+    );
+    const runtime = join(dir, 'runtime.mjs');
+    await writeFile(
+      runtime,
+      `export const calls = [];
+export async function getWorld() {
+  calls.push('getWorld');
+  return { queueAuthMode: ${JSON.stringify(queueAuthMode)} };
+}
+export async function registerWorkflowHandler(route) {
+  calls.push('register ' + typeof route);
+  return ${queueAuthMode === 'deny'};
+}
+`
+    );
+    const source = (
+      nitro.options.virtual['#workflow/worker-plugin'] as string
+    ).replace(
+      "'workflow/runtime'",
+      JSON.stringify(pathToFileURL(runtime).href)
+    );
+    const plugin = join(dir, 'plugin.mjs');
+    await writeFile(plugin, source);
+    const mod = await import(pathToFileURL(plugin).href);
+    await mod.default();
+    return (await import(pathToFileURL(runtime).href)).calls as string[];
+  }
+
+  it('registers the flow route when WORKFLOW_TARGET_WORLD names the Postgres World', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+    expect(await runPlugin('deny')).toEqual(['getWorld', 'register function']);
+  });
+
+  it('registers on a custom World module that delivers in process, and leaves one that does not alone', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', './my-world.ts');
+    expect(await runPlugin('deny')).toEqual(['getWorld', 'register function']);
+    expect(await runPlugin('loopback')).toEqual(['getWorld']);
+  });
+
+  it('does not build the Local or Vercel World at boot', async () => {
+    for (const target of [
+      undefined,
+      'local',
+      'vercel',
+      '@workflow/world-local',
+      '@workflow/world-vercel',
+    ]) {
+      vi.unstubAllEnvs();
+      if (target) vi.stubEnv('WORKFLOW_TARGET_WORLD', target);
+      expect(await runPlugin('loopback')).toEqual([]);
+    }
+  });
+
+  it('reports a World that delivers in process but did not take the route', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const dir = await mkdtemp(join(tmpdir(), 'nitro-worker-plugin-'));
+      dirs.push(dir);
+      const nitro = createNitroStub({ routing: false });
+      nitro.options.buildDir = dir;
+      await nitroModule.setup(nitro);
+      await mkdir(join(dir, 'workflow'), { recursive: true });
+      await writeFile(
+        join(dir, 'workflow', 'workflows.mjs'),
+        'export const POST = async () => new Response(null);\n'
+      );
+      const runtime = join(dir, 'runtime.mjs');
+      await writeFile(
+        runtime,
+        `export async function getWorld() { return { queueAuthMode: 'deny' }; }
+export async function registerWorkflowHandler() { return false; }
+`
+      );
+      const source = (
+        nitro.options.virtual['#workflow/worker-plugin'] as string
+      ).replace(
+        "'workflow/runtime'",
+        JSON.stringify(pathToFileURL(runtime).href)
+      );
+      const plugin = join(dir, 'plugin.mjs');
+      await writeFile(plugin, source);
+      await (await import(pathToFileURL(plugin).href)).default();
+      expect(
+        error.mock.calls.map((call) => String(call[0])).join('\n')
+      ).toContain('runs no jobs');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('adds no worker plugin to a Vercel deploy', async () => {
+    const nitro = createNitroStub({ routing: false, preset: 'vercel' });
+    await nitroModule.setup(nitro);
+    expect(nitro.options.plugins ?? []).not.toContain(
+      '#workflow/worker-plugin'
+    );
   });
 });
 

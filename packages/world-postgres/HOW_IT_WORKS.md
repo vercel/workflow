@@ -11,14 +11,13 @@ If you want to use any other ORM, query builder or underlying database client, y
 ```mermaid
 graph LR
     Client --> PG[graphile-worker queue]
-    PG --> Worker[Embedded Worker]
-    Worker --> HTTP[Combined flow HTTP route]
-    HTTP --> Handler[Workflow Handler]
+    PG --> Worker[Embedded Worker, in the app process]
+    Worker --> Handler[Workflow route handler, called in process]
 
     PG -.-> F["${prefix}flows<br/>(orchestration and steps)"]
 ```
 
-Jobs include retry logic (3 attempts), idempotency keys, durable delayed rescheduling, and configurable worker concurrency (default: 10).
+Jobs include retry logic, idempotency keys, durable delayed rescheduling, and configurable worker concurrency (default: 50).
 
 ## Streaming
 
@@ -54,27 +53,11 @@ An orchestrator message without a spec stamp (`runInput.specVersion`, `runContex
 
 ## Setup
 
-Call `world.start()` to initialize graphile-worker workers. When `.start()` is called, workers begin listening to graphile-worker queues. When a job arrives, the worker executes the queue message over the workflow HTTP routes and awaits completion before acknowledging the Graphile job.
+`world.start()` makes the World ready to enqueue, and starts a graphile-worker runner when the process is a worker: one that registered the Workflow SDK's flow route with `world.registerHandler(prefix, route)`. The framework integrations do that when the app starts (`registerWorkflowHandler()` from `workflow/runtime`, see the Postgres World docs), in either order with `start()`: a registration after `start()` starts the runner then. Every other process (the CLI, the web UI, a script) only enqueues and never claims a job.
+
+When a job arrives, the worker calls the registered route's in-process entry (`IN_PROCESS_QUEUE_HANDLER` from `@workflow/world`) with the decoded message and its metadata, and awaits the runtime's handler before acknowledging the Graphile job. Nothing goes over HTTP, and the flow route refuses HTTP requests (`queueAuthMode: 'deny'`; see [Security](./README.md#security)). The HTTP shape of a delivery (`src/queue-handler.ts`) remains for a consumer's own route (`registerRoute`), and for the flow route while `WORKFLOW_QUEUE_AUTH=off` admits a worker on an earlier release; it reads the current delivery headers and the earlier release's `x-vqs-*` names.
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
-
-The worker sends workflow orchestration and queued step messages to the combined `.well-known/workflow/v1/flow` endpoint.
-
-That endpoint is not authenticated: the queue HTTP handler is inherited from `@workflow/world-local` and checks the `x-vqs-*` header shape and the queue-name prefix, but never the caller, so restricting the route is left to the deployment. The payload is validated later, by the runtime that consumes the message. See [Security](./README.md#security).
-
-In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
-
-```ts
-// instrumentation.ts
-
-if (process.env.NEXT_RUNTIME !== "edge") {
-  import("workflow/runtime").then(async ({ getWorld }) => {
-    // start listening to the jobs.
-    const world = await getWorld();
-    await world.start?.();
-  });
-}
-```
 
 ## Crash recovery
 
@@ -96,6 +79,6 @@ Releasing every job is opt-in because of rolling upgrades: a process on an earli
 
 `world.close()` first stops Graphile Worker from claiming new jobs, then waits for active jobs before closing the streamer and any internally owned pool.
 
-Graphile Worker gives active tasks a grace period, then aborts their task signal. The Postgres world forwards that signal to both the workflow HTTP request and its response body. If the request aborts, Graphile Worker unlocks the same Postgres job row through its normal failure handling. The already-claimed delivery consumes an attempt and is retried only if its Graphile attempt budget remains; the shutdown handler does not insert a successor row.
+Graphile Worker gives active tasks a grace period, then aborts their task signal. The Postgres world stops waiting on the in-process delivery when that signal aborts (the runtime's handler finishes on its own), so Graphile Worker unlocks the same Postgres job row through its normal failure handling. The already-claimed delivery consumes an attempt and is retried only if its Graphile attempt budget remains; the shutdown handler does not insert a successor row.
 
 Applications that manage a broader shutdown sequence should set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` for the standard package target or `applicationManagedShutdown: true` for a programmatic World, await `world.close()`, and only then close the workflow HTTP routes and any caller-owned pool. This prevents Graphile Worker's default handler from terminating the process as soon as its queue stops. Because aborting a client request does not prove that its server handler stopped, workflow and step handlers still need to tolerate at-least-once execution.

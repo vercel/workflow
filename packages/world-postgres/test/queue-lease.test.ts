@@ -1,11 +1,17 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer, type Server, type ServerResponse } from 'node:http';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { JsonTransport } from '@vercel/queue';
-import { getQueueTopicPrefix, MessageId } from '@workflow/world';
+import {
+  getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  MessageId,
+} from '@workflow/world';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
 import type { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
@@ -24,14 +30,12 @@ describe.skipIf(process.platform === 'win32')(
   'Postgres queue job lock renewal (real database and Graphile)',
   () => {
     const STALE_SECONDS = 2;
-    const originalBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
     let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
     let connectionString: string;
     let pool: Pool;
-    let server: Server;
-    let deliveries: Array<{ attempt: string; executorJob?: string }> = [];
-    let respond: (response: ServerResponse) => void = (response) =>
-      response.end('{}');
+    let deliveries: Array<{ attempt: string }> = [];
+    /** The flow handler's answer to a delivery. */
+    let respond: () => Promise<unknown> = async () => undefined;
     let releaseHeldResponses = () => {};
     const queues: PostgresQueue[] = [];
     const children: ChildProcess[] = [];
@@ -46,6 +50,17 @@ describe.skipIf(process.platform === 'win32')(
           ...config,
         } as Parameters<typeof createQueue>[0],
         pool
+      );
+      // The app's flow handler, as registered when the app starts: this
+      // queue is a worker, delivering in process.
+      queue.registerHandler(
+        getQueueTopicPrefix('workflow'),
+        Object.assign(async () => Response.json({}), {
+          [IN_PROCESS_QUEUE_HANDLER]: async ({ meta }: InProcessDelivery) => {
+            deliveries.push({ attempt: String(meta.attempt) });
+            return respond();
+          },
+        })
       );
       queues.push(queue);
       return queue;
@@ -69,26 +84,16 @@ describe.skipIf(process.platform === 'win32')(
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       connectionString = container.getConnectionUri();
       pool = new TestPool({ connectionString, max: 10 });
+      // The World's own tables too: in invoke mode the executor lane reads
+      // the invocations table before it hands a delivery to the handler.
+      await migrate(drizzle(pool), {
+        migrationsFolder: fileURLToPath(
+          new URL('../src/drizzle/migrations', import.meta.url)
+        ),
+      });
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
-      server = createServer(async (request, response) => {
-        await request.toArray();
-        const executorJob = request.headers['x-workflow-postgres-executor-job'];
-        deliveries.push({
-          attempt: String(request.headers['x-vqs-message-attempt']),
-          ...(typeof executorJob === 'string' ? { executorJob } : {}),
-        });
-        respond(response);
-      });
-      await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', resolve);
-      });
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('Expected a TCP server');
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
     }, 120_000);
 
     afterEach(async () => {
@@ -99,20 +104,11 @@ describe.skipIf(process.platform === 'win32')(
         'TRUNCATE graphile_worker._private_jobs, graphile_worker._private_job_queues'
       );
       deliveries = [];
-      respond = (response) => response.end('{}');
+      respond = async () => undefined;
       releaseHeldResponses = () => {};
     });
 
     afterAll(async () => {
-      if (originalBaseUrl === undefined) {
-        delete process.env.WORKFLOW_LOCAL_BASE_URL;
-      } else {
-        process.env.WORKFLOW_LOCAL_BASE_URL = originalBaseUrl;
-      }
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeAllConnections();
-      });
       await pool.end();
       await container.stop();
     });
@@ -166,9 +162,7 @@ describe.skipIf(process.platform === 'win32')(
     test('a delivery that outlives the stale window keeps its lock and is delivered once', async () => {
       const release = Promise.withResolvers<void>();
       releaseHeldResponses = release.resolve;
-      respond = (response) => {
-        release.promise.then(() => response.end('{}'));
-      };
+      respond = () => release.promise.then(() => undefined);
       const first = startQueue({});
       // A second host whose sweeps would release the job if its lock went stale.
       const second = startQueue({});
@@ -205,9 +199,7 @@ describe.skipIf(process.platform === 'win32')(
     test("a delivery that lost its lock leaves the successor's job alone when it finishes", async () => {
       const release = Promise.withResolvers<void>();
       releaseHeldResponses = release.resolve;
-      respond = (response) => {
-        release.promise.then(() => response.end('{}'));
-      };
+      respond = () => release.promise.then(() => undefined);
       const queue = startQueue({});
       await queue.start();
       await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
@@ -278,7 +270,9 @@ describe.skipIf(process.platform === 'win32')(
 
       await expect
         .poll(() => deliveries, { timeout: 15_000, interval: 100 })
-        .toEqual([{ attempt: '2', executorJob: executorJob.id }]);
+        .toEqual([{ attempt: '2' }]);
+      // The executor lane's own job is what carried the redelivery.
+      expect(executorJob).toBeDefined();
       await expect
         .poll(
           async () =>

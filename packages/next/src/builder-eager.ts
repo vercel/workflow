@@ -12,8 +12,10 @@ import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   assertFlowBundleIsSandboxSafe,
   type NextConfig as BuilderNextConfig,
+  createWorkflowWorkerModuleCode,
   type WorkflowManifest,
 } from '@workflow/builders';
+import type { InProcessWorkerState } from '@workflow/utils';
 import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
 import {
@@ -193,6 +195,7 @@ export async function getNextBuilderEager(
       // V2: Build combined route (replaces separate step + flow routes)
       const combinedResult = await this.buildCombinedFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+      await this.writeWorkerModule(workflowGeneratedDir);
 
       const writeManifest = async (
         sourceManifest: WorkflowManifest | undefined
@@ -476,6 +479,7 @@ export async function getNextBuilderEager(
 
           await workflowsCtx.bundleFinal(workflowOutput);
           await writeManifest(mergeCombinedManifest(stepsManifest));
+          await this.refreshWorkerRoute();
         };
 
         // The pin helper owns the capture-before-build / restore-after-
@@ -518,6 +522,7 @@ export async function getNextBuilderEager(
 
               await writeManifest(newCombined.manifest);
               await refreshSourceSnapshots();
+              await this.refreshWorkerRoute();
             },
           });
 
@@ -979,6 +984,67 @@ export async function getNextBuilderEager(
         sourceStepRegistrationImports: true,
         tsconfigPath,
       });
+    }
+
+    /**
+     * After a rebuild in development, when this process runs as a worker
+     * (`startWorkflowWorker` in `flow/worker.js`; `next dev` runs the app
+     * and this builder in one process): the registered flow handler still
+     * holds the code of the build it was registered from, and Next.js
+     * evaluates the rebuilt route module only on a request to it. Request
+     * its health endpoint, so the module is evaluated and hands the World the
+     * rebuilt route (`refreshWorkflowHandler`). Best effort: a failure here
+     * leaves the previous build serving until the next request to the route.
+     */
+    private async refreshWorkerRoute(): Promise<void> {
+      // The worker state `registerWorkflowHandler` keeps in @workflow/core.
+      const { IN_PROCESS_WORKER_STATE, peekGlobalSingleton } = await import(
+        '@workflow/utils'
+      );
+      const worker = peekGlobalSingleton<InProcessWorkerState>(
+        IN_PROCESS_WORKER_STATE.name,
+        IN_PROCESS_WORKER_STATE.shapeVersion
+      );
+      if (!worker?.registered) return;
+      try {
+        // Give the dev server's watcher a moment to see the rewritten files,
+        // so the request compiles the new module rather than the old one.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const { getWorkflowPort } = await import('@workflow/utils/get-port');
+        // `basePath` already includes the workflow route prefix.
+        const endpoint = `${this.config.basePath ?? ''}/.well-known/workflow/v1/flow?__health`;
+        const port = await getWorkflowPort({ endpoint });
+        if (port === undefined) return;
+        await fetch(`http://localhost:${port}${endpoint}`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(10_000),
+        });
+      } catch (error) {
+        if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+          console.log('[workflow] Could not refresh the worker route:', error);
+        }
+      }
+    }
+
+    /**
+     * Writes `flow/worker.js`, the module an app imports from
+     * `instrumentation.ts` to run the process as a worker for a World that
+     * delivers in process (the Postgres World). It hands the flow route to
+     * the World (`registerWorkflowHandler`) and starts the World, before the
+     * first request. Next.js routes only `route.js`, so the file is plain
+     * colocated code; it sits next to the route so the import is relative
+     * and compiles with it.
+     */
+    private async writeWorkerModule(
+      workflowGeneratedDir: string
+    ): Promise<void> {
+      // Imported once: Turbopack's `import()` keeps returning the first module,
+      // so a rebuilt route re-registers itself when it is evaluated instead
+      // (see `refreshWorkerRoute`).
+      await writeFileIfChanged(
+        join(workflowGeneratedDir, 'flow/worker.js'),
+        createWorkflowWorkerModuleCode({ routeSpecifier: './route.js' })
+      );
     }
 
     private async buildWebhookRoute({

@@ -535,6 +535,18 @@ export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
 );
 
 /**
+ * How a delivery reached the flow route handler: as an HTTP request to the
+ * route, or in the app's process from a World's queue, through the handler's
+ * in-process entry (`IN_PROCESS_QUEUE_HANDLER` in `@workflow/world`). An
+ * in-process delivery is not a server request, so its span is `INTERNAL`
+ * and carries no `http.request.method`; it keeps `http.route` as the name of
+ * the handler it reached.
+ */
+export const WorkflowRouteTransport = SemanticConvention<'http' | 'in-process'>(
+  'workflow.route.transport'
+);
+
+/**
  * Compute instance handling this route: the synthesized `getComputeInstanceId()`.
  * Uses OTEL `faas.instance` (execution-environment id, reused across
  * invocations to the same function):

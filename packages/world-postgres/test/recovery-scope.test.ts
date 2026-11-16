@@ -1,5 +1,4 @@
 import { execSync } from 'node:child_process';
-import { createServer } from 'node:net';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { Pool } from 'pg';
@@ -26,7 +25,6 @@ describe('startup recovery scope', () => {
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
   let pool: Pool;
-  const originalBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -41,30 +39,12 @@ describe('startup recovery scope', () => {
     });
 
     pool = new TestPool({ connectionString: dbUrl });
-
-    // Point the runner at a loopback port nothing listens on, so it defers
-    // its start and every recovered job stays queued where the test can
-    // read it.
-    const port = await new Promise<number>((resolve, reject) => {
-      const server = createServer();
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address();
-        server.close(() => {
-          if (address && typeof address === 'object') resolve(address.port);
-          else reject(new Error('no port'));
-        });
-      });
-    });
-    process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${port}`;
+    // No flow handler is registered in this process, so no World here starts
+    // a runner and every recovered job stays queued where the test can read
+    // it.
   }, 120_000);
 
   afterAll(async () => {
-    if (originalBaseUrl === undefined) {
-      delete process.env.WORKFLOW_LOCAL_BASE_URL;
-    } else {
-      process.env.WORKFLOW_LOCAL_BASE_URL = originalBaseUrl;
-    }
     await pool?.end();
     await container?.stop();
   });

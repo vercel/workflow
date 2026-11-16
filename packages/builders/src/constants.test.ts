@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
+  createWorkflowRouteHandlersCode,
   getWorkflowQueueTrigger,
   isSequentialReplaysEnabled,
 } from './constants.js';
@@ -100,5 +101,46 @@ describe('createWorkflowEntrypointOptionsCode', () => {
     ).toBe(
       ', { namespace: "custom", basePath: "/v2", routeModuleBodyStartedAt: workflowRouteModuleBodyStartedAt }'
     );
+  });
+});
+
+describe('createWorkflowRouteHandlersCode', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_QUEUE_NAMESPACE;
+  });
+
+  /** Evaluates the generated module with a recording `refreshWorkflowHandler`. */
+  async function evaluate(nodeEnv: string | undefined) {
+    const refreshed: unknown[][] = [];
+    const code = createWorkflowRouteHandlersCode('workflowEntrypoint()', {
+      namespace: 'agent',
+    });
+    const module = `
+      const process = { env: { NODE_ENV: ${JSON.stringify(nodeEnv)} } };
+      const workflowEntrypoint = () => 'route';
+      const refreshWorkflowHandler = (...args) => refreshed.push(args);
+      ${code.replace(/export const /g, 'const ')}
+      return { POST, GET };
+    `;
+    // biome-ignore lint/security/noGlobalEval: evaluates generated module code
+    const exports = new Function('refreshed', module)(refreshed) as {
+      POST: string;
+      GET: string;
+    };
+    return { exports, refreshed };
+  }
+
+  it('re-registers the evaluated route with its namespace outside production', async () => {
+    for (const nodeEnv of [undefined, 'development', 'test']) {
+      const { exports, refreshed } = await evaluate(nodeEnv);
+      expect(exports).toEqual({ POST: 'route', GET: 'route' });
+      expect(refreshed).toEqual([['route', { namespace: 'agent' }]]);
+    }
+  });
+
+  it('evaluates without a side effect in production', async () => {
+    const { exports, refreshed } = await evaluate('production');
+    expect(exports).toEqual({ POST: 'route', GET: 'route' });
+    expect(refreshed).toEqual([]);
   });
 });

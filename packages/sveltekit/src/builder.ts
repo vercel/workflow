@@ -4,7 +4,8 @@ import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
-  NORMALIZE_REQUEST_CODE,
+  createWorkflowWorkerModuleCode,
+  createWrappedWorkflowRouteCode,
   resolveProjectRoot,
   type SvelteKitConfig,
   writeFileIfChanged,
@@ -93,16 +94,28 @@ export class SvelteKitBuilder extends BaseBuilder {
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
-      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
-}`
+      (_match, options = '') =>
+        createWrappedWorkflowRouteCode(
+          `workflowEntrypoint(workflowCode${options})`
+        )
     );
     // These files are generated into the SvelteKit routes directory, which
     // Vite watches in dev, so an identical rewrite would still invalidate the
     // module and force a redundant recompile.
     await writeFileIfChanged(workflowsRouteFile, workflowsRouteContent);
+
+    // `worker.js`: imported from `hooks.server.ts` (`init`) to run the
+    // process as a worker for a World that delivers in process. Not a route
+    // (no `+` prefix). Vite's dynamic `import()` returns the rebuilt route in
+    // development, so the handler loads it on every delivery.
+    await writeFileIfChanged(
+      join(flowRouteDir, 'worker.js'),
+      createWorkflowWorkerModuleCode({
+        routeSpecifier: './+server.js',
+        wrapped: true,
+        reloads: true,
+      })
+    );
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
 

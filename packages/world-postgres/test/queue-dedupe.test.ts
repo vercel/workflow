@@ -1,4 +1,3 @@
-import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
@@ -82,12 +81,10 @@ describe.skipIf(process.platform === 'win32')(
 
     describe('a re-send of a step message', () => {
       let queue: ReturnType<typeof createQueue>;
-      const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
 
       beforeAll(async () => {
-        // A loopback target nothing listens on: the queue holds its runner
-        // back until the target is reachable, so no job here is delivered.
-        process.env.WORKFLOW_LOCAL_BASE_URL = 'http://127.0.0.1:9';
+        // No flow handler is registered on this queue, so it starts no
+        // runner and no job here is delivered.
         queue = createQueue(
           { connectionString: container.getConnectionUri() },
           pool
@@ -100,9 +97,6 @@ describe.skipIf(process.platform === 'win32')(
         await pool.query(
           `DELETE FROM graphile_worker._private_jobs WHERE payload->>'id' = 'dedupe-step'`
         );
-        if (oldBaseUrl === undefined)
-          delete process.env.WORKFLOW_LOCAL_BASE_URL;
-        else process.env.WORKFLOW_LOCAL_BASE_URL = oldBaseUrl;
       });
 
       /** Sends the step message the runtime sends for `stepId`. */
@@ -218,9 +212,6 @@ describe.skipIf(process.platform === 'win32')(
     describe('a spec 9 run whose step message is re-sent while its body runs', () => {
       let world: World & { start(): Promise<void> };
       let secondWorker: World;
-      let server: Server;
-      const oldPort = process.env.PORT;
-      const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
       const bodies: string[] = [];
       let resend: (() => Promise<unknown>) | undefined;
       let stepJobsDuringBody: number | undefined;
@@ -234,44 +225,9 @@ globalThis.__private_workflows = new Map([['resent', resent]]);
 
       beforeAll(async () => {
         vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+        // The app's flow route, registered on each worker as the app does
+        // when it starts.
         const handler = workflowEntrypoint(code);
-        server = createServer(async (req, res) => {
-          const chunks: Buffer[] = [];
-          for await (const chunk of req) chunks.push(Buffer.from(chunk));
-          try {
-            const headers = new Headers();
-            for (const [key, value] of Object.entries(req.headers)) {
-              if (value !== undefined)
-                headers.set(
-                  key,
-                  Array.isArray(value) ? value.join(',') : value
-                );
-            }
-            const response = await handler(
-              new Request(`http://localhost${req.url}`, {
-                method: 'POST',
-                headers,
-                body: Buffer.concat(chunks),
-              })
-            );
-            res.writeHead(
-              response.status,
-              Object.fromEntries(response.headers)
-            );
-            res.end(Buffer.from(await response.arrayBuffer()));
-          } catch (error) {
-            res.writeHead(500);
-            res.end(String(error));
-          }
-        });
-        await new Promise<void>((resolve) =>
-          server.listen(0, '127.0.0.1', resolve)
-        );
-        const address = server.address();
-        if (!address || typeof address === 'string')
-          throw new Error('No test server address');
-        process.env.PORT = String(address.port);
-        process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
         // One worker slot: while the step body holds it, a second job for
         // the step can only be taken by the other process's worker, whose
         // in-process duplicate check does not know the first delivery.
@@ -281,6 +237,7 @@ globalThis.__private_workflows = new Map([['resent', resent]]);
           pollInterval: 50,
           applicationManagedShutdown: true,
         });
+        world.registerHandler('__wkf_workflow_', handler);
         // Every step message the runtime sends, so a test can send it again
         // exactly as the re-send rule does.
         const send = world.queue.bind(world);
@@ -301,6 +258,7 @@ globalThis.__private_workflows = new Map([['resent', resent]]);
           pollInterval: 50,
           applicationManagedShutdown: true,
         });
+        secondWorker.registerHandler?.('__wkf_workflow_', handler);
         await secondWorker.start?.();
         registerStepFunction('dedupeOnce', async (n: number) => {
           bodies.push(`body-${n}`);
@@ -326,18 +284,7 @@ globalThis.__private_workflows = new Map([['resent', resent]]);
         vi.unstubAllEnvs();
         await secondWorker?.close?.();
         await world?.close?.();
-        if (server) {
-          await new Promise<void>((resolve) => {
-            server.close(() => resolve());
-            server.closeAllConnections();
-          });
-        }
         setWorld(undefined);
-        if (oldPort === undefined) delete process.env.PORT;
-        else process.env.PORT = oldPort;
-        if (oldBaseUrl === undefined)
-          delete process.env.WORKFLOW_LOCAL_BASE_URL;
-        else process.env.WORKFLOW_LOCAL_BASE_URL = oldBaseUrl;
       });
 
       it('runs the step body once', async () => {

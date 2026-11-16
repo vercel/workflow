@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { turbopackContentPattern } from '@workflow/builders';
+import { resolveWorkflowTargetWorld } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -66,6 +67,7 @@ describe('withWorkflow builder config', () => {
     WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
     WORKFLOW_NEXT_PRIVATE_BUILT: process.env.WORKFLOW_NEXT_PRIVATE_BUILT,
     WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
+    WORKFLOW_IN_PROCESS_WORKER: process.env.WORKFLOW_IN_PROCESS_WORKER,
   };
 
   beforeEach(() => {
@@ -82,6 +84,7 @@ describe('withWorkflow builder config', () => {
     delete process.env.WORKFLOW_LOCAL_DATA_DIR;
     delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
     delete process.env.WORKFLOW_TARGET_WORLD;
+    delete process.env.WORKFLOW_IN_PROCESS_WORKER;
     delete (globalThis as Record<symbol, unknown>)[
       Symbol.for('@workflow/next/workflowBuilds')
     ];
@@ -103,6 +106,46 @@ describe('withWorkflow builder config', () => {
         process.env[key] = value;
       }
     }
+  });
+
+  it('inlines WORKFLOW_IN_PROCESS_WORKER from the World the app is built for', async () => {
+    const resolve = (config: ReturnType<typeof withWorkflow>) =>
+      config('phase-production-build', { defaultConfig: {} });
+    process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres';
+    delete process.env.WORKFLOW_IN_PROCESS_WORKER;
+    const postgres = await resolve(withWorkflow({ env: { KEEP: 'me' } }));
+    expect(postgres.env).toEqual({
+      KEEP: 'me',
+      WORKFLOW_IN_PROCESS_WORKER: '1',
+    });
+
+    delete process.env.WORKFLOW_TARGET_WORLD;
+    const local = await resolve(withWorkflow({}));
+    expect(local.env?.WORKFLOW_IN_PROCESS_WORKER).toBe('');
+
+    // An explicit value in the build environment wins (a World of the
+    // app's own that delivers in process).
+    process.env.WORKFLOW_IN_PROCESS_WORKER = '1';
+    const explicit = await resolve(withWorkflow({}));
+    expect(explicit.env?.WORKFLOW_IN_PROCESS_WORKER).toBe('1');
+
+    // Only that constant is inlined. WORKFLOW_TARGET_WORLD stays a runtime
+    // read in the app bundle, so a build without VERCEL_DEPLOYMENT_ID (which
+    // selects the Local World for the build process) still picks the World
+    // of the environment it runs in.
+    for (const resolved of [postgres, local, explicit]) {
+      expect(Object.keys(resolved.env ?? {})).not.toContain(
+        'WORKFLOW_TARGET_WORLD'
+      );
+    }
+    // The build process chose 'local' for itself (no VERCEL_DEPLOYMENT_ID at
+    // build time); the runtime still decides from its own environment, so
+    // the same build picks the Vercel World on Vercel.
+    expect(process.env.WORKFLOW_TARGET_WORLD).toBe('local');
+    expect(resolveWorkflowTargetWorld({ VERCEL_DEPLOYMENT_ID: 'dpl_x' })).toBe(
+      'vercel'
+    );
+    expect(resolveWorkflowTargetWorld({})).toBe('local');
   });
 
   it('uses outputFileTracingRoot for tracing without changing module specifier root', async () => {

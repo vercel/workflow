@@ -147,11 +147,12 @@ packages/core/e2e/event-log-race-repro.test.ts, which is the single source of
 truth the CI workflow also defers to.
 
 The other knob this script sets is the backend's replay concurrency, which
-caps how many replays the app and the harness each run at once. Both backends
+caps how many replays the app runs at once (on world-postgres the harness
+only enqueues; on world-local its queue delivers to the app too). Both backends
 default it far too high for one Next.js process on one machine (50 for
-world-postgres, i.e. ~100 replays in flight; 1000 for world-local), which on a
-12-core laptop saturates GC and reports every attempt as `stuck`. Both are set
-to 10 here. Export your own value to override:
+world-postgres; 1000 for world-local), which on a 12-core laptop saturates GC
+and reports every attempt as `stuck`. Both are set to 10 here. Export your own
+value to override:
 
   WORKFLOW_POSTGRES_WORKER_CONCURRENCY   (--world postgres)
   WORKFLOW_LOCAL_QUEUE_CONCURRENCY       (--world local)

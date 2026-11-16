@@ -44,7 +44,11 @@ export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
 } from './pseudo-package-esbuild-plugin.js';
-export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
+export {
+  createWrappedWorkflowRouteCode,
+  IN_PROCESS_QUEUE_HANDLER_CODE,
+  NORMALIZE_REQUEST_CODE,
+} from './request-converter.js';
 export {
   analyzeSerdeCompliance,
   extractClassEntries,
@@ -81,5 +85,6 @@ export type {
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
+export { createWorkflowWorkerModuleCode } from './worker-module.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 export { hasSameContent, writeFileIfChanged } from './write-if-changed.js';

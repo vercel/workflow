@@ -4,7 +4,8 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
-  NORMALIZE_REQUEST_CODE,
+  createWorkflowWorkerModuleCode,
+  createWrappedWorkflowRouteCode,
   resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
   writeFileIfChanged,
@@ -26,6 +27,8 @@ const WORKFLOW_ROUTES = [
  * an underscore. Without it, Astro 5 warns about the manifest on every scan.
  */
 const ASTRO_MANIFEST_FILE_NAME = '_manifest.json';
+/** The worker module, in the pages directory; see `LocalBuilder.build`. */
+export const ASTRO_WORKER_FILE_NAME = '_worker.js';
 
 export class LocalBuilder extends BaseBuilder {
   #pagesDir: string;
@@ -92,18 +95,31 @@ export class LocalBuilder extends BaseBuilder {
     // Normalize request, needed for preserving request through astro
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
-      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
-}
-
-export const prerender = false;`
+      (_match, options = '') =>
+        createWrappedWorkflowRouteCode(
+          `workflowEntrypoint(workflowCode${options})`,
+          '\n\nexport const prerender = false;'
+        )
     );
     // These files are generated into the Astro pages directory, which Vite
     // watches in dev, so an identical rewrite would still invalidate the
     // module and force a redundant recompile.
     await writeFileIfChanged(workflowsRouteFile, workflowsRouteContent);
+
+    // `_worker.js`: runs the process as a worker for a World that delivers
+    // in process. Prefixed with an underscore so Astro's router skips it. The
+    // integration loads it at dev-server start and emits it as the
+    // `workflow-worker.mjs` server entry of a production build. Vite's
+    // dynamic `import()` returns the rebuilt route in development, so the
+    // handler loads it on every delivery.
+    await writeFileIfChanged(
+      join(workflowGeneratedDir, ASTRO_WORKER_FILE_NAME),
+      createWorkflowWorkerModuleCode({
+        routeSpecifier: './flow.js',
+        wrapped: true,
+        reloads: true,
+      })
+    );
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
 

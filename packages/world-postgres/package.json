@@ -50,7 +50,6 @@
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
-    "@workflow/world-local": "workspace:*",
     "cbor-x": "1.6.9",
     "dotenv": "17.4.2",
     "drizzle-orm": "0.45.4",
@@ -58,6 +57,9 @@
     "pg": "8.23.1",
     "ulid": "catalog:",
     "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "workflow": "workspace:^"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "11.14.0",

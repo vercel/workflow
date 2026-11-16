@@ -132,6 +132,84 @@ describe('queue timeout re-enqueue', () => {
     expect(body).toEqual({ ok: true });
   });
 
+  it('createQueueHandler reads the current delivery header names, and the earlier release’s', async () => {
+    const metas: { queueName: string; messageId: string; attempt: number }[] =
+      [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_body, meta) => {
+        metas.push(meta);
+      }
+    );
+    const send = (headers: Record<string, string>) =>
+      handler(
+        new Request('http://localhost/flow', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: JSON.stringify(workflowPayload),
+        })
+      );
+    // The current names.
+    expect(
+      (
+        await send({
+          'x-workflow-queue-name': '__wkf_workflow_current',
+          'x-workflow-message-id': 'msg_current',
+          'x-workflow-message-attempt': '1',
+        })
+      ).status
+    ).toBe(200);
+    // The earlier release's names (an old CLI next to a new app).
+    expect(
+      (
+        await send({
+          'x-vqs-queue-name': '__wkf_workflow_legacy',
+          'x-vqs-message-id': 'msg_legacy',
+          'x-vqs-message-attempt': '2',
+        })
+      ).status
+    ).toBe(200);
+    expect(metas).toEqual([
+      expect.objectContaining({
+        queueName: '__wkf_workflow_current',
+        messageId: 'msg_current',
+        attempt: 1,
+      }),
+      expect.objectContaining({
+        queueName: '__wkf_workflow_legacy',
+        messageId: 'msg_legacy',
+        attempt: 2,
+      }),
+    ]);
+  });
+
+  it('sends a delivery under the current header names and the earlier release’s', async () => {
+    let headers: Record<string, string> | undefined;
+    localQueue.registerHandler('__wkf_workflow_', async (req) => {
+      headers = Object.fromEntries(req.headers);
+      return Response.json({ ok: true });
+    });
+    const { messageId } = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload
+    );
+    await vi.waitFor(() => expect(headers).toBeDefined());
+    // Both sets, so an app on the earlier release still reads them.
+    expect(headers).toMatchObject({
+      'x-workflow-queue-name': '__wkf_workflow_test',
+      'x-workflow-message-id': messageId,
+      'x-workflow-message-attempt': '1',
+      'x-workflow-message-delivery-count': '1',
+      'x-vqs-queue-name': '__wkf_workflow_test',
+      'x-vqs-message-id': messageId,
+      'x-vqs-message-attempt': '1',
+      'x-vqs-message-delivery-count': '1',
+    });
+    expect(headers?.['x-workflow-message-created-at']).toBe(
+      headers?.['x-vqs-message-created-at']
+    );
+  });
+
   it('createQueueHandler reports a delivery-count header as deliveryCount, separate from attempt', async () => {
     const metas: { attempt: number; deliveryCount?: number }[] = [];
     const handler = localQueue.createQueueHandler(

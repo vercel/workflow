@@ -1,3 +1,10 @@
+import { context, trace as otelTrace, SpanKind } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import {
   EntityConflictError,
   PreconditionFailedError,
@@ -8,13 +15,24 @@ import {
 import {
   type CreateEventParams,
   type Event,
+  IN_PROCESS_QUEUE_HANDLER,
+  type QueueDeliveryMeta,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
 import { ulid } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { runtimeLogger } from './logger.js';
 import { registerStepFunction } from './private.js';
 import {
@@ -1576,6 +1594,8 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
     /** Stamp the message with the producer-carried run identity so the
      *  consumer skips the blocking runs.get (vercel/workflow#3456). */
     includeRunContext?: boolean;
+    /** Deliver through the route's in-process entry rather than a request. */
+    inProcess?: boolean;
   }) {
     const stepId = 'step_resilient_1';
     const dehydratedInput = (await dehydrateStepArguments(
@@ -1659,6 +1679,29 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
     );
 
     const runsGet = vi.fn(async () => workflowRun);
+    const message = {
+      runId: opts.runId,
+      stepId,
+      stepName: 'resilientAdd',
+      requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+      ...(opts.omitStepInput ? {} : { stepInput: { input: dehydratedInput } }),
+      ...(opts.includeRunContext
+        ? {
+            runContext: {
+              deploymentId: 'test-deployment',
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+              startedAt: Date.parse('2024-01-01T00:00:00.000Z'),
+              rootRunId: opts.runId,
+            },
+          }
+        : {}),
+    };
+    const meta = {
+      requestId: 'req_test',
+      attempt: opts.attempt,
+      queueName: '__wkf_workflow_workflow',
+      messageId: 'msg_test',
+    } as unknown as QueueDeliveryMeta;
     setWorld({
       capabilities: { inBandFence: true },
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -1668,33 +1711,7 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
           handler: (message: unknown, metadata: unknown) => Promise<unknown>
         ) => {
           return async () => {
-            await handler(
-              {
-                runId: opts.runId,
-                stepId,
-                stepName: 'resilientAdd',
-                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
-                ...(opts.omitStepInput
-                  ? {}
-                  : { stepInput: { input: dehydratedInput } }),
-                ...(opts.includeRunContext
-                  ? {
-                      runContext: {
-                        deploymentId: 'test-deployment',
-                        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-                        startedAt: Date.parse('2024-01-01T00:00:00.000Z'),
-                        rootRunId: opts.runId,
-                      },
-                    }
-                  : {}),
-              },
-              {
-                requestId: 'req_test',
-                attempt: opts.attempt,
-                queueName: '__wkf_workflow_workflow',
-                messageId: 'msg_test',
-              }
-            );
+            await handler(message, meta);
             return new Response(null, { status: 204 });
           };
         }
@@ -1716,9 +1733,17 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
     } as any);
 
     const handler = workflowEntrypoint(resilientWorkflow);
-    const response = (await handler(
-      new Request('https://example.test')
-    )) as Response;
+    let response: Response;
+    if (opts.inProcess) {
+      // As a World that delivers in process does: the message and its
+      // metadata, no request.
+      await handler[IN_PROCESS_QUEUE_HANDLER]?.({ message, meta });
+      response = new Response(null, { status: 204 });
+    } else {
+      response = (await handler(
+        new Request('https://example.test')
+      )) as Response;
+    }
     return {
       response,
       createdEvents,
@@ -1727,6 +1752,76 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
       runsGet,
     };
   }
+
+  describe('through the in-process entry', () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider();
+    const contextManager = new AsyncLocalStorageContextManager();
+    beforeAll(() => {
+      provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+      contextManager.enable();
+      context.setGlobalContextManager(contextManager);
+      otelTrace.setGlobalTracerProvider(provider);
+    });
+    afterAll(() => {
+      context.disable();
+      otelTrace.disable();
+    });
+
+    it('runs the step under the in-process route span', async () => {
+      const { createdEvents } = await driveStepMessage({
+        runId: 'wrun_resilient_step_in_process',
+        attempt: 1,
+        inProcess: true,
+      });
+      expect(createdEvents).toContainEqual(
+        expect.objectContaining({
+          eventType: 'step_completed',
+          correlationId: 'step_resilient_1',
+        })
+      );
+
+      const spans = exporter.getFinishedSpans();
+      const route = spans.find((span) => span.name === 'workflow.route.flow');
+      expect(route?.kind).toBe(SpanKind.INTERNAL);
+      expect(route?.attributes['workflow.route.transport']).toBe('in-process');
+      const stepSpans = spans.filter((span) =>
+        span.name.startsWith('step.execute')
+      );
+      expect(stepSpans.map((span) => span.name)).toContain(
+        'step.execute resilientAdd'
+      );
+      // Every step span's ancestry ends at the in-process route span: the
+      // in-process delivery is the trace's entry point, as the HTTP request
+      // span is for a World that delivers over HTTP.
+      const byId = new Map(
+        spans.map((span) => [span.spanContext().spanId, span])
+      );
+      const ancestry = (span: (typeof spans)[number]) => {
+        const names: string[] = [];
+        for (
+          let parentId = span.parentSpanId;
+          parentId !== undefined;
+          parentId = byId.get(parentId)?.parentSpanId
+        ) {
+          names.push(byId.get(parentId)?.name ?? '<outside this process>');
+        }
+        return names;
+      };
+      for (const span of stepSpans) {
+        expect(ancestry(span).at(-1)).toBe('workflow.route.flow');
+      }
+      // The documented shape, with the in-process span where the request
+      // span would be: route -> workflow.execute -> step.execute.
+      const named = stepSpans.find(
+        (span) => span.name === 'step.execute resilientAdd'
+      );
+      expect(named && ancestry(named)).toEqual([
+        'workflow.execute workflow',
+        'workflow.route.flow',
+      ]);
+    });
+  });
 
   it('skips the re-ensure on a first delivery (no per-step write overhead)', async () => {
     const { response, createdEvents } = await driveStepMessage({

@@ -177,8 +177,8 @@ the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
 under `--world local`, whose only state is a data directory the script clears
 before each run. Under `--world local` it also exports `WORKFLOW_QUEUE_AUTH=off`,
 as the e2e-local CI lanes do until the team decides to run them with queue auth
-on. world-postgres needs no such setting: it declares
-`queueAuthMode: 'skip'`, so its flow route is not checked.
+on. world-postgres needs no such setting: it delivers in process, and its flow
+route refuses HTTP (`queueAuthMode: 'deny'`).
 
 Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates
@@ -190,7 +190,9 @@ Export `WORKFLOW_SPEC_VERSION=9` to race the single orchestrator; CI runs both
 worlds at the default spec and at spec 9. Read the world-local spec 9 cell with
 one difference in mind: its run gate is in-process, and the harness calls
 `start()` and `resumeHook()` from its own process, so those messages reach the
-app through the harness' queue and overlap the app's own deliveries of the run.
+app through the harness' queue and overlap the app's own deliveries of the run
+(on world-postgres the harness only enqueues, and the app's own worker runs
+every delivery).
 The in-band fence refuses each overlap (logged as "keep being refused by the
 in-band fence"), so the run stays correct but slower: on a 4-core box,
 `hook-storm` took about 300s a run at spec 9 against 150s at spec 8, and the
@@ -265,9 +267,10 @@ process.
 
 One difference affects how you read a local result: in CI each replay gets its
 own Fluid invocation, while here every replay
-of every run shares one Next.js process. world-postgres gives that process (and
-the harness process) 50 embedded Graphile Worker slots each, and approximately
-100 replays in one heap saturates GC. Measured on a 12-core laptop, all 14
+of every run shares one Next.js process. world-postgres gives that process 50
+embedded Graphile Worker slots (the harness process only enqueues: a worker
+runs only where the app registered its flow route), and approximately 100
+replays in one heap saturates GC. Measured on a 12-core laptop, all 14
 attempts came back
 `stuck` with the server at 6.4 GB RSS and Postgres idle. The script therefore
 sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and

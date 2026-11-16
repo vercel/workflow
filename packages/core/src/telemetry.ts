@@ -411,7 +411,7 @@ export async function recordStepExecutionDuration(
 export async function recordQueueDeliveryRefused(attributes: {
   world: string;
   route: string;
-  reason: 'no-key' | 'wrong-key';
+  reason: 'no-key' | 'wrong-key' | 'denied';
 }): Promise<void> {
   const counter = await QueueDeliveryRefusedCounter.value;
   counter?.add(1, {

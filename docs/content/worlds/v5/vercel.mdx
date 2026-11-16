@@ -545,7 +545,7 @@ Practically, this means:
 - Only messages delivered through Vercel Queues can trigger execution
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
 
-These two layers, a route only Vercel Queues can trigger and a handler that takes a message ID and retrieves and leases the message through Vercel Queues, are why the Vercel World declares `queueAuthMode: 'skip'`: the runtime does not also check a [queue key](/worlds/building-a-world#authenticating-deliveries) on its deliveries. A custom World should declare `'skip'` only when its platform provides both layers.
+These two layers, a route only Vercel Queues can trigger and a handler that takes a message ID and retrieves and leases the message through Vercel Queues, are why the Vercel World declares `queueAuthMode: 'allow'`: the runtime does not also check a [queue key](/worlds/building-a-world#authenticating-deliveries) on its deliveries. A custom World should declare `'allow'` only when its platform provides both layers.
 
 <Callout>
   The Workflow SDK build step manages this configuration. If you are writing a custom integration, see [Framework integrations: Security](/docs/how-it-works/framework-integrations#security) for more details.

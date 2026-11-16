@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import { operatorLog } from './logger.js';
 
 /**
  * The stale window when neither `jobLockStaleSeconds` nor
@@ -232,14 +233,9 @@ const isMissingTable = (error: unknown) =>
 const MISSING_TABLE_HINT =
   "workflow.workflow_job_lock_holders does not exist; run `bootstrap` (`npx --package=@workflow/world-postgres bootstrap`, migration 0030). Until then, no process on the default policy (`jobLockStaleSeconds` unset) releases a per-run named-queue job of a process that dies; such a job is recovered by the next start() or after Graphile Worker's 4 hours";
 
-/**
- * `console.warn`, except in the CLI's JSON mode (`WORKFLOW_JSON_MODE=1`),
- * whose output must stay machine-readable; the queue's Graphile logger is
- * silent there too.
- */
-function warn(...args: unknown[]): void {
-  if (process.env.WORKFLOW_JSON_MODE === '1') return;
-  console.warn(...args);
+/** An operator notice (see `operatorLog`). */
+function warn(message: string, ...rest: unknown[]): void {
+  operatorLog.warn(message, ...rest);
 }
 
 type GraphileTask = (payload: unknown, helpers: unknown) => Promise<void>;
