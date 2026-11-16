@@ -233,7 +233,7 @@ Three more are situational:
 - `WORKFLOW_VERCEL_PROJECT_NAME` — the project slug, used only to build dashboard links.
 - `VERCEL_TOKEN` — a fallback the World reads for the Vercel API calls it makes alongside your Workflow requests (fetching a run's encryption key, resolving `deploymentId: "latest"`). A client that passes `token` explicitly, as below, already covers those calls and does not need it.
 
-For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against. The `workflow` CLI's `--env` flag reads the same variable but only accepts `production` or `preview`, so a custom environment is reachable from your own script, not from the CLI.
+For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against. The `workflow` CLI's `--env` flag reads the same variable but only accepts `production` or `preview`, so a custom environment is reachable from your own script, not from the CLI, and setting it in the environment makes CLI commands exit with an error.
 
 <Callout type="info">
   The Workflow SDK does not read `WORKFLOW_VERCEL_*` from the environment on
@@ -380,7 +380,7 @@ Set these only when a tool outside Vercel cannot infer the project, team, token,
 
 The Vercel environment to target: `production`, `preview`, or a custom environment's slug.
 
-The CLI flag accepts only `production` or `preview`, so a custom environment's slug works from your own script but not from the CLI (see [Environment variables](#environment-variables)).
+The CLI accepts only `production` or `preview`. With any other value set in the environment, CLI commands exit with an error, so set it only for your own script (see [Environment variables](#environment-variables)).
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 

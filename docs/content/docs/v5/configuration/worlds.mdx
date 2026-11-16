@@ -262,7 +262,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: `--env` or `-e`
 - Default: `production`
 - Vercel environment targeted by tooling. Accepts `production`, `preview`, or a custom environment's **slug** — configure the slug, not the environment's ID.
-- The CLI flag accepts only `production` or `preview`, so a custom environment's slug works from your own script but not from the CLI. See [Environment variables](/worlds/vercel#environment-variables).
+- The CLI accepts only `production` or `preview`. With any other value set in the environment, CLI commands exit with an error, so set it only for your own script. See [Environment variables](/worlds/vercel#environment-variables).
 
 ### `projectConfig.projectId`
 
