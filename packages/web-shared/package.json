@@ -5,7 +5,9 @@
   "private": false,
   "files": [
     "dist",
-    "src"
+    "src",
+    "!dist/**/*.test.*",
+    "!src/**/*.test.*"
   ],
   "publishConfig": {
     "access": "public"

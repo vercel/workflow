@@ -10,7 +10,9 @@
   "files": [
     "dist",
     "bin",
-    "oclif.manifest.json"
+    "oclif.manifest.json",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"
@@ -42,36 +44,27 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "date-fns": "4.4.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "dependencies": {
     "@oclif/core": "4.11.4",
     "@oclif/plugin-help": "6.2.37",
-    "@swc/core": "catalog:",
     "@vercel/cli-auth": "0.0.1",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/web": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
     "@workflow/world-vercel": "workspace:*",
     "boxen": "8.0.1",
-    "builtin-modules": "5.5.0",
     "chalk": "5.6.2",
-    "chokidar": "4.0.3",
-    "date-fns": "4.4.0",
     "dotenv": "^17.4.2",
     "easy-table": "1.2.0",
-    "enhanced-resolve": "5.26.1",
-    "esbuild": "catalog:",
-    "find-up": "7.0.0",
-    "mixpart": "0.0.4",
     "open": "10.2.0",
-    "ora": "8.2.0",
     "terminal-link": "5.0.0",
     "tinyglobby": "0.2.17",
     "xdg-app-paths": "5.5.1",
