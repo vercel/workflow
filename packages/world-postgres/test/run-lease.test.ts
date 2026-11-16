@@ -379,6 +379,49 @@ describe.skipIf(process.platform === 'win32')(
       });
     });
 
+    it('keeps a lease that a new owner took over while recovery waited for it', async () => {
+      const leases = createRunLeases(pool);
+      const gone = await job();
+      await leases.claim('run_t', gone, left('own'), 'wake', false);
+      await pool.query(
+        'DELETE FROM graphile_worker._private_jobs WHERE id = $1',
+        [gone]
+      );
+      // A take-over in progress holds the orphaned lease's row.
+      const takeover = await pool.connect();
+      await takeover.query('BEGIN');
+      await takeover.query(
+        "SELECT 1 FROM workflow.workflow_run_delivery_leases WHERE run_id = 'run_t' FOR UPDATE"
+      );
+      // Recovery starts, taking its snapshot, and waits for that row.
+      const recovery = leases.recoverOrphans();
+      await expect
+        .poll(
+          async () =>
+            (
+              await pool.query<{ n: number }>(
+                `SELECT count(*)::int AS n FROM pg_stat_activity
+                  WHERE wait_event_type = 'Lock'
+                    AND query LIKE '%workflow_run_delivery_leases%FOR UPDATE%'`
+              )
+            ).rows[0]!.n,
+          { timeout: 5_000 }
+        )
+        .toBe(1);
+      // The new owner's job is created after recovery's snapshot, and the
+      // take-over commits.
+      const owner = await job();
+      await takeover.query(
+        "UPDATE workflow.workflow_run_delivery_leases SET owner_job_id = $1 WHERE run_id = 'run_t'",
+        [owner]
+      );
+      await takeover.query('COMMIT');
+      takeover.release();
+
+      await expect(recovery).resolves.toEqual({ leases: 0, jobs: 0 });
+      expect((await row('run_t')).owner).toBe(owner);
+    });
+
     it('serializes concurrent claims: exactly one delivery owns the lease', async () => {
       const leases = createRunLeases(pool);
       const jobs = await Promise.all(Array.from({ length: 8 }, () => job()));

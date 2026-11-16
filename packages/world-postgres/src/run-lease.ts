@@ -166,18 +166,25 @@ WHERE run_id = $1 AND owner_job_id = $2::bigint
   AND wake IS NULL AND deferred = '[]'::jsonb
 RETURNING 1`;
 
-// The leases whose owner can no longer run, deleted with what was left on
-// them re-added as jobs. `FOR UPDATE SKIP LOCKED` leaves a lease that a claim,
-// take-over or release holds to it; a locked row's owner is re-checked once
-// the lock is taken.
-const recoverOrphansSql = (graphileSchema: string) => `WITH orphans AS (
-  SELECT run_id FROM ${LEASES_TABLE} AS leases
-  WHERE NOT ${liveOwner(graphileSchema, 'leases')}
-  LIMIT $1
-  FOR UPDATE SKIP LOCKED
-), removed AS (
-  DELETE FROM ${LEASES_TABLE} AS leases USING orphans
-  WHERE leases.run_id = orphans.run_id
+// Recovering orphaned leases takes two statements in one transaction. The
+// first locks the candidates: leases whose owner looked unable to run. The
+// second rechecks each owner with its own, later snapshot and deletes only
+// those still orphaned, re-adding what was left on them as jobs. One
+// statement is not enough: when its row lock follows a take-over committed
+// after the statement began, Postgres rechecks the row against that take-over,
+// but the owner's job is read with the statement's earlier snapshot, so a new
+// owner's job is not seen and a live lease would be deleted. With the
+// candidates locked, no take-over can commit between the two statements.
+const lockOrphansSql = (graphileSchema: string) => `SELECT run_id
+FROM ${LEASES_TABLE} AS leases
+WHERE NOT ${liveOwner(graphileSchema, 'leases')}
+LIMIT $1
+FOR UPDATE`;
+
+const recoverOrphansSql = (graphileSchema: string) => `WITH removed AS (
+  DELETE FROM ${LEASES_TABLE} AS leases
+  WHERE leases.run_id = ANY($1::varchar[])
+    AND NOT ${liveOwner(graphileSchema, 'leases')}
   RETURNING leases.wake, leases.deferred
 ), left_jobs AS (
   SELECT job FROM removed,
@@ -226,6 +233,7 @@ export function createRunLeases(pool: Pool): RunLeases {
   const leaveQuery = leaveSql(graphileSchema);
   const addJobQuery = addJobSql(graphileSchema);
   const addContinuationQuery = addContinuationSql(graphileSchema);
+  const lockOrphansQuery = lockOrphansSql(graphileSchema);
   const recoverOrphansQuery = recoverOrphansSql(graphileSchema);
   let warnedMissing = false;
 
@@ -300,11 +308,29 @@ export function createRunLeases(pool: Pool): RunLeases {
       }
     },
     async recoverOrphans(limit = 1000) {
-      const { rows } = await pool.query<{ leases: number; jobs: number }>(
-        recoverOrphansQuery,
-        [limit]
-      );
-      return rows[0] ?? { leases: 0, jobs: 0 };
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const locked = await client.query<{ run_id: string }>(
+          lockOrphansQuery,
+          [limit]
+        );
+        if (locked.rows.length === 0) {
+          await client.query('COMMIT');
+          return { leases: 0, jobs: 0 };
+        }
+        const { rows } = await client.query<{ leases: number; jobs: number }>(
+          recoverOrphansQuery,
+          [locked.rows.map((row) => row.run_id)]
+        );
+        await client.query('COMMIT');
+        return rows[0] ?? { leases: 0, jobs: 0 };
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async release(runId, jobId) {
       const empty = await pool.query(releaseEmptySql, [runId, jobId]);
