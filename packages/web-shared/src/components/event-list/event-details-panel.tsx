@@ -355,7 +355,6 @@ export interface EventDetailsPanelProps extends EventDetailsBodyProps {
   onPrev?: () => void;
   onNext?: () => void;
   onClose: () => void;
-  /** Shows "View in Trace", called with the trace span ID to select. */
   onViewInTrace?: (spanId: string) => void;
 }
 

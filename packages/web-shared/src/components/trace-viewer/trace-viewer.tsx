@@ -47,7 +47,6 @@ interface TraceViewerProps {
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
-  /** Span to select on mount. */
   initialSelectedSpanId?: string;
 }
 
