@@ -10,7 +10,27 @@ class TestBuilder extends SvelteKitBuilder {
   }
 }
 
+const DEFAULT_EXTERNALS = [
+  '$env/*',
+  '$lib',
+  '$lib/*',
+  '$app/*',
+  '#lib',
+  '#lib/*',
+];
+
 let workingDir: string;
+
+function expectDefaultExternals(builder: TestBuilder) {
+  expect(builder.externalPackages).toEqual(
+    expect.arrayContaining(DEFAULT_EXTERNALS)
+  );
+  expect(builder.externalPackages).toHaveLength(DEFAULT_EXTERNALS.length);
+}
+
+async function writePackageJson(contents: string) {
+  await writeFile(join(workingDir, 'package.json'), contents);
+}
 
 beforeEach(async () => {
   workingDir = await mkdtemp(join(tmpdir(), 'workflow-sveltekit-builder-'));
@@ -38,8 +58,7 @@ describe('SvelteKitBuilder', () => {
   });
 
   it("leaves every key of the app's package.json imports to Vite", async () => {
-    await writeFile(
-      join(workingDir, 'package.json'),
+    await writePackageJson(
       JSON.stringify({
         imports: { '#db': './src/db.ts', '#lib/*': './src/lib/*' },
       })
@@ -48,27 +67,38 @@ describe('SvelteKitBuilder', () => {
     const builder = new TestBuilder({ workingDir });
 
     expect(builder.externalPackages).toEqual(
-      expect.arrayContaining(['#db', '#lib/*'])
+      expect.arrayContaining([...DEFAULT_EXTERNALS, '#db'])
     );
-    expect(
-      builder.externalPackages?.filter((pkg) => pkg === '#lib/*')
-    ).toHaveLength(1);
+    expect(builder.externalPackages).toHaveLength(DEFAULT_EXTERNALS.length + 1);
   });
 
-  it('builds the externals without a package.json imports field', async () => {
-    expect(() => new TestBuilder({ workingDir })).not.toThrow();
+  it('keeps the defaults without a package.json', () => {
+    expectDefaultExternals(new TestBuilder({ workingDir }));
+  });
 
-    await writeFile(join(workingDir, 'package.json'), '{}');
-    expect(new TestBuilder({ workingDir }).externalPackages).toEqual([
-      '$env/*',
-      '$lib',
-      '$lib/*',
-      '$app/*',
-      '#lib',
-      '#lib/*',
-    ]);
+  it('keeps the defaults when package.json has no imports field', async () => {
+    await writePackageJson('{}');
 
-    await writeFile(join(workingDir, 'package.json'), 'not json');
-    expect(() => new TestBuilder({ workingDir })).not.toThrow();
+    expectDefaultExternals(new TestBuilder({ workingDir }));
+  });
+
+  it('keeps the defaults when package.json is not valid JSON', async () => {
+    await writePackageJson('not json');
+
+    expectDefaultExternals(new TestBuilder({ workingDir }));
+  });
+
+  it('keeps the defaults when imports is not an object', async () => {
+    await writePackageJson(JSON.stringify({ imports: ['#x'] }));
+
+    expectDefaultExternals(new TestBuilder({ workingDir }));
+  });
+
+  it('ignores imports keys that do not start with #', async () => {
+    await writePackageJson(
+      JSON.stringify({ imports: { 'lib/*': './src/lib/*' } })
+    );
+
+    expectDefaultExternals(new TestBuilder({ workingDir }));
   });
 });
