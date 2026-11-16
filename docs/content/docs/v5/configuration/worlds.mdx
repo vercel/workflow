@@ -336,13 +336,14 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: disabled
 - Set `1` to turn off the World's metadata-only `analytics` read namespace, forcing `workflow inspect` and web UI list views onto strongly consistent primary storage. Intended for tests and tooling that read entities immediately after writing them.
+- Only `1` disables it; other values, including `true`, are ignored.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
 - Factory option: none
 - CLI flag: none
 - Default: `ws`
-- Ships workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Set to exactly `http` to opt out; any other value, including unset or empty, uses the WebSocket.
+- Ships workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Set to `http` (case-insensitive, surrounding whitespace ignored) to opt out; any other value, including unset or empty, uses the WebSocket.
 - Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.
 
 ### `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`
@@ -371,6 +372,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Default: enabled
 - On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
 - Set `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
+- Only `0` turns it off; other values, including `false`, are ignored.
 - Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled, which takes the whole HTTP/2 path away.
 
 ### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
@@ -382,6 +384,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Clamped to `[5000, 120000]`.
 - This is the only request path the World cannot bound with `WORKFLOW_REQUEST_TIMEOUT_MS`, because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
 - Keep it below the queue's visibility-renewal interval (60 seconds) so a failed call has room to surface and be retried before the message lease lapses.
+- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled: the queue client then uses the runtime's global HTTP agent, with no connection cap and no deadline.
 
 ### `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`
 
@@ -391,3 +394,4 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Connections the Vercel World's queue client may open to the queue service.
 - Clamped to `[1, 1024]`.
 - Sized much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out. Lower it only if you have a reason to cap sockets; too low turns invocation concurrency into the limit on how fast messages can be acknowledged.
+- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled: the queue client then uses the runtime's global HTTP agent, with no connection cap and no deadline.

@@ -446,7 +446,7 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to its backend
 
 Below the floor the deadline starts canceling requests that would have succeeded, since a cold route or a large event page can take seconds, and a canceled request is redriven through the queue rather than making progress. The ceiling matches the longest a backend route holds a response. Requests that legitimately outlast it (stream reads and writes, event batches) opt out of the deadline entirely rather than relying on this value.
 
-The same deadline bounds the [events WebSocket](#workflow_events_transport): opening the socket, including resolving the token it is opened with, and each event write over it.
+The same deadline bounds the [events WebSocket](#event-writes-over-websocket): opening the socket, including resolving the token it is opened with, and each event write over it.
 
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
@@ -500,7 +500,7 @@ Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Eve
 
 - Default: disabled
 
-Set `1` to turn off the World's metadata-only `analytics` read namespace, forcing `workflow inspect` and web UI list views onto strongly consistent primary storage.
+Set `1` to turn off the World's metadata-only `analytics` read namespace, forcing `workflow inspect` and web UI list views onto strongly consistent primary storage. Only `1` disables it; other values, including `true`, are ignored.
 
 Change it when: tests or tooling read entities immediately after writing them.
 
@@ -508,7 +508,7 @@ Change it when: tests or tooling read entities immediately after writing them.
 
 - Default: enabled
 
-Lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request. Set `0` to take the event-log requests off HTTP/2 entirely, so each request uses its own HTTP/1.1 connection.
+Lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request. Set `0` to take the event-log requests off HTTP/2 entirely, so each request uses its own HTTP/1.1 connection. Only `0` turns it off; other values, including `false`, are ignored.
 
 Change it when: HTTP/2 turns out to be at fault for event delivery problems. `0` is the kill switch.
 
@@ -524,6 +524,8 @@ Change it when: you have a reason to cap sockets. Too low turns invocation concu
 
 The default is much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out.
 
+Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled: the queue client then uses the runtime's global HTTP agent, with no connection cap and no deadline.
+
 ### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
 
 - Default: `30000`
@@ -534,13 +536,15 @@ Keep it below the queue's visibility-renewal interval (60 seconds) so a failed c
 
 This is the only request path the World cannot bound with [`WORKFLOW_REQUEST_TIMEOUT_MS`](#workflow_request_timeout_ms), because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
 
+Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled: the queue client then uses the runtime's global HTTP agent, with no connection cap and no deadline.
+
 ### `WORKFLOW_NODE_HTTP`
 
 - Default: disabled
 
 Whether the Vercel World issues its HTTP requests through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library it normally uses. Set to `1` to switch to Node's modules.
 
-It costs throughput: event-log requests lose HTTP/2, among other per-call-site tuning. See [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) for the trade-offs.
+It costs throughput: event-log requests lose HTTP/2, among other per-call-site tuning. The queue client's requests stay on undici but lose their own connection cap and deadline ([`WORKFLOW_VERCEL_QUEUE_CONNECTIONS`](#workflow_vercel_queue_connections) and [`WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`](#workflow_vercel_queue_timeout_ms) stop applying). See [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) for the trade-offs.
 
 ### Programmatic configuration
 
@@ -618,8 +622,6 @@ The Vercel World uses Vercel's infrastructure for workflow execution:
 - **Queuing**: Steps are distributed across Vercel Functions through [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
 - **Authentication**: OIDC tokens provide secure, automatic authentication inside deployments; clients outside one authenticate with a [Vercel auth token](#connecting-from-outside-a-deployment)
 
-For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).
-
 ### Stream writes over WebSocket
 
 With [`WORKFLOW_STREAMS_TRANSPORT`](#workflow_streams_transport) at its default, the client only offers the upgrade. The server accepts or declines each one, and a writer whose upgrade is declined or fails writes over HTTP for the rest of its lifetime. This setting does not decide which tenants may upgrade and does not infer server support from package versions. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
@@ -680,3 +682,5 @@ The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the c
 A frame over [`WORKFLOW_WS_MAX_MESSAGE_BYTES`](#workflow_ws_max_message_bytes) is sent as several messages, and the other side rebuilds it before handling it. Stream writes split a large write group into several ordered write requests instead (see [Stream writes over WebSocket](#stream-writes-over-websocket)).
 
 The client splits its own large requests, which needs a Vercel World backend that accepts split frames. It lists `frame-parts` in the `x-workflow-ws-flags` header of the WebSocket upgrade, and the backend splits large replies only for a client that does, so older clients keep receiving whole replies.
+
+For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

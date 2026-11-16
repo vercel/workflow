@@ -86,7 +86,7 @@ Full base URL override for HTTPS or custom hostnames.
 
 Change it when: the app is served over HTTPS or on a custom hostname.
 
-Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
+Port resolution priority: `baseUrl` > `WORKFLOW_LOCAL_BASE_URL` > `port` > `PORT` > auto-detected
 
 ### `WORKFLOW_QUEUE_AUTH`
 
@@ -161,7 +161,7 @@ A step counts as abandoned only if it started before the Local World loaded in t
 
 How long a process keeps its connection to `world.db` open between operations.
 
-`1` keeps it until it has been idle for a few seconds. `brief` closes it once a burst of operations ends; it is the default on Windows, where an open database file cannot be deleted, so the data directory stays removable while the app runs. `0` opens and closes a connection for every operation, which is slower; the repository's own tests use it on Windows because they delete their data directory right after using it.
+`1` keeps it until it has been idle for a few seconds. `brief` closes it once a burst of operations ends; it is the default on Windows, where an open database file cannot be deleted, so the data directory stays removable while the app runs. `0` opens and closes a connection for every operation, which is slower; the repository's own tests use it on Windows because they delete their data directory right after using it. Any other value, including `true` or `false`, uses the default.
 
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 

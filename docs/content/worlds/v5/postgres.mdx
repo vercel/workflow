@@ -336,7 +336,7 @@ Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. 
 
 Number of concurrent workers polling for jobs.
 
-Change it when: more `returnValue` polls can be in flight at once than this ceiling allows. Raise it above the peak.
+Change it when: you need more jobs in flight per process, including `returnValue` polls that hold a worker slot (see below).
 
 A parent workflow awaiting `childRun.returnValue` of a child it started does not hold a worker slot: it suspends on a system hook the child resumes when it finishes (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)). A `returnValue` that falls back to polling still does, for example one awaited inside a step, or any await while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. Each of those holds a worker slot until its child run terminates.
 
