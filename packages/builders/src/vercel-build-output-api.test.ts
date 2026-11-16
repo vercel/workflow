@@ -46,7 +46,7 @@ function executeStep(workingDir: string, stepName: string): string {
       '-e',
       `await import(${JSON.stringify(bundleUrl)});
 const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
-const step = [...steps].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
+const step = [...(steps ?? [])].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
 if (!step) throw new Error(${JSON.stringify(`${stepName} step was not registered`)});
 process.stdout.write(JSON.stringify(await step()));`,
     ],
@@ -187,6 +187,64 @@ export async function gaxWorkflow(): Promise<string> {
       expect(
         webhookBundle.match(/var __dirname = __pathDirname\(__filename\);/g)
       ).toHaveLength(1);
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder step discovery', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    'registers steps whose "use step" shares a line with other code',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      // A step in the workflow's own file, and one in a file that only has
+      // one-line steps, so discovery has to find it from the directive alone.
+      await write(
+        join(workingDir, 'src/workflows/inline.ts'),
+        `import { fromOtherFile } from '../lib/helpers';
+
+export async function doWork() { "use step"; return 'same-file'; }
+
+export async function inlineWorkflow() {
+  'use workflow';
+  return [await doWork(), await fromOtherFile()];
+}
+`
+      );
+      await write(
+        join(workingDir, 'src/lib/helpers.ts'),
+        `export const fromOtherFile = async () => { 'use step'; return 'other-file'; };
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      expect(executeStep(workingDir, 'doWork')).toBe('same-file');
+      expect(executeStep(workingDir, 'fromOtherFile')).toBe('other-file');
+
+      const manifest = JSON.parse(
+        await readFile(
+          join(
+            workingDir,
+            '.vercel/output/diagnostics/workflows-manifest.json'
+          ),
+          'utf8'
+        )
+      );
+      expect(Object.keys(manifest.steps).sort()).toEqual([
+        'src/lib/helpers.ts',
+        'src/workflows/inline.ts',
+      ]);
     }
   );
 });
