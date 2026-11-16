@@ -48,7 +48,7 @@ When you cannot run it (the prompt only contains code), apply the same rules by 
 | `batchEvents` | as debounce, but each event is stored first (a table keyed by the batch key) and the step reads the window's events |
 | `concurrency` that waits its turn, `throttle`, `priority` | no equivalent yet (native locks and in-run rate limiting are in development); keep the existing lock inside the steps that need it, use `RetryableError` with `retryAfter` for downstream limits, and say so in `## Open Questions`. `concurrency: { limit: 1 }` that can drop overlap is the `singleton` skip row |
 | cron trigger | a Vercel Schedule targeting a queue topic whose consumer calls `start()` with ``experimental_hook: { token: `${name}:${message.executionId}`, experimental_minRetention: '7 days' }`` and returns on `HookConflictError` (https://vercel.com/docs/schedules/workflows); schedules take a `timezone` |
-| several functions on one event | one `start()` per target where the event is sent, each with token `${targetName}:${event.id}` |
+| several functions on one event | one `start()` per target where the event is sent, each with token `${targetName}:${event.id}` and `experimental_minRetention: '24h'` (Inngest dedupes events by `id` for 24 hours; without a retention the token is released when the target ends, and a retried send starts it again) |
 
 ## One owner per token
 

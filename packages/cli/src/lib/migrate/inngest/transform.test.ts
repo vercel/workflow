@@ -606,6 +606,117 @@ export const fn1 = inngest.createFunction({ id: 'fn1', triggers: [{ event: 'a/b'
     expect(code).toContain('async function label(event: any) {');
   });
 
+  it('writes a wait helper that is valid JavaScript and survives a takeover from another file', async () => {
+    const m = await migrate({
+      'client.js': client,
+      'waits.js': `import { inngest } from './client.js';
+
+export const jsWait = inngest.createFunction({ id: 'js-wait' }, { event: 'a/h' }, async ({ event, step }) => {
+  const got = await step.waitForEvent('w', { event: 'a/i', timeout: '1m', match: 'data.id' });
+  const sig = await step.waitForSignal('s', { signal: \`s:\${event.data.id}\`, timeout: '1m', onConflict: 'fail' });
+  return { got, sig };
+});
+`,
+    });
+    const code = m.out('waits.js');
+    expect(code).toContain('async function waitForHook(hook, timeout) {');
+    // No replacing call in this file, but another file's can take the
+    // token over: the waiter still times out with null, as in Inngest.
+    expect(code).toContain(
+      "import { HookForceClaimedError } from 'workflow/errors';"
+    );
+    expect(code).toContain(
+      'if (!timeout || !HookForceClaimedError.is(error)) throw error;'
+    );
+    const file = join(m.dir, 'waits-check.mjs');
+    writeFileSync(file, code);
+    expect(() =>
+      execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' })
+    ).not.toThrow();
+  });
+
+  it('refuses const config that other code modifies, and reads const config nothing else touches', async () => {
+    const m = await migrate({
+      'client.ts': client,
+      'functions.ts': `import { inngest } from './client';
+
+const config = { id: 'mutated', retries: 2 as 0 | 2, triggers: [{ event: 'a/d' }] };
+config.retries = 0;
+export const mutated = inngest.createFunction(config, async ({ step }) => step.run('flaky', () => 1));
+
+const TRIGGERS = [{ event: 'a/e' }];
+TRIGGERS.push({ event: 'a/f' });
+export const pushed = inngest.createFunction({ id: 'pushed', triggers: TRIGGERS }, async ({ step }) => step.run('x', () => 1));
+
+const SHARED = { id: 'shared', retries: 4 as const, triggers: [{ event: 'a/g' }] };
+export const shared = inngest.createFunction(SHARED, async ({ step }) => step.run('y', () => 1));
+`,
+    });
+    const code = m.out('functions.ts');
+    const [mutated, pushed, shared] = m.report('functions.ts').functions;
+    expect(mutated.notes.map((n) => n.message)).toEqual([
+      expect.stringContaining(
+        '`config` are a const object that other code in this file uses'
+      ),
+    ]);
+    expect(code).not.toContain('flaky.maxRetries');
+    expect(pushed.notes.map((n) => n.message)).toEqual([
+      expect.stringContaining(
+        '`triggers: TRIGGERS` is a const that other code in this file uses'
+      ),
+    ]);
+    expect(shared.triggers).toEqual([{ kind: 'event', value: 'a/g' }]);
+    expect(code).toContain('y.maxRetries = 4;');
+  });
+
+  it('keeps a type-only import and imports the value under an alias', async () => {
+    const m = await migrate({
+      'client.ts': client,
+      'functions.ts': `import { type sleep } from 'workflow';
+import { inngest } from './client';
+
+export type Timer = typeof sleep;
+
+export const pause = inngest.createFunction({ id: 'pause' }, { event: 'a/c' }, async ({ step }) => {
+  await step.sleep('pause', '1s');
+});
+`,
+    });
+    const code = m.out('functions.ts');
+    expect(code).toContain(
+      "import { type sleep, sleep as workflowSleep } from 'workflow';"
+    );
+    expect(code).toContain("await workflowSleep('1s');");
+  });
+
+  it('types the closure parameters step.run() typed from its inputs', async () => {
+    const m = await migrate({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          target: 'es2022',
+          module: 'esnext',
+          moduleResolution: 'bundler',
+          skipLibCheck: true,
+        },
+      }),
+      'src/client.ts': client,
+      'src/functions.ts':
+        fn(`    const doubled = await step.run('double', (n) => n * 2, 21);
+    const field: string = event.data.field;
+    const read = await step.run('read', ({ [field]: value }) => value, { [field]: 42 });
+    const none = await step.run('none', (missing) => missing);
+    return [doubled, read, none];`),
+    });
+    const code = m.out('src/functions.ts');
+    expect(code).toContain('async function double(n: number) {');
+    expect(code).toContain(
+      'async function readStep(field: string, { [field]: value }: { [x: string]: number }) {'
+    );
+    // No input: an explicit fallback rather than an implicit any.
+    expect(code).toContain('async function noneStep(missing: any) {');
+  });
+
   it('writes plain JavaScript for .js files', async () => {
     const m = await migrate({
       'client.js': client.replace(': string', ''),

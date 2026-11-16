@@ -200,7 +200,11 @@ export function transformInngestFile(
           ts.isImportDeclaration(decl) &&
           ts.isStringLiteral(decl.moduleSpecifier)
         ) {
-          from = `${decl.moduleSpecifier.text}:${(specifier.propertyName ?? specifier.name).text}`;
+          // A type-only import is not a runtime binding: record it apart, so
+          // a value of the same name is imported under an alias instead.
+          const typeOnly =
+            specifier.isTypeOnly || !!decl.importClause?.isTypeOnly;
+          from = `${decl.moduleSpecifier.text}:${typeOnly ? 'type:' : ''}${(specifier.propertyName ?? specifier.name).text}`;
         }
       }
       declaredNames.set(
@@ -254,22 +258,25 @@ export function transformInngestFile(
     const known = aliases.get(key);
     if (known) return known;
     let local = name;
-    for (
-      let n = 2;
-      declaredNames.has(local) &&
-      declaredNames.get(local) !== `workflow:${name}`;
-      n++
-    )
+    const imported = (candidate: string) =>
+      declaredNames.get(candidate) === `workflow:${name}` ||
+      declaredNames.get(candidate) === `workflow:type:${name}`;
+    for (let n = 2; declaredNames.has(local) && !imported(local); n++)
       local = `Workflow${name}${n}`;
     names.reserve(local);
     aliases.set(key, local);
-    workflowImports.add(
-      local === name ? `type ${name}` : `type ${name} as ${local}`
-    );
+    // Already imported (as a value or a type): use it as it is.
+    if (!imported(local)) {
+      workflowImports.add(
+        local === name ? `type ${name}` : `type ${name} as ${local}`
+      );
+    }
     return local;
   };
   /** Module-level helpers the generated code calls, appended to the file. */
   const helpers: Array<() => string> = [];
+  /** Consts not read through because other code could modify them. */
+  const unstableConsts = new Set<string>();
   let waitHelperName: string | undefined;
   /** Local name of HookForceClaimedError, once a wait takes over its token. */
   let forceClaimedError: string | undefined;
@@ -459,7 +466,14 @@ export function transformInngestFile(
     const triggerNodes: TS.Expression[] = [];
     if (call.arguments.length >= 3) triggerNodes.push(call.arguments[1]);
     const v4Triggers = config && getProperty(ts, config, 'triggers');
-    if (v4Triggers) triggerNodes.push(resolveConst(v4Triggers));
+    if (v4Triggers) {
+      const resolved = resolveConst(v4Triggers);
+      triggerNodes.push(resolved);
+      if (ts.isIdentifier(resolved) && unstableConsts.has(resolved.text)) {
+        const message = `\`triggers: ${resolved.text}\` is a const that other code in this file uses, so the codemod cannot be sure which events start this function. Check it and route those events to start() by hand.`;
+        fnNotes.push({ severity: 'todo', line: line(v4Triggers), message });
+      }
+    }
     for (const node of triggerNodes) {
       fn.triggers.push(...readTriggers(node));
     }
@@ -484,7 +498,11 @@ export function transformInngestFile(
     const configTodos: string[] = [];
     // Config the codemod cannot read is a blocker, not a silent default:
     // the retry count, triggers and flow control would otherwise be lost.
-    if (configArg && !config) {
+    if (configArg && !config && unstableConsts.has(configArg.getText(sf))) {
+      const message = `The function options \`${configArg.getText(sf)}\` are a const object that other code in this file uses, so the codemod cannot be sure of their values when the function is registered (\`const\` does not stop \`${configArg.getText(sf)}.retries = 0\`). Migrate its retries, triggers and flow-control options by hand: set \`maxRetries\` on each step.`;
+      configTodos.push(message);
+      fnNotes.push({ severity: 'todo', line: line(configArg), message });
+    } else if (configArg && !config) {
       const message = `The function options (\`${singleLine(configArg.getText(sf), 80)}\`) are not an object literal the codemod can read, so its retries, triggers and flow-control options were not migrated. Set \`maxRetries\` on each step and move the rest by hand.`;
       configTodos.push(message);
       fnNotes.push({ severity: 'todo', line: line(configArg), message });
@@ -541,7 +559,7 @@ export function transformInngestFile(
     }
     for (const trigger of fn.triggers) {
       if (trigger.kind === 'cron') {
-        const message = `Inngest ran this function on the cron schedule ${trigger.value}. Point a Vercel Schedule at a queue topic whose consumer calls start(${workflowName}, [...]) with the occurrence's executionId in an experimental_hook token (https://vercel.com/docs/schedules/workflows).`;
+        const message = `Inngest ran this function on the cron schedule ${trigger.value}. Point a Vercel Schedule at a queue topic whose consumer calls start(${workflowName}, [...]) with the occurrence's executionId in an experimental_hook token, retained with experimental_minRetention (for example '7 days') so a redelivery after the run ends is refused too (https://vercel.com/docs/schedules/workflows).`;
         configTodos.push(message);
         fnNotes.push({ severity: 'todo', line: line(call), message });
       }
@@ -1189,7 +1207,17 @@ export function transformInngestFile(
     const capturedParams = captured.map((c) =>
       typed ? `${c.name}${INFER_MARK}` : c.name
     );
-    const ownParams = fnNode.parameters.map((p) => p.getText(sf));
+    // step.run() typed the closure's own parameters from its inputs; a
+    // function declaration has no such context, so an unannotated one gets
+    // its type from the call site too (or an explicit `any`).
+    const ownParams = fnNode.parameters.map((p) => {
+      if (!typed || p.type || p.dotDotDotToken || p.questionToken)
+        return p.getText(sf);
+      const initializer = p.initializer
+        ? ` = ${p.initializer.getText(sf)}`
+        : '';
+      return `${p.name.getText(sf)}${INFER_MARK}${initializer}`;
+    });
     const allParams = [...capturedParams, ...ownParams].join(', ');
     const typeParams = fnNode.typeParameters
       ? `<${fnNode.typeParameters.map((p) => p.getText(sf)).join(', ')}>`
@@ -1795,7 +1823,7 @@ export function transformInngestFile(
         : '';
       return (
         `/** Resolves with the hook's payload, or with null once \`timeout\` resolves. */\n` +
-        `async function ${name}${t('<T>')}(hook${t(`: ${hookType}<T>`)}, timeout?${t(': Promise<void>')})${t(': Promise<T | null>')} {\n` +
+        `async function ${name}${t('<T>')}(hook${t(`: ${hookType}<T>`)}, timeout${t('?: Promise<void>')})${t(': Promise<T | null>')} {\n` +
         `${I}try {\n` +
         `${I}${I}return await (timeout ? Promise.race([hook, timeout.then(() => null)]) : hook)${semi}\n` +
         takenOver +
@@ -1839,9 +1867,9 @@ export function transformInngestFile(
       return;
     }
     const force = conflict === 'replace' ? ', experimental_force: true' : '';
-    if (force) {
-      forceClaimedError = use('workflow/errors', 'HookForceClaimedError');
-    }
+    // Any signal wait can be replaced, by a run of any workflow in any file,
+    // so every migrated signal wait handles the takeover the Inngest way.
+    forceClaimedError = use('workflow/errors', 'HookForceClaimedError');
     let typeArg = '';
     if (typed) {
       const typeText = printType(
@@ -2232,9 +2260,78 @@ export function transformInngestFile(
       ts.isVariableDeclarationList(declaration.parent) &&
       declaration.parent.flags & ts.NodeFlags.Const
     ) {
+      // `const` stops rebinding, not `config.retries = 0`: an object or array
+      // is only read through when nothing else in the file touches it.
+      const init = skipParens(ts, declaration.initializer);
+      const inner =
+        ts.isAsExpression(init) || ts.isSatisfiesExpression?.(init)
+          ? skipParens(ts, init.expression)
+          : init;
+      if (
+        (ts.isObjectLiteralExpression(inner) ||
+          ts.isArrayLiteralExpression(inner)) &&
+        !onlyReadAsConfig(symbol, declaration.name)
+      ) {
+        unstableConsts.add(node.text);
+        return node;
+      }
       return resolveConst(declaration.initializer, depth + 1);
     }
     return node;
+  }
+
+  /**
+   * Whether every use of `symbol` places it in function options: as the
+   * options argument of createFunction(), a property value, an array
+   * element or a spread. Any other use could modify it before the function
+   * is registered.
+   */
+  function onlyReadAsConfig(
+    symbol: TS.Symbol,
+    declarationName: TS.Node
+  ): boolean {
+    let ok = true;
+    const visit = (node: TS.Node): void => {
+      if (!ok) return;
+      if (
+        ts.isIdentifier(node) &&
+        node !== declarationName &&
+        !isNonReferenceName(ts, node)
+      ) {
+        const parent = node.parent;
+        const shorthand =
+          ts.isShorthandPropertyAssignment(parent) && parent.name === node;
+        const resolved = shorthand
+          ? checker.getShorthandAssignmentValueSymbol(parent)
+          : symbolOf(node);
+        if (resolved === symbol) {
+          let use: TS.Node = node;
+          while (
+            ts.isParenthesizedExpression(use.parent) ||
+            ts.isAsExpression(use.parent) ||
+            ts.isSatisfiesExpression?.(use.parent)
+          ) {
+            use = use.parent;
+          }
+          const at = use.parent;
+          const asOptions =
+            ts.isCallExpression(at) &&
+            at.arguments[0] === use &&
+            ts.isPropertyAccessExpression(at.expression) &&
+            at.expression.name.text === 'createFunction';
+          const asValue =
+            shorthand ||
+            (ts.isPropertyAssignment(at) && at.initializer === use) ||
+            ts.isArrayLiteralExpression(at) ||
+            ts.isSpreadElement(at) ||
+            ts.isSpreadAssignment(at);
+          if (!asOptions && !asValue) ok = false;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    return ok;
   }
 
   /** `eventType('name', ...)`, directly or through a const in this file. */

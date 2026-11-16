@@ -447,7 +447,8 @@ export function inferParameterTypes(
     const call = calls.get(name);
     for (const { index, markAt, declaration } of params) {
       const arg = call?.arguments[index];
-      let annotation = '';
+      // Explicit fallback: an unannotated parameter fails `strict` projects.
+      let annotation = ': any';
       if (arg) {
         let type = checker.getTypeAtLocation(arg);
         const base = (
