@@ -40,6 +40,7 @@ import {
   runAsOrchestratorDelivery,
 } from './runtime/inline-orchestrator.js';
 import { withRunInputs } from './runtime/invocations.js';
+import { reportWorkflowInvocation } from './runtime/platform-attribution.js';
 import {
   authorizeQueueDelivery,
   createQueueAuthRefusalLogger,
@@ -352,6 +353,9 @@ export function workflowEntrypoint(
         runInput,
         hookResumeTiming,
       } = message;
+      // Attribute this request to the run on the hosting platform. An inline
+      // delivery runs in an ordinary route (see runtime/platform-attribution).
+      reportWorkflowInvocation(runId);
 
       // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
       // Threaded through this invocation and CONSUMED by the first durable
