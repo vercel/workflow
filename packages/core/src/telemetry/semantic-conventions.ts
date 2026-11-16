@@ -429,6 +429,14 @@ export const WorkflowParkedSessionAgeMs = SemanticConvention<number>(
   'workflow.parked_session.age_ms'
 );
 
+/**
+ * The VM this delivery resumed from a park diverged from the log on its first
+ * pass, and the delivery replayed it from cold instead.
+ */
+export const WorkflowParkedSessionDiverged = SemanticConvention<boolean>(
+  'workflow.parked_session_diverged'
+);
+
 /** The in-band fence refused this orchestrator delivery's write. */
 export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'

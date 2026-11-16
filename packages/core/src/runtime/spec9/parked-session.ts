@@ -14,11 +14,10 @@ import { getParkedVmMaxAgeMs, getParkedVmMaxBytes } from '../constants.js';
  * costs one incremental read.
  *
  * What it holds is only valid against the log it consumed. The next delivery
- * reads from `cursor` and keeps the session only while the World's in-band
- * count still equals `expectedSeqInBand`, so no other orchestrator decided
- * anything since; otherwise it falls back to the full load and cold replay.
- * The VM still holds the parking delivery's end-of-run drain, so the
- * resuming delivery hands it its own (`WorkflowSession.resume`).
+ * reads from `cursor`, including whatever another orchestrator decided since,
+ * and the VM replays that like any read event. `expectedSeqInBand` says
+ * whether it did. The VM still holds the parking delivery's end-of-run
+ * drain, so the resuming delivery hands it its own (`WorkflowSession.resume`).
  */
 export interface ParkedSession {
   readonly session: WorkflowSession;
