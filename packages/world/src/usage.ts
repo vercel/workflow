@@ -16,9 +16,9 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
  * Only world-local computes it today (`world.experimental_usage`), from
  * aggregate queries over its database.
  *
- * TODO(https://github.com/vercel/workflow/issues/5445): the production data
- * path. World-vercel needs this shape from an analytics API or a
- * precomputed per-run rollup, not from reading the run's log.
+ * Production data path (world-vercel): tracked in #5445. World-vercel needs
+ * this shape from an analytics API or a precomputed per-run rollup, not from
+ * reading the run's log.
  *
  * Pure (no Node.js imports): the web UI bundles it for the browser.
  */

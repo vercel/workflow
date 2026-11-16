@@ -47,6 +47,11 @@ export function purgesUserDataOnFinish(
  * saves on Data Retained, not Data Written. The event sizes come from the
  * pass that scrubs the events (the rows are read before any is rewritten),
  * so the only extra read is the run's stream bytes, from their index.
+ *
+ * This rewrites the run's event rows in place, and it is the only path that
+ * does: the usage cache (`usage-storage.ts`) counts only rows after the last
+ * position it counted and relies on that. Usage handles the purge by
+ * reporting the sizes saved here and recounting the purged run.
  */
 export function purgeRunData(db: Database, runId: string): void {
   for (const row of db.all<{ step_id: string; doc: string }>(

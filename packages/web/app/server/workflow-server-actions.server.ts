@@ -721,8 +721,8 @@ export async function fetchRun(
  * (only world-local does today), so the UI shows nothing rather than a
  * count of the events it happened to load.
  *
- * TODO(https://github.com/vercel/workflow/issues/5445): world-vercel, from
- * an analytics API or a precomputed per-run rollup.
+ * Production data path (world-vercel): tracked in #5445, from an analytics
+ * API or a precomputed per-run rollup.
  */
 export async function fetchRunUsage(
   worldEnv: EnvMap,

@@ -11,6 +11,10 @@ import type { RawDatabase } from './driver.js';
  * - `tag` is the World's `tag` option (test isolation), NULL when untagged.
  *   Steps, waits and events belong to their run's tag.
  */
+// `run_usage_purged` is not here: it is created on first use, outside the
+// migrations (see storage/purged-usage.ts), so `user_version` does not change
+// and an older world-local still opens the database. A future migration must
+// not create or drop it blindly.
 const MIGRATIONS: string[] = [
   `
   CREATE TABLE runs (

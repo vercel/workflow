@@ -346,6 +346,12 @@ export function createUsageStorage(
 
   // Per World (this closure), never module state. Insertion order is the
   // recency order: a read moves its run to the end.
+  //
+  // A read counts only the rows after the last position it counted, so the
+  // cache assumes event rows are never rewritten in place. The one path that
+  // does is the zero-retention purge (`purgeRunData` in run-retention.ts),
+  // which the read handles: a purged run reports the sizes saved before the
+  // purge, and counts taken before it are taken again.
   const cache = new Map<string, RunCounts>();
   // One count per run at a time: a second read of the same run waits for
   // the first and extends what it counted. Overlapping counts would still be
@@ -464,8 +470,8 @@ export function createUsageStorage(
       // Local runs are not billed: the UI and CLI say what the run would
       // count as on Vercel instead.
       billed: false,
-      // world-local has no plan retention to multiply by.
-      // TODO: confirm with the pricing owners that local runs hide it.
+      // world-local has no plan retention, so there is no Data Retained to
+      // report: the UI and CLI hide it.
       dataRetained: null,
     });
   }

@@ -295,6 +295,7 @@ export class Store {
       .map((row) => decode<Event>(row.doc));
   }
 
+  // A caller that rewrites a live run's events makes the usage cache stale (see usage-storage.ts).
   rewriteEvent(event: Event): void {
     const seq = eventIdToSlot(event.eventId);
     if (seq === null) return;
