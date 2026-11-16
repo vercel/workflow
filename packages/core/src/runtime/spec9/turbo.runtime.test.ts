@@ -1,4 +1,9 @@
-import { InBandSupersededError, RunExpiredError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  InBandSupersededError,
+  RUN_ALREADY_STARTED_CODE,
+  RunExpiredError,
+} from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -16,6 +21,7 @@ import {
   runResult,
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
+import { TURBO_FIRST_DELIVERY_MAX_AGE_MS } from '../constants.js';
 import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
 
@@ -69,6 +75,29 @@ const fanOut = `const branch = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turb
   }${transform('workflow')}`;
 
 const twoSteps = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_add");
+  async function workflow(a, b) {
+    const first = await add(a, b);
+    return await add(first, 10);
+  }${transform('workflow')}`;
+
+/**
+ * When set, the next `turbo_parkable` body records itself and then waits on
+ * this: the step an invocation that dies mid-step leaves open.
+ */
+let parkNextBody: Promise<void> | undefined;
+
+registerStepFunction('turbo_parkable', async (a: number, b: number) => {
+  bodies.push({
+    listCalls: currentWorld?.listCalls.length ?? -1,
+    eventTypes: currentWorld?.events.map((e) => e.eventType) ?? [],
+  });
+  const park = parkNextBody;
+  parkNextBody = undefined;
+  if (park) await park;
+  return a + b;
+});
+
+const twoParkableSteps = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_parkable");
   async function workflow(a, b) {
     const first = await add(a, b);
     return await add(first, 10);
@@ -175,6 +204,7 @@ const savedEnv: Partial<Record<(typeof ENV)[number], string | undefined>> = {};
 beforeEach(() => {
   bodies = [];
   onBody = undefined;
+  parkNextBody = undefined;
   for (const key of ENV) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
@@ -324,6 +354,121 @@ describe.each([
     expect(result).toBeUndefined();
     expect(types(world.events)).toEqual(['run_created']);
     expect(world.held).toEqual([]);
+  });
+
+  it('runs the open step again when a replay of the first delivery finds the run already started', async () => {
+    // The first delivery starts the run and its first step, then its
+    // invocation dies mid-step: the log it leaves is captured while the body
+    // is parked.
+    let releaseBody: () => void = () => {};
+    parkNextBody = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    const {
+      world: crashed,
+      runId,
+      start,
+    } = await setup(twoParkableSteps, [1, 2]);
+    const crashedDelivery = crashed.deliver(start).catch(() => {});
+    await vi.waitFor(() =>
+      expect(types(crashed.events)).toEqual([
+        'run_created',
+        'run_started',
+        'step_started',
+      ])
+    );
+    const crashedLog = structuredClone(crashed.events);
+    const crashedRun = structuredClone(await crashed.asWorld().runs.get(runId));
+    const firstStepId = crashedLog[2]!.correlationId;
+    // A step body still executing in this process would be awaited by the
+    // replay rather than run again (one execution per step per process); a
+    // dead invocation's is not. Let it settle against the discarded World.
+    releaseBody();
+    await crashedDelivery;
+
+    // A platform re-runs the crashed invocation: the same request, so the
+    // same message with delivery count 1, against the log the first one left.
+    // The World refuses the replay's `run_started` as a started run.
+    const replay: AppendOnlyWorld = new AppendOnlyWorld({
+      fence: true,
+      beforeCreate(data) {
+        if (
+          data.eventType === 'run_started' &&
+          replay.events.some((e) => e.eventType === 'run_started')
+        ) {
+          throw new EntityConflictError(
+            `Workflow run "${runId}" has already started`,
+            { code: RUN_ALREADY_STARTED_CODE }
+          );
+        }
+      },
+    });
+    replay.seedLog(crashedRun, crashedLog);
+    currentWorld = replay;
+    setWorld(replay.asWorld());
+    await workflowEntrypoint(twoParkableSteps)(
+      new Request('https://example.test')
+    );
+
+    await replay.deliver({ ...start, deliveryCount: 1, createdAt: new Date() });
+    await replay.runUntilIdle();
+
+    // Not acknowledged as finished: the open step ran again, as attempt 2,
+    // and the run completed.
+    const firstStepStarts = replay.events.filter(
+      (e) => e.eventType === 'step_started' && e.correlationId === firstStepId
+    );
+    expect(firstStepStarts.map((e) => e.eventData?.attempt)).toEqual([1, 2]);
+    expect(types(replay.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+  });
+
+  it('continues from a fresh load when run_started loses a race to another start on the normal path', async () => {
+    process.env.WORKFLOW_TURBO = '0';
+    let raced = false;
+    const { world, runId, start } = await setup(twoSteps, [1, 2], {
+      fence: true,
+      beforeCreate(data) {
+        if (data.eventType !== 'run_started' || raced) return;
+        // Another delivery's `run_started` lands between this delivery's
+        // load and its own write.
+        raced = true;
+        currentWorld!.appendOutOfBand({
+          eventType: 'run_started',
+          runId,
+          correlationId: runId,
+        } as Partial<Event>);
+        throw new EntityConflictError(
+          `Workflow run "${runId}" has already started`,
+          { code: RUN_ALREADY_STARTED_CODE }
+        );
+      },
+    });
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(raced).toBe(true);
+    expect(types(world.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+  });
+
+  it('loads the log instead of taking the turbo path when the first message is older than a first delivery can be', async () => {
+    const { world, start } = await setup(twoSteps, [1, 2]);
+
+    await world.deliver({
+      ...start,
+      createdAt: new Date(Date.now() - TURBO_FIRST_DELIVERY_MAX_AGE_MS - 1),
+    });
+    await world.runUntilIdle();
+
+    expect(bodies[0]!.listCalls).toBeGreaterThan(0);
+    expect(world.creates[0]?.params).not.toMatchObject({ skipPreload: true });
+    expect(types(world.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
   });
 
   it('completes a resilient start (run_created never landed) under turbo', async () => {

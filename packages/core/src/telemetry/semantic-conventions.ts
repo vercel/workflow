@@ -333,6 +333,15 @@ export const WorkflowSuperseded = SemanticConvention<boolean>(
 );
 
 /**
+ * This orchestrator delivery's `run_started` conflicted with an earlier start
+ * of the run (a replayed first delivery, or a lost race), so it continued in
+ * place from a full load.
+ */
+export const WorkflowStartConflictRestart = SemanticConvention<boolean>(
+  'workflow.start_conflict_restart'
+);
+
+/**
  * The queue's `attempt` for this delivery, which the delivery cap counts:
  * `deliveryCount` less the deliveries that followed a handoff and less
  * coalesced re-runs (see `Queue` in `@workflow/world`).

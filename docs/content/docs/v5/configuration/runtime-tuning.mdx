@@ -158,6 +158,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Fast path for a run's first delivery.
+- Applies only while that delivery's queue message is at most 15 seconds old. An older one, such as a platform re-running a crashed invocation, loads the event log first.
 - Stops forcing optimistic inline step start once the run creates a hook or wait.
 - Set `0` or `false` to disable.
 

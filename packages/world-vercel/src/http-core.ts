@@ -499,7 +499,14 @@ export function errorForResponse(
       code: START_HOOK_CANDIDATE_CANCELLED,
     });
   }
-  if (status === 409) return new EntityConflictError(message);
+  // The code (e.g. `run-already-started`) is the only thing that tells one
+  // conflict from another, so it is kept for the caller.
+  if (status === 409) {
+    return new EntityConflictError(message, {
+      ...(code !== undefined ? { code } : {}),
+      ...(url !== undefined ? { url } : {}),
+    });
+  }
   if (status === 410) {
     if (code === 'stream-expired') {
       const streamDetails =
