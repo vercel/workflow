@@ -10,7 +10,9 @@ import {
   writeFileIfChanged,
 } from '@workflow/builders';
 
-const SVELTEKIT_VIRTUAL_MODULES = [
+// Specifiers left to Vite: SvelteKit's virtual modules and the `#lib`
+// package.json subpath import that replaces `$lib` in SvelteKit 3.
+const SVELTEKIT_EXTERNALS = [
   '$env/*', // All $env subpaths
   '$lib', // Exact $lib import
   '$lib/*', // All $lib subpaths
@@ -33,10 +35,7 @@ export class SvelteKitBuilder extends BaseBuilder {
     const projectRoot = config.projectRoot ?? resolveProjectRoot(workingDir);
     const routesDir = resolve(workingDir, config.routesDir ?? 'src/routes');
     const externalPackages = [
-      ...new Set([
-        ...SVELTEKIT_VIRTUAL_MODULES,
-        ...readSubpathImports(workingDir),
-      ]),
+      ...new Set([...SVELTEKIT_EXTERNALS, ...readSubpathImports(workingDir)]),
     ];
     super({
       ...createBaseBuilderConfig({
