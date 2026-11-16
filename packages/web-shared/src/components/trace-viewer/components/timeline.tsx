@@ -379,7 +379,6 @@ const TimelineBar = memo(function TimelineBar({
   viewDuration,
   containerWidth,
   isSelected,
-  isFlashing,
   isDimmed,
   onSelect,
   onRevealTime,
@@ -389,7 +388,6 @@ const TimelineBar = memo(function TimelineBar({
   viewDuration: number;
   containerWidth: number;
   isSelected: boolean;
-  isFlashing: boolean;
   isDimmed?: boolean;
   onSelect: (spanId: string) => void;
   onRevealTime?: (timeMs: number) => void;
@@ -480,8 +478,7 @@ const TimelineBar = memo(function TimelineBar({
       aria-level={1}
       className={cn(
         'group/timeline-row h-10 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200 transition-opacity',
-        isDimmed && 'opacity-35',
-        isFlashing && 'wf-span-flash'
+        isDimmed && 'opacity-35'
       )}
       onClick={handleClick}
     >
@@ -693,7 +690,6 @@ export function Timeline({
   viewEnd,
   markers,
   selectedId,
-  flashSpanId,
   searchResult,
   onSelect,
   onRevealTime,
@@ -705,7 +701,6 @@ export function Timeline({
   viewEnd: number;
   markers: TimeMarker[];
   selectedId: string | null;
-  flashSpanId: string | null;
   searchResult: SpanSearchResult;
   onSelect: (spanId: string) => void;
   onRevealTime?: (timeMs: number) => void;
@@ -809,7 +804,6 @@ export function Timeline({
             viewDuration={viewDuration}
             containerWidth={timelineWidth}
             isSelected={selectedId === span.spanId}
-            isFlashing={flashSpanId === span.spanId}
             isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
             onSelect={onSelect}
             onRevealTime={onRevealTime}
