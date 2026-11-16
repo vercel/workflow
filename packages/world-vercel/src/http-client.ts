@@ -13,6 +13,7 @@ import {
   RetryAgent,
   type RetryHandler,
 } from 'undici';
+import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import type { APIConfig } from './utils.js';
 import { version } from './version.js';
 
@@ -320,7 +321,11 @@ function deadlineInterceptor(
 
     #abort(): void {
       this.#controller?.abort(
-        new Error(`Queue request exceeded its ${timeoutMs}ms deadline`)
+        Object.assign(
+          new Error(`Queue request exceeded its ${timeoutMs}ms deadline`),
+          // Lets a send's retry policy tell it apart (queue-send-retry.ts).
+          { code: QUEUE_REQUEST_DEADLINE_CODE }
+        )
       );
     }
 
