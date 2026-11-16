@@ -19,6 +19,7 @@ export function summarize(reports: FileReport[]): ReportSummary {
   for (const report of reports) {
     if (report.changed) summary.filesChanged++;
     summary.functions += report.functions.length;
+    summary.steps += report.steps?.length ?? 0;
     summary.todos += report.notes.filter((n) => n.severity === 'todo').length;
     for (const fn of report.functions) {
       summary.steps += fn.steps.length;

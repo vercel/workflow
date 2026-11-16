@@ -30,6 +30,12 @@ export interface MigrationFramework<Context = unknown> {
     code: string;
     report: FileReport;
   };
+  /**
+   * Files outside the quick text filter that the transform must also see,
+   * e.g. the activities modules a Temporal workflow imports. Only files in
+   * the project's own file set are added.
+   */
+  extraFiles?(context: Context): string[];
   /** Markdown report for `--report`. */
   renderMarkdown(
     reports: FileReport[],

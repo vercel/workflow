@@ -57,14 +57,188 @@ Temporal ships a first-party `@temporalio/ai-sdk` plugin and a "Workflow Streams
 
 ## Migrating from Temporal
 
-The model maps closely. Keep your orchestration logic; drop the workers, task queues, and activity modules.
+### Run the codemod
+
+The `workflow` CLI includes a codemod for Temporal TypeScript apps. Run it from your project root, on a clean working tree so its changes are easy to review:
+
+```bash
+npx workflow migrate temporal
+```
+
+It reads the project's `tsconfig.json` to find the files to migrate, and uses the project's own TypeScript. Pass paths to limit it, `--dry-run` to see what would change without writing anything, and `--report <file>` to write a Markdown report. See [`workflow migrate`](/docs/configuration/cli-and-web-ui#migrate-from-temporal) for every flag.
+
+The two models already split work the same way, so most of the change is removing the proxy between them. The codemod:
+
+- Adds `"use workflow"` to every exported function of a workflows module.
+- Replaces each `proxyActivities<typeof activities>()` with a plain import of those activities, and adds `"use step"` to each activity in its own module, with the proxy's `retry.maximumAttempts` as the step's `maxRetries`.
+- Turns each signal into a hook the run creates as it starts, so a signal sent before the handler is set waits in it, as Temporal buffers it. Your `setHandler()` callback still runs for each signal, in order, and `condition()` re-checks after each one.
+- Rewrites `sleep`, `executeChild` and `startChild` (to `start()` in the workflow), `workflowInfo`, `uuid4`, `patched`, `log` and `ApplicationFailure`, and the activity's `Context.current().info.attempt`.
+
+{/* @skip-typecheck: Temporal code, the input of the codemod */}
+```typescript title="workflows.ts (before)"
+import { condition, defineSignal, proxyActivities, setHandler } from '@temporalio/workflow';
+import type * as activities from './activities';
+
+const { chargeCard, sendReceipt } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '1 minute',
+  retry: { maximumAttempts: 5 },
+});
+
+export const approveSignal = defineSignal<[boolean]>('approve');
+
+export async function orderWorkflow(orderId: string, amount: number): Promise<string> {
+  let approved: boolean | undefined;
+  setHandler(approveSignal, (ok) => {
+    approved = ok;
+  });
+  if (!(await condition(() => approved !== undefined, '7 days')) || !approved) {
+    return 'cancelled';
+  }
+  const chargeId = await chargeCard(orderId, amount);
+  await sendReceipt(orderId, chargeId);
+  return chargeId;
+}
+```
+
+```typescript title="workflows.ts (after, formatted)"
+import { createHook, getWorkflowMetadata, type Hook, sleep } from 'workflow';
+declare function chargeCard(orderId: string, amount: number): Promise<string>; // @setup
+declare function sendReceipt(orderId: string, chargeId: string): Promise<void>; // @setup
+
+export const approveSignal = { type: 'signal', name: 'approve' } as const;
+
+export async function orderWorkflow(
+  orderId: string,
+  amount: number
+): Promise<string> {
+  'use workflow';
+  const signals = new TemporalSignals(); // [!code highlight]
+  const approveSignalHook = signals.hook<[boolean]>(approveSignal.name);
+  let approved: boolean | undefined;
+  signals.handle(approveSignalHook, (ok) => { // [!code highlight]
+    approved = ok;
+  });
+  if (
+    !(await signals.condition(
+      () => approved !== undefined,
+      () => sleep('7 days')
+    )) ||
+    !approved
+  ) {
+    return 'cancelled';
+  }
+  const chargeId = await chargeCard(orderId, amount);
+  await sendReceipt(orderId, chargeId);
+  return chargeId;
+}
+
+/**
+ * Temporal signals on Workflow SDK hooks. Each signal has a hook with the
+ * token `${runId}:<signal name>`, created when the run starts so a signal
+ * sent early waits in it. handle() runs the handler for each payload in
+ * order (the payload is the signal's arguments array), and condition()
+ * re-checks its predicate after each one.
+ */
+class TemporalSignals {
+  private readonly runId = getWorkflowMetadata().workflowRunId;
+  private waiters: Array<() => void> = [];
+
+  hook<Args extends unknown[]>(name: string): Hook<Args> {
+    return createHook<Args>({ token: `${this.runId}:${name}` });
+  }
+
+  handle<Args extends unknown[]>(
+    hook: Hook<Args>,
+    handler: (...args: Args) => unknown
+  ): void {
+    void (async () => {
+      for await (const args of hook) {
+        await handler(...args);
+        const waiters = this.waiters;
+        this.waiters = [];
+        for (const wake of waiters) wake();
+      }
+    })();
+  }
+
+  async condition(
+    fn: () => boolean,
+    timeout?: () => Promise<void>
+  ): Promise<boolean> {
+    let expired: Promise<false> | undefined;
+    while (!fn()) {
+      expired ??= timeout?.().then(() => false as const);
+      const changed = new Promise<true>((wake) =>
+        this.waiters.push(() => wake(true))
+      );
+      if (
+        (await (expired ? Promise.race([changed, expired]) : changed)) === false
+      )
+        return false;
+    }
+    return true;
+  }
+}
+```
+
+```typescript title="activities.ts (after, formatted)"
+declare const payments: { charge(input: { orderId: string; amount: number }): Promise<{ id: string }> }; // @setup
+declare const email: { send(to: string, body: string): Promise<void> }; // @setup
+
+export async function chargeCard(
+  orderId: string,
+  amount: number
+): Promise<string> {
+  'use step'; // [!code highlight]
+  const charge = await payments.charge({ orderId, amount });
+  return charge.id;
+}
+chargeCard.maxRetries = 4; // [!code highlight]
+
+export async function sendReceipt(
+  orderId: string,
+  chargeId: string
+): Promise<void> {
+  'use step'; // [!code highlight]
+  await email.send(orderId, `Charged: ${chargeId}`);
+}
+sendReceipt.maxRetries = 4;
+```
+
+It never guesses. Code it cannot migrate without changing behavior is left in place under a `// TODO(workflow-migrate): ...` comment that says what to do: queries and updates, `continueAsNew()`, cancellation scopes, `workflowInfo().workflowId`, a `condition()` on state no signal changes, and an activity retried without limit. The report lists every Temporal client call with its replacement, and a Signal routing table with the hook token each signal now resumes.
+
+### What the codemod converts
+
+| Temporal | Converted automatically | Left as a TODO |
+| --- | --- | --- |
+| Workflow functions | Exported functions of a module that imports `@temporalio/workflow`, async or not | None |
+| `proxyActivities()` / `proxyLocalActivities()` | Typed with `typeof activities` or `typeof import('./activities')`, destructured or used as an object | An untyped proxy, which names no module |
+| Activity retry policy | `maximumAttempts` | No `maximumAttempts` (Temporal retries without limit), different policies for one activity, `nonRetryableErrorTypes`; intervals and timeouts are reported |
+| Signals | `defineSignal` + `setHandler` + `condition`, in the same or a shared module | Removing a handler, a second handler for one signal, `setDefaultSignalHandler` |
+| Queries and updates | None | All |
+| Child workflows | `executeChild`, `startChild` and `handle.result()` | A child named by its type string, signalling a child |
+| Other workflow APIs | `sleep`, `workflowInfo().runId` / `.workflowType` / `.startTime`, `uuid4`, `patched`, `deprecatePatch`, `log` | `continueAsNew`, `CancellationScope`, `getExternalWorkflowHandle`, `upsertSearchAttributes` |
+| Activity APIs | `Context.current().info.attempt`, `heartbeat()` (removed), `log` | Cancellation signals and the activity client |
+| Failures | `ApplicationFailure.nonRetryable`, `.retryable`, `.create({ nonRetryable, nextRetryDelay })` | `instanceof` checks on Temporal failure classes |
+| Client and worker | Reported with their replacements | Rewriting them |
+
+<Callout type="info">
+For what the codemod leaves to you, install the migration skill and ask your agent to finish the migration:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
+
+### Concept mapping
 
 | Temporal | Workflow SDK | Note |
 | --- | --- | --- |
 | Workflow Definition / Execution | `"use workflow"` function started with `start()` | Orchestration stays in the workflow function. |
-| Activity | `"use step"` function | Side effects and Node.js access live in steps. |
+| Activity (`proxyActivities`) | `"use step"` function, imported and called directly | Side effects and Node.js access live in steps. `retry.maximumAttempts: n` becomes `maxRetries = n - 1`. |
 | Worker + Task Queue | Managed execution | No worker fleet or polling loop to operate. |
-| Signal | `createHook()` / `createWebhook()` | Hooks for typed resume signals; webhooks for HTTP callbacks. |
+| Signal (`defineSignal` + `setHandler`) | A hook per signal, created when the run starts | The codemod keeps your handler and runs it for each payload, in order; the payload is the signal's arguments array. `handle.signal(sig, ...args)` becomes `resumeHook(`${runId}:${sig.name}`, args)`. Write new code with one `createHook()` + `await` instead. |
+| `condition(fn, timeout)` | Re-checked after each signal, raced against `sleep(timeout)` | Returns `false` on timeout, as in Temporal. |
 | Query | `getWritable({ namespace: 'status' })` stream | Stream status durably; clients read the stream instead of polling. |
 | Child Workflow | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | `await run.returnValue` suspends without polling. Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
 | `continueAsNew()` | `start()` the same workflow from inside the workflow, then return | Pass `deploymentId: 'latest'` to move onto new code. See [Self upgrading workflows](/docs/foundations/versioning#self-upgrading-workflows). |
@@ -74,44 +248,38 @@ The model maps closely. Keep your orchestration logic; drop the workers, task qu
 | Search attributes / visibility queries | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) / `attributes` option on `start()` | Filter runs by `key=value`. See [Attributes](/docs/observability/attributes). |
 | Memo | Workflow arguments, the return value, or a [stream](/docs/foundations/streaming) | Attributes are searchable plaintext strings (up to 256 bytes each, 64 per run), not a place for arbitrary data. Promote only the small labels you filter by. |
 | Event History | Workflow event log / run timeline | Same durable replay; built-in observability UI. |
+| `patched()` / `deprecatePatch()` | Not needed | Runs keep the code of the deployment that started them, so every run of new code takes the new branch. |
+| `workflowInfo()` | [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) | `runId` is `workflowRunId`, `startTime` is `workflowStartedAt`. The workflow ID is the start token the caller chose. |
+| `uuid4()` | `crypto.randomUUID()` | Seeded per run, so replays see the same value. |
+| `ApplicationFailure.nonRetryable()` / `.create({ nextRetryDelay })` | `FatalError` / `RetryableError` with `retryAfter` | From an activity or the workflow. |
+| `Context.current().info.attempt` | `getStepMetadata().attempt` | Both count from 1. |
 
-A minimal translation, where the orchestrator loses `proxyActivities` and becomes plain TypeScript:
 
-```typescript title="workflows/order.ts"
-export async function processOrder(orderId: string) {
-  'use workflow'; // [!code highlight]
-  await chargePayment(orderId);
-  return { orderId, status: 'completed' };
-}
+### What behaves differently
 
-async function chargePayment(orderId: string) {
-  'use step'; // [!code highlight]
-  await fetch(`https://example.com/api/orders/${orderId}/charge`, { method: 'POST' });
-}
-```
+- **Signals go to a run, not a workflow ID.** A hook token includes the run ID (`${runId}:approve`). Keep the run ID `start()` returns, or look it up from the workflow ID with `(await getHookByToken(workflowId)).runId`, since the workflow ID is the run's start token. The run creates its hooks the moment it starts executing: a signal sent in the instant between `start()` and that moment gets `HookNotFoundError`, so retry it briefly.
+- **A plain `Error` thrown in a workflow fails the run.** In Temporal it failed the workflow task, which retried until the code was fixed; only `ApplicationFailure` failed the workflow.
+- **`condition()` re-checks after each signal.** In Temporal it re-checked after any state change. A condition on state that only another branch of the workflow changes needs its own hook.
+- **Retries are counted per step, with the SDK's own backoff.** An activity Temporal retried without limit now retries 3 times unless you set `maxRetries`. There are no per-activity timeouts: race a step against `sleep()` and pass an `AbortSignal` into it for a deadline.
+- **Failures arrive unwrapped.** A step's error reaches the workflow as the error the step threw, not an `ActivityFailure`, and a child's as `WorkflowRunFailedError` with the child's error as its cause.
 
-Signals become hooks, where one `createHook()` + `await` replaces a signal definition, handler, and `condition()` guard:
+### Verify the migration
 
-```typescript title="workflows/refund.ts"
-import { createHook } from 'workflow';
+Before you switch traffic, run the same inputs through both versions and compare what each run returns:
 
-export async function refundWorkflow(refundId: string) {
-  'use workflow';
-  using approval = createHook<{ approved: boolean }>({
-    token: `refund:${refundId}:approval`, // [!code highlight]
-  });
-  const { approved } = await approval; // suspends durably until resumed
-  return { refundId, approved };
-}
-```
+1. Keep a copy of the Temporal app and run it against the Temporal dev server (`temporal server start-dev`).
+2. Build the migrated app and run it locally against the [Local World](/worlds/local).
+3. Give both apps the same entry points: start a workflow by ID, send a signal, and read the result. On the Temporal side these call `client.workflow.start()`, `handle.signal()` and `handle.result()`; on the Workflow side `start()` with the ID as the start token, `resumeHook()` as the Signal routing table says, and `getRun()`.
+4. For every workflow, drive each path (success, retries, a non-retryable failure, a signal before and after the handler is set, a condition that times out, child workflows, a duplicate start) and compare the outputs and final statuses.
 
-<Callout type="info">
-Install the migration skill to translate a Temporal app automatically:
+### Cut over
 
-```bash
-npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
-```
-</Callout>
+Runs started on Temporal keep running on Temporal. Move new work to the Workflow SDK, and keep the Temporal workers running until their in-flight runs, timers and waits have drained:
+
+1. Deploy the migrated app next to the Temporal workers.
+2. Point new starts at `start()`. Code that signals runs needs both paths for a while: `handle.signal()` for runs that started on Temporal, `resumeHook()` for runs that started on the Workflow SDK.
+3. Keep using the same business keys: the workflow ID you passed to Temporal becomes the start token, so a duplicate request cannot start two runs on the Workflow side.
+4. Once no Temporal runs are left, stop the workers and remove the `@temporalio/*` dependencies. Point dashboards and alerts at the Workflow SDK's [observability](/docs/observability).
 
 ### Temporal features without a direct Workflow SDK equivalent
 

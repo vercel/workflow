@@ -280,8 +280,17 @@ export function migrateProject(
   };
   const project = new Project(ts, candidates, compilerOptions, cwd);
 
-  const program = project.program();
-  const context = options.framework.prepare?.(ts, program, candidates);
+  let program = project.program();
+  let context = options.framework.prepare?.(ts, program, candidates);
+  const projectFiles = new Set(options.files.map((f) => resolve(f)));
+  const extra = (options.framework.extraFiles?.(context) ?? []).filter(
+    (f) => projectFiles.has(resolve(f)) && !candidates.includes(resolve(f))
+  );
+  if (extra.length) {
+    candidates.push(...extra.map((f) => resolve(f)));
+    program = project.program();
+    context = options.framework.prepare?.(ts, program, candidates);
+  }
 
   // Pass 1: transform every file against the original program.
   const pending = new Map<string, string>();
