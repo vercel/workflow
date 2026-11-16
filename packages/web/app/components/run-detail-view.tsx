@@ -3,7 +3,6 @@ import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
   DecryptButton,
   ErrorBoundary,
-  EventListView,
   type SidebarDataContextValue,
   StreamViewer,
   StreamViewerSkeleton,
@@ -29,8 +28,9 @@ import {
   Lock,
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
+import { RunEventsTab } from '~/components/run-events-tab';
 import { RunLimitGuidanceAlert } from '~/components/run-limit-guidance-alert';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
 import {
@@ -53,13 +53,13 @@ import {
 } from '~/components/ui/breadcrumb';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import { useCancellationReason } from '~/lib/client/hooks/use-cancellation-reason';
-import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import { useRunUsage } from '~/lib/client/hooks/use-run-usage';
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
 import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
+import { useOptimisticSearchParams } from '~/lib/url-state';
 import {
   cancelRun,
   createRunStateHydratorForEnv,
@@ -217,7 +217,8 @@ export function RunDetailView({
   selectedId: _selectedId,
 }: RunDetailViewProps) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  // Optimistic so tab switches render on the click, not after the navigation.
+  const [searchParams, updateSearchParams] = useOptimisticSearchParams();
   const { serverConfig } = useServerConfig();
   const [cancelling, setCancelling] = useState(false);
   const [rerunning, setRerunning] = useState(false);
@@ -230,22 +231,6 @@ export function RunDetailView({
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
-
-  // Helper to update URL search params
-  const updateSearchParams = useCallback(
-    (updates: Record<string, string | null>) => {
-      const params = new URLSearchParams(searchParams.toString());
-      for (const [key, value] of Object.entries(updates)) {
-        if (value === null) {
-          params.delete(key);
-        } else {
-          params.set(key, value);
-        }
-      }
-      navigate(`?${params.toString()}`, { preventScrollReset: true });
-    },
-    [navigate, searchParams]
-  );
 
   const setActiveTab = useCallback(
     (tab: Tab) => {
@@ -357,20 +342,8 @@ export function RunDetailView({
   const [encryptionKey, setEncryptionKey] = useState<Uint8Array | null>(null);
   encryptionKeyRef.current = encryptionKey;
 
-  // Separate event fetching for the Events tab with user-controlled sort order
+  // The Events tab's sort order, held here so it survives leaving the tab.
   const [eventsSortOrder, setEventsSortOrder] = useState<'asc' | 'desc'>('asc');
-  const {
-    events: eventsListData,
-    loading: eventsListLoading,
-    hasMore: hasMoreEventsTab,
-    loadingMore: loadingMoreEventsTab,
-    loadMore: loadMoreEventsTab,
-    searchByExactId,
-  } = useEventsListData(env, runId, {
-    sortOrder: eventsSortOrder,
-    encryptionKey: encryptionKey ?? undefined,
-    enabled: activeTab === 'events',
-  });
 
   const fetchSpanDetail = useCallback<FetchSpanDetail>(
     (selection) =>
@@ -815,21 +788,17 @@ export function RunDetailView({
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
                 <div className="h-full">
-                  <EventListView
-                    events={eventsListData}
+                  <RunEventsTab
+                    env={env}
+                    runId={runId}
                     run={run}
                     onLoadEventData={handleLoadEventData}
-                    hasMoreEvents={hasMoreEventsTab}
-                    isLoadingMoreEvents={loadingMoreEventsTab}
-                    onLoadMoreEvents={loadMoreEventsTab}
                     encryptionKey={encryptionKey ?? undefined}
-                    isLoading={eventsListLoading}
                     sortOrder={eventsSortOrder}
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
-                    onExactIdSearch={searchByExactId}
                   />
                 </div>
               </ErrorBoundary>
