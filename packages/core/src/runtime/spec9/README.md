@@ -574,7 +574,7 @@ Writes waiting on the barrier fail instead of writing, so a refused start leaves
 
 #### Turbo configuration
 
-Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo and a start Hook candidate's skipped first load (which `WORKFLOW_START_HOOK_LOAD_ONCE=0` disables on its own): every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
+Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo and a start Hook candidate's skipped first load (which `WORKFLOW_START_HOOK_SKIP_LOAD=0` disables on its own): every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
 
 `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or `false`) keeps turbo's backgrounded `run_started` and skipped load, and makes the first delivery's inline bodies wait for their start to commit. No other value does anything: outside turbo's first delivery there is no optimistic inline start, because only that delivery is known to have no other orchestrator.
 
@@ -590,7 +590,7 @@ If the count was wrong because the run has moved past its creation (an earlier d
 
 Every World checks the fence before any entity condition, so a conflict or an expiry on this `run_started` got past the fence: the run ended out-of-band (a cancel) before anything started it. The delivery acknowledges it as "already finished" without a load, as the normal path does.
 
-`WORKFLOW_START_HOOK_LOAD_ONCE=0` (or `false`) disables this path alone, leaving turbo on; such a delivery then loads the log before `run_started`, as on the normal path. `WORKFLOW_TURBO=0` disables it along with turbo.
+`WORKFLOW_START_HOOK_SKIP_LOAD=0` (or `false`) disables this path alone, leaving turbo on; such a delivery then loads the log before `run_started`, as on the normal path. `WORKFLOW_TURBO=0` disables it along with turbo.
 
 ### `maxRetries: 0` is at most once per live owner
 

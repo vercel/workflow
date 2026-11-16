@@ -86,7 +86,7 @@ import {
   getReplayDivergenceMaxRetries,
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
-  isStartHookLoadOnceEnabled,
+  isStartHookSkipLoadEnabled,
   isTurboEnabled,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
@@ -665,13 +665,13 @@ async function runDelivery(
   /**
    * The first delivery of a `start({ experimental_hook })` candidate's first
    * message, which turbo never takes (see `admitsTurboStart`): it writes
-   * `run_started` before loading the log, instead of loading it twice.
+   * `run_started` without loading the log first.
    * A restart in place has written it already, so takes the normal path.
-   * `WORKFLOW_START_HOOK_LOAD_ONCE=0` disables it alone, and
+   * `WORKFLOW_START_HOOK_SKIP_LOAD=0` disables it alone, and
    * `WORKFLOW_TURBO=0` with turbo, so such a delivery loads first.
    */
   let startHookFirstDelivery =
-    isStartHookLoadOnceEnabled() &&
+    isStartHookSkipLoadEnabled() &&
     !turbo &&
     runInput?.startHook !== undefined &&
     !prefetchedRun &&
@@ -1356,11 +1356,14 @@ async function runDelivery(
   }
 
   /**
-   * Resets the delivery for a fresh orchestrator pass in this same delivery
-   * after run-ahead stopped it: a fresh writer, which adopts the count of
-   * the next full load, no log and no speculative state, no turbo, and no
-   * run-ahead for the rest of the delivery. What it already sent stays sent
-   * (`sentStepMessages`, `timedWaits`).
+   * Resets the delivery for a fresh orchestrator pass in this same delivery,
+   * after run-ahead stopped it or the fence refused a start Hook first
+   * delivery's `run_started`: a fresh writer, which adopts the count of the
+   * next full load, no log and no speculative state, and no turbo or start
+   * Hook first-delivery path. A run-ahead stop also counts the restart in
+   * `runAheadRestarts`, which keeps run-ahead off for the rest of the
+   * delivery. What it already sent stays sent (`sentStepMessages`,
+   * `timedWaits`).
    */
   function restartInPlace(): void {
     writer = newWriter();
@@ -1556,13 +1559,12 @@ async function runDelivery(
       if (startHookFirstDelivery && runInput) {
         // --- Run setup: a start-hook candidate's first delivery ---
         // Its `run_started` decides admission (and creates the run if
-        // `run_created` has not landed), and the log is loaded after it, so
-        // it is loaded once instead of twice. A load before it can hold only
-        // the run's creation and out-of-band writes (`hook_received` from
-        // `resumeHook()`), which do not move the in-band count: the count is
-        // the one right after the run's creation, as in turbo. When the run
-        // has moved past that, `run_started` is refused and setup runs again
-        // from a full load (see the fallback beside it).
+        // `run_created` has not landed), and no log is read before it. A load
+        // before it could hold only the run's creation and out-of-band writes
+        // (`hook_received` from `resumeHook()`), which do not move the in-band
+        // count: the count is the one right after the run's creation, as in
+        // turbo. When the run has moved past that, `run_started` is refused
+        // and setup runs again from a full load (see the fallback beside it).
         writer.adoptSnapshot({
           seq: FIRST_EVENT_SLOT,
           seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
@@ -1668,10 +1670,13 @@ async function runDelivery(
           startWorkflowCompile(runInput);
           startReplayPayloadCache(runInput);
           span?.addEvent('workflow.run_started.create.start', {
-            'workflow.run_started.skip_preload': false,
+            'workflow.run_started.skip_preload': startHookFirstDelivery,
           });
           const started = await createEvent(runStartedRequest(), {
             requestId,
+            // No preload: the World still returns the skipped-slot report,
+            // which is all this response needs to carry.
+            ...(startHookFirstDelivery ? { skipPreload: true as const } : {}),
           });
           recordAcceptedStartHookCandidate(
             runInput,
@@ -1699,6 +1704,7 @@ async function runDelivery(
           // condition, so a conflict or an expiry that got past the fence
           // means the run ended out-of-band before it started (a cancel), and
           // takes the same acknowledgement below as on the normal path.
+          // The restart is not a run-ahead one, so run-ahead stays on.
           if (
             startHookFirstDelivery &&
             (OrchestratorSupersededError.is(err) || writer.isSuperseded)
