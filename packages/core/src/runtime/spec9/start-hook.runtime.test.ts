@@ -220,7 +220,7 @@ const nonFirst: [string, (held: HeldMessage) => HeldMessage][] = [
 beforeEach(() => {
   bodies = 0;
   delete process.env.WORKFLOW_TURBO;
-  delete process.env.WORKFLOW_START_HOOK_LOAD_ONCE;
+  delete process.env.WORKFLOW_START_HOOK_SKIP_LOAD;
 });
 
 afterEach(() => {
@@ -274,8 +274,8 @@ describe.each([
 
   it.each([
     ['WORKFLOW_TURBO', '0'],
-    ['WORKFLOW_START_HOOK_LOAD_ONCE', '0'],
-    ['WORKFLOW_START_HOOK_LOAD_ONCE', 'false'],
+    ['WORKFLOW_START_HOOK_SKIP_LOAD', '0'],
+    ['WORKFLOW_START_HOOK_SKIP_LOAD', 'false'],
   ] as const)('loads the log before run_started on a first delivery under %s=%s', async (name, value) => {
     process.env[name] = value;
     const { world, start, listsBeforeRunStarted } = await candidate('accept');
