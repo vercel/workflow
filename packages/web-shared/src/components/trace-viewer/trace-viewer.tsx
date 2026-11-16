@@ -47,7 +47,7 @@ interface TraceViewerProps {
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
-  /** Span to select on mount. */
+  /** Span to select, and highlight once, on mount. */
   initialSelectedSpanId?: string;
 }
 
@@ -163,6 +163,16 @@ function TraceViewerContent({
   const { activeSpanId, setActiveSpan, clearActiveSpan } = useActiveSpan();
 
   const reducedMotion = useReducedMotion();
+
+  // The span selected on mount (View in Trace's) plays `wf-span-flash` once.
+  // ponytail: cleared by a timer that outlasts the CSS animation (0.15s delay
+  // + 0.6s), so a row scrolled out and back does not replay it. Listen for
+  // animationend instead if that duration ever stops being a constant.
+  const [flashSpanId, setFlashSpanId] = useState(activeSpanId);
+  useEffect(() => {
+    const timer = setTimeout(() => setFlashSpanId(null), 1000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -532,6 +542,7 @@ function TraceViewerContent({
             <EventList
               spans={trace.spans}
               activeSpanId={activeSpanId}
+              flashSpanId={flashSpanId}
               searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
             />
@@ -559,6 +570,7 @@ function TraceViewerContent({
               viewEnd={viewport.end}
               markers={timeMarkers}
               selectedId={activeSpanId}
+              flashSpanId={flashSpanId}
               searchResult={searchResult}
               onSelect={handleSelectSpan}
               onRevealTime={handleRevealTime}

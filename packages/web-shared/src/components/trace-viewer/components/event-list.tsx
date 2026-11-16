@@ -88,11 +88,13 @@ export function ResourceIcon({
 const EventRow = ({
   span,
   isSelected,
+  isFlashing,
   isDimmed,
   onSelectSpan,
 }: {
   span: Span;
   isSelected: boolean;
+  isFlashing: boolean;
   isDimmed?: boolean;
   onSelectSpan: (spanId: string) => void;
 }) => {
@@ -112,7 +114,12 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
+      <div
+        className={cn(
+          'h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200',
+          isFlashing && 'wf-span-flash'
+        )}
+      >
         <div className="flex h-full min-w-0 items-center pl-4 pr-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <ResourceIcon
@@ -138,11 +145,14 @@ const EventRow = ({
 const EventList = ({
   spans,
   activeSpanId,
+  flashSpanId,
   searchResult,
   onSelectSpan,
 }: {
   spans: Span[];
   activeSpanId: string | null;
+  /** Span whose row plays the one-shot `wf-span-flash` highlight. */
+  flashSpanId: string | null;
   searchResult: SpanSearchResult;
   onSelectSpan: (spanId: string) => void;
 }) => {
@@ -165,6 +175,7 @@ const EventList = ({
           key={span.spanId}
           span={span}
           isSelected={span.spanId === activeSpanId}
+          isFlashing={span.spanId === flashSpanId}
           isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
           onSelectSpan={onSelectSpan}
         />
