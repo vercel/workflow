@@ -281,6 +281,8 @@ export function createQueue(
     defaultJobLockStaleSeconds?: number;
     /** How often orphaned run leases are recovered, in place of 60 seconds. */
     orphanedLeaseIntervalMs?: number;
+    /** Deferred messages one run lease keeps, in place of 100. */
+    maxDeferredPerLease?: number;
   }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
@@ -377,7 +379,12 @@ export function createQueue(
     config.jobLockStaleSeconds,
     internal?.defaultJobLockStaleSeconds
   );
-  const runLeases = createRunLeases(pool);
+  const runLeases = createRunLeases(
+    pool,
+    internal?.maxDeferredPerLease !== undefined
+      ? { maxDeferred: internal.maxDeferredPerLease }
+      : {}
+  );
   const jobLeases = createJobLeases(pool, {
     staleSeconds: leasePolicy.staleSeconds,
     ...(leasePolicy.scope === 'off' ? {} : { scope: leasePolicy.scope }),
@@ -1360,6 +1367,10 @@ export function createQueue(
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         let leased = false;
         if (leaseRunId !== undefined && ownJobId !== undefined && job) {
+          const remainingAttempts = Math.max(
+            1,
+            (job.max_attempts ?? MAX_GRAPHILE_JOB_ATTEMPTS) - job.attempts + 1
+          );
           const claim = await runLeases.claim(
             leaseRunId,
             ownJobId,
@@ -1375,14 +1386,13 @@ export function createQueue(
                 deliveryOffset: deliveryCount - 1,
               }),
               jobKey: messageData.idempotencyKey ?? messageData.messageId,
-              maxAttempts: Math.max(
-                1,
-                (job.max_attempts ?? MAX_GRAPHILE_JOB_ATTEMPTS) -
-                  job.attempts +
-                  1
-              ),
+              maxAttempts: remainingAttempts,
+              ...(orchestration ? { executor: true } : {}),
             },
-            coalescing && isCoveredWake(body) ? 'wake' : 'deferred',
+            // An executor wake is covered by any later executor delivery,
+            // which reads every pending invocation: it collapses into the
+            // lease's one wake rather than piling up as deferred messages.
+            isCoveredWake(body) ? 'wake' : 'deferred',
             typeof body === 'object' &&
               body !== null &&
               (body as { hookResumeTiming?: unknown }).hookResumeTiming !==
@@ -1392,6 +1402,39 @@ export function createQueue(
           // Not 'completed': a re-added job under the same key must not be
           // skipped as already done in this process.
           if (claim.owner === false) return 'rescheduled';
+          if (claim.owner === 'busy') {
+            // The owner already has as many deferred messages as a lease
+            // keeps: this one stays a job of its own, retried after a delay
+            // that grows with its age (half of it, 1 to 60 seconds), and
+            // takes the lease or a free slot then.
+            const createdAtMs = messageData.createdAt
+              ? Date.parse(messageData.createdAt)
+              : Number.NaN;
+            await addGraphileJob({
+              task: job.task_identifier,
+              queueId: messageData.id,
+              prefix: messageData.prefix,
+              route: messageData.route,
+              body: messageData.data,
+              messageId: messageData.messageId,
+              createdAt: messageData.createdAt,
+              attempt,
+              attemptOffset: attempt - 1,
+              deliveryOffset: deliveryCount - 1,
+              idempotencyKey: messageData.idempotencyKey,
+              headers: messageData.headers,
+              delaySeconds: Number.isFinite(createdAtMs)
+                ? Math.min(
+                    60,
+                    Math.max(1, Math.round((Date.now() - createdAtMs) / 2000))
+                  )
+                : 5,
+              jobKey: messageData.idempotencyKey ?? messageData.messageId,
+              maxAttempts: remainingAttempts,
+              ...(orchestration ? { executorRunId: orchestration.runId } : {}),
+            });
+            return 'rescheduled';
+          }
           leased = claim.owner === true;
         }
         let handedOff = false;

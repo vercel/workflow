@@ -524,23 +524,70 @@ describe.skipIf(process.platform === 'win32')(
           JSON.stringify(legacy),
         ]);
         // Transferred to the executor task, its delivery finds the run's
-        // lease held by the active executor and is deferred on it, to be
-        // re-added when that executor releases the lease.
-        const deferred = await until(
+        // lease held by the active executor and leaves its wake on it, to be
+        // re-added when that executor releases the lease. A plain executor
+        // wake takes the lease's one wake slot rather than the deferred list:
+        // any later executor delivery reads every pending invocation.
+        const left = await until(
           async () =>
             (
               await pool.query<{
-                deferred: { task: string; payload: { messageId: string } }[];
+                wake: {
+                  task: string;
+                  executor?: boolean;
+                  payload: { messageId: string };
+                } | null;
+                deferred: unknown[];
               }>(
-                'SELECT deferred FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+                'SELECT wake, deferred FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
                 [runId]
               )
-            ).rows[0]?.deferred ?? [],
-          (left) => left.some((job) => job.payload.messageId === messageId)
+            ).rows[0],
+          (row) => row?.wake?.payload.messageId === messageId
         );
-        expect(
-          deferred.find((job) => job.payload.messageId === messageId)
-        ).toMatchObject({ task: 'workflow_flows_executor' });
+        expect(left.wake).toMatchObject({
+          task: 'workflow_flows_executor',
+          executor: true,
+        });
+        expect(left.deferred).toEqual([]);
+
+        // A burst of invocation wakes, as `invoke()` adds one per submission,
+        // while the executor is held: they collapse into that one wake
+        // rather than growing the lease row.
+        for (let n = 0; n < 20; n++) {
+          await pool.query(
+            'SELECT graphile_worker.add_job($1, $2::json, max_attempts => 73)',
+            [
+              'workflow_flows_executor',
+              JSON.stringify(
+                MessageData.encode({
+                  id: 'heldHook',
+                  data: Buffer.from(JSON.stringify({ runId })),
+                  messageId:
+                    `msg_burst_${n}_${randomUUID()}` as MessageData['messageId'],
+                  attempt: 1,
+                })
+              ),
+            ]
+          );
+        }
+        await until(
+          async () =>
+            (await executorJobs(runId)).filter((j) => j.locked_by === null)
+              .length,
+          (waiting) => waiting === 0
+        );
+        const afterBurst = (
+          await pool.query<{
+            wake: { executor?: boolean } | null;
+            deferred: unknown[];
+          }>(
+            'SELECT wake, deferred FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+            [runId]
+          )
+        ).rows[0];
+        expect(afterBurst?.deferred).toEqual([]);
+        expect(afterBurst?.wake).toMatchObject({ executor: true });
         await resumeHook(token, 'input');
         // The existing executor accepted the input while the step was held.
         // The legacy wake is queued, not another HTTP executor invocation.

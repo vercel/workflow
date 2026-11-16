@@ -422,6 +422,78 @@ describe.skipIf(process.platform === 'win32')(
       expect((await row('run_t')).owner).toBe(owner);
     });
 
+    it('keeps one executor wake however many executor deliveries find the lease held', async () => {
+      const leases = createRunLeases(pool);
+      const owner = await job();
+      await leases.claim('run_e1', owner, left('own'), 'wake', false);
+      const executorWake = (marker: string): LeftJob => ({
+        ...left(marker),
+        executor: true,
+      });
+      // An ordinary wake first; the first executor wake replaces it, and
+      // later ones, and later ordinary ones, do not.
+      await leases.claim('run_e1', await job(), left('plain'), 'wake', false);
+      for (let n = 0; n < 20; n++) {
+        await expect(
+          leases.claim(
+            'run_e1',
+            await job(),
+            executorWake(`invoke:${n}`),
+            'wake',
+            false
+          )
+        ).resolves.toEqual({ owner: false });
+      }
+      await leases.claim('run_e1', await job(), left('later'), 'wake', true);
+      expect(await row('run_e1')).toMatchObject({
+        wake: executorWake('invoke:0'),
+        deferred: [],
+      });
+      // An ordinary owner's re-run does not take it: it is re-added on
+      // release, once.
+      await expect(leases.takeWake('run_e1', owner)).resolves.toBeUndefined();
+      await leases.release('run_e1', owner);
+      expect(await jobsByKey('left:invoke:0')).toHaveLength(1);
+      expect(await jobsByKey('left:invoke:1')).toEqual([]);
+    });
+
+    it('keeps at most maxDeferred deferred messages on a lease, and reports the rest busy', async () => {
+      const leases = createRunLeases(pool, { maxDeferred: 2 });
+      const owner = await job();
+      await leases.claim('run_c1', owner, left('own'), 'wake', false);
+      const results = [];
+      for (const marker of ['hook:1', 'hook:2', 'hook:3', 'hook:4']) {
+        results.push(
+          await leases.claim(
+            'run_c1',
+            await job(),
+            left(marker),
+            'deferred',
+            false
+          )
+        );
+      }
+      expect(results).toEqual([
+        { owner: false },
+        { owner: false },
+        { owner: 'busy' },
+        { owner: 'busy' },
+      ]);
+      // Wakes still collapse into their slot when the list is full.
+      await expect(
+        leases.claim('run_c1', await job(), left('wake'), 'wake', false)
+      ).resolves.toEqual({ owner: false });
+      expect(await row('run_c1')).toMatchObject({
+        wake: left('wake'),
+        deferred: [left('hook:1'), left('hook:2')],
+      });
+      // Release re-adds a bounded set.
+      await leases.release('run_c1', owner);
+      for (const marker of ['hook:1', 'hook:2', 'wake']) {
+        expect(await jobsByKey(`left:${marker}`)).toHaveLength(1);
+      }
+    });
+
     it('serializes concurrent claims: exactly one delivery owns the lease', async () => {
       const leases = createRunLeases(pool);
       const jobs = await Promise.all(Array.from({ length: 8 }, () => job()));

@@ -21,8 +21,17 @@ import type { Pool } from 'pg';
  *   re-runs for it in place (coalescing). Later wakes are dropped, except that
  *   a wake carrying a hook resume's timing replaces one without.
  * - `deferred`: every message a later delivery does not cover (a start
- *   message carrying the run's input, a hook's input, invoke mode's executor
- *   deliveries). The owner re-adds them as jobs when it releases.
+ *   message carrying the run's input, a legacy hook's input). The owner
+ *   re-adds them as jobs when it releases. At most `maxDeferred` are kept: a
+ *   delivery that finds the list full keeps its own job instead, retried
+ *   after a delay (`'busy'`), so one run's burst neither grows the row
+ *   without bound nor makes its release re-add an unbounded backlog.
+ *
+ * An invoke executor wake is a wake too: the invocations it is for are in
+ * `workflow_invocations`, which any later executor delivery reads, so one
+ * covers them all. It takes the wake slot over from an ordinary wake, since
+ * only an executor delivery drives the mailbox, and is re-added on release
+ * rather than re-run in place.
  *
  * Releasing deletes the row and re-adds what was left on it in one
  * transaction, so nothing left for the owner is lost between the two.
@@ -42,6 +51,8 @@ export interface LeftJob {
   payload: unknown;
   jobKey?: string;
   maxAttempts?: number;
+  /** Delivered on invoke mode's executor lane, which drives the mailbox. */
+  executor?: boolean;
 }
 
 /** A handoff's continuation job (see {@link RunLeases.handoff}). */
@@ -60,6 +71,11 @@ export type ClaimResult =
   | { owner: true }
   /** Another job owns it; this job's message was left for that owner. */
   | { owner: false }
+  /**
+   * Another job owns it, and the deferred messages left for it are at the
+   * cap: this job's message was not left, so the caller keeps it as a job.
+   */
+  | { owner: 'busy' }
   /** The leases table is missing (migration 0031 not applied). */
   | { owner: undefined };
 
@@ -78,7 +94,9 @@ export interface RunLeases {
   ): Promise<ClaimResult>;
   /**
    * The wake left on the owner's lease, cleared from the row, or `undefined`
-   * when there is none (or `jobId` no longer owns the lease).
+   * when there is none (or `jobId` no longer owns the lease). An executor
+   * wake is not taken: an ordinary delivery's re-run does not drive the
+   * invocation mailbox, so it stays for release to re-add.
    */
   takeWake(runId: string, jobId: string): Promise<LeftJob | undefined>;
   /**
@@ -130,25 +148,47 @@ WHERE leases.owner_job_id = excluded.owner_job_id
   OR NOT ${liveOwner(graphileSchema, 'leases')}
 RETURNING 1`;
 
+// Whether a wake left now replaces the one on the lease: none is there, an
+// executor wake replaces an ordinary one (only an executor delivery drives
+// the invocation mailbox), and on the same lane one carrying a hook resume's
+// timing replaces one without. Parameters: $5 has a resume, $6 executor.
+const REPLACES_WAKE = `(leases.wake IS NULL
+  OR ($6::boolean AND NOT coalesce((leases.wake->>'executor')::boolean, false))
+  OR ($6::boolean = coalesce((leases.wake->>'executor')::boolean, false)
+    AND NOT leases.wake_resume AND $5::boolean))`;
+
 // Leave a message for the lease's live owner. Returns no row when the lease
-// was released (or its owner can no longer run) since the claim was refused:
-// the caller claims again.
+// was released (or its owner can no longer run) since the claim was refused,
+// and the caller claims again, or when a deferred message finds the list at
+// its cap ($7).
 const leaveSql = (graphileSchema: string) => `UPDATE ${LEASES_TABLE} AS leases
 SET wake = CASE
-      WHEN $3::text = 'wake'
-        AND (leases.wake IS NULL OR (NOT leases.wake_resume AND $5::boolean))
-      THEN $4::jsonb ELSE leases.wake END,
-    wake_resume = leases.wake_resume OR ($3::text = 'wake' AND $5::boolean),
+      WHEN $3::text = 'wake' AND ${REPLACES_WAKE} THEN $4::jsonb
+      ELSE leases.wake END,
+    wake_resume = CASE
+      WHEN $3::text = 'wake' AND ${REPLACES_WAKE} THEN $5::boolean
+      ELSE leases.wake_resume END,
     deferred = CASE
       WHEN $3::text = 'deferred' THEN leases.deferred || jsonb_build_array($4::jsonb)
       ELSE leases.deferred END
 WHERE leases.run_id = $1 AND leases.owner_job_id <> $2::bigint
+  AND ($3::text <> 'deferred' OR jsonb_array_length(leases.deferred) < $7::int)
   AND ${liveOwner(graphileSchema, 'leases')}
 RETURNING 1`;
+
+// Whether a deferred message was refused for a full list (rather than for a
+// lease that was released meanwhile).
+const fullSql = (
+  graphileSchema: string
+) => `SELECT 1 FROM ${LEASES_TABLE} AS leases
+WHERE leases.run_id = $1 AND leases.owner_job_id <> $2::bigint
+  AND jsonb_array_length(leases.deferred) >= $3::int
+  AND ${liveOwner(graphileSchema, 'leases')}`;
 
 const takeWakeSql = `WITH old AS (
   SELECT run_id, wake FROM ${LEASES_TABLE}
   WHERE run_id = $1 AND owner_job_id = $2::bigint AND wake IS NOT NULL
+    AND NOT coalesce((wake->>'executor')::boolean, false)
   FOR UPDATE
 )
 UPDATE ${LEASES_TABLE} AS leases SET wake = NULL, wake_resume = false
@@ -225,12 +265,19 @@ export const isMissingTable = (error: unknown) =>
 /** Attempts at claiming before giving up on a lease that keeps changing hands. */
 const MAX_CLAIM_TRIES = 5;
 
-export function createRunLeases(pool: Pool): RunLeases {
+/** Deferred messages kept on one lease by default (see `maxDeferred`). */
+export const DEFAULT_MAX_DEFERRED = 100;
+
+export function createRunLeases(
+  pool: Pool,
+  { maxDeferred = DEFAULT_MAX_DEFERRED }: { maxDeferred?: number } = {}
+): RunLeases {
   const graphileSchema = escapeIdentifier(
     process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
   );
   const claimQuery = claimSql(graphileSchema);
   const leaveQuery = leaveSql(graphileSchema);
+  const fullQuery = fullSql(graphileSchema);
   const addJobQuery = addJobSql(graphileSchema);
   const addContinuationQuery = addContinuationSql(graphileSchema);
   const lockOrphansQuery = lockOrphansSql(graphileSchema);
@@ -259,8 +306,18 @@ export function createRunLeases(pool: Pool): RunLeases {
             kind,
             JSON.stringify(left),
             hasResume,
+            left.executor === true,
+            maxDeferred,
           ]);
           if (leftRows.rowCount) return { owner: false };
+          if (kind === 'deferred') {
+            const full = await pool.query(fullQuery, [
+              runId,
+              jobId,
+              maxDeferred,
+            ]);
+            if (full.rowCount) return { owner: 'busy' };
+          }
         }
       } catch (error) {
         if (isMissingTable(error)) return missing();

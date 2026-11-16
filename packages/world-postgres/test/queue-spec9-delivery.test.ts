@@ -688,6 +688,83 @@ describe.skipIf(process.platform === 'win32')(
       await untilReleased(runId);
     });
 
+    it('keeps a bounded number of messages on a held lease, and delivers the rest later as their own jobs', async () => {
+      await queue.close();
+      queue = createQueue(
+        {
+          connectionString: container.getConnectionUri(),
+          queueConcurrency: 4,
+          pollInterval: 50,
+          applicationManagedShutdown: true,
+        },
+        pool,
+        { maxDeferredPerLease: 2 }
+      );
+      await queue.start();
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (_delivery, response) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        response.end('{}');
+      };
+      await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      // Legacy hook resumes, which carry their input and are deferred.
+      const resumes = [1, 2, 3, 4].map((n) => `res_${n}`);
+      for (const resumeId of resumes) {
+        await wake(runId, {
+          hookInput: {
+            token: 'tok',
+            resumeId,
+            hookId: 'hook_1',
+            payload: 'x',
+            payloadDigest: 'digest',
+          },
+        });
+      }
+      // Two are left on the lease; the others found it full and wait as
+      // delayed jobs of their own.
+      await until(
+        () => leftOnLease(runId),
+        (left) => left?.deferred.length === 2
+      );
+      const delayed = await until(
+        async () =>
+          (
+            await pool.query<{ payload: { data: string } }>(
+              'SELECT payload FROM graphile_worker._private_jobs WHERE locked_at IS NULL AND run_at > now()'
+            )
+          ).rows
+            .map((row) => decode(row.payload))
+            .filter((body) => body.runId === runId),
+        (jobs) => jobs.length === 2
+      );
+      expect(delayed.every((body) => body.hookInput !== undefined)).toBe(true);
+      expect((await leftOnLease(runId))?.deferred).toHaveLength(2);
+      gate.release();
+
+      // Every resume is delivered once.
+      await until(
+        () =>
+          runDeliveries(runId)
+            .map((d) => d.body.hookInput?.resumeId)
+            .filter(Boolean)
+            .sort(),
+        (delivered) => delivered.length === 4,
+        30_000
+      );
+      expect(
+        runDeliveries(runId)
+          .map((d) => d.body.hookInput?.resumeId)
+          .filter(Boolean)
+          .sort()
+      ).toEqual(resumes);
+      await untilReleased(runId);
+    }, 45_000);
+
     it('delivers a handoff before the messages left on its lease', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
