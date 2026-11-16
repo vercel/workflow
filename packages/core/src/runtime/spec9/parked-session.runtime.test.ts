@@ -5,7 +5,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import { WorkflowWorldError } from '@workflow/errors';
+import { ReplayDivergenceError, WorkflowWorldError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import {
   afterAll,
@@ -22,6 +22,7 @@ import { dehydrateStepReturnValue } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import type { AppendOnlyWorld } from '../../test-support/append-only-world.js';
+import type { WorkflowSession } from '../../workflow.js';
 import {
   eventsOf,
   ORCHESTRATOR_QUEUE,
@@ -317,12 +318,49 @@ describe('a session parked across deliveries', () => {
     takeParkedSession(thisProcess, runId);
     parkSession(thisProcess, runId, stale!);
     const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
 
     await send(world, runId, 'c');
 
     expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
     expect(echoes).toBe(3);
     expect(fullLoadsOf(world)).toBe(loads);
+    // The stale VM itself carried the run, not a cold replay of the log.
+    expect(coldReplays.count).toBe(replays);
+  });
+
+  it("replays a parked VM that diverges from cold, without spending the log's divergence budget", async () => {
+    // A divergence the delivery counted would fail the run on the spot.
+    vi.stubEnv('WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES', '0');
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    await send(world, runId, 'a');
+    const thisProcess = await getWorld();
+    const parked = takeParkedSession(thisProcess, runId);
+    expect(parked).toBeDefined();
+    const diverging: WorkflowSession = {
+      workflowRun: parked!.session.workflowRun,
+      argumentCount: parked!.session.argumentCount,
+      resume: async () => {
+        throw new ReplayDivergenceError('parked VM disagrees', {
+          eventId: 'evnt_parked',
+        });
+      },
+    };
+    parkSession(thisProcess, runId, { ...parked!, session: diverging });
+    const replays = coldReplays.count;
+
+    await send(world, runId, 'b');
+    await send(world, runId, 'c');
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    // The cold replay that replaced the VM.
+    expect(coldReplays.count).toBe(replays + 1);
   });
 
   it('replays the log a refused cursor read from the start without reading it again', async () => {
