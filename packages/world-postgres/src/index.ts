@@ -53,6 +53,7 @@ export function createWorld(
   config: PostgresWorldConfig = {
     connectionString: getDefaultConnectionString(),
     jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
+    deploymentId: process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ID || undefined,
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
       50,
@@ -120,6 +121,12 @@ export function createWorld(
     maxConcurrency: true,
     // Required by the runtime; see in-band-fence.test.ts for conformance.
     inBandFence: true,
+    // With a `deploymentId`, each deployment's workers claim only its own
+    // runs' jobs and messages for another deployment's runs are routed to
+    // its task (queue.ts), so a run executes only where it started.
+    ...(config.deploymentId !== undefined
+      ? { deploymentAffinity: true as const }
+      : {}),
   } satisfies WorldCapabilities;
   return {
     // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs

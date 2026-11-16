@@ -6,17 +6,20 @@ import type {
 } from '@workflow/web-shared';
 import { hydrateResourceIOAsync } from '@workflow/web-shared';
 import type { Event } from '@workflow/world';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
+import { useCallback, useRef } from 'react';
+import {
+  unwrapOrThrow,
+  unwrapServerActionResult,
+} from '~/lib/client/workflow-errors';
 import {
   fetchEvent,
   fetchEvents,
   fetchEventsByCorrelationId,
 } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
+import { useInfiniteList } from './use-infinite-list';
 
-const INITIAL_PAGE_SIZE = 100;
-const LOAD_MORE_PAGE_SIZE = 100;
+const PAGE_SIZE = 100;
 /**
  * Max pages when fetching correlation ID search results (100 events/page).
  *
@@ -26,6 +29,8 @@ const LOAD_MORE_PAGE_SIZE = 100;
  * much cheaper.
  */
 const MAX_CORRELATION_SEARCH_PAGES = 5;
+
+const getEventId = (event: Event) => event.eventId;
 
 /**
  * Independent event fetching for the Events tab.
@@ -37,20 +42,11 @@ export function useEventsListData(
   runId: string,
   options: {
     sortOrder?: 'asc' | 'desc';
+    /** Used when hydrating exact-ID search results. */
     encryptionKey?: Uint8Array;
-    /** When false, defers fetching until enabled. Defaults to true. */
-    enabled?: boolean;
   } = {}
 ) {
-  const { sortOrder = 'asc', encryptionKey, enabled = true } = options;
-
-  const [events, setEvents] = useState<Event[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-  const [cursor, setCursor] = useState<string | undefined>();
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const isFetchingRef = useRef(false);
+  const { sortOrder = 'asc', encryptionKey } = options;
 
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
@@ -60,85 +56,28 @@ export function useEventsListData(
     return Promise.all(rawEvents.map((ev) => hydrateResourceIOAsync(ev, key)));
   }, []);
 
-  const fetchInitial = useCallback(async () => {
-    if (isFetchingRef.current) return;
-    isFetchingRef.current = true;
-    setLoading(true);
-    setError(null);
-    setEvents([]);
-    setCursor(undefined);
-    setHasMore(false);
-
-    try {
-      const { error: fetchError, result } = await unwrapServerActionResult(
-        fetchEvents(env, runId, {
-          sortOrder,
-          limit: INITIAL_PAGE_SIZE,
-          withData: false,
-        })
-      );
-      if (fetchError) {
-        setError(fetchError);
-      } else {
-        setEvents(await hydrateEvents(result.data));
-        setCursor(result.hasMore ? result.cursor : undefined);
-        setHasMore(Boolean(result.hasMore));
-      }
-    } catch (err) {
-      setError(err as Error);
-    } finally {
-      setLoading(false);
-      isFetchingRef.current = false;
-    }
-  }, [env, runId, sortOrder, hydrateEvents]);
-
-  useEffect(() => {
-    if (enabled) fetchInitial();
-  }, [fetchInitial, enabled]);
-
-  // Re-hydrate loaded events with decryption when encryption key becomes available
-  useEffect(() => {
-    if (!encryptionKey || events.length === 0) return;
-    let cancelled = false;
-    Promise.all(events.map((ev) => hydrateResourceIOAsync(ev, encryptionKey)))
-      .then((decrypted) => {
-        if (!cancelled) setEvents(decrypted);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [encryptionKey]);
-
-  const loadMore = useCallback(async () => {
-    if (loadingMore || !cursor) return;
-    setLoadingMore(true);
-    try {
-      const { error: fetchError, result } = await unwrapServerActionResult(
+  // Rows are listed without payloads (`withData: false`), so there is nothing
+  // in them to hydrate or decrypt.
+  const fetchPage = useCallback(
+    (cursor?: string) =>
+      unwrapOrThrow(
         fetchEvents(env, runId, {
           cursor,
           sortOrder,
-          limit: LOAD_MORE_PAGE_SIZE,
+          limit: PAGE_SIZE,
           withData: false,
         })
-      );
-      if (fetchError) {
-        setError(fetchError);
-      } else {
-        if (result.data.length > 0) {
-          const hydrated = await hydrateEvents(result.data);
-          setEvents((prev) => [...prev, ...hydrated]);
-        }
-        setCursor(result.hasMore ? result.cursor : undefined);
-        setHasMore(Boolean(result.hasMore));
-      }
-    } catch (err) {
-      setError(err as Error);
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [env, runId, sortOrder, cursor, loadingMore, hydrateEvents]);
+      ),
+    [env, runId, sortOrder]
+  );
+
+  // Rows restored from the cache may be stale. A new query starts empty.
+  const list = useInfiniteList(
+    `run-events:${runId}:${sortOrder}`,
+    fetchPage,
+    getEventId,
+    { keepPreviousData: false, revalidateCached: true }
+  );
 
   const searchByExactId = useCallback(
     async (
@@ -213,12 +152,12 @@ export function useEventsListData(
   );
 
   return {
-    events,
-    loading,
-    error,
-    hasMore,
-    loadingMore,
-    loadMore,
+    events: list.items,
+    loading: list.isLoading,
+    error: list.error,
+    hasMore: list.hasMore,
+    loadingMore: list.isLoadingMore,
+    loadMore: list.loadMore,
     searchByExactId,
   };
 }

@@ -319,6 +319,80 @@ describe('frozen values stored by reference', () => {
     expect(performance.now() - started).toBeLessThan(30_000);
   });
 
+  it('rebuilds a long run with several changes per step in bounded time', () => {
+    // Each step result makes several changes under one object, as an agent's
+    // session does: it appends messages, adds this turn's tool calls, finishes
+    // the previous turn's and updates counters. A cold replay applies every
+    // change, and each one used to copy the whole session, tool calls included.
+    type Turn = {
+      session: {
+        messages: Message[];
+        tools: Record<string, { name: string; done: boolean }>;
+        usage: { input: number; output: number };
+        turn: number;
+      };
+    };
+    const writer = new StateContext();
+    const first = write(
+      {
+        s: produce(
+          {
+            session: {
+              messages: [],
+              tools: {},
+              usage: { input: 0, output: 0 },
+              turn: 0,
+            },
+          } as Turn,
+          () => {}
+        ),
+      },
+      writer
+    );
+    let state = read(first, writer).s as Turn;
+    const payloads = [first];
+    for (let i = 0; i < 300; i++) {
+      state = produce(state, (d) => {
+        d.session.messages.push(
+          { role: 'user', content: `message ${i}` },
+          { role: 'assistant', content: `reply ${i}` }
+        );
+        for (const id of [`${i - 1}a`, `${i - 1}b`])
+          if (d.session.tools[id]) d.session.tools[id].done = true;
+        d.session.tools[`${i}a`] = { name: 'search', done: false };
+        d.session.tools[`${i}b`] = { name: 'fetch', done: false };
+        d.session.usage.input += 10;
+        d.session.usage.output += 20;
+        d.session.turn = i + 1;
+      });
+      const bytes = write({ s: state }, writer);
+      payloads.push(bytes);
+      state = read(bytes, writer).s;
+    }
+    // Mostly changes, with an occasional whole snapshot: the replay has to
+    // apply them.
+    expect(
+      payloads.filter((p) => text(p).includes('"patch"')).length
+    ).toBeGreaterThan(290);
+    const started = performance.now();
+    const rebuilt = read(payloads.at(-1) as Uint8Array, cold(...payloads))
+      .s as Turn;
+    const elapsed = performance.now() - started;
+    if (process.env.STATE_REFS_BENCH === '1')
+      process.stderr.write(
+        `[state-refs] cold rebuild ${elapsed.toFixed(1)} ms\n`
+      );
+    expect(rebuilt.session.messages).toHaveLength(600);
+    expect(Object.keys(rebuilt.session.tools)).toHaveLength(600);
+    expect(
+      Object.values(rebuilt.session.tools).filter((t) => t.done)
+    ).toHaveLength(598);
+    expect(rebuilt.session.usage).toEqual({ input: 3_000, output: 6_000 });
+    // ~35 ms on a laptop (~95 ms before each container was copied once);
+    // CI runners can be 20 times slower.
+    expect(elapsed).toBeLessThan(30_000);
+  });
+
   it('measures a growing value only now and then to apply the snapshot rule', () => {
     const replay = new StateContext();
     let state = read(

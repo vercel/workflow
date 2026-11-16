@@ -48,7 +48,11 @@ import {
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
-import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
+import {
+  type PostgresWorldConfig,
+  resolveJobPrefix,
+  UNPINNED_DEPLOYMENT_ID,
+} from './config.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import {
@@ -329,8 +333,35 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(): string {
-    return `${resolveJobPrefix(config)}flows`;
+  function getJobQueueName(
+    deploymentId: string | undefined = config.deploymentId
+  ): string {
+    return `${resolveJobPrefix(config, deploymentId)}flows`;
+  }
+
+  /**
+   * The task of another deployment's runs, when `opts.deploymentId` names one:
+   * a pinned run's messages go to the workers of the deployment that started
+   * it, wherever they are enqueued from, and an unpinned run's (one recorded
+   * with {@link UNPINNED_DEPLOYMENT_ID}, such as a run started before
+   * `deploymentId` was set) go to the unpinned task. `undefined` means this
+   * World's own, as it does for an id that cannot name a deployment's task.
+   */
+  function deploymentTask(deploymentId: string | undefined) {
+    if (
+      deploymentId === undefined ||
+      deploymentId === (config.deploymentId ?? UNPINNED_DEPLOYMENT_ID)
+    ) {
+      return undefined;
+    }
+    if (deploymentId === UNPINNED_DEPLOYMENT_ID) {
+      return `${resolveJobPrefix({ jobPrefix: config.jobPrefix })}flows`;
+    }
+    try {
+      return getJobQueueName(deploymentId);
+    } catch {
+      return undefined;
+    }
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
@@ -500,7 +531,7 @@ export function createQueue(
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
-    return 'postgres';
+    return config.deploymentId ?? UNPINNED_DEPLOYMENT_ID;
   };
 
   const completedMessages = new Set<string>();
@@ -544,6 +575,7 @@ export function createQueue(
     jobKeyMode = 'preserve_run_at',
     priority,
     handoffLease,
+    task,
   }: {
     queueId: string;
     prefix?: QueuePrefix;
@@ -576,6 +608,8 @@ export function createQueue(
      * handed the lease in one transaction (see `RunLeases.handoff`).
      */
     handoffLease?: { runId: string; jobId: string };
+    /** Another deployment's task ({@link deploymentTask}); default this World's. */
+    task?: string;
   }): Promise<{ handedOff: boolean }> {
     const utils = workerUtils;
     if (!utils) {
@@ -587,7 +621,8 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
-    const task = executorRunId ? executorTask() : getJobQueueName();
+    const jobTask =
+      task ?? (executorRunId ? executorTask() : getJobQueueName());
     const payload = MessageData.encode({
       id: queueId,
       ...(prefix ? { prefix } : {}),
@@ -605,11 +640,19 @@ export function createQueue(
       const handedOff = await runLeases.handoff(
         handoffLease.runId,
         handoffLease.jobId,
-        { task, payload, jobKey, jobKeyMode, maxAttempts, priority, runAt }
+        {
+          task: jobTask,
+          payload,
+          jobKey,
+          jobKeyMode,
+          maxAttempts,
+          priority,
+          runAt,
+        }
       );
       return { handedOff };
     }
-    await utils.addJob(task, payload, {
+    await utils.addJob(jobTask, payload, {
       ...(jobKey ? { jobKey, jobKeyMode } : {}),
       ...(runAt ? { runAt } : {}),
       ...(priority !== undefined ? { priority } : {}),
@@ -1032,11 +1075,15 @@ export function createQueue(
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
+    const task = deploymentTask(opts?.deploymentId);
+    // Invoke mode's executor lane is this World's own; another deployment's
+    // runs are delivered on its flow task, as without invoke.
     const input =
-      invocations && prefix === ownPrefix()
+      invocations && !task && prefix === ownPrefix()
         ? executorInput(message)
         : undefined;
     await addGraphileJob({
+      task,
       queueId,
       // Kept, so the job is delivered under the queue name it was sent to
       // whichever worker takes it, rather than the worker's own prefix.
