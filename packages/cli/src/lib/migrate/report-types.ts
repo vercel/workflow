@@ -20,7 +20,8 @@ export interface LiftedStep {
   dynamicId: boolean;
   functionName: string;
   line: number;
-  source: 'step.run' | 'step.ai.wrap';
+  /** The source call, e.g. `step.run` (Inngest) or `step.do` (Cloudflare). */
+  source: string;
   /** Variables the closure read from the handler, now passed as arguments. */
   captured: CapturedVariable[];
   /** Number of extra inputs `step.run(id, fn, ...inputs)` passed. */
@@ -34,8 +35,8 @@ export interface FunctionTrigger {
 
 export interface MigratedHook {
   line: number;
-  /** The Inngest event or signal this hook replaces. */
-  source: 'step.waitForEvent' | 'step.waitForSignal';
+  /** The source wait this hook replaces, e.g. `step.waitForEvent`. */
+  source: string;
   name: string;
   /** The token expression as written in the migrated code. */
   token: string;
@@ -58,8 +59,9 @@ export interface MigratedFunction {
 
 export interface AppBoundaryCall {
   line: number;
-  kind: 'send' | 'serve' | 'sendSignal';
-  /** Event names (for `send`) or signal (for `sendSignal`), when literal. */
+  /** e.g. `send`, `serve`, `sendSignal` (Inngest); `create`, `sendEvent` (Cloudflare). */
+  kind: string;
+  /** Event names, signals or bindings the call names, when literal. */
   names: string[];
   text: string;
 }

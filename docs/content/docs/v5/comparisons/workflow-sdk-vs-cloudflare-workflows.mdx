@@ -52,23 +52,235 @@ On portability, Cloudflare Workflows is the most locked-in of the tools in this 
 
 Credit where due: Cloudflare's V8-isolate model gives **near-zero cold starts**, and code runs across its global Anycast network with no region selection. For latency-sensitive, globally-distributed workloads on Cloudflare's platform, that's a genuine strength. The Workflow SDK's performance depends on the World it runs on; on Vercel it benefits from Fluid Compute, a 100K concurrency ceiling, and [multi-region support](/worlds/vercel#multi-region).
 
-## Moving from Cloudflare Workflows
+## Migrating from Cloudflare Workflows
 
-There's no automated migration skill for Cloudflare specifically, but the mapping is direct:
+### Run the codemod
+
+The `workflow` CLI includes a codemod for Cloudflare Workflows. Run it from your project root, on a clean working tree so its changes are easy to review:
+
+```bash
+npx workflow migrate cloudflare-workflows --report cloudflare-migration.md
+```
+
+It reads the project's `tsconfig.json` to find the files to migrate and uses the project's own TypeScript. It also reads `wrangler.jsonc`, `wrangler.json` or `wrangler.toml`, to learn which `this.env` names are vars and which are bindings, and which class each Workflow binding runs. Pass paths to limit it, and `--dry-run` to see what would change without writing anything. See [`workflow migrate`](/docs/configuration/cli-and-web-ui#migrate-from-cloudflare-workflows) for every flag.
+
+Each `class X extends WorkflowEntrypoint` becomes a `"use workflow"` function named `X` that takes the event `run()` received, so `event.payload` keeps working. Each `step.do(name, callback)` becomes a module-level `"use step"` function. A callback can read anything in `run()`, but a step function only gets its arguments, because they are recorded in the event log. So the codemod finds every variable the callback reads from `run()`, makes each one a parameter, and passes it at the call site. It lists the captured variables of every step so you can check that each is [serializable](/docs/foundations/serialization).
+
+{/* @skip-typecheck: Cloudflare Workers code, the input of the codemod */}
+```typescript title="src/workflows.ts (before)"
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
+import { createInvoice, notify } from './billing';
+
+type Params = { customerId: string; amount: number };
+
+export class InvoiceWorkflow extends WorkflowEntrypoint<Env, Params> {
+  async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
+    const { customerId, amount } = event.payload;
+    const invoice = await step.do(
+      'create invoice',
+      { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' } },
+      async () => {
+        if (amount <= 0) throw new NonRetryableError('amount must be positive');
+        return createInvoice(customerId, amount);
+      }
+    );
+    await step.sleep('grace period', '1 day');
+    const approval = await step.waitForEvent<{ approvedBy: string }>('approval', {
+      type: 'invoice-approved',
+      timeout: '7 days',
+    });
+    await step.do('notify', async () =>
+      notify(customerId, `${invoice.id} approved by ${approval.payload.approvedBy}`)
+    );
+  }
+}
+```
+
+```typescript title="src/workflows.ts (after, formatted)"
+import { FatalError, sleep } from 'workflow';
+declare function createInvoice(customerId: string, amount: number): Promise<{ id: string; total: number }>; // @setup
+declare function notify(customerId: string, message: string): Promise<void>; // @setup
+declare function workflowEvents(token: string): { next<T>(type: string, timeoutMs: number): Promise<{ type: string; payload: T; timestamp: Date }> }; // @setup
+type Params = { customerId: string; amount: number };
+
+export async function InvoiceWorkflow(event: {
+  payload: Params;
+  timestamp: Date;
+  instanceId: string;
+  workflowName: string;
+}) {
+  'use workflow';
+  const events = workflowEvents(`InvoiceWorkflow:${event.instanceId}`); // [!code highlight]
+  const { customerId, amount } = event.payload;
+  const invoice = await createInvoiceStep(amount, customerId); // [!code highlight]
+  await sleep('1 day');
+  const approval = await events.next<{ approvedBy: string }>(
+    'invoice-approved',
+    604800000
+  );
+  await notifyStep(customerId, invoice, approval); // [!code highlight]
+}
+
+async function createInvoiceStep(amount: number, customerId: string) {
+  'use step';
+  if (amount <= 0) throw new FatalError('amount must be positive');
+  return createInvoice(customerId, amount);
+}
+createInvoiceStep.maxRetries = 3;
+
+async function notifyStep(
+  customerId: string,
+  invoice: { id: string; total: number },
+  approval: { type: string; payload: { approvedBy: string }; timestamp: Date }
+) {
+  'use step';
+  return notify(customerId, `${invoice.id} approved by ${approval.payload.approvedBy}`);
+}
+notifyStep.maxRetries = 5;
+```
+
+The run prints each step it lifted with the variables it captured:
+
+```bash
+src/workflows.ts
+  InvoiceWorkflow
+    step create invoice -> createInvoiceStep() captures amount, customerId
+    step notify -> notifyStep() captures customerId, invoice, approval
+    hook invoice-approved -> token `InvoiceWorkflow:${event.instanceId}`
+```
+
+Beyond `step.do()`, the codemod:
+
+- Gives every step its Cloudflare retry count: `retries.limit` counts retries after the first attempt, as `maxRetries` does, and a step without a limit gets Cloudflare's default of 5 (the Workflow SDK's own default is 3).
+- Rewrites `step.sleep()` and `step.sleepUntil()` as `sleep()`. Duration strings like `'1 hour'` carry over; a month is 30 days, as in Cloudflare, and a duration only known at runtime goes through a small `cloudflareDuration()` helper it adds.
+- Turns `step.waitForEvent()` into a read from the run's events, through a `workflowEvents()` helper it adds. Events sent to an instance are kept until a wait for their type takes them, in the order they arrived, and a wait that times out throws `WorkflowTimeoutError: Execution timed out after <ms>ms`, as Cloudflare's does. Without a `timeout`, a wait times out after 24 hours, Cloudflare's default.
+- Turns `NonRetryableError` into `FatalError`, `ctx.attempt` into `getStepMetadata().attempt`, and `ctx.step.name` into the step's name.
+- Turns `this.env.NAME` into `process.env.NAME` inside steps when the wrangler config declares `NAME` as a var.
+- Removes the `cloudflare:workers` and `cloudflare:workflows` imports nothing uses any more.
+
+It never guesses. Code it cannot migrate without changing behavior stays in place under a `// TODO(workflow-migrate): ...` comment that says what to do. That covers bindings (`this.env.MY_KV`, D1, R2, Queues, Workers AI, other Workflows), `this.ctx`, a var read outside a step, a per-step `timeout`, rollback handlers, nested steps, and a callback that assigns to a variable outside it. Retry `delay` and `backoff` are reported but not carried over: Workflow SDK steps retry after about a second, and a step can throw [`RetryableError`](/docs/api-reference/workflow/retryable-error) with `retryAfter` where the wait matters.
+
+### Replace the Workflow bindings
+
+The code that created instances, sent them events and read their status stays as it was, with one change: where it used `env.MY_WORKFLOW`, it uses an adapter built on `start()`, `resumeHook()` and `getRun()`. The report includes this adapter and the binding-to-workflow table; it keeps the binding API your Worker already calls:
+
+```typescript title="lib/workflow-instances.ts"
+import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
+import { HookConflictError } from 'workflow/errors';
+
+type WorkflowEvent<P> = { payload: P; timestamp: Date; instanceId: string; workflowName: string };
+
+/** Creates and finds runs the way a Cloudflare Workflow binding creates and finds instances. */
+export function workflowInstances<P>(
+  name: string,
+  workflow: (event: WorkflowEvent<P>) => Promise<unknown>
+) {
+  const token = (id: string) => `${name}:${id}`;
+  const run = async (id: string) => getRun((await getHookByToken(token(id))).runId);
+  const instance = (id: string) => ({
+    id,
+    async status() {
+      const handle = await run(id);
+      const status = await handle.status;
+      if (status === 'completed') return { status: 'complete', output: await handle.returnValue };
+      if (status === 'cancelled') return { status: 'terminated' };
+      if (status === 'failed') {
+        let error = await handle.returnValue.then(() => undefined, (e: any) => e?.cause ?? e);
+        // A step that ran out of retries fails the run with a FatalError whose
+        // cause is what the step threw: Cloudflare reports the latter.
+        if (error?.name === 'FatalError' && error.cause) error = error.cause;
+        return { status: 'errored', error: { name: error?.name ?? 'Error', message: error?.message ?? String(error) } };
+      }
+      return { status: status === 'pending' ? 'queued' : 'running' };
+    },
+    async sendEvent({ type, payload }: { type: string; payload: unknown }) {
+      await resumeHook(token(id), { type, payload, timestamp: new Date() });
+    },
+    async terminate() {
+      await (await run(id)).cancel();
+    },
+  });
+  return {
+    async create({ id = crypto.randomUUID(), params }: { id?: string; params?: P } = {}) {
+      try {
+        await start(workflow, [{ payload: params as P, timestamp: new Date(), instanceId: id, workflowName: name }], {
+          // One run per ID, kept for 30 days after it ends, like an instance ID.
+          experimental_hook: { token: token(id), experimental_minRetention: '30 days' },
+        });
+      } catch (error) {
+        if (HookConflictError.is(error)) throw new Error(`An instance with ID ${id} already exists`);
+        throw error;
+      }
+      return instance(id);
+    },
+    async get(id: string) {
+      await getHookByToken(token(id)); // throws when there is no such instance
+      return instance(id);
+    },
+  };
+}
+```
+
+Then `env.INVOICES.create({ id, params })` becomes `invoices.create({ id, params })`, with `const invoices = workflowInstances('InvoiceWorkflow', InvoiceWorkflow)`. The adapter starts one run per instance ID with that ID in a [start token](/docs/foundations/idempotency#start-a-run-once-per-key), so a second `create()` with the same ID is refused, as on Cloudflare, and events sent before the run waits are kept. `instance.sendEvent({ type, payload })` resumes that token with `{ type, payload, timestamp }`, the shape `step.waitForEvent()` returned.
+
+### What the codemod converts
+
+| Cloudflare Workflows | Converted automatically | Left as a TODO |
+| --- | --- | --- |
+| `class X extends WorkflowEntrypoint` | A top-level class whose only member is `run()` | Classes with other members, or not at module scope |
+| `step.do()` | Inline callbacks and function references, with captured variables, `retries.limit`, `ctx.attempt` and `ctx.step.name` | `timeout`, rollback handlers, nested steps, callbacks that assign to a captured variable or call a function declared in `run()` |
+| `step.sleep()` / `step.sleepUntil()` | Yes, with Cloudflare's duration units | None |
+| `step.waitForEvent()` | Yes: events by type in arrival order, Cloudflare's timeout error and 24-hour default | A `run()` that does not name its event parameter |
+| `NonRetryableError` | `FatalError` | None |
+| `this.env` | Vars read inside a step | Bindings, and vars read outside a step |
+| `env.MY_WORKFLOW` in your Worker | Listed in the report, with the adapter above | All: replace them as the report says |
+
+### Concept mapping
 
 | Cloudflare Workflows | Workflow SDK |
 | --- | --- |
 | `class extends WorkflowEntrypoint` + `run(event, step)` | `"use workflow"` function started with `start()` |
 | `step.do(name, cb)` | `"use step"` function called with `await` |
 | `step.sleep` / `step.sleepUntil` | `sleep('1h')` / `sleep(date)` |
-| `step.waitForEvent` | `createHook()` / `createWebhook()` |
-| Per-step `retries` config (`limit`, `delay`, `backoff`) | `maxRetries` caps attempts; any backoff curve via [`RetryableError`](/docs/api-reference/workflow/retryable-error)'s `retryAfter` derived from [`getStepMetadata().attempt`](/docs/api-reference/workflow/get-step-metadata); `FatalError` stops retries. See [Errors & Retrying](/docs/foundations/errors-and-retries#advanced-example) |
-| `env.MY_WORKFLOW.create(...)` binding | `start(workflow, [args])` from your app |
-| Custom instance `id` on `create({ id })` | `start(workflow, args, { experimental_hook: { token } })`; a duplicate start throws `HookConflictError` naming the owner. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) |
-| `instance.sendEvent({ type, payload })` | `resumeHook(token, payload)` for a `createHook({ token })` in the workflow |
+| `step.waitForEvent({ type, timeout })` | A hook on the run's start token, raced against `sleep()` (the codemod's `workflowEvents()`) |
+| Per-step `retries` config (`limit`, `delay`, `backoff`) | `maxRetries` caps retries; any backoff curve via [`RetryableError`](/docs/api-reference/workflow/retryable-error)'s `retryAfter` derived from [`getStepMetadata().attempt`](/docs/api-reference/workflow/get-step-metadata); `FatalError` stops retries. See [Errors & Retrying](/docs/foundations/errors-and-retries#advanced-example) |
+| `env.MY_WORKFLOW.create({ id, params })` | `start(workflow, [event], { experimental_hook: { token: id } })`; a duplicate start throws `HookConflictError` naming the owner. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) |
+| `instance.sendEvent({ type, payload })` | `resumeHook(token, { type, payload, timestamp })` on the run's start token |
+| `instance.status()` | `getRun(runId).status` and `returnValue` |
 | `instance.terminate()` | `run.cancel({ cancelReason })` |
+| `instance.pause()` / `resume()` / `restart()` | No equivalent: cancel the run and start a new one |
 
-Side effects that lived in `step.do` callbacks move into named `"use step"` functions; the orchestration becomes plain `await` / `if` / `Promise.all` instead of the `WorkflowEntrypoint` class.
+### What behaves differently
+
+- **Retry timing.** Cloudflare waits `delay` between attempts, growing with `backoff` (by default 1 second, doubling). Workflow SDK steps retry after about a second unless they throw `RetryableError` with a `retryAfter`.
+- **No per-step timeout.** Cloudflare stops an attempt after its `timeout` (10 minutes by default) and retries it. A step runs until it returns or the function's own limit; bound slow work inside the step, for example with `AbortSignal.timeout()` passed to `fetch()`.
+- **A step that runs out of retries.** In `run()`, Cloudflare's `step.do()` rejected with the step's own error. A migrated workflow receives a `FatalError` whose message names the step and the retry count, with the step's error as its `cause`. The adapter's `status()` reports the step's error, as Cloudflare does.
+- **A `NonRetryableError` that ends the run.** Cloudflare reports it as `WorkflowFatalError` with a generic message; the run reports the `FatalError` with the message you wrote.
+- **Status.** A run has no `waiting` or `paused` status: a sleeping or waiting run is `running`.
+- **`sleepUntil()` in the past.** Cloudflare throws; `sleep(date)` with a past date resumes right away.
+- **Bindings.** KV, D1, R2, Queues, Workers AI and Durable Objects exist only on Cloudflare. Use a store or service reachable from Node, such as a database from the [Vercel Marketplace](https://vercel.com/marketplace), inside steps.
+- **Larger payloads.** Step results and event payloads are no longer capped at 1 MiB; see the [Vercel World limits](https://vercel.com/docs/workflows/pricing).
+
+### Verify the migration
+
+Before you switch traffic, run the same inputs through both versions and compare what each instance or run returns:
+
+1. Run the Worker locally with `wrangler dev`, which runs Workflows locally.
+2. Build the migrated app and run it locally against the [Local World](/worlds/local), with your wrangler `vars` set as environment variables.
+3. Give both the same entry points: create an instance, send it an event, read its status. On the Workflow side, these are the adapter's `create()`, `sendEvent()` and `status()`.
+4. For every workflow, drive each path (success, a non-retryable failure, a step that recovers and one that runs out of retries, a wait that is resumed, an event sent before the wait, a wait that times out) and compare the outputs and final statuses.
+
+Also typecheck and build the migrated app: the codemod's annotations are checked against your project, but your own types only meet the new code once you build.
+
+### Cut over
+
+Instances started on Cloudflare keep running there. Move new work to the Workflow SDK, and keep the Worker deployed until its running and waiting instances have finished:
+
+1. Deploy the migrated app next to the Worker.
+2. Create new instances through the adapter. Code that sends events needs both paths for a while: `sendEvent()` on the Cloudflare instance for instances created there, and the adapter for runs created on the Workflow SDK.
+3. Keep instance IDs unique across both: an ID already used on Cloudflare should not be reused for a run, so the two cannot both act on the same business key.
+4. Once no Cloudflare instances are left, remove the `[[workflows]]` bindings and the Worker code that used them.
 
 ---
 *Compiled from public documentation. Verify current Cloudflare Workflows limits and pricing against [developers.cloudflare.com/workflows](https://developers.cloudflare.com/workflows/). Not based on head-to-head benchmarks.*

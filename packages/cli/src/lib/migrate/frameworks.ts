@@ -1,3 +1,4 @@
+import { cloudflareWorkflowsFramework } from './cloudflare-workflows/index.js';
 import type { MigrationFramework } from './framework.js';
 import { inngestFramework } from './inngest/index.js';
 
@@ -5,4 +6,5 @@ import { inngestFramework } from './inngest/index.js';
 // biome-ignore lint/suspicious/noExplicitAny: each framework has its own context type
 export const FRAMEWORKS: Record<string, MigrationFramework<any>> = {
   [inngestFramework.id]: inngestFramework,
+  [cloudflareWorkflowsFramework.id]: cloudflareWorkflowsFramework,
 };
