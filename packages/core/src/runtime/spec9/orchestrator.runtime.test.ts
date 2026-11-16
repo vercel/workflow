@@ -1811,36 +1811,40 @@ describe.each([
     expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBeGreaterThan(0);
   });
 
-  it('skips the tail read for a wake that names an event it has not consumed', async () => {
-    const { world, runId } = await setup(
-      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  // Node only: the QuickJS engine records no consumed position, so it never
+  // reads the tail and there is nothing for the wake to skip.
+  it.runIf(engine === 'node')(
+    'skips the tail read for a wake that names an event it has not consumed',
+    async () => {
+      const { world, runId } = await setup(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
        async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
-      []
-    );
-    await world.deliver(world.held[0]!);
-    world.held.length = 0;
-    // An out-of-band writer commits an event, then sends its wake naming it.
-    const written = world.appendOutOfBand({
-      eventType: 'noop',
-    } as Partial<Event>);
-    const tailReads = () =>
-      world.listCalls.filter(
-        (call) =>
-          (call.pagination as { sortOrder?: string } | undefined)?.sortOrder ===
-          'desc'
-      ).length;
-    const before = tailReads();
-    await world.deliver(
-      world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
-    );
-    expect(tailReads()).toBe(before);
-    // A wake naming an event it already consumed still reads the tail (the
-    // QuickJS engine records no consumed position, so it never does).
-    await world.deliver(
-      world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
-    );
-    expect(tailReads()).toBe(engine === 'node' ? before + 1 : before);
-  });
+        []
+      );
+      await world.deliver(world.held[0]!);
+      world.held.length = 0;
+      // An out-of-band writer commits an event, then sends its wake naming it.
+      const written = world.appendOutOfBand({
+        eventType: 'noop',
+      } as Partial<Event>);
+      const tailReads = () =>
+        world.listCalls.filter(
+          (call) =>
+            (call.pagination as { sortOrder?: string } | undefined)
+              ?.sortOrder === 'desc'
+        ).length;
+      const before = tailReads();
+      await world.deliver(
+        world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
+      );
+      expect(tailReads()).toBe(before);
+      // A wake naming an event it already consumed still reads the tail.
+      await world.deliver(
+        world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
+      );
+      expect(tailReads()).toBe(before + 1);
+    }
+  );
 
   describe('a delivery the fence refuses', () => {
     const fanOut = 2 * MAX_IN_BAND_CREATION_BATCH_EVENTS + 4;
