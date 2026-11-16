@@ -61,7 +61,7 @@ import {
   resolveJobLeasePolicy,
 } from './job-lease.js';
 import { MessageData } from './message.js';
-import { createRunLeases, type LeftJob } from './run-lease.js';
+import { createRunLeases, isMissingTable, type LeftJob } from './run-lease.js';
 
 /**
  * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
@@ -184,6 +184,12 @@ const MAX_GRAPHILE_JOB_ATTEMPTS =
  */
 export const MAX_COALESCED_RERUNS = 32;
 /**
+ * How often a process with a runner recovers orphaned run leases (see
+ * `RunLeases.recoverOrphans`). An owner can stop being able to run only
+ * after the stale-lock sweep released it, so this need not be frequent.
+ */
+const ORPHANED_LEASE_INTERVAL_MS = 60_000;
+/**
  * Graphile priority of a spec 9 handoff's job: below the default 0, so the
  * continuation, which the run's lease passes to, starts ahead of other work
  * (Graphile takes the lowest priority first, then the earliest `run_at`).
@@ -273,6 +279,8 @@ export function createQueue(
   internal?: {
     /** The `'run-leases'` default window, in place of 300 seconds. */
     defaultJobLockStaleSeconds?: number;
+    /** How often orphaned run leases are recovered, in place of 60 seconds. */
+    orphanedLeaseIntervalMs?: number;
   }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
@@ -1595,6 +1603,61 @@ export function createQueue(
     // run's delivery lease, and only those of holders registered as renewing
     // (see `JobLeasePolicy`).
     jobLeases.startSweeper([getJobQueueName(), executorTask()]);
+    scheduleOrphanRecovery();
+  }
+
+  const orphanedLeaseIntervalMs =
+    internal?.orphanedLeaseIntervalMs ?? ORPHANED_LEASE_INTERVAL_MS;
+  let orphanTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveringOrphans: Promise<void> | undefined;
+  let orphanRecoveryFailing = false;
+
+  /**
+   * Periodically recover the run leases whose owner can no longer run (see
+   * `RunLeases.recoverOrphans`), with jitter so the processes sharing the
+   * database spread their checks. Every process with a runner recovers
+   * every deployment's leases: a pinned deployment whose workers scaled to
+   * zero runs no process of its own to recover them.
+   */
+  function scheduleOrphanRecovery() {
+    if (closing || orphanTimer || orphanedLeaseIntervalMs <= 0) return;
+    orphanTimer = setTimeout(
+      () => {
+        orphanTimer = undefined;
+        recoveringOrphans = recoverOrphanedLeases().finally(() => {
+          recoveringOrphans = undefined;
+          scheduleOrphanRecovery();
+        });
+      },
+      orphanedLeaseIntervalMs * (0.8 + 0.4 * Math.random())
+    );
+    orphanTimer.unref?.();
+  }
+
+  async function recoverOrphanedLeases() {
+    try {
+      const recovered = await runLeases.recoverOrphans();
+      orphanRecoveryFailing = false;
+      if (recovered.leases > 0 && process.env.WORKFLOW_JSON_MODE !== '1') {
+        console.warn(
+          `[world-postgres] Recovered ${recovered.leases} run lease(s) whose owner job can no longer run, re-adding the ${recovered.jobs} message(s) left on them`
+        );
+      }
+    } catch (error) {
+      // A missing table (migration 0031) is reported by the leases' first
+      // claim; anything else is retried on the next tick.
+      if (
+        !orphanRecoveryFailing &&
+        !isMissingTable(error) &&
+        process.env.WORKFLOW_JSON_MODE !== '1'
+      ) {
+        console.warn(
+          '[world-postgres] Failed to recover orphaned run leases; retrying:',
+          error
+        );
+      }
+      orphanRecoveryFailing = true;
+    }
   }
 
   return {
@@ -1642,6 +1705,9 @@ export function createQueue(
       // After the runner, whose active deliveries keep renewing while it
       // drains them.
       await jobLeases.stop();
+      clearTimeout(orphanTimer);
+      orphanTimer = undefined;
+      await recoveringOrphans;
       if (workerUtils) {
         await workerUtils.release();
         workerUtils = null;

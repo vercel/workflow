@@ -97,6 +97,17 @@ export interface RunLeases {
   ): Promise<boolean>;
   /** Release the lease, re-adding as jobs what was left on it. */
   release(runId: string, jobId: string): Promise<void>;
+  /**
+   * Recover the leases whose owner can no longer run (its job is gone, or
+   * used its last attempt and is not locked), of every deployment sharing
+   * the database: delete each row and re-add what was left on it as jobs, in
+   * one transaction. Their senders acknowledged their own jobs, so without
+   * this a deferred message (a start, a hook's input) left for an owner that
+   * died on its last attempt would be stranded until the run's next message
+   * took the lease over. Returns how many leases were recovered (at most
+   * `limit`) and how many jobs were re-added.
+   */
+  recoverOrphans(limit?: number): Promise<{ leases: number; jobs: number }>;
 }
 
 /** A Graphile job, by id, that can still run and so still owns its lease. */
@@ -155,6 +166,36 @@ WHERE run_id = $1 AND owner_job_id = $2::bigint
   AND wake IS NULL AND deferred = '[]'::jsonb
 RETURNING 1`;
 
+// The leases whose owner can no longer run, deleted with what was left on
+// them re-added as jobs. `FOR UPDATE SKIP LOCKED` leaves a lease that a claim,
+// take-over or release holds to it; a locked row's owner is re-checked once
+// the lock is taken.
+const recoverOrphansSql = (graphileSchema: string) => `WITH orphans AS (
+  SELECT run_id FROM ${LEASES_TABLE} AS leases
+  WHERE NOT ${liveOwner(graphileSchema, 'leases')}
+  LIMIT $1
+  FOR UPDATE SKIP LOCKED
+), removed AS (
+  DELETE FROM ${LEASES_TABLE} AS leases USING orphans
+  WHERE leases.run_id = orphans.run_id
+  RETURNING leases.wake, leases.deferred
+), left_jobs AS (
+  SELECT job FROM removed,
+    jsonb_array_elements(removed.deferred || CASE
+      WHEN removed.wake IS NULL THEN '[]'::jsonb
+      ELSE jsonb_build_array(removed.wake) END) AS job
+), added AS (
+  SELECT ${graphileSchema}.add_job(
+    identifier => left_jobs.job->>'task',
+    payload => (left_jobs.job->'payload')::json,
+    job_key => left_jobs.job->>'jobKey',
+    job_key_mode => 'preserve_run_at',
+    max_attempts => (left_jobs.job->>'maxAttempts')::int
+  ) FROM left_jobs
+)
+SELECT (SELECT count(*)::int FROM removed) AS leases,
+  (SELECT count(*)::int FROM added) AS jobs`;
+
 const releaseSql = `DELETE FROM ${LEASES_TABLE}
 WHERE run_id = $1 AND owner_job_id = $2::bigint
 RETURNING wake, deferred`;
@@ -185,6 +226,7 @@ export function createRunLeases(pool: Pool): RunLeases {
   const leaveQuery = leaveSql(graphileSchema);
   const addJobQuery = addJobSql(graphileSchema);
   const addContinuationQuery = addContinuationSql(graphileSchema);
+  const recoverOrphansQuery = recoverOrphansSql(graphileSchema);
   let warnedMissing = false;
 
   function missing(): ClaimResult {
@@ -256,6 +298,13 @@ export function createRunLeases(pool: Pool): RunLeases {
       } finally {
         client.release();
       }
+    },
+    async recoverOrphans(limit = 1000) {
+      const { rows } = await pool.query<{ leases: number; jobs: number }>(
+        recoverOrphansQuery,
+        [limit]
+      );
+      return rows[0] ?? { leases: 0, jobs: 0 };
     },
     async release(runId, jobId) {
       const empty = await pool.query(releaseEmptySql, [runId, jobId]);

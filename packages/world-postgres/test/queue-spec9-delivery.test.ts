@@ -19,6 +19,7 @@ import {
   it,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
+import { MessageData } from '../src/message.js';
 import { createQueue, type PostgresQueue } from '../src/queue.js';
 import { createEventsStorage } from '../src/storage.js';
 import { TestPool } from './pool.js';
@@ -616,6 +617,76 @@ describe.skipIf(process.platform === 'win32')(
         }
       );
     }, 30_000);
+
+    it('delivers a hook resume left on the lease of an owner that died on its last attempt', async () => {
+      // The owner's last delivery was SIGKILLed: the stale-lock sweep unlocked
+      // its job at 73/73 attempts, so Graphile never runs it again, and the
+      // hook resume another delivery left on its lease has no job of its own.
+      const runId = `wrun_${ulid()}`;
+      const utils = await makeWorkerUtils({ pgPool: pool });
+      const owner = await utils.addJob(
+        'workflow_flows',
+        MessageData.encode({
+          id: 'spec9-delivery',
+          data: Buffer.from(JSON.stringify({ runId: 'wrun_dead_owner' })),
+          messageId: `msg_${ulid()}` as MessageData['messageId'],
+          attempt: 73,
+        }),
+        { maxAttempts: 73, runAt: new Date(Date.now() + 3_600_000) }
+      );
+      await utils.release();
+      await pool.query(
+        'UPDATE graphile_worker._private_jobs SET attempts = 73 WHERE id = $1',
+        [owner.id]
+      );
+      const hookInput = {
+        token: 'tok',
+        resumeId: 'res_orphan',
+        hookId: 'hook_orphan',
+        payload: 'x',
+        payloadDigest: 'digest',
+      };
+      const resume = {
+        task: 'workflow_flows',
+        payload: MessageData.encode({
+          id: 'spec9-delivery',
+          prefix: '__wkf_workflow_',
+          data: Buffer.from(
+            JSON.stringify({ runId, runSpecVersion: SPEC, hookInput })
+          ),
+          messageId: `msg_${ulid()}` as MessageData['messageId'],
+          attempt: 1,
+          attemptOffset: 0,
+          deliveryOffset: 0,
+        }),
+        maxAttempts: 73,
+      };
+      await pool.query(
+        `INSERT INTO workflow.workflow_run_delivery_leases (run_id, owner_job_id, deferred)
+         VALUES ($1, $2, jsonb_build_array($3::jsonb))`,
+        [runId, owner.id, JSON.stringify(resume)]
+      );
+
+      await queue.close();
+      queue = createQueue(
+        {
+          connectionString: container.getConnectionUri(),
+          queueConcurrency: 4,
+          pollInterval: 50,
+          applicationManagedShutdown: true,
+        },
+        pool,
+        { orphanedLeaseIntervalMs: 200 }
+      );
+      await queue.start();
+
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      expect(runDeliveries(runId)[0]!.body.hookInput).toEqual(hookInput);
+      await untilReleased(runId);
+    });
 
     it('delivers a handoff before the messages left on its lease', async () => {
       const runId = `wrun_${ulid()}`;

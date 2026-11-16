@@ -318,6 +318,67 @@ describe.skipIf(process.platform === 'win32')(
       expect(await jobsByKey('continuation:run_k')).toHaveLength(1);
     });
 
+    it('recovers the leases whose owner can no longer run, re-adding what was left on them', async () => {
+      const leases = createRunLeases(pool);
+      // Died on its last attempt: the stale-lock sweep unlocked it, and it
+      // will never run again.
+      const exhausted = await job({ attempts: 3, maxAttempts: 3 });
+      // Completed without releasing.
+      const gone = await job();
+      // Still running on its last attempt, and one waiting to be redelivered.
+      const running = await job({ attempts: 3, maxAttempts: 3 });
+      const waiting = await job({ locked: false, attempts: 1 });
+      const other = await job();
+      for (const [runId, owner] of [
+        ['run_x1', exhausted],
+        ['run_x2', gone],
+        ['run_x3', running],
+        ['run_x4', waiting],
+      ] as const) {
+        await leases.claim(runId, owner, left('own'), 'wake', false);
+        await leases.claim(
+          runId,
+          other,
+          left(`${runId}:hook`),
+          'deferred',
+          false
+        );
+      }
+      await leases.claim('run_x1', other, left('run_x1:wake'), 'wake', false);
+      await pool.query(
+        'UPDATE graphile_worker._private_jobs SET locked_at = NULL, locked_by = NULL WHERE id = $1',
+        [exhausted]
+      );
+      await pool.query(
+        'DELETE FROM graphile_worker._private_jobs WHERE id = $1',
+        [gone]
+      );
+
+      await expect(leases.recoverOrphans()).resolves.toEqual({
+        leases: 2,
+        jobs: 3,
+      });
+      expect(await row('run_x1')).toBeUndefined();
+      expect(await row('run_x2')).toBeUndefined();
+      for (const marker of ['run_x1:hook', 'run_x1:wake', 'run_x2:hook']) {
+        expect(await jobsByKey(`left:${marker}`)).toEqual([
+          {
+            task_identifier: 'lease_test',
+            payload: { marker },
+            max_attempts: 7,
+          },
+        ]);
+      }
+      // Live owners keep their leases and what was left for them.
+      expect((await row('run_x3')).owner).toBe(running);
+      expect((await row('run_x4')).owner).toBe(waiting);
+      expect(await jobsByKey('left:run_x3:hook')).toEqual([]);
+      await expect(leases.recoverOrphans()).resolves.toEqual({
+        leases: 0,
+        jobs: 0,
+      });
+    });
+
     it('serializes concurrent claims: exactly one delivery owns the lease', async () => {
       const leases = createRunLeases(pool);
       const jobs = await Promise.all(Array.from({ length: 8 }, () => job()));
