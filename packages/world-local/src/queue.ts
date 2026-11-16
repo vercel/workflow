@@ -303,6 +303,7 @@ export const INVOCATION_STARTED_AT_HEADER =
 export interface CoalescedResume {
   hookResumeTiming: unknown;
   traceCarrier?: unknown;
+  wakeEventId?: unknown;
 }
 
 /** One hold of a run's orchestrator gate. */
@@ -461,6 +462,9 @@ function resumeOf(
     ...(message.traceCarrier !== undefined && {
       traceCarrier: message.traceCarrier,
     }),
+    ...(message.wakeEventId !== undefined && {
+      wakeEventId: message.wakeEventId,
+    }),
   };
 }
 
@@ -604,15 +608,17 @@ export function createQueue(
    * `hookResumeTiming` of the message it handles, and the re-run is what
    * consumes the absorbed resume. Its own timing is dropped either way: the
    * first run consumed it, and a re-run must not report that resume again.
+   * The same goes for its `wakeEventId`, which the first run consumed.
    */
   const rerunBody = (
     message: unknown,
     resume: CoalescedResume | undefined
   ): Uint8Array => {
-    const { hookResumeTiming: _consumed, ...rest } = message as Record<
-      string,
-      unknown
-    >;
+    const {
+      hookResumeTiming: _consumed,
+      wakeEventId: _consumedWake,
+      ...rest
+    } = message as Record<string, unknown>;
     return transport.serialize(
       resume
         ? {
@@ -620,6 +626,9 @@ export function createQueue(
             hookResumeTiming: resume.hookResumeTiming,
             ...(resume.traceCarrier !== undefined && {
               traceCarrier: resume.traceCarrier,
+            }),
+            ...(resume.wakeEventId !== undefined && {
+              wakeEventId: resume.wakeEventId,
             }),
           }
         : rest

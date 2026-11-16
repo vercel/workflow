@@ -240,6 +240,7 @@ type LoopbackTarget = { hosts: string[]; port: number };
 interface CoalescedResume {
   hookResumeTiming: unknown;
   traceCarrier?: unknown;
+  wakeEventId?: unknown;
 }
 
 /** Whether a queue message is a step's execution message. */
@@ -1186,13 +1187,15 @@ export function createQueue(
    * `hookResumeTiming` of the message it handles, and the re-run is what
    * consumes the absorbed resume, so without this the measurement would be
    * lost. Its own timing is dropped either way: the first run consumed it,
-   * and a re-run must not report that resume again.
+   * and a re-run must not report that resume again. The same goes for its
+   * `wakeEventId`, which the first run consumed.
    */
   function rerunBody(body: unknown, resume: CoalescedResume | undefined) {
-    const { hookResumeTiming: _consumed, ...rest } = body as Record<
-      string,
-      unknown
-    >;
+    const {
+      hookResumeTiming: _consumed,
+      wakeEventId: _consumedWake,
+      ...rest
+    } = body as Record<string, unknown>;
     return transport.serialize(
       resume
         ? {
@@ -1200,6 +1203,9 @@ export function createQueue(
             hookResumeTiming: resume.hookResumeTiming,
             ...(resume.traceCarrier !== undefined && {
               traceCarrier: resume.traceCarrier,
+            }),
+            ...(resume.wakeEventId !== undefined && {
+              wakeEventId: resume.wakeEventId,
             }),
           }
         : rest
@@ -1217,12 +1223,16 @@ export function createQueue(
       return undefined;
     }
     if (typeof body !== 'object' || body === null) return undefined;
-    const { hookResumeTiming, traceCarrier } = body as Record<string, unknown>;
+    const { hookResumeTiming, traceCarrier, wakeEventId } = body as Record<
+      string,
+      unknown
+    >;
     return hookResumeTiming === undefined
       ? undefined
       : {
           hookResumeTiming,
           ...(traceCarrier !== undefined && { traceCarrier }),
+          ...(wakeEventId !== undefined && { wakeEventId }),
         };
   }
 

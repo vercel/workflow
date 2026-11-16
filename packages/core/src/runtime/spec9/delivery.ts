@@ -1197,7 +1197,9 @@ async function runDelivery(
   // new, so the no-op check's tail read below would only find that out.
   const wakesForNewEvent = (): boolean => {
     const slot = wakeEventId ? eventIdToSlot(wakeEventId) : null;
-    return slot !== null && isAboveConsumedPosition(world, runId, slot);
+    const isNew = slot !== null && isAboveConsumedPosition(world, runId, slot);
+    if (isNew) span?.setAttributes(Attribute.WorkflowNoopCheckSkipped(true));
+    return isNew;
   };
   // A delivery with nothing new since the position this
   // process last consumed, and no due timer, exits without a

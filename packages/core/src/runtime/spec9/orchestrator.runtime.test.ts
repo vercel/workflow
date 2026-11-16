@@ -1834,15 +1834,26 @@ describe.each([
               ?.sortOrder === 'desc'
         ).length;
       const before = tailReads();
+      const listsBefore = world.listCalls.length;
       await world.deliver(
         world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
       );
       expect(tailReads()).toBe(before);
-      // A wake naming an event it already consumed still reads the tail.
+      // It loaded the log instead.
+      expect(world.listCalls.length).toBeGreaterThan(listsBefore);
+      // A wake naming an event it already consumed still reads the tail, and
+      // finds nothing new: the delivery above consumed the event.
+      const listsAfter = world.listCalls.length;
       await world.deliver(
         world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
       );
       expect(tailReads()).toBe(before + 1);
+      expect(world.listCalls.length).toBe(listsAfter + 1);
+      // A malformed or non-slot name is no hint: the delivery reads the tail.
+      for (const wakeEventId of [42, 'evnt_not-a-slot']) {
+        await world.deliver(world.enqueue(QUEUE, { runId, wakeEventId }));
+      }
+      expect(tailReads()).toBe(before + 3);
     }
   );
 

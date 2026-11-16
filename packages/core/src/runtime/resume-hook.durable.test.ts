@@ -691,7 +691,7 @@ describe('resumeHook durable resume', () => {
     const createEvent = vi.fn(async (_run, _event, params) => {
       if (params.requireHookResumeDedup)
         throw new WorkflowWorldError('refused', { status });
-      return {};
+      return { event: { eventId: 'evnt_00000000000000000000000009' } };
     });
     const { getByToken, queue } = makeWorld(
       hook,
@@ -705,6 +705,10 @@ describe('resumeHook durable resume', () => {
     expect(fallback[2].requireHookResumeDedup).toBeUndefined();
     expect(fallback[2].resumeId).toBe(resolved[2].resumeId);
     expect(queue).toHaveBeenCalledTimes(1);
+    // The wake names the event the fallback write committed.
+    expect(queue.mock.calls[0][1].wakeEventId).toBe(
+      'evnt_00000000000000000000000009'
+    );
     expect(telemetrySpan.setAttributes).toHaveBeenCalledWith({
       'workflow.hook.resume_route': 'resolved_fallback',
       'workflow.hook.resolved_refusal_status': status,
