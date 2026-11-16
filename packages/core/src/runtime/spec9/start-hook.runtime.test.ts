@@ -88,8 +88,8 @@ async function candidate(
    * `run_started` nor on `runs.get`.
    */
   echo = true,
-  /** Answer in-band writes with an incomplete skipped-slot report. */
-  reportIncomplete = false
+  /** Options of the World: `reportIncomplete`, `creationOnStart`. */
+  worldOptions: { reportIncomplete?: boolean; creationOnStart?: boolean } = {}
 ) {
   const runId = `wrun_${ulid()}`;
   const input = await dehydrateWorkflowArguments([1], runId, undefined, []);
@@ -98,7 +98,7 @@ async function candidate(
   const listsBeforeRunStarted: number[] = [];
   const world: AppendOnlyWorld = new AppendOnlyWorld({
     fence: true,
-    reportIncomplete,
+    ...worldOptions,
     async beforeCreate(data) {
       if (data.eventType !== 'run_started') return;
       runStartedData.push(data.eventData ?? {});
@@ -290,13 +290,33 @@ describe.each([
     expect(world.events.map((e) => e.eventType)).toContain('run_completed');
   });
 
+  it('reads no log on a first delivery whose run_started the World records as the creation', async () => {
+    const { world, start } = await candidate(
+      'admit-on-run-started',
+      0,
+      undefined,
+      true,
+      { creationOnStart: true }
+    );
+
+    const result = await world.deliver(start);
+
+    expectAcknowledged(world, result, start);
+    expect(world.listCalls).toHaveLength(0);
+    expect(bodies).toBe(1);
+    await world.runUntilIdle();
+    const types = world.events.map((e) => e.eventType);
+    expect(types).not.toContain('run_created');
+    expect(types).toContain('run_completed');
+  });
+
   it('loads the log after a first delivery’s run_started when its report stops short', async () => {
     const { world, start, listsBeforeRunStarted } = await candidate(
       'accept',
       0,
       undefined,
       true,
-      true
+      { reportIncomplete: true }
     );
 
     const result = await world.deliver(start);
@@ -679,7 +699,10 @@ describe.each([
 async function admittedWithEarlyPayload(
   code: string,
   engine: 'node' | 'quickjs',
-  { payloadInBand = false }: { payloadInBand?: boolean } = {}
+  {
+    payloadInBand = false,
+    noReport = false,
+  }: { payloadInBand?: boolean; noReport?: boolean } = {}
 ) {
   const runId = `wrun_${ulid()}`;
   const hookId = startHookId(runId);
@@ -723,6 +746,7 @@ async function admittedWithEarlyPayload(
   const listsBeforeRunStarted: number[] = [];
   const world: AppendOnlyWorld = new AppendOnlyWorld({
     fence: true,
+    noReport,
     async beforeCreate(data) {
       if (data.eventType === 'run_started') {
         listsBeforeRunStarted.push(world.listCalls.length);
@@ -776,18 +800,19 @@ describe.each([
   'node',
   'quickjs',
 ] as const)('start Hook deliveries to a pending run on the single-orchestrator engine (%s)', (engine) => {
+  const opens = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+    async function workflow(n) {
+      const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+      const conflict = await hook.getConflict();
+      const payload = await hook;
+      return { conflict, message: payload.message };
+    }
+    ;globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
   it.each([
     ['out-of-band, as every World writes it', false],
     ['counted in-band', true],
   ] as const)('delivers a payload resumed while the run was pending once the body opens the start Hook (%s)', async (_, payloadInBand) => {
-    const opens = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-      async function workflow(n) {
-        const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
-        const conflict = await hook.getConflict();
-        const payload = await hook;
-        return { conflict, message: payload.message };
-      }
-      ;globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
     const { world, start, runId, hookId, listsBeforeRunStarted } =
       await admittedWithEarlyPayload(opens, engine, { payloadInBand });
     const info = vi.spyOn(runtimeLogger, 'info');
@@ -810,13 +835,14 @@ describe.each([
       expect(listsBeforeRunStarted[1]).toBeGreaterThan(0);
     } else {
       // The hook_received left the count at the run's creation: run_started
-      // lands at it before any read, and the one load after it picks up the
-      // early payload.
+      // lands at it before any read, and its skipped-slot report brings the
+      // early payload, so nothing is read.
       expect(info).not.toHaveBeenCalledWith(
         expect.stringMatching(/run_started refused, setting up again/),
         expect.anything()
       );
       expect(listsBeforeRunStarted).toEqual([0]);
+      expect(world.listCalls).toHaveLength(0);
     }
     expect(await outputOf(world, runId)).toEqual({
       conflict: null,
@@ -828,6 +854,26 @@ describe.each([
         (e) => e.eventType === 'hook_created' && e.correlationId === hookId
       )
     ).toEqual([]);
+  });
+
+  it('loads the log once after run_started when the World reports nothing below it', async () => {
+    const { world, start, runId } = await admittedWithEarlyPayload(
+      opens,
+      engine,
+      { noReport: true }
+    );
+
+    const result = await world.deliver(start);
+    await world.runUntilIdle();
+
+    expectAcknowledged(world, result, start);
+    // run_started landed above the unreported hook_received: the hole check
+    // reads the log once.
+    expect(world.listCalls).toHaveLength(1);
+    expect(await outputOf(world, runId)).toEqual({
+      conflict: null,
+      message: 'early',
+    });
   });
 
   it('completes a run that never opens its start Hook, leaving the payload unread', async () => {

@@ -1739,6 +1739,11 @@ async function runDelivery(
         // resilient start, its creation). A start Hook candidate's first
         // delivery folded it in with the write's report; a report that
         // stopped short, or left a hole, still needs the load.
+        if (startHookFirstDelivery && logBehind) {
+          span?.setAttributes(
+            Attribute.WorkflowStartHookFirstDeliveryFallback('report')
+          );
+        }
         if (!startHookFirstDelivery || logBehind) await fullLoad();
         // The deployment check the start Hook first delivery
         // skipped: the run exists now, so a re-queued wake on

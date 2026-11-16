@@ -117,6 +117,7 @@ export interface RecordedCreate {
  * - `subscribe`: the live feed.
  * - `reportIncomplete`: answer in-band writes with an incomplete skipped-slot
  *   report (`hasMore: true`).
+ * - `noReport`: answer in-band writes with no skipped-slot report at all.
  *
  * Every created event is recorded, so a test can assert what the runtime
  * wrote and with which params.
@@ -198,6 +199,7 @@ export class AppendOnlyWorld {
        */
       lazyCreatePayloads?: boolean;
       reportIncomplete?: boolean;
+      noReport?: boolean;
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
       /**
@@ -526,6 +528,7 @@ export class AppendOnlyWorld {
     ownSlot: number
   ): Pick<EventResult, 'events' | 'cursor' | 'hasMore'> {
     if (params?.inBand !== true || params.eventCount === undefined) return {};
+    if (this.options.noReport) return {};
     if (this.options.reportIncomplete) {
       return { events: [], cursor: null, hasMore: true };
     }
