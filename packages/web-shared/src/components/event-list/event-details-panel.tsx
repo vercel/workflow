@@ -2,7 +2,7 @@
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { ChartGantt, Lock } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
 import {
   type EventListRow,
@@ -22,7 +22,7 @@ import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell'
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
 import { Button } from '../ui/button';
 import { Collapsible } from '../ui/collapsible';
-import { DataInspector } from '../ui/data-inspector';
+import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { DecryptButton } from '../ui/decrypt-button';
 import {
   ErrorStackBlock,
@@ -30,7 +30,6 @@ import {
   type StructuredErrorRecord,
 } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
-import type { DecryptControl } from './event-list-toolbar';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -99,21 +98,21 @@ const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
   failed: 'bg-amber-700',
   backoff: 'bg-amber-300',
   ok: 'bg-green-700',
-  running: 'bg-blue-700',
 };
 
 function PayloadView({
   data,
   eventType,
-  decrypt,
+  encrypted,
 }: {
   data: unknown;
   eventType: string;
-  /** Set while the payload is still encrypted. */
-  decrypt?: DecryptControl;
+  /** Still sealed with the run's key. */
+  encrypted: boolean;
 }) {
+  const decrypt = useContext(DecryptClickContext);
   const cleaned = useMemo(() => deepParseJson(data), [data]);
-  if (decrypt) {
+  if (encrypted && decrypt) {
     return (
       <Collapsible defaultOpen label="Payload">
         <div className="flex items-center gap-2 rounded-md border border-gray-alpha-400 bg-gray-100 py-1.5 pl-3 pr-1.5">
@@ -200,19 +199,12 @@ function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
   );
 }
 
-interface EventPayloadProps {
+interface EventDetailsBodyProps {
+  row: EventListRow;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
   cachedEventData: unknown | null;
   onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
-  /** Offered on a payload that is still encrypted. */
-  decrypt?: DecryptControl;
-}
-
-interface EventDetailsBodyProps extends EventPayloadProps {
-  row: EventListRow;
-  /** The step's queued, attempt and backoff breakdown; empty for other events. */
-  segments: TimingSegment[];
 }
 
 /**
@@ -221,12 +213,10 @@ interface EventDetailsBodyProps extends EventPayloadProps {
  */
 function EventDetailsBody({
   row,
-  segments,
   onLoadEventData,
   cachedEventData,
   onCacheEventData,
   encryptionKey,
-  decrypt,
 }: EventDetailsBodyProps) {
   const { event } = row;
   // Inline eventData is complete only when the event type has no ref fields
@@ -270,7 +260,7 @@ function EventDetailsBody({
     };
   }, [event.eventId, encryptionKey]);
 
-  const timingTotal = segments.reduce((sum, s) => sum + s.ms, 0);
+  const timingTotal = row.segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
   const createdAt = new Date(event.createdAt);
   const structuredError = extractStructuredError(data, event.eventType);
@@ -289,7 +279,7 @@ function EventDetailsBody({
             </span>
           }
         >
-          <TimingBreakdown segments={segments} />
+          <TimingBreakdown segments={row.segments} />
         </Collapsible>
       ) : row.durationMs !== undefined ? (
         <Collapsible defaultOpen label="Timing">
@@ -310,9 +300,7 @@ function EventDetailsBody({
         <PayloadView
           data={data}
           eventType={event.eventType}
-          decrypt={
-            !encryptionKey && hasEncryptedValues(data) ? decrypt : undefined
-          }
+          encrypted={!encryptionKey && hasEncryptedValues(data)}
         />
       ) : loading || loadError ? (
         <Collapsible defaultOpen label="Payload">
@@ -376,19 +364,14 @@ export interface EventDetailsPanelProps extends EventDetailsBodyProps {
  * selection moves; only the body is keyed per event.
  */
 export function EventDetailsPanel({
-  row,
-  segments,
-  onLoadEventData,
-  cachedEventData,
-  onCacheEventData,
-  encryptionKey,
-  decrypt,
   width,
   onPrev,
   onNext,
   onClose,
   onViewInTrace,
+  ...body
 }: EventDetailsPanelProps) {
+  const { row } = body;
   const { event } = row;
   return (
     <DetailPanelShell
@@ -421,16 +404,7 @@ export function EventDetailsPanel({
           </Button>
         </div>
       ) : null}
-      <EventDetailsBody
-        key={event.eventId}
-        row={row}
-        segments={segments}
-        onLoadEventData={onLoadEventData}
-        cachedEventData={cachedEventData}
-        onCacheEventData={onCacheEventData}
-        encryptionKey={encryptionKey}
-        decrypt={decrypt}
-      />
+      <EventDetailsBody key={event.eventId} {...body} />
     </DetailPanelShell>
   );
 }

@@ -22,7 +22,6 @@ export function DetailPanelShell({
   id,
   width,
   title,
-  headerActions,
   itemLabel,
   onPrev,
   onNext,
@@ -32,8 +31,6 @@ export function DetailPanelShell({
   id: string;
   width: DetailPanelWidth;
   title: ReactNode;
-  /** Extra header controls, rendered before prev/next. */
-  headerActions?: ReactNode;
   /** What one item is called in labels, e.g. "span" or "event". */
   itemLabel: string;
   onPrev?: () => void;
@@ -93,7 +90,6 @@ export function DetailPanelShell({
           {title}
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
-          {headerActions}
           <Tooltip>
             <TooltipTrigger asChild>
               <IconButton

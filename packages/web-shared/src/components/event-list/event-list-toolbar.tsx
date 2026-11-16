@@ -3,14 +3,6 @@
 import { Search } from 'lucide-react';
 import { Kbd } from '../ui/kbd';
 
-export interface DecryptControl {
-  onDecrypt: () => void;
-  /** Whether the encryption key is currently being fetched. */
-  isDecrypting: boolean;
-  isDecryptDisabled: boolean;
-  decryptDisabledReason?: string;
-}
-
 /** The events search box. */
 export function EventListToolbar({
   query,
