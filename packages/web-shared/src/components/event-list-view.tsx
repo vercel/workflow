@@ -62,6 +62,7 @@ interface EventsListProps {
   onExactIdSearch?: ExactSearchHandler;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  onViewInTrace?: (spanId: string) => void;
 }
 
 function EventListViewInner({
@@ -81,6 +82,7 @@ function EventListViewInner({
   decryptDisabledReason,
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
+  onViewInTrace,
 }: EventsListProps) {
   const [internalSortOrder, setInternalSortOrder] =
     useState<EventSortOrder>('asc');
@@ -351,6 +353,7 @@ function EventListViewInner({
                   : undefined
               }
               onClose={() => setSelectedEventId(undefined)}
+              onViewInTrace={onViewInTrace}
             />
           ) : null}
         </div>

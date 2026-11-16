@@ -1,7 +1,7 @@
 'use client';
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
-import { Lock } from 'lucide-react';
+import { ChartGantt, Lock } from 'lucide-react';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
 import {
@@ -10,6 +10,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
   AttrSetEventBlock,
@@ -19,6 +20,7 @@ import { serializeForClipboard } from '../sidebar/copyable-data-block';
 import { CopyButton } from '../trace-viewer/components/copy-button';
 import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell';
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
+import { Button } from '../ui/button';
 import { Collapsible } from '../ui/collapsible';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { DecryptButton } from '../ui/decrypt-button';
@@ -351,6 +353,7 @@ export interface EventDetailsPanelProps extends EventDetailsBodyProps {
   onPrev?: () => void;
   onNext?: () => void;
   onClose: () => void;
+  onViewInTrace?: (spanId: string) => void;
 }
 
 /**
@@ -362,6 +365,7 @@ export function EventDetailsPanel({
   onPrev,
   onNext,
   onClose,
+  onViewInTrace,
   ...body
 }: EventDetailsPanelProps) {
   const { row } = body;
@@ -385,6 +389,18 @@ export function EventDetailsPanel({
       onNext={onNext}
       onClose={onClose}
     >
+      {onViewInTrace ? (
+        <div className="px-4 pb-2">
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => onViewInTrace(getEventSpanId(event))}
+          >
+            <ChartGantt />
+            View in Trace
+          </Button>
+        </div>
+      ) : null}
       <EventDetailsBody key={event.eventId} {...body} />
     </DetailPanelShell>
   );

@@ -223,15 +223,16 @@ export function RunDetailView({
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
+  const initialSelectedSpanId = searchParams.get('spanId') ?? undefined;
 
   const setActiveTab = useCallback(
     (tab: Tab) => {
       // When switching away from streams tab, clear streamId so
       // useStreamReader stops fetching/polling in the background.
       if (tab !== 'streams') {
-        updateSearchParams({ tab, streamId: null });
+        updateSearchParams({ tab, streamId: null, spanId: null });
       } else {
-        updateSearchParams({ tab });
+        updateSearchParams({ tab, spanId: null });
       }
     },
     [updateSearchParams]
@@ -247,7 +248,7 @@ export function RunDetailView({
   // Handler for clicking on stream refs in the trace viewer
   const handleStreamClick = useCallback(
     (streamId: string) => {
-      updateSearchParams({ tab: 'streams', streamId });
+      updateSearchParams({ tab: 'streams', streamId, spanId: null });
     },
     [updateSearchParams]
   );
@@ -747,6 +748,7 @@ export function RunDetailView({
                     onLoadMore={loadMoreTraceData}
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
+                    initialSelectedSpanId={initialSelectedSpanId}
                   />
                 </div>
               </ErrorBoundary>
@@ -765,6 +767,9 @@ export function RunDetailView({
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
+                    onViewInTrace={(spanId) =>
+                      updateSearchParams({ tab: 'trace', spanId })
+                    }
                   />
                 </div>
               </ErrorBoundary>
