@@ -182,6 +182,13 @@ export const QUEUE_AGENT_CONNECTIONS = 64;
  */
 export const QUEUE_REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * `code` on the error a queue request is aborted with when it runs past
+ * {@link QUEUE_REQUEST_TIMEOUT_MS}, so a send's retry policy can recognize it
+ * (see `queue-send-retry.ts`).
+ */
+export const QUEUE_REQUEST_DEADLINE_CODE = 'WORKFLOW_QUEUE_REQUEST_DEADLINE';
+
 /** Effective queue-request deadline, read per call so tests can override it. */
 export const getQueueRequestTimeoutMs = (): number =>
   envNumber('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', QUEUE_REQUEST_TIMEOUT_MS, {
@@ -320,7 +327,11 @@ function deadlineInterceptor(
 
     #abort(): void {
       this.#controller?.abort(
-        new Error(`Queue request exceeded its ${timeoutMs}ms deadline`)
+        Object.assign(
+          new Error(`Queue request exceeded its ${timeoutMs}ms deadline`),
+          // Lets a send's retry policy tell it apart (queue-send-retry.ts).
+          { code: QUEUE_REQUEST_DEADLINE_CODE }
+        )
       );
     }
 
