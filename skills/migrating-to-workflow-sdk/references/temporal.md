@@ -1,5 +1,22 @@
 # Temporal -> Workflow SDK
 
+## Start with the codemod
+
+When you can run commands in the user's project, run the codemod before writing anything by hand:
+
+```bash
+npx workflow migrate temporal --dry-run --report temporal-migration.md   # preview
+npx workflow migrate temporal --report temporal-migration.md             # apply
+```
+
+- It needs a clean working tree for the files it rewrites (or `--force`), and the project's `typescript` package (or `npx -p typescript -p workflow workflow migrate temporal`). Without paths it migrates the files of the project's `tsconfig.json`, plus the activities modules the workflows proxy.
+- It adds `"use workflow"` to every exported function of a module that imports `@temporalio/workflow`; replaces each `proxyActivities<typeof activities>()` with a plain import of the activities; and adds `"use step"` to each activity in its own module, with `retry.maximumAttempts: n` as `maxRetries = n - 1`.
+- Signals become hooks with the token `` `${runId}:<signal name>` ``, created when the run starts (so a signal sent before `setHandler()` waits, as Temporal buffers it). A small `TemporalSignals` helper appended to the file runs the original handler for each payload in order and re-checks `condition()` after each one. The payload is the signal's arguments array.
+- It also maps `sleep`, `executeChild`/`startChild`/`handle.result()` (to `start()` in the workflow and `run.returnValue`), `workflowInfo()` (to `getWorkflowMetadata()`), `uuid4()` (to `crypto.randomUUID()`), `patched()` (to the new branch), `deprecatePatch()` (removed), `log` (to `console`), `ApplicationFailure` (to `FatalError` / `RetryableError` / `Error`), and the activity's `Context.current().info.attempt` (to `getStepMetadata().attempt`, both 1-based).
+- Everything else is left in place under a `// TODO(workflow-migrate): ...` comment: queries, updates, `continueAsNew`, cancellation scopes, `workflowInfo().workflowId`, a `condition()` no signal changes, and an activity with no `maximumAttempts`. Your job is to resolve those and replace the client calls the report lists (its Signal routing table gives each signal's token).
+
+When you cannot run it (the prompt only contains code), apply the same rules by hand, using the table below.
+
 ## Imports
 
 Userland imports come from `workflow` and `workflow/api`. Never import from `@workflow/core`, `@workflow/next`, `@workflow/cli`.
@@ -11,7 +28,14 @@ Userland imports come from `workflow` and `workflow/api`. Never import from `@wo
 | Workflow Definition / Execution | `"use workflow"` + `start()` |
 | Activity | `"use step"` |
 | Worker + Task Queue | remove from app code |
-| Signal | `createHook()` or `createWebhook()` |
+| Signal (`defineSignal` + `setHandler`) | a hook per signal created at the top of the run (token `` `${runId}:${name}` ``), with the handler run for each payload; new code: one `createHook()` + `await` with a deterministic business token |
+| `condition(fn, timeout)` | wait until `fn()` holds, re-checked after each signal, raced against `sleep(timeout)`; returns `false` on timeout |
+| `handle.signal(sig, ...args)` | `resumeHook(`${runId}:${sig.name}`, args)`; `runId` from `start()` or `(await getHookByToken(workflowId)).runId`; retry briefly on `HookNotFoundError` right after `start()` |
+| `patched()` / `deprecatePatch()` | not needed: runs are pinned to the deployment that started them, so new code always takes the new branch |
+| `workflowInfo()` | `getWorkflowMetadata()`: `runId` -> `workflowRunId`, `startTime` -> `workflowStartedAt`, `workflowType` -> the function name at the end of `workflowName`; `workflowId` has no equivalent (it is the caller's start token) |
+| `uuid4()` | `crypto.randomUUID()` (seeded per run, replay-safe) |
+| `ApplicationFailure.nonRetryable()` / `.create({ nextRetryDelay })` / `.retryable()` | `FatalError` / `RetryableError(msg, { retryAfter })` / `Error` |
+| `Context.current().info.attempt` | `getStepMetadata().attempt` (both start at 1); `heartbeat()` has no equivalent and is removed |
 | Query | `getWritable({ namespace: 'status' })` on the workflow side; clients read via `getRun(runId).getReadable()` |
 | Update | `createHook()` + `resumeHook()` (one-way; no return-value parity, so stream the result via `getWritable()` or keep a separate HTTP read route) |
 | Child Workflow (`executeChild` / `startChild`) | `start()` called directly in the workflow; `await run.returnValue` to collect |
@@ -21,8 +45,16 @@ Userland imports come from `workflow` and `workflow/api`. Never import from `@wo
 | Cancellation scopes (`CancellationScope`, `isCancellation`) | `AbortController` in the workflow, `AbortSignal` passed into the step; cancel a run with `run.cancel({ cancelReason })` |
 | `continueAsNew()` | `start()` the same workflow from inside the workflow with the carried state (add `deploymentId: 'latest'` on Vercel to move onto new code), then return |
 | Activity timeouts (`startToCloseTimeout`, `scheduleToCloseTimeout`, `heartbeatTimeout`) | enforce inside steps with `AbortSignal.timeout()`, or `Promise.race(step(), sleep(...))` from the workflow |
-| Activity retry policy (`maximumAttempts`, `initialInterval`, etc.) | `maxRetries` + `RetryableError` / `FatalError` classification |
+| Activity retry policy (`maximumAttempts`, `initialInterval`, etc.) | `maxRetries = maximumAttempts - 1`; Temporal's default is unlimited, the Workflow SDK's is 3 retries, so set `maxRetries` explicitly when the source set no `maximumAttempts`; `RetryableError` / `FatalError` classification |
 | Event history | run timeline / event log |
+
+## Watch for
+
+- **A plain `Error` thrown in workflow code fails the run.** Temporal failed only the workflow task (and retried it) unless the error was an `ApplicationFailure`.
+- **`condition()` on non-signal state.** The migrated `condition()` re-checks after each signal only. A predicate that another branch of the workflow (a step result, a `Promise.all` branch) makes true needs its own hook or a direct `await`.
+- **Unwrapped failures.** Catch blocks that test `instanceof ActivityFailure` / `ChildWorkflowFailure` now see the step's own error, or `WorkflowRunFailedError` with the child's error as `cause`.
+- **Activity arguments and results are serialized** with the Workflow SDK serializer: `Date`, `Map`, `Set` survive; class instances need custom serialization.
+- **Cut over by draining.** Runs started on Temporal finish on Temporal: keep the workers until they drain, and signal both paths meanwhile.
 
 ## Remove
 
@@ -51,4 +83,4 @@ Userland imports come from `workflow` and `workflow/api`. Never import from `@wo
 - `setAttributes()` for search attributes the app filters runs by; see `references/shared-patterns.md` -> `## Run attributes (searchable metadata)`
 - `AbortSignal` passed into steps when the source cancelled in-flight Activities through a `CancellationScope`; see `references/shared-patterns.md` -> `## Cancellation`
 
-<!-- Verified against workflow@5.4.0 and @temporalio/workflow@1.16 on 2026-11-09 -->
+<!-- Verified against workflow@5.4.0, @temporalio/*@1.25.0 and the Temporal CLI 1.10.1 dev server on 2026-11-16 -->
