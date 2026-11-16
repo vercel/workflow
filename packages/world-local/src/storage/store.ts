@@ -22,6 +22,9 @@ import type { Database } from '../db/index.js';
 /** Rows one batch of a capped `listEvents` page reads (see `maxBytes`). */
 const EVENT_READ_BATCH = 64;
 
+/** world-local never collects planner stats, and without them SQLite scans the run by primary key. */
+const EVENTS_BY_CORRELATION = 'events INDEXED BY events_by_correlation';
+
 export interface RunRow {
   run: WorkflowRun;
   tag: string | null;
@@ -187,7 +190,8 @@ export class Store {
     eventType: string
   ): Event | null {
     const row = this.db.get<{ doc: string }>(
-      `SELECT doc FROM events WHERE run_id = ? AND correlation_id = ? AND event_type = ?
+      `SELECT doc FROM ${EVENTS_BY_CORRELATION}
+       WHERE run_id = ? AND correlation_id = ? AND event_type = ?
        ORDER BY seq LIMIT 1`,
       runId,
       correlationId,
@@ -220,6 +224,8 @@ export class Store {
     const sortOrder = options.sortOrder ?? 'asc';
     const limit = Math.max(1, options.limit ?? 20);
     const after = parseEventCursor(options.cursor);
+    const source =
+      options.correlationId === undefined ? 'events' : EVENTS_BY_CORRELATION;
     const query = (from: number | null, take: number) => {
       const clauses = ['run_id = ?'];
       const params: unknown[] = [runId];
@@ -232,7 +238,7 @@ export class Store {
         params.push(from);
       }
       return this.db.all<{ seq: number; doc: string }>(
-        `SELECT seq, doc FROM events WHERE ${clauses.join(' AND ')}
+        `SELECT seq, doc FROM ${source} WHERE ${clauses.join(' AND ')}
          ORDER BY seq ${sortOrder === 'asc' ? 'ASC' : 'DESC'} LIMIT ?`,
         ...params,
         take
