@@ -7,9 +7,13 @@
  * (`withRunPayloadsPurged` in `events-storage.ts`); everything else it owns
  * (step payloads, event payloads, hook metadata, stream chunks) is scrubbed
  * by `purgeRunData` in the same transaction, so a purged run is never
- * observable with any of its data left. The connection zeroes freed pages
- * (`secure_delete`), and the WAL, which still holds the old pages, is
- * checkpointed and truncated right after the purge commits.
+ * observable with any of its data left. A step still running when the run
+ * ended may finish afterwards (`step_completed`, `step_failed`,
+ * `step_retrying`); that write runs `purgeRunData` again in its own
+ * transaction, so the late payload is never left behind either. The
+ * connection zeroes freed pages (`secure_delete`), and the WAL, which still
+ * holds the old pages, is checkpointed and truncated right after the purge
+ * commits.
  */
 
 import type { Event, Hook, Step } from '@workflow/world';

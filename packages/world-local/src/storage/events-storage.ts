@@ -991,13 +991,37 @@ export function createEventsStorage(
       );
     }
 
-    if (runPurged) {
+    // A step that was running when its zero-retention run ended may still
+    // finish, fail or record a retry (only a running step writes on an ended
+    // run, see Step ordering). The run's purge has already run, so this
+    // write's payload is scrubbed the same way, in the same transaction.
+    const lateOnPurgedRun =
+      validatedStep !== null &&
+      (data.eventType === 'step_completed' ||
+        data.eventType === 'step_failed' ||
+        data.eventType === 'step_retrying') &&
+      wasPurgedOnFinish(runId, run);
+
+    let reported = stored;
+    if (runPurged || lateOnPurgedRun) {
       purgeRunData(db, runId);
       // The scrubbed bytes are still in the WAL until it is checkpointed.
       effects.push(() => db.checkpoint());
     }
+    if (lateOnPurgedRun && step) {
+      // Answer with what is stored, not with the payload just scrubbed.
+      step = store.getStep(runId, step.stepId) ?? step;
+      reported =
+        store.getEventAt(runId, Number(stored.eventId.slice('evnt_'.length))) ??
+        stored;
+    }
 
-    return finish(stored, resultRun, { step, hook, wait, stepCreatedLazily });
+    return finish(reported, resultRun, {
+      step,
+      hook,
+      wait,
+      stepCreatedLazily,
+    });
 
     function finish(
       committed: Event,
@@ -1034,6 +1058,29 @@ export function createEventsStorage(
       };
       return delta ? ({ ...result, ...delta } as EventResult) : result;
     }
+  }
+
+  /**
+   * Whether `runId` ended under `$retention: '0'` and its purge ran (the
+   * purge stamps `expiredAt`). `loaded` is the run when the caller already
+   * read it; otherwise only a terminal run's document is read.
+   */
+  function wasPurgedOnFinish(
+    runId: string,
+    loaded: WorkflowRun | null
+  ): boolean {
+    let run = loaded;
+    if (!run) {
+      const status = store.getRunStatus(runId);
+      if (!status || !isTerminalWorkflowRunStatus(status)) return false;
+      run = store.getRun(runId)?.run ?? null;
+    }
+    return (
+      run !== null &&
+      isTerminalWorkflowRunStatus(run.status) &&
+      run.expiredAt !== undefined &&
+      purgesUserDataOnFinish(run.attributes)
+    );
   }
 
   function committedResume(
