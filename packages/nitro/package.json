@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"
@@ -27,14 +29,11 @@
     "test": "vitest run --config=../../vitest.config.ts src"
   },
   "dependencies": {
-    "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/rollup": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
     "@workflow/web": "workspace:*",
-    "exsolve": "1.2.0",
     "pathe": "2.0.3"
   },
   "devDependencies": {
