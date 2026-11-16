@@ -1,3 +1,4 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
@@ -33,6 +34,20 @@ const sessionWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREA
       replies.push(await echo(payload));
       if (replies.length === 3) break;
     }
+    return replies;
+  }${registerWorkflow()}`;
+
+// Ends with a step it never awaits, which the end-of-run drain records.
+const unawaitedTailWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_echo");
+  async function workflow() {
+    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const replies = [];
+    for await (const payload of hook) {
+      replies.push(await echo(payload));
+      if (replies.length === 2) break;
+    }
+    echo("tail");
     return replies;
   }${registerWorkflow()}`;
 
@@ -86,6 +101,22 @@ describe('a session parked across deliveries', () => {
     expect(fullLoadsOf(world)).toBe(startLoads);
   });
 
+  it("records what the resumed VM left queued through the resuming delivery's writer", async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      unawaitedTailWorkflow,
+      []
+    );
+    await world.deliver(start);
+    const startLoads = fullLoadsOf(world);
+    for (const payload of ['a', 'b']) await send(world, runId, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b']);
+    // The run finished on a resumed VM, not a cold replay.
+    expect(fullLoadsOf(world)).toBe(startLoads);
+    // Inline steps record no `step_created`; the unawaited one is the drain's.
+    expect(eventsOf(world, 'step_created')).toHaveLength(1);
+  });
+
   it('loads and replays the whole log when another orchestrator wrote in-band meanwhile', async () => {
     const { world, runId, start } = await setupOrchestratorRun(
       sessionWorkflow,
@@ -104,6 +135,34 @@ describe('a session parked across deliveries', () => {
     expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
     expect(echoes).toBe(3);
     expect(fullLoadsOf(world)).toBe(startLoads + 1);
+  });
+
+  it('replays the log a refused cursor read from the start without reading it again', async () => {
+    let refuseCursor = false;
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      [],
+      {
+        beforeList(params) {
+          if (refuseCursor && params.pagination?.cursor !== undefined) {
+            refuseCursor = false;
+            throw new WorkflowWorldError('cursor expired', { status: 400 });
+          }
+        },
+      }
+    );
+    await world.deliver(start);
+    await send(world, runId, 'a');
+    const loads = fullLoadsOf(world);
+    refuseCursor = true;
+
+    await send(world, runId, 'b');
+    await send(world, runId, 'c');
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+    // The refused read's retry from the start is the only full load.
+    expect(fullLoadsOf(world)).toBe(loads + 1);
   });
 
   it('is never resumed by a second delivery', async () => {

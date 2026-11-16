@@ -548,10 +548,12 @@ A delivery that suspends cleanly now parks its VM session in process memory (`pa
 The run's next orchestrator delivery in the same process takes the entry, whatever it is. Only a plain wake (no `runInput`, `hookInput`, timer or `wakeUp()` names, and past the re-send gate) resumes it; any other delivery drops it. Resuming it:
 
 1. reads the log from the parked cursor in the writer's queue, keeping that read's first-page snapshot, beside the usual `runs.get`;
-2. keeps the session only when the snapshot's `seqInBand` equals the parked count, so no other orchestrator decided anything since and the World refused no cursor; it then adopts the snapshot and resumes the VM on the new events. Otherwise it does today's full load and cold replay;
+2. keeps the session only when the snapshot's `seqInBand` equals the parked count, so no other orchestrator decided anything since; it then adopts the snapshot and resumes the VM on the new events. Otherwise it does today's full load and cold replay. When the World refused the cursor, the read already went back to the start, so it is that full load;
 3. replaces the no-op check: when the read finds nothing new and no recorded timer is due, the delivery parks the session again and acknowledges.
 
-Everything after the setup is unchanged: the deployment guard, the run's status, the re-send pass, timers and the fence all apply as on any delivery. The check is not a lease: an overlapping orchestrator that writes after the read is caught by the fence on this delivery's next in-band write, as it is today. Entries are kept per World instance, at most 64 of them, for up to 10 minutes. QuickJS keeps its own VM lifetime and does not park.
+The resuming delivery hands the VM its own end-of-run drain (`WorkflowSession.resume`). The VM was created with the parking delivery's, whose writer's in-band count stops being the run's once anything else is written, so a run that finished on a resumed VM with work still queued (an unawaited step) would have its drain refused as superseded and the items lost.
+
+Everything after the setup is unchanged: the deployment guard, the run's status, the re-send pass, timers and the fence all apply as on any delivery. The check is not a lease: an overlapping orchestrator that writes after the read is caught by the fence on this delivery's next in-band write, as it is today. Entries are kept per World instance, at most 64 of them, for up to 10 minutes, and a timer drops expired ones. Two deliveries of a run in one process can park in either order (a no-op wake puts back the entry it took after a later delivery parked a newer one), so an entry is never replaced by one whose log ends at a lower slot. QuickJS keeps its own VM lifetime and does not park.
 
 ### Turbo
 

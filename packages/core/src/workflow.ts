@@ -129,7 +129,10 @@ interface WorkflowSessionOptions {
   readonly encryptionKey: PayloadKey | undefined;
   readonly replayPayloadCache: ReplayPayloadCache;
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
-  /** Records the end-of-run drain. */
+  /**
+   * Records the end-of-run drain, until a `resume` hands the session another
+   * (see {@link WorkflowSession.resume}).
+   */
   readonly drainPendingQueue?: PendingQueueDrain;
   readonly worldCapabilities?: WorldCapabilities;
   /**
@@ -212,9 +215,16 @@ export function compileDynamicWorkflowBundle(
 export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
+  /**
+   * `drainPendingQueue`, when given, replaces the drain the session records
+   * its end-of-run queue through. A session resumed by another delivery than
+   * the one that created it must be given that delivery's drain: the old one
+   * writes through a writer whose in-band count is no longer the run's.
+   */
   resume(
     events: Event[],
-    rebase?: WorkflowSessionRebase
+    rebase?: WorkflowSessionRebase,
+    drainPendingQueue?: PendingQueueDrain
   ): Promise<WorkflowResumeResult>;
 }
 
@@ -298,7 +308,8 @@ export function replayWorkflow(
 export function resumeWorkflow(
   session: WorkflowSession,
   events: Event[],
-  rebase?: WorkflowSessionRebase
+  rebase?: WorkflowSessionRebase,
+  drainPendingQueue?: PendingQueueDrain
 ): Promise<WorkflowResumeResult> {
   return traceExecution(
     'retained',
@@ -308,7 +319,7 @@ export function resumeWorkflow(
       span?.setAttributes({
         ...Attribute.WorkflowArgumentsCount(session.argumentCount),
       });
-      const result = await session.resume(events, rebase);
+      const result = await session.resume(events, rebase, drainPendingQueue);
       return result.type === 'replay' ? result : recordResult(result, span);
     }
   );
@@ -1277,6 +1288,9 @@ async function createWorkflowSessionInner(
   });
   await workflowContext.promiseQueue;
 
+  /** The drain the end of the run writes through; a `resume` may replace it. */
+  let currentDrain = drainPendingQueue;
+
   const failWorkflow = async (error: unknown): Promise<never> => {
     // Control-flow signals are handled by the runtime and do not mean the
     // workflow has terminally failed. `onWorkflowError` usually already moved
@@ -1296,7 +1310,7 @@ async function createWorkflowSessionInner(
       vmGlobalThis,
       workflowRun,
       'failed',
-      drainPendingQueue
+      currentDrain
     );
 
     throw error;
@@ -1357,7 +1371,7 @@ async function createWorkflowSessionInner(
         vmGlobalThis,
         workflowRun,
         'completed',
-        drainPendingQueue
+        currentDrain
       );
 
       return { type: 'completed', output, resultType: typeof result };
@@ -1424,9 +1438,10 @@ async function createWorkflowSessionInner(
   const session: WorkflowSession = {
     workflowRun,
     argumentCount: args.length,
-    async resume(nextEvents, rebase) {
+    async resume(nextEvents, rebase, drain) {
       switch (state.type) {
         case 'suspended': {
+          if (drain) currentDrain = drain;
           if (rebase || aliases.size > 0 || admittedBelow.size > 0) {
             for (const [from, to] of rebase?.aliases ?? []) {
               aliases.set(from, to);

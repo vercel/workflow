@@ -1031,6 +1031,16 @@ async function runDelivery(
     absorbWrite(result);
     return result;
   };
+  /**
+   * The end-of-run drain of every VM this delivery runs, through this
+   * delivery's writer. A parked VM was created by an earlier delivery, so it
+   * is handed this one on resume: the drain it was created with writes
+   * through that delivery's writer, whose in-band count is no longer the
+   * run's, and the World would refuse the items as superseded.
+   */
+  const drainPendingQueue = pendingQueueDrain(world, (data, params) =>
+    writeInBand(data, params)
+  );
   const createEvent = async <T extends CreateEventRequest>(
     data: T,
     params?: CreateEventParams
@@ -1127,49 +1137,67 @@ async function runDelivery(
   };
   /**
    * Reads what landed since `entry` parked, in the writer's queue as a full
-   * load reads, and adopts the read's fence snapshot when it still matches:
-   * no other orchestrator wrote in-band meanwhile and the World took the
-   * cursor, so the VM and its log still describe the run. `undefined` when
-   * they do not.
+   * load reads, and adopts the read's fence snapshot.
+   *
+   * - `resume`: the snapshot still matches, so no other orchestrator wrote
+   *   in-band meanwhile, and the VM and its log still describe the run.
+   * - `reloaded`: the World refused the cursor, so the read is the whole log
+   *   with a full load's snapshot. The delivery uses it as its full load.
+   * - `stale`: another orchestrator wrote in-band; nothing is adopted and the
+   *   delivery does the full load.
    */
-  const readSinceParked = (entry: ParkedSession) =>
+  const readSinceParked = (
+    entry: ParkedSession
+  ): Promise<
+    { type: 'resume' | 'reloaded'; page: LoadedEventLog } | { type: 'stale' }
+  > =>
     writer.exclusive(async () => {
       const page = await loadWorkflowRunEvents(runId, entry.cursor, {
         specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         incrementalSnapshot: true,
       });
-      if (
-        page.reloadedFromStart ||
-        page.snapshot?.seqInBand !== entry.expectedSeqInBand
-      ) {
-        return undefined;
+      if (page.reloadedFromStart) {
+        // Without a snapshot the full load reports the World's contract
+        // error as it does on any delivery.
+        if (page.snapshot === undefined) return { type: 'stale' };
+        writer.adoptSnapshot(page.snapshot);
+        return { type: 'reloaded', page };
+      }
+      if (page.snapshot?.seqInBand !== entry.expectedSeqInBand) {
+        return { type: 'stale' };
       }
       writer.adoptSnapshot(page.snapshot);
-      return page;
+      return { type: 'resume', page };
     });
   /**
    * Run setup for a parked session: its log extended by what
    * {@link readSinceParked} read, and its VM resumed by the first pass. A
-   * stale one takes the full load.
+   * stale one takes the full load, and a read from the start is one.
    */
   const resumeParkedLoad = async (
     entry: ParkedSession,
-    read: LoadedEventLog | undefined
+    read: Awaited<ReturnType<typeof readSinceParked>>
   ): Promise<LoadedEventLog> => {
-    if (!read) {
+    if (read.type !== 'resume') {
       runtimeLogger.debug(
-        'Parked session is stale; loading the whole log instead',
-        { workflowRunId: runId }
+        'Parked session is stale; replaying the whole log instead',
+        { workflowRunId: runId, reason: read.type }
       );
-      return fullLoad();
+      if (read.type === 'stale') return fullLoad();
+      for (const event of read.page.events) {
+        prepareReplayEvent(event);
+      }
+      logBehind = false;
+      log = { events: read.page.events, cursor: read.page.cursor };
+      return log;
     }
     replayPayloadCache = entry.replayPayloadCache;
-    for (const event of read.events) {
+    for (const event of read.page.events) {
       prepareReplayEvent(event);
     }
     logBehind = false;
-    log = { events: entry.events, cursor: read.cursor ?? entry.cursor };
-    indexOf(log.events).merge(read.events);
+    log = { events: entry.events, cursor: read.page.cursor ?? entry.cursor };
+    indexOf(log.events).merge(read.page.events);
     // As a full load: the log can hold events above the snapshot.
     writer.observeSlot(indexOf(log.events).maxSlot() ?? 0);
     resumedSession = entry.session;
@@ -1420,7 +1448,7 @@ async function runDelivery(
   let parked:
     | {
         entry: ParkedSession;
-        read: LoadedEventLog | undefined;
+        read: Awaited<ReturnType<typeof readSinceParked>>;
         run: Promise<WorkflowRunWithoutData>;
       }
     | undefined;
@@ -1437,11 +1465,12 @@ async function runDelivery(
     parkedRun.catch(() => {});
     const read = await readSinceParked(taken);
     if (
-      read?.events.length === 0 &&
+      read.type === 'resume' &&
+      read.page.events.length === 0 &&
       isNoopDelivery({
         world,
         runId,
-        tailSlot: indexOf(taken.events).maxSlot(),
+        tailSlot: taken.tailSlot,
         nowMs: Date.now(),
       })
     ) {
@@ -3693,7 +3722,12 @@ async function runDelivery(
           const rebase = pendingRebase;
           pendingRebase = undefined;
           let workflowResult: WorkflowResumeResult = session
-            ? await resumeWorkflow(session, log.events, rebase)
+            ? await resumeWorkflow(
+                session,
+                log.events,
+                rebase,
+                drainPendingQueue
+              )
             : { type: 'replay' };
           if (rebase && workflowResult.type !== 'replay') {
             runAheadStats.repairsRetained++;
@@ -3721,9 +3755,7 @@ async function runDelivery(
                   }
                 : {}),
               worldCapabilities: world.capabilities,
-              drainPendingQueue: pendingQueueDrain(world, (data, params) =>
-                writeInBand(data, params)
-              ),
+              drainPendingQueue,
               // `start({ experimental_hook })` runs: the body's createHook with the start
               // token binds to the Hook the admission created. Undefined for
               // every other run.
@@ -3821,6 +3853,7 @@ async function runDelivery(
                 session,
                 events: log.events,
                 cursor: log.cursor,
+                tailSlot: indexOf(log.events).maxSlot() ?? 0,
                 expectedSeqInBand: writer.expectedSeqInBand,
                 replayPayloadCache,
               });
