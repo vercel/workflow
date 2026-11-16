@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'pathe';
+import { join, normalize } from 'pathe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const failInspect = vi.hoisted(() => ({ value: false }));
@@ -44,7 +44,11 @@ let appDir: string;
  * packages leave it: @workflow/nest always carries its own @swc/core 1.15.
  */
 function createApp(swc: { cli?: string; core?: string }): string {
-  appDir = realpathSync(mkdtempSync(join(tmpdir(), 'workflow-nest-init-')));
+  // pathe form (forward slashes), as the warning prints paths; realpathSync
+  // keeps backslashes on Windows.
+  appDir = normalize(
+    realpathSync(mkdtempSync(join(tmpdir(), 'workflow-nest-init-')))
+  );
   writeFileSync(join(appDir, 'package.json'), '{"name":"app"}');
   writeFileSync(join(appDir, 'package-lock.json'), '{}');
   const nm = join(appDir, 'node_modules');

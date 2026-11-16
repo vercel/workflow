@@ -10,7 +10,7 @@ import {
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'pathe';
+import { dirname, join, normalize } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   describeSwcBuilderProblems,
@@ -48,7 +48,11 @@ function link(nodeModules: string, pkg: string, target: string): void {
 let appDir: string | undefined;
 
 function createApp(): string {
-  appDir = realpathSync(mkdtempSync(join(tmpdir(), 'workflow-nest-swc-')));
+  // pathe form (forward slashes), as inspectSwcBuilderPackages returns paths;
+  // realpathSync keeps backslashes on Windows.
+  appDir = normalize(
+    realpathSync(mkdtempSync(join(tmpdir(), 'workflow-nest-swc-')))
+  );
   writeFileSync(join(appDir, 'package.json'), '{"name":"app"}');
   return appDir;
 }
