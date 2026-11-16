@@ -222,8 +222,6 @@ export function RunDetailView({
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
-  // Span the Trace tab selects when it opens, set by an event's "View in
-  // Trace". Selecting another span afterwards does not rewrite it.
   const initialSelectedSpanId = searchParams.get('spanId') ?? undefined;
 
   // Helper to update URL search params
@@ -245,9 +243,7 @@ export function RunDetailView({
   const setActiveTab = useCallback(
     (tab: Tab) => {
       // When switching away from streams tab, clear streamId so
-      // useStreamReader stops fetching/polling in the background. spanId only
-      // belongs to the Trace visit "View in Trace" opened, so any tab change
-      // clears it.
+      // useStreamReader stops fetching/polling in the background.
       if (tab !== 'streams') {
         updateSearchParams({ tab, streamId: null, spanId: null });
       } else {

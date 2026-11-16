@@ -68,7 +68,6 @@ interface EventsListProps {
   ) => Promise<ExactIdSearchResult>;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
-  /** Shows "View in Trace" in the details panel, with the trace span ID to select. */
   onViewInTrace?: (spanId: string) => void;
 }
 

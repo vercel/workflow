@@ -30,10 +30,6 @@ const TraceViewer = ({
   loading?: boolean;
   /** Adds product-specific attributes to event-derived step span data. */
   getStepAttributes?: GetStepAttributes;
-  /**
-   * Span to select, and highlight once, when the viewer mounts (step, hook,
-   * wait or run ID).
-   */
   initialSelectedSpanId?: string;
 }) => {
   const trace: TraceWithMeta | undefined = useMemo(() => {
