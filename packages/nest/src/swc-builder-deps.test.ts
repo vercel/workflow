@@ -391,9 +391,55 @@ describe('inspectSwcBuilderPackages in workspaces', () => {
     });
   });
 
-  it('falls back to the app @swc/cli when the root @nestjs/cli cannot reach one', () => {
-    const { root, app, appCore } = npmWorkspace();
+  it('reports @swc/cli missing when the root @nestjs/cli cannot reach one, even though the app has one', () => {
+    // nest build would fail with "Failed to load @swc/cli": the app's copy is
+    // not on @nestjs/cli's resolution path.
+    const { root, app } = npmWorkspace();
     rmSync(join(root, 'node_modules', '@swc'), { recursive: true });
+    const status = inspectSwcBuilderPackages(app);
+    expect(status).toEqual({
+      cli: false,
+      core: { state: 'missing' },
+      outside: {
+        dir: root,
+        relative: '../..',
+        workspaceRoot: true,
+        yarnBerry: false,
+      },
+    });
+    const message = describeSwcBuilderProblems(status, 'npm');
+    expect(message).toContain(
+      '@swc/cli and @swc/core are not installed where @nestjs/cli can load them'
+    );
+    expect(message?.split('\n').at(-1)).toBe(
+      '  cd ../.. && npm i -D @swc/cli @swc/core@~1.15.18'
+    );
+  });
+
+  it('reports only @swc/cli missing when the root has @swc/core 1.15 but no @swc/cli', () => {
+    const { root, app } = npmWorkspace();
+    rmSync(join(root, 'node_modules', '@swc', 'cli'), { recursive: true });
+    const rootCore = installFake(
+      join(root, 'node_modules'),
+      '@swc/core',
+      '1.15.47'
+    );
+    const status = inspectSwcBuilderPackages(app);
+    expect(status).toMatchObject({
+      cli: false,
+      core: { state: 'supported', version: '1.15.47', path: rootCore },
+      outside: { dir: root },
+    });
+    const message = describeSwcBuilderProblems(status, 'npm');
+    expect(message).toContain(
+      '@swc/cli is not installed where @nestjs/cli can load it'
+    );
+    expect(message?.split('\n').at(-1)).toBe('  cd ../.. && npm i -D @swc/cli');
+  });
+
+  it('resolves from the app only when no @nestjs/cli is installed at all', () => {
+    const { root, app, appCore } = npmWorkspace();
+    rmSync(join(root, 'node_modules', '@nestjs'), { recursive: true });
     expect(inspectSwcBuilderPackages(app)).toEqual({
       cli: true,
       core: { state: 'supported', version: '1.15.47', path: appCore },

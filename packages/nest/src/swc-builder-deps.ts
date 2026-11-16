@@ -125,8 +125,8 @@ export function isSupportedSwcCoreVersion(version: string): boolean {
  *
  * They are resolved the way `nest build` loads them: `@nestjs/cli` requires
  * `@swc/cli` from its own location, and `@swc/cli` requires `@swc/core` from
- * its own. Without `@nestjs/cli`, or when `@swc/cli` cannot be reached from
- * it, `@swc/cli` is resolved from `workingDir`. `@swc/core` is never taken
+ * its own. Only when `@nestjs/cli` is not installed at all is `@swc/cli`
+ * resolved from `workingDir`. `@swc/core` is never taken
  * from `@workflow/nest`, whose own dependency is a different copy whenever
  * the application installs another version.
  */
@@ -134,20 +134,17 @@ export function inspectSwcBuilderPackages(
   workingDir: string
 ): SwcBuilderStatus {
   const appDir = resolve(workingDir);
+  // nest build loads @swc/cli only from @nestjs/cli's location, so when the
+  // app has @nestjs/cli, an @swc/cli it cannot reach does not count, even if
+  // the app has one. Without @nestjs/cli there is nothing to follow, and the
+  // app is where it will be installed.
   const nestCli = findPackage('@nestjs/cli', appDir);
-  const cliViaNest = nestCli
-    ? findPackage('@swc/cli', dirname(nestCli.packageJson))
-    : null;
-  const cli = cliViaNest ?? findPackage('@swc/cli', appDir);
-  const core = findPackage(
-    '@swc/core',
-    cli ? dirname(cli.packageJson) : appDir
-  );
+  const from = nestCli ? dirname(nestCli.packageJson) : appDir;
+  const cli = findPackage('@swc/cli', from);
+  const core = findPackage('@swc/core', cli ? dirname(cli.packageJson) : from);
 
-  // Where a fix has to go: next to @nestjs/cli when nest build resolves the
-  // SWC packages through it, or would have to.
-  const installDir =
-    nestCli?.installDir && (cliViaNest || !cli) ? nestCli.installDir : appDir;
+  // Where a fix has to go: next to @nestjs/cli.
+  const installDir = nestCli?.installDir ?? appDir;
   const outside: OutsideInstall | undefined =
     installDir === appDir
       ? undefined
@@ -259,9 +256,12 @@ export function describeSwcBuilderProblems(
     install.push(SWC_CORE_INSTALL_SPEC);
   }
   if (missing.length > 0) {
+    const where = status.outside
+      ? ` where @nestjs/cli can load ${missing.length === 1 ? 'it' : 'them'}`
+      : '';
     lines.push(
       `⚠ ${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} ` +
-        'not installed. The NestJS SWC builder needs @swc/cli and ' +
+        `not installed${where}. The NestJS SWC builder needs @swc/cli and ` +
         `@swc/core ${SUPPORTED_SWC_CORE_LINE}.x as dev dependencies.`
     );
   }
