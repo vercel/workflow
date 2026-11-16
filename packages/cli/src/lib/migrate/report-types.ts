@@ -44,8 +44,8 @@ export interface MigratedHook {
 }
 
 export interface MigratedFunction {
-  /** Inngest function ID from the config, when it is a literal. */
-  inngestId?: string;
+  /** The function's ID in the source framework, when it is a literal. */
+  sourceId?: string;
   workflowName: string;
   line: number;
   triggers: FunctionTrigger[];

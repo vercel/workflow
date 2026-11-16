@@ -2,15 +2,16 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import type * as TS from 'typescript';
-import type { FileReport } from './report-types.js';
+import type { MigrationFramework } from './framework.js';
 import {
   INFER_MARK,
   isTypeScriptFile,
+  REST_INFER_MARK,
   TYPE_END,
   TYPE_START,
   tidyType,
-  transformInngestFile,
-} from './transform.js';
+} from './markers.js';
+import type { FileReport } from './report-types.js';
 
 const SOURCE_EXTENSIONS = [
   '.ts',
@@ -82,6 +83,9 @@ export interface ProjectMigrationOptions {
   /** Files to consider (absolute). */
   files: string[];
   tsconfig?: string;
+  /** The framework to migrate from. */
+  // biome-ignore lint/suspicious/noExplicitAny: each framework has its own context type
+  framework: MigrationFramework<any>;
 }
 
 export function findTsconfig(ts: typeof TS, cwd: string): string | undefined {
@@ -174,16 +178,6 @@ function parseTsconfig(
   return ts.getParsedCommandLineOfConfigFile(tsconfig, {}, host);
 }
 
-/** Quick text filter: only files that can contain Inngest code. */
-export function mightUseInngest(text: string): boolean {
-  return (
-    text.includes('createFunction') ||
-    /\binngest\b/i.test(text) ||
-    text.includes('NonRetriableError') ||
-    text.includes('RetryAfterError')
-  );
-}
-
 /**
  * A language service over the project, with an in-memory overlay for the
  * files the codemod has rewritten. Each pass reads the program once, so the
@@ -257,7 +251,7 @@ export function migrateProject(
 
   const candidates = options.files.filter((file) => {
     try {
-      return mightUseInngest(readFileSync(file, 'utf8'));
+      return options.framework.mightUse(readFileSync(file, 'utf8'));
     } catch {
       return false;
     }
@@ -286,49 +280,22 @@ export function migrateProject(
   };
   const project = new Project(ts, candidates, compilerOptions, cwd);
 
-  // Every Inngest client name in the project, so `inngest.send()` calls are
-  // reported even in files that define no functions.
-  const clientNames = new Set<string>();
   const program = project.program();
-  for (const file of candidates) {
-    const sf = program.getSourceFile(file);
-    if (!sf) continue;
-    const visit = (node: TS.Node): void => {
-      if (
-        ts.isVariableDeclaration(node) &&
-        ts.isIdentifier(node.name) &&
-        node.initializer &&
-        ts.isNewExpression(node.initializer) &&
-        ts.isIdentifier(node.initializer.expression) &&
-        node.initializer.expression.text === 'Inngest'
-      ) {
-        clientNames.add(node.name.text);
-      }
-      if (
-        ts.isPropertyAccessExpression(node) &&
-        node.name.text === 'createFunction' &&
-        ts.isIdentifier(node.expression)
-      ) {
-        clientNames.add(node.expression.text);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sf);
-  }
+  const context = options.framework.prepare?.(ts, program, candidates);
 
   // Pass 1: transform every file against the original program.
   const pending = new Map<string, string>();
   for (const file of candidates) {
     const sf = program.getSourceFile(file);
     if (!sf) continue;
-    let transformed: ReturnType<typeof transformInngestFile>;
+    let transformed: ReturnType<MigrationFramework['transform']>;
     try {
-      transformed = transformInngestFile({
+      transformed = options.framework.transform({
         ts,
         sourceFile: sf,
         checker: program.getTypeChecker(),
         reportName: relative(cwd, file) || file,
-        clientNames,
+        context,
       });
     } catch (error) {
       // One file the codemod cannot handle must not stop the others.
@@ -409,25 +376,31 @@ export function inferParameterTypes(
   checker: TS.TypeChecker
 ): string {
   const text = sf.text;
-  if (!text.includes(INFER_MARK)) return text;
-  const targets = new Map<
-    string,
-    Array<{
-      index: number;
-      markAt: number;
-      declaration: TS.FunctionDeclaration;
-    }>
-  >();
+  if (!text.includes(INFER_MARK) && !text.includes(REST_INFER_MARK))
+    return text;
+  interface Target {
+    index: number;
+    markAt: number;
+    mark: string;
+    rest: boolean;
+    declaration: TS.FunctionDeclaration;
+  }
+  const targets = new Map<string, Target[]>();
   const calls = new Map<string, TS.CallExpression>();
   const visit = (node: TS.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name) {
       const name = node.name.text;
       node.parameters.forEach((param, index) => {
         const at = param.name.end;
-        if (text.startsWith(INFER_MARK, at)) {
-          const list = targets.get(name) ?? [];
-          list.push({ index, markAt: at, declaration: node });
-          targets.set(name, list);
+        for (const [mark, rest] of [
+          [INFER_MARK, false],
+          [REST_INFER_MARK, true],
+        ] as const) {
+          if (text.startsWith(mark, at)) {
+            const list = targets.get(name) ?? [];
+            list.push({ index, markAt: at, mark, rest, declaration: node });
+            targets.set(name, list);
+          }
         }
       });
     }
@@ -442,42 +415,60 @@ export function inferParameterTypes(
   };
   visit(sf);
 
-  const replacements: Array<{ at: number; text: string }> = [];
+  /** Printed type of an argument, `any` when it is any, undefined if unprintable. */
+  const typeOf = (
+    arg: TS.Expression,
+    declaration: TS.Node
+  ): string | undefined => {
+    let type = checker.getTypeAtLocation(arg);
+    const base = (
+      checker as { getBaseTypeOfLiteralType?: (t: TS.Type) => TS.Type }
+    ).getBaseTypeOfLiteralType;
+    if (base && type.flags & ts.TypeFlags.Literal)
+      type = base.call(checker, type);
+    if (type.flags & ts.TypeFlags.Any) return 'any';
+    const printed = checker.typeToString(
+      type,
+      declaration,
+      ts.TypeFormatFlags.NoTruncation |
+        ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope
+    );
+    if (!printed || printed.length > 600 || printed.includes('...'))
+      return undefined;
+    return tidyType(printed);
+  };
+
+  const replacements: Array<{ at: number; length: number; text: string }> = [];
   for (const [name, params] of targets) {
     const call = calls.get(name);
-    for (const { index, markAt, declaration } of params) {
-      const arg = call?.arguments[index];
-      // Explicit fallback: an unannotated parameter fails `strict` projects.
-      let annotation = ': any';
-      if (arg) {
-        let type = checker.getTypeAtLocation(arg);
-        const base = (
-          checker as { getBaseTypeOfLiteralType?: (t: TS.Type) => TS.Type }
-        ).getBaseTypeOfLiteralType;
-        if (base && type.flags & ts.TypeFlags.Literal)
-          type = base.call(checker, type);
-        if (type.flags & ts.TypeFlags.Any) {
-          annotation = ': any';
-        } else {
-          const printed = checker.typeToString(
-            type,
-            declaration,
-            ts.TypeFormatFlags.NoTruncation |
-              ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope
-          );
-          if (printed && printed.length <= 600 && !printed.includes('...')) {
-            annotation = `: ${TYPE_START}${tidyType(printed)}${TYPE_END}`;
-          }
+    for (const { index, markAt, mark, rest, declaration } of params) {
+      // Explicit fallbacks: an unannotated parameter fails `strict` projects.
+      let annotation = rest ? ': any[]' : ': any';
+      if (rest) {
+        // `...ns` receives the remaining arguments: type it as their tuple.
+        const args = call ? [...call.arguments.slice(index)] : undefined;
+        const types = args?.map((arg) => typeOf(arg, declaration));
+        if (
+          types &&
+          !types.some((t) => t === undefined) &&
+          !args?.some(ts.isSpreadElement)
+        ) {
+          annotation = `: ${TYPE_START}[${types.join(', ')}]${TYPE_END}`;
         }
+      } else {
+        const arg = call?.arguments[index];
+        const printed = arg && typeOf(arg, declaration);
+        if (printed === 'any') annotation = ': any';
+        else if (printed) annotation = `: ${TYPE_START}${printed}${TYPE_END}`;
       }
-      replacements.push({ at: markAt, text: annotation });
+      replacements.push({ at: markAt, length: mark.length, text: annotation });
     }
   }
   let out = text;
-  for (const { at, text: annotation } of replacements.sort(
+  for (const { at, length, text: annotation } of replacements.sort(
     (a, b) => b.at - a.at
   )) {
-    out = out.slice(0, at) + annotation + out.slice(at + INFER_MARK.length);
+    out = out.slice(0, at) + annotation + out.slice(at + length);
   }
   return out;
 }
@@ -548,6 +539,8 @@ export function stripMarkers(text: string): string {
     .split(TYPE_START)
     .join('')
     .split(TYPE_END)
+    .join('')
+    .split(REST_INFER_MARK)
     .join('')
     .split(INFER_MARK)
     .join('');
