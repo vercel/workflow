@@ -162,11 +162,72 @@ describe('useRunUsage', () => {
     });
     expect(fetchRunUsage).toHaveBeenCalledTimes(2);
 
+    // That read took 3 s, so the next poll waits 10 × 3 s, not 1 s.
     await act(async () => {
       slow.resolve(ok(usage('wrun_a', 2)));
       await vi.advanceTimersByTimeAsync(1000);
     });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_000);
+    });
     expect(fetchRunUsage).toHaveBeenCalledTimes(3);
+  });
+
+  it('polls at the interval while reads are fast', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchRunUsage).mockResolvedValue(ok(usage('wrun_a', 1)));
+    renderHook(() =>
+      useRunUsage(env, 'wrun_a', { live: true, refreshInterval: 1000 })
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(6);
+  });
+
+  it('waits ten times as long as a slow read before the next, then speeds up again', async () => {
+    vi.useFakeTimers();
+    /** A read that answers after `ms`. */
+    const after = (ms: number, events: number) =>
+      new Promise<Result>((resolve) =>
+        setTimeout(() => resolve(ok(usage('wrun_a', events))), ms)
+      );
+    vi.mocked(fetchRunUsage)
+      .mockReturnValueOnce(after(0, 1))
+      .mockImplementationOnce(() => after(500, 2))
+      .mockImplementationOnce(() => after(0, 3))
+      .mockImplementation(() => after(0, 4));
+    const { result } = renderHook(() =>
+      useRunUsage(env, 'wrun_a', { live: true, refreshInterval: 1000 })
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    // The 500 ms read starts at 1 s and answers at 1.5 s.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(2);
+    expect(result.current.usage?.events).toBe(2);
+    // Next poll: 10 × 500 ms = 5 s later, at 6.5 s.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4999);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(3);
+    // That one was fast: back to the 1 s interval, not another 5 s.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1100);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(4);
+    expect(result.current.usage?.events).toBe(4);
   });
 
   it('reads the final numbers once when the run finishes, then stops polling', async () => {

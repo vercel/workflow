@@ -7,6 +7,14 @@ import type { EnvMap } from '~/lib/types';
 /** How often a run that has not finished re-reads its usage. */
 export const RUN_USAGE_REFRESH_INTERVAL_MS = 5000;
 
+/**
+ * A poll waits at least this many times as long as the last read took. On
+ * the Local World a read holds the server while it runs, so a run whose
+ * usage is slow to read is read less often, and the server stays free for
+ * everything else at least 90% of the time.
+ */
+export const SLOW_READ_BACKOFF = 10;
+
 export interface RunUsageState {
   /** `undefined` until the first read; `null` when the World has no usage. */
   usage: RunUsage | null | undefined;
@@ -22,8 +30,10 @@ export interface RunUsageState {
  * Reads can overlap (a poll, the run finishing, a run change), and finish
  * in any order. The last read started wins: a response from an earlier one
  * is dropped, so a slow read of an older log never replaces a newer count.
- * A poll is skipped while a read is in flight, so a slow World is not
- * stacked up with reads; every other trigger reads regardless.
+ * Polls never stack: the next one is scheduled when the last one has
+ * answered, `max(refreshInterval, SLOW_READ_BACKOFF × its duration)` later,
+ * and a poll that comes due while another read is in flight is skipped.
+ * Every other trigger reads regardless.
  */
 export function useRunUsage(
   env: EnvMap,
@@ -38,6 +48,7 @@ export function useRunUsage(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const latestRef = useRef(0);
+  const lastReadMsRef = useRef(0);
   const inFlightRef = useRef(0);
   const mountedRef = useRef(true);
 
@@ -50,6 +61,7 @@ export function useRunUsage(
 
   const read = useCallback(async () => {
     const seq = ++latestRef.current;
+    const startedAt = Date.now();
     // Only the newest read, on a mounted hook, writes state.
     const isCurrent = () => mountedRef.current && seq === latestRef.current;
     inFlightRef.current++;
@@ -66,6 +78,7 @@ export function useRunUsage(
         setError(err instanceof Error ? err : new Error(String(err)));
       }
     } finally {
+      lastReadMsRef.current = Date.now() - startedAt;
       inFlightRef.current--;
       if (isCurrent()) setLoading(false);
     }
@@ -91,11 +104,24 @@ export function useRunUsage(
   useEffect(() => {
     if (!enabled || !live || unsupported) return;
     if (!refreshInterval || refreshInterval <= 0) return;
-    const interval = setInterval(() => {
-      if (inFlightRef.current > 0) return;
-      void read();
-    }, refreshInterval);
-    return () => clearInterval(interval);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      const delay = Math.max(
+        refreshInterval,
+        SLOW_READ_BACKOFF * lastReadMsRef.current
+      );
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        if (inFlightRef.current === 0) await read();
+        if (!cancelled) schedule();
+      }, delay);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [enabled, live, unsupported, refreshInterval, read]);
 
   return { usage, loading, error, refresh: read };
