@@ -193,6 +193,11 @@ export async function resumeHookOrStart<
   let lastError: unknown;
   let next: 'resume' | 'start' = 'resume';
   let startRetries = 0;
+  // Candidates of this call's starts whose outcome was unknown. One of them
+  // may have been admitted: a later start is then refused naming it, and that
+  // run is the one this call started (it already has `args`), not an owner to
+  // resume, which would deliver `payload` to it a second time.
+  const uncertainCandidates = new Set<string>();
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (next === 'resume') {
@@ -227,6 +232,9 @@ export async function resumeHookOrStart<
       lastError = error;
       if (HookConflictError.is(error)) {
         const owner = error.conflictingRunId;
+        if (owner !== undefined && uncertainCandidates.has(owner)) {
+          return { action: 'started', run: getRun<TResult>(owner) };
+        }
         if (owner !== undefined && owner === refusedBy && refusedByIsGone) {
           // The same owner refused us again after its Hook stopped answering:
           // it ended and its retention keeps the token.
@@ -240,6 +248,7 @@ export async function resumeHookOrStart<
       if (WorkflowStartError.is(error)) {
         // Unknown outcome: the same token either makes us the owner or names
         // the owner, so retrying is safe.
+        uncertainCandidates.add(error.runId);
         const backoff =
           START_RETRY_DELAYS_MS[
             Math.min(startRetries, START_RETRY_DELAYS_MS.length - 1)

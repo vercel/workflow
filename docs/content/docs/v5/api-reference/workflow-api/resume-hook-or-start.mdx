@@ -60,6 +60,8 @@ The run that `resumeHookOrStart()` starts receives `args`, not `payload`, so pas
 
 Without a retention, the token is released when the run ends, so the next call starts a new run. Set `experimental_minRetention` when a finished conversation should refuse new payloads instead.
 
+A `resumed` result means the payload is recorded for the run, not that the run has read it. Payloads the run has not read when it returns are dropped, so keep iterating the Hook for as long as the run accepts payloads.
+
 It needs a World with atomic start Hooks: the Local, Postgres and Vercel Worlds have them (the Postgres World after [migration `0028`](/worlds/postgres#start-hooks)).
 
 <Callout type="warn">

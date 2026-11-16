@@ -166,13 +166,27 @@ describe('resumeHookOrStart', () => {
     resumeHook.mockRejectedValueOnce(notFound());
     start
       .mockRejectedValueOnce(new WorkflowStartError('wrun_cand', 'admission'))
-      .mockResolvedValueOnce({ runId: 'wrun_cand' });
+      .mockResolvedValueOnce({ runId: 'wrun_retry' });
 
     const result = await resumeHookOrStart(TOKEN, 'payload', workflow, []);
 
-    expect(result).toEqual({ action: 'started', run: { runId: 'wrun_cand' } });
+    expect(result).toEqual({ action: 'started', run: { runId: 'wrun_retry' } });
     expect(start).toHaveBeenCalledTimes(2);
     expect(start.mock.calls[1][2]).toEqual(start.mock.calls[0][2]);
+  });
+
+  it('reports a start whose unknown outcome was an admission as started, without resuming it', async () => {
+    resumeHook.mockRejectedValueOnce(notFound());
+    start
+      .mockRejectedValueOnce(new WorkflowStartError('wrun_cand', 'admission'))
+      .mockRejectedValueOnce(conflict('wrun_cand'));
+
+    const result = await resumeHookOrStart(TOKEN, 'payload', workflow, []);
+
+    // wrun_cand already received `args`: resuming it would deliver the
+    // payload a second time.
+    expect(result).toEqual({ action: 'started', run: { runId: 'wrun_cand' } });
+    expect(calls()).toEqual(['resume', 'start', 'start']);
   });
 
   it('waits out a retryAfter before resuming again', async () => {
