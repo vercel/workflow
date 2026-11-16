@@ -384,7 +384,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Clamped to `[5000, 120000]`.
 - This is the only request path the World cannot bound with `WORKFLOW_REQUEST_TIMEOUT_MS`, because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
 - Keep it below the queue's visibility-renewal interval (60 seconds) so a failed call has room to surface and be retried before the message lease lapses.
-- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled, where the queue client uses the runtime's global HTTP agent and loses its connection cap and deadline (30 seconds by default), leaving only undici's default 300-second timeouts, or when a custom `dispatcher` is passed to `createWorld()` (see [Programmatic configuration](/worlds/vercel#programmatic-configuration)), where it uses that dispatcher instead.
+- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled (only undici's default 300-second timeouts apply) or when a custom `dispatcher` is passed to `createWorld()` (its own limits apply).
 
 ### `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`
 
@@ -394,4 +394,4 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Connections the Vercel World's queue client may open to the queue service.
 - Clamped to `[1, 1024]`.
 - Sized much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out. Lower it only if you have a reason to cap sockets; too low turns invocation concurrency into the limit on how fast messages can be acknowledged.
-- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled, where the queue client uses the runtime's global HTTP agent and loses its connection cap and deadline (30 seconds by default), leaving only undici's default 300-second timeouts, or when a custom `dispatcher` is passed to `createWorld()` (see [Programmatic configuration](/worlds/vercel#programmatic-configuration)), where it uses that dispatcher instead.
+- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled (only undici's default 300-second timeouts apply) or when a custom `dispatcher` is passed to `createWorld()` (its own limits apply).
