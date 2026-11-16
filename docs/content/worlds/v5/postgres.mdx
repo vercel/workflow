@@ -277,7 +277,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The defaults work for a single process on a local database, so most apps set only `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL`. You can set every option through environment variables, or programmatically through `createWorld()` (see [Programmatic configuration](#programmatic-configuration)).
+The defaults work for a single process on a local database, so most apps set only `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL`, and every option can also be set programmatically through `createWorld()` (see [Programmatic configuration](#programmatic-configuration)).
 
 **Common**
 
@@ -360,7 +360,7 @@ Number of concurrent workers polling for jobs.
 
 Change it when: you need more jobs in flight per process, including `returnValue` polls that hold a worker slot (see below).
 
-A parent workflow awaiting `childRun.returnValue` of a child it started does not hold a worker slot: it suspends on a system hook the child resumes when it finishes (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)). A `returnValue` that falls back to polling still does, for example one awaited inside a step, or any await while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. Each of those holds a worker slot until its child run terminates.
+A parent workflow awaiting `childRun.returnValue` of a child it started does not hold a worker slot: it suspends on a system hook the child resumes when it finishes (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)). A `returnValue` that falls back to polling still does, for example one awaited inside a step, or any await while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. Each of those holds a worker slot until its child run terminates, so raise this ceiling above the peak number of such polls in flight.
 
 ### `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
 

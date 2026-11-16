@@ -233,7 +233,7 @@ Three more are situational:
 - `WORKFLOW_VERCEL_PROJECT_NAME` — the project slug, used only to build dashboard links.
 - `VERCEL_TOKEN` — a fallback the World reads for the Vercel API calls it makes alongside your Workflow requests (fetching a run's encryption key, resolving `deploymentId: "latest"`). A client that passes `token` explicitly, as below, already covers those calls and does not need it.
 
-For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against. The `workflow` CLI's `--env` flag reads the same variable but only accepts `production` or `preview`, so a custom environment is reachable from your own script, not from the CLI, and setting it in the environment makes CLI commands exit with an error.
+For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against. The `workflow` CLI's `--env` flag reads the same variable but only accepts `production` or `preview`, so a custom environment is reachable from your own script, not from the CLI. With any other value in the environment, CLI commands that take `--env` exit with an error unless you pass `--env`.
 
 <Callout type="info">
   The Workflow SDK does not read `WORKFLOW_VERCEL_*` from the environment on
@@ -340,19 +340,17 @@ If the deployment is behind deployment protection, the job also needs a way to r
 
 ## Configuration
 
-In a Vercel deployment you configure nothing: the platform injects what the runtime needs (`VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption), so do not set those yourself, and keep [system environment variables](#system-environment-variables) enabled for the project, since that setting is what makes `VERCEL_DEPLOYMENT_ID` available. The settings below are for tools outside Vercel (the CLI, CI, scripts) and for rare tuning; see [Connecting from outside a deployment](#connecting-from-outside-a-deployment) for which ones a local script or CI job needs and how to hand them to the SDK.
+In a Vercel deployment you configure nothing, as long as [system environment variables](#system-environment-variables) stay enabled for the project; the settings below are for tools outside Vercel and for rare tuning (see [Connecting from outside a deployment](#connecting-from-outside-a-deployment)).
 
-**Common: for tools outside Vercel**
+**Common**
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | [`WORKFLOW_VERCEL_ENV`](#workflow_vercel_env) | `production` | Vercel environment to target |
-| [`WORKFLOW_VERCEL_AUTH_TOKEN`](#workflow_vercel_auth_token) | `VERCEL_TOKEN`, then Vercel CLI login | Vercel API authentication |
-| [`WORKFLOW_VERCEL_PROJECT`](#workflow_vercel_project) | inferred from `.vercel/project.json` when possible | Project ID |
-| [`WORKFLOW_VERCEL_TEAM`](#workflow_vercel_team) | inferred from `.vercel/project.json` when possible | Team ID |
+| [`WORKFLOW_VERCEL_AUTH_TOKEN`](#workflow_vercel_auth_token) | Vercel CLI login (when using the `workflow` CLI) | Vercel API authentication |
+| [`WORKFLOW_VERCEL_PROJECT`](#workflow_vercel_project) | inferred from `.vercel/project.json` or `.vercel/repo.json` when possible | Project ID |
+| [`WORKFLOW_VERCEL_TEAM`](#workflow_vercel_team) | inferred from `.vercel/project.json` or `.vercel/repo.json` when possible | Team ID |
 | [`WORKFLOW_VERCEL_PROJECT_NAME`](#workflow_vercel_project_name) | inferred when possible | Project slug for dashboard links |
-
-Set these only when a tool outside Vercel cannot infer the project, team, token, or target environment, for example `workflow inspect runs --backend vercel` in CI without an interactive `vercel login`, or tests against a specific preview deployment. In local development the CLI infers them from your `.vercel` directory and Vercel CLI login. In a deployed Vercel function they have no effect on runtime configuration, and the runtime warns if they are set there.
 
 **Advanced**
 
@@ -372,6 +370,10 @@ Set these only when a tool outside Vercel cannot infer the project, team, token,
 | [`WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`](#workflow_vercel_queue_timeout_ms) | `30000` ms | Queue client request deadline |
 | [`WORKFLOW_NODE_HTTP`](#workflow_node_http) | disabled | Requests through Node's built-in HTTP modules |
 
+The platform injects what the runtime needs (`VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption), so do not set those yourself; the system environment variables setting is what makes `VERCEL_DEPLOYMENT_ID` available.
+
+Set the Common variables only when a tool outside Vercel (the CLI, CI, a script) cannot infer the project, team, token, or target environment, for example `workflow inspect runs --backend vercel` in CI without an interactive `vercel login`, or tests against a specific preview deployment. In local development the CLI infers them from your `.vercel` directory and Vercel CLI login. In a deployed Vercel function they have no effect on runtime configuration, and the runtime warns if they are set there. [Connecting from outside a deployment](#connecting-from-outside-a-deployment) covers which ones a local script or CI job needs and how to hand them to the SDK.
+
 ### `WORKFLOW_VERCEL_ENV`
 
 - Default: `production`
@@ -380,11 +382,11 @@ Set these only when a tool outside Vercel cannot infer the project, team, token,
 
 The Vercel environment to target: `production`, `preview`, or a custom environment's slug.
 
-The CLI accepts only `production` or `preview`. With any other value set in the environment, CLI commands exit with an error, so set it only for your own script (see [Environment variables](#environment-variables)).
+The CLI accepts only `production` or `preview`; see [Environment variables](#environment-variables) for what other values do.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
-- Default: `VERCEL_TOKEN`, then your Vercel CLI login
+- Default: Vercel CLI login (when using the `workflow` CLI)
 - Factory option: `token`
 - CLI flag: `--authToken` or `-a`
 
@@ -394,7 +396,7 @@ Keep this secret in your environment, not in code.
 
 ### `WORKFLOW_VERCEL_PROJECT`
 
-- Default: inferred from `.vercel/project.json` when possible
+- Default: inferred from `.vercel/project.json` or `.vercel/repo.json` when possible
 - Factory option: `projectConfig.projectId`
 - CLI flag: `--project`
 
@@ -402,7 +404,7 @@ Vercel project ID (`prj_...`).
 
 ### `WORKFLOW_VERCEL_TEAM`
 
-- Default: inferred from `.vercel/project.json` when possible
+- Default: inferred from `.vercel/project.json` or `.vercel/repo.json` when possible
 - Factory option: `projectConfig.teamId`
 - CLI flag: `--team`
 
@@ -623,6 +625,8 @@ The Vercel World uses Vercel's infrastructure for workflow execution:
 - **Queuing**: Steps are distributed across Vercel Functions through [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
 - **Authentication**: OIDC tokens provide secure, automatic authentication inside deployments; clients outside one authenticate with a [Vercel auth token](#connecting-from-outside-a-deployment)
 
+For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).
+
 ### Stream writes over WebSocket
 
 With [`WORKFLOW_STREAMS_TRANSPORT`](#workflow_streams_transport) at its default, the client only offers the upgrade. The server accepts or declines each one, and a writer whose upgrade is declined or fails writes over HTTP for the rest of its lifetime. This setting does not decide which tenants may upgrade and does not infer server support from package versions. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
@@ -683,5 +687,3 @@ The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the c
 A frame over [`WORKFLOW_WS_MAX_MESSAGE_BYTES`](#workflow_ws_max_message_bytes) is sent as several messages, and the other side rebuilds it before handling it. Stream writes split a large write group into several ordered write requests instead (see [Stream writes over WebSocket](#stream-writes-over-websocket)).
 
 The client splits its own large requests, which needs a Vercel World backend that accepts split frames. It lists `frame-parts` in the `x-workflow-ws-flags` header of the WebSocket upgrade, and the backend splits large replies only for a client that does, so older clients keep receiving whole replies.
-
-For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

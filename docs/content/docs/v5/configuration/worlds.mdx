@@ -250,7 +250,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 
 ### `token`
 
-- Environment variable: `WORKFLOW_VERCEL_AUTH_TOKEN`, then `VERCEL_TOKEN`, then Vercel CLI login
+- Environment variable: `WORKFLOW_VERCEL_AUTH_TOKEN` (the `workflow` CLI falls back to your Vercel CLI login)
 - CLI flag: `--authToken` or `-a`
 - Default: inferred when possible
 - Vercel API token for external tooling. Keep it secret.
@@ -262,7 +262,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: `--env` or `-e`
 - Default: `production`
 - Vercel environment targeted by tooling. Accepts `production`, `preview`, or a custom environment's **slug** — configure the slug, not the environment's ID.
-- The CLI accepts only `production` or `preview`. With any other value set in the environment, CLI commands exit with an error, so set it only for your own script. See [Environment variables](/worlds/vercel#environment-variables).
+- The CLI accepts only `production` or `preview`; see [Environment variables](/worlds/vercel#environment-variables) for what other values do.
 
 ### `projectConfig.projectId`
 
