@@ -16,6 +16,7 @@
  *   snapshots, and leave no snapshot behind once they finish.
  */
 
+import '../../test-utils/vercel-request-context.js';
 import { waitUntil } from '@vercel/functions';
 import { MaxEventsExceededError } from '@workflow/errors';
 import {
