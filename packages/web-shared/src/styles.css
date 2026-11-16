@@ -714,7 +714,6 @@
   max-width: calc(1200px + 48px);
 }
 
-/* View in Trace: the arriving span's row blinks amber twice. */
 @keyframes wf-span-flash {
   0%, 44%, 100% { background-color: var(--ds-gray-100); }
   12%, 28%, 58%, 74% { background-color: var(--ds-amber-200); }

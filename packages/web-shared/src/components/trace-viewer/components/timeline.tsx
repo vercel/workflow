@@ -705,7 +705,6 @@ export function Timeline({
   viewEnd: number;
   markers: TimeMarker[];
   selectedId: string | null;
-  /** Span whose bar plays the one-shot `wf-span-flash` highlight. */
   flashSpanId: string | null;
   searchResult: SpanSearchResult;
   onSelect: (spanId: string) => void;

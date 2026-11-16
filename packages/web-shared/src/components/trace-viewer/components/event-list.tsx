@@ -151,7 +151,6 @@ const EventList = ({
 }: {
   spans: Span[];
   activeSpanId: string | null;
-  /** Span whose row plays the one-shot `wf-span-flash` highlight. */
   flashSpanId: string | null;
   searchResult: SpanSearchResult;
   onSelectSpan: (spanId: string) => void;
