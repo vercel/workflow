@@ -11,7 +11,9 @@
   "files": [
     "dist",
     "bin",
-    "src/drizzle/migrations"
+    "src/drizzle/migrations",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"
@@ -46,7 +48,6 @@
     "db:push": "node dist/cli.js"
   },
   "dependencies": {
-    "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
@@ -63,6 +64,7 @@
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "catalog:",
     "@types/pg": "8.23.1",
+    "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-testing": "workspace:*",
