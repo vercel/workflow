@@ -28,6 +28,7 @@ import {
 } from '@workflow/errors';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { getNodeHttpAgents, getNodeHttpPhaseTimeouts } from './http-client.js';
+import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import {
   ErrorType,
   getSpanKind,
@@ -82,6 +83,8 @@ const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'EAI_AGAIN',
   'EPIPE',
   'ETIMEDOUT',
+  // The queue dispatcher's own request deadline (see http-client.ts).
+  QUEUE_REQUEST_DEADLINE_CODE,
 ]);
 
 /** Walk a bounded cause chain looking for a transient transport error code. */

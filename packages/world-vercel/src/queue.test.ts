@@ -325,6 +325,81 @@ describe('createQueue', () => {
         await expect(
           queue.queue('__wkf_workflow_test', { runId: 'run-123' })
         ).rejects.toThrow('Some other error');
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    // A start() send that fails on a closed pooled socket never reaches the
+    // queue, while its run_created has committed: without a re-send the run
+    // exists and never runs.
+    it('re-sends a send that failed on a closed socket', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockSend
+        .mockRejectedValueOnce(
+          new TypeError('fetch failed', {
+            cause: Object.assign(new Error('other side closed'), {
+              code: 'UND_ERR_SOCKET',
+            }),
+          })
+        )
+        .mockResolvedValueOnce({ messageId: 'msg-retried' });
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        const result = await queue.queue('__wkf_workflow_test', {
+          runId: 'wrun_retried',
+        });
+
+        expect(result.messageId).toBe('msg-retried');
+        expect(mockSend).toHaveBeenCalledTimes(2);
+        // The re-send is the same message.
+        expect(mockSend.mock.calls[1]).toEqual(mockSend.mock.calls[0]);
+        expect(String(warn.mock.calls[0]?.[0])).toContain('wrun_retried');
+      } finally {
+        warn.mockRestore();
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it.each([
+      [
+        'a 429 that asks for a longer wait',
+        Object.assign(new Error('Too many requests'), {
+          name: 'TooManyRequestsError',
+          retryAfter: 30,
+        }),
+      ],
+      [
+        'a 503 for a project without a consumer registry',
+        Object.assign(new Error('Consumer registry not configured'), {
+          name: 'ConsumerRegistryNotConfiguredError',
+        }),
+      ],
+    ])('sends once after %s', async (_, error) => {
+      mockSend.mockRejectedValueOnce(error);
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        await expect(
+          queue.queue('__wkf_workflow_test', { runId: 'wrun_once' })
+        ).rejects.toBe(error);
+        expect(mockSend).toHaveBeenCalledTimes(1);
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
