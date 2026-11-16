@@ -504,7 +504,10 @@ export function createQueue(
   };
 
   const completedMessages = new Set<string>();
-  const inflightMessages = new Map<string, Promise<void>>();
+  const inflightMessages = new Map<
+    string,
+    Promise<'completed' | 'rescheduled'>
+  >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let runnerStart: RunnerStart | null = null;
@@ -540,6 +543,7 @@ export function createQueue(
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
     jobKeyMode = 'preserve_run_at',
     priority,
+    handoffLease,
   }: {
     queueId: string;
     prefix?: QueuePrefix;
@@ -567,7 +571,12 @@ export function createQueue(
     jobKeyMode?: 'preserve_run_at' | 'unsafe_dedupe';
     /** Graphile priority; lower runs first. Default 0. */
     priority?: number;
-  }) {
+    /**
+     * The run lease this job continues, as a handoff: the job is added and
+     * handed the lease in one transaction (see `RunLeases.handoff`).
+     */
+    handoffLease?: { runId: string; jobId: string };
+  }): Promise<{ handedOff: boolean }> {
     const utils = workerUtils;
     if (!utils) {
       throw new Error('Postgres queue worker utils are not initialized');
@@ -578,28 +587,35 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
-    return utils.addJob(
-      executorRunId ? executorTask() : getJobQueueName(),
-      MessageData.encode({
-        id: queueId,
-        ...(prefix ? { prefix } : {}),
-        ...(route ? { route } : {}),
-        data: Buffer.from(body),
-        attempt,
-        ...(attemptOffset !== undefined ? { attemptOffset } : {}),
-        ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
-        messageId,
-        ...(createdAt ? { createdAt } : {}),
-        idempotencyKey,
-        headers,
-      }),
-      {
-        ...(jobKey ? { jobKey, jobKeyMode } : {}),
-        ...(runAt ? { runAt } : {}),
-        ...(priority !== undefined ? { priority } : {}),
-        maxAttempts,
-      }
-    );
+    const task = executorRunId ? executorTask() : getJobQueueName();
+    const payload = MessageData.encode({
+      id: queueId,
+      ...(prefix ? { prefix } : {}),
+      ...(route ? { route } : {}),
+      data: Buffer.from(body),
+      attempt,
+      ...(attemptOffset !== undefined ? { attemptOffset } : {}),
+      ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
+      messageId,
+      ...(createdAt ? { createdAt } : {}),
+      idempotencyKey,
+      headers,
+    });
+    if (handoffLease) {
+      const handedOff = await runLeases.handoff(
+        handoffLease.runId,
+        handoffLease.jobId,
+        { task, payload, jobKey, jobKeyMode, maxAttempts, priority, runAt }
+      );
+      return { handedOff };
+    }
+    await utils.addJob(task, payload, {
+      ...(jobKey ? { jobKey, jobKeyMode } : {}),
+      ...(runAt ? { runAt } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      maxAttempts,
+    });
+    return { handedOff: false };
   }
 
   async function transferToExecutor(
@@ -1432,17 +1448,14 @@ export function createQueue(
               ...(handoff ? { priority: HANDOFF_JOB_PRIORITY } : {}),
               jobKey: messageData.idempotencyKey ?? messageData.messageId,
               ...(orchestration ? { executorRunId: orchestration.runId } : {}),
+              // A handoff's continuation takes the run's lease over, with the
+              // wakes left on it, so the run's other deliveries keep waiting
+              // for it rather than starting between the two.
+              ...(handoff && leased && leaseRunId && ownJobId
+                ? { handoffLease: { runId: leaseRunId, jobId: ownJobId } }
+                : {}),
             });
-            // A handoff's continuation takes the run's lease over, with the
-            // wakes left on it, so the run's other deliveries keep waiting for
-            // it rather than starting between the two.
-            if (handoff && leased && leaseRunId && ownJobId) {
-              handedOff = await runLeases.transfer(
-                leaseRunId,
-                ownJobId,
-                String(next.id)
-              );
-            }
+            handedOff = next.handedOff;
             return 'rescheduled';
           }
 
@@ -1464,14 +1477,20 @@ export function createQueue(
         return;
       }
 
-      if (completedMessages.has(idempotencyKey)) {
-        return;
-      }
-
-      const existing = inflightMessages.get(idempotencyKey);
-      if (existing) {
-        await existing;
-        return;
+      // A job whose key is being delivered in this process waits for that
+      // delivery, and is acknowledged without its own only if that delivery
+      // completed. One that rescheduled (a handoff's continuation, which is
+      // this job's own message and can be taken while its predecessor is
+      // still returning) or failed leaves this job to run.
+      for (;;) {
+        if (completedMessages.has(idempotencyKey)) {
+          return;
+        }
+        const existing = inflightMessages.get(idempotencyKey);
+        if (!existing) break;
+        if ((await existing.catch(() => 'failed' as const)) === 'completed') {
+          return;
+        }
       }
 
       const execution = executeTask()
@@ -1479,6 +1498,7 @@ export function createQueue(
           if (result === 'completed') {
             markMessageCompleted(idempotencyKey);
           }
+          return result;
         })
         .finally(() => {
           inflightMessages.delete(idempotencyKey);

@@ -477,6 +477,146 @@ describe.skipIf(process.platform === 'win32')(
       expect(runDeliveries(runId)[1]!.deliveryCount).toBe(1);
     });
 
+    /**
+     * Runs `queue` for one test on its own pool, whose statements matching
+     * `slow` are held up: before they run, or (`afterCommit`) when the
+     * transaction they ran in commits, before the commit returns.
+     */
+    async function withSlowPool(
+      slow: RegExp,
+      where: 'before' | 'afterCommit',
+      body: () => Promise<void>
+    ) {
+      await queue.close();
+      const slowPool = new TestPool({
+        connectionString: container.getConnectionUri(),
+        max: 20,
+      });
+      const hold = () => new Promise((resolve) => setTimeout(resolve, 500));
+      // Every statement, `pool.query` included, runs on one of the pool's
+      // clients, so wrapping each client as it connects covers them all.
+      slowPool.on('connect', (client) => {
+        const query = client.query.bind(client) as (
+          ...args: unknown[]
+        ) => unknown;
+        let matched = false;
+        client.query = ((...args: unknown[]) => {
+          const config = args[0] as string | { text?: string } | undefined;
+          const sql =
+            typeof config === 'string' ? config : (config?.text ?? '');
+          const isSlow = slow.test(sql);
+          const isHeldCommit = sql === 'COMMIT' && matched;
+          if (!isSlow && !isHeldCommit) return query(...args);
+          if (isSlow && where === 'afterCommit') matched = true;
+          if (isHeldCommit) matched = false;
+          const callbackAt = args.findIndex((arg) => typeof arg === 'function');
+          if (callbackAt !== -1) {
+            // `pool.query` passes a callback.
+            const callback = args[callbackAt] as (...result: unknown[]) => void;
+            const rest = [...args];
+            if (isHeldCommit) {
+              rest[callbackAt] = (...result: unknown[]) =>
+                void hold().then(() => callback(...result));
+              return query(...rest);
+            }
+            void (where === 'before' ? hold() : Promise.resolve()).then(() =>
+              query(...rest)
+            );
+            return undefined;
+          }
+          return (async () => {
+            if (isSlow && where === 'before') await hold();
+            const result = await (query(...args) as Promise<unknown>);
+            if (isHeldCommit) await hold();
+            return result;
+          })();
+        }) as typeof client.query;
+      });
+      queue = createQueue(
+        {
+          connectionString: container.getConnectionUri(),
+          queueConcurrency: 4,
+          pollInterval: 50,
+          applicationManagedShutdown: true,
+        },
+        slowPool
+      );
+      await queue.start();
+      try {
+        await body();
+      } finally {
+        await queue.close();
+        await slowPool.end();
+        // A queue for `afterEach` to close.
+        queue = createQueue(
+          { connectionString: container.getConnectionUri() },
+          pool
+        );
+      }
+    }
+
+    it('runs a handoff’s continuation that a worker takes at once, while the lease passes to it', async () => {
+      // The handoff's lease update is held up. The continuation must not be
+      // visible to a worker until the lease is its own: one that took it in
+      // between would find the lease held, leave its message, and complete,
+      // and the lease would pass to a job that no longer exists.
+      await withSlowPool(/SET owner_job_id = \$3/, 'before', async () => {
+        const runId = `wrun_${ulid()}`;
+        respond = (_delivery, response) =>
+          response.end(
+            runDeliveries(runId).length === 1
+              ? JSON.stringify({ timeoutSeconds: 0 })
+              : '{}'
+          );
+        const { messageId } = await wake(runId);
+        await until(
+          () => runDeliveries(runId).length,
+          (n) => n === 2
+        );
+        expect(runDeliveries(runId)[1]).toMatchObject({
+          messageId,
+          attempt: 1,
+          deliveryCount: 2,
+        });
+        await untilReleased(runId);
+      });
+    }, 30_000);
+
+    it('runs a keyed handoff’s continuation that another worker of the process takes while its predecessor returns', async () => {
+      // The handoff's commit returns late, so the continuation is visible
+      // while its predecessor, which has the same idempotency key, is still
+      // in flight in this process. The continuation must still be delivered,
+      // not acknowledged as a duplicate of a delivery that only rescheduled.
+      await withSlowPool(
+        /run_at => \$3::timestamptz/,
+        'afterCommit',
+        async () => {
+          const runId = `wrun_${ulid()}`;
+          respond = (_delivery, response) =>
+            response.end(
+              runDeliveries(runId).length === 1
+                ? JSON.stringify({ timeoutSeconds: 0 })
+                : '{}'
+            );
+          const { messageId } = await queue.queue(
+            QUEUE,
+            { runId, runSpecVersion: SPEC },
+            { idempotencyKey: `wait:${runId}` }
+          );
+          await until(
+            () => runDeliveries(runId).length,
+            (n) => n === 2
+          );
+          expect(runDeliveries(runId)[1]).toMatchObject({
+            messageId,
+            attempt: 1,
+            deliveryCount: 2,
+          });
+          await untilReleased(runId);
+        }
+      );
+    }, 30_000);
+
     it('delivers a handoff before the messages left on its lease', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();

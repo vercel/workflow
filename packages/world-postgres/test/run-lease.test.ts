@@ -236,26 +236,86 @@ describe.skipIf(process.platform === 'win32')(
       ).resolves.toEqual({ owner: false });
     });
 
-    it('hands the lease to a handoff’s continuation, which takes it while it waits to start', async () => {
+    it('adds a handoff’s continuation and hands it the lease in one transaction', async () => {
       const leases = createRunLeases(pool);
       const owner = await job();
-      const continuation = await job({ locked: false, attempts: 0 });
       const other = await job();
       await leases.claim('run_h', owner, left('own'), 'wake', false);
-      await expect(leases.transfer('run_h', owner, continuation)).resolves.toBe(
+      const continuation = {
+        task: 'lease_test',
+        payload: { marker: 'continuation' },
+        jobKey: 'continuation:run_h',
+        jobKeyMode: 'preserve_run_at' as const,
+        maxAttempts: 9,
+        priority: -1,
+      };
+      await expect(leases.handoff('run_h', owner, continuation)).resolves.toBe(
         true
       );
-      // The old owner can no longer hand it on.
-      await expect(leases.transfer('run_h', owner, other)).resolves.toBe(false);
+      const [added] = (
+        await pool.query<{
+          id: string;
+          priority: number;
+          max_attempts: number;
+        }>(
+          "SELECT id::text AS id, priority, max_attempts FROM graphile_worker._private_jobs WHERE key = 'continuation:run_h'"
+        )
+      ).rows;
+      expect(added).toMatchObject({ priority: -1, max_attempts: 9 });
+      expect((await row('run_h')).owner).toBe(added!.id);
+
+      // A delivery that finds the continuation owning the lease, while it
+      // waits to start, leaves its message for it.
       await expect(
         leases.claim('run_h', other, left('wake'), 'wake', false)
       ).resolves.toEqual({ owner: false });
       await expect(
-        leases.claim('run_h', continuation, left('own'), 'wake', false)
+        leases.claim('run_h', added!.id, left('own'), 'wake', false)
       ).resolves.toEqual({ owner: true });
-      await expect(leases.takeWake('run_h', continuation)).resolves.toEqual(
+      await expect(leases.takeWake('run_h', added!.id)).resolves.toEqual(
         left('wake')
       );
+
+      // The old owner can no longer hand it on, though its continuation is
+      // still added.
+      await expect(
+        leases.handoff('run_h', owner, {
+          ...continuation,
+          jobKey: 'continuation:late',
+        })
+      ).resolves.toBe(false);
+      expect(await jobsByKey('continuation:late')).toHaveLength(1);
+      expect((await row('run_h')).owner).toBe(added!.id);
+    });
+
+    it('never shows a handoff’s continuation to a worker before it owns the lease', async () => {
+      const leases = createRunLeases(pool);
+      const owner = await job();
+      await leases.claim('run_k', owner, left('own'), 'wake', false);
+      // Hold the lease row from another session, so the handoff's transaction
+      // stops after adding the continuation and before handing it the lease.
+      const blocker = await pool.connect();
+      await blocker.query('BEGIN');
+      await blocker.query(
+        "SELECT 1 FROM workflow.workflow_run_delivery_leases WHERE run_id = 'run_k' FOR UPDATE"
+      );
+      const handoff = leases.handoff('run_k', owner, {
+        task: 'lease_test',
+        payload: { marker: 'continuation' },
+        jobKey: 'continuation:run_k',
+        jobKeyMode: 'preserve_run_at',
+        maxAttempts: 9,
+      });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        // A worker polling now sees no continuation.
+        expect(await jobsByKey('continuation:run_k')).toEqual([]);
+      } finally {
+        await blocker.query('COMMIT');
+        blocker.release();
+      }
+      await expect(handoff).resolves.toBe(true);
+      expect(await jobsByKey('continuation:run_k')).toHaveLength(1);
     });
 
     it('serializes concurrent claims: exactly one delivery owns the lease', async () => {

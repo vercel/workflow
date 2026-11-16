@@ -44,6 +44,17 @@ export interface LeftJob {
   maxAttempts?: number;
 }
 
+/** A handoff's continuation job (see {@link RunLeases.handoff}). */
+export interface ContinuationJob {
+  task: string;
+  payload: unknown;
+  jobKey?: string;
+  jobKeyMode: 'preserve_run_at' | 'unsafe_dedupe';
+  maxAttempts: number;
+  priority?: number;
+  runAt?: Date;
+}
+
 export type ClaimResult =
   /** This job owns the run's lease. */
   | { owner: true }
@@ -70,8 +81,20 @@ export interface RunLeases {
    * when there is none (or `jobId` no longer owns the lease).
    */
   takeWake(runId: string, jobId: string): Promise<LeftJob | undefined>;
-  /** Hand the lease from `jobId` to `nextJobId` (a handoff's continuation). */
-  transfer(runId: string, jobId: string, nextJobId: string): Promise<boolean>;
+  /**
+   * Add a handoff's continuation job and hand it the lease `jobId` owns, in
+   * one transaction. The continuation is not visible to any worker before it
+   * owns the lease: a worker that took it in between would find the lease
+   * still held, leave its message on the row and complete, and the lease
+   * would pass to a job that no longer exists, leaving the run nothing to
+   * run. Returns whether the lease was handed over (`false` when `jobId` no
+   * longer owns it; the continuation is added either way).
+   */
+  handoff(
+    runId: string,
+    jobId: string,
+    continuation: ContinuationJob
+  ): Promise<boolean>;
   /** Release the lease, re-adding as jobs what was left on it. */
   release(runId: string, jobId: string): Promise<void>;
 }
@@ -136,6 +159,11 @@ const releaseSql = `DELETE FROM ${LEASES_TABLE}
 WHERE run_id = $1 AND owner_job_id = $2::bigint
 RETURNING wake, deferred`;
 
+const addContinuationSql = (graphileSchema: string) =>
+  `SELECT (${graphileSchema}.add_job(identifier => $1, payload => $2::json,
+    run_at => $3::timestamptz, max_attempts => $4::int, job_key => $5,
+    priority => $6::int, job_key_mode => $7)).id::text AS id`;
+
 const addJobSql = (graphileSchema: string) =>
   `SELECT ${graphileSchema}.add_job(identifier => $1, payload => $2::json,
     job_key => $3, job_key_mode => 'preserve_run_at', max_attempts => $4)`;
@@ -156,6 +184,7 @@ export function createRunLeases(pool: Pool): RunLeases {
   const claimQuery = claimSql(graphileSchema);
   const leaveQuery = leaveSql(graphileSchema);
   const addJobQuery = addJobSql(graphileSchema);
+  const addContinuationQuery = addContinuationSql(graphileSchema);
   let warnedMissing = false;
 
   function missing(): ClaimResult {
@@ -198,13 +227,35 @@ export function createRunLeases(pool: Pool): RunLeases {
       ]);
       return rows[0]?.wake;
     },
-    async transfer(runId, jobId, nextJobId) {
-      const { rowCount } = await pool.query(transferSql, [
-        runId,
-        jobId,
-        nextJobId,
-      ]);
-      return Boolean(rowCount);
+    async handoff(runId, jobId, continuation) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const { rows } = await client.query<{ id: string }>(
+          addContinuationQuery,
+          [
+            continuation.task,
+            JSON.stringify(continuation.payload),
+            continuation.runAt ?? null,
+            continuation.maxAttempts,
+            continuation.jobKey ?? null,
+            continuation.priority ?? null,
+            continuation.jobKeyMode,
+          ]
+        );
+        const moved = await client.query(transferSql, [
+          runId,
+          jobId,
+          rows[0]!.id,
+        ]);
+        await client.query('COMMIT');
+        return Boolean(moved.rowCount);
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async release(runId, jobId) {
       const empty = await pool.query(releaseEmptySql, [runId, jobId]);
