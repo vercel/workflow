@@ -173,6 +173,21 @@ describe('resumeHook durable resume', () => {
     expect(attributes['workflow.hook.resume_strategy']).toBe('sequential');
   });
 
+  it('names the hook_received it committed on the wake', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { queue } = makeWorld(hook, {
+      createEvent: vi.fn().mockResolvedValue({
+        event: { eventId: 'evnt_00000000000000000000000007' },
+      }),
+    });
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(queue.mock.calls[0][1].wakeEventId).toBe(
+      'evnt_00000000000000000000000007'
+    );
+  });
+
   it("stamps hook_received with the run's spec version when it is older", async () => {
     // The runtime executing the run reads this event; one built against a
     // lower spec version (an older deployment, or another SDK) rejects an

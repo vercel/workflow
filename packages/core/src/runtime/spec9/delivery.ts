@@ -146,6 +146,7 @@ import { consumeOwnResolvingWrite } from './consume-after-commit.js';
 import {
   forgetConsumedPosition,
   hasConsumedPosition,
+  isAboveConsumedPosition,
   isCompletedWaitTimer,
   isNoopDelivery,
   isTerminalRun,
@@ -376,6 +377,7 @@ async function runDelivery(
     stepCreatedAt,
     runContext,
     hookResumeTiming,
+    wakeEventId,
     waitContinuation,
     completeWaits,
     recovery,
@@ -1191,6 +1193,12 @@ async function runDelivery(
   }
 
   // --- Orchestrator delivery ---
+  // A wake that names an event above the consumed position has something
+  // new, so the no-op check's tail read below would only find that out.
+  const wakesForNewEvent = (): boolean => {
+    const slot = wakeEventId ? eventIdToSlot(wakeEventId) : null;
+    return slot !== null && isAboveConsumedPosition(world, runId, slot);
+  };
   // A delivery with nothing new since the position this
   // process last consumed, and no due timer, exits without a
   // replay. Only consulted when this process holds a
@@ -1229,7 +1237,8 @@ async function runDelivery(
     (!waitContinuation ||
       isCompletedWaitTimer(world, runId, waitContinuation)) &&
     wakeUpWaits.size === 0 &&
-    hasConsumedPosition(world, runId)
+    hasConsumedPosition(world, runId) &&
+    !wakesForNewEvent()
   ) {
     const tail = await world.events.list({
       runId,
