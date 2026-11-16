@@ -30,6 +30,9 @@ export interface RunUsageState {
  * Reads can overlap (a poll, the run finishing, a run change), and finish
  * in any order. The last read started wins: a response from an earlier one
  * is dropped, so a slow read of an older log never replaces a newer count.
+ * It polls while the run is live or its last usage read was still in
+ * progress, and stops once neither is true.
+ *
  * Polls never stack: the next one is scheduled when the last one has
  * answered, `max(refreshInterval, SLOW_READ_BACKOFF × its duration)` later,
  * and a poll that comes due while another read is in flight is skipped.
@@ -101,8 +104,13 @@ export function useRunUsage(
 
   // A World without usage answers `null` every time: no point polling it.
   const unsupported = usage === null;
+  // Poll while the page reads the run as live, and also while the last usage
+  // read was taken mid-run: the run can finish between that read and the
+  // page's own read of the run, which then never reads as live, so `live`
+  // never flips and nothing else would read the final numbers.
+  const polling = live || usage?.inProgress === true;
   useEffect(() => {
-    if (!enabled || !live || unsupported) return;
+    if (!enabled || !polling || unsupported) return;
     if (!refreshInterval || refreshInterval <= 0) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -122,7 +130,7 @@ export function useRunUsage(
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [enabled, live, unsupported, refreshInterval, read]);
+  }, [enabled, polling, unsupported, refreshInterval, read]);
 
   return { usage, loading, error, refresh: read };
 }

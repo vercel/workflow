@@ -234,7 +234,12 @@ describe('useRunUsage', () => {
 
   it('reads the final numbers once when the run finishes, then stops polling', async () => {
     vi.useFakeTimers();
-    vi.mocked(fetchRunUsage).mockResolvedValue(ok(usage('wrun_a', 1)));
+    // While it runs, reads say so; the read after it finishes does not.
+    vi.mocked(fetchRunUsage)
+      .mockResolvedValueOnce(ok(usage('wrun_a', 1)))
+      .mockResolvedValue(
+        ok({ ...usage('wrun_a', 2), status: 'completed', inProgress: false })
+      );
     const { rerender } = renderHook(
       ({ live }) => useRunUsage(env, 'wrun_a', { live, refreshInterval: 1000 }),
       { initialProps: { live: true } }
@@ -267,6 +272,56 @@ describe('useRunUsage', () => {
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps polling a usage read that came back in progress, even once the run reads as finished', async () => {
+    // The page loads the run after it finished (`live` is false from the
+    // start), but the usage read was taken while it still ran.
+    vi.useFakeTimers();
+    const finished: RunUsage = {
+      ...usage('wrun_a', 9),
+      status: 'completed',
+      inProgress: false,
+    };
+    vi.mocked(fetchRunUsage)
+      .mockResolvedValueOnce(ok(usage('wrun_a', 5)))
+      .mockResolvedValueOnce(ok(finished));
+    const { result } = renderHook(() =>
+      useRunUsage(env, 'wrun_a', { live: false, refreshInterval: 1000 })
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.usage?.inProgress).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(2);
+    expect(result.current.usage).toMatchObject({
+      events: 9,
+      inProgress: false,
+    });
+
+    // Finished, and the run is not live: polling stops.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not poll a finished run whose usage is complete', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchRunUsage).mockResolvedValue(
+      ok({ ...usage('wrun_a', 9), status: 'completed', inProgress: false })
+    );
+    renderHook(() =>
+      useRunUsage(env, 'wrun_a', { live: false, refreshInterval: 1000 })
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
     });
     expect(fetchRunUsage).toHaveBeenCalledTimes(1);
   });

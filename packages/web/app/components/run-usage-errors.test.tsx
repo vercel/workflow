@@ -182,6 +182,37 @@ describe('a failed first usage read on a finished run', () => {
   });
 });
 
+describe('a run that finished before the page read it', () => {
+  it('reads the usage again until it is complete', async () => {
+    vi.useFakeTimers();
+    // The usage read was taken mid-run; the page reads the run as finished,
+    // so it is never live.
+    vi.mocked(fetchRunUsage)
+      .mockResolvedValueOnce(ok(usage(4, 'running')))
+      .mockResolvedValue(ok(usage(7, 'completed')));
+    render(<RunPageUsage live={false} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId('run-usage-events').textContent).toBe('4');
+    expect(screen.getByTestId('usage-tab').textContent).toContain(
+      'its usage can still grow'
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(screen.getByTestId('run-usage-events').textContent).toBe('7');
+    expect(screen.getByTestId('usage-tab').textContent).not.toContain(
+      'its usage can still grow'
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('unchanged paths', () => {
   it('hides the fields and the tab on a World without usage', async () => {
     vi.mocked(fetchRunUsage).mockResolvedValue(ok(null));
