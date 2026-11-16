@@ -894,6 +894,94 @@ export const client = { provider: providerName };`
     expect(output).toContain('from-serde');
     expect(output).not.toMatch(/from\s+["']workflow-pkg["']/);
   });
+
+  describe('package.json subpath imports that lead to a bundled entry', () => {
+    let outdir: string;
+    let stepFile: string;
+    let serdeFile: string;
+
+    beforeEach(async () => {
+      outdir = join(testRoot, 'out');
+      stepFile = join(testRoot, 'src', 'workflows', 'my-workflow.ts');
+      serdeFile = join(testRoot, 'src', 'lib', 'server', 'emails', 'serde.ts');
+      const emailsIndex = join(
+        testRoot,
+        'src',
+        'lib',
+        'server',
+        'emails',
+        'index.ts'
+      );
+
+      writeFile(
+        join(testRoot, 'package.json'),
+        JSON.stringify({ imports: { '#lib/*': './src/lib/*' } })
+      );
+      writeFile(serdeFile, `export const value = "from-serde";`);
+      writeFile(emailsIndex, `export { value } from './serde';`);
+      writeFile(
+        stepFile,
+        `import { value } from '#lib/server/emails';\nexport async function myStep() {\n  'use step';\n  return value;\n}`
+      );
+
+      // Record that the emails module leads to the serde file, as discovery
+      // does when it walks the app's files.
+      await esbuild.build({
+        entryPoints: [emailsIndex],
+        absWorkingDir: testRoot,
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        plugins: [
+          createDiscoverEntriesPlugin(
+            {
+              discoveredSteps: new Set<string>(),
+              discoveredWorkflows: new Set<string>(),
+              discoveredSerdeFiles: new Set<string>(),
+            },
+            testRoot
+          ),
+        ],
+      });
+    });
+
+    function buildStep(external?: string[]) {
+      return esbuild.build({
+        entryPoints: [stepFile],
+        absWorkingDir: testRoot,
+        outdir,
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        logLevel: 'silent',
+        external,
+        plugins: [
+          createSwcPlugin({
+            mode: 'step',
+            entriesToBundle: [stepFile, serdeFile],
+            outdir,
+          }),
+        ],
+      });
+    }
+
+    it('keeps the import when it matches an external pattern', async () => {
+      const result = await buildStep(['#lib/*']);
+
+      expect(result.errors).toHaveLength(0);
+      const output = result.outputFiles[0].text;
+      expect(output).toMatch(/from\s+["']#lib\/server\/emails["']/);
+      expect(output).not.toContain('from-serde');
+    });
+
+    it('fails to resolve an extensionless import without the external', async () => {
+      await expect(buildStep()).rejects.toThrow(
+        /Could not resolve "#lib\/server\/emails"/
+      );
+    });
+  });
 });
 
 describe('createSwcPlugin sideEffectEntries', () => {
