@@ -68,7 +68,8 @@ describe('supported @swc/core line', () => {
     'packages/nest/src/swc-builder-deps.ts, and the pinned @swc/core version ' +
     'in docs/content/docs/v4/getting-started/nestjs.mdx, ' +
     'docs/content/docs/v5/getting-started/nestjs.mdx and ' +
-    'packages/nest/README.md';
+    'packages/nest/README.md, and the @swc/core devDependency in ' +
+    'workbench/nest/package.json';
 
   it('matches the @swc/core that @workflow/nest and its SWC plugin are built against', () => {
     // The catalog version @workflow/nest depends on and @workflow/swc-plugin
@@ -113,6 +114,24 @@ describe('supported @swc/core line', () => {
       `${file} does not contain ${SWC_CORE_INSTALL_SPEC}: update ${PINS} ` +
         'together.'
     ).toBe(true);
+  });
+
+  it('workbench/nest/package.json installs SWC_CORE_INSTALL_SPEC', () => {
+    // The e2e workbench builds with what the docs tell users to install.
+    const { devDependencies } = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL('../../../workbench/nest/package.json', import.meta.url)
+        ),
+        'utf-8'
+      )
+    );
+    const spec = `@swc/core@${devDependencies?.['@swc/core']}`;
+    expect(
+      spec,
+      `workbench/nest/package.json installs ${spec}, not ` +
+        `${SWC_CORE_INSTALL_SPEC}: update ${PINS} together.`
+    ).toBe(SWC_CORE_INSTALL_SPEC);
   });
 });
 
