@@ -18,6 +18,16 @@ There may be cases where you see multiple `step_started` events for the same ste
 - **Out of memory (OOM)**: if your step code loads enough data into memory, especially if the step is invoked concurrently, the function invocation might run out of memory. You can see your function's peak memory use by going to the [Observability Query page](https://vercel.com/docs/observability) and showing the **Function Invocation Peak Memory** metric, then filtering down the **Route** to `/.well-known/workflow` endpoints.
 - **Network issues**: persistent firewall, network stability, and related issues might prevent your function from reporting results or errors. This should be temporary.
 
+## When the step runs out of retries
+
+On the experimental [spec 9 runtime](/docs/configuration/runtime-tuning#spec-9-experimental), a step whose last attempt never recorded a result fails with an error that names that attempt and when it started:
+
+```text
+Step "processData" exceeded max retries (3 retries): attempt 4 started at 2026-11-13T22:29:47.000Z and never recorded a result. The invocation running it likely crashed, ran out of memory, hit its timeout, or was stopped before it could record the result. Check that invocation's logs for the cause.
+```
+
+Use the start time to find that invocation in your function logs, which show the timeout, OOM, or crash.
+
 ## Getting help
 
 If you consistently see multiple `step_started` events and have ruled out function timeouts, OOMs, and firewall issues, please [contact support](https://vercel.com/help).
