@@ -13,6 +13,7 @@ import {
   RetryAgent,
   type RetryHandler,
 } from 'undici';
+import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import type { APIConfig } from './utils.js';
 import { version } from './version.js';
 
@@ -181,13 +182,6 @@ export const QUEUE_AGENT_CONNECTIONS = 64;
  * misconfigured value from failing healthy acknowledgements.
  */
 export const QUEUE_REQUEST_TIMEOUT_MS = 30_000;
-
-/**
- * `code` on the error a queue request is aborted with when it runs past
- * {@link QUEUE_REQUEST_TIMEOUT_MS}, so a send's retry policy can recognize it
- * (see `queue-send-retry.ts`).
- */
-export const QUEUE_REQUEST_DEADLINE_CODE = 'WORKFLOW_QUEUE_REQUEST_DEADLINE';
 
 /** Effective queue-request deadline, read per call so tests can override it. */
 export const getQueueRequestTimeoutMs = (): number =>

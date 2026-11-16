@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QUEUE_REQUEST_DEADLINE_CODE } from './http-client.js';
+import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import {
   QUEUE_SEND_MAX_ATTEMPTS,
   QUEUE_SEND_RETRY_BUDGET_MS,
@@ -106,6 +106,32 @@ describe('withQueueSendRetry', () => {
 
     await settled;
     expect(send).toHaveBeenCalledTimes(QUEUE_SEND_MAX_ATTEMPTS);
+  });
+
+  it('reports a send that still failed after its re-sends', async () => {
+    const send = vi.fn().mockImplementation(async () => {
+      throw connectionReset();
+    });
+    const onExhausted = vi.fn();
+
+    const result = withQueueSendRetry(send, { onExhausted });
+    const settled = expect(result).rejects.toThrow('fetch failed');
+    await vi.runAllTimersAsync();
+
+    await settled;
+    expect(onExhausted).toHaveBeenCalledOnce();
+    expect(onExhausted.mock.calls[0]?.[1]).toBe(QUEUE_SEND_MAX_ATTEMPTS);
+  });
+
+  it('does not report a send that was never re-sent', async () => {
+    const onExhausted = vi.fn();
+    await expect(
+      withQueueSendRetry(
+        vi.fn().mockRejectedValue(queueError('BadRequestError')),
+        { onExhausted }
+      )
+    ).rejects.toThrow('BadRequestError');
+    expect(onExhausted).not.toHaveBeenCalled();
   });
 
   it('sends once when the queue refused the message', async () => {
