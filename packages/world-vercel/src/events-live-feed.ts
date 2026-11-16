@@ -380,8 +380,8 @@ export function subscribeRunEvents(
     .then(({ openWsChannel, resolveWsTransport }) => {
       if (!active) return;
       const release = openWsChannel(runId, config);
-      const resolved = release ? resolveWsTransport(runId, config) : null;
-      if (!release || !resolved) {
+      const resolved = release ? resolveWsTransport(runId, config) : undefined;
+      if (!release || resolved?.kind !== 'open') {
         release?.();
         fail(
           new LiveFeedError(

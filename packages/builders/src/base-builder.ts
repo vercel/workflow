@@ -846,32 +846,51 @@ export abstract class BaseBuilder {
 
     const emittedImportIdentities = new Set<string>([builtInSteps]);
     const importStatements: string[] = [];
+    // Serde-only files are imported as namespaces that the sentinel export
+    // references. The framework bundler consumes this file directly, and for
+    // a package with `"sideEffects": false` (AI SDK providers, for one) it
+    // drops a bare `import "pkg"`, taking the class registrations with it.
+    const serdeNamespaces: string[] = [];
     const routeDir = dirname(outfile);
     const addRegistrationImport = (specifier: string): void => {
       importStatements.push(`import ${JSON.stringify(specifier)};`);
     };
-    const addRegistrationFileImport = (file: string): void => {
+    const addRegistrationFileImport = (
+      file: string,
+      { keepWithoutSideEffects }: { keepWithoutSideEffects: boolean }
+    ): void => {
       const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
       if (emittedImportIdentities.has(identity)) {
         return;
       }
       emittedImportIdentities.add(identity);
-      addRegistrationImport(this.createRouteImportSpecifier(file, routeDir));
+      const specifier = this.createRouteImportSpecifier(file, routeDir);
+      if (!keepWithoutSideEffects) {
+        addRegistrationImport(specifier);
+        return;
+      }
+      const namespace = `__wf_serde_${serdeNamespaces.length}`;
+      serdeNamespaces.push(namespace);
+      importStatements.push(
+        `import * as ${namespace} from ${JSON.stringify(specifier)};`
+      );
     };
 
     addRegistrationImport(builtInSteps);
     for (const file of stepFiles) {
-      addRegistrationFileImport(file);
+      addRegistrationFileImport(file, { keepWithoutSideEffects: false });
     }
     for (const file of serdeOnlyFiles) {
-      addRegistrationFileImport(file);
+      addRegistrationFileImport(file, { keepWithoutSideEffects: true });
     }
 
+    const stepsRegistered =
+      serdeNamespaces.length > 0 ? `[${serdeNamespaces.join(', ')}]` : 'true';
     const output = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 ${importStatements.join('\n')}
 
-export const __steps_registered = true;
+export const __steps_registered = ${stepsRegistered};
 `;
     await mkdir(dirname(outfile), { recursive: true });
     await this.writeGeneratedFile(outfile, output);

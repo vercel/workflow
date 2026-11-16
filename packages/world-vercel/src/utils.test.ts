@@ -84,16 +84,10 @@ describe('getHeaders', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
-    delete process.env.WORKFLOW_TEST_LIMIT_OVERRIDES;
   });
 
   afterEach(() => {
     process.env = originalEnv;
-  });
-
-  it('omits x-workflow-test-limit-overrides when WORKFLOW_TEST_LIMIT_OVERRIDES is unset', () => {
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-workflow-test-limit-overrides')).toBeNull();
   });
 
   it('appends a caller user-agent token to the world-vercel user-agent', () => {
@@ -105,13 +99,6 @@ describe('getHeaders', () => {
     expect(headers.get('User-Agent')).toMatch(
       /^@workflow\/world-vercel\/\S+ node-\S+ \S+ \([^)]*\)(?: \S+)? eve\/0\.18\.1$/
     );
-  });
-
-  it('forwards WORKFLOW_TEST_LIMIT_OVERRIDES verbatim as x-workflow-test-limit-overrides', () => {
-    const overrides = '{"STREAM_MAX_DURATION_MS":5000}';
-    process.env.WORKFLOW_TEST_LIMIT_OVERRIDES = overrides;
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-workflow-test-limit-overrides')).toBe(overrides);
   });
 
   it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {

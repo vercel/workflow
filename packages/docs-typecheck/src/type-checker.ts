@@ -119,6 +119,7 @@ const compilerOptions: ts.CompilerOptions = {
       path.join(__dirname, '../node_modules/@ai-sdk/workflow'),
     ],
     '@ai-sdk/react': [path.join(__dirname, '../node_modules/@ai-sdk/react')],
+    immer: [path.join(__dirname, '../node_modules/immer')],
     // Pin vite/vitest to a single instance. pnpm can materialize multiple
     // copies of vite (differing only by peer-dep hash), and a docs sample
     // mixing `vitest/config` with `@workflow/vitest` would otherwise see two

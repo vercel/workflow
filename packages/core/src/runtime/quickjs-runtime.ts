@@ -71,6 +71,7 @@ import {
   quickjsWasiVersion,
   quickjsWasm,
 } from './quickjs-assets.generated.js';
+import { getPrecompiledQuickJSModules } from './quickjs-precompiled.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -1317,6 +1318,24 @@ const quickjsAssets = globalSingleton(
 
 function getCompiledAssets() {
   if (!quickjsAssets.promise) {
+    const precompiled = getPrecompiledQuickJSModules();
+    if (precompiled) {
+      // The host compiled the modules at deploy time (runtimes that forbid
+      // compiling WebAssembly from bytes). See `quickjs-precompiled.ts`.
+      quickjsAssets.promise = Promise.resolve({
+        wasm: precompiled.quickjs,
+        extensions: quickjsExtensions.map((ext) => {
+          const wasm = precompiled.extensions[ext.name];
+          if (!wasm) {
+            throw new Error(
+              `setPrecompiledQuickJSModules() is missing the "${ext.name}" QuickJS extension`
+            );
+          }
+          return { ...ext, wasm: wasm as ExtensionDescriptor['wasm'] };
+        }),
+      });
+      return quickjsAssets.promise;
+    }
     quickjsAssets.promise = (async () => {
       const [wasm, ...extensionModules] = await Promise.all([
         WebAssemblyGlobal.compile(quickjsWasm),
@@ -2311,7 +2330,7 @@ export async function startQuickJSWorkflow(
     // throw an error tagged with `name = "WorkflowNotRegisteredError"`
     // so the host-side entrypoint can reconstruct a real
     // WorkflowNotRegisteredError (a WorkflowRuntimeError subclass that
-    // classifies as RUNTIME_ERROR) rather than a generic user error.
+    // classifies as WORKFLOW_NOT_REGISTERED) rather than a generic user error.
     // See quickjs-entrypoint.ts's run_failed branch.
     try {
       vm.evalCode(`

@@ -32,7 +32,7 @@ jobs:
       RELEASE_VERSION: 5
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -42,19 +42,21 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       # Keep setup-node because registry-url configures npm publishing. pnpm/setup
-      # handles the pnpm store cache after Node.js is available.
+      # handles the pnpm store cache after Node.js is available, and must not
+      # install a second Node.js from `.node-version` (`node-version-file: false`).
       - name: Setup Node.js 24.x
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
           registry-url: 'https://registry.npmjs.org'
 
       - name: Setup pnpm
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: true
           require-lockfile: true
           cache: true
+          node-version-file: false
 
       - name: Check package release major
         run: node .github/scripts/check-release-major.js "$RELEASE_VERSION"
@@ -77,7 +79,7 @@ jobs:
       # publish, and the release PR is still refreshed in the same run.
       - name: Select release mode
         id: mode
-        uses: changesets/action/select-mode@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
 
       # `select-mode` asks the registry only when no changesets are pending.
       # Otherwise ask it here: `publish-plan` is the diff `changeset publish`
@@ -106,7 +108,7 @@ jobs:
       - name: Publish to npm
         id: publish
         if: steps.mode.outputs.mode == 'publish' || steps.unpublished.outputs.stale == 'true'
-        uses: changesets/action/publish@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           script: pnpm ci:publish
           create-github-releases: false
@@ -207,6 +209,6 @@ jobs:
 
       - name: Create or update the release pull request
         if: ${{ !cancelled() && steps.reset.outcome == 'success' }}
-        uses: changesets/action/version@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           script: pnpm ci:version

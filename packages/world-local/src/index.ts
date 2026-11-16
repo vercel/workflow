@@ -1,21 +1,15 @@
-import { promises as fs } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import path from 'node:path';
-import type { QueuePrefix, World, WorldCapabilities } from '@workflow/world';
+import type {
+  QueuePrefix,
+  Wait,
+  World,
+  WorldCapabilities,
+} from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
-import {
-  clearCreatedFilesCache,
-  deleteJSON,
-  hasTag,
-  isUntagged,
-  listTaggedFiles,
-  listTaggedFilesByExtension,
-  readJSON,
-  settleAll,
-} from './fs.js';
+import { decode } from './db/codec.js';
+import { databaseFor } from './db/index.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import {
@@ -24,8 +18,7 @@ import {
 } from './orphaned-steps.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { createQueueAuthKey } from './queue-auth-key.js';
-import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
-import { resetHookIndexEnsureCache } from './storage/hook-index.js';
+import { backstopWakeDelaySeconds } from './recovery-wake.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -71,57 +64,16 @@ export type LocalWorld = World & {
 };
 
 /**
- * Delete one tag's lock files: dispose locks, terminal markers, create
- * claims and staged hook events, all named `.locks/<kind>/<id>.<state>.<tag>`.
- *
- * `.locks` is shared by every tag, and a lock is the durable record that its
- * hook or entity is closed, so a tagged `clear()` must leave other tags' locks
- * alone. Vitest workers each clear under their own tag when a test file
- * starts, while other workers' runs are in flight: deleting a disposed hook's
- * lock there makes it look live to the token claim rebuild, and the run that
- * recreates its token then conflicts with its own disposed hook.
- */
-async function clearTaggedLocks(basedir: string, tag: string): Promise<void> {
-  const locksDir = path.join(basedir, '.locks');
-  let lockKindEntries: import('node:fs').Dirent[];
-  try {
-    lockKindEntries = await fs.readdir(locksDir, { withFileTypes: true });
-  } catch {
-    lockKindEntries = [];
-  }
-  await settleAll(
-    lockKindEntries
-      .filter((entry) => entry.isDirectory())
-      .map(async (entry) => {
-        const lockKindDir = path.join(locksDir, entry.name);
-        const lockNames = await fs
-          .readdir(lockKindDir)
-          .catch(() => [] as string[]);
-        await settleAll(
-          lockNames
-            .filter((name) => name.endsWith(`.${tag}`))
-            .map((name) =>
-              // Recursive: a run's staged hook events are a directory.
-              fs.rm(path.join(lockKindDir, name), {
-                recursive: true,
-                force: true,
-              })
-            )
-        );
-      })
-  );
-}
-
-/**
- * Creates a local world instance that combines queue, storage, and streamer functionalities.
+ * Creates a local world: storage, queue and streams in one SQLite database,
+ * `<dataDir>/world.db`.
  *
  * @param args - Optional configuration object
  * @param args.dataDir - Directory for storing workflow data (default: `.workflow-data/`)
  * @param args.port - Port override for queue transport (default: auto-detected)
  * @param args.baseUrl - Full base URL override for queue transport (default: `http://localhost:{port}`)
  * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
- * @param args.tag - Optional tag to scope files (e.g., `vitest-0`). When set, files are written
- *   as `{id}.{tag}.json` and `clear()` only deletes files matching this tag.
+ * @param args.tag - Optional tag (e.g., `vitest-0`) scoping the runs and
+ *   streams this World writes; `clear()` only deletes this tag's data.
  * @param args.queueAuthKey - `'regenerate'` (default) writes a new queue auth key to the data
  *   directory when the World is created; `'read'` only reads the key a running app wrote (the
  *   CLI, the web UI). See `Config.queueAuthKey`.
@@ -143,44 +95,51 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     mergedConfig.dataDir,
     mergedConfig.queueAuthKey ?? 'regenerate'
   );
-  const queue = createQueue(mergedConfig, { queueAuthKey });
-  const { clearCache: clearStorageCache, ...storage } = createStorage(
+  const queue = createQueue(mergedConfig, {
+    queueAuthKey,
+    // Read on demand, once storage exists: only for an orchestrator message
+    // that carries no spec version (see `Config.readUnstampedRunSpec`).
+    ...(mergedConfig.readUnstampedRunSpec !== false && {
+      runSpecVersion: async (runId: string) => {
+        try {
+          const run = await storage.runs.get(runId, { resolveData: 'none' });
+          return run.specVersion;
+        } catch {
+          return undefined;
+        }
+      },
+    }),
+  });
+  const { clearCache: _clearStorageCache, ...storage } = createStorage(
     mergedConfig.dataDir,
     tag
   );
-  const { clearCache: clearStreamerCache, ...streamer } = createStreamer(
+  const { clearCache: _clearStreamerCache, ...streamer } = createStreamer(
     mergedConfig.dataDir,
     tag
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   const capabilities = {
     hookRetention: { active: true },
-    // `start({ experimental_hook })`: the start Hook's token claim, the run and the Hook
-    // entity are written under the claim lock; a refusal is recorded per
-    // candidate. See `admitStartHook` in storage/events-storage.ts.
+    // `start({ experimental_hook })`: the start Hook's token, the run, its Hook and its
+    // run_created commit in one transaction, or the refusal is recorded.
     atomicStartHook: { active: true },
     // Stored whole on the run record; no upload path, so `start()` always
     // sends the code inline.
     dynamicWorkflowCode: true,
-    // world-local deduplicates concurrent `hook_received` writes sharing a
-    // `(runId, resumeId)` via a filesystem sidecar claim (see
-    // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
-    // path converges on one event in dev exactly as it does on Vercel.
+    // `hook_received` writes sharing a `(runId, resumeId)` converge on one
+    // event (the `hook_resumes` table).
     hookResumeDedup: true,
-    // The token claim lock serializes the takeover behind
-    // `createHook({ experimental_force: true })`; see the hook_created
-    // branch of storage/events-storage.ts.
+    // `createHook({ experimental_force: true })` takes a token over in one
+    // transaction, writing the holder's `hook_disposed`.
     hookForceClaim: true,
     // The queue delivers a single-orchestrator run's orchestrator messages
     // one at a time (a per-run gate where they are sent and one where they
-    // are handled, so a message another process on the data directory sent
-    // waits too; see queue.ts): with the fence, the two halves of the single-writer guarantee. An in-band
-    // write is stored at its `occurredAt` (events-storage.ts), as the
-    // spec-9 contract requires.
+    // are handled, see queue.ts): with the fence, the two halves of the
+    // single-writer guarantee. An in-band write is stored at its `occurredAt`.
     maxConcurrency: true,
-    // A per-run in-band count on disk, under a lock file, so every process
-    // on the data directory shares it; see the in-band writer fence in
-    // storage/events-storage.ts.
+    // The per-run in-band count is a column of the run's row, checked and
+    // advanced in the write's transaction.
     inBandFence: true,
   } satisfies WorldCapabilities;
   return {
@@ -190,6 +149,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       inBandFence: capabilities.inBandFence,
     }),
     capabilities,
+    // The queue, its handlers and `queueAuthMode: 'loopback'`; `close()` is
+    // the World's own, below.
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
@@ -200,40 +161,38 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
+      // The key is written in the background from `createWorld`. Once
+      // `start()` resolves it is in the file, so the CLI, the web UI and the
+      // app's other processes read this process's key, and two processes
+      // started at once have both written theirs (the last write is the key).
+      await queueAuthKey.written();
       if (!recoverActiveRuns) {
         return;
       }
-      // Scope recovery to this world's own files. A tagged world recovers only
-      // its tag; an untagged world recovers only untagged files. Without the
-      // untagged filter, an untagged dev server sharing the data directory with
-      // the vitest harness would list tagged runs (list enumerates every file)
-      // and re-enqueue them, but run_started's tagged-or-untagged read can't
-      // resolve a foreign tag, yielding "did not return the run entity" 500s
-      // on startup until the message exhausts its deliveries.
-      const fileIdFilter = tag
-        ? (fileId: string) => hasTag(fileId, tag)
-        : isUntagged;
-      // Recovery assumes this is the only live process on this data directory
-      // and tag, as re-enqueueing already does: a concurrent process's
-      // in-flight queue-owned steps are dispatched again by the replays
-      // below. Under that assumption the previous process's queue is gone, so
-      // release the steps its messages owned before the run is re-enqueued.
-      // Runs re-enqueued earlier in this loop can already wake later ones;
-      // steps those deliveries start are newer than this realm's boot, so
-      // releaseOrphanedSteps leaves them alone.
+      // The queue is in memory: a restart loses every message a run had
+      // queued (its step messages, its wait timers). Every active run of this
+      // World's tag is re-enqueued (a tagged World recovers only its tag, an
+      // untagged one only untagged runs, so a dev server never recovers a
+      // test's runs), after its steps that were running inline in the
+      // previous process are released. Recovery assumes this is the only
+      // live process on this data directory and tag.
       //
-      // Releasing reads a run's steps (and its events when a step is
-      // running), so each listed page of runs starts releasing in the
-      // background, several runs at a time, while runs are still enqueued in
-      // order and each only once its own release has settled.
+      // The recovery delivery is what re-arms a run's lost wait timers: a
+      // spec 8 replay suspends on the open wait again and re-arms it, and the
+      // recovery message carries a recovery marker, so a single-orchestrator
+      // (spec 9) delivery sends the run's step messages and wait timers again
+      // (chained in hops for a wait longer than one queue delay). So a spec 9
+      // wait gets two wakes; one is a no-op.
+      //
+      // On top of that, as a backstop, every open wait of a recovered run due
+      // within one queue timer gets a plain wake of its own, due when the
+      // wait is (see `backstopWakeDelaySeconds`): a wait whose timer is lost
+      // leaves a run asleep forever, so it is worth one more message.
       const releases = createReleasePipeline(storage);
       const recoveryRuns = {
         ...storage.runs,
         list: (async (params) => {
-          const page = await storage.runs.list({
-            ...params,
-            fileIdFilter,
-          });
+          const page = await storage.runs.list({ ...params, ownTagOnly: true });
           releases.prefetch(page.data.map((run) => run.runId));
           return page;
         }) as typeof storage.runs.list,
@@ -243,12 +202,47 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         message,
         opts
       ) => {
-        await releases.settle((message as { runId: string }).runId);
-        return queue.queue(queueName, message, opts);
+        const { runId, runSpecVersion } = message as {
+          runId: string;
+          runSpecVersion?: number;
+        };
+        await releases.settle(runId);
+        const sent = await queue.queue(queueName, message, opts);
+        await wakeOpenWaits(queueName, runId, runSpecVersion);
+        return sent;
       };
-      // The queue is in memory: the run's step messages and wait timers
-      // died with the previous process, so the recovery delivery sends them
-      // again.
+      const wakeOpenWaits = async (
+        queueName: Parameters<typeof queue.queue>[0],
+        runId: string,
+        runSpecVersion: number | undefined
+      ) => {
+        const now = Date.now();
+        for (const wait of openWaits(mergedConfig.dataDir, runId)) {
+          const resumeAt = wait.resumeAt
+            ? new Date(wait.resumeAt).getTime()
+            : now;
+          const delaySeconds = backstopWakeDelaySeconds(resumeAt, now);
+          if (delaySeconds === undefined) continue;
+          try {
+            await queue.queue(
+              queueName,
+              {
+                runId,
+                ...(runSpecVersion !== undefined && { runSpecVersion }),
+                requestedAt: new Date(),
+              },
+              {
+                delaySeconds,
+                idempotencyKey: `recovery-wait:${runId}:${wait.waitId}:${resumeAt}`,
+              }
+            );
+          } catch (error) {
+            console.warn(
+              `[world-local] Failed to re-arm wait ${wait.waitId} of run ${runId}: ${error}`
+            );
+          }
+        }
+      };
       await reenqueueActiveRuns(
         recoveryRuns,
         releaseThenEnqueue,
@@ -261,150 +255,68 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       return releaseOrphanedSteps(storage, runId);
     },
     async close() {
-      clearStorageCache();
       await queue.close();
+      // The key is written behind createWorld(): never leave that write in
+      // flight past close() (a caller may remove the directory next).
+      await queueAuthKey.current().catch(() => {});
+      // Other Worlds on the data directory reopen it on their next use.
+      databaseFor(mergedConfig.dataDir).close();
     },
     async clear() {
-      clearStorageCache();
-      if (tag) {
-        // Selectively delete only files matching this tag
-        const basedir = mergedConfig.dataDir;
-
-        // Delete hook token constraint files (and recovery markers,
-        // for disk hygiene) BEFORE deleting the hooks, since we need
-        // to read each hook to extract its token hash. Constraint
-        // files and markers are untagged (`{sha256}.json` and
-        // `{sha256}.recovery.json`) so listTaggedFiles won't find
-        // them. We must resolve them via the hook data.
-        const hooksDir = path.join(basedir, 'hooks');
-        const taggedHookFiles = await listTaggedFiles(hooksDir, tag);
-        const { HookSchema } = await import('@workflow/world');
-        await settleAll(
-          taggedHookFiles.map(async (hookFile) => {
-            const hook = await readJSON(
-              path.join(hooksDir, hookFile),
-              HookSchema
-            );
-            if (hook?.token) {
-              await deleteJSON(
-                path.join(hooksDir, 'tokens', `${hashToken(hook.token)}.json`)
-              );
-              await deleteJSON(
-                hookRecoveryMarkerPath(
-                  basedir,
-                  hook.token,
-                  hook.runId,
-                  hook.hookId
-                )
-              );
-            }
-          })
-        );
-
-        // Delete tagged entity files across all directories. Steps and
-        // events live one directory per run, so walk only this tag's runs
-        // (found from `runs/*.<tag>.json`) rather than every run the shared
-        // data directory holds.
-        const runScopedDirs = (
-          await listTaggedFiles(path.join(basedir, 'runs'), tag)
-        ).flatMap((file) => {
-          const runId = file.slice(0, -`.${tag}.json`.length);
-          return [path.join('steps', runId), path.join('events', runId)];
-        });
-        const entityDirs = [
-          'runs',
-          ...runScopedDirs,
-          'hooks',
-          'hooks/by-run',
-          'hooks/admissions',
-          'waits',
-          'streams/runs',
-        ];
-        await settleAll(
-          entityDirs.map(async (dir) => {
-            const fullDir = path.join(basedir, dir);
-            const files = await listTaggedFiles(fullDir, tag);
-            await settleAll(
-              files.map((f) => deleteJSON(path.join(fullDir, f)))
-            );
-          })
-        );
-        // Drop the run directories that clearing left empty. `rmdir` refuses
-        // a non-empty one, so another tag's (or untagged) files keep theirs.
-        await settleAll(
-          runScopedDirs.map((dir) =>
-            fs.rmdir(path.join(basedir, dir)).catch(() => {})
-          )
-        );
-        // Delete tagged hook-index entries (nested per-key directories)
-        for (const indexDir of ['token-index', 'id-index']) {
-          const fullIndexDir = path.join(basedir, 'hooks', indexDir);
-          let keyDirEntries: import('node:fs').Dirent[];
-          try {
-            keyDirEntries = await fs.readdir(fullIndexDir, {
-              withFileTypes: true,
-            });
-          } catch {
-            keyDirEntries = [];
+      const db = databaseFor(mergedConfig.dataDir);
+      await db.transactAsync(() => {
+        if (tag === undefined) {
+          for (const table of [
+            'events',
+            'steps',
+            'waits',
+            'hooks',
+            'hook_disposals',
+            'hook_tokens',
+            'hook_resumes',
+            'start_hook_rejections',
+            'stream_chunks',
+            'snapshots',
+            'runs',
+          ]) {
+            db.run(`DELETE FROM ${table}`);
           }
-          await settleAll(
-            keyDirEntries
-              .filter((entry) => entry.isDirectory())
-              .map(async (entry) => {
-                const keyDir = path.join(fullIndexDir, entry.name);
-                const taggedEntryFiles = await listTaggedFiles(keyDir, tag);
-                await settleAll(
-                  taggedEntryFiles.map((f) => deleteJSON(path.join(keyDir, f)))
-                );
-              })
-          );
+          return;
         }
-        await clearTaggedLocks(basedir, tag);
-        // Delete tagged stream chunks (.{tag}.bin files). Chunks are sharded
-        // one directory per stream (streams/chunks/<streamName>/<chunkId>.{tag}.bin),
-        // so iterate each per-stream directory: the top-level chunks dir now
-        // holds only subdirectories, so listing it directly would match nothing
-        // and silently leak tagged chunk files across test sessions.
-        const chunksDir = path.join(basedir, 'streams', 'chunks');
-        let streamDirEntries: import('node:fs').Dirent[];
-        try {
-          streamDirEntries = await fs.readdir(chunksDir, {
-            withFileTypes: true,
-          });
-        } catch {
-          streamDirEntries = [];
+        // Only this tag's data: its runs and everything they own, and its
+        // streams.
+        const runs = 'SELECT run_id FROM runs WHERE tag = ?';
+        for (const table of [
+          'events',
+          'steps',
+          'waits',
+          'hook_disposals',
+          'hook_resumes',
+          'snapshots',
+        ]) {
+          db.run(`DELETE FROM ${table} WHERE run_id IN (${runs})`, tag);
         }
-        await settleAll(
-          streamDirEntries
-            .filter((entry) => entry.isDirectory())
-            .map(async (entry) => {
-              const streamChunkDir = path.join(chunksDir, entry.name);
-              const taggedBinFiles = await listTaggedFilesByExtension(
-                streamChunkDir,
-                tag,
-                '.bin'
-              );
-              await settleAll(
-                taggedBinFiles.map((f) =>
-                  fs.unlink(path.join(streamChunkDir, f)).catch(() => {})
-                )
-              );
-            })
+        db.run(
+          `DELETE FROM hook_tokens WHERE run_id IN (${runs}) OR hook_id IN (SELECT hook_id FROM hooks WHERE tag = ?)`,
+          tag,
+          tag
         );
-        // Clear the in-memory write cache so deleted paths are forgotten
-        clearCreatedFilesCache();
-      } else {
-        // `rm()` removes directories that the write path may have cached.
-        clearCreatedFilesCache();
-        resetHookIndexEnsureCache();
-        await rm(mergedConfig.dataDir, { recursive: true, force: true });
-        await initDataDir(mergedConfig.dataDir);
-        // That removed the queue auth key too: a World that wrote it writes
-        // it again, so the CLI and the app's other processes can still send.
-        await queueAuthKey.restore();
-      }
-      // The stream indexes are gone, so forget which streams were registered.
-      clearStreamerCache();
+        db.run('DELETE FROM hooks WHERE tag = ?', tag);
+        db.run('DELETE FROM start_hook_rejections WHERE tag = ?', tag);
+        db.run('DELETE FROM stream_chunks WHERE tag = ?', tag);
+        db.run('DELETE FROM runs WHERE tag = ?', tag);
+      });
+      // Shrink the file: `@workflow/vitest` clears in every worker, and the
+      // freed pages would otherwise keep the database at its largest size.
+      await db.reclaimFreePages();
     },
   };
+}
+
+/** A run's waits that have not completed. */
+function openWaits(dataDir: string, runId: string): Wait[] {
+  return databaseFor(dataDir)
+    .all<{ doc: string }>('SELECT doc FROM waits WHERE run_id = ?', runId)
+    .map((row) => decode<Wait>(row.doc))
+    .filter((wait) => wait.status === 'waiting');
 }

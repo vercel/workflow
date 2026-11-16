@@ -24,12 +24,19 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
-
 import type { FlushableStreamState } from '../../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import type { PayloadKey } from '../../serialization/encryption.js';
 import { formatSerializationError } from '../../serialization/errors.js';
+import { WorkflowStateRecoveryError } from '../../serialization/state-recovery.js';
+import {
+  type StateContext,
+  stateContextForData,
+  stateDehydrateAttributes,
+  stateHydrateAttributes,
+  stateWriteCounts,
+} from '../../serialization/state-refs.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -46,7 +53,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../../types.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -104,6 +111,13 @@ export interface CallerStart {
 
 export interface StepExecutorParams {
   world: World;
+  /**
+   * The replay's frozen state context, for an inline step: its input's
+   * references resolve against it, and its output's changes are encoded
+   * against it. Absent elsewhere; the input's own binding or a recovery from
+   * the run's log is used instead.
+   */
+  stateContext?: StateContext;
   /** Writes this step's events. See {@link StepEventWriter}. */
   createEvent: StepEventWriter;
   workflowRunId: string;
@@ -135,6 +149,11 @@ export interface StepExecutorParams {
    * `stepStartedAt` is the step's first start, not this attempt's.
    */
   firstStartedAt?: Date;
+  /**
+   * When the step's latest attempt started, for an attempt after one that
+   * left no outcome. Reported if this attempt exceeds the retry budget.
+   */
+  lastStartedAt?: Date;
   /** The step's serialized input, as written on its creation. */
   input: SerializedData;
   /**
@@ -240,12 +259,22 @@ export type StepExecutionResult =
   | { type: 'gone' }
   | { type: 'throttled'; timeoutSeconds: number };
 
-/** Message of the `step_failed` written when a step exhausts its retries. */
+/**
+ * Message of the `step_failed` written when a step exhausts its retries.
+ *
+ * The step's final attempt wrote `step_started` and then no outcome, so no
+ * error from its body exists to report. When the log shows that attempt's
+ * start, the message says so, which tells the reader to look at the logs of
+ * the invocation that ran it rather than for an error thrown by the step.
+ */
 export function exceededMaxRetriesMessage(
   stepName: string,
-  maxRetries: number
+  maxRetries: number,
+  lastAttempt?: { attempt: number; startedAt: Date }
 ): string {
-  return `Step "${stepName}" exceeded max retries (${maxRetries} ${pluralize('retry', 'retries', maxRetries)})`;
+  const base = `Step "${stepName}" exceeded max retries (${maxRetries} ${pluralize('retry', 'retries', maxRetries)})`;
+  if (!lastAttempt) return base;
+  return `${base}: attempt ${lastAttempt.attempt} started at ${lastAttempt.startedAt.toISOString()} and never recorded a result. The invocation running it likely crashed, ran out of memory, hit its timeout, or was stopped before it could record the result. Check that invocation's logs for the cause.`;
 }
 
 /**
@@ -261,16 +290,27 @@ export async function failStepForExhaustedRetries(params: {
   stepName: string;
   attempt: number;
   maxRetries: number;
+  /** When the attempt before `attempt`, which left no outcome, started. */
+  lastStartedAt?: Date;
   encryptionKey: PayloadKey | undefined;
   runSpecVersion?: number;
 }): Promise<StepExecutionResult> {
-  const message = exceededMaxRetriesMessage(params.stepName, params.maxRetries);
+  const message = exceededMaxRetriesMessage(
+    params.stepName,
+    params.maxRetries,
+    params.lastStartedAt
+      ? { attempt: params.attempt - 1, startedAt: params.lastStartedAt }
+      : undefined
+  );
   stepLogger.error('Step exceeded max retries', {
     workflowRunId: params.workflowRunId,
     stepName: params.stepName,
     stepId: params.stepId,
     attempt: params.attempt,
     maxRetries: params.maxRetries,
+    ...(params.lastStartedAt
+      ? { lastStartedAt: params.lastStartedAt.toISOString() }
+      : {}),
   });
   try {
     const result = await params.createEvent({
@@ -412,7 +452,7 @@ export async function executeStep(
   // requestId as analytics `vercelId`, while computeInstanceId identifies the
   // worker that executed the step.
   const stepStartedEventParams: CreateEventParams = {
-    computeInstanceId: COMPUTE_INSTANCE_ID,
+    computeInstanceId: getComputeInstanceId(),
     ...(params.requestId ? { requestId: params.requestId } : {}),
     // A step start latency metric covers a background step's first attempt
     // only; a caller-written start (an inline step) never carries it.
@@ -501,6 +541,9 @@ export async function executeStep(
         stepName,
         attempt,
         maxRetries,
+        ...(params.lastStartedAt
+          ? { lastStartedAt: params.lastStartedAt }
+          : {}),
         encryptionKey: params.encryptionKey ?? (await getEncryptionKey()),
         runSpecVersion: params.runSpecVersion,
       });
@@ -688,6 +731,8 @@ export async function executeStep(
 
     try {
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
+      let stateContext =
+        params.stateContext ?? stateContextForData(params.input);
       const hydratedInput = await trace(
         'step.hydrate',
         {},
@@ -704,10 +749,15 @@ export async function executeStep(
             streamStates,
             // A workflow-created writable passed into an optimistic step can
             // emit chunks before run_started lands, just like getWritable().
-            optimisticStart ? params.runReadyBarrier : undefined
+            optimisticStart ? params.runReadyBarrier : undefined,
+            stateContext
           );
+          // The step writes its output through the layer the hydrated input
+          // is bound to, not the context shared with other inline steps.
+          stateContext = stateContextForData(hydrated) ?? stateContext;
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
+            ...stateHydrateAttributes(stateContext),
             ...Attribute.StepArgumentsCount(hydrated.args.length),
             ...Attribute.QueueDeserializeTimeMs(durationMs),
           });
@@ -870,6 +920,7 @@ export async function executeStep(
 
       result = await trace('step.dehydrate', {}, async (dehydrateSpan) => {
         const startTime = Date.now();
+        const stateBefore = stateWriteCounts(stateContext);
         const dehydrated = await dehydrateStepReturnValue(
           result,
           workflowRunId,
@@ -885,10 +936,12 @@ export async function executeStep(
           optimisticStart ? params.runReadyBarrier : undefined,
           ops,
           // Step-initiated aborts are read by this deployment's runtime.
-          true
+          true,
+          stateContext
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
+          ...stateDehydrateAttributes(stateContext, stateBefore),
           ...Attribute.QueueSerializeTimeMs(durationMs),
           ...Attribute.StepResultType(typeof dehydrated),
         });
@@ -936,6 +989,9 @@ export async function executeStep(
         await Promise.all(preCompletionOps).catch(() => {});
       }
     } catch (err: unknown) {
+      // The run's log could not be read to rebuild this step's frozen state
+      // input: retry the delivery, not the user's step (its body has not run).
+      if (WorkflowStateRecoveryError.is(err)) throw err;
       if (preCompletionOps.length > 0) {
         await Promise.all(preCompletionOps).catch(() => {});
       }

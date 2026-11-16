@@ -10,7 +10,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: {
       userAgent: '*',
       allow: '/',
-      disallow: ['/*/docs/internal/', '/docs/internal/'],
+      disallow: ['/docs/internal', '/v4/docs/internal', '/*/docs/internal'],
     },
     sitemap: `${baseUrl}/sitemap.xml`,
   };

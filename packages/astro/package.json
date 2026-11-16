@@ -1,6 +1,6 @@
 {
   "name": "@workflow/astro",
-  "version": "5.0.8",
+  "version": "5.0.9",
   "description": "Astro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -30,13 +30,13 @@
     "@workflow/rollup": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
-    "exsolve": "^1.0.8",
+    "exsolve": "^1.2.0",
     "pathe": "^2.0.3"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "astro": "7.2.10",
+    "astro": "7.4.7",
     "typescript": "catalog:"
   }
 }

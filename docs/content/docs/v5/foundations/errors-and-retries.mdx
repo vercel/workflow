@@ -213,6 +213,7 @@ try {
 | `STREAM_ERROR` | Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure rather than an error in workflow code; retry the run and report persistent failures with the `runId` |
 | `WORLD_CONTRACT_ERROR` | A World response violated the SDK contract; points at a World implementation bug |
 | `DEPLOYMENT_MISMATCH` | The run was delivered to a deployment other than the one it is pinned to, and automatic re-routing did not recover it. See [deployment-mismatch](/docs/errors/deployment-mismatch) |
+| `WORKFLOW_NOT_REGISTERED` | The deployment executing the run does not have the run's workflow registered. See [workflow-not-registered](/docs/errors/workflow-not-registered) |
 | `RUNTIME_ERROR` | An internal runtime error. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 
 <Callout type="info">
@@ -279,4 +280,4 @@ export async function placeOrderSaga(orderId: string) {
 
 ## Spec 9 (experimental)
 
-The experimental spec 9 runtime retries steps differently: a failed step is retried after about a second by default on its one queue message, and a `maxRetries = 0` step whose invocation dies after it started fails instead of running again. See [Retries on spec 9 runs](/docs/changelog/spec-9#retries).
+The experimental spec 9 runtime retries steps differently: a failed step is retried after about a second by default on its one queue message, and a `maxRetries = 0` step whose invocation dies after it started fails instead of running again.

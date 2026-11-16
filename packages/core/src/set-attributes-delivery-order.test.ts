@@ -223,11 +223,10 @@ async function drive(code: string) {
 }
 
 describe('setAttributes() delivery ordering', () => {
-  describe.each(['1', '0'])('WORKFLOW_LOG_ORDER_DRAWS=%s', (logOrderDraws) => {
+  describe('log-order draws', () => {
     it.each([
       0, 3, 12, 48,
     ])('does not swap step results between branches (hops=%i)', async (hops) => {
-      vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', logOrderDraws);
       const { output, replay } = await drive(SWAP_WORKFLOW(hops));
       expect(output).toBe('after-attribute|other-branch');
       // Fresh replays of the committed log, with cold and warm caches, must
@@ -243,7 +242,6 @@ describe('setAttributes() delivery ordering', () => {
     it.each([
       0, 3, 12, 48,
     ])('does not diverge when racing a hook registration (hops=%i)', async (hops) => {
-      vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', logOrderDraws);
       const { output, replay } = await drive(HOOK_WORKFLOW(hops));
       expect(output).toBe('completed');
       const cache = new ReplayPayloadCache(undefined);

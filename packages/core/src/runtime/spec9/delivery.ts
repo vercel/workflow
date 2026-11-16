@@ -1,6 +1,10 @@
 /**
  * The spec 9 (single-orchestrator) delivery: one writer per run, enforced by
  * the World's in-band fence. See `../delivery.ts`.
+ *
+ * `./README.md` is the spec 9 reference: the model, the World contract,
+ * lifecycles, edge cases and the decisions behind them. Read it before
+ * changing spec 9 behaviour, and update it in the same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
@@ -74,7 +78,7 @@ import {
   type WorkflowSessionRebase,
 } from '../../workflow.js';
 import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
@@ -113,7 +117,6 @@ import {
   type EventCreator,
   getWorkflowQueueName,
   isQueueSendFailure,
-  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   maxEventSlot,
@@ -1526,14 +1529,29 @@ async function runDelivery(
           writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
         }
       } else if (loadOutcome.status === 'rejected') {
-        // A World contract error on the log load fails the run
-        // (out-of-band, since there is no fence snapshot); any
-        // other load failure redelivers.
-        workflowRun ??= run;
-        if (await recordWorkflowSetupFailure(loadOutcome.reason)) {
-          return undefined;
+        try {
+          const error = loadOutcome.reason;
+          if (
+            !WorkflowRunNotFoundError.is(error) &&
+            !(WorkflowWorldError.is(error) && error.status === 404)
+          ) {
+            throw error;
+          }
+          // Queue delivery can beat run_created. The concurrent run read
+          // has now found the run, so reload history once before paying for
+          // a queue redelivery. Use fullLoad to adopt the real fence; a
+          // successful run read alone never authorizes an empty snapshot.
+          span?.addEvent('workflow.replay.load.not_found_retry');
+          await fullLoad();
+        } catch (error) {
+          // A World contract error fails the run (out-of-band if no fence
+          // was loaded); any other failure retains normal redelivery.
+          workflowRun ??= run;
+          if (await recordWorkflowSetupFailure(error)) {
+            return undefined;
+          }
+          throw error;
         }
-        throw loadOutcome.reason;
       }
       if (run && isTerminalWorkflowRunStatus(run.status)) {
         runtimeLogger.info('Workflow already completed or failed, skipping', {
@@ -2679,7 +2697,7 @@ async function runDelivery(
           event,
           occurredAt,
           ...(event.eventType === 'step_started'
-            ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+            ? { computeInstanceId: getComputeInstanceId() }
             : {}),
         })),
         {
@@ -2936,44 +2954,42 @@ async function runDelivery(
           // waits this one completed.
           if (due.length > 0) await armTimers(log.events, 'other-chains');
 
-          if (isSlotGapCheckEnabled()) {
-            // Run-ahead places an outcome at the slot its write
-            // will take, so the log can hold it above a
-            // position this delivery's writer is still about
-            // to fill (a sibling step's start queued ahead of
-            // it). That is no hole: let the speculative writes
-            // and everything queued before them commit, and
-            // fold them in, before judging the log.
-            if (
-              speculationsBySlot.size > 0 &&
-              indexOf(log.events).slotGap() !== undefined
-            ) {
-              if ((await drainRunAhead()) === 'repair') {
-                await repairRunAhead();
-              }
-              await writer.idle();
-              flushPending();
+          // Run-ahead places an outcome at the slot its write
+          // will take, so the log can hold it above a
+          // position this delivery's writer is still about
+          // to fill (a sibling step's start queued ahead of
+          // it). That is no hole: let the speculative writes
+          // and everything queued before them commit, and
+          // fold them in, before judging the log.
+          if (
+            speculationsBySlot.size > 0 &&
+            indexOf(log.events).slotGap() !== undefined
+          ) {
+            if ((await drainRunAhead()) === 'repair') {
+              await repairRunAhead();
             }
-            // A dense log, which the index answers without a pass, has
-            // nothing to settle.
-            if (indexOf(log.events).slotGap() !== undefined) {
-              const settled = await settleEventSlotGap(
-                runId,
-                { events: log.events, cursor: log.cursor },
-                { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
+            await writer.idle();
+            flushPending();
+          }
+          // A dense log, which the index answers without a pass, has
+          // nothing to settle.
+          if (indexOf(log.events).slotGap() !== undefined) {
+            const settled = await settleEventSlotGap(
+              runId,
+              { events: log.events, cursor: log.cursor },
+              { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
+            );
+            if (settled.log.events !== log.events) {
+              session = null;
+            }
+            log = {
+              events: settled.log.events,
+              cursor: settled.log.cursor,
+            };
+            if (settled.gap !== undefined) {
+              throw new CorruptedEventLogError(
+                `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
               );
-              if (settled.log.events !== log.events) {
-                session = null;
-              }
-              log = {
-                events: settled.log.events,
-                cursor: settled.log.cursor,
-              };
-              if (settled.gap !== undefined) {
-                throw new CorruptedEventLogError(
-                  `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
-                );
-              }
             }
           }
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
@@ -3853,6 +3869,9 @@ async function runDelivery(
             ...(step.firstStartedAt
               ? { firstStartedAt: step.firstStartedAt }
               : {}),
+            ...(step.lastStartedAt
+              ? { lastStartedAt: step.lastStartedAt }
+              : {}),
           });
         }
       }
@@ -4004,6 +4023,7 @@ async function runDelivery(
             step.correlationId,
             () =>
               executeStep({
+                stateContext: replayPayloadCache?.stateContext,
                 world,
                 createEvent: async (data, params) => {
                   if (data.eventType === 'step_retrying') {
@@ -4079,6 +4099,9 @@ async function runDelivery(
                 attempt: step.attempt,
                 ...(step.firstStartedAt
                   ? { firstStartedAt: step.firstStartedAt }
+                  : {}),
+                ...(step.lastStartedAt
+                  ? { lastStartedAt: step.lastStartedAt }
                   : {}),
                 input,
                 ...(step.started ? { started: step.started } : {}),

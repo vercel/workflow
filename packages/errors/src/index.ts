@@ -744,7 +744,7 @@ export class StepNotRegisteredError extends WorkflowRuntimeError {
  * - Something went wrong with the bundling/build tooling that caused the workflow
  *   to not get built correctly
  *
- * When this happens, the run fails with a `RUNTIME_ERROR` error code.
+ * When this happens, the run fails with a `WORKFLOW_NOT_REGISTERED` error code.
  */
 export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
   workflowName: string;

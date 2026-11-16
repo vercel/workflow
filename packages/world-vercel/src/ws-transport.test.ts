@@ -794,12 +794,12 @@ describe('handshake deadline', () => {
     const config = { token: 'test-token' };
     openWsChannel('wrun_1', config);
     await nextSocket();
-    expect(resolveWsTransport('wrun_1', config)).not.toBeNull();
+    expect(resolveWsTransport('wrun_1', config).kind).toBe('open');
 
     await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
     await vi.advanceTimersByTimeAsync(30_000);
 
-    expect(resolveWsTransport('wrun_1', config)).toBeNull();
+    expect(resolveWsTransport('wrun_1', config).kind).toBe('no_channel');
     expect(sockets).toHaveLength(1);
   });
 
@@ -1369,11 +1369,13 @@ describe('transport selection', () => {
    * "did this invocation open a channel", and every `null` means write over HTTP.
    */
   describe('resolveWsTransport', () => {
-    it('returns null for a run with no open channel', () => {
+    it('finds no channel for a run nothing opened one for', () => {
       // The default for every writer that isn't the flow route — `start()`
       // writing `run_created` most of all, where one write would not repay a
       // handshake.
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig)).toEqual({
+        kind: 'no_channel',
+      });
       expect(sockets).toHaveLength(0);
     });
 
@@ -1382,35 +1384,42 @@ describe('transport selection', () => {
       openWsChannel('wrun_1', directConfig);
       openWsChannel('wrun_2', directConfig);
 
-      const first = resolveWsTransport('wrun_1', directConfig);
-      const second = resolveWsTransport('wrun_1', directConfig);
+      const open = (runId: string) => {
+        const resolved = resolveWsTransport(runId, directConfig);
+        if (resolved.kind !== 'open') throw new Error(`no channel: ${runId}`);
+        return resolved;
+      };
+      const first = open('wrun_1');
+      const second = open('wrun_1');
 
-      expect(first?.wsUrl).toContain('/websockets/v1/runs/wrun_1');
-      expect(second?.transport).toBe(first?.transport);
-      expect(resolveWsTransport('wrun_2', directConfig)?.transport).not.toBe(
-        first?.transport
-      );
+      expect(first.wsUrl).toContain('/websockets/v1/runs/wrun_1');
+      expect(second.transport).toBe(first.transport);
+      expect(open('wrun_2').transport).not.toBe(first.transport);
     });
 
-    it('returns null once the channel is closed', () => {
+    it('finds no channel once the channel is closed', () => {
       // What makes a late write — one the runtime issues after the invocation
       // that opened the channel has returned — fall back instead of failing.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       const release = openWsChannel('wrun_1', directConfig);
-      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe('open');
 
       release?.();
 
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe(
+        'no_channel'
+      );
     });
 
-    it('returns null for a World behind the api-workflow proxy', () => {
+    it('says proxy for a World behind the api-workflow proxy', () => {
       // That gateway does not forward a raw upgrade, so the caller has to fall
       // back to HTTP rather than attempt a connection it can't serve.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       openWsChannel('wrun_1', proxyConfig);
 
-      expect(resolveWsTransport('wrun_1', proxyConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', proxyConfig)).toEqual({
+        kind: 'proxy',
+      });
       expect(sockets).toHaveLength(0);
     });
 
@@ -1478,7 +1487,9 @@ describe('transport selection', () => {
       expect(sockets).toHaveLength(0);
       // And nothing registered, so writes resolve no channel either.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe(
+        'no_channel'
+      );
     });
 
     it('does nothing for a World behind the api-workflow proxy', async () => {
@@ -1557,7 +1568,9 @@ describe('transport selection', () => {
       await tick();
       sockets[0].failHandshake();
       await tick();
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe(
+        'no_channel'
+      );
 
       openWsChannel('wrun_1', directConfig);
       await tick();
@@ -1569,7 +1582,7 @@ describe('transport selection', () => {
       await tick();
 
       expect(sockets[1].readyState).toBe(1);
-      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe('open');
     });
 
     it('is inert when called twice', async () => {
@@ -1612,7 +1625,7 @@ describe('transport selection', () => {
       expect(latest().readyState).toBe(1);
       // Registered, so this invocation's writes take the socket rather than
       // silently spending the whole invocation on the HTTP fallback.
-      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe('open');
     });
 
     it('is undefined when the gate is off', () => {
