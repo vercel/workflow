@@ -376,13 +376,8 @@ export function EventDetailsPanel({
       width={width}
       itemLabel="event"
       title={
-        <span className="flex min-w-0 flex-col">
-          <span className="truncate font-mono text-label-12 font-normal text-gray-900">
-            {event.eventType}
-          </span>
-          <span className="truncate text-label-16 font-semibold">
-            {row.name || event.eventType}
-          </span>
+        <span className="truncate text-label-16 font-semibold">
+          {row.name || event.eventType}
         </span>
       }
       onPrev={onPrev}
