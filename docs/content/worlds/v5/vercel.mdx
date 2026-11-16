@@ -524,7 +524,7 @@ Change it when: you have a reason to cap sockets. Too low turns invocation concu
 
 The default is much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out.
 
-Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled: the queue client then uses the runtime's global HTTP agent, with no connection cap and no deadline.
+Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled, where the queue client uses the runtime's global HTTP agent with no connection cap and no deadline, or when a custom `dispatcher` is passed to `createWorld()` (see [Programmatic configuration](#programmatic-configuration)), where it uses that dispatcher instead.
 
 ### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
 
@@ -536,7 +536,7 @@ Keep it below the queue's visibility-renewal interval (60 seconds) so a failed c
 
 This is the only request path the World cannot bound with [`WORKFLOW_REQUEST_TIMEOUT_MS`](#workflow_request_timeout_ms), because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
 
-Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled: the queue client then uses the runtime's global HTTP agent, with no connection cap and no deadline.
+Has no effect when [`WORKFLOW_NODE_HTTP`](#workflow_node_http) is enabled, where the queue client uses the runtime's global HTTP agent with no connection cap and no deadline, or when a custom `dispatcher` is passed to `createWorld()` (see [Programmatic configuration](#programmatic-configuration)), where it uses that dispatcher instead.
 
 ### `WORKFLOW_NODE_HTTP`
 
