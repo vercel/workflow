@@ -181,8 +181,8 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 ### `jobLockStaleSeconds`
 
 - Environment variable: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
-- Default: unset. Every delivery renews its job lock, and a job in a spec 9 run's named queue whose process died is redelivered after 300 seconds unrenewed, if its holder registered as renewing. Other jobs keep Graphile Worker's fixed 4 hour reset.
-- Seconds a running delivery's job lock may go unrenewed before another process releases any of this World's jobs for redelivery. Setting it extends the release from spec 9 named queues to every job, whoever holds it.
+- Default: unset. Every delivery renews its job lock, and a job holding a spec 9 run's delivery lease whose process died is redelivered after 300 seconds unrenewed, if its holder registered as renewing. Other jobs keep Graphile Worker's fixed 4 hour reset.
+- Seconds a running delivery's job lock may go unrenewed before another process releases any of this World's jobs for redelivery. Setting it extends the release from spec 9 run-lease jobs to every job, whoever holds it.
 - `30` is a good value when more than one process shares the database. Use the same value on every process, and keep it well above the longest a process can block its event loop.
 - `0` turns renewal and release off, and leaves recovery to Graphile Worker's fixed 4 hour reset and to restarts.
 - Set it only once every process that shares the database runs a version that includes this option. A process on an earlier version neither renews its locks nor fences its acknowledgement on the lock holder, so while it shares the database with a process that has this set, its deliveries that run longer than the window are redelivered, and finishing one can delete the redelivered job. The default is safe for this: it never releases the job of a holder that did not register as renewing. See [Postgres World: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](/worlds/postgres#workflow_postgres_job_lock_stale_seconds).
