@@ -12,10 +12,7 @@ import {
   title,
   translations,
 } from '@/geistdocs';
-
-const isPreview =
-  process.env.VERCEL_ENV === 'preview' ||
-  process.env.NODE_ENV === 'development';
+import { isPreview } from './visibility';
 
 const visibleNav: GeistdocsNavItem[] = nav
   .filter((item) => !item.preview || isPreview)

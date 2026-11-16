@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { databaseFor } from '../db/index.js';
 import { createSnapshotsStorage } from './snapshots-storage.js';
 
 describe('snapshots storage (world-local)', () => {
@@ -10,10 +11,11 @@ describe('snapshots storage (world-local)', () => {
 
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'snapshots-test-'));
-    snapshots = createSnapshotsStorage(testDir);
+    snapshots = createSnapshotsStorage(databaseFor(testDir));
   });
 
   afterEach(async () => {
+    databaseFor(testDir).close();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
@@ -71,23 +73,25 @@ describe('snapshots storage (world-local)', () => {
     await snapshots.delete('wrun_c');
   });
 
-  it('stores metadata and bytes in ONE file (atomic pairing — no torn save)', async () => {
+  it('stores metadata and bytes in ONE row (atomic pairing — no torn save)', async () => {
     await snapshots.save('wrun_atomic', new Uint8Array([1, 2, 3]), {
       eventsCursor: 'evnt_x',
       createdAt: new Date(),
     });
-    const files = await fs.readdir(path.join(testDir, 'snapshots'));
-    expect(files).toEqual(['wrun_atomic.snapshot']);
+    expect(databaseFor(testDir).all('SELECT run_id FROM snapshots')).toEqual([
+      { run_id: 'wrun_atomic' },
+    ]);
   });
 
-  it('treats a corrupt envelope file as a miss instead of returning torn state', async () => {
+  it('treats a corrupt envelope as a miss instead of returning torn state', async () => {
     await snapshots.save('wrun_corrupt', new Uint8Array([1, 2, 3]), {
       eventsCursor: 'evnt_x',
       createdAt: new Date(),
     });
-    await fs.writeFile(
-      path.join(testDir, 'snapshots', 'wrun_corrupt.snapshot'),
-      Buffer.from([0xde, 0xad])
+    databaseFor(testDir).run(
+      'UPDATE snapshots SET envelope = ? WHERE run_id = ?',
+      new Uint8Array([0xde, 0xad]),
+      'wrun_corrupt'
     );
     expect(await snapshots.load('wrun_corrupt')).toBeNull();
   });

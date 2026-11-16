@@ -203,4 +203,90 @@ describe('useInfiniteList', () => {
     await waitFor(() => expect(result.current.error).not.toBeNull());
     expect(result.current.error?.message).toBe('boom');
   });
+
+  it('revalidateCached refetches every cached page in place on remount', async () => {
+    const cache = new Map();
+    let resolveFirstPage!: (page: PaginatedResult<Item>) => void;
+    const fetchFn = vi
+      .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
+      .mockResolvedValueOnce(page(['a'], { cursor: 'c1', hasMore: true }))
+      .mockResolvedValueOnce(page(['b'], { hasMore: false }))
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirstPage = resolve;
+        })
+      )
+      .mockResolvedValueOnce(page(['c'], { hasMore: false }));
+    const mount = () =>
+      renderHook(
+        () =>
+          useInfiniteList('k1', fetchFn, getKey, { revalidateCached: true }),
+        { wrapper: makeWrapper(cache) }
+      );
+
+    const first = mount();
+    await waitFor(() =>
+      expect(first.result.current.items.map(getKey)).toEqual(['a'])
+    );
+    act(() => {
+      first.result.current.loadMore();
+    });
+    await waitFor(() =>
+      expect(first.result.current.items.map(getKey)).toEqual(['a', 'b'])
+    );
+
+    first.unmount();
+    const { result } = mount();
+
+    // The rows stay on screen while both pages are read again.
+    expect(result.current.items.map(getKey)).toEqual(['a', 'b']);
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.isLoadingMore).toBe(false);
+
+    await act(async () =>
+      resolveFirstPage(page(['a2'], { cursor: 'c2', hasMore: true }))
+    );
+    await waitFor(() =>
+      expect(result.current.items.map(getKey)).toEqual(['a2', 'c'])
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(4);
+    expect(fetchFn).toHaveBeenLastCalledWith('c2');
+  });
+
+  it('revalidateCached fetches a key with nothing cached once', async () => {
+    const fetchFn = vi
+      .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
+      .mockReturnValue(new Promise(() => {}));
+
+    renderHook(
+      () => useInfiniteList('k1', fetchFn, getKey, { revalidateCached: true }),
+      { wrapper: makeWrapper() }
+    );
+    await act(async () => {});
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts empty on a new key when keepPreviousData is off', async () => {
+    const fetchFn = vi
+      .fn<(cursor?: string) => Promise<PaginatedResult<Item>>>()
+      .mockResolvedValueOnce(page(['a'], { hasMore: false }))
+      .mockReturnValue(new Promise(() => {}));
+
+    const { result, rerender } = renderHook(
+      ({ cacheKey }) =>
+        useInfiniteList(cacheKey, fetchFn, getKey, {
+          keepPreviousData: false,
+        }),
+      { initialProps: { cacheKey: 'k1' }, wrapper: makeWrapper() }
+    );
+    await waitFor(() =>
+      expect(result.current.items.map(getKey)).toEqual(['a'])
+    );
+
+    rerender({ cacheKey: 'k2' });
+
+    expect(result.current.items).toEqual([]);
+    expect(result.current.isLoading).toBe(true);
+  });
 });

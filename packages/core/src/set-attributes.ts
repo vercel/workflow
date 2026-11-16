@@ -1,3 +1,5 @@
+// Workflow Attributes started as the MVP described in `./attributes-mvp.md`,
+// which records its design, trade-offs and implementation decisions.
 import { FatalError } from '@workflow/errors';
 import { normalizeAttributeChanges } from './attribute-changes.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';

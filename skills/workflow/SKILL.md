@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.19'
+  version: '1.20'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -232,11 +232,13 @@ Three things to size, and all three are capped. Do NOT treat any number you reme
 
 **Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), a retry records one or two more, and hooks, sleeps, and webhooks each record their own. Split into child workflows well before the ceiling — the pricing page recommends that past **a few thousand events**, because replay slows down long before the run fails.
 
+**For long-running workflows, set `WORKFLOW_VM=quickjs`.** Agents, chat sessions, loops over hooks or sleeps, and anything with many steps should run on the QuickJS engine. Snapshotting is on by default on the Vercel World: a resume restores the VM from a snapshot and replays only the events recorded since, so replay cost stays flat as the log grows, and the run is exempt from the default per-run event limit on the Vercel and Local Worlds. Set it in the environment that starts runs (on Vercel, the project's env vars); only runs started after the change use it. On the Local and Postgres Worlds, also set `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` on the workflow handler: those Worlds have no run encryption keys, and unencrypted runs are not snapshotted without it. Workflow code runs unchanged unless the workflow function itself uses an `Intl.*` constructor, a `toLocaleString()`-style method with a locale, `crypto.subtle`, or `WebAssembly`; move those calls into a step, as you would any non-deterministic work. See `configuration/runtime-tuning.mdx` (`WORKFLOW_VM`, `WORKFLOW_SNAPSHOT_THRESHOLD`). Child workflows are still the right split when units of work are independent and deserve their own history and failure boundary.
+
 **Steps per run.** Capped separately from events, so a long sequential chain *is* bounded even though it stays narrow. Bundle several items into one step when a chain would otherwise reach five figures.
 
 **Concurrency.** A wide fan-out is throttled rather than rejected: event creation is rate-limited per run per second, so a flat `Promise.all` over a few thousand items spends much of its time backing off. Batch or bundle instead — process the list in chunks, or handle several items per step, so fewer and larger units run concurrently. Spawning one child run per item does not by itself narrow the fan-out; it bounds each child's log and isolates failures, which is worth doing for those reasons, but it is not a substitute for chunking.
 
-You cannot raise any of these yourself — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceilings are service-owned — but Vercel raises the per-run event and step limits on request, so a genuinely large run is a support question as well as a design one.
+Apart from running on QuickJS, you cannot raise any of these yourself — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceilings are service-owned — but Vercel raises the per-run event and step limits on request, so a genuinely large run is a support question as well as a design one.
 
 ```typescript
 const BATCH = 100;

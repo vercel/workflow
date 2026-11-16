@@ -1,5 +1,16 @@
 # @workflow/nest
 
+## 5.1.7
+
+### Patch Changes
+
+- [#5307](https://github.com/vercel/workflow/pull/5307) [`c7003b1`](https://github.com/vercel/workflow/commit/c7003b17935c3ed964b948c400a72ee9c989fc38) Thanks [@joelfickson](https://github.com/joelfickson)! - Mark the NestJS and SWC peer dependencies as optional, so installing `workflow` no longer pulls `@nestjs/core`, `@nestjs/common` and `@swc/cli` into projects that do not use NestJS. NestJS projects must now list `@swc/cli` and `@swc/core` in their own `devDependencies` (`npm i -D @swc/cli @swc/core`).`workflow-nest init` now warns when they are missing.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+- Updated dependencies [[`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`e05186a`](https://github.com/vercel/workflow/commit/e05186ab2fc138a7b1b52b263cff0b3d4deaafb0), [`f61f410`](https://github.com/vercel/workflow/commit/f61f41006b23ad3659180f17c6a2a94e0ac3249e), [`b573022`](https://github.com/vercel/workflow/commit/b5730229e4dec88e18d32c05988efd5f05e27947), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/builders@5.1.0
+  - @workflow/utils@5.1.0
+
 ## 5.1.6
 
 ### Patch Changes

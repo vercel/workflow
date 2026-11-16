@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseModuleType as parseModuleTypeRaw } from './parse-module-type.js';
+import { findMissingSwcBuilderPackages } from './swc-builder-deps.js';
 import { hasWorkflowPlugin, mergeSwcrc, serializeSwcrc } from './swcrc.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -117,6 +118,17 @@ function handleInit(args: string[]): void {
     console.log('✓ Created .swcrc with workflow plugin configuration');
   }
   console.log(`  Plugin path: ${pluginPath}`);
+
+  const missing = findMissingSwcBuilderPackages(process.cwd());
+  if (missing.length > 0) {
+    console.log(
+      `\n⚠ ${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} ` +
+        'not installed. The NestJS SWC builder needs @swc/cli and @swc/core ' +
+        'as dev dependencies:'
+    );
+    console.log('  npm i -D @swc/cli @swc/core');
+  }
+
   console.log('\nNext steps:');
   console.log(
     '1. Ensure nest-cli.json has: "compilerOptions": { "builder": "swc" }'

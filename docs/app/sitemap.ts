@@ -1,3 +1,4 @@
+import { isPageVisibleForSurface } from '@vercel/geistdocs/page-visibility';
 import type { MetadataRoute } from 'next';
 
 import { currentSources } from '@/lib/geistdocs/source';
@@ -16,8 +17,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   for (const source of currentSources) {
     for (const page of source.source.getPages()) {
-      // Exclude internal/preview-only pages from sitemap
-      if (page.url.includes('/internal')) continue;
+      // Same rule as geistdocs' own sitemap routes: no `internal` or
+      // `noindex` pages.
+      if (!isPageVisibleForSurface(page, 'sitemap')) continue;
       pages.push({
         changeFrequency: 'weekly' as const,
         lastModified: undefined,

@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { envNumber } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import type { DrizzleHandle } from './drizzle/index.js';
@@ -19,7 +18,7 @@ import { listenChannel } from './streamer.js';
  * duplicate or lost message can never produce a wrong answer. Because it can
  * be lost (a `NOTIFY` that fires between a waiter's read and its `LISTEN`, or a
  * dropped listener connection), the wait is also backstopped by a periodic
- * re-read ({@link getRunStatusPollIntervalMs}), which bounds the damage of a
+ * re-read ({@link RUN_STATUS_POLL_INTERVAL_MS}), which bounds the damage of a
  * miss to one interval.
  *
  * One `LISTEN` connection is shared by every waiter in the process and is
@@ -38,24 +37,15 @@ export const RUN_STATUS_TOPIC = 'workflow_run_status';
  */
 const LISTEN_RETRY_BACKOFF_MS = 5_000;
 
-const RUN_STATUS_POLL_INTERVAL_MS = 1_000;
-
 /**
- * Backstop re-read interval for a terminal-status wait, in ms. Override with
- * `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`.
+ * Backstop re-read interval for a terminal-status wait, in ms.
  *
  * The `NOTIFY` is what makes the wait fast; this only bounds how long a *lost*
  * notification can go unnoticed, so it is kept at the interval the SDK would
  * have polled at anyway. The wait is then never slower than the poll it
  * replaces, and normally three orders of magnitude faster.
  */
-export function getRunStatusPollIntervalMs(): number {
-  return envNumber(
-    'WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS',
-    RUN_STATUS_POLL_INTERVAL_MS,
-    { integer: true, min: 1 }
-  );
-}
+export const RUN_STATUS_POLL_INTERVAL_MS = 1_000;
 
 /**
  * Announce that a run reached a terminal status.

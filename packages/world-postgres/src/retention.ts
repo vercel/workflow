@@ -36,7 +36,7 @@ const NULL = sql`NULL`;
  * have to satisfy is that data must become *unreadable* no later than it
  * becomes *unrecoverable*, because a reader that dereferences an
  * already-deleted payload gets a hard failure rather than a clean "expired".
- * The Vercel World has to sequence that by hand across DynamoDB and S3. Here
+ * A World spread across several stores has to sequence that by hand. Here
  * the whole purge is one transaction, so no reader can observe an
  * intermediate state at all: `expired_at` and the last cleared byte commit
  * together. The run's `UPDATE` is written first anyway, so the statement

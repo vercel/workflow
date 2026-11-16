@@ -34,7 +34,7 @@ describe('getHttpUrl', () => {
     process.env = originalEnv;
   });
 
-  it('uses default workflow-server URL when no config and no env override', () => {
+  it('uses default backend URL when no config and no env override', () => {
     expect(getHttpUrl()).toEqual({
       baseUrl: WORKFLOW_SERVER_URL_OVERRIDE
         ? `${WORKFLOW_SERVER_URL_OVERRIDE}/api`
@@ -84,16 +84,10 @@ describe('getHeaders', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
-    delete process.env.WORKFLOW_TEST_LIMIT_OVERRIDES;
   });
 
   afterEach(() => {
     process.env = originalEnv;
-  });
-
-  it('omits x-workflow-test-limit-overrides when WORKFLOW_TEST_LIMIT_OVERRIDES is unset', () => {
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-workflow-test-limit-overrides')).toBeNull();
   });
 
   it('appends a caller user-agent token to the world-vercel user-agent', () => {
@@ -105,13 +99,6 @@ describe('getHeaders', () => {
     expect(headers.get('User-Agent')).toMatch(
       /^@workflow\/world-vercel\/\S+ node-\S+ \S+ \([^)]*\)(?: \S+)? eve\/0\.18\.1$/
     );
-  });
-
-  it('forwards WORKFLOW_TEST_LIMIT_OVERRIDES verbatim as x-workflow-test-limit-overrides', () => {
-    const overrides = '{"STREAM_MAX_DURATION_MS":5000}';
-    process.env.WORKFLOW_TEST_LIMIT_OVERRIDES = overrides;
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-workflow-test-limit-overrides')).toBe(overrides);
   });
 
   it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
@@ -136,7 +123,7 @@ describe('getHeaders', () => {
   });
 
   it('omits x-vercel-workflow-api-url when override is set but not using proxy', () => {
-    // Direct-to-workflow-server mode uses baseUrl, so the header is redundant.
+    // Direct-to-backend mode uses baseUrl, so the header is redundant.
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
     const headers = getHeaders(undefined, { usingProxy: false });
     expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
@@ -529,7 +516,7 @@ describe('makeRequest body-parse retry', () => {
     ).rejects.toThrow('x-vercel-id=sfo1::req-deny; x-vercel-mitigated=deny');
   });
 
-  it('maps workflow-server error fields onto WorkflowWorldError.code', async () => {
+  it('maps backend error fields onto WorkflowWorldError.code', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({

@@ -9,12 +9,11 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import {
-  envNumber,
-  type GetChunksOptions,
-  type StreamChunksResponse,
-  type Streamer,
-  type StreamInfoResponse,
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+  StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
 import {
@@ -51,17 +50,6 @@ import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
  * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
  */
 export const MAX_CHUNKS_PER_REQUEST = MAX_CHUNKS_PER_STREAM_WRITE;
-
-/**
- * Effective max chunks per write request. Override via
- * `WORKFLOW_MAX_CHUNKS_PER_REQUEST`. Lower it (paired with the server's
- * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
- */
-export const getMaxChunksPerRequest = (): number =>
-  envNumber('WORKFLOW_MAX_CHUNKS_PER_REQUEST', MAX_CHUNKS_PER_REQUEST, {
-    integer: true,
-    min: 1,
-  });
 
 // All stream requests share the instrumented envelope (`instrumentedFetch`):
 // an OTEL client span, trace-context injection, `DEBUG` logging, and the
@@ -213,10 +201,7 @@ export async function writeStreamSessionOverHttp(
 ): Promise<void> {
   const httpConfig = await getHttpConfig(config);
   httpConfig.headers.set('X-Stream-Multi', 'true');
-  const pageSize = Math.min(
-    getMaxChunksPerRequest(),
-    MAX_CHUNKS_PER_STREAM_WRITE
-  );
+  const pageSize = MAX_CHUNKS_PER_REQUEST;
   for (let offset = 0; offset < chunks.length; offset += pageSize) {
     const url = getStreamUrl(name, runId, httpConfig);
     const response = await instrumentedFetch({
@@ -271,7 +256,7 @@ export async function closeStreamSessionOverHttp(
 }
 
 /**
- * Creates the streamer that talks to workflow-server. Stream writes upgrade to
+ * Creates the streamer that talks to the backend. Stream writes upgrade to
  * a WebSocket session unless `WORKFLOW_STREAMS_TRANSPORT=http`, or the World
  * routes through the `projectConfig` proxy (`api.vercel.com`), an HTTP-only
  * gateway that does not forward the upgrade. Without `createWriteSession`,
@@ -360,9 +345,8 @@ export function createStreamer(config?: APIConfig): Streamer {
         // will be re-sent on retry, producing duplicates. This is acceptable
         // because the alternative (400 on all >1000 chunk flushes) is worse,
         // and the scenario requires a network failure mid-batch.
-        const maxChunksPerRequest = getMaxChunksPerRequest();
-        for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
-          const batch = chunks.slice(i, i + maxChunksPerRequest);
+        for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
+          const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
           const body = encodeMultiChunks(batch);
           const url = getStreamUrl(name, resolvedRunId, httpConfig);
           const response = await instrumentedFetch({

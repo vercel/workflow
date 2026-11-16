@@ -33,8 +33,18 @@ export const WS_FLAGS_HEADER = 'x-workflow-ws-flags';
 /** Flag: this client rebuilds replies the server sends as parts. */
 export const WS_FLAG_FRAME_PARTS = 'frame-parts';
 
+/**
+ * Flag: this client takes `run_heartbeat` frames on a live feed (see
+ * `events-live-feed.ts`). A server that sends them says so on each
+ * `subscribe_ack` (`heartbeatMs`); one that predates them ignores the flag.
+ */
+export const WS_FLAG_RUN_HEARTBEAT = 'run-heartbeat';
+
 /** The flags this client sends on every upgrade. */
-export const WS_CLIENT_FLAGS = [WS_FLAG_FRAME_PARTS] as const;
+export const WS_CLIENT_FLAGS = [
+  WS_FLAG_FRAME_PARTS,
+  WS_FLAG_RUN_HEARTBEAT,
+] as const;
 
 export const WS_PART_TYPE = 'part';
 

@@ -4,6 +4,11 @@
  * Calls the Vercel API to find the most recent deployment that shares the same
  * environment (e.g., same "production" target or same git branch for "preview"
  * deployments) as the provided current deployment.
+ *
+ * Outside a deployment (the CLI, CI, scripts) there is no current deployment,
+ * so the source deployment is taken from the configured project and
+ * environment instead, and the same API resolves the latest deployment from
+ * it. Every caller therefore gets the same answer to "latest".
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
@@ -15,6 +20,10 @@ import type { APIConfig } from './utils.js';
 
 const ResolveLatestDeploymentResponseSchema = z.object({
   id: z.string(),
+});
+
+const ListDeploymentsResponseSchema = z.object({
+  deployments: z.array(z.object({ uid: z.string() })),
 });
 
 /**
@@ -53,10 +62,85 @@ async function resolveDeploymentIdentityToken(
 }
 
 /**
+ * Find a deployment of the configured project in the configured environment,
+ * to stand in for the current deployment when this process is not one.
+ *
+ * The resolve-latest-deployment API only reads the source's environment (its
+ * target, or for a preview its git branch) and picks the newest READY
+ * deployment there itself. The source is limited to READY deployments too:
+ * the newest deployment may still be building or have failed, and on a
+ * preview branch with no READY deployment yet it could not be resolved.
+ *
+ * Preview deployments are per branch, so a preview source is taken from the
+ * configured `gitBranch` and "latest" is the newest READY deployment on it.
+ * Without one there is no predictable branch to pick, so this throws rather
+ * than choosing whichever branch deployed last.
+ */
+async function findSourceDeployment(
+  projectId: string,
+  config: APIConfig | undefined,
+  token: string
+): Promise<string> {
+  const environment = config?.projectConfig?.environment || 'production';
+  const teamId = config?.projectConfig?.teamId;
+  const branch =
+    environment === 'preview' ? config?.projectConfig?.gitBranch : undefined;
+  if (environment === 'preview' && !branch) {
+    throw new Error(
+      'Cannot resolve the latest preview deployment outside a deployment without a git branch. ' +
+        'Set `projectConfig.gitBranch` (the CLI takes it from `--branch` or the current git branch), ' +
+        'or pass a concrete deployment ID.'
+    );
+  }
+
+  const params = new URLSearchParams({
+    projectId,
+    target: environment,
+    limit: '1',
+    state: 'READY',
+  });
+  if (branch) params.set('branch', branch);
+  if (teamId) params.set('teamId', teamId);
+  const url = `https://api.vercel.com/v6/deployments?${params}`;
+
+  const response = await instrumentedFetch({
+    method: 'GET',
+    url,
+    headers: new Headers({ Authorization: `Bearer ${token}` }),
+    dispatcher: getDispatcher(config),
+    peerService: 'vercel-api',
+    timeoutMs: null,
+    buildError: async (res) => {
+      const body = await res.text().catch(() => '');
+      return new Error(
+        `Failed to list ${environment} deployments of project ${projectId}: HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`
+      );
+    },
+  });
+
+  const result = ListDeploymentsResponseSchema.safeParse(await response.json());
+  if (!result.success) {
+    throw new Error(
+      `Invalid response from Vercel API: expected { deployments: { uid: string }[] }. Zod error: ${result.error.message}`
+    );
+  }
+  const source = result.data.deployments[0];
+  if (!source) {
+    const where = branch ? ` on branch ${branch}` : '';
+    throw new Error(
+      `Cannot resolve the latest deployment: project ${projectId} has no READY ${environment} deployments${where}.`
+    );
+  }
+  return source.uid;
+}
+
+/**
  * Create the `resolveLatestDeploymentId` implementation for a Vercel World.
  *
  * Resolves the most recent deployment ID for the same environment as the
- * current deployment by calling the Vercel API.
+ * current deployment by calling the Vercel API. Outside a deployment, the
+ * environment is the one in `config.projectConfig` (see
+ * {@link findSourceDeployment}).
  *
  * @param config - API configuration (token, project config, etc.)
  * @returns The `resolveLatestDeploymentId` function
@@ -65,8 +149,11 @@ export function createResolveLatestDeploymentId(
   config?: APIConfig
 ): () => Promise<string> {
   return async function resolveLatestDeploymentId(): Promise<string> {
-    const currentDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
-    if (!currentDeploymentId) {
+    // Inside a deployment, "latest" is relative to that deployment. Outside
+    // one, it is relative to the configured project's environment.
+    const envDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+    const projectId = config?.projectConfig?.projectId;
+    if (!envDeploymentId && !projectId) {
       throw new Error(
         missingDeploymentIdMessage(
           "Resolving the latest deployment for deploymentId: 'latest'"
@@ -80,6 +167,10 @@ export function createResolveLatestDeploymentId(
         'Cannot resolve latest deployment: no OIDC token or VERCEL_TOKEN available'
       );
     }
+
+    const currentDeploymentId =
+      envDeploymentId ||
+      (await findSourceDeployment(projectId as string, config, token));
 
     // Scope the request to the owning team when the caller knows it, the same
     // way the sibling run-key request does. Without either this parameter or

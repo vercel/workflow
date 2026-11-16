@@ -6,6 +6,7 @@ import {
 import {
   type Hook,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -581,6 +582,48 @@ describe('resumeHook', () => {
       expect(queue.mock.calls[0][2]).toMatchObject({
         deploymentId: 'dpl_claimer',
       });
+    });
+
+    it('names the new owner’s workflow on a spec 9 resume it was redirected to', async () => {
+      // The payload ref is keyed by workflow name: the claimer's write must
+      // carry the claimer's name, not the victim's it first resolved.
+      const spec9 = (hook: Hook): Hook => ({
+        ...hook,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        resumeContext: {
+          ...hook.resumeContext!,
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+      });
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(spec9(freshVictim()))
+        .mockResolvedValueOnce(spec9(freshClaimer()));
+      const createEvent = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new HookForceClaimedError('shared', 'wrun_claimer', 'hook_claimer')
+        )
+        .mockResolvedValueOnce(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      await resumeHook('shared', { n: 1 });
+
+      expect(createEvent).toHaveBeenCalledTimes(2);
+      expect(createEvent.mock.calls[0][1].eventData.workflowName).toBe(
+        'victimWorkflow'
+      );
+      expect(createEvent.mock.calls[1][0]).toBe('wrun_claimer');
+      expect(createEvent.mock.calls[1][1].eventData.workflowName).toBe(
+        'claimerWorkflow'
+      );
     });
 
     it('re-resolves once on a not-found rejection and retries when the token now names another hook', async () => {

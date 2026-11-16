@@ -6,11 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
 import { dehydrateWorkflowReturnValue } from '../serialization.js';
-import {
-  getReturnValueWaitTimeoutMs,
-  isReturnValueLongPollEnabled,
-  Run,
-} from './run.js';
+import { getReturnValueWaitTimeoutMs, Run } from './run.js';
 import { setWorld } from './world.js';
 
 /**
@@ -66,7 +62,6 @@ const sleepFake = (ms: number) =>
 
 describe('Run.returnValue long poll', () => {
   const envNames = [
-    'WORKFLOW_RETURN_VALUE_LONG_POLL',
     'WORKFLOW_RETURN_VALUE_WAIT_MS',
     'WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS',
     'WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS',
@@ -253,59 +248,6 @@ describe('Run.returnValue long poll', () => {
     expect(get).toHaveBeenCalledTimes(2);
 
     await assertion;
-  });
-
-  it('kill switch restores the fixed-interval poll', async () => {
-    process.env.WORKFLOW_RETURN_VALUE_LONG_POLL = '0';
-    process.env.WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS = '1000';
-    const waitForTerminalStatus = vi.fn().mockResolvedValue(cancelledRun);
-    const get = vi
-      .fn()
-      .mockResolvedValueOnce(runningRun)
-      .mockResolvedValue(cancelledRun);
-    setWorld(createWorld({ get, waitForTerminalStatus }));
-
-    const pending = new Run(RUN_ID).returnValue;
-    const assertion = expect(pending).rejects.toBeInstanceOf(
-      WorkflowRunCancelledError
-    );
-
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    await assertion;
-    expect(waitForTerminalStatus).not.toHaveBeenCalled();
-    expect(get).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('isReturnValueLongPollEnabled', () => {
-  const envName = 'WORKFLOW_RETURN_VALUE_LONG_POLL';
-  const originalValue = process.env[envName];
-
-  afterEach(() => {
-    if (originalValue === undefined) delete process.env[envName];
-    else process.env[envName] = originalValue;
-  });
-
-  it('defaults to on', () => {
-    delete process.env[envName];
-    expect(isReturnValueLongPollEnabled()).toBe(true);
-  });
-
-  it('treats an empty value as unset', () => {
-    process.env[envName] = '';
-    expect(isReturnValueLongPollEnabled()).toBe(true);
-  });
-
-  it.each(['0', 'false', 'FALSE'])('is disabled by %s', (value) => {
-    process.env[envName] = value;
-    expect(isReturnValueLongPollEnabled()).toBe(false);
-  });
-
-  it.each(['1', 'true'])('stays enabled for %s', (value) => {
-    process.env[envName] = value;
-    expect(isReturnValueLongPollEnabled()).toBe(true);
   });
 });
 

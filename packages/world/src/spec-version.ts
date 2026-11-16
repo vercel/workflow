@@ -5,7 +5,7 @@
  * from @workflow/world rather than using arbitrary numbers.
  */
 
-import { envFlag, warnOnce } from './env-config.js';
+import { warnOnce } from './env-config.js';
 
 declare const SpecVersionBrand: unique symbol;
 
@@ -120,6 +120,9 @@ export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
  *
  * It requires the sealed log: the fence counts positions the World's
  * sequencer allocates, so it builds on {@link SPEC_VERSION_SUPPORTS_SEALED_LOG}.
+ *
+ * The spec 9 reference, for users, World authors and runtime maintainers, is
+ * `packages/core/src/runtime/spec9/README.md` in the Workflow SDK repository.
  */
 export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
 
@@ -162,12 +165,10 @@ export const SPEC_VERSION_DEFAULT_MINTED = SPEC_VERSION_CURRENT as SpecVersion;
 export const SPEC_VERSION_ENV_VAR = 'WORKFLOW_SPEC_VERSION';
 
 /**
- * Environment variable that opts new runs out of the sealed log: `0` or
- * `false` creates runs at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}, as it
- * did before {@link SPEC_VERSION_ENV_VAR} existed. Read only while
- * {@link SPEC_VERSION_ENV_VAR} is unset.
+ * Environment variable that used to opt new runs out of the sealed log. It is
+ * no longer read: set {@link SPEC_VERSION_ENV_VAR} to `6` instead.
  *
- * @deprecated Set {@link SPEC_VERSION_ENV_VAR} instead.
+ * @deprecated No longer read. Set {@link SPEC_VERSION_ENV_VAR} instead.
  */
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
@@ -187,14 +188,13 @@ export interface MintedSpecVersionOptions {
  *
  * | `WORKFLOW_SPEC_VERSION` | `inBandFence` | returns |
  * |---|---|---|
- * | unset | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8), or {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} (6) with `WORKFLOW_SEALED_LOG=0` |
+ * | unset | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8) |
  * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
  * | `9` | not `true` | the default, with a warning once per process |
  * | `6` to `8` | any | that version |
  * | anything else | any | the default, with a warning once per process |
  *
- * Values are trimmed. When both variables are set, `WORKFLOW_SPEC_VERSION`
- * wins and a warning is logged once.
+ * Values are trimmed.
  *
  * A call with no options never returns 9. A World written to an earlier
  * "Building a World" guide, which declares `specVersion: mintedSpecVersion()`,
@@ -221,11 +221,7 @@ export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env,
   options: MintedSpecVersionOptions = {}
 ): SpecVersion {
-  const sealedLogRaw = env[SEALED_LOG_ENV_VAR];
-  const sealedLogSet = sealedLogRaw !== undefined && sealedLogRaw !== '';
-  const fallback = envFlag(SEALED_LOG_ENV_VAR, true, env)
-    ? SPEC_VERSION_DEFAULT_MINTED
-    : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+  const fallback = SPEC_VERSION_DEFAULT_MINTED;
   const requested = env[SPEC_VERSION_ENV_VAR]?.trim();
   if (requested !== undefined && requested !== '') {
     const version = Number(requested);
@@ -234,12 +230,6 @@ export function mintedSpecVersion(
       version >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
       version <= SPEC_VERSION_MAX_SUPPORTED
     ) {
-      if (sealedLogSet) {
-        warnOnce(
-          `${SEALED_LOG_ENV_VAR}+${SPEC_VERSION_ENV_VAR}`,
-          `${SPEC_VERSION_ENV_VAR} and ${SEALED_LOG_ENV_VAR} are both set; new runs use ${SPEC_VERSION_ENV_VAR}=${version} and ${SEALED_LOG_ENV_VAR} is ignored.`
-        );
-      }
       if (
         version >= SPEC_VERSION_SINGLE_ORCHESTRATOR &&
         options.inBandFence !== true

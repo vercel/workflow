@@ -4,7 +4,6 @@ import path from 'node:path';
 import { SPEC_VERSION_CURRENT, type Storage } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHook, createRun, disposeHook } from '../test-helpers.js';
-import { hookResumeClaimPath } from './helpers.js';
 import { createStorage } from './index.js';
 
 // When a run carries the `hookResumeInputVersion` marker, the parallel resume
@@ -224,44 +223,6 @@ describe('world-local hook_received resume dedup', () => {
       // a position the resume did not land at.
       const second = await resume(runId, hook, 'resume_1', 'digest_1', payload);
 
-      expect(second.event.eventId).toBe(first.event.eventId);
-      expect(await countHookReceived(runId)).toBe(1);
-    });
-
-    it('converges a redelivery whose claim still names the occupied position', async () => {
-      const { runId, hook } = await setup();
-      const other = await seedStaleAllocator(runId);
-      const payload = new Uint8Array([1, 2, 3]);
-
-      const first = await other.events.create(
-        runId,
-        {
-          eventType: 'hook_received',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: hook.hookId,
-          eventData: { token: hook.token, payload },
-        },
-        { resumeId: 'resume_1', resumePayloadDigest: 'digest_1' }
-      );
-
-      // Roll the claim back to the position it named before the append, as a
-      // crash between the append and the claim's correction would leave it.
-      // That position holds an unrelated event, so a reader that trusts the
-      // claim reports an `attr_set` as this resume's event: no error, no
-      // second event, and the payload silently gone.
-      const claimPath = hookResumeClaimPath(testDir, runId, 'resume_1');
-      const claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
-      const occupant = (await storage.events.list({ runId })).data.find(
-        (event) => event.eventType === 'attr_set'
-      );
-      await fs.writeFile(
-        claimPath,
-        JSON.stringify({ ...claim, eventId: occupant?.eventId })
-      );
-
-      const second = await resume(runId, hook, 'resume_1', 'digest_1', payload);
-
-      expect(second.event.eventType).toBe('hook_received');
       expect(second.event.eventId).toBe(first.event.eventId);
       expect(await countHookReceived(runId)).toBe(1);
     });

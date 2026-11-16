@@ -1,5 +1,15 @@
 # @workflow/utils
 
+## 5.1.0
+
+### Minor Changes
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Add queue auth helpers: `QUEUE_AUTH_HEADER`, the key functions (`generateQueueAuthKey()`, `getQueueAuthKey()`, `isQueueAuthKey()`, `isWellFormedQueueAuthKey()`, `setQueueAuthKeySource()`, `clearQueueAuthKeySources()`, `verifyQueueAuthKey()`), the refusal marker (`isQueueAuthRefusal()`, `QUEUE_AUTH_REFUSED_HEADER`, `QUEUE_AUTH_REFUSED_CODE`) and `createLogLimiter()`.
+
+### Patch Changes
+
+- [#5267](https://github.com/vercel/workflow/pull/5267) [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf) Thanks [@Hecze](https://github.com/Hecze)! - Detect dev servers that listen only on IPv6 (such as Vite on `localhost`, which binds `::1`) on Windows, where `netstat -p tcp` lists IPv4 sockets only.
+
 ## 5.0.2
 
 ### Patch Changes

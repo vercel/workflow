@@ -576,25 +576,58 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('preserves the first schedule when a keyed delayed job is published again', async () => {
+  it("deduplicates an earlier run's step message against any job holding its key", async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    // A spec 8 step message, as its runtime sends it (and sends again after
+    // a failed send).
+    const message = {
+      runId: 'run_01ABC',
+      stepId: 'step_01ABC',
+      stepName: 'retrying-step',
+      runSpecVersion: 8,
+    } as const;
+
+    await queue.queue('__wkf_workflow_test-step', message, {
+      delaySeconds: 5,
+      idempotencyKey: 'step_01ABC',
+    });
+    await queue.queue('__wkf_workflow_test-step', message, {
+      idempotencyKey: 'step_01ABC',
+    });
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
+    expect(workerUtilsMock.addJob).toHaveBeenNthCalledWith(
+      2,
+      'workflow_flows',
+      expect.anything(),
+      expect.objectContaining({
+        jobKey: 'step_01ABC',
+        jobKeyMode: 'unsafe_dedupe',
+      })
+    );
+  });
+
+  it("preserves the first schedule when an earlier run's other keyed message is published again", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
 
     try {
       const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
       await queue.start();
+      // A spec 8 timer: no step, keyed by its wait.
       const message = {
         runId: 'run_01ABC',
-        stepId: 'step_01ABC',
-        stepName: 'retrying-step',
+        waitContinuation: { correlationId: 'wait_01ABC', attempt: 0 },
+        runSpecVersion: 8,
       } as const;
 
-      await queue.queue('__wkf_workflow_test-step', message, {
+      await queue.queue('__wkf_workflow_test', message, {
         delaySeconds: 5,
-        idempotencyKey: 'step_01ABC',
+        idempotencyKey: 'wait_01ABC:1704067205',
       });
-      await queue.queue('__wkf_workflow_test-step', message, {
-        idempotencyKey: 'step_01ABC',
+      await queue.queue('__wkf_workflow_test', message, {
+        idempotencyKey: 'wait_01ABC:1704067205',
       });
 
       expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
@@ -603,7 +636,7 @@ describe('postgres queue http execution', () => {
         'workflow_flows',
         expect.anything(),
         expect.objectContaining({
-          jobKey: 'step_01ABC',
+          jobKey: 'wait_01ABC:1704067205',
           jobKeyMode: 'preserve_run_at',
         })
       );

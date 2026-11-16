@@ -22,6 +22,15 @@ export interface RunAheadContext {
 }
 
 /**
+ * The membership {@link runAheadHazard} reads: a context, or a view over
+ * several that answers without copying their ids into a new set.
+ */
+export interface RunAheadMembership {
+  sensitiveHookIds: Pick<ReadonlySet<string>, 'has'>;
+  selfStepIds: Pick<ReadonlySet<string>, 'has'>;
+}
+
+/**
  * Stops a delivery that ran ahead of its writes: a speculative write failed
  * a check before anything else was written. The delivery is redelivered and
  * decides from the log.
@@ -45,7 +54,7 @@ export class RunAheadStopError extends Error {
  */
 export function runAheadHazard(
   event: Event,
-  context: RunAheadContext,
+  context: RunAheadMembership,
   isOwn: (event: Event) => boolean
 ): string | undefined {
   if (isOwn(event)) return undefined;
