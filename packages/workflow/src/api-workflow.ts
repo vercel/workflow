@@ -21,6 +21,7 @@ const workflowStub = (item: string) => {
 export const getRun = () => workflowStub('getRun');
 export const getHookByToken = () => workflowStub('getHookByToken');
 export const resumeHook = () => workflowStub('resumeHook');
+export const resumeHookOrStart = () => workflowStub('resumeHookOrStart');
 export const resumeWebhook = () => workflowStub('resumeWebhook');
 export const runStep = () => workflowStub('runStep');
 export const registerLifecycleHooks = () => {

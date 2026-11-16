@@ -85,46 +85,28 @@ export async function POST(request: Request) {
 
 ### Start or route to the owner
 
-A duplicate request often carries data the owner should receive, such as a follow-up message in a chat. Since the start Hook exists from the moment the run is admitted, you can resume it right away on a conflict, even before the owner starts executing:
+A duplicate request often carries data the owner should receive, such as a follow-up message in a chat. [`resumeHookOrStart()`](/docs/api-reference/workflow-api/resume-hook-or-start) delivers the payload to the run that owns the token, or starts the workflow as the owner when no run holds it:
 
 ```typescript title="app/api/orders/route.ts" lineNumbers
-import { resumeHook, start } from "workflow/api";
-import { HookConflictError, HookNotFoundError } from "workflow/errors";
+import { resumeHookOrStart } from "workflow/api";
 import { processOrder } from "./workflows/process-order";
 
 export async function POST(request: Request) {
   const { orderId, note } = await request.json();
-  const token = `order:${orderId}`;
 
-  let owner: string | undefined;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const run = await start(processOrder, [orderId, note], { experimental_hook: { token } });
-      return Response.json({ runId: run.runId, started: true });
-    } catch (error) {
-      if (!HookConflictError.is(error)) throw error;
-      owner = error.conflictingRunId;
-    }
-
-    try {
-      const hook = await resumeHook(token, { note }); // [!code highlight]
-      return Response.json({ runId: hook.runId, started: false });
-    } catch (error) {
-      // The owner's Hook is no longer resumable (it ended, or disposed its
-      // start Hook): try to start again, which may take the token.
-      if (!HookNotFoundError.is(error)) throw error; // [!code highlight]
-    }
-  }
-
-  // Still refused: a finished owner holds the token for its retention, or
-  // the owner is a candidate that was admitted but never became a run.
-  throw new Error(`Run ${owner} holds ${token}; it can't be started or resumed`);
+  const { action, run } = await resumeHookOrStart( // [!code highlight]
+    `order:${orderId}`,
+    { note },
+    processOrder,
+    [orderId, note]
+  );
+  return Response.json({ runId: run.runId, started: action === "started" });
 }
 ```
 
-Every caller either starts the run, delivers its payload to the owner, or learns which run holds the token. While the owner's start Hook is open, the loop needs at most two calls. A `HookNotFoundError` after a conflict means the owner's Hook is no longer resumable: the owner ended, or [disposed its start Hook](#take-care-with-the-start-hooks-lifecycle). The next `start()` may then take the token, or be refused again: by a finished owner that still holds it for its retention, or by another caller that started first.
+Every caller either starts the run or delivers its payload to the owner, however many race: the start Hook exists from the moment the run is admitted, so a payload reaches it even before the owner starts executing. The run that a call starts receives its arguments, so pass the first payload there too.
 
-If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps refusing new starts until the retention passes, and its Hook can no longer be resumed, so the loop above gives up after its attempts and names that run. Use `getRun(owner)` to tell the caller what the finished run returned.
+If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps the token until the retention passes and can no longer receive payloads, so `resumeHookOrStart()` throws `HookConflictError` naming it. Use `getRun(error.conflictingRunId)` to tell the caller what the finished run returned.
 
 ### Receive the payloads in the workflow
 
