@@ -16,7 +16,7 @@ export async function register() {
     instrumentationConfig: {
       fetch: {
         // By default @vercel/otel only propagates W3C trace context to Vercel
-        // deployment URLs, so outgoing requests to the workflow-server
+        // deployment URLs, so outgoing requests to the world-vercel backend
         // (vercel-workflow.com) and the Vercel Queue Service
         // (*.vercel-queue.com) get a client span with no `traceparent` header
         // — which breaks the trace link to those services' spans in APM.

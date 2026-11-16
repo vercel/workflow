@@ -10,9 +10,10 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { makeWorkerUtils } from 'graphile-worker';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue, type PostgresQueue } from '../src/queue.js';
+import { TestPool } from './pool.js';
 
 /**
  * The default job-lease policy, with neither `jobLockStaleSeconds` nor
@@ -125,7 +126,7 @@ describe.skipIf(process.platform === 'win32')(
       delete process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS;
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       connectionString = container.getConnectionUri();
-      pool = new Pool({ connectionString, max: 10 });
+      pool = new TestPool({ connectionString, max: 10 });
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();

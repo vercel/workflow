@@ -1,6 +1,6 @@
 {
   "name": "@workflow/rollup",
-  "version": "5.0.8",
+  "version": "5.0.9",
   "description": "Rollup plugin for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -23,19 +23,19 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run src",
+    "test": "vitest run --config=../../vitest.config.ts src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "exsolve": "1.0.7"
+    "exsolve": "1.2.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "rollup": "^4.67.4",
+    "rollup": "^4.68.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

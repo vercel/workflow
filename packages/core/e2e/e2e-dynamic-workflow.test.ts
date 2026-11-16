@@ -38,8 +38,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { getCurrentTest } from '@vitest/runner';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  TestRunner,
+} from 'vitest';
 import type { Run, start as rawStart } from '../src/runtime';
 import { getRun, getWorld } from '../src/runtime';
 import {
@@ -168,10 +175,10 @@ function skipIfUnsupportedDeployment(error: unknown): never {
       // otherwise shows two bare ids per test — the parent fixture's and this
       // one — with nothing saying which is the dynamic run.
       trackRun(getRun(createdRunId), {
-        testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+        testName: `${TestRunner.getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
       });
     }
-    getCurrentTest()?.context.skip(
+    TestRunner.getCurrentTest()?.context.skip(
       unsupported.reason +
         (createdRunId ? ` (created, unreplayable run: ${createdRunId})` : '')
     );
@@ -247,7 +254,7 @@ async function readRunRecord(runId: string) {
  */
 async function awaitChildRun(childRunId: string) {
   const child = trackRun(getRun(childRunId), {
-    testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+    testName: `${TestRunner.getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
   });
   const output = await child.returnValue;
   return { output, record: await readRunRecord(childRunId) };
@@ -256,7 +263,7 @@ async function awaitChildRun(childRunId: string) {
 /** As above, for a child expected to fail. */
 async function awaitChildRunFailure(childRunId: string, timeoutMs = 60_000) {
   trackRun(getRun(childRunId), {
-    testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+    testName: `${TestRunner.getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
   });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

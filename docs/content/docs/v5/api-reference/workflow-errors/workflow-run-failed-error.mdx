@@ -13,7 +13,7 @@ related:
 
 The `cause` property holds the original thrown value, hydrated through the workflow serialization pipeline so its type identity (e.g. `FatalError`, `RetryableError`, custom `Error` subclasses), `cause` chain, and custom properties are preserved. Because any JavaScript value can be thrown, `cause` is typed as `unknown`, so narrow it with `instanceof Error` (or a more specific check) before accessing fields like `message`. The high-level error classification is exposed as the top-level `errorCode` property.
 
-A failed run is terminal, so this error is non-retryable (`fatal: true`). Inside a workflow, `await run.returnValue` runs as a step, and that step fails on its first attempt instead of spending its retry budget re-reading a run that cannot change: the remote failure reaches the caller immediately, and the caller catches a `WorkflowRunFailedError` rather than a retry-exhaustion wrapper. Errors from *failing to read* the run, such as a transport blip, stay retryable.
+A failed run is terminal, so this error is non-retryable (`fatal: true`). Inside a workflow, `await run.returnValue` reads the result in a step, and that step fails on its first attempt instead of spending its retry budget re-reading a run that cannot change: the remote failure reaches the caller immediately, and the caller catches a `WorkflowRunFailedError` rather than a retry-exhaustion wrapper. Errors from *failing to read* the run, such as a transport blip, stay retryable.
 
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "workflow/errors"

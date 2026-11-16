@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nest",
-  "version": "5.1.6",
+  "version": "5.1.7",
   "description": "NestJS integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -34,7 +34,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run src"
+    "test": "vitest run --config=../../vitest.config.ts src"
   },
   "dependencies": {
     "@swc/core": "catalog:",
@@ -52,27 +52,27 @@
   },
   "peerDependenciesMeta": {
     "@nestjs/common": {
-      "optional": false
+      "optional": true
     },
     "@nestjs/core": {
-      "optional": false
+      "optional": true
     },
     "@swc/cli": {
-      "optional": false
+      "optional": true
     },
     "@swc/core": {
-      "optional": false
+      "optional": true
     }
   },
   "devDependencies": {
-    "@nestjs/common": "^11.1.27",
-    "@nestjs/core": "^11.1.27",
-    "@nestjs/platform-express": "^11.1.27",
-    "@nestjs/platform-fastify": "^11.1.27",
+    "@nestjs/common": "^11.2.8",
+    "@nestjs/core": "^11.2.8",
+    "@nestjs/platform-express": "^11.2.8",
+    "@nestjs/platform-fastify": "^11.2.8",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "express": "^5.2.1",
-    "fastify": "^5.12.2",
+    "express": "^5.3.0",
+    "fastify": "^5.12.8",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "supports-color": "10.2.2",

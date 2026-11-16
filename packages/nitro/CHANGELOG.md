@@ -1,5 +1,19 @@
 # @workflow/nitro
 
+## 5.0.9
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump dev dependencies `next` to 16.4.5 and `vite` to 7.3.7 to pick up security fixes.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`f292ef0`](https://github.com/vercel/workflow/commit/f292ef05cadbd5320298568050e39c96ef19f813), [`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`f486912`](https://github.com/vercel/workflow/commit/f486912be3b3715747737f68bd5f9a10b8d0cfa4), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`3debce2`](https://github.com/vercel/workflow/commit/3debce2174130c3f54ac6ed7f030f93b2f5576fb), [`e05186a`](https://github.com/vercel/workflow/commit/e05186ab2fc138a7b1b52b263cff0b3d4deaafb0), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`b7534aa`](https://github.com/vercel/workflow/commit/b7534aa6d102bd4caa584d28f6c3daef59478dc6), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1), [`d2a0d5a`](https://github.com/vercel/workflow/commit/d2a0d5ae67456a1946e1e29fe32c34e51a933f5b), [`50a1a9f`](https://github.com/vercel/workflow/commit/50a1a9f696729aa7944f7660e004ffe67650a120), [`530abff`](https://github.com/vercel/workflow/commit/530abff0838d260640c033c4ced86cef56f6123e), [`dfe2764`](https://github.com/vercel/workflow/commit/dfe27649e90c5e9b233edd778c64affff63216ee), [`f61f410`](https://github.com/vercel/workflow/commit/f61f41006b23ad3659180f17c6a2a94e0ac3249e), [`b573022`](https://github.com/vercel/workflow/commit/b5730229e4dec88e18d32c05988efd5f05e27947), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0)]:
+  - @workflow/vite@5.0.9
+  - @workflow/core@5.5.0
+  - @workflow/builders@5.1.0
+  - @workflow/web@5.1.0
+  - @workflow/rollup@5.0.9
+
 ## 5.0.8
 
 ### Patch Changes

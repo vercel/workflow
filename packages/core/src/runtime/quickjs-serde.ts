@@ -190,6 +190,11 @@ const CAPTURE_INTRINSICS = `(() => {
     dataViewByteOffset: getter(DataView.prototype, 'byteOffset'),
     dataViewByteLength: getter(DataView.prototype, 'byteLength'),
     arrayBufferByteLength: getter(ArrayBuffer.prototype, 'byteLength'),
+    // QuickJS-NG >= 0.16 implements the Error.prototype.stack accessor
+    // proposal: an engine-captured stack lives in an internal slot behind
+    // this native getter rather than in an own data property. Undefined
+    // on engines that still store it as an own data property.
+    errorStack: getter(Error.prototype, 'stack'),
     objectPrototype: Object.prototype,
     errorPrototype: Error.prototype,
     domExceptionPrototype: maybeProto(g.DOMException),
@@ -427,6 +432,7 @@ export function createQuickJSSerde(
     dataViewByteOffset: at('dataViewByteOffset'),
     dataViewByteLength: at('dataViewByteLength'),
     arrayBufferByteLength: at('arrayBufferByteLength'),
+    errorStack: optional('errorStack'),
     objectPrototype: at('objectPrototype'),
     errorPrototype: at('errorPrototype'),
     domExceptionPrototype: optional('domExceptionPrototype'),
@@ -593,6 +599,29 @@ export function createQuickJSSerde(
     const result = handle.isString ? handle.toString() : undefined;
     handle.dispose();
     return result;
+  };
+
+  /**
+   * An Error's `stack`. An own data property (set by guest code, or by
+   * revivers) wins. Otherwise, on engines with the Error.prototype.stack
+   * accessor, read the engine-captured trace through the boot-captured
+   * native getter: it only returns the Error's internal slot and runs no
+   * guest code, so a guest that replaces `Error.prototype.stack` cannot
+   * observe or spoof the read. Falls back to a data-property lookup along
+   * the prototype chain.
+   */
+  const errorStackString = (value: JSValueHandle): string | undefined => {
+    const ownStack = own(value, 'stack');
+    if (ownStack) {
+      const result = ownStack.isString ? ownStack.toString() : undefined;
+      ownStack.dispose();
+      return result;
+    }
+    if (i.errorStack && value.isError) {
+      using engineStack = call(i.errorStack, value);
+      if (engineStack.isString) return engineStack.toString();
+    }
+    return chainedString(value, 'stack');
   };
 
   const ownString = (
@@ -938,7 +967,7 @@ export function createQuickJSSerde(
     const shape: { message: string; stack?: string; cause?: unknown } = {
       message: chainedString(value, 'message') ?? '',
     };
-    const stack = chainedString(value, 'stack');
+    const stack = errorStackString(value);
     if (stack !== undefined) shape.stack = stack;
     if (guestHasOwn(value, 'cause')) {
       shape.cause = own(value, 'cause') ?? undefined;

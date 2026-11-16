@@ -37,10 +37,11 @@ vi.mock('./ws-transport.js', async (importOriginal) => {
     resolveWsTransport: () =>
       process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws'
         ? {
+            kind: 'open' as const,
             transport: { request: requestMock },
             wsUrl: `wss://vercel-workflow.com/api/websockets/v1/runs/${RUN_ID}`,
           }
-        : undefined,
+        : { kind: 'no_channel' as const },
   };
 });
 

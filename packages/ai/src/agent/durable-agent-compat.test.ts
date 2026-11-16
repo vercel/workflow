@@ -286,13 +286,11 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
         writable,
       });
 
-      expect(doStreamOptions?.providerOptions).toMatchInlineSnapshot(`
-        {
-          "test": {
-            "value": "test",
-          },
-        }
-      `);
+      expect(doStreamOptions?.providerOptions).toStrictEqual({
+        test: {
+          value: 'test',
+        },
+      });
     });
 
     it('should use prepareStep from constructor', async () => {
@@ -598,11 +596,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           writable,
         });
 
-        expect(onStartCalls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-          ]
-        `);
+        expect(onStartCalls).toStrictEqual(['constructor']);
       });
 
       it.fails('should call experimental_onStart from stream method', async () => {
@@ -619,11 +613,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(onStartCalls).toMatchInlineSnapshot(`
-          [
-            "method",
-          ]
-        `);
+        expect(onStartCalls).toStrictEqual(['method']);
       });
 
       it.fails('should call both constructor and method experimental_onStart in correct order', async () => {
@@ -645,12 +635,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(onStartCalls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-            "method",
-          ]
-        `);
+        expect(onStartCalls).toStrictEqual(['constructor', 'method']);
       });
 
       it.fails('should pass correct event information', async () => {
@@ -681,22 +666,20 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           temperature: startEvent.temperature,
           maxOutputTokens: startEvent.maxOutputTokens,
           experimental_context: startEvent.experimental_context,
-        }).toMatchInlineSnapshot(`
-          {
-            "experimental_context": {
-              "userId": "test-user",
-            },
-            "maxOutputTokens": 500,
-            "messages": undefined,
-            "model": {
-              "modelId": "mock-model-id",
-              "provider": "mock-provider",
-            },
-            "prompt": "Hello, world!",
-            "system": "You are a helpful assistant",
-            "temperature": 0.7,
-          }
-        `);
+        }).toStrictEqual({
+          experimental_context: {
+            userId: 'test-user',
+          },
+          maxOutputTokens: 500,
+          messages: undefined,
+          model: {
+            modelId: 'mock-model-id',
+            provider: 'mock-provider',
+          },
+          prompt: 'Hello, world!',
+          system: 'You are a helpful assistant',
+          temperature: 0.7,
+        });
       });
     });
   });
@@ -728,11 +711,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           writable,
         });
 
-        expect(onStepStartCalls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-          ]
-        `);
+        expect(onStepStartCalls).toStrictEqual(['constructor']);
       });
 
       it.fails('should call experimental_onStepStart from stream method', async () => {
@@ -749,11 +728,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(onStepStartCalls).toMatchInlineSnapshot(`
-          [
-            "method",
-          ]
-        `);
+        expect(onStepStartCalls).toStrictEqual(['method']);
       });
 
       it.fails('should call both constructor and method experimental_onStepStart in correct order', async () => {
@@ -775,12 +750,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(onStepStartCalls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-            "method",
-          ]
-        `);
+        expect(onStepStartCalls).toStrictEqual(['constructor', 'method']);
       });
 
       it.fails('should pass correct event information', async () => {
@@ -808,21 +778,19 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           messagesLength: stepStartEvent.messages.length,
           steps: stepStartEvent.steps,
           experimental_context: stepStartEvent.experimental_context,
-        }).toMatchInlineSnapshot(`
-          {
-            "experimental_context": {
-              "userId": "test-user",
-            },
-            "messagesLength": 1,
-            "model": {
-              "modelId": "mock-model-id",
-              "provider": "mock-provider",
-            },
-            "stepNumber": 0,
-            "steps": [],
-            "system": "You are a helpful assistant",
-          }
-        `);
+        }).toStrictEqual({
+          experimental_context: {
+            userId: 'test-user',
+          },
+          messagesLength: 1,
+          model: {
+            modelId: 'mock-model-id',
+            provider: 'mock-provider',
+          },
+          stepNumber: 0,
+          steps: [],
+          system: 'You are a helpful assistant',
+        });
       });
     });
   });
@@ -976,11 +944,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           writable,
         });
 
-        expect(calls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-          ]
-        `);
+        expect(calls).toStrictEqual(['constructor']);
       });
 
       it.fails('should call experimental_onToolCallStart from stream method', async () => {
@@ -1006,11 +970,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(calls).toMatchInlineSnapshot(`
-          [
-            "method",
-          ]
-        `);
+        expect(calls).toStrictEqual(['method']);
       });
 
       it.fails('should call both constructor and method in correct order', async () => {
@@ -1039,12 +999,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(calls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-            "method",
-          ]
-        `);
+        expect(calls).toStrictEqual(['constructor', 'method']);
       });
 
       it.fails('should pass correct event information', async () => {
@@ -1075,16 +1030,14 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           toolCallId: event.toolCall.toolCallId,
           toolCallInput: event.toolCall.input,
           messagesLength: event.messages.length,
-        }).toMatchInlineSnapshot(`
-          {
-            "messagesLength": 1,
-            "toolCallId": "call-1",
-            "toolCallInput": {
-              "value": "test",
-            },
-            "toolCallName": "testTool",
-          }
-        `);
+        }).toStrictEqual({
+          messagesLength: 1,
+          toolCallId: 'call-1',
+          toolCallInput: {
+            value: 'test',
+          },
+          toolCallName: 'testTool',
+        });
       });
     });
   });
@@ -1115,11 +1068,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           writable,
         });
 
-        expect(calls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-          ]
-        `);
+        expect(calls).toStrictEqual(['constructor']);
       });
 
       it.fails('should call experimental_onToolCallFinish from stream method', async () => {
@@ -1145,11 +1094,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(calls).toMatchInlineSnapshot(`
-          [
-            "method",
-          ]
-        `);
+        expect(calls).toStrictEqual(['method']);
       });
 
       it.fails('should call both constructor and method in correct order', async () => {
@@ -1178,12 +1123,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           },
         });
 
-        expect(calls).toMatchInlineSnapshot(`
-          [
-            "constructor",
-            "method",
-          ]
-        `);
+        expect(calls).toStrictEqual(['constructor', 'method']);
       });
 
       it.fails('should pass correct event information on success', async () => {
@@ -1219,18 +1159,16 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
           success: event.success,
           output: event.success ? event.output : undefined,
           messagesLength: event.messages.length,
-        }).toMatchInlineSnapshot(`
-          {
-            "messagesLength": 1,
-            "output": "hello-result",
-            "success": true,
-            "toolCallId": "call-1",
-            "toolCallInput": {
-              "value": "hello",
-            },
-            "toolCallName": "testTool",
-          }
-        `);
+        }).toStrictEqual({
+          messagesLength: 1,
+          output: 'hello-result',
+          success: true,
+          toolCallId: 'call-1',
+          toolCallInput: {
+            value: 'hello',
+          },
+          toolCallName: 'testTool',
+        });
       });
     });
   });

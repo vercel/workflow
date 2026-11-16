@@ -4,6 +4,9 @@ import { MockLanguageModelV3 } from 'ai/test';
 // `new ClassName(...)` in a step closure doesn't get closure vars hoisted
 // correctly. Wrapping the constructor call in a plain function (imported
 // from a separate file) fixes it.
+/**
+ * @deprecated `@workflow/ai` is deprecated. Use the mock models from `ai/test`.
+ */
 export function mockProvider(
   ...args: ConstructorParameters<typeof MockLanguageModelV3>
 ) {

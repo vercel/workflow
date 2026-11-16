@@ -45,6 +45,7 @@ import {
   NODE_HTTP_HEADERS_TIMEOUT_MS,
   noteEventsTransportOutcome,
   QUEUE_AGENT_CONNECTIONS,
+  QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS,
   QUEUE_REQUEST_TIMEOUT_MS,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
@@ -1121,6 +1122,28 @@ describe('queue client transport', () => {
     expect(getQueueRequestTimeoutMs()).toBe(45_000);
     vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', '1');
     expect(getQueueRequestTimeoutMs()).toBe(5_000);
+  });
+
+  // Instances publish every few seconds to minutes; a gap above the idle
+  // timeout reopens the connection inside the send. See
+  // QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS.
+  it('keeps idle queue connections longer than the shared pool', () => {
+    const options = getQueueAgentOptions();
+    expect(options.keepAliveTimeout).toBe(QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS);
+    expect(options.keepAliveTimeout).toBeGreaterThan(
+      DEFAULT_AGENT_OPTIONS.keepAliveTimeout
+    );
+    // Bounded well below the queue endpoint's idle timeout.
+    expect(options.keepAliveTimeout).toBeLessThanOrEqual(240_000);
+  });
+
+  it('reads the keep-alive override, clamped', () => {
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS', '30000');
+    expect(getQueueAgentOptions().keepAliveTimeout).toBe(30_000);
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS', '900000');
+    expect(getQueueAgentOptions().keepAliveTimeout).toBe(240_000);
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS', '1');
+    expect(getQueueAgentOptions().keepAliveTimeout).toBe(1_000);
   });
 
   it('reads the connection override', () => {

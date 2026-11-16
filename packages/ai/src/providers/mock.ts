@@ -1,5 +1,8 @@
 import { mockProvider } from './mock-function-wrapper.js';
 
+/**
+ * @deprecated `@workflow/ai` is deprecated. Use the mock models from `ai/test`.
+ */
 export type MockResponseDescriptor =
   | { type: 'text'; text: string }
   | { type: 'tool-call'; toolName: string; input: string }
@@ -14,6 +17,8 @@ export type MockResponseDescriptor =
  * Mock model that returns a fixed text response.
  * Same 'use step' pattern as real providers (anthropic, openai, etc.).
  * Only captures `text` (string), which is fully serializable across step boundary.
+ *
+ * @deprecated `@workflow/ai` is deprecated. Use the mock models from `ai/test`.
  */
 export function mockTextModel(text: string) {
   return async () => {
@@ -57,6 +62,8 @@ export function mockTextModel(text: string) {
  * Mock model that plays through a sequence of responses.
  * Determines which response to return by counting assistant messages in the prompt.
  * Only captures `responses` (array of plain objects), which is fully serializable.
+ *
+ * @deprecated `@workflow/ai` is deprecated. Use the mock models from `ai/test`.
  */
 export function mockSequenceModel(responses: MockResponseDescriptor[]) {
   return async () => {

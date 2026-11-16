@@ -28,7 +28,7 @@ export function EventListToolbar({
             onQueryChange('');
           }
         }}
-        className="min-w-0 flex-1 bg-transparent text-label-14 text-gray-1000 outline-none placeholder:text-gray-800 disabled:cursor-not-allowed disabled:placeholder:text-gray-700"
+        className="min-w-0 flex-1 bg-transparent text-label-14 text-gray-1000 outline-none placeholder:text-gray-800"
       />
       {query ? (
         <button

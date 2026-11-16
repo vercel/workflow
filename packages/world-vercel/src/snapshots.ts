@@ -35,7 +35,7 @@ function snapshotDiag(fields: Record<string, unknown>): void {
 }
 
 /**
- * Largest snapshot envelope the workflow-server accepts (it rejects larger
+ * Largest snapshot envelope the backend accepts (it rejects larger
  * bodies with a 400 and stores nothing). Checked before the upload so an
  * oversized heap fails fast with a clear error instead of first sending
  * tens of MB over the wire. The core treats a failed save as a skipped
@@ -44,7 +44,7 @@ function snapshotDiag(fields: Record<string, unknown>): void {
 export const MAX_SNAPSHOT_ENVELOPE_BYTES = 64 * 1024 * 1024;
 
 /**
- * Create snapshot storage backed by the workflow-server API.
+ * Create snapshot storage backed by the world-vercel backend API.
  *
  * Compression and encryption are handled by `@workflow/core`'s
  * snapshot entrypoint (`compress(snapshot) → encrypt → save`). This
@@ -53,7 +53,7 @@ export const MAX_SNAPSHOT_ENVELOPE_BYTES = 64 * 1024 * 1024;
  * not encrypt.
  *
  * The request/response body is a snapshot ENVELOPE (metadata + bytes in
- * one blob; see `encodeSnapshotEnvelope`): the workflow-server stores
+ * one blob; see `encodeSnapshotEnvelope`): the backend stores
  * it opaquely, so the FULL metadata object round-trips losslessly
  * without any server-side schema involvement, and the metadata/bytes
  * pairing is atomic by construction. The `X-Snapshot-*` headers on save
@@ -101,7 +101,7 @@ export function createSnapshotsStorage(
       // Explicit W3C trace-context injection: this path routes around
       // `makeRequest` (raw undici for Buffer-body retry correctness), so
       // ambient auto-instrumentation does not reliably hook it. Required
-      // for workflow-server spans to join the caller's trace — see
+      // for backend spans to join the caller's trace — see
       // telemetry.ts and trace-propagation.test.ts.
       await injectTraceContextIntoHeaders(headers);
 

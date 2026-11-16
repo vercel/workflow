@@ -166,8 +166,8 @@ type CallPhase = 'before' | 'after';
 after `step_started` is durable and before the workflow resumes".
 
 Neither phase produces the opposite order, and a write is not atomic, so the
-opposite order is reachable: a real backend mints the event ID *first*.
-DynamoDB does not generate IDs, and that ID is the log's sort key. Only
+opposite order is reachable: a real backend mints the event ID *first*
+(its store does not generate IDs, and that ID is the log's sort key), and only
 then attempts the storage write. Between the two the event has a position but
 no visibility, and a write that commits in that window sorts **behind** it.
 
@@ -390,7 +390,7 @@ order is its commit order. Both leave the reader short rather than wrong, and
 a short read is what a write's skipped-slot report corrects.
 
 Off by default: the sim exists to model the world that exists, and production
-mints at the boundary because DynamoDB does not generate ids. The value of the
+mints at the boundary because its store does not generate ids. The value of the
 switch is differential. Play the book both ways, and the diff separates "fails
 because of the mint-before-commit window" from "fails for some other reason".
 No scenario in the book sets it; it is meant to be driven from

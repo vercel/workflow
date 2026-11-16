@@ -21,17 +21,17 @@ import {
  * `SPEC_VERSION_CURRENT`, which now sits one above it at the sealed log. Two
  * reasons, and both are about the window a spec bump is staged over:
  *
- * - `WORKFLOW_SEALED_LOG=0` puts a deployment back on slot identity, so its
+ * - `WORKFLOW_SPEC_VERSION=6` puts a deployment back on slot identity, so its
  *   World declares the lower version. Flooring at the version we stamp by
- *   default would make that kill switch reject the very World it selects,
+ *   default would make that setting reject the very World it selects,
  *   turning a rollback into a startup failure.
  * - A World package one version behind the runtime it ships alongside is the
  *   normal state mid-bump, and it can still serve the protocol: slot identity
  *   is what the runtime actually requires, and sealed logs are a capability on
  *   top of it that only the backend implements.
  *
- * The range narrows again when the sealed log becomes mandatory and the flag
- * goes away, exactly as slot identity's own floor did.
+ * The range narrows again once `WORKFLOW_SPEC_VERSION` stops accepting
+ * versions below the sealed log, exactly as slot identity's own floor did.
  */
 export function assertWorldSupportsRuntimeProtocol(
   world: Pick<World, 'specVersion'>

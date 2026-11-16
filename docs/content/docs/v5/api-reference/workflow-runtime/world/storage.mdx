@@ -182,8 +182,7 @@ a normal return, not an error, and a missing run throws
   also return a non-terminal snapshot before `timeoutMs` is up. Callers pace
   their own retries (`await run.returnValue` keeps consecutive non-terminal
   observations at least one `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` apart), and
-  worlds that omit the method are polled on that interval instead. Set
-  `WORKFLOW_RETURN_VALUE_LONG_POLL=0` to force interval polling everywhere.
+  worlds that omit the method are polled on that interval instead.
 </Callout>
 
 ### runs.list()

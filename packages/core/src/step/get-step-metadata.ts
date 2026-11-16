@@ -38,6 +38,18 @@ export interface StepMetadata {
    * Accessing this property in a workflow function will throw an error.
    */
   attempt: number;
+
+  /**
+   * The maximum number of times the current step can be executed: its `maxRetries` plus one.
+   * The current attempt is the last one when `attempt` is greater than or equal to `maxAttempts`:
+   * an error thrown from it fails the step instead of retrying it.
+   *
+   * @remarks
+   *
+   * Only available inside a step function.
+   * Accessing this property in a workflow function will throw an error.
+   */
+  maxAttempts: number;
 }
 
 /**

@@ -312,7 +312,7 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * Race a promise against a deadline. Rejects with a timeout error when the
  * deadline elapses first. Used to bound `world.streams.get()` inside the
  * health-check poll loop: some worlds hold that request open until the
- * stream has data (e.g. workflow-server holds unwritten streams open for
+ * stream has data (e.g. world-vercel holds unwritten streams open for
  * ~2 minutes), which would otherwise blow through the configured health
  * check timeout, since the `while` condition is only re-checked between
  * iterations.
@@ -850,28 +850,13 @@ export function appendEventLog(
 
 /**
  * Whether a replay refuses to run over a log with a hole in it (see
- * {@link findEventSlotGap}). **On by default**; set
- * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
+ * {@link findEventSlotGap}). Always `true`: the `WORKFLOW_SLOT_GAP_CHECK`
+ * opt-out is no longer read.
  *
- * A World that allocates a position at the moment it commits leaves no hole
- * behind when a write fails, so density is a property the log has by
- * construction rather than one this check maintains. What the check is for is
- * the reads and the Worlds where that does not hold, and by the time it runs
- * the benign explanations are spent: a position missing because a concurrent
- * commit is not visible yet clears on a re-read, which is what
- * {@link settleEventSlotGap} does first.
- *
- * What is left is a hole that persists, and its two causes are
- * indistinguishable from the log. Either a World allocated the position outside
- * the commit and lost the write, in which case nothing happened there and
- * replaying past it is correct, or an event that did happen is missing, in
- * which case replaying past it decides a branch on absence and produces a wrong
- * result with nothing to show for it. Failing is the recoverable side of that
- * trade, and this is the way back out if a fleet turns out to carry holes of
- * the first kind.
+ * @deprecated No longer read by the runtime; always returns `true`.
  */
 export function isSlotGapCheckEnabled(): boolean {
-  return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
+  return true;
 }
 
 /*

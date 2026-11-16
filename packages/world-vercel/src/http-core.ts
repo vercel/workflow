@@ -62,9 +62,9 @@ import {
 } from './telemetry.js';
 
 /**
- * Per-request timeout for HTTP calls to workflow-server (in ms).
+ * Per-request timeout for HTTP calls to the backend (in ms).
  *
- * Without this, a hung workflow-server response would keep the caller blocked
+ * Without this, a hung backend response would keep the caller blocked
  * until the platform's `maxDuration` SIGTERM, burning compute and defeating
  * upstream timeout handlers (e.g. the replay timeout).
  */
@@ -214,7 +214,7 @@ export function describeTransportFailure(error: unknown): string | undefined {
  * into range:
  *
  * - **Floor.** Below ~10s this stops being a safety net and becomes the thing
- *   that breaks working requests: a cold workflow-server route, a large event
+ *   that breaks working requests: a cold backend route, a large event
  *   page, or an ordinary tail-latency blip all exceed a few seconds, and the
  *   resulting timeout is indistinguishable from a broken backend, so the
  *   runtime redrives via the queue instead of making progress.

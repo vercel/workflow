@@ -3,13 +3,18 @@ import type {
   CreateEventParams,
   Storage,
 } from '@workflow/world';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import {
   createWorkflowRunEvent,
   createWorkflowRunEventBatch,
   getEvent,
   getWorkflowRunEvents,
 } from './events.js';
-import { subscribeRunEvents } from './events-live-feed.js';
+import {
+  cursorAfterSlot,
+  GAP_FILL_PAGE_SIZE,
+  subscribeRunEvents,
+} from './events-live-feed.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
 import {
@@ -82,7 +87,26 @@ export function createStorage(config?: APIConfig): Storage {
       // and stays open for a whole blocked wait, so a per-call span would
       // measure nothing.
       subscribe: (runId, afterSlot, onEvent, options) =>
-        subscribeRunEvents(runId, afterSlot, onEvent, options, config),
+        subscribeRunEvents(
+          runId,
+          afterSlot,
+          onEvent,
+          options,
+          config,
+          // Fills a gap a heartbeat reveals: the log after the last slot the
+          // subscription delivered, as the runtime's own poll reads it.
+          (after) =>
+            storage.events.list({
+              runId,
+              pagination: {
+                sortOrder: 'asc',
+                limit: GAP_FILL_PAGE_SIZE,
+                ...(after >= 1 ? { cursor: cursorAfterSlot(after) } : {}),
+              },
+              resolveData: 'all',
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            })
+        ),
     },
     hooks: instrumentObject('world.hooks', storage.hooks),
     experimental_snapshots: instrumentObject(
