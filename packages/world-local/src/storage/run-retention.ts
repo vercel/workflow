@@ -9,8 +9,9 @@
  * by `purgeRunData` in the same transaction, so a purged run is never
  * observable with any of its data left. A step still running when the run
  * ended may finish afterwards (`step_completed`, `step_failed`,
- * `step_retrying`); that write runs `purgeRunData` again in its own
- * transaction, so the late payload is never left behind either. The
+ * `step_retrying`); that write scrubs what it stored (`purgeLateStepWrite`)
+ * in its own transaction, so the late payload is never left behind either.
+ * The
  * connection zeroes freed pages (`secure_delete`), and the WAL, which still
  * holds the old pages, is checkpointed and truncated right after the purge
  * commits.
@@ -44,48 +45,14 @@ export function purgeRunData(db: Database, runId: string): void {
     'SELECT step_id, doc FROM steps WHERE run_id = ?',
     runId
   )) {
-    const step = decode<Step>(row.doc);
-    step.input = undefined as never;
-    step.output = undefined;
-    step.error = undefined;
-    db.run(
-      'UPDATE steps SET doc = ? WHERE run_id = ? AND step_id = ?',
-      encode(step),
-      runId,
-      row.step_id
-    );
+    writeScrubbedStep(db, runId, row.step_id, row.doc);
   }
 
   for (const row of db.all<{ seq: number; doc: string }>(
     'SELECT seq, doc FROM events WHERE run_id = ?',
     runId
   )) {
-    const event = decode<Event & { eventData?: Record<string, unknown> }>(
-      row.doc
-    );
-    const eventData = event.eventData;
-    if (!eventData || typeof eventData !== 'object') continue;
-    for (const field of getEventDataRefFields(String(event.eventType))) {
-      delete eventData[field];
-    }
-    if (
-      event.eventType === 'run_created' ||
-      event.eventType === 'run_started'
-    ) {
-      delete eventData.dynamicWorkflowCode;
-      delete eventData.dynamicWorkflowCodeRef;
-      // A start Hook's metadata is user data; its token and retention are not.
-      const startHook = eventData.startHook as
-        | Record<string, unknown>
-        | undefined;
-      if (startHook && typeof startHook === 'object') delete startHook.metadata;
-    }
-    db.run(
-      'UPDATE events SET doc = ? WHERE run_id = ? AND seq = ?',
-      encode(event),
-      runId,
-      row.seq
-    );
+    writeScrubbedEvent(db, runId, row.seq, row.doc);
   }
 
   // A hook kept for its token's retention keeps its token, not its payload.
@@ -103,6 +70,82 @@ export function purgeRunData(db: Database, runId: string): void {
   }
 
   purgeRunStreams(db, runId);
+}
+
+/**
+ * Scrubs what a step write on an already-purged run stored: the step's
+ * payloads and the event at `seq` it appended. The rest of the run was
+ * scrubbed by its purge, so this costs the same whatever the run's size,
+ * which matters when many steps were running when the run ended. Streams
+ * are dropped again too, in case the step wrote to them after the purge.
+ * Runs inside a transaction.
+ */
+export function purgeLateStepWrite(
+  db: Database,
+  runId: string,
+  stepId: string,
+  seq: number
+): void {
+  const step = db.get<{ doc: string }>(
+    'SELECT doc FROM steps WHERE run_id = ? AND step_id = ?',
+    runId,
+    stepId
+  );
+  if (step) writeScrubbedStep(db, runId, stepId, step.doc);
+  const event = db.get<{ doc: string }>(
+    'SELECT doc FROM events WHERE run_id = ? AND seq = ?',
+    runId,
+    seq
+  );
+  if (event) writeScrubbedEvent(db, runId, seq, event.doc);
+  purgeRunStreams(db, runId);
+}
+
+function writeScrubbedStep(
+  db: Database,
+  runId: string,
+  stepId: string,
+  doc: string
+): void {
+  const step = decode<Step>(doc);
+  step.input = undefined as never;
+  step.output = undefined;
+  step.error = undefined;
+  db.run(
+    'UPDATE steps SET doc = ? WHERE run_id = ? AND step_id = ?',
+    encode(step),
+    runId,
+    stepId
+  );
+}
+
+function writeScrubbedEvent(
+  db: Database,
+  runId: string,
+  seq: number,
+  doc: string
+): void {
+  const event = decode<Event & { eventData?: Record<string, unknown> }>(doc);
+  const eventData = event.eventData;
+  if (!eventData || typeof eventData !== 'object') return;
+  for (const field of getEventDataRefFields(String(event.eventType))) {
+    delete eventData[field];
+  }
+  if (event.eventType === 'run_created' || event.eventType === 'run_started') {
+    delete eventData.dynamicWorkflowCode;
+    delete eventData.dynamicWorkflowCodeRef;
+    // A start Hook's metadata is user data; its token and retention are not.
+    const startHook = eventData.startHook as
+      | Record<string, unknown>
+      | undefined;
+    if (startHook && typeof startHook === 'object') delete startHook.metadata;
+  }
+  db.run(
+    'UPDATE events SET doc = ? WHERE run_id = ? AND seq = ?',
+    encode(event),
+    runId,
+    seq
+  );
 }
 
 /**

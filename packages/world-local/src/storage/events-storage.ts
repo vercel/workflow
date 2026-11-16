@@ -75,7 +75,11 @@ import { monotonicFactory } from 'ulid';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { CommitThenThrow, type Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
-import { purgeRunData, purgesUserDataOnFinish } from './run-retention.js';
+import {
+  purgeLateStepWrite,
+  purgeRunData,
+  purgesUserDataOnFinish,
+} from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { startHookRecord, withStartHookId } from './start-hook.js';
 import { eventCursor, type RunRow, Store } from './store.js';
@@ -1003,17 +1007,20 @@ export function createEventsStorage(
       wasPurgedOnFinish(runId, run);
 
     let reported = stored;
-    if (runPurged || lateOnPurgedRun) {
+    if (runPurged) {
       purgeRunData(db, runId);
       // The scrubbed bytes are still in the WAL until it is checkpointed.
       effects.push(() => db.checkpoint());
-    }
-    if (lateOnPurgedRun && step) {
+    } else if (lateOnPurgedRun && step) {
+      // Only this write's step and event: the rest of the run is already
+      // scrubbed, and re-running the whole purge per late write would cost
+      // the run's size times the number of steps still running.
+      const seq = Number(stored.eventId.slice('evnt_'.length));
+      purgeLateStepWrite(db, runId, step.stepId, seq);
+      effects.push(() => db.checkpoint());
       // Answer with what is stored, not with the payload just scrubbed.
       step = store.getStep(runId, step.stepId) ?? step;
-      reported =
-        store.getEventAt(runId, Number(stored.eventId.slice('evnt_'.length))) ??
-        stored;
+      reported = store.getEventAt(runId, seq) ?? stored;
     }
 
     return finish(reported, resultRun, {
