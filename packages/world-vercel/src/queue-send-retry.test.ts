@@ -1,3 +1,4 @@
+import { QueueClient } from '@vercel/queue';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import {
@@ -40,7 +41,10 @@ describe('queueSendRetryDelayMs', () => {
     ],
     ['a 5xx', queueError('InternalServerError')],
     ['a consumer-discovery 502', queueError('ConsumerDiscoveryError')],
-    ['a 429 without Retry-After', queueError('TooManyRequestsError')],
+    [
+      'a 429 with a short Retry-After',
+      queueError('TooManyRequestsError', { retryAfter: 1 }),
+    ],
   ])('re-sends after %s', (_, error) => {
     expect(queueSendRetryDelayMs(error, 0)).toBeGreaterThan(0);
   });
@@ -139,6 +143,33 @@ describe('withQueueSendRetry', () => {
 
     await expect(withQueueSendRetry(send)).rejects.toThrow('BadRequestError');
     expect(send).toHaveBeenCalledOnce();
+  });
+
+  it('does not retry a long throttle whose Retry-After the queue client drops', async () => {
+    const fetch = vi.fn().mockImplementation(
+      async () =>
+        new Response('Rate limited', {
+          status: 429,
+          headers: { 'Retry-After': '60' },
+        })
+    );
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const client = new QueueClient({
+        region: 'iad1',
+        token: 'test',
+        deploymentId: 'dpl_test',
+      });
+      const result = withQueueSendRetry(() => client.send('test', {}));
+      const settled = expect(result).rejects.toMatchObject({
+        name: 'TooManyRequestsError',
+      });
+      await vi.runAllTimersAsync();
+      await settled;
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('starts no retry past its budget', async () => {

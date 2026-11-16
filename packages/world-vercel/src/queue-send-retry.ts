@@ -77,8 +77,12 @@ export function queueSendRetryDelayMs(
   const name = queueErrorName(error);
   if (name === 'TooManyRequestsError') {
     const { retryAfter } = error as { retryAfter?: unknown };
-    const retryAfterMs =
-      typeof retryAfter === 'number' && retryAfter > 0 ? retryAfter * 1000 : 0;
+    // @vercel/queue 0.3.1 drops Retry-After on send errors. An absent value
+    // therefore cannot distinguish a short throttle from a long one.
+    if (typeof retryAfter !== 'number' || !Number.isFinite(retryAfter)) {
+      return undefined;
+    }
+    const retryAfterMs = Math.max(0, retryAfter * 1000);
     // A longer wait is left to the caller: the queue asked for it.
     if (retryAfterMs > QUEUE_SEND_MAX_RETRY_AFTER_MS) return undefined;
     return Math.max(backoff, retryAfterMs);
