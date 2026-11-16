@@ -1,0 +1,349 @@
+---
+title: Workflow SDK vs Cloudflare Durable Objects
+description: How Cloudflare Durable Objects map to Workflow SDK runs. Per-entity objects such as chat rooms, sessions and agents become one durable run per entity, with hooks for incoming messages and streams for outgoing ones.
+type: conceptual
+summary: Many Durable Objects are per-entity, long-lived state machines. Each becomes one Workflow run, started once per ID, that reads commands from a hook and writes what clients see to a resumable stream.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+  - /docs/foundations/hooks
+related:
+  - /docs/foundations/streaming
+  - /docs/foundations/idempotency
+  - /docs/comparisons/workflow-sdk-vs-cloudflare-workflows
+---
+
+[Cloudflare Durable Objects](https://developers.cloudflare.com/durable-objects/) are single-threaded actors with their own storage. Each object has an ID, Cloudflare routes every request for that ID to one instance, and the instance keeps its state in transactional storage, sets alarms, and holds WebSockets open. A Durable Object is not a workflow engine, but many of the things built with one are long-lived, per-entity state machines: a chat room, a document session, an agent conversation, a game match, a scheduler. Those map well to the Workflow SDK as **one durable run per entity**.
+
+<Callout type="info">
+**Move an object to a Workflow run** when it is the durable life of one entity: it waits for messages, reacts, keeps state across them, and sleeps until a deadline. **Keep a Durable Object** when it serves hot, low-latency request/response traffic, many callers read its state between writes, or it controls a raw WebSocket protocol.
+</Callout>
+
+## At a glance
+
+| | Workflow SDK | Cloudflare Durable Objects |
+| --- | --- | --- |
+| **Unit** | A run of a `"use workflow"` function | An instance of a class that extends `DurableObject` |
+| **One per entity** | `start(workflow, args, { experimental_hook: { token } })` admits one run per token | `idFromName(name)` routes every request for a name to one instance |
+| **Durability** | Event log and deterministic replay: local variables survive restarts | Transactional storage (key-value and SQLite) that the code reads and writes |
+| **Incoming messages** | `resumeHook(token, payload)`, read in the run with `for await` or a hook's iterator | `fetch()`, RPC methods and `webSocketMessage()` |
+| **Outgoing messages** | `getWritable()` streams, readable from any index after a reconnect | `ws.send()` to the sockets the object holds |
+| **Timers** | `sleep()` | One alarm per object: `storage.setAlarm()` and `alarm()` |
+| **Concurrency** | The run reads commands from its hook one at a time, in order; side effects run in steps | Single-threaded with input and output gates |
+| **Idle cost** | A run waiting on a hook or a `sleep()` uses no compute | Hibernated WebSockets and idle objects are not billed for duration |
+| **Where it runs** | Your platform (Vercel, or a self-hosted World) | Cloudflare, placed near the first caller (optionally in a jurisdiction) |
+
+## When an object is a workflow run
+
+A Durable Object that does one of these is usually a good fit:
+
+- **It waits for things to happen to one entity**: messages in a room, edits to a document, turns in a game, replies in an agent conversation.
+- **Its state only matters to itself** between events: a sequence number, a history, a score, a status.
+- **It acts on time**: closes an idle room, expires a session, sends a reminder, retries a delivery.
+- **Its clients can tolerate a short delay** between sending a message and seeing the result, the way chat and collaborative clients already do.
+
+In the Workflow SDK, the same entity is a run that loops over incoming commands. The run is the object:
+
+- **The ID** becomes the run's start token. Every caller tries `start()` with it: the first one starts the run, the rest get `HookConflictError` naming the run that owns the token. That is `idFromName()`.
+- **Methods and incoming WebSocket messages** become `resumeHook(token, command)` calls from your routes. The run reads them from its hook, one at a time and in order.
+- **State** is local variables in the workflow function. The event log reconstructs them after a restart or a redeploy, so there is no storage API to call and no schema to keep in step with the code.
+- **Alarms** become `sleep()`. A Durable Object has one alarm at a time, and so should the run (see [Timers](#timers)).
+- **Outgoing WebSocket messages** become chunks on the run's stream. Clients read the stream through a route and, after a reconnect, continue from the index they had reached, so nothing is lost while they are away.
+
+## Where it does not map
+
+Be honest with yourself about these before you move an object:
+
+- **Hot request/response traffic.** A call into a Durable Object returns in the same request. A command to a run is a hook delivery, a replay and a step, and an answer travels back on a stream. That suits a chat message; it does not suit a rate limiter checked on every request, or a counter read thousands of times a second.
+- **Many readers of current state.** An object can answer `getState()` to every caller with a consistent read. A run's state lives inside the run. Publish what readers need: write it to a database from a step, append it to a stream, or set small labels with [`setAttributes()`](/docs/api-reference/workflow/set-attributes).
+- **Unbounded event counts in one run.** Every command adds events to the run's log, and a run has an [event limit](/docs/errors/max-events-exceeded). A room that lives for months should start a successor run, carrying its state, before it gets there (see [Long-lived entities](#long-lived-entities)).
+- **Raw WebSocket control.** Streams carry serializable values, including `Uint8Array`, over HTTP. Subprotocol negotiation, ping and pong control and close codes are not part of the model.
+- **Connected-client cost.** A hibernated WebSocket costs nothing while it is quiet. A client reading a run's stream holds an HTTP request open to a route that streams it; plan for one open request per connected client.
+- **Placement.** An object is created near its first caller. A run is created in the region where it was started (see [multi-region](/worlds/vercel#multi-region)); start entity runs from the region your users are in.
+
+## Concept mapping
+
+| Durable Objects | Workflow SDK | Note |
+| --- | --- | --- |
+| `env.ROOMS.idFromName(roomId)` / `env.ROOMS.get(id)` | `start(chatRoom, [roomId], { experimental_hook: { token: \`room:${roomId}\` } })`; on `HookConflictError`, use `error.conflictingRunId` | Concurrent first requests still get one run. |
+| RPC method or `fetch()` into the object | `resumeHook(token, command)` | The run reads commands in the order they arrive. |
+| An RPC method's return value | An answer written to a stream namespace the caller reads (see [Answers](#answers)) | Adds a round trip; keep it for commands that need one. |
+| `webSocketMessage(ws, message)` | A route that calls `resumeHook(token, message)` | The client sends with an HTTP request instead of a socket frame. |
+| `ws.send()` / broadcasting to `getWebSockets()` | Writing to `getWritable()` in a step | Every reader of the stream sees every chunk, in order. |
+| A reconnecting client catching up from storage | `run.getReadable({ startIndex })` | Stream chunks are kept, so a client resumes from the last index it saw. |
+| `storage.get()` / `storage.put()` / `storage.sql` | Local variables in the workflow; a database in a step for data others read | Replay restores local variables. |
+| `storage.setAlarm()` / `alarm()` | `sleep()`, one at a time | See [Timers](#timers). |
+| `blockConcurrencyWhile()` | Nothing to do | Commands are read one at a time by the run. |
+| Object eviction and restart | Nothing to do | A run is resumed from its event log, wherever it runs next. |
+| `storage.deleteAll()` and a "closed" flag | The run returns; a start token retained with `experimental_minRetention` keeps the ID from starting again | [Keep the token after the run ends](/docs/foundations/idempotency#keep-the-token-after-the-run-ends). |
+
+## Migrating a chat room
+
+The room below accepts WebSocket connections with the [Hibernation API](https://developers.cloudflare.com/durable-objects/best-practices/websockets/), keeps its history in storage, lets a reconnecting client catch up from a sequence number, counts through an RPC method, and closes itself after a few seconds without activity.
+
+{/* @skip-typecheck: Cloudflare Worker code, the source of the migration */}
+```typescript title="src/worker.ts (Durable Object)"
+import { DurableObject } from 'cloudflare:workers';
+
+const key = (seq: number) => `msg:${String(seq).padStart(8, '0')}`;
+
+export class ChatRoom extends DurableObject<Env> {
+  async fetch(request: Request) {
+    if (await this.ctx.storage.get('closed')) return new Response('closed', { status: 410 });
+    const since = Number(new URL(request.url).searchParams.get('since') ?? 0);
+    const pair = new WebSocketPair();
+    this.ctx.acceptWebSocket(pair[1]);
+    const history = await this.ctx.storage.list({ prefix: 'msg:', start: key(since + 1) });
+    for (const message of history.values()) pair[1].send(JSON.stringify(message));
+    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
+    return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  async webSocketMessage(_ws: WebSocket, data: string | ArrayBuffer) {
+    const command = JSON.parse(String(data));
+    if (command.type === 'join') await this.append({ kind: 'joined', user: command.user });
+    else await this.append({ kind: 'message', user: command.user, text: command.text });
+  }
+
+  async increment(by: number) {
+    const count = ((await this.ctx.storage.get<number>('count')) ?? 0) + by;
+    await this.ctx.storage.put('count', count);
+    await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
+    return count;
+  }
+
+  async alarm() {
+    await this.append({ kind: 'closed', reason: 'idle' }, false);
+    await this.ctx.storage.put('closed', true);
+    for (const ws of this.ctx.getWebSockets()) ws.close(1000, 'closed');
+  }
+
+  private async append(message: object, touch = true) {
+    const seq = ((await this.ctx.storage.get<number>('seq')) ?? 0) + 1;
+    const full = { seq, ...message };
+    await this.ctx.storage.put({ seq, [key(seq)]: full });
+    for (const ws of this.ctx.getWebSockets()) ws.send(JSON.stringify(full));
+    if (touch) await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
+  }
+}
+```
+
+### The room as a run
+
+The run reads commands from its start Hook, keeps the sequence number and the count in local variables, and writes one chunk per message to its stream, so a message's stream index is its sequence number minus one:
+
+```typescript title="workflows/chat-room.ts" lineNumbers
+import { createHook, getWritable, sleep } from 'workflow';
+
+export type RoomCommand =
+  | { type: 'join'; user: string }
+  | { type: 'message'; user: string; text: string }
+  | { type: 'increment'; by: number; requestId: string };
+
+export type RoomMessage =
+  | { seq: number; kind: 'joined'; user: string }
+  | { seq: number; kind: 'message'; user: string; text: string }
+  | { seq: number; kind: 'closed'; reason: 'idle' };
+
+export type CounterReply = { requestId: string; count: number };
+
+export const roomToken = (roomId: string) => `room:${roomId}`;
+
+export async function chatRoom(roomId: string, idleMs: number) {
+  'use workflow';
+
+  // The start Hook: start() created it with the same token.
+  const inbox = createHook<RoomCommand>({ token: roomToken(roomId) }); // [!code highlight]
+  const commands = inbox[Symbol.asyncIterator]();
+
+  let seq = 0;
+  let count = 0;
+  let next = commands.next();
+  // One timer at a time, like the object's alarm.
+  let lastActivity = Date.now();
+  let alarm = sleep(idleMs).then(() => 'alarm' as const);
+  for (;;) {
+    const result = await Promise.race([next, alarm]);
+    if (result === 'alarm') {
+      const idleFor = Date.now() - lastActivity;
+      if (idleFor < idleMs) {
+        alarm = sleep(idleMs - idleFor).then(() => 'alarm' as const); // [!code highlight]
+        continue;
+      }
+      await broadcast({ seq: ++seq, kind: 'closed', reason: 'idle' });
+      await closeStreams();
+      return { roomId, messages: seq, count };
+    }
+    if (result.done) break;
+    next = commands.next();
+    lastActivity = Date.now();
+
+    const command = result.value;
+    if (command.type === 'join') {
+      await broadcast({ seq: ++seq, kind: 'joined', user: command.user });
+    } else if (command.type === 'message') {
+      await broadcast({ seq: ++seq, kind: 'message', user: command.user, text: command.text });
+    } else {
+      count += command.by;
+      await reply({ requestId: command.requestId, count });
+    }
+  }
+  return { roomId, messages: seq, count };
+}
+
+async function broadcast(message: RoomMessage) {
+  'use step';
+  const writer = getWritable<RoomMessage>().getWriter(); // [!code highlight]
+  await writer.write(message);
+  writer.releaseLock();
+}
+
+async function reply(answer: CounterReply) {
+  'use step';
+  const writer = getWritable<CounterReply>({ namespace: 'replies' }).getWriter();
+  await writer.write(answer);
+  writer.releaseLock();
+}
+
+async function closeStreams() {
+  'use step';
+  await getWritable<RoomMessage>().close();
+  await getWritable<CounterReply>({ namespace: 'replies' }).close();
+}
+```
+
+### The routes
+
+The Worker's `fetch()` handler becomes three routes. Opening a room is the `idFromName()` step: whoever comes first starts the run, and everyone else is told which run owns the room. The token is retained after the run ends, so a closed room stays closed, as it did with the `closed` flag:
+
+```typescript title="lib/rooms.ts" lineNumbers
+import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
+import { HookConflictError, HookNotFoundError } from 'workflow/errors';
+type RoomCommand = { type: 'join'; user: string } | { type: 'message'; user: string; text: string } | { type: 'increment'; by: number; requestId: string }; // @setup
+type RoomMessage = { seq: number; kind: string }; // @setup
+declare function chatRoom(roomId: string, idleMs: number): Promise<{ roomId: string; messages: number; count: number }>; // @setup
+declare function roomToken(roomId: string): string; // @setup
+declare const IDLE_MS: number; // @setup
+
+/** idFromName(): one run per room. */
+export async function openRoom(roomId: string): Promise<string> {
+  const existing = await getHookByToken(roomToken(roomId)).catch(() => null);
+  if (existing) return existing.runId;
+  try {
+    const run = await start(chatRoom, [roomId, IDLE_MS], {
+      experimental_hook: {
+        token: roomToken(roomId),
+        experimental_minRetention: '1 day', // a closed room stays closed
+      },
+    });
+    return run.runId;
+  } catch (error) {
+    if (!HookConflictError.is(error)) throw error;
+    return error.conflictingRunId ?? (await getHookByToken(roomToken(roomId))).runId; // [!code highlight]
+  }
+}
+
+/** What webSocketMessage() or an RPC call received. */
+export async function send(roomId: string, command: RoomCommand): Promise<boolean> {
+  await openRoom(roomId);
+  try {
+    await resumeHook(roomToken(roomId), command); // [!code highlight]
+    return true;
+  } catch (error) {
+    if (HookNotFoundError.is(error)) return false; // the room has closed
+    throw error;
+  }
+}
+
+// POST /rooms/:id/commands: the WebSocket's incoming messages.
+export async function postCommand(roomId: string, request: Request) {
+  const sent = await send(roomId, (await request.json()) as RoomCommand);
+  return new Response(null, { status: sent ? 202 : 410 });
+}
+
+// GET /rooms/:id/stream?since=n: the WebSocket's outgoing messages, one JSON
+// line each, from the message after `since`.
+export async function getStream(roomId: string, request: Request) {
+  const since = Number(new URL(request.url).searchParams.get('since') ?? 0);
+  const readable = getRun(await openRoom(roomId)).getReadable<RoomMessage>({ startIndex: since }); // [!code highlight]
+  const encoder = new TextEncoder();
+  const lines = readable.pipeThrough(
+    new TransformStream<RoomMessage, Uint8Array>({
+      transform: (message, controller) =>
+        controller.enqueue(encoder.encode(`${JSON.stringify(message)}\n`)),
+    })
+  );
+  return new Response(lines, {
+    headers: { 'content-type': 'application/x-ndjson' },
+  });
+}
+```
+
+### Answers
+
+`increment()` returned the new count to its caller. A command to a run has no return value, so the run writes the answer to a stream namespace, and the route waits for the answer carrying its request ID. Read the tail index before sending, so the route only scans answers written after its command:
+
+```typescript title="lib/rooms.ts" lineNumbers
+import { getRun } from 'workflow/api';
+type CounterReply = { requestId: string; count: number }; // @setup
+declare function openRoom(roomId: string): Promise<string>; // @setup
+declare function send(roomId: string, command: { type: 'increment'; by: number; requestId: string }): Promise<boolean>; // @setup
+
+// POST /rooms/:id/increment: an RPC method with a return value.
+export async function postIncrement(roomId: string, by: number) {
+  const run = getRun(await openRoom(roomId));
+  const requestId = crypto.randomUUID();
+  const probe = run.getReadable<CounterReply>({ namespace: 'replies' });
+  const tail = await probe.getTailIndex(); // [!code highlight]
+  await probe.cancel();
+  if (!(await send(roomId, { type: 'increment', by, requestId }))) {
+    return new Response('closed', { status: 410 });
+  }
+  const answers = run.getReadable<CounterReply>({ namespace: 'replies', startIndex: tail + 1 });
+  for await (const answer of answers) {
+    if (answer.requestId === requestId) return Response.json({ count: answer.count });
+  }
+  return new Response('closed', { status: 410 });
+}
+```
+
+### WebSockets become a stream and a hook
+
+A WebSocket carried two directions over one connection. The migration splits them:
+
+- **Server to client** is the run's stream. A client keeps a `GET /rooms/:id/stream` request open and reads one JSON line per message. Every client sees the same messages in the same order, and they stay readable: after a dropped connection, the client asks again with `?since=` set to the last sequence number it saw and gets exactly what it missed. That replaces the history the object kept in storage for catching up.
+- **Client to server** is a `POST /rooms/:id/commands` request per message, which the route turns into `resumeHook()`.
+
+On the client, replace `new WebSocket(url)` with a `fetch()` that reads the stream and a `fetch()` per message. A browser can read the stream with `response.body.getReader()`, or the route can format it as server-sent events for `EventSource`.
+
+### Timers
+
+`storage.setAlarm()` replaces the object's alarm, so an object has one at a time. A `sleep()` cannot be cancelled, so a run that started a new `sleep()` for every command would collect timers that each wake it up later. Keep one: when it fires, check how long the room has been idle and, if a command arrived in the meantime, sleep for the rest of the time. `Date.now()` inside a workflow reads the run's [deterministic clock](/docs/how-it-works/event-sourcing), the time recorded for the current point in the run, so the check gives the same answer on every replay.
+
+### Long-lived entities
+
+A room that lives for days and sees thousands of messages adds events to its run with every command. Before it reaches the [event limit](/docs/errors/max-events-exceeded), have the run start a successor that carries its state (the sequence number, the count, anything else it keeps) and hand the token over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) in the successor's `createHook()`. Readers then follow the new run: look the run up with `getHookByToken()` again when a stream ends without a `closed` message. Keep history that must outlive the run in a database, written from a step.
+
+## Why there is no codemod
+
+`workflow migrate` rewrites [Inngest](/docs/comparisons/workflow-sdk-vs-inngest#run-the-codemod) and other step-based workflow engines, where a step call maps to a step function line for line. A Durable Object's shape is a class whose methods the platform calls; its storage calls, its alarm and its sockets each turn into a different part of a run, and which part depends on what the object is for. That is a design decision, not a syntax change, so this guide and the migration skill walk through it instead:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+
+## Verify the migration
+
+Run both versions side by side before you move traffic, with the same client operations against each:
+
+1. Run the Worker with `wrangler dev`, and the migrated app locally against the [Local World](/worlds/local).
+2. Give your test client one interface over both: a WebSocket for the object; a command `POST` and a stream read for the run.
+3. Drive the behaviors clients rely on and compare what each client observed: message order across clients, a reconnect catching up from a sequence number, a late joiner's history, concurrent calls that return values, many concurrent first requests for a new ID reaching one entity, and alarms firing after the expected idle time.
+
+## Cut over
+
+Durable Object state does not move by itself, and in-flight objects keep running on Cloudflare:
+
+1. Deploy the migrated routes next to the Worker. Send new entities (new room IDs) to the Workflow SDK.
+2. For entities that already exist, either let them finish on Cloudflare, or export their state (history, counters) and pass it as arguments to `start()`, so the run begins where the object left off.
+3. Move clients from the WebSocket URL to the stream and command routes. Keep the Worker until no client connects to it.
+4. Protect the stream and command routes the way you protected the WebSocket upgrade, and move dashboards to the Workflow SDK's [observability](/docs/observability).
