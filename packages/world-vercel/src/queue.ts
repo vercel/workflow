@@ -14,6 +14,8 @@ import {
 import { decode, encode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { getQueueDispatcher } from './http-client.js';
+import { getTransientTransportCode } from './http-core.js';
+import { withQueueSendRetry } from './queue-send-retry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 
 /**
@@ -133,6 +135,42 @@ const MessageWrapper = z.object({
 const MAX_DELAY_SECONDS = Number(
   process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before 24h retention limit
 );
+
+/**
+ * What a send-retry log line names: the run a message is for. It carries it
+ * because the queue may never have seen the failed send, so this line can be
+ * its only record.
+ */
+function sendRetrySubject(payload: QueuePayload): string {
+  return 'runId' in payload && typeof payload.runId === 'string'
+    ? ` for run "${payload.runId}"`
+    : '';
+}
+
+/** An error's name, message and transport code, without its stack. */
+function describeSendError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const code = getTransientTransportCode(error);
+  return `${error.name}: ${error.message}${code ? ` (${code})` : ''}`;
+}
+
+/** Hooks that log a send's re-sends and, if they did not help, its failure. */
+function sendRetryLogging(
+  queueName: string,
+  payload: QueuePayload
+): Parameters<typeof withQueueSendRetry>[1] {
+  const subject = sendRetrySubject(payload);
+  return {
+    onRetry: (error, attempt, delayMs) =>
+      console.warn(
+        `[workflow] Queue send to "${queueName}"${subject} failed on attempt ${attempt}; re-sending in ${delayMs}ms: ${describeSendError(error)}`
+      ),
+    onExhausted: (error, attempts) =>
+      console.error(
+        `[workflow] Queue send to "${queueName}"${subject} still failed after ${attempts} attempts: ${describeSendError(error)}`
+      ),
+  };
+}
 
 const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // Ceiling for the per-redelivery backoff. This value is the `retry-after` we
@@ -284,14 +322,20 @@ export function createQueue(config?: APIConfig): Queue {
     };
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     try {
-      const { messageId } = await client.send(sanitizedQueueName, wrapper, {
-        idempotencyKey: opts?.idempotencyKey,
-        delaySeconds: opts?.delaySeconds,
-        headers: {
-          ...getHeadersFromPayload(payload),
-          ...opts?.headers,
-        },
-      });
+      // Re-sent after a transient failure (see queue-send-retry.ts): a failed
+      // `start()` send would otherwise leave a created run that never runs.
+      const { messageId } = await withQueueSendRetry(
+        () =>
+          client.send(sanitizedQueueName, wrapper, {
+            idempotencyKey: opts?.idempotencyKey,
+            delaySeconds: opts?.delaySeconds,
+            headers: {
+              ...getHeadersFromPayload(payload),
+              ...opts?.headers,
+            },
+          }),
+        sendRetryLogging(queueName, payload)
+      );
       return {
         // messageId may be null when VQS fails over to a different region —
         // the event is ingested but the responding region cannot return an ID.
