@@ -1,3 +1,4 @@
+import { Button } from '@workflow/web-shared';
 import {
   collapseUsageSpans,
   EVENTS_PER_RETRY,
@@ -13,7 +14,7 @@ import {
   usageSpanLabel,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
-import { AlertCircle, ChevronRight } from 'lucide-react';
+import { AlertCircle, ChevronRight, RotateCw } from 'lucide-react';
 import { useState } from 'react';
 import { Skeleton } from './ui/skeleton';
 
@@ -48,17 +49,41 @@ function ShareBar({ share }: { share: number }) {
 }
 
 /**
+ * Whether the run page shows the header's usage fields and the Usage tab:
+ * when the World answered with usage, and while the first read is pending
+ * (or failed) on the Local World, which counts it. `null` means the World
+ * does not count usage: the page stays as it is without it.
+ */
+export function usageVisible(
+  usage: RunUsage | null | undefined,
+  isLocalBackend: boolean
+): boolean {
+  return usage != null || (usage === undefined && isLocalBackend);
+}
+
+/** What the header shows in place of a number the read did not return. */
+const UNAVAILABLE = '—';
+
+/**
  * The run header's Events and Storage figures, from the World's count of
  * the whole run (not the events this page has loaded). Storage opens the
- * Usage tab.
+ * Usage tab. Until the first read answers they are placeholders; if it
+ * failed, they say so (the error is in the tooltip and, in full, on the
+ * Usage tab) instead of loading forever.
  */
 export function RunUsageHeaderStats({
   usage,
+  error,
   onOpenUsage,
 }: {
   usage: RunUsage | undefined;
+  error: Error | null;
   onOpenUsage: () => void;
 }) {
+  const failed = !usage && error !== null;
+  const failedTitle = failed
+    ? `Could not read this run's usage: ${error.message}`
+    : undefined;
   return (
     <>
       <div className="flex flex-col gap-1">
@@ -67,20 +92,31 @@ export function RunUsageHeaderStats({
           <div className="text-xs" data-testid="run-usage-events">
             {usage.events.toLocaleString('en-US')}
           </div>
+        ) : failed ? (
+          <div
+            className="text-xs text-gray-900"
+            data-testid="run-usage-events"
+            title={failedTitle}
+          >
+            {UNAVAILABLE}
+          </div>
         ) : (
           <Skeleton className="w-[40px] h-[20px]" />
         )}
       </div>
       <div className="flex flex-col gap-1">
         <div className="text-xs text-muted-foreground">Storage</div>
-        {usage ? (
+        {usage || failed ? (
           <button
             type="button"
             onClick={onOpenUsage}
             className="text-left text-xs underline decoration-dotted underline-offset-2 text-gray-1000 hover:text-blue-900"
-            title="See where this run's events and data come from"
+            title={
+              failedTitle ?? "See where this run's events and data come from"
+            }
+            data-testid="run-usage-storage"
           >
-            {formatUsageBytes(usage.dataWritten.bytes)}
+            {usage ? formatUsageBytes(usage.dataWritten.bytes) : UNAVAILABLE}
           </button>
         ) : (
           <Skeleton className="w-[50px] h-[20px]" />
@@ -185,16 +221,34 @@ function Section({
 export function RunUsagePanel({
   usage,
   error,
+  onRetry,
+  retrying = false,
 }: {
   usage: RunUsage | undefined;
   error: Error | null;
+  /** Reads the usage again: a finished run does not poll. */
+  onRetry?: () => void;
+  retrying?: boolean;
 }) {
   if (!usage) {
     if (error) {
       return (
-        <div className="flex items-center gap-2 p-6 text-copy-13 text-red-800">
-          <AlertCircle className="h-4 w-4" />
-          Could not read this run's usage: {error.message}
+        <div className="flex flex-col items-start gap-3 p-6">
+          <div className="flex items-center gap-2 text-copy-13 text-red-800">
+            <AlertCircle className="h-4 w-4" />
+            Could not read this run's usage: {error.message}
+          </div>
+          {onRetry && (
+            <Button
+              variant="secondary"
+              size="small"
+              onClick={onRetry}
+              disabled={retrying}
+            >
+              <RotateCw className="h-4 w-4 mr-2" />
+              {retrying ? 'Trying again…' : 'Try again'}
+            </Button>
+          )}
         </div>
       );
     }

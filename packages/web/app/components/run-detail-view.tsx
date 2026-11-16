@@ -81,7 +81,7 @@ import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
-import { RunUsageHeaderStats, RunUsagePanel } from './run-usage';
+import { RunUsageHeaderStats, RunUsagePanel, usageVisible } from './run-usage';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -414,11 +414,13 @@ export function RunDetailView({
   // and the Usage tab stay as they were.
   const runIsLive =
     Boolean(run.status) && !isTerminalWorkflowRunStatus(run.status);
-  const { usage: runUsage, error: runUsageError } = useRunUsage(env, runId, {
-    live: runIsLive,
-  });
-  const showUsage =
-    runUsage != null || (runUsage === undefined && isLocalBackend);
+  const {
+    usage: runUsage,
+    error: runUsageError,
+    loading: runUsageLoading,
+    refresh: refreshRunUsage,
+  } = useRunUsage(env, runId, { live: runIsLive });
+  const showUsage = usageVisible(runUsage, isLocalBackend);
 
   // Fetch streams for this run
   const {
@@ -704,6 +706,7 @@ export function RunDetailView({
               {showUsage && (
                 <RunUsageHeaderStats
                   usage={runUsage ?? undefined}
+                  error={runUsageError}
                   onOpenUsage={() => setActiveTab('usage')}
                 />
               )}
@@ -810,6 +813,8 @@ export function RunDetailView({
                   <RunUsagePanel
                     usage={runUsage ?? undefined}
                     error={runUsageError}
+                    onRetry={refreshRunUsage}
+                    retrying={runUsageLoading}
                   />
                 </ErrorBoundary>
               </TabsContent>

@@ -124,6 +124,51 @@ describe('the web UI reads run usage from the World', () => {
   });
 
   it(
+    'returns a failed getRun through the RPC route as an error the UI shows',
+    { timeout: 20_000 },
+    async () => {
+      // A run id this World does not see: getRun rejects with
+      // WorkflowRunNotFoundError.
+      const missing = 'wrun_01M6MV000000000000000000000';
+      const response = await rpc.action({
+        request: new Request('http://localhost/api/rpc', {
+          method: 'POST',
+          headers: { 'content-type': 'application/cbor' },
+          body: new Uint8Array(
+            encode({ method: 'fetchRunUsage', params: { runId: missing } })
+          ),
+        }),
+      } as never);
+      // An error result, not a failed request: the page reads it.
+      expect(response.status).toBe(200);
+      const body = decode(new Uint8Array(await response.arrayBuffer()));
+      expect(body).toMatchObject({
+        success: false,
+        error: {
+          layer: 'API',
+          request: {
+            operation: 'world.experimental_usage.getRun',
+            status: 404,
+            params: { runId: missing },
+          },
+        },
+      });
+      expect(body.error.message).toEqual(expect.any(String));
+      expect(body.error.message.length).toBeGreaterThan(0);
+
+      // What useRunUsage does with it: an Error the header and tab show.
+      const { unwrapOrThrow, WorkflowWebAPIError } = await import(
+        '../lib/client/workflow-errors'
+      );
+      const thrown = await unwrapOrThrow(Promise.resolve(body)).catch(
+        (error: unknown) => error
+      );
+      expect(thrown).toBeInstanceOf(WorkflowWebAPIError);
+      expect((thrown as Error).message).toBe(body.error.message);
+    }
+  );
+
+  it(
     'returns null on a World without usage, instead of a partial count',
     { timeout: 20_000 },
     async () => {

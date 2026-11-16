@@ -79,7 +79,9 @@ describe('RunUsageHeaderStats', () => {
   it("shows the whole run's event count, not the loaded page", () => {
     const usage = bigRun();
     expect(usage.events).toBeGreaterThan(200);
-    render(<RunUsageHeaderStats usage={usage} onOpenUsage={() => {}} />);
+    render(
+      <RunUsageHeaderStats usage={usage} error={null} onOpenUsage={() => {}} />
+    );
     expect(screen.getByTestId('run-usage-events').textContent).toBe(
       usage.events.toLocaleString('en-US')
     );
@@ -90,13 +92,25 @@ describe('RunUsageHeaderStats', () => {
 
   it('opens the Usage tab from Storage', () => {
     const onOpenUsage = vi.fn();
-    render(<RunUsageHeaderStats usage={bigRun()} onOpenUsage={onOpenUsage} />);
+    render(
+      <RunUsageHeaderStats
+        usage={bigRun()}
+        error={null}
+        onOpenUsage={onOpenUsage}
+      />
+    );
     fireEvent.click(screen.getByRole('button', { name: '16.2 KB' }));
     expect(onOpenUsage).toHaveBeenCalledTimes(1);
   });
 
   it('shows placeholders until the count arrives', () => {
-    render(<RunUsageHeaderStats usage={undefined} onOpenUsage={() => {}} />);
+    render(
+      <RunUsageHeaderStats
+        usage={undefined}
+        error={null}
+        onOpenUsage={() => {}}
+      />
+    );
     expect(screen.queryByTestId('run-usage-events')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
   });
