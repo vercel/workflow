@@ -116,8 +116,8 @@ export async function POST(request: Request) {
     }
   }
 
-  // Still refused: a finished owner holds the token for its retention (or,
-  // after a rare crash, the owner is a candidate that never became a run).
+  // Still refused: a finished owner holds the token for its retention, or
+  // the owner is a candidate that was admitted but never became a run.
   throw new Error(`Run ${owner} holds ${token}; it can't be started or resumed`);
 }
 ```
