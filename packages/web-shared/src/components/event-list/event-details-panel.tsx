@@ -1,7 +1,7 @@
 'use client';
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
-import { ChartGantt, Lock } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
 import {
@@ -390,14 +390,19 @@ export function EventDetailsPanel({
       onClose={onClose}
     >
       {onViewInTrace ? (
-        <div className="px-4 pb-2">
+        // The panel can be narrower than the label, so the label gives way
+        // first: it ellipsizes inside the button instead of spilling past its
+        // border and being cut off by the panel edge. `pt-1` keeps the button's
+        // border and focus ring, both painted outside its box, from being
+        // clipped by the top of the scrolling body.
+        <div className="flex px-4 pt-1 pb-2">
           <Button
             variant="secondary"
             size="small"
+            className="min-w-0 shrink"
             onClick={() => onViewInTrace(getEventSpanId(event))}
           >
-            <ChartGantt />
-            View in Trace
+            <span className="min-w-0 truncate">View in Trace</span>
           </Button>
         </div>
       ) : null}

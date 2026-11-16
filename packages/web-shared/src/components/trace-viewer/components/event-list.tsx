@@ -102,7 +102,7 @@ const EventRow = ({
   return (
     <li
       className={cn(
-        'relative overflow-clip group transition-opacity',
+        'relative overflow-clip transition-opacity hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200',
         ROW_HEIGHT_CLASS,
         isDimmed && 'opacity-35'
       )}
@@ -112,7 +112,7 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
+      <div className="h-full">
         <div className="flex h-full min-w-0 items-center pl-4 pr-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <ResourceIcon
