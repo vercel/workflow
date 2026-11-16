@@ -236,7 +236,7 @@ type HttpExecutionResult =
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
 
-/** A hook resume's timing, carried from a coalesced wake to the re-run. */
+/** A coalesced hook wake's resume timing and event, for the re-run. */
 interface CoalescedResume {
   hookResumeTiming: unknown;
   traceCarrier?: unknown;

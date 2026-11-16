@@ -299,7 +299,7 @@ export const MAX_LOCAL_COALESCED_RERUNS = 32;
 export const INVOCATION_STARTED_AT_HEADER =
   'x-workflow-local-invocation-started-at';
 
-/** A hook resume's timing, carried from a coalesced wake to the re-run. */
+/** A coalesced hook wake's resume timing and event, for the re-run. */
 export interface CoalescedResume {
   hookResumeTiming: unknown;
   traceCarrier?: unknown;
