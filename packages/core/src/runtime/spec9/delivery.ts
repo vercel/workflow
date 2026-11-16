@@ -1698,6 +1698,7 @@ async function runDelivery(
           // condition, so a conflict or an expiry that got past the fence
           // means the run ended out-of-band before it started (a cancel), and
           // takes the same acknowledgement below as on the normal path.
+          // The restart is not a run-ahead one, so run-ahead stays on.
           if (
             startHookFirstDelivery &&
             (OrchestratorSupersededError.is(err) || writer.isSuperseded)
