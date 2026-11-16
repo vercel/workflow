@@ -1,6 +1,12 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { type AnyEventRequest, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  type AnyEventRequest,
+  IN_BAND_SEQ_AT_RUN_CREATION,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
+import { Client } from 'pg';
 import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
@@ -33,10 +39,11 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
   let hooks: ReturnType<typeof createHooksStorage>;
   const claimantPools: TestPool[] = [];
   let claimantEvents: ReturnType<typeof createEventsStorage>[] = [];
+  let dbUrl: string;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
-    const dbUrl = container.getConnectionUri();
+    dbUrl = container.getConnectionUri();
     process.env.DATABASE_URL = dbUrl;
     process.env.WORKFLOW_POSTGRES_URL = dbUrl;
     execSync('pnpm db:push', {
@@ -74,11 +81,24 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
       ...rest,
     }) as AnyEventRequest;
 
-  async function runningRun(): Promise<string> {
+  /**
+   * A fenced run's writes go in-band: each carries the count of in-band
+   * events it has seen, and runs in one transaction with the fence check, so
+   * the hook write below runs in a savepoint of that transaction.
+   */
+  type Mode = { fenced?: boolean };
+  const specOf = ({ fenced }: Mode) =>
+    fenced ? SPEC_VERSION_SINGLE_ORCHESTRATOR : SPEC_VERSION_CURRENT;
+  const inBandAt = ({ fenced }: Mode, seen: number) =>
+    fenced ? { inBand: true, expectedSeqInBand: seen } : undefined;
+
+  async function runningRun(mode: Mode = {}): Promise<string> {
     const runId = `wrun_${ulid()}`;
+    const specVersion = specOf(mode);
     await events.create(
       runId,
       event('run_created', {
+        specVersion,
         eventData: {
           deploymentId: 'dpl_1',
           workflowName: 'wf',
@@ -86,7 +106,11 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
         },
       })
     );
-    await events.create(runId, event('run_started'));
+    await events.create(
+      runId,
+      event('run_started', { specVersion }),
+      inBandAt(mode, IN_BAND_SEQ_AT_RUN_CREATION)
+    );
     return runId;
   }
 
@@ -102,16 +126,19 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
   async function claimAtOnce(
     token: string,
     runIds: string[],
-    force: (i: number) => boolean = () => false
+    force: (i: number) => boolean = () => false,
+    mode: Mode = {}
   ) {
     return Promise.all(
       runIds.map((runId, i) =>
         claimantEvents[i].create(
           runId,
           event('hook_created', {
+            specVersion: specOf(mode),
             correlationId: `hook_${ulid()}`,
             eventData: { token, ...(force(i) ? { force: true } : {}) },
-          })
+          }),
+          inBandAt(mode, IN_BAND_SEQ_AT_RUN_CREATION + 1)
         )
       )
     );
@@ -264,14 +291,16 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
     return owner;
   }
 
-  async function holdToken(token: string): Promise<string> {
-    const runId = await runningRun();
+  async function holdToken(token: string, mode: Mode = {}): Promise<string> {
+    const runId = await runningRun(mode);
     await events.create(
       runId,
       event('hook_created', {
+        specVersion: specOf(mode),
         correlationId: `hook_${ulid()}`,
         eventData: { token },
-      })
+      }),
+      inBandAt(mode, IN_BAND_SEQ_AT_RUN_CREATION + 1)
     );
     return runId;
   }
@@ -344,6 +373,126 @@ describe('hook token claims across concurrent runs (world-postgres)', () => {
 
       for (const r of results) expect(r.event?.eventType).toBe('hook_created');
       await forcedChain(token, runIds, results);
+    }
+  });
+  // A fenced (in-band) write runs the takeover in a savepoint of the fence's
+  // transaction. A restart must roll that savepoint back, releasing the row
+  // locks it took: kept, they deadlock the retry against a concurrent
+  // takeover (40P01).
+  for (const live of [true, false]) {
+    test(`fenced forced claims from many runs on a ${live ? 'live' : 'fresh'} token all register and form one chain`, async () => {
+      const mode = { fenced: true };
+      for (let round = 0; round < ROUNDS; round++) {
+        const token = `force-fenced-${ulid()}`;
+        const victim = live ? await holdToken(token, mode) : undefined;
+        const runIds = await Promise.all(
+          Array.from({ length: CLAIMANTS }, () => runningRun(mode))
+        );
+
+        const results = await claimAtOnce(token, runIds, () => true, mode);
+
+        for (const r of results)
+          expect(r.event?.eventType).toBe('hook_created');
+        await forcedChain(token, runIds, results, victim);
+      }
+    });
+  }
+  // The interleaving, made deterministic: C reads owner A, B then takes the
+  // token from A, so C's locked read finds B and C restarts. Before C's retry,
+  // T starts taking the token from B and locks B's run. Had C kept its lock on
+  // B's hook across the restart, T would wait for C on the hook and C for T on
+  // the run: a deadlock Postgres breaks by failing one claim with 40P01.
+  test('a fenced forced claim that restarts keeps no lock from the attempt it abandoned', async () => {
+    const mode = { fenced: true };
+    const token = `force-restart-${ulid()}`;
+    await holdToken(token, mode);
+    const [b, c, t] = await Promise.all([
+      runningRun(),
+      runningRun(mode),
+      runningRun(),
+    ]);
+    const forcedClaim = (
+      storage: ReturnType<typeof createEventsStorage>,
+      runId: string,
+      claimMode: Mode = {}
+    ) =>
+      storage.create(
+        runId,
+        event('hook_created', {
+          specVersion: specOf(claimMode),
+          correlationId: `hook_${ulid()}`,
+          eventData: { token, force: true },
+        }),
+        inBandAt(claimMode, IN_BAND_SEQ_AT_RUN_CREATION + 1)
+      );
+
+    let tClaim: ReturnType<typeof forcedClaim> | undefined;
+    let tSettled = false;
+    const lockWaiters = async () =>
+      (
+        await pool.query(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock'`
+        )
+      ).rows[0].n as number;
+    let runLocks = 0;
+    let candidateReads = 0;
+    // Start T, and return once T waits on a lock (or, with nothing to wait
+    // on, has finished).
+    const startT = async () => {
+      tClaim = forcedClaim(events, t);
+      void tClaim.finally(() => {
+        tSettled = true;
+      });
+      for (let i = 0; i < 200 && !tSettled; i++) {
+        if ((await lockWaiters()) > 0) return;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    const isRunLock = (text: string) =>
+      /"workflow_runs".*for update/is.test(text);
+    const isCandidateRead = (text: string) =>
+      /select "run_id", "hook_id" from "workflow"\."workflow_hooks"/i.test(
+        text
+      );
+    // Runs before each of C's statements; only the takeover's are gated.
+    const gate = async (text: string) => {
+      // C has read owner A; let B take the token from A first.
+      if (isRunLock(text) && ++runLocks === 1) await forcedClaim(events, b);
+      // C restarts: let T lock B's run before C retries.
+      if (isCandidateRead(text) && ++candidateReads === 2) await startT();
+    };
+    class GatedClient extends Client {
+      override query(...args: any[]): any {
+        const q = args[0] as string | { text?: string };
+        const text = typeof q === 'string' ? q : q?.text;
+        if (typeof text !== 'string' || typeof args.at(-1) === 'function') {
+          return super.query(...(args as [string]));
+        }
+        return gate(text).then(() => super.query(...(args as [string])));
+      }
+    }
+    const gatedPool = new TestPool({
+      connectionString: dbUrl,
+      max: 2,
+      Client: GatedClient,
+    });
+    try {
+      const cResult = await forcedClaim(
+        createEventsStorage(createClient(gatedPool)),
+        c,
+        mode
+      );
+      expect(candidateReads).toBeGreaterThanOrEqual(2);
+      expect(tClaim).toBeDefined();
+      const tResult = await tClaim;
+      expect(cResult.event?.eventType).toBe('hook_created');
+      expect(tResult?.event?.eventType).toBe('hook_created');
+      const rows = await hookRows(token);
+      expect(rows).toHaveLength(1);
+      expect([c, t]).toContain(rows[0].run_id);
+    } finally {
+      await gatedPool.end();
     }
   });
 });

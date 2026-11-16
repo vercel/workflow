@@ -3162,9 +3162,13 @@ function createUnfencedEventsStorage(
                   );
                 }
                 return { inserted, claimedFrom, journaled, journaledEventData };
-              }, SLOT_INSERT_TRANSACTION).catch((err: unknown) => {
-                // A fenced write nests this transaction in a savepoint. Roll
-                // it back before retrying so its row locks are released too.
+              }, SLOT_INSERT_TRANSACTION);
+            // A restart is thrown, not returned, so the attempt rolls back:
+            // a fenced write nests it in a savepoint, and only a rollback
+            // releases the row locks it took. Kept across the restart, they
+            // can deadlock the retry against a concurrent takeover.
+            const restartableTakeover = () =>
+              takeoverAttempt().catch((err: unknown) => {
                 if (err === OWNER_CHANGED) {
                   return { restart: 'owner-changed' as const };
                 }
@@ -3182,7 +3186,7 @@ function createUnfencedEventsStorage(
               const takeover =
                 attempt === 0 && !existingHook
                   ? ({ free: true } as const)
-                  : await journaledHookCreated(takeoverAttempt);
+                  : await journaledHookCreated(restartableTakeover);
               let restart: TakeoverRestartReason;
               if ('restart' in takeover && takeover.restart) {
                 restart = takeover.restart;
