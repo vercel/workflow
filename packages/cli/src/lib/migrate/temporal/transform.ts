@@ -907,7 +907,7 @@ export function transformTemporalFile(options: TemporalTransformOptions): {
       case 'makeContinueAsNewFunc':
         kit.todo(
           call,
-          "continueAsNew() has no direct equivalent. To keep the event log short, start the workflow again with the state it needs (`start(thisWorkflow, [state])` from workflow/api, inside the workflow) and return. Pass `{ deploymentId: 'latest' }` to start it on the newest deployment, as continue-as-new picked up new code.",
+          "continueAsNew() is not needed: Temporal restarts a run because it caps a run's event history and payloads. Keep this run going instead: continue the loop with the new state (or delete the call where the loop already continues), and start runs with WORKFLOW_VM=quickjs, where snapshotting exempts a run from the default event limit and keeps each resume fast as the log grows. Start a new run only to move onto newer code: `start(thisWorkflow, [state], { deploymentId: 'latest' })` from workflow/api, then return.",
           notes
         );
         return true;
@@ -966,6 +966,18 @@ export function transformTemporalFile(options: TemporalTransformOptions): {
             ? `.replace(/^.*\\//, ${quote}${quote})`
             : '';
         kit.replace(parent, `${fn}().${target}${suffix}`);
+        return true;
+      }
+      if (
+        ['historyLength', 'historySize', 'continueAsNewSuggested'].includes(
+          parent.name.text
+        )
+      ) {
+        kit.todo(
+          call,
+          `\`workflowInfo().${parent.name.text}\` only decided when to continue-as-new, which the Workflow SDK does not need (see the continueAsNew() TODO): remove the check and keep the run going.`,
+          notes
+        );
         return true;
       }
       kit.todo(
@@ -1498,6 +1510,18 @@ export function transformTemporalFile(options: TemporalTransformOptions): {
           report.boundary.push({
             line: kit.line(node),
             kind: method,
+            names: [],
+            text: textOf(),
+          });
+        } else if (
+          method === 'create' &&
+          ts.isPropertyAccessExpression(receiver) &&
+          receiver.name.text === 'schedule'
+        ) {
+          // client.schedule.create({ scheduleId, spec, action })
+          report.boundary.push({
+            line: kit.line(node),
+            kind: 'schedule',
             names: [],
             text: textOf(),
           });

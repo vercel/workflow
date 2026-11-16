@@ -29,6 +29,8 @@ const BOUNDARY: Record<string, string> = {
     'Updates have no equivalent: resume a hook with the input, and read the result from a stream or a second hook.',
   startUpdate:
     'Updates have no equivalent: resume a hook with the input, and read the result from a stream or a second hook.',
+  schedule:
+    "Replace the Temporal Schedule with a Vercel Schedule (https://vercel.com/docs/schedules/workflows): a static schedule in `vercel.json`, or a dynamic one from `@vercel/schedules` for schedules created at runtime. The schedule publishes to a queue topic whose consumer calls `start(workflow, args, { experimental_hook: { token: `<name>:${message.executionId}`, experimental_minRetention: '7 days' } })`, so a redelivered occurrence never starts a second run. Overlap and backfill policies have no equivalent.",
   worker:
     'Delete the worker: the Workflow SDK framework integration runs workflows and steps inside your app.',
 };

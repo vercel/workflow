@@ -55,7 +55,6 @@ Be honest with yourself about these before you move an object:
 
 - **Hot request/response traffic.** A call into a Durable Object returns in the same request. A command to a run is a hook delivery, a replay and a step, and an answer travels back on a stream. That suits a chat message; it does not suit a rate limiter checked on every request, or a counter read thousands of times a second.
 - **Many readers of current state.** An object can answer `getState()` to every caller with a consistent read. A run's state lives inside the run. Publish what readers need: write it to a database from a step, append it to a stream, or set small labels with [`setAttributes()`](/docs/api-reference/workflow/set-attributes).
-- **Unbounded event counts in one run.** Every command adds events to the run's log, and a run has an [event limit](/docs/errors/max-events-exceeded). A room that lives for months should start a successor run, carrying its state, before it gets there (see [Long-lived entities](#long-lived-entities)).
 - **Raw WebSocket control.** Streams carry serializable values, including `Uint8Array`, over HTTP. Subprotocol negotiation, ping and pong control and close codes are not part of the model.
 - **Connected-client cost.** A hibernated WebSocket costs nothing while it is quiet. A client reading a run's stream holds an HTTP request open to a route that streams it; plan for one open request per connected client.
 - **Placement.** An object is created near its first caller. A run is created in the region where it was started (see [multi-region](/worlds/vercel#multi-region)); start entity runs from the region your users are in.
@@ -321,7 +320,9 @@ On the client, replace `new WebSocket(url)` with a `fetch()` that reads the stre
 
 ### Long-lived entities
 
-A room that lives for days and sees thousands of messages adds events to its run with every command. Before it reaches the [event limit](/docs/errors/max-events-exceeded), have the run start a successor that carries its state (the sequence number, the count, anything else it keeps) and hand the token over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) in the successor's `createHook()`. Readers then follow the new run: look the run up with `getHookByToken()` again when a stream ends without a `closed` message. Keep history that must outlive the run in a database, written from a step.
+A room that lives for months stays one run. Start runs with [`WORKFLOW_VM=quickjs`](/docs/configuration/runtime-tuning#workflow_vm): with snapshotting, a resume restores the VM and replays only the commands since the last snapshot, so resume cost stays roughly flat however many messages the room has handled, and the run is exempt from the default [per-run event limit](/docs/errors/max-events-exceeded). Payloads and state are far larger than a Durable Object's per-value storage limits, too (see the [Vercel World limits](https://vercel.com/docs/workflows/pricing)). There is no continue-as-new step to schedule, and nothing for the room to hand over.
+
+Start a successor run only when the room should move onto newer code, because a run stays on the deployment that started it. Have the run start the successor with `deploymentId: 'latest'` at a quiet point, carrying its state, and take the token over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) in the successor's `createHook()`, so readers follow the new run when a stream ends without a `closed` message. Keep history that other systems read in a database, written from a step.
 
 ## Why there is no codemod
 

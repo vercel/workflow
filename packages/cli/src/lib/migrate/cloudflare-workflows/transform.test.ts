@@ -119,6 +119,60 @@ async function compiled(code: string, name = 'workflows.ts') {
 }
 
 describe('workflow migrate cloudflare-workflows', () => {
+  it('points Cron Triggers and the scheduled() handler at Vercel Schedules', async () => {
+    for (const config of [
+      {
+        name: 'wrangler.jsonc',
+        text: JSON.stringify({
+          name: 'app',
+          triggers: { crons: ['0 2 * * *', '*/15 * * * *'] },
+          workflows: [
+            { name: 'my', binding: 'MY_WORKFLOW', class_name: 'MyWorkflow' },
+          ],
+        }),
+      },
+      {
+        name: 'wrangler.toml',
+        text: `name = "app"
+
+[triggers]
+crons = ["0 2 * * *", "*/15 * * * *"]
+
+[[workflows]]
+name = "my"
+binding = "MY_WORKFLOW"
+class_name = "MyWorkflow"
+`,
+      },
+    ]) {
+      const m = await migrate({
+        [config.name]: config.text,
+        'workflows.ts': workflow(
+          "    return step.do('one', async () => event.payload.id);"
+        ),
+        'index.ts': `export default {
+  async scheduled(controller: ScheduledController, env: { MY_WORKFLOW: Workflow }) {
+    await env.MY_WORKFLOW.create({ params: { id: String(controller.scheduledTime), items: [] } });
+  },
+};
+`,
+      });
+      const todos = m.report('index.ts').notes.map((n) => n.message);
+      expect(todos).toEqual([
+        expect.stringContaining(
+          `This scheduled() handler runs on Cloudflare Cron Triggers ("0 2 * * *", "*/15 * * * *" in ${config.name}, UTC). Replace it with a Vercel Schedule`
+        ),
+      ]);
+      expect(m.out('index.ts')).toContain(
+        '// TODO(workflow-migrate): This scheduled() handler runs on Cloudflare Cron Triggers'
+      );
+      const markdown = m.markdown();
+      expect(markdown).toContain(`## Cron Triggers in \`${config.name}\``);
+      expect(markdown).toContain('"schedule": "*/15 * * * *"');
+      expect(markdown).toContain('https://vercel.com/docs/schedules/workflows');
+    }
+  });
+
   it('lifts step.do() callbacks and passes what they captured as arguments', async () => {
     const m = await migrate({
       'wrangler.json': wrangler,

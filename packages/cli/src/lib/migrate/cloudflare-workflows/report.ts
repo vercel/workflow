@@ -113,6 +113,30 @@ export function renderMarkdown(
     out.push('');
   }
 
+  if (context?.crons?.length) {
+    out.push(
+      `## Cron Triggers in \`${context.configFile ?? 'wrangler config'}\``,
+      '',
+      "Cloudflare ran these schedules in UTC. Replace each with a [Vercel Schedule](https://vercel.com/docs/schedules/workflows) that publishes to a queue topic, and have the topic's consumer call `start()` with the occurrence's `executionId` in a start token retained for 7 days (`experimental_minRetention: '7 days'`), so a redelivered occurrence never starts a second run:",
+      '',
+      '```json',
+      JSON.stringify(
+        {
+          schedules: Object.fromEntries(
+            context.crons.map((cron, i) => [
+              `cron-${i + 1}`,
+              { schedule: cron, timezone: 'UTC', topic: `cron-${i + 1}` },
+            ])
+          ),
+        },
+        null,
+        2
+      ),
+      '```',
+      ''
+    );
+  }
+
   for (const report of reports) {
     if (!report.functions.length && !report.notes.length) continue;
     out.push(`## \`${report.file}\``, '');

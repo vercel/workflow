@@ -346,7 +346,7 @@ export async function parent(n: number) {
   const b = await handle.result();
   log.info('ids', { run: workflowInfo().runId, id: uuid4() });
   const branch = patched('fast') ? 'fast' : 'slow';
-  if (n > 10) await continueAsNew<typeof parent>(n - 1);
+  if (n > 10 || workflowInfo().continueAsNewSuggested) await continueAsNew<typeof parent>(n - 1);
   return { a, b, branch, type: workflowInfo().workflowType, wid: workflowInfo().workflowId };
 }
 `,
@@ -366,7 +366,10 @@ export async function parent(n: number) {
       "type: getWorkflowMetadata().workflowName.replace(/^.*\\//, '')"
     );
     expect(todos(m.report('workflows.ts'))).toEqual([
-      expect.stringContaining('continueAsNew() has no direct equivalent'),
+      expect.stringContaining(
+        '`workflowInfo().continueAsNewSuggested` only decided when to continue-as-new'
+      ),
+      expect.stringContaining('continueAsNew() is not needed'),
       expect.stringContaining('`workflowInfo().workflowId` has no equivalent'),
     ]);
     await expect(manifest(code, 'workflows.ts')).resolves.toMatchObject({
@@ -466,6 +469,11 @@ export async function main(client: Client) {
   void worker;
   const handle = await client.workflow.start(waiter, { taskQueue: 'q', workflowId: 'w-1' });
   await handle.signal(go, 'now');
+  await client.schedule.create({
+    scheduleId: 'nightly',
+    spec: { cronExpressions: ['0 2 * * *'] },
+    action: { type: 'startWorkflow', workflowType: waiter, taskQueue: 'q' },
+  });
   return client.workflow.getHandle('w-1').result();
 }
 `,
@@ -474,6 +482,7 @@ export async function main(client: Client) {
       'worker',
       'start',
       'signal',
+      'schedule',
       'getHandle',
     ]);
     expect(m.report('client.ts').changed).toBe(false);
@@ -483,6 +492,9 @@ export async function main(client: Client) {
       '| `waiter` | `go` | `resumeHook(token, args)` with `` `${run.runId}:go` `` |'
     );
     expect(markdown).toContain('Delete the worker');
+    expect(markdown).toContain(
+      'Replace the Temporal Schedule with a Vercel Schedule (https://vercel.com/docs/schedules/workflows)'
+    );
     expect(markdown).toContain(
       '`start(workflow, args, { experimental_hook: { token: workflowId } })`'
     );

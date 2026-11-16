@@ -39,6 +39,7 @@ When you cannot run it, apply the same rules by hand with the table below. Use t
 | `instance.sendEvent({ type, payload })` | `resumeHook(\`X:${id}\`, { type, payload, timestamp: new Date() })` |
 | `env.MY_WORKFLOW.get(id)` / `instance.status()` | `getHookByToken(\`X:${id}\`)` -> `getRun(hook.runId)` -> `status`, `returnValue` |
 | `instance.terminate()` | `run.cancel()` |
+| Cron Triggers (`triggers.crons` + a `scheduled()` handler calling `create()`) | a [Vercel Schedule](https://vercel.com/docs/schedules/workflows) targeting a queue topic whose consumer calls `start()` with ``experimental_hook: { token: `${name}:${message.executionId}`, experimental_minRetention: '7 days' }`` and returns on `HookConflictError`; static schedules in `vercel.json`, dynamic ones (per user, created at runtime) with `@vercel/schedules`; schedules take an IANA `timezone`; Cloudflare's crons ran in UTC, so set `"timezone": "UTC"` to keep the times. The codemod reports the crons and marks the `scheduled()` handler |
 | `pause()` / `resume()` / `restart()` | no equivalent: cancel and start a new run |
 
 ## Watch for

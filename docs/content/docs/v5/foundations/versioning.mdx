@@ -124,7 +124,7 @@ export async function POST(request: Request) {
 
 Some workflows are expected to run for long periods. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
 
-Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits. This is similar to `continueAsNew` in other durable execution systems, but Workflow SDK uses [explicit recursion through `start()`](/cookbook/common-patterns/workflow-composition).
+Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits, using [explicit recursion through `start()`](/cookbook/common-patterns/workflow-composition). This looks like `continueAsNew` in other durable execution systems, but it answers a different need. Those systems restart a run because its history is capped. A Workflow SDK run can keep going as long as it needs: on the [QuickJS engine](/docs/configuration/runtime-tuning#workflow_vm), snapshotting keeps resumes fast and exempts the run from the default [per-run event limit](/docs/errors/max-events-exceeded). Start the next run when you want the work to move onto newer code, not to keep a run small.
 
 ```typescript title="workflows/daily-digest.ts" lineNumbers
 import { sleep } from "workflow";

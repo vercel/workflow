@@ -54,6 +54,10 @@ export function readWranglerConfig(dir: string): CloudflareContext {
   }
   if (!config) return context;
 
+  const triggers = config.triggers as Table | undefined;
+  const crons = triggers && Array.isArray(triggers.crons) ? triggers.crons : [];
+  context.crons = crons.filter((c): c is string => typeof c === 'string');
+
   const vars = config.vars;
   if (vars && typeof vars === 'object') {
     for (const key of Object.keys(vars)) context.vars.add(key);

@@ -64,6 +64,8 @@ export interface CloudflareContext {
   bindings: Map<string, string>;
   /** `[[workflows]]` entries of the wrangler config. */
   workflows: Array<{ binding: string; className: string; name?: string }>;
+  /** `triggers.crons` of the wrangler config (Cloudflare Cron Triggers, UTC). */
+  crons?: string[];
   configFile?: string;
 }
 
@@ -584,7 +586,7 @@ export function transformCloudflareWorkflowsFile(
         ) {
           addTodo(
             node,
-            '`event.schedule` is set when a cron schedule started the run. Start the workflow from a scheduled job (for example a Vercel Cron Job) and pass the schedule in the event instead.',
+            '`event.schedule` is set when a Cron Trigger started the run. Start the workflow from a Vercel Schedule instead (https://vercel.com/docs/schedules/workflows), and pass what the run needs, such as the scheduled time, in the event.',
             notes
           );
         }
@@ -1270,6 +1272,23 @@ export function transformCloudflareWorkflowsFile(
       : undefined;
   };
   const visitBoundary = (node: TS.Node): void => {
+    // A Worker's `scheduled()` handler runs on Cron Triggers.
+    if (
+      (ts.isMethodDeclaration(node) || ts.isPropertyAssignment(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'scheduled' &&
+      (ts.isObjectLiteralExpression(node.parent) || ts.isClassLike(node.parent))
+    ) {
+      const crons = context.crons?.length
+        ? ` (${context.crons.map((c) => `"${c}"`).join(', ')} in ${context.configFile ?? 'the wrangler config'}, UTC)`
+        : '';
+      addTodo(
+        node,
+        `This scheduled() handler runs on Cloudflare Cron Triggers${crons}. Replace it with a Vercel Schedule (https://vercel.com/docs/schedules/workflows): a schedule publishes to a queue topic whose consumer calls start() with the occurrence's executionId in a start token retained for 7 days, so a redelivered occurrence never starts a second run. Give each schedule \`"timezone": "UTC"\` to keep the same times.`,
+        report.notes
+      );
+    }
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression)

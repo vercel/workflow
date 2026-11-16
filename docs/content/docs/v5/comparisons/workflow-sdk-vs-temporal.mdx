@@ -34,7 +34,7 @@ related:
 | **Pricing** | SDK free; pay your platform (Vercel: events + data) or only your infrastructure if self-hosted | Self-host = free software; Temporal Cloud bills per Action (from $50 per million) + storage |
 | **Limits** | No run/sleep cap; 10,000 steps, 50 MB payload, 2 GB/run ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | No run cap (Continue-As-New for long histories); event history capped at 51,200 events / 50 MB; 2 MB payloads |
 
-**What the limits mean in practice**: Temporal caps payloads at 2 MB and event history at 51,200 events. A model context, tool transcript, or embedding batch that exceeds 2 MB requires external blob storage and claim-check plumbing. Long agent loops must use Continue-As-New before the history fills. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) (50 MB payloads, 2 GB of state per run, and no run or sleep caps) provide more space for contexts in the run itself.
+**What the limits mean in practice**: Temporal caps payloads at 2 MB and event history at 51,200 events. A model context, tool transcript, or embedding batch that exceeds 2 MB requires external blob storage and claim-check plumbing. Long agent loops must use Continue-As-New before the history fills. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) (50 MB payloads, 2 GB of state per run, and no run or sleep caps) provide more space for contexts in the run itself, and the Workflow SDK has no Continue-As-New because it doesn't need one: see [Long-running workflows without Continue-As-New](#long-running-workflows-without-continue-as-new).
 
 ## The biggest difference: what you operate
 
@@ -48,6 +48,15 @@ This is where the two differ most in day-to-day risk. Because both replay code a
 
 - **Temporal**: Editing a workflow can produce a non-determinism error that breaks or stalls open executions. You can evolve workflows with **patch APIs** (`patched()` / `GetVersion()`, which accumulate patch branches) or **Worker Versioning** (Build IDs / Worker Deployments pin workflows to a build and keep the old worker fleet running until it drains). You must manage this process for every long-running workflow.
 - **Workflow SDK**: Runs are **pinned to the immutable deployment that started them**. Shipping new code never touches in-flight runs because they keep replaying against the exact code they began on. Upgrading a run is explicit and opt-in (start it with `deploymentId: 'latest'`, or self-restart at a checkpoint). This model requires no patch branches or draining worker fleets.
+
+## Long-running workflows without Continue-As-New
+
+Continue-As-New exists in Temporal because a run's event history is capped: a long loop has to end its run and start a fresh one carrying its state before the history fills. The Workflow SDK leaves that out on purpose.
+
+- **Payloads and state are much larger.** A context, transcript or batch that would need blob storage on Temporal fits in the run. See the [Vercel World limits](https://vercel.com/docs/workflows/pricing).
+- **A run can keep going.** With [`WORKFLOW_VM=quickjs`](/docs/configuration/runtime-tuning#workflow_vm), snapshotting is on: a resume restores the VM and replays only the events since the last snapshot, so resume cost stays roughly flat however long the run gets, and the run is exempt from the default [per-run event limit](/docs/errors/max-events-exceeded). An agent loop, a chat session or a per-entity loop stays one run, with one history to inspect.
+
+The one reason left to start over is to move onto newer code, since a run stays on the deployment that started it. That is a versioning decision, not a size limit: start the next run with `deploymentId: 'latest'` at a safe point, as in [Self upgrading workflows](/docs/foundations/versioning#self-upgrading-workflows). Steps per run are still capped, so a loop that runs tens of thousands of steps should bundle items into fewer steps or hand batches to [child workflows](/cookbook/advanced/child-workflows).
 
 ## AI agents and streaming
 
@@ -205,7 +214,7 @@ export async function sendReceipt(
 sendReceipt.maxRetries = 4;
 ```
 
-It never guesses. Code it cannot migrate without changing behavior is left in place under a `// TODO(workflow-migrate): ...` comment that says what to do: queries and updates, `continueAsNew()`, cancellation scopes, `workflowInfo().workflowId`, a `condition()` on state no signal changes, and an activity retried without limit. The report lists every Temporal client call with its replacement, and a Signal routing table with the hook token each signal now resumes.
+It never guesses. Code it cannot migrate without changing behavior is left in place under a `// TODO(workflow-migrate): ...` comment that says what to do: queries and updates, `continueAsNew()` (which the Workflow SDK [doesn't need](#long-running-workflows-without-continue-as-new); the TODO says how to keep the run going), cancellation scopes, `workflowInfo().workflowId`, a `condition()` on state no signal changes, and an activity retried without limit. The report lists every Temporal client call with its replacement, and a Signal routing table with the hook token each signal now resumes.
 
 ### What the codemod converts
 
@@ -217,7 +226,7 @@ It never guesses. Code it cannot migrate without changing behavior is left in pl
 | Signals | `defineSignal` + `setHandler` + `condition`, in the same or a shared module | Removing a handler, a second handler for one signal, `setDefaultSignalHandler` |
 | Queries and updates | None | All |
 | Child workflows | `executeChild`, `startChild` and `handle.result()` | A child named by its type string, signalling a child |
-| Other workflow APIs | `sleep`, `workflowInfo().runId` / `.workflowType` / `.startTime`, `uuid4`, `patched`, `deprecatePatch`, `log` | `continueAsNew`, `CancellationScope`, `getExternalWorkflowHandle`, `upsertSearchAttributes` |
+| Other workflow APIs | `sleep`, `workflowInfo().runId` / `.workflowType` / `.startTime`, `uuid4`, `patched`, `deprecatePatch`, `log` | `continueAsNew` (not needed: the TODO says to keep the run going), `CancellationScope`, `getExternalWorkflowHandle`, `upsertSearchAttributes` |
 | Activity APIs | `Context.current().info.attempt`, `heartbeat()` (removed), `log` | Cancellation signals and the activity client |
 | Failures | `ApplicationFailure.nonRetryable`, `.retryable`, `.create({ nonRetryable, nextRetryDelay })` | `instanceof` checks on Temporal failure classes |
 | Client and worker | Reported with their replacements | Rewriting them |
@@ -241,7 +250,9 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 | `condition(fn, timeout)` | Re-checked after each signal, raced against `sleep(timeout)` | Returns `false` on timeout, as in Temporal. |
 | Query | `getWritable({ namespace: 'status' })` stream | Stream status durably; clients read the stream instead of polling. |
 | Child Workflow | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | `await run.returnValue` suspends without polling. Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
-| `continueAsNew()` | `start()` the same workflow from inside the workflow, then return | Pass `deploymentId: 'latest'` to move onto new code. See [Self upgrading workflows](/docs/foundations/versioning#self-upgrading-workflows). |
+| `continueAsNew()` | Not needed: keep the run going, on [QuickJS with snapshotting](#long-running-workflows-without-continue-as-new) | To move onto newer code, `start()` the same workflow with `deploymentId: 'latest'` and return. See [Self upgrading workflows](/docs/foundations/versioning#self-upgrading-workflows). |
+| Schedules (`client.schedule.create()`, cron workflows) | [Vercel Schedules](https://vercel.com/docs/schedules/workflows): a schedule publishes to a queue topic, and its consumer calls `start()` with the occurrence's `executionId` in a start token retained for 7 days (`experimental_minRetention: '7 days'`), so a redelivered occurrence never starts a second run. | Static schedules live in `vercel.json`; dynamic ones are created at runtime with `@vercel/schedules`. Schedules take an IANA `timezone` and also run in Preview branches and custom environments. A schedule's overlap and backfill policies have no equivalent: a start token per occurrence stops duplicates. |
+| Worker tuning (`maxConcurrentActivityTaskExecutions`, `maxActivitiesPerSecond`, `maxTaskQueueActivitiesPerSecond`) | No worker to tune. Bound a wide fan-out in the workflow (chunked `Promise.all`), and throttle a downstream API with `RetryableError`'s `retryAfter` | See [Rate Limiting & Retries](/cookbook/common-patterns/rate-limiting). Native per-key locks are in development (see the [concurrency controls discussion](https://github.com/vercel/workflow/discussions/301)). |
 | Workflow ID + reuse / conflict policy | `start(workflow, args, { experimental_hook: { token } })` | A duplicate start throws `HookConflictError` naming the owner. `experimental_minRetention` keeps refusing after the run ends. See [Run idempotency](/docs/foundations/idempotency#run-idempotency). |
 | Cancellation scopes / `handle.cancel()` | `AbortController` passed into steps; `run.cancel({ cancelReason })` | An abort reaches a step that is already running. See [Cancellation](/docs/foundations/cancellation). |
 | Activity retry policy | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. See [Errors & Retrying](/docs/foundations/errors-and-retries). |

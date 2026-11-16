@@ -33,7 +33,7 @@ related:
 | **Pricing** | SDK free; pay your platform | Workers Standard: requests + CPU-time + storage + per-step ($0.80 / 100K steps); idle/sleep not billed |
 | **Limits** | 50 MB payloads; 2 GB/run; 10K steps ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | **1 MiB** step result & event payload; 1 GB state/instance; 10K steps (up to 25K) |
 
-**What the limits mean in practice:** Cloudflare's 1 MiB cap on step results and event payloads is the tightest in this section. A single large model response or document can exceed it, pushing anything sizable into R2/KV indirection, and instance state is capped at 1 GB. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
+**What the limits mean in practice:** Cloudflare's 1 MiB cap on step results and event payloads is the tightest in this section. A single large model response or document can exceed it, pushing anything sizable into R2/KV indirection, and instance state is capped at 1 GB. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run, and a long loop stays one run rather than being split across instances. On the [QuickJS engine](/docs/configuration/runtime-tuning#workflow_vm), snapshotting keeps each resume fast as the log grows and exempts the run from the default [per-run event limit](/docs/errors/max-events-exceeded).
 
 ## Versioning: pinned vs. live code
 
@@ -249,6 +249,7 @@ Then `env.INVOICES.create({ id, params })` becomes `invoices.create({ id, params
 | `instance.sendEvent({ type, payload })` | `resumeHook(token, { type, payload, timestamp })` on the run's start token |
 | `instance.status()` | `getRun(runId).status` and `returnValue` |
 | `instance.terminate()` | `run.cancel({ cancelReason })` |
+| Cron Triggers (`triggers.crons` in wrangler config and a `scheduled()` handler that calls `create()`) | [Vercel Schedules](https://vercel.com/docs/schedules/workflows): a schedule publishes to a queue topic, and its consumer calls `start()` with the occurrence's `executionId` in a start token retained for 7 days (`experimental_minRetention: '7 days'`), so a redelivered occurrence never starts a second run. Static schedules live in `vercel.json`; dynamic ones are created at runtime with `@vercel/schedules`. Schedules take an IANA `timezone` and also run in Preview branches and custom environments. |
 | `instance.pause()` / `resume()` / `restart()` | No equivalent: cancel the run and start a new one |
 
 ### What behaves differently
