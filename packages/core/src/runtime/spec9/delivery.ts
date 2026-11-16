@@ -44,6 +44,7 @@ import {
   slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
+  type WorkflowRunWithoutData,
 } from '@workflow/world';
 
 import { decodeTime } from 'ulid';
@@ -205,6 +206,11 @@ import {
   type StepMessageSpec,
   stepCreationOf,
 } from './log-state.js';
+import {
+  type ParkedSession,
+  parkSession,
+  takeParkedSession,
+} from './parked-session.js';
 import {
   getOrchestratorReadTimeoutMs,
   readWithDeadline,
@@ -799,6 +805,8 @@ async function runDelivery(
   // The loaded event log. `undefined` until the delivery's
   // first full load.
   let log: LoadedEventLog | undefined;
+  /** A parked session this delivery resumes; see {@link resumeParkedLoad}. */
+  let resumedSession: WorkflowSession | null = null;
   /**
    * What each write reads of the log (its ids, highest slot and whether it
    * has a hole), kept up to date as events are merged so that a write costs
@@ -1117,6 +1125,57 @@ async function runDelivery(
     }
     return log;
   };
+  /**
+   * Reads what landed since `entry` parked, in the writer's queue as a full
+   * load reads, and adopts the read's fence snapshot when it still matches:
+   * no other orchestrator wrote in-band meanwhile and the World took the
+   * cursor, so the VM and its log still describe the run. `undefined` when
+   * they do not.
+   */
+  const readSinceParked = (entry: ParkedSession) =>
+    writer.exclusive(async () => {
+      const page = await loadWorkflowRunEvents(runId, entry.cursor, {
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        incrementalSnapshot: true,
+      });
+      if (
+        page.reloadedFromStart ||
+        page.snapshot?.seqInBand !== entry.expectedSeqInBand
+      ) {
+        return undefined;
+      }
+      writer.adoptSnapshot(page.snapshot);
+      return page;
+    });
+  /**
+   * Run setup for a parked session: its log extended by what
+   * {@link readSinceParked} read, and its VM resumed by the first pass. A
+   * stale one takes the full load.
+   */
+  const resumeParkedLoad = async (
+    entry: ParkedSession,
+    read: LoadedEventLog | undefined
+  ): Promise<LoadedEventLog> => {
+    if (!read) {
+      runtimeLogger.debug(
+        'Parked session is stale; loading the whole log instead',
+        { workflowRunId: runId }
+      );
+      return fullLoad();
+    }
+    replayPayloadCache = entry.replayPayloadCache;
+    for (const event of read.events) {
+      prepareReplayEvent(event);
+    }
+    logBehind = false;
+    log = { events: entry.events, cursor: read.cursor ?? entry.cursor };
+    indexOf(log.events).merge(read.events);
+    // As a full load: the log can hold events above the snapshot.
+    writer.observeSlot(indexOf(log.events).maxSlot() ?? 0);
+    resumedSession = entry.session;
+    span?.setAttributes(Attribute.WorkflowParkedSessionResumed(true));
+    return log;
+  };
 
   let workflowRun: WorkflowRun | undefined;
   // The World's per-run event ceiling: from every full load
@@ -1352,6 +1411,50 @@ async function runDelivery(
   }
 
   // --- Orchestrator delivery ---
+  // A session this process parked for the run (see `parked-session.ts`).
+  // Every orchestrator delivery takes it, so no other delivery here resumes
+  // the same VM; only a plain wake (the one an out-of-band writer such as
+  // `resumeHook()` sends) resumes it. Its incremental read replaces the
+  // no-op check below.
+  const taken = takeParkedSession(world, runId);
+  let parked:
+    | {
+        entry: ParkedSession;
+        read: LoadedEventLog | undefined;
+        run: Promise<WorkflowRunWithoutData>;
+      }
+    | undefined;
+  if (
+    taken &&
+    (!resendGate || resends.swept) &&
+    !runInput &&
+    !hookInput &&
+    !waitContinuation &&
+    wakeUpWaits.size === 0
+  ) {
+    // The run is read beside the log, as on the full-load path.
+    const parkedRun = world.runs.get(runId, { resolveData: 'none' });
+    parkedRun.catch(() => {});
+    const read = await readSinceParked(taken);
+    if (
+      read?.events.length === 0 &&
+      isNoopDelivery({
+        world,
+        runId,
+        tailSlot: indexOf(taken.events).maxSlot(),
+        nowMs: Date.now(),
+      })
+    ) {
+      parkSession(world, runId, taken);
+      span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+      runtimeLogger.debug(
+        'Nothing new since the parked session; acknowledging without a replay',
+        { workflowRunId: runId }
+      );
+      return;
+    }
+    parked = { entry: taken, read, run: parkedRun };
+  }
   // A wake that names an event above the consumed position has something
   // new, so the no-op check's tail read below would only find that out.
   const wakesForNewEvent = (): boolean => {
@@ -1398,6 +1501,7 @@ async function runDelivery(
     (!waitContinuation ||
       isCompletedWaitTimer(world, runId, waitContinuation)) &&
     wakeUpWaits.size === 0 &&
+    !parked &&
     hasConsumedPosition(world, runId) &&
     !wakesForNewEvent()
   ) {
@@ -1888,9 +1992,12 @@ async function runDelivery(
       } else {
         // --- Run setup: full load (with the fence snapshot) ---
         const [loadOutcome, runOutcome] = await Promise.allSettled([
-          fullLoad(),
-          prefetchedRun ?? world.runs.get(runId, { resolveData: 'none' }),
+          parked ? resumeParkedLoad(parked.entry, parked.read) : fullLoad(),
+          prefetchedRun ??
+            parked?.run ??
+            world.runs.get(runId, { resolveData: 'none' }),
         ]);
+        parked = undefined;
         run =
           runOutcome.status === 'fulfilled'
             ? (runOutcome.value as WorkflowRun)
@@ -2334,7 +2441,8 @@ async function runDelivery(
       }
     }
 
-    let session: WorkflowSession | null = null;
+    let session: WorkflowSession | null = resumedSession;
+    resumedSession = null;
     const continuedHookIds = new Set<string>();
 
     // Inline steps run as background work of this delivery,
@@ -3701,6 +3809,22 @@ async function runDelivery(
             servedByRetained
           );
           if (outcome.type === 'return') {
+            if (
+              outcome.parkSession === true &&
+              session &&
+              log.cursor !== null &&
+              replayPayloadCache &&
+              writer.expectedSeqInBand !== undefined &&
+              !writer.isSuperseded
+            ) {
+              parkSession(world, runId, {
+                session,
+                events: log.events,
+                cursor: log.cursor,
+                expectedSeqInBand: writer.expectedSeqInBand,
+                replayPayloadCache,
+              });
+            }
             return outcome.result;
           }
           if (outcome.type === 'reload-full') {
@@ -3798,6 +3922,8 @@ async function runDelivery(
       | {
           type: 'return';
           result: { timeoutSeconds: number } | undefined;
+          /** A clean suspend whose VM the next delivery may resume. */
+          parkSession?: boolean;
         }
       | { type: 'reload'; retainSession: boolean }
       | { type: 'reload-full' }
@@ -4534,7 +4660,7 @@ async function runDelivery(
         slot: indexOf(log.events).maxSlot() ?? 0,
         ...nextTimerAt(log.events),
       });
-      return { type: 'return', result: undefined };
+      return { type: 'return', result: undefined, parkSession: retain };
     }
 
     /**

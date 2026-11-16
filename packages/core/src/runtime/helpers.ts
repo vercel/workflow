@@ -703,6 +703,8 @@ export async function loadWorkflowRunEvents(
     signal?: AbortSignal;
     specVersion?: number;
     eventLimit?: (maxEvents: number | undefined) => number | undefined;
+    /** Keep an incremental load's first-page fence snapshot too. */
+    incrementalSnapshot?: boolean;
   }
 ): Promise<LoadedEventLog> {
   const signal = options?.signal;
@@ -780,7 +782,7 @@ export async function loadWorkflowRunEvents(
         throw error;
       }
 
-      if (!snapshotTaken && !incremental) {
+      if (!snapshotTaken && (!incremental || options?.incrementalSnapshot)) {
         snapshotTaken = true;
         snapshot = response.snapshot;
       }
@@ -862,6 +864,7 @@ export async function loadWorkflowRunEvents(
       ...(stoppedAtLimit !== undefined
         ? { stoppedAtEventLimit: stoppedAtLimit }
         : {}),
+      ...(incremental && retriedWithoutCursor && { reloadedFromStart: true }),
     };
   });
 }
@@ -876,7 +879,8 @@ export interface LoadedEventLog {
   cursor: string | null;
   /**
    * The fence snapshot from the first page of a full load, when the World
-   * returned one. Absent on incremental loads.
+   * returned one. Absent on incremental loads unless asked for
+   * (`incrementalSnapshot`).
    */
   snapshot?: EventLogSnapshot;
   /**
@@ -890,6 +894,11 @@ export interface LoadedEventLog {
    * events, and more after the returned cursor.
    */
   stoppedAtEventLimit?: number;
+  /**
+   * An incremental load whose cursor the World refused, so it read the whole
+   * log from the start instead.
+   */
+  reloadedFromStart?: true;
 }
 
 /**

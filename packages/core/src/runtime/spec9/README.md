@@ -539,6 +539,20 @@ QuickJS runs ahead with the same writer, classification, depth and hazard rules,
 
 On the node engine, a replay that diverges from the log discards the VM, reloads the log and replays from cold in a fresh VM in the same delivery, up to [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_replay_divergence_max_retries) times (3 by default), then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence, and the `run_failed` of an exhausted budget, carry `replayDivergenceCount` and `replayDivergenceEventIds` (the newest 8 events the replays diverged at, ids only), so a divergence can be located even when the run's error payload is encrypted. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no in-delivery divergence recovery.
 
+### Parked sessions
+
+A run that loops on a hook (one payload per message, as a chat session does) gets each payload that arrives after its orchestrator stopped lingering on a new delivery. On the node engine that delivery used to read the log tail, load the whole log and replay the workflow from cold in a fresh VM before it could act on one new event, and the load and the replay both grow with the run's history.
+
+A delivery that suspends cleanly now parks its VM session in process memory (`parked-session.ts`), with the log it consumed, the cursor after it, its writer's in-band count and the payload cache its events were prepared with (the VM's state containers live there). Only a suspension whose VM retention allows it (`getRetentionDecision`) parks.
+
+The run's next orchestrator delivery in the same process takes the entry, whatever it is. Only a plain wake (no `runInput`, `hookInput`, timer or `wakeUp()` names, and past the re-send gate) resumes it; any other delivery drops it. Resuming it:
+
+1. reads the log from the parked cursor in the writer's queue, keeping that read's first-page snapshot, beside the usual `runs.get`;
+2. keeps the session only when the snapshot's `seqInBand` equals the parked count, so no other orchestrator decided anything since and the World refused no cursor; it then adopts the snapshot and resumes the VM on the new events. Otherwise it does today's full load and cold replay;
+3. replaces the no-op check: when the read finds nothing new and no recorded timer is due, the delivery parks the session again and acknowledges.
+
+Everything after the setup is unchanged: the deployment guard, the run's status, the re-send pass, timers and the fence all apply as on any delivery. The check is not a lease: an overlapping orchestrator that writes after the read is caught by the fence on this delivery's next in-band write, as it is today. Entries are kept per World instance, at most 64 of them, for up to 10 minutes. QuickJS keeps its own VM lifetime and does not park.
+
 ### Turbo
 
 [Turbo mode](../spec8/turbo-mode.md) fast-paths a run's first delivery. On that delivery the log holds only `run_created`, whose position counts as the run's first in-band write, and no other orchestrator exists yet. So it writes `run_started` without waiting, starts the in-band writer from `IN_BAND_SEQ_AT_RUN_CREATION` instead of loading the log, and starts the first inline step bodies before their start commits. Every in-band write queues behind `run_started` in the delivery's writer, and a refused `run_started` stops the delivery like any fence refusal.

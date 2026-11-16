@@ -384,6 +384,11 @@ export const WorkflowNoopCheckSkipped = SemanticConvention<boolean>(
   'workflow.noop_check_skipped'
 );
 
+/** The delivery resumed a VM an earlier delivery in this process parked. */
+export const WorkflowParkedSessionResumed = SemanticConvention<boolean>(
+  'workflow.parked_session_resumed'
+);
+
 /** The in-band fence refused this orchestrator delivery's write. */
 export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'

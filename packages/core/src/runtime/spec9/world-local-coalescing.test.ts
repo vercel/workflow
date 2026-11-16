@@ -77,6 +77,10 @@ describe('coalescing a spec 9 fan-out’s wakes on world-local', () => {
           request.headers.get('x-vqs-message-delivery-count')
         );
         delivered.set(id, [...(delivered.get(id) ?? []), count]);
+        // Wakes coalesce only while a delivery runs. A delivery that resumes
+        // a parked session is quick, so each one is held long enough for the
+        // outcomes it races to queue behind it.
+        await new Promise((resolve) => setTimeout(resolve, 30));
       }
       return entrypoint(request);
     });
