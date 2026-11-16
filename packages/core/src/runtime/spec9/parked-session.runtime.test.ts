@@ -14,6 +14,20 @@ import {
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
+// Cold replays: a fresh VM over the whole log. A resumed parked VM is none,
+// and a resume the VM declines falls back to one.
+const { coldReplays } = vi.hoisted(() => ({ coldReplays: { count: 0 } }));
+vi.mock('../../workflow.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../workflow.js')>();
+  return {
+    ...actual,
+    replayWorkflow: (...args: Parameters<typeof actual.replayWorkflow>) => {
+      coldReplays.count++;
+      return actual.replayWorkflow(...args);
+    },
+  };
+});
+
 // A session-style workflow: one inline step per hook payload. Each payload
 // arrives after the delivery that handled the previous one acknowledged, as
 // a message does once its orchestrator stopped lingering.
@@ -76,6 +90,7 @@ async function send(world: AppendOnlyWorld, runId: string, payload: string) {
 
 beforeEach(() => {
   echoes = 0;
+  coldReplays.count = 0;
   // No linger, so every payload reaches a new delivery.
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '0');
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
@@ -93,12 +108,16 @@ describe('a session parked across deliveries', () => {
     );
     await world.deliver(start);
     const startLoads = fullLoadsOf(world);
+    const startReplays = coldReplays.count;
+    // The count sees the start delivery's replay.
+    expect(startReplays).toBeGreaterThan(0);
 
     for (const payload of ['a', 'b', 'c']) await send(world, runId, payload);
 
     expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
     expect(echoes).toBe(3);
     expect(fullLoadsOf(world)).toBe(startLoads);
+    expect(coldReplays.count).toBe(startReplays);
   });
 
   it("records what the resumed VM left queued through the resuming delivery's writer", async () => {
@@ -108,11 +127,13 @@ describe('a session parked across deliveries', () => {
     );
     await world.deliver(start);
     const startLoads = fullLoadsOf(world);
+    const startReplays = coldReplays.count;
     for (const payload of ['a', 'b']) await send(world, runId, payload);
 
     expect(await runResult(world)).toEqual(['echo:a', 'echo:b']);
     // The run finished on a resumed VM, not a cold replay.
     expect(fullLoadsOf(world)).toBe(startLoads);
+    expect(coldReplays.count).toBe(startReplays);
     // Inline steps record no `step_created`; the unawaited one is the drain's.
     expect(eventsOf(world, 'step_created')).toHaveLength(1);
   });
