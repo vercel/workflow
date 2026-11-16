@@ -117,7 +117,7 @@ export interface EventEntity {
 }
 
 /** Entity key of the run itself. */
-export const RUN_ENTITY_KEY = '__run__';
+const RUN_ENTITY_KEY = '__run__';
 
 function getEntityKind(eventType: string): EventEntityKind {
   if (isStepEventType(eventType)) return 'step';
@@ -282,7 +282,7 @@ export function buildEventTiming(
     const { key } = getEventEntity(event);
     if (key === null) continue;
     const ts = getEffectiveEventTime(event);
-    const type: string = event.eventType;
+    const type = event.eventType;
     let clock = clocks.get(key);
     if (!clock) {
       clock = { attempt: 0, segments: [] };
@@ -533,19 +533,12 @@ export function buildEventRow(
   };
 }
 
-export function buildEventRows(
-  events: readonly Event[],
-  lookups: EventListLookups
-): EventListRow[] {
-  return events.map((event) => buildEventRow(event, lookups));
-}
-
 // ──────────────────────────────────────────────────────────────────────────
 // Idle gaps
 // ──────────────────────────────────────────────────────────────────────────
 
 /** A pause this long between consecutive events gets a divider row. */
-export const IDLE_GAP_MS = 30_000;
+const IDLE_GAP_MS = 30_000;
 
 export type EventListItem =
   | { kind: 'event'; row: EventListRow; index: number }

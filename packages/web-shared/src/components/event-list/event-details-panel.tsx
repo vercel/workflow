@@ -225,9 +225,7 @@ function EventDetailsBody({
   const [data, setData] = useState<unknown | null>(
     cachedEventData ?? (inlineIsComplete ? event.eventData : null)
   );
-  const [loading, setLoading] = useState(
-    data === null && !!onLoadEventData && !!event.correlationId
-  );
+  const [loading, setLoading] = useState(data === null && !!onLoadEventData);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Load (or reload once decryption is available) the full payload.

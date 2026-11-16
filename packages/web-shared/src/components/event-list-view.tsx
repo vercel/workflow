@@ -8,7 +8,6 @@ import { findDuplicateEventIds } from '../lib/duplicate-events';
 import {
   buildEventLookups,
   buildEventRow,
-  buildEventRows,
   buildListItems,
   getEmptyMessage,
   getEventEntity,
@@ -17,10 +16,6 @@ import {
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
-import type {
-  ExactIdSearchResult,
-  ExactWorkflowSearchIdKind,
-} from '../lib/exact-event-search-id';
 import { EventDetailsPanel } from './event-list/event-details-panel';
 import { EventListToolbar } from './event-list/event-list-toolbar';
 import {
@@ -30,7 +25,10 @@ import {
   type EventSortOrder,
   IdleGapRow,
 } from './event-list/event-row';
-import { useEventSearch } from './event-list/use-event-search';
+import {
+  type ExactSearchHandler,
+  useEventSearch,
+} from './event-list/use-event-search';
 import { useDetailPanelWidth } from './trace-viewer/components/use-detail-panel-width';
 import { ContextCardProvider } from './ui/context-card';
 import { DecryptClickContext } from './ui/data-inspector';
@@ -61,11 +59,7 @@ interface EventsListProps {
   /** Explains why decryption is unavailable. */
   decryptDisabledReason?: string;
   /** Fetch events for an exact correlation or event ID. */
-  onExactIdSearch?: (
-    id: string,
-    kind: ExactWorkflowSearchIdKind,
-    signal?: AbortSignal
-  ) => Promise<ExactIdSearchResult>;
+  onExactIdSearch?: ExactSearchHandler;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
 }
@@ -124,7 +118,7 @@ function EventListViewInner({
     [knownEvents, run, duplicateEventIds]
   );
   const rows = useMemo(
-    () => buildEventRows(sortedEvents, lookups),
+    () => sortedEvents.map((event) => buildEventRow(event, lookups)),
     [sortedEvents, lookups]
   );
   const listItems = useMemo(
