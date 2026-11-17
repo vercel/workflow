@@ -60,6 +60,7 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  MAX_RATE_WAIT_MS,
   RATE_ACQUIRE_GRACE_MS,
   rateLimitIntervalUs,
   requiresNewerWorld,
@@ -367,8 +368,8 @@ export function createEventsStorage(
     } catch (error) {
       throw new WorkflowWorldError((error as Error).message, { status: 400 });
     }
-    const expiresAt = new Date(eventData.expiresAt);
-    if (!Number.isFinite(expiresAt.getTime())) {
+    const requested = new Date(eventData.expiresAt);
+    if (!Number.isFinite(requested.getTime())) {
       throw new WorkflowWorldError(
         'rate_created requires expiresAt as a date',
         {
@@ -377,7 +378,12 @@ export function createEventsStorage(
       );
     }
     // The World's clock, not the orchestrator's `occurredAt`.
-    const nowUs = Date.now() * 1000;
+    const nowMs = Date.now();
+    const nowUs = nowMs * 1000;
+    // Capped at 30 days, and recorded capped.
+    const expiresAt = new Date(
+      Math.min(requested.getTime(), nowMs + MAX_RATE_WAIT_MS)
+    );
     const decision = decideRateLimit({
       tatUs: store.getRateTat(call.key),
       intervalUs: rateLimitIntervalUs(call),

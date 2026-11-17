@@ -136,6 +136,7 @@ export {
   decideRateLimit,
   MAX_RATE_KEY_BYTES,
   MAX_RATE_PERIOD_MS,
+  MAX_RATE_WAIT_MS,
   RATE_ACQUIRE_GRACE_MS,
   type RateLimitDecision,
   rateLimitIntervalUs,

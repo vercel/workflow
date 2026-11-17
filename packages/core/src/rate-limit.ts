@@ -21,7 +21,7 @@ export interface RateLimitOptions {
    * The longest the call waits for its slot. When the key's next slot is
    * later than that, the call rejects with `RateLimitTimeoutError` at once
    * and uses up none of the key's capacity. Without one, the call waits up
-   * to a year.
+   * to 30 days, which is also the longest a timeout can be.
    */
   timeout?: StringValue | number;
 }

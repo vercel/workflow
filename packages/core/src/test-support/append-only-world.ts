@@ -14,6 +14,7 @@ import {
   type EventResult,
   IN_BAND_SEQ_AT_RUN_CREATION,
   type ListEventsParams,
+  MAX_RATE_WAIT_MS,
   orchestratorRunIdOf,
   type QueueBatchResult,
   RATE_ACQUIRE_GRACE_MS,
@@ -667,7 +668,12 @@ export class AppendOnlyWorld {
         limit: eventData.limit as number,
         periodMs: eventData.periodMs as number,
       };
-      const expiresAt = new Date(eventData.expiresAt as Date);
+      const expiresAt = new Date(
+        Math.min(
+          new Date(eventData.expiresAt as Date).getTime(),
+          Date.now() + MAX_RATE_WAIT_MS
+        )
+      );
       const nowUs = Date.now() * 1000;
       const decision = decideRateLimit({
         tatUs: this.rateTats.get(call.key),

@@ -2,6 +2,7 @@ import { RateLimitTimeoutError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import {
   type Event,
+  MAX_RATE_WAIT_MS,
   SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
@@ -127,14 +128,23 @@ describe('createRateLimit', () => {
     expect(item.hasCreatedEvent).toBeUndefined();
   });
 
-  it('waits up to a year without a timeout', async () => {
+  it('waits up to 30 days without a timeout, and no longer with one', async () => {
     const { rateLimit, ctx, errorReceived } = rateLimitFor([]);
     void rateLimit(CALL);
     await errorReceived.promise;
     const item = ctx.invocationsQueue.get(CID);
     if (item?.type !== 'rate') throw new Error('not a rate item');
     expect(item.expiresAt.getTime()).toBe(
-      ctx.globalThis.Date.now() + 365 * 24 * 60 * 60 * 1000
+      ctx.globalThis.Date.now() + MAX_RATE_WAIT_MS
+    );
+
+    const long = rateLimitFor([]);
+    void long.rateLimit({ ...CALL, timeout: '90d' });
+    await long.errorReceived.promise;
+    const capped = long.ctx.invocationsQueue.get(CID);
+    if (capped?.type !== 'rate') throw new Error('not a rate item');
+    expect(capped.expiresAt.getTime()).toBe(
+      long.ctx.globalThis.Date.now() + MAX_RATE_WAIT_MS
     );
   });
 
