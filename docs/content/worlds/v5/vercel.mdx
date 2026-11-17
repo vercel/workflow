@@ -164,7 +164,9 @@ The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. T
 
 Workflow observability is built into the Vercel dashboard on your project page. It respects your existing authentication and project permission settings.
 
-The Vercel World implements the optional [`world.analytics`](/docs/api-reference/workflow-runtime/world/analytics) interface, backed by the same observability data pipeline as the dashboard. Two behaviors are specific to this implementation. Listings scan faster when bounded with a `startTime`/`endTime` window, and your plan's observability lookback caps the queryable window. Requesting an older window fails with `observability-upgrade-required`, and responses include `pageInfo` with the current and maximum lookback so tools can size date ranges. Listings are ingested asynchronously and can trail the live state by a few seconds, so tests and tooling that read entities right after writing them should read through the [Storage](/docs/api-reference/workflow-runtime/world/storage) API instead.
+The Vercel World implements the optional [`world.analytics`](/docs/api-reference/workflow-runtime/world/analytics) interface, backed by the same observability data pipeline as the dashboard. Two behaviors are specific to this implementation. Listings scan faster when bounded with a `startTime`/`endTime` window, and your plan's observability lookback caps the queryable window. Requesting an older window fails with `observability-upgrade-required`, and responses include `pageInfo` with the current and maximum lookback so tools can size date ranges.
+
+Analytics listings are ingested asynchronously and can trail the live state by a few seconds. Tests and tooling that read entities right after writing them should use the [Storage](/docs/api-reference/workflow-runtime/world/storage) API, which reads the run's primary storage and is not subject to ingestion delay. A step listing can still be a moment behind a run that has only just finished, so poll until the rows you expect appear rather than asserting on the first read.
 
 The `workflow` CLI commands open a browser window deeplinked to the Vercel dashboard:
 
