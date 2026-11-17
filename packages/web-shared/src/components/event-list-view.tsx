@@ -35,6 +35,13 @@ import { DecryptClickContext } from './ui/data-inspector';
 import { LoadMoreButton } from './ui/load-more-button';
 import { TooltipProvider } from './ui/tooltip';
 
+/** Spacer below the last row. Module scope so Virtuoso never remounts it. */
+function ListFooter() {
+  return <div className="h-2" />;
+}
+
+const VIRTUOSO_COMPONENTS = { Footer: ListFooter };
+
 interface EventsListProps {
   events: Event[] | null;
   run?: WorkflowRun | null;
@@ -286,7 +293,7 @@ function EventListViewInner({
                     void onLoadMoreEvents?.();
                   }
                 }}
-                components={{ Footer: () => <div className="h-2" /> }}
+                components={VIRTUOSO_COMPONENTS}
                 itemContent={(i: number) => {
                   const item = listItems[i];
                   if (item.kind === 'gap') {
@@ -316,22 +323,18 @@ function EventListViewInner({
               />
             )}
 
-            <div className="relative flex h-10 shrink-0 items-center border-t border-gray-alpha-400 px-4 text-label-13 text-gray-900">
-              <span>
+            <div className="flex h-10 shrink-0 items-center justify-between gap-4 border-t border-gray-alpha-400 px-4 text-label-13 text-gray-900">
+              <span className="min-w-0 truncate">
                 {getFooterLabel(search, {
                   total: sortedEvents.length,
                   hasMoreEvents,
                 })}
               </span>
               {list.hasMore && (
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                  <div className="pointer-events-auto">
-                    <LoadMoreButton
-                      loading={isLoadingMoreEvents}
-                      onClick={() => void onLoadMoreEvents?.()}
-                    />
-                  </div>
-                </div>
+                <LoadMoreButton
+                  loading={isLoadingMoreEvents}
+                  onClick={() => void onLoadMoreEvents?.()}
+                />
               )}
             </div>
           </div>
