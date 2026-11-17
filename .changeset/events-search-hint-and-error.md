@@ -3,4 +3,4 @@
 '@workflow/web': patch
 ---
 
-Show the Events search hint under the search box once typing pauses, give a failed search an error state with Try again, and report an ID that does not exist as not found.
+Share one search bar between the Trace and Events tabs, show the Events search's hint and errors (with Try again) under it, and report an ID that does not exist as not found.

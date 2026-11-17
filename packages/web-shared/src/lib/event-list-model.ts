@@ -631,7 +631,6 @@ export function getListSource(
     case 'ok':
       return { events: search.events, hasMore: false, isLog: false };
     case 'not_found':
-    case 'error':
       return { events: NO_EVENTS, hasMore: false, isLog: false };
     default:
       return {
@@ -668,6 +667,11 @@ export function getSearchHint(search: EventSearchState): string | null {
   }
 }
 
+/** Shown under the search box when the lookup failed. */
+export function getSearchError(search: EventSearchState): string | null {
+  return search.status === 'error' ? search.message : null;
+}
+
 export function getFooterLabel(
   search: EventSearchState,
   counts: {
@@ -682,7 +686,6 @@ export function getFooterLabel(
       return `${countEvents(total)} for ${search.query}${search.truncated ? ' (results may be truncated)' : ''}`;
     case 'loading':
     case 'not_found':
-    case 'error':
       return null;
     default:
       return `${countEvents(total)}${hasMoreEvents ? ' loaded' : ''}`;

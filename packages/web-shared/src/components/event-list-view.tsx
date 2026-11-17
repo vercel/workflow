@@ -1,7 +1,6 @@
 'use client';
 
 import type { Event, WorkflowRun } from '@workflow/world';
-import { AlertCircle } from 'lucide-react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
@@ -10,17 +9,16 @@ import {
   buildEventLookups,
   buildEventRow,
   buildListItems,
-  type EventSearchState,
   getEmptyMessage,
   getEventEntity,
   getFooterLabel,
   getListSource,
+  getSearchError,
   getSearchHint,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
 import { EventDetailsPanel } from './event-list/event-details-panel';
-import { EventListToolbar } from './event-list/event-list-toolbar';
 import {
   EventListHeader,
   EventRow,
@@ -33,10 +31,10 @@ import {
   useEventSearch,
 } from './event-list/use-event-search';
 import { useDetailPanelWidth } from './trace-viewer/components/use-detail-panel-width';
-import { Button } from './ui/button';
 import { ContextCardProvider } from './ui/context-card';
 import { DecryptClickContext } from './ui/data-inspector';
 import { LoadMoreButton } from './ui/load-more-button';
+import { SearchInput } from './ui/search-input';
 import { TooltipProvider } from './ui/tooltip';
 
 interface EventsListProps {
@@ -67,36 +65,6 @@ interface EventsListProps {
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
   onViewInTrace?: (spanId: string) => void;
-}
-
-function EmptyState({
-  search,
-  onRetry,
-}: {
-  search: EventSearchState;
-  onRetry: () => void;
-}) {
-  if (search.status === 'error') {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-        <div className="flex flex-col items-center gap-1">
-          <div className="flex items-center gap-2 text-label-14 font-medium text-gray-1000">
-            <AlertCircle className="h-4 w-4 shrink-0 text-red-800" />
-            Couldn’t search events
-          </div>
-          <p className="m-0 text-copy-13 text-gray-900">{search.message}</p>
-        </div>
-        <Button variant="secondary" size="small" onClick={onRetry}>
-          Try again
-        </Button>
-      </div>
-    );
-  }
-  return (
-    <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-900">
-      {getEmptyMessage(search)}
-    </div>
-  );
 }
 
 function EventListViewInner({
@@ -255,10 +223,16 @@ function EventListViewInner({
   const panelWidth = useDetailPanelWidth(bodyRef, selectedRow !== undefined);
 
   const toolbar = (
-    <EventListToolbar
-      query={query}
+    <SearchInput
+      name="event-list-search"
+      aria-label="Search events"
+      placeholder="Search by step ID, wait ID, hook ID, or event ID…"
+      value={query}
+      onChange={setQuery}
       hint={getSearchHint(search)}
-      onQueryChange={setQuery}
+      error={getSearchError(search)}
+      onRetry={retry}
+      insetClassName="pl-[34px]"
     />
   );
 
@@ -306,7 +280,9 @@ function EventListViewInner({
             {isRefetching || search.status === 'loading' ? (
               <EventRowsSkeleton />
             ) : rows.length === 0 ? (
-              <EmptyState search={search} onRetry={retry} />
+              <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-900">
+                {getEmptyMessage(search)}
+              </div>
             ) : (
               <Virtuoso
                 ref={virtuosoRef}
