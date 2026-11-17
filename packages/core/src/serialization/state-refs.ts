@@ -872,7 +872,10 @@ export class StateContext {
       const depth = path.length;
       let atDepth = read.get(v);
       if (atDepth?.has(depth)) return atDepth.get(depth);
-      if (atDepth === undefined) read.set(v, (atDepth = new Map()));
+      if (atDepth === undefined) {
+        atDepth = new Map();
+        read.set(v, atDepth);
+      }
       let node: Map<string | number, SourceNode> | undefined;
       const visit = (key: string | number, child: unknown) => {
         path.push(key);
