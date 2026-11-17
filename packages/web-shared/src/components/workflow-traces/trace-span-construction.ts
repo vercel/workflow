@@ -49,7 +49,7 @@ export const getEventTimestamp = (
  * Convert workflow events to span events
  * Only includes events that should be displayed as markers
  */
-export function convertEventsToSpanEvents(
+function convertEventsToSpanEvents(
   events: Event[],
   filterTypes = true,
   options: { preferOccurredAt?: boolean } = {}
@@ -327,7 +327,7 @@ export function stepToSpan(
  * (the run's creation stands for it), so pass its `startHook` creation from
  * `findStartHookCreation` to build it from deliveries alone.
  */
-export const hookEventsToHookEntity = (
+const hookEventsToHookEntity = (
   events: Event[],
   startHook?: StartHookCreation
 ): {
