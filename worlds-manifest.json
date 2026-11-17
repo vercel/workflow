@@ -421,7 +421,7 @@
       "services": []
     },
     {
-      "id": "aws",
+      "id": "joaquingiorgis-aws",
       "type": "community",
       "package": "@joaquingiorgis/world-aws",
       "name": "AWS",
