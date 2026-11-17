@@ -13,8 +13,6 @@ Before finalizing a review or implementation, inspect the rendering tree of the 
 | Skeletons, loading indicators, list fallbacks, or data that arrives after first render                | [Loading States](./loading-states/GUIDE.md)                                     |
 | Sheets, alert dialogs, or modals, including their dynamic content, scrolling, sizing, or footer actions | [Dialogs](./dialogs/GUIDE.md)                                                   |
 | Text colour, typography, or other Geist tokens                                                        | [`packages/web-shared/AGENTS.md`](../../../packages/web-shared/AGENTS.md)       |
-| User-facing flows, copy, states, or component choice                                                  | [`product-design`](../product-design/SKILL.md)                                  |
-| Keyboard, focus, forms, animation, or URL state                                                       | [`web-interface-guidelines`](../web-interface-guidelines/SKILL.md)              |
 | Any change to code in either package, including logic, styles, layout, and loading states             | [Validation](./validation/GUIDE.md)                                             |
 
 ## Guide Structure

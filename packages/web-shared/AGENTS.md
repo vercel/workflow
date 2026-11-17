@@ -1,6 +1,6 @@
 # Observability UI styling rules
 
-These rules apply to `packages/web-shared` and `packages/web` (which consumes it). For loading states, dialogs, and validation, read the [`web-guidelines`](../../.agents/skills/web-guidelines/SKILL.md) skill. For user-facing flows, copy, and states, load [`product-design`](../../.agents/skills/product-design/SKILL.md).
+These rules apply to `packages/web-shared` and `packages/web` (which consumes it). For loading states, dialogs, and validation, read the [`web-guidelines`](../../.agents/skills/web-guidelines/SKILL.md) skill.
 
 ## Never use opacity to set a text colour
 

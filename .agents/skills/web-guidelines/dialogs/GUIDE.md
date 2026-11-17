@@ -25,15 +25,10 @@ If the Sheet has actions, render them at the bottom of the Sheet, outside its sc
 
 ### Modals
 
-Use `AlertDialog` from `packages/web/app/components/ui/alert-dialog.tsx` for confirmations, as the run actions in `run-detail-view.tsx` do. Name the action in the confirm button and the title, and keep the cancel button as `Cancel`. The copy and destructive-action rules live in the product-design [modals reference](../../product-design/references/surfaces-modals.md).
+Use `AlertDialog` from `packages/web/app/components/ui/alert-dialog.tsx` for confirmations, as the run actions in `run-detail-view.tsx` do. Name the action in the confirm button and the title, and keep the cancel button as `Cancel`. For deletes, use `This cannot be undone.` for the irreversibility note and give the confirm button the destructive treatment.
 
 Dialogs in `packages/web-shared` (such as `ResolveHookModal`) cannot import from `packages/web`. Keep them styled to match the dashboard's dialogs, since they also render there.
 
 ## Rationale
 
 Sheets are larger than modals, leaving more room for large UI without scrolling. Modals are vertically centred, so unpredictable content height shifts their position. Sheets are sized relative to the viewport and stay stable as their content changes.
-
-## Related Guidance
-
-- [Product design: modals](../../product-design/references/surfaces-modals.md)
-- [Web interface guidelines](../../web-interface-guidelines/SKILL.md) for focus trapping and return
