@@ -159,7 +159,9 @@ describe('EncryptedDataBlock', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
+    // The reason is the button's accessible description (and its tooltip).
+    expect(markup).toContain('aria-describedby=');
+    expect(markup).toContain('Requires decrypt access');
   });
 });
 
@@ -173,7 +175,9 @@ describe('decrypt controls', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
+    // The reason is the button's accessible description (and its tooltip).
+    expect(markup).toContain('aria-describedby=');
+    expect(markup).toContain('Requires decrypt access');
   });
 
   it('disables inline Decrypt buttons with a reason', () => {
@@ -190,6 +194,8 @@ describe('decrypt controls', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
+    // The reason is the button's accessible description (and its tooltip).
+    expect(markup).toContain('aria-describedby=');
+    expect(markup).toContain('Requires decrypt access');
   });
 });

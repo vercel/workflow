@@ -3,9 +3,8 @@
 import { Lock } from 'lucide-react';
 import { useContext } from 'react';
 import { CopyButton } from '../trace-viewer/components/copy-button';
-import { Button } from '../ui/button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
-import { Spinner } from '../ui/spinner';
+import { DecryptButton } from '../ui/decrypt-button';
 
 const encryptedPlaceholderPreview = `{
   "input": "[encrypted]",
@@ -25,21 +24,13 @@ export function EncryptedDataBlock() {
       </pre>
       <div className="absolute inset-0 flex items-center justify-center">
         {ctx ? (
-          <Button
-            onClick={ctx.onDecrypt}
-            disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
-            title={
-              ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined
-            }
+          <DecryptButton
             size="tiny"
-          >
-            {ctx.isDecrypting ? (
-              <Spinner size={10} />
-            ) : (
-              <Lock className="h-3 w-3" />
-            )}
-            <span>Decrypt</span>
-          </Button>
+            loading={ctx.isDecrypting}
+            disabled={ctx.isDecryptDisabled}
+            disabledReason={ctx.decryptDisabledReason}
+            onClick={ctx.onDecrypt}
+          />
         ) : (
           <span className="inline-flex items-center gap-1 rounded border border-gray-alpha-400 bg-gray-100 px-1.5 py-0.5 text-button-12 font-medium text-gray-700">
             <Lock className="h-3 w-3" />

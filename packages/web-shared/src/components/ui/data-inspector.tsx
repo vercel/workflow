@@ -32,9 +32,8 @@ import {
   type FormattedStreamChunkDisplay,
   formatArrayBufferViewForDisplay,
 } from '../../lib/stream-display';
-import { Button } from './button';
 import { CLS, JSON_VIEW_STYLES } from './data-inspector.styles';
-import { Spinner } from './spinner';
+import { DecryptButton } from './decrypt-button';
 
 // ---------------------------------------------------------------------------
 // StreamRef / ClassInstanceRef type detection
@@ -166,28 +165,19 @@ function EncryptedInlineLabel() {
   const ctx = useContext(DecryptClickContext);
   if (ctx) {
     return (
-      <Button
+      <DecryptButton
         size="tiny"
         className="align-baseline"
-        disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
-        title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
-        onClick={(e) => {
-          e.stopPropagation();
-          ctx.onDecrypt();
-        }}
-      >
-        {ctx.isDecrypting ? (
-          <Spinner size={10} />
-        ) : (
-          <Lock className="h-3 w-3" />
-        )}
-        <span>Decrypt</span>
-      </Button>
+        loading={ctx.isDecrypting}
+        disabled={ctx.isDecryptDisabled}
+        disabledReason={ctx.decryptDisabledReason}
+        onClick={ctx.onDecrypt}
+      />
     );
   }
   return (
-    <span className="text-gray-600 italic">
-      <Lock className="-mt-px mr-[3px] inline h-3 w-3 align-middle" />
+    <span className="text-gray-900 italic">
+      <Lock className="-mt-px mr-1 inline size-3 align-middle" aria-hidden />
       Encrypted
     </span>
   );

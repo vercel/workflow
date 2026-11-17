@@ -1,25 +1,44 @@
 'use client';
 
+import { Lock } from 'lucide-react';
+import { useId } from 'react';
+import { Button } from './button';
 import { Spinner } from './spinner';
-
-const STYLES = `.wf-decrypt-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 10px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;cursor:pointer;white-space:nowrap;gap:6px;transition:background 150ms}.wf-decrypt-idle{color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400)}.wf-decrypt-idle:hover{background:var(--ds-gray-alpha-200)}.wf-decrypt-btn:disabled{cursor:not-allowed;opacity:.5}.wf-decrypt-done{color:var(--ds-green-900);background:var(--ds-green-100);box-shadow:0 0 0 1px var(--ds-green-400);cursor:default}`;
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from './tooltip';
 
 interface DecryptButtonProps {
-  /** Whether an encryption key has been obtained (decryption is active). */
+  /**
+   * @deprecated Once the data is decrypted there is nothing left to do, so
+   * stop rendering the button instead. Passing `true` renders nothing.
+   */
   decrypted?: boolean;
   /** Whether the key is currently being fetched. */
   loading?: boolean;
   /** Whether decryption is unavailable. */
   disabled?: boolean;
-  /** Explains why decryption is unavailable. */
+  /** Explains why decryption is unavailable. Shown in a tooltip. */
   disabledReason?: string;
   /** Called when the user clicks to initiate decryption. */
   onClick?: () => void;
+  /** `small` (32px) for toolbars and banners, `tiny` (24px) inline in data. */
+  size?: 'small' | 'tiny';
+  className?: string;
 }
 
 /**
- * Decrypt/Decrypted button using Geist secondary style.
- * Three states: idle (secondary gray), decrypting (spinner), decrypted (green success).
+ * The one control for starting decryption of a run's data.
+ *
+ * - idle: "Decrypt" with a lock icon
+ * - loading: a spinner replaces the icon and the button is disabled
+ * - unavailable: disabled, with `disabledReason` in a tooltip and exposed to
+ *   assistive tech as the button's description
+ *
+ * Clicks don't propagate, so it is safe inside a clickable row or tree node.
  */
 export function DecryptButton({
   decrypted = false,
@@ -27,50 +46,56 @@ export function DecryptButton({
   disabled = false,
   disabledReason,
   onClick,
+  size = 'small',
+  className,
 }: DecryptButtonProps) {
+  const reasonId = useId();
+  const iconSize = size === 'tiny' ? 12 : 14;
+
+  if (decrypted) {
+    return null;
+  }
+
+  const showReason = disabled && !!disabledReason;
+
+  const button = (
+    <Button
+      variant="secondary"
+      size={size}
+      className={className}
+      disabled={disabled || loading}
+      aria-busy={loading || undefined}
+      aria-describedby={showReason ? reasonId : undefined}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.();
+      }}
+    >
+      {loading ? <Spinner size={iconSize} /> : <Lock aria-hidden />}
+      Decrypt
+    </Button>
+  );
+
+  if (!showReason) {
+    return button;
+  }
+
+  // A disabled <button> gets no pointer or focus events, so the tooltip
+  // hangs off a focusable wrapper.
   return (
-    <>
-      <style dangerouslySetInnerHTML={{ __html: STYLES }} />
-      <button
-        type="button"
-        onClick={decrypted ? undefined : onClick}
-        disabled={decrypted || loading || disabled}
-        title={disabled ? disabledReason : undefined}
-        className={`wf-decrypt-btn ${decrypted ? 'wf-decrypt-done' : 'wf-decrypt-idle'}`}
-      >
-        {loading ? (
-          <Spinner size={14} />
-        ) : decrypted ? (
-          <svg
-            width={14}
-            height={14}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-            <path d="M7 11V7a5 5 0 0 1 9.9-1" />
-          </svg>
-        ) : (
-          <svg
-            width={14}
-            height={14}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-        )}
-        {loading ? 'Decrypting…' : decrypted ? 'Decrypted' : 'Decrypt'}
-      </button>
-    </>
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {/* biome-ignore lint/a11y/noNoninteractiveTabindex: lets keyboard users reach the reason */}
+          <span tabIndex={0} className="inline-flex rounded-md align-middle">
+            {button}
+            <span id={reasonId} className="sr-only">
+              {disabledReason}
+            </span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>{disabledReason}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
