@@ -981,6 +981,8 @@ export async function getNextBuilderEager(
       // holds a message.
       if (
         !this.config.watch &&
+        // Baseline for measurements: no inline entries, so every start is queued.
+        false &&
         process.env.WORKFLOW_INLINE_ENTRIES !== '0' &&
         // Absent on test doubles of the base builder.
         typeof this.createInlineWorkflowEntries === 'function'
