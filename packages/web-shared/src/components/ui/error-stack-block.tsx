@@ -70,13 +70,7 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       : body;
 
   return (
-    <div
-      className="relative overflow-hidden rounded-md border"
-      style={{
-        borderColor: 'var(--ds-red-400)',
-        background: 'var(--ds-red-100)',
-      }}
-    >
+    <div className="relative overflow-hidden rounded-md border border-red-400 bg-red-100">
       <CopyButton
         copyText={copyText}
         ariaLabel="Copy error"
@@ -85,14 +79,8 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       />
 
       {title && (
-        <div
-          className="flex items-center gap-2 px-3 py-2.5 pr-10"
-          style={{
-            color: 'var(--ds-red-900)',
-            borderBottom: '1px solid var(--ds-red-400)',
-          }}
-        >
-          <AlertCircle className="h-4 w-4 shrink-0" />
+        <div className="flex items-center gap-2 border-b border-red-400 px-3 py-2.5 pr-10 text-red-900">
+          <AlertCircle className="size-4 shrink-0" aria-hidden />
           <p
             className="text-label-12 font-semibold m-0 truncate"
             // The full message or stack is in the body below; the header
@@ -106,13 +94,7 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
         </div>
       )}
       {body && (
-        <pre
-          className="px-3 py-2.5 text-label-12-mono whitespace-pre-wrap break-words overflow-auto m-0"
-          style={{
-            color: 'var(--ds-red-900)',
-            background: 'var(--ds-red-200)',
-          }}
-        >
+        <pre className="m-0 overflow-auto whitespace-pre-wrap break-words bg-red-200 px-3 py-2.5 text-label-12-mono text-red-900">
           {body}
         </pre>
       )}
