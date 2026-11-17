@@ -556,7 +556,6 @@ function TraceViewerContent({
             />
             <div className="pointer-events-auto flex items-center border border-gray-alpha-400 rounded-md bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
               <IconButton
-                variant="muted"
                 size="small"
                 onClick={zoomOut}
                 disabled={isAtMinZoom}
@@ -565,7 +564,6 @@ function TraceViewerContent({
                 <ZoomOut className="w-4 h-4" />
               </IconButton>
               <IconButton
-                variant="muted"
                 size="small"
                 onClick={resetZoom}
                 aria-label="Reset zoom"
@@ -573,7 +571,6 @@ function TraceViewerContent({
                 <RotateCcw className="w-3.5 h-3.5" />
               </IconButton>
               <IconButton
-                variant="muted"
                 size="small"
                 onClick={zoomIn}
                 disabled={isAtMaxZoom}
