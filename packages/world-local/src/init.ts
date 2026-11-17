@@ -379,7 +379,8 @@ export async function initDataDir(dataDir: string): Promise<void> {
 
   // Run data written by earlier releases (one JSON file per entity) is not
   // migrated, and not deleted either: it stays where it is, unread, for the
-  // user to keep or remove. This release only uses `world.db`.
+  // user to keep or remove (`clear()` removes it). This release only uses
+  // `world.db`.
   // (The upgrade notice is printed where world.db is created, see
   // legacy-data.ts.)
   const legacy = legacyEntriesIn(dataDir);

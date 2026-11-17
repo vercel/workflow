@@ -20,11 +20,20 @@ import type {
   StreamChunksResponse,
   Streamer,
   StreamInfoResponse,
+  WorkflowRun,
 } from '@workflow/world';
+import { decode } from './db/codec.js';
 import { type Database, databaseFor } from './db/index.js';
+import { ranPurge } from './storage/run-retention.js';
 
 /** How often a reader checks for chunks written by another process. */
 const POLL_INTERVAL_MS = 100;
+
+/**
+ * How many chunks a reader reads at once. A reader reads the next batch only
+ * once the consumer has taken the last, so this bounds what it holds.
+ */
+const READ_BATCH_CHUNKS = 16;
 
 /** Reads that fail in a row before a reader gives up with the error. */
 const MAX_CONSECUTIVE_READ_FAILURES = 50;
@@ -92,6 +101,14 @@ export function createStreamer(
       : undefined;
   }
 
+  function runWasPurged(runId: string): boolean {
+    const row = db.get<{ doc: string }>(
+      'SELECT doc FROM runs WHERE run_id = ?',
+      runId
+    );
+    return row !== undefined && ranPurge(decode<WorkflowRun>(row.doc));
+  }
+
   /**
    * Appends chunks (and optionally the end marker) in one transaction. A
    * stream that has ended takes nothing more, so its end marker stays its
@@ -107,6 +124,18 @@ export function createStreamer(
     const appended = await db.transactAsync(() => {
       const last = lastRow(name);
       if (last?.eof) return false;
+      // The purge of a zero-retention run ended every stream it had; one
+      // first written after it (by a step still running when the run ended)
+      // is ended the same way, with nothing in it.
+      if (!last && runWasPurged(runId)) {
+        db.run(
+          'INSERT INTO stream_chunks (name, idx, run_id, tag, data, eof) VALUES (?, 0, ?, ?, NULL, 1)',
+          name,
+          runId,
+          tag ?? null
+        );
+        return true;
+      }
       let idx = last?.idx ?? 0;
       for (const chunk of chunks) {
         idx++;
@@ -263,85 +292,105 @@ export function createStreamer(
       },
 
       async get(_runId: string, name: string, startIndex = 0) {
-        let teardown = () => {};
+        // Chunks are read as the consumer asks for them, a bounded batch at a
+        // time, never the whole unread backlog: a long stream costs a reader
+        // one batch of memory, and a reader cancelled mid-stream stops reading.
+        let lastIdx = startIndex;
         let closed = false;
+        let failures = 0;
+        let wake: (() => void) | null = null;
+        let timer: ReturnType<typeof setInterval> | null = null;
+        const key = signalKey(db, name);
+        const onSignal = () => wake?.();
+        const stopWaiting = () => {
+          wake = null;
+          signals.emitter.off(key, onSignal);
+          if (timer) {
+            clearInterval(timer);
+            timer = null;
+          }
+        };
+
+        /**
+         * Enqueues the next batch of chunks, or ends the stream. False when
+         * there is nothing to deliver yet, or the read failed transiently.
+         */
+        const read = (
+          controller: ReadableStreamDefaultController<Uint8Array>
+        ): boolean => {
+          const finish = () => {
+            closed = true;
+            try {
+              controller.close();
+            } catch {
+              // Already closed or cancelled.
+            }
+          };
+          try {
+            let delivered = false;
+            for (;;) {
+              const rows = rowsAfter(name, lastIdx, READ_BATCH_CHUNKS);
+              failures = 0;
+              for (const row of rows) {
+                lastIdx = row.idx;
+                if (row.eof) {
+                  finish();
+                  return true;
+                }
+                if (row.data && row.data.byteLength > 0) {
+                  controller.enqueue(row.data);
+                  delivered = true;
+                }
+              }
+              if (delivered) return true;
+              // A batch of empty chunks only: read on.
+              if (rows.length < READ_BATCH_CHUNKS) break;
+            }
+            // Ended below the read position: started past the tail of a
+            // finished stream, or a purged one (its end sits at index 0).
+            // One seek, not a scan of the stream: an idle reader at the
+            // tail of a long stream costs the same as at a short one.
+            const last = lastRow(name);
+            if (last?.eof && last.idx <= lastIdx) {
+              finish();
+              return true;
+            }
+            return false;
+          } catch (error) {
+            // A transient read failure (the database busy with another
+            // process's recovery, say): the next poll reads from the
+            // same position. Repeated failures end the stream.
+            failures++;
+            if (failures < MAX_CONSECUTIVE_READ_FAILURES) return false;
+            closed = true;
+            controller.error(error);
+            return true;
+          }
+        };
+
         return new ReadableStream<Uint8Array>({
-          start(controller) {
-            let resolvedStart = startIndex;
-            if (typeof startIndex === 'number' && startIndex < 0) {
-              resolvedStart = Math.max(0, info(name).count + startIndex);
-            }
-            // The last row index delivered (or skipped).
-            let lastIdx = resolvedStart;
-            let reading = false;
-            let failures = 0;
-            let timer: ReturnType<typeof setInterval> | null = null;
-            const key = signalKey(db, name);
-
-            const finish = () => {
-              if (closed) return;
-              closed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Already closed or cancelled.
-              }
-            };
-
-            const drain = () => {
-              if (closed || reading) return;
-              reading = true;
-              try {
-                for (const row of rowsAfter(name, lastIdx)) {
-                  lastIdx = row.idx;
-                  if (row.eof) {
-                    finish();
-                    return;
-                  }
-                  if (row.data && row.data.byteLength > 0) {
-                    controller.enqueue(row.data);
-                  }
-                }
-                failures = 0;
-                // Ended below the read position: started past the tail of a
-                // finished stream, or a purged one (its end sits at index 0).
-                // One seek, not a scan of the stream: an idle reader at the
-                // tail of a long stream costs the same as at a short one.
-                const last = lastRow(name);
-                if (last?.eof && last.idx <= lastIdx) finish();
-              } catch (error) {
-                // A transient read failure (the database busy with another
-                // process's recovery, say): the next poll reads from the
-                // same position. Repeated failures end the stream.
-                failures++;
-                if (!closed && failures >= MAX_CONSECUTIVE_READ_FAILURES) {
-                  closed = true;
-                  teardown();
-                  controller.error(error);
-                }
-              } finally {
-                reading = false;
-              }
-            };
-
-            teardown = () => {
-              signals.emitter.off(key, drain);
-              if (timer) {
-                clearInterval(timer);
-                timer = null;
-              }
-            };
-
-            signals.emitter.on(key, drain);
-            drain();
-            if (!closed) {
-              timer = setInterval(drain, POLL_INTERVAL_MS);
-            }
+          start() {
+            if (startIndex < 0)
+              lastIdx = Math.max(0, info(name).count + startIndex);
+          },
+          async pull(controller) {
+            if (closed || read(controller)) return;
+            // At the tail: wait for a write in this process, or poll for one
+            // from another, until a chunk arrives or the reader cancels.
+            await new Promise<void>((resolve) => {
+              wake = () => {
+                if (!closed && !read(controller)) return;
+                stopWaiting();
+                resolve();
+              };
+              signals.emitter.on(key, onSignal);
+              timer = setInterval(onSignal, POLL_INTERVAL_MS);
+            });
           },
           cancel() {
             closed = true;
-            teardown();
+            wake?.();
+            stopWaiting();
           },
         });
       },
