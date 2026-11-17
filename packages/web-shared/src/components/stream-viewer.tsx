@@ -6,7 +6,7 @@ import { getStreamImageType } from '../lib/stream-image';
 import { serializeForClipboard } from './sidebar/copyable-data-block';
 import { StreamImagePreview } from './stream-image-preview';
 import { StreamViewerSkeleton } from './stream-viewer-skeleton';
-import { CopyButton } from './trace-viewer/components/copy-button';
+import { CopyButton } from './ui/copy-button';
 import { DataInspector } from './ui/data-inspector';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -55,9 +55,9 @@ const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
       </div>
       {!image && (
         <CopyButton
-          copyText={serializeForClipboard(chunk.value)}
-          ariaLabel="Copy chunk"
-          className="shrink-0 -mr-1 [&>div]:h-4 [&>div]:w-4 [&_svg]:h-4 [&_svg]:w-4"
+          text={serializeForClipboard(chunk.value)}
+          label="Copy chunk"
+          className="-mr-1"
         />
       )}
     </div>

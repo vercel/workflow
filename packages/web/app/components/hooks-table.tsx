@@ -2,6 +2,7 @@ import {
   Button,
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
+  TextWithCopyButton,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -42,7 +43,6 @@ import {
   resumeHook,
   useWorkflowHooks,
 } from '~/lib/workflow-api-client';
-import { CopyableText } from './display-utils/copyable-text';
 import { HookTokenCell } from './display-utils/hook-token-cell';
 import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
@@ -322,14 +322,22 @@ export function HooksTable({
                       data-selected={hook.hookId === selectedHookId}
                     >
                       <TableCell className="font-mono text-xs py-2">
-                        <CopyableText text={hook.hookId} overlay>
+                        <TextWithCopyButton
+                          text={hook.hookId}
+                          label="Copy hook ID"
+                          overlay
+                        >
                           {hook.hookId}
-                        </CopyableText>
+                        </TextWithCopyButton>
                       </TableCell>
                       <TableCell className="font-mono text-xs py-2">
-                        <CopyableText text={hook.runId} overlay>
+                        <TextWithCopyButton
+                          text={hook.runId}
+                          label="Copy run ID"
+                          overlay
+                        >
                           {hook.runId}
-                        </CopyableText>
+                        </TextWithCopyButton>
                       </TableCell>
                       <TableCell className="font-mono text-xs py-2">
                         <HookTokenCell

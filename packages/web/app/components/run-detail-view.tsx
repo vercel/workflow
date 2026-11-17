@@ -7,6 +7,7 @@ import {
   StreamViewer,
   StreamViewerSkeleton,
   stepEventsToStepEntity,
+  TextWithCopyButton,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -68,7 +69,6 @@ import {
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
 
-import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
@@ -638,9 +638,9 @@ export function RunDetailView({
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Run ID</div>
                 {run.runId ? (
-                  <CopyableText text={run.runId}>
+                  <TextWithCopyButton text={run.runId} label="Copy run ID">
                     <div className="text-xs mt-0.5 font-mono">{run.runId}</div>
-                  </CopyableText>
+                  </TextWithCopyButton>
                 ) : (
                   <Skeleton className="w-[280px] h-[20px]" />
                 )}

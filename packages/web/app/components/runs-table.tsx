@@ -1,6 +1,7 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   Button,
+  TextWithCopyButton,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -67,7 +68,6 @@ import {
   useWorkflowRunsInfinite,
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
-import { CopyableText } from './display-utils/copyable-text';
 import { RelativeTime } from './display-utils/relative-time';
 import { SelectionBar } from './display-utils/selection-bar';
 import { StatusBadge } from './display-utils/status-badge';
@@ -894,14 +894,22 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                       />
                     </TableCell>
                     <TableCell className="py-2">
-                      <CopyableText text={run.workflowName} overlay>
+                      <TextWithCopyButton
+                        text={run.workflowName}
+                        label="Copy workflow name"
+                        overlay
+                      >
                         {parseWorkflowName(run.workflowName)?.shortName || '?'}
-                      </CopyableText>
+                      </TextWithCopyButton>
                     </TableCell>
                     <TableCell className="font-mono text-xs py-2">
-                      <CopyableText text={run.runId} overlay>
+                      <TextWithCopyButton
+                        text={run.runId}
+                        label="Copy run ID"
+                        overlay
+                      >
                         {run.runId}
-                      </CopyableText>
+                      </TextWithCopyButton>
                     </TableCell>
                     <TableCell className="py-2">
                       <StatusBadge

@@ -33,6 +33,12 @@ export { TraceViewer } from './trace-viewer';
 export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 export { Button, type ButtonProps, buttonVariants } from './ui/button';
 export {
+  CopyButton,
+  type CopyButtonProps,
+  TextWithCopyButton,
+  type TextWithCopyButtonProps,
+} from './ui/copy-button';
+export {
   DataInspector,
   type DataInspectorProps,
   DecryptClickContext,
