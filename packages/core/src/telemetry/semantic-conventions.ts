@@ -1065,6 +1065,19 @@ export const WorkflowEventsPagesLoaded = SemanticConvention<number>(
   'workflow.events.pages_loaded'
 );
 
+/**
+ * Whether an event log load stopped following `hasMore` because it already
+ * held the run's event ceiling: the log holds at least that many events.
+ */
+export const WorkflowEventsLoadStoppedAtLimit = SemanticConvention<boolean>(
+  'workflow.events.load_stopped_at_limit'
+);
+
+/** The run's event ceiling a load stopped at. */
+export const WorkflowEventsLimit = SemanticConvention<number>(
+  'workflow.events.limit'
+);
+
 // Queue timing breakdown attributes (workflow-specific)
 
 /** Time spent deserializing the queue message in milliseconds */
