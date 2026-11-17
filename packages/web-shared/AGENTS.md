@@ -28,7 +28,7 @@ Use the same tokens as the Vercel dashboard:
 | Secondary text, labels | `text-gray-900`, e.g. `text-gray-900 text-label-13` for a field label |
 | Tertiary text, hints, metadata, muted icons | `text-gray-700` |
 | Muted text that brightens on hover | `text-gray-900 hover:text-gray-1000` |
-| Status text | the `-800` step of the scale: `text-red-800`, `text-amber-800`, `text-green-800` |
+| Status text | the `-900` step of the scale: `text-red-900`, `text-amber-900`, `text-green-900` |
 | Text on an inverted surface (tooltip, selection bar) | inherit the surface's foreground. Don't add `text-foreground` / `text-muted-foreground`, which are meant for the light surface |
 
 Content inside the shared `Tooltip` renders on a `gray-1000` pill with `background-100` text. Use the standard single tooltip: plain content in one colour, with no colour or text-size overrides.
