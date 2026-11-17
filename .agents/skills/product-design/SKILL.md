@@ -4,7 +4,7 @@ description: >-
   Single entry point for product design and user-facing product implementation
   in the workflow observability UI (packages/web and packages/web-shared). Use whenever work changes what a user sees, understands,
   chooses, or does: shaping requirements and flows; building or redesigning
-  pages and components; reviewing URLs, screenshots, diffs, or Vercel Agent
+  pages and components; reviewing URLs, screenshots, diffs, or review
   findings; improving product copy, information architecture, component choice,
   Geist compliance, hierarchy, layout, interaction, accessibility, responsive
   behavior, and loading, empty, error, permission, billing, or destructive
@@ -22,7 +22,7 @@ Make the interface correct for the user, the product, and Vercel. Working code i
 
 ## Local Context
 
-This skill is adapted from the Vercel dashboard's product-design guidance. In this repository it covers the workflow observability UI:
+This skill covers the workflow observability UI:
 
 - `packages/web` is the standalone observability app (`workflow web`), built with React Router 7, Vite, Tailwind 4, and shadcn/Radix primitives in `app/components/ui`.
 - `packages/web-shared` holds the trace viewer, event list, stream viewer, and sidebar panels. The same components also render inside the Vercel dashboard, so they must look native there.

@@ -23,7 +23,6 @@ Cross-cutting copy patterns not tied to one component. Load when reviewing flows
   - [Permission \& Access Copy](#permission--access-copy)
     - [Cross-Tenant Denials](#cross-tenant-denials)
     - [Third-Party Integration Auth Failures](#third-party-integration-auth-failures)
-  - [Plan, Billing, and Usage](#plan-billing-and-usage)
 
 ## Error Messages
 
@@ -487,30 +486,3 @@ GitHub / GitLab / Bitbucket / Linear / Slack auth-fail copy distinguishes by cau
 - **Resource gone:** `The repository was deleted on GitHub.` → `Connect a different repo` CTA
 
 Always name the provider explicitly. Generic “third-party” is confusing.
-
-## Plan, Billing, and Usage
-
-- **Currency:** always `$`, two decimals under $1 (`$0.40`), no space (`$20`, not `$ 20`).
-- **Units:** decimal SI (GB, MB, TB) for storage and bandwidth. Compute uses `GB-hours`, `ms`, `invocations`, `requests`. See [mechanics.md → Units and SI Prefixes](mechanics.md#units-and-si-prefixes).
-- **Truncation:** exact numbers in billing and invoices (`12,450 requests`). `K`/`M` abbreviation is OK in dashboard meters at ≥10,000 (`12.5K requests`).
-- **Threshold copy template (generalized across billing surfaces; AI Gateway is one of several).**
-  - **80%:** `<Note type="warning">` inline. `You’ve used 80% of your monthly {limit-name} ({current} of {max}).` Pair with the upgrade CTA.
-  - **100%:** `<Note type="error" fill>` blocking. `Monthly {limit-name} reached. {What is paused/blocked}.` Pair with the upgrade or update-limit CTA.
-  - **Overage (charges incurring):** `<Note type="warning" fill>` blocking. `You’ve exceeded your monthly {limit-name}. Additional usage is being billed at {rate}.` Pair with the update-limit CTA.
-- **Upgrade CTAs:** `Upgrade to Pro` / `Upgrade to Enterprise` for self-serve. `Contact Sales` for Enterprise-only. Both are `Verb + Noun` (the noun is the destination plan).
-- **Canonical plan names:** `Hobby`, `Pro`, `Enterprise`.
-
-### Billing Decision Disclosures
-
-On any surface where the primary action starts, changes, cancels, or resumes billing, keep consent-critical consequences in the surface itself. Do not rely only on docs links, FAQ text, or post-action receipts.
-
-Include the facts that change the user's financial or access outcome:
-
-- when charges start
-- what payment method can be charged
-- what happens after a trial ends
-- whether usage can trigger charges before the billing cycle ends
-- whether credits expire, become unusable, or require an active plan
-- whether cancellation, downgrade, or refund behavior is immediate or delayed
-
-Compress aggressively, but do not remove a fact that would change whether a reasonable user proceeds. If the full explanation is too long for the primary surface, include the core consequence inline and link to details for edge cases.

@@ -6,18 +6,18 @@ Data-presentation copy: table column headers, card titles, avatar fallbacks, gau
 
 ## Contents
 
-- [`<Table>` (`geist/components`)](#table-geistcomponents)
-- [`<Card>` (`geist/components`)](#card-geistcomponents)
-- [`<Avatar>` (`geist/components`)](#avatar-geistcomponents)
+- [`<Table>`](#table)
+- [`<Card>`](#card)
+- [`<Avatar>`](#avatar)
 - [`<Gauge>` & `<StatusDot>`](#gauge--statusdot)
 - [Code Display (`Code`, `InlineCode`, `CodeBlock`, `Snippet`)](#code-display-code-inlinecode-codeblock-snippet)
-- [`<RelativeTimeCard>` (`geist/components`)](#relativetimecard-geistcomponents)
-- [`<Kbd>` (`geist/components`)](#kbd-geistcomponents)
-- [`<Feedback>` (`geist/components`)](#feedback-geistcomponents)
+- [`<RelativeTimeCard>`](#relativetimecard)
+- [`<Kbd>`](#kbd)
+- [`<Feedback>`](#feedback)
 
 ---
 
-## `<Table>` (`geist/components`)
+## `<Table>`
 
 Data tables. Columns are scannable; copy is dense; headers identify, cells display.
 
@@ -51,7 +51,7 @@ Data tables. Columns are scannable; copy is dense; headers identify, cells displ
 
 When the underlying list is empty (filter cleared, never populated), render `<EmptyState.Root>` instead of `<Table>` rather than an empty `<Table.Body>`.
 
-## `<Card>` (`geist/components`)
+## `<Card>`
 
 Layout container. Card itself has no copy slots — its props are visual only (`border`, `shadow`, `hoverable`). All copy lives in children. Treat each card as a mini-section: lead with a label or heading, follow with body copy, end with one primary action when appropriate.
 
@@ -74,7 +74,7 @@ Layout container. Card itself has no copy slots — its props are visual only (`
 </Card>
 ```
 
-## `<Avatar>` (`geist/components`)
+## `<Avatar>`
 
 User/team identifier. Copy lives in `title` (rendered to `aria-label` / image `title`), `letter` (initials shown when no image), and `placeholder` (renders generic copy `"Placeholder Avatar"`).
 
@@ -146,7 +146,7 @@ Code surfaces have no Title Case rule — preserve user-supplied syntax verbatim
 
 > **Component-API note (not a copy issue):** `<Code>vercel deploy --prod</Code>` fails type-check because `syntax` is required. Always pass `<Code syntax="bash">…</Code>` (or `tsx`, `json`, etc.). Listed here separately so copy reviewers don’t score this as a copy bug.
 
-## `<RelativeTimeCard>` (`geist/components`)
+## `<RelativeTimeCard>`
 
 Displays relative time (`5m ago`, `Yesterday`) with a hover card showing absolute timestamps. Copy comes from `date` (a number — don’t format it yourself) and optional `children` overriding the default short label.
 
@@ -164,7 +164,7 @@ Displays relative time (`5m ago`, `Yesterday`) with a hover card showing absolut
 <span><RelativeTimeCard date={ts} /> ago</span>                    // duplicates "ago"
 ```
 
-## `<Kbd>` (`geist/components`)
+## `<Kbd>`
 
 Keyboard shortcut display. Modifiers come from boolean props (`meta`, `shift`, `alt`, `ctrl`); the literal key goes in `children`. The component handles platform symbols (`⌘` on macOS, `Ctrl` elsewhere), so don’t hard-code them.
 
@@ -183,7 +183,7 @@ Keyboard shortcut display. Modifiers come from boolean props (`meta`, `shift`, `
 <Kbd>Press K</Kbd>                           // sentence inside <Kbd>
 ```
 
-## `<Feedback>` (`geist/components`)
+## `<Feedback>`
 
 In-product feedback widget (emoji + textarea). Copy slots are `label` (the trigger button) and `copy` (override of the **prompt header** that sits next to the emoji row — NOT the textarea placeholder, which is hard-coded `Your feedback...` and not configurable).
 

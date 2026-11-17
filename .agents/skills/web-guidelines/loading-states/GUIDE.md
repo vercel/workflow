@@ -28,7 +28,7 @@ Once content has rendered, a background refresh, poll, or live update must not p
 
 ### Components in `packages/web-shared`
 
-Components in `packages/web-shared` also render inside the Vercel dashboard, which loads data with React Suspense. Keep data fetching out of them: take data as props and export a matching skeleton, so each host can render the fallback in its own loading boundary.
+Components in `packages/web-shared` also render inside the Vercel dashboard, which owns its own data loading. Keep data fetching out of them: take data as props and export a matching skeleton, so each host can render the fallback in its own loading boundary.
 
 ## Rationale
 

@@ -7,7 +7,7 @@ Load [`copy.md`](copy.md) for all user-facing language, then load only the refer
 | Surface                                                           | Load                                                                   | Internal pass                                              |
 | ----------------------------------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Full UI review or structural UI change                            | `product-judgment.md` + `interface-quality.md` + matching rows below   | product, component, design-system, interaction, resilience |
-| Modal or `ResourceDeletionModal`                                  | `surfaces-modals.md` + `patterns.md` destructive patterns + `verbs.md` | component + design-system + interaction                    |
+| Modal or delete confirmation                                      | `surfaces-modals.md` + `patterns.md` destructive patterns + `verbs.md` | component + design-system + interaction                    |
 | Drawer, Sheet, Dialog, or Popover                                 | `surfaces-modals.md`                                                   | component + interaction + responsive                       |
 | Toast, Note, Banner, Tooltip, or EmptyState                       | `surfaces-feedback.md` + relevant `patterns.md`                        | component + design-system                                  |
 | Button, Badge, page/section heading                               | `surfaces-buttons.md`                                                  | component + design-system + focus                          |
@@ -25,7 +25,7 @@ Load [`copy.md`](copy.md) for all user-facing language, then load only the refer
 | Permission, plan, policy, or cross-tenant gate                    | `patterns.md` + `surfaces-errors.md`                                   | product consequence + state                                |
 | Notification/activity/audit feed                                  | `surfaces-lifecycle.md` + `surfaces-navigation.md` + `mechanics.md`    | hierarchy + state                                          |
 | Workflow, Sandbox, Queue, build/deploy progress                   | `surfaces-lifecycle.md` + `patterns.md`                                | state + resilience                                         |
-| Auth, OTP, passkey, Sign Up/Log In/Log Out                        | `surfaces-lifecycle.md` + `verbs.md` + `glossary.md`                   | component + interaction                                    |
+| Auth, OTP, passkey, Sign Up/Log In/Log Out                        | `surfaces-lifecycle.md` + `verbs.md`                                  | component + interaction                                    |
 
 ## Domain References
 
@@ -33,7 +33,6 @@ Load [`copy.md`](copy.md) for all user-facing language, then load only the refer
 | ------------------------------------------------------------------ | ------------------------------------------------------ |
 | Incident and planned maintenance                                   | `patterns.md` incident section                         |
 | Dates, times, units, shortcuts, lifecycle labels, audit logs, cron | `mechanics.md`                                         |
-| Product names and capitalization                                   | `glossary.md`                                          |
 | Verb choice                                                        | `verbs.md`                                             |
 | Bad/good copy catalog                                              | `anti-patterns.md`                                     |
 | Rule citation lookup                                               | `rules.md`                                             |

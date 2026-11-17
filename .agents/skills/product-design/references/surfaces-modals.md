@@ -7,8 +7,8 @@ Modal, Drawer, and destructive-action copy. Verb+Noun primary buttons, type-to-c
 ## Contents
 
 - [Destructive Actions](#destructive-actions)
-- [`<Modal>` (`geist/components`)](#modal-geistcomponents)
-- [`<Drawer>` (`geist/components`)](#drawer-geistcomponents)
+- [`<Modal>`](#modal)
+- [`<Drawer>`](#drawer)
 
 ---
 
@@ -41,72 +41,25 @@ Red button. **Format: `Verb + Noun`** (`Delete Project`, `Remove Team Member`, `
 
 Pattern: `To confirm, type the {resource type} name "{name}"`
 
-### `DestructiveConfirmationInput` (Canonical Type-to-Confirm)
+### Type-to-Confirm Gates
 
-In the Vercel dashboard, every type-to-confirm gate renders through `DestructiveConfirmationInput`. This repository has no equivalent component: build the gate from local primitives and follow the same props and copy rules below.
+Render the confirmation phrase verbatim. A label component that applies CSS `capitalize` turns `my-site.com` into `My-Site.Com`, and users who type what they see fail the exact match. Browser translation and mobile autocorrect rewrite the phrase too, so opt the field out of translation (`translate="no"` on the phrase) and turn off autocapitalization, autocorrect, spellcheck, and autocomplete on the input.
 
-**Don’t hand-roll the prompt.** Geist `<Label>` (behind `<Input label>`, `<Select label>`, `<Textarea label>`) applies CSS `capitalize`, so `my-site.com` renders as `Vercel-Site.Com` and users who type what they see fail the exact match. Browser translation and mobile autocorrect rewrite the phrase too. The component renders the phrase verbatim, opts the field out of translation, and turns off autocapitalization, autocorrect, spellcheck, and autocomplete. Don’t rebuild that with `bypassCasing`, `translate="no"`, or an `aria-label`.
+- The phrase: the exact value to type. Prefer the resource name for entity deletes; use a lowercase verb phrase for non-entity actions (`"cancel all runs"`).
+- The noun: name what is being typed (`"run ID"`, `"workflow name"`). Omit it when the phrase needs no noun.
+- The mismatch error: copy rules in [Forms → Typed-Confirmation Mismatch](surfaces-forms.md#typed-confirmation-mismatch).
 
-```tsx
-// ❌ Label title cases the domain; translation and autocorrect can rewrite it
-<Input
-  id="confirm-domain"
-  label={`To confirm, type the domain name “${domain}”`}
-  value={confirmText}
-  onChange={(e) => setConfirmText(e.target.value)}
-/>
+### Delete Confirmations
 
-// ✅ Renders: To confirm, type the domain name “my-site.com”
-<DestructiveConfirmationInput
-  error={mismatch ? 'The domain name must match exactly.' : null}
-  onChange={(e) => setConfirmText(e.target.value)}
-  value={confirmText}
-  verificationLabel="domain name"
-  verificationPhrase={domain}
-/>
-```
-
-- `verificationPhrase`: the exact value to type. Prefer the resource name for entity deletes; use a lowercase verb phrase for non-entity actions (`"disable vercel authentication"`).
-- `verificationLabel`: the noun from the pattern (`"project name"`, `"team slug"`). Omit it when the phrase needs no noun: `To confirm, type “disable vercel authentication”`.
-- `error`: the mismatch message. Copy rules in [Forms → Typed-Confirmation Mismatch](surfaces-forms.md#typed-confirmation-mismatch).
-- The component is presentation only. The caller owns the value and the `===` check. It forwards its ref and native input props, so react-hook-form `register` and native `pattern`/`required` work unchanged.
-
-### `ResourceDeletionModal` (Canonical Delete)
-
-A Vercel dashboard component with no equivalent in this repository. Its copy rules below apply to any delete confirmation built here. Require typed confirmation for high-stakes deletes (`type "delete my-project" to confirm`).
-
-**Always pass these explicitly. The component defaults are wrong:**
-
-- `errorNoteMessage`: defaults to `'This action is not reversible. Please be certain.'` (banned phrase). Override with `'This cannot be undone.'`.
-- `submitButtonText`: defaults to `'Continue'`. Override with the named action: `'Delete Project'`, `'Delete Blob'`, `'Delete All Blobs'`.
-- `submitButtonType="error"`: gives the destructive red treatment.
-
-**Title scope:** disambiguate single vs. all. Single-resource delete → title is `Project` / `Blob`. Bulk delete → title is `All Projects` / `All Blobs`. Don’t lose the scope signal. The scope-ambiguous title is the most-missed pattern in shipped diffs.
-
-**Code-prop values match shipped constants, not prose rules.** `parentResourceType`, `resourceType`, and similar prop strings mirror existing constants (for example `parentResourceType="blob store"` lowercase, even when user-facing prose uses `Blob`). Match adjacent shipped code; do not apply Title Case or canonical-noun rules to prop strings.
-
-```tsx
-<ResourceDeletionModal
-  active={open}
-  onCancel={closeModal}
-  onConfirm={performDelete}
-  resourceName={project.name}
-  resourceType="project"
-  title="Project"
-  subtitle={
-    <p>
-      <b>{project.name}</b> and all its deployments will be permanently deleted.
-    </p>
-  }
-  submitButtonText="Delete Project"
-  submitButtonType="error"
-  errorNoteMessage="This cannot be undone."
-/>
-```
+- Name the action in the submit button: `Delete Run`, `Delete All Runs`. Never `Continue` or `Confirm`.
+- Use `This cannot be undone.` for the irreversibility note. `This action is not reversible. Please be certain.` is banned.
+- Give the submit button the destructive treatment.
+- Disambiguate single vs. all in the title. Single-resource delete → `Run`. Bulk delete → `All Runs`. The scope-ambiguous title is the most-missed pattern in shipped diffs.
+- Require typed confirmation for high-stakes deletes.
 
 ### Severity Ladder (Non-Delete)
 
-Not deletes. Do not use `ResourceDeletionModal`. Each has its own confirmation shape.
+Not deletes. Each has its own confirmation shape.
 
 - **Reversible:** revoke token, disconnect Git, remove member (re-addable). Confirm direct effect only. CTAs: `Revoke Token`, `Disconnect GitHub`, `Remove Member`. Always Verb + Noun — bare `Disconnect` is wrong.
 - **Irreversible, no delete:** rotate without backup, expire a key. Confirm direct + downstream effect. Body: `All existing sessions will be invalidated.` Close with `This cannot be undone.`
@@ -154,7 +107,7 @@ Close with the irreversibility clause that matches the headline action, then a `
 
 Don’t claim full irreversibility when only part of the operation is irreversible. See [`patterns.md` → Destructive Copy Patterns](patterns.md#destructive-copy-patterns) for the full rule.
 
-## `<Modal>` (`geist/components`)
+## `<Modal>`
 
 `<Modal.Title>` is Title Case, short. `<Modal.P>` is sentence case, 1-3 sentences. Cancel button: always `Cancel`. Primary button names the action and matches the title verb. Use `<Modal.Action>` for buttons inside `<Modal.Actions>` (matches shipped exemplars).
 
@@ -180,7 +133,7 @@ Don’t claim full irreversibility when only part of the operation is irreversib
 </Modal.Modal>
 ```
 
-## `<Drawer>` (`geist/components`)
+## `<Drawer>`
 
 Lateral sheet for persistent associated context (log details, deployment metadata, member profile). Slides in from the side; the underlying page stays visible.
 

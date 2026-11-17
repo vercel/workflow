@@ -200,7 +200,7 @@ Disable for pending or duplicate work, or for a prerequisite that cannot be reso
 
 #### Typed-Confirmation Mismatch
 
-When a destructive modal gates submit on a typed phrase, the mismatch error must name the noun the user is typing — never component-internal terms like `"phrase"` or `"value"`. Render the gate with [`DestructiveConfirmationInput`](surfaces-modals.md#destructiveconfirmationinput-canonical-type-to-confirm) and pass the message as its `error` so it sits under the prompt. Don’t put the prompt in an `<Input>` `label`; `<Label>` title cases the phrase the user must type.
+When a destructive modal gates submit on a typed phrase, the mismatch error must name the noun the user is typing — never component-internal terms like `"phrase"` or `"value"`. Follow [Modals → Type-to-Confirm Gates](surfaces-modals.md#type-to-confirm-gates) and render the message under the prompt. Don’t put the prompt in an `<Input>` `label`; `<Label>` title cases the phrase the user must type.
 
 | Prompt                                                           | ✅ Mismatch error                      | ❌                                              |
 | ---------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------- |
@@ -269,7 +269,7 @@ Concrete example from the resource-connection modal: the `Custom Environment Var
 | Information architecture / layout / spacing rhythm | The token table in [`packages/web-shared/AGENTS.md`](../../../../packages/web-shared/AGENTS.md) and adjacent shipped layout. |
 | Copy implications of co-location                   | Here. Once two controls are co-located, helper text on either must not re-explain the other; jointly the controls form one description.       |
 
-If you find yourself writing a helper that mentions an adjacent control by name, the copy isn’t the problem — the layout is. Run the internal design-system pass. See [Product Design Workflow](../SKILL.md#workflow).
+If you find yourself writing a helper that mentions an adjacent control by name, the copy isn’t the problem — the layout is. Run the design-system pass. See [Product Design Workflow](../SKILL.md#workflow).
 
 ## Checkboxes
 

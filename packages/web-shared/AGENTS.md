@@ -16,7 +16,7 @@ Opacity is fine for anything else, such as disabled controls, overlays, fades an
 
 ### Follow the dashboard's patterns
 
-Use the same tokens as the dashboard in `vercel/front` (`apps/vercel-site`):
+Use the same tokens as the Vercel dashboard:
 
 | Need | Use |
 | --- | --- |

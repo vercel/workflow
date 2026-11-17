@@ -1,6 +1,6 @@
 # Agent Skills
 
-This directory contains agent skills synced to multiple coding agents.
+This directory contains agent skills for contributors working in this repository.
 
 More information:
 

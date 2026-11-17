@@ -17,7 +17,7 @@ Canonical voice and interface-language rules for the observability UI (`packages
 
 Run substantive checks before punctuation mechanics.
 
-1. Cut banned words and banned product-noun variants. Use [`glossary.md`](glossary.md).
+1. Cut banned words and banned product-noun variants.
 2. Make destructive buttons `Verb + Noun` (`Delete Project`, not `Delete` or `Confirm`). Pair the resulting toast verb exactly.
 3. Make errors state what happened and what to do next. Classify the failure before choosing the verb: API, network, build, deploy, and integration failures use `Failed to` or `{Noun} failed`; validation, permission, and user-state failures use `Couldn’t` or `Can’t`. Never normalize every error to `Couldn’t`. Add a stable ID for platform/system errors when one exists.
 4. Make the title identify scope: deleting one item and deleting all items must not share an ambiguous title.
@@ -175,8 +175,8 @@ Avoid these patterns, not only individual words:
 - Lowercase articles, coordinating conjunctions, prepositions, and `to` in infinitives. Capitalize the first/last word and all major words.
 - Capitalize phrasal-verb auth labels: `Sign Up`, `Log In`, `Log Out`, `Set Up`, `Opt In`. Preserve provider brand strings such as `Sign in with GitHub`.
 - Use sentence case for body text, errors, toasts, placeholders, helper text, validation, descriptions, inline prose links, and sentence-style buttons.
-- Keep canonical product names from [`glossary.md`](glossary.md) capitalized in body text.
-- Treat setting/section headings as labels, not proper nouns, unless the glossary or a dedicated product brand establishes otherwise.
+- Keep canonical product names capitalized in body text (`Workflow SDK`, `Vercel`).
+- Treat setting/section headings as labels, not proper nouns, unless a dedicated product brand establishes otherwise.
 
 ### Quotes
 
@@ -218,7 +218,7 @@ Use these when the situation matches; do not paraphrase without a product reason
 | Stalled operation              | `Still {verb}ing. Most {operations} finish within {duration}.`                                         |
 | Single-filter no results       | `No {items} match your filter. Clear the filter to see all {items}.`                                   |
 | Multi-filter no results        | `No {items} match your filters. Try widening the time range or clearing a filter to see more {items}.` |
-| Type to confirm                | `To confirm, type the {resource type} name “{name}”` (rendered by `DestructiveConfirmationInput`)      |
+| Type to confirm                | `To confirm, type the {resource type} name “{name}”`      |
 | Popup blocked                  | `Couldn’t open the {Feature} popup. Allow popups and try again.`                                       |
 | Read-only acknowledgment       | `Done`                                                                                                 |
 | Destructive cancellation       | `Cancel`                                                                                               |

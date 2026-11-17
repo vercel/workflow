@@ -8,9 +8,9 @@ Toast, Note, Banner, Tooltip, Empty State, and Loading copy. Inline feedback sur
 
 - [Toasts](#toasts)
 - [Empty States](#empty-states)
-- [`<Note>` (`geist/components`)](#note-geistcomponents)
-- [`<Banner>` (`geist/components`)](#banner-geistcomponents)
-- [`<Tooltip>` (`geist/components`)](#tooltip-geistcomponents)
+- [`<Note>`](#note)
+- [`<Banner>`](#banner)
+- [`<Tooltip>`](#tooltip)
 - [Loading (Skeleton, Spinner, LoadingDots, Progress)](#loading-skeleton-spinner-loadingdots-progress)
   - [Loading Boundary](#loading-boundary)
   - [Transition Budget](#transition-budget)
@@ -136,7 +136,6 @@ Title Title Case. Description sentence case, quotes the query verbatim with curl
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Cleared/completed        | `No open incidents.` · `No deployments need review.` (neutral, not celebratory). No CTA.                                                                                                                                                                                                                                                     |
 | Permission/configuration | `Only team owners can view audit logs. Ask a team owner for access.` No CTA when the resolver isn’t the current user.                                                                                                                                                                                                                        |
-| Tier-gated               | Title is the feature name (`On-Demand Concurrent Builds`); description names the value (`Run more builds in parallel with the Pro plan.`); CTA `Upgrade to Pro` (or `Unlock {Feature}` only when the surface is a paywall card, not a full empty state). See [`patterns.md` → Plan, Billing, and Usage](patterns.md#plan-billing-and-usage). |
 | Error                    | `Couldn’t load deployments. Try again.` + copyable request ID + `Try Again` button                                                                                                                                                                                                                                                           |
 
 **Surface choice for permission/tier denials.** A user landing on a page they can’t view renders the Permission/configuration empty state full-page — not a Note, not a redirect, not a toast. Use a Note only when one tile inside an otherwise-accessible page is gated.
@@ -162,7 +161,7 @@ Opt-in patterns when concept needs teaching or sample data accelerates activatio
 - After an async filter change, wrap the region in `aria-live="polite"`.
 - CTA must be a real `<Button>` or `<Link>`, not an `onClick` div.
 
-## `<Note>` (`geist/components`)
+## `<Note>`
 
 Inline callouts. Copy lives in `children`; `label` is the short prefix. Valid `type` values: `default | secondary | tertiary | error | warning | success | alert | violet | cyan | ghost | lite | rotate-ccw`. No `type="info"`: omit `type` (default renders an info icon) or use `type="secondary"`.
 
@@ -175,7 +174,7 @@ Inline callouts. Copy lives in `children`; `label` is the short prefix. Valid `t
 <Note type="secondary">Usage resets on the 1st of each month.</Note>
 ```
 
-## `<Banner>` (`geist/components`)
+## `<Banner>`
 
 Page-level / system-wide announcement. Always paired with a single CTA via the required `button` prop. Use for trial expirations, plan-wide changes, system status, security advisories.
 
@@ -197,7 +196,7 @@ Page-level / system-wide announcement. Always paired with a single CTA via the r
 
 Other valid copy: `3 access tokens haven’t been used in 90 days. Rotate or revoke unused tokens.` paired with `Review Tokens`. Banner has no `type` prop; communicate severity through the `prefix` icon and copy tone. When you need a colored callout, use `<Note type="error|warning|...">` instead.
 
-## `<Tooltip>` (`geist/components`)
+## `<Tooltip>`
 
 One sentence/fragment in the `text` prop. Explain **why**, not **what**. The label names the thing. Bad: `text="Rate limit"` (repeats label) · `text="Click to override"` (describes interaction).
 
@@ -297,16 +296,15 @@ A settings page is a stack of fieldset shells: title, description, control area,
 </div>
 
 // GOOD — real shell, real copy, skeleton only where the value is unknown
-<ProjectSettingsFieldset
-  description="The Node.js version used during builds and for Serverless Functions."
-  note={loading ? <Skeleton boxHeight={32} vcenter width={200} /> : <LearnMore />}
+<SettingsFieldset
+  description="How many runs to show per page."
   saveDisabled={!canSave}
-  title="Node.js Version"
+  title="Page Size"
 >
   <Skeleton show={loading}>
-    <Select value={nodeVersion}>{options}</Select>
+    <Select value={pageSize}>{options}</Select>
   </Skeleton>
-</ProjectSettingsFieldset>
+</SettingsFieldset>
 ```
 
 The save action stays disabled until the form is dirty, so it never flips from disabled to enabled on load.

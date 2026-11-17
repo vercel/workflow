@@ -132,7 +132,7 @@ Vercel’s canonical auth verbs across the dashboard. Title Case as button/headi
 
 Don’t mix `Sign In` and `Log In` in the same Vercel-owned flow. Sign-in-with-{partner} buttons preserve the partner’s verb if the destination dictates it (`Sign in with GitHub`).
 
-**Exception:** `Sign in with Vercel` is a sentence-case literal brand name (the OAuth-provider product), not a phrasal-verb auth label. Do NOT rewrite to `Sign In with Vercel`. Same shape as `Sign in with GitHub`. See [glossary.md → Auth & Identity](glossary.md#auth--identity) for the canonical entry.
+**Exception:** `Sign in with Vercel` is a sentence-case literal brand name (the OAuth-provider product), not a phrasal-verb auth label. Do NOT rewrite to `Sign In with Vercel`. Same shape as `Sign in with GitHub`.
 
 For component examples, see [surfaces.md → Auth (Sign Up & Log In)](surfaces-lifecycle.md#auth-sign-up--log-in). For migration cases away from `Sign in`, see [anti-patterns.md → Sign Up vs. Log In](anti-patterns.md#sign-up-vs-log-in-canonical).
 

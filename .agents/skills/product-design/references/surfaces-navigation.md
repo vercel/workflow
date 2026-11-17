@@ -8,11 +8,11 @@ Nav-related copy: sidebar, tabs, breadcrumbs, pagination, menus, command palette
 
 - [Links & Navigation](#links--navigation)
   - [External links and new tabs](#external-links-and-new-tabs)
-- [`<Tabs>` (`geist/components`)](#tabs-geistcomponents)
-- [`<Breadcrumbs>` (`geist/components`)](#breadcrumbs-geistcomponents)
-- [`<Pagination>` (`geist/components`)](#pagination-geistcomponents)
+- [`<Tabs>`](#tabs)
+- [`<Breadcrumbs>`](#breadcrumbs)
+- [`<Pagination>`](#pagination)
 - [Menus (`Menu`, `DotsMenu`, `ContextMenu`)](#menus-menu-dotsmenu-contextmenu)
-- [`<CommandMenu>` (`geist/components`)](#commandmenu-geistcomponents)
+- [`<CommandMenu>`](#commandmenu)
 - [Sidebar (`Sidebar`, `SidebarLink`, `SidebarSection`)](#sidebar-sidebar-sidebarlink-sidebarsection)
 
 ---
@@ -36,7 +36,7 @@ Decide the icon and tab behavior independently.
 1. Is the destination owned and operated by Vercel?
    - **Yes:** do not show the icon. This includes the dashboard, `vercel.com`, Vercel Docs, Vercel Support, Vercel Changelog, and other Vercel-owned properties.
    - **No:** show the icon. It tells the user they are leaving Vercel.
-2. If ownership is uncertain, verify it. Do not guess from whether the URL is absolute, cross-origin, or served by another microfrontend.
+2. If ownership is uncertain, verify it. Do not guess from whether the URL is absolute or cross-origin.
 
 The icon describes the destination, not whether the browser opens a new tab. Link text must still name the destination.
 
@@ -44,7 +44,7 @@ The icon describes the destination, not whether the browser opens a new tab. Lin
 
 1. Open links in the same tab by default.
 2. Open a new tab when the user needs to keep their current Vercel work available, such as unsaved configuration, an active task, or a partner handoff they must return from.
-3. Never open a new tab solely because a link is external, absolute, cross-origin, cross-microfrontend, non-prefetchable, or expected to load slowly.
+3. Never open a new tab solely because a link is external, absolute, cross-origin, non-prefetchable, or expected to load slowly.
 
 | Example                                            | External icon | Tab      |
 | -------------------------------------------------- | ------------- | -------- |
@@ -62,7 +62,7 @@ Downloads, `mailto:`, and `tel:` links describe their action or file type direct
 
 This policy keeps the [HTML meaning of “external”](https://html.spec.whatwg.org/multipage/links.html#link-type-external) separate from new-tab behavior.
 
-## `<Tabs>` (`geist/components`)
+## `<Tabs>`
 
 Tabs switch between sibling views inside a single page. Copy lives in each tab’s `title` (and optional `tooltip`) on the `tabs` array. Title Case, 1-2 words, naming the destination — not a verb.
 
@@ -88,7 +88,7 @@ Tabs switch between sibling views inside a single page. Copy lives in each tab�
 
 Don’t reuse Tabs for navigation between unrelated pages — that’s a sub-menu (see Links & Navigation).
 
-## `<Breadcrumbs>` (`geist/components`)
+## `<Breadcrumbs>`
 
 Trail of `Breadcrumbs.Item` children. Copy lives in each item’s children. Each item names the entity at that level, not the page’s purpose. Title Case for proper nouns and entity types; sentence case is acceptable when the segment is the literal name a user typed (project slug, branch name).
 
@@ -112,7 +112,7 @@ Trail of `Breadcrumbs.Item` children. Copy lives in each item’s children. Each
 </Breadcrumbs>
 ```
 
-## `<Pagination>` (`geist/components`)
+## `<Pagination>`
 
 Previous/next links on docs and long lists. Copy lives in `previous.title` and `next.title` (the destination name); Geist auto-renders the `Previous`/`Next` label and chevrons.
 
@@ -160,7 +160,7 @@ Action menus rendered from a trigger. Each item child is the visible label.
 
 `ContextMenu` follows identical rules — its `Item` children are the labels.
 
-## `<CommandMenu>` (`geist/components`)
+## `<CommandMenu>`
 
 Spotlight-style search/command palette. `CommandMenu` is a compound component — copy lives on `<CommandMenu.Root>` (page list), `<CommandMenu.Input>` (placeholder), `<CommandMenu.Item>` (children + optional `keybind`), and `<CommandMenu.Group>` (heading).
 
