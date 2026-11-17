@@ -1,42 +1,27 @@
 /**
  * @workflow/web-shared default theme
  *
- * Geist design tokens for @workflow/web-shared components, identical to
- * geistcn's Tailwind entry in vercel/front. Import this file if your
- * application does not already provide geistcn's styles:
+ * Design tokens for @workflow/web-shared components. Import this file if your
+ * application does not already provide these tokens:
  *
  *   import '@workflow/web-shared/styles.css';
  *
- * The Vercel dashboard imports geistcn itself and scans this package's `dist`
- * for class names, so it does NOT import this file.
+ * Hosts that already define the tokens only need to scan this package's
+ * `dist` for class names and should NOT import this file.
  */
 
 /*
- * `dark:` follows the theme class rather than the OS setting, as in the
- * dashboard (apps/vercel-site/styles/globals.css in vercel/front matches
- * `.dark-theme`). `.dark` is the class next-themes sets in @workflow/web.
+ * `dark:` follows the theme class rather than the OS setting. `.dark` is the
+ * class next-themes sets in @workflow/web; `.dark-theme` is also supported.
  */
 @custom-variant dark (&:where(.dark, .dark *, .dark-theme, .dark-theme *));
 
-/* geistcn:begin */
-
 /*
- * Geist design tokens, copied 1:1 from geistcn in vercel/front@86c83fbeea57704e5ae8a635f17b7af5f44bcfb0.
- * Do not edit by hand: run `pnpm --filter @workflow/web-shared
- * sync-geist-tokens <absolute-path-to-vercel-front>` to regenerate this block.
- *
- * Sources, under packages/geistcn/src/styles/:
- *   themes/gray.css               verbatim
- *   themes/base.css               --ds-* tokens on `:root, :host` and the
- *                                 custom properties they reference
- *   components/design-system.css  --ds-* tokens that are not colour steps
- *   themes/dark.css               dark --ds-* tokens
- *   tailwind.css                  verbatim, minus its @layer/@import lines
+ * Design tokens. Keep these values in sync as a whole; don't tweak individual
+ * values here.
  */
 
-/* packages/geistcn/src/styles/themes/gray.css */
-
-/* Neutral colors share one source across the Tailwind and full-style entries.
+/* Neutral palette.
    Gray-alpha pairs target background-100: white in light, 4% gray in dark.
    Keep the raw HSL tuples for consumers that supply their own opacity. */
 :root,
@@ -115,18 +100,13 @@
   --ds-background-200-value: 0, 0%, 0%;
 }
 
-/* packages/geistcn/src/styles/themes/base.css */
+/* Base tokens */
 
 :root,
 :host {
-  --geist-space-small: 32px;
-  --geist-space-medium: 36px;
-  --geist-space-large: 40px;
-  --geist-space-gap: 24px;
-  --geist-page-margin: var(--geist-space-gap);
   --ds-page-width: 1400px;
   --ds-page-width-with-margin: calc(
-    var(--ds-page-width) + calc(2 * var(--geist-page-margin))
+    var(--ds-page-width) + calc(2 * 24px)
   );
   --ds-z-drawer: 200;
   --ds-z-modal: 300;
@@ -177,17 +157,17 @@
   --ds-motion-overlay-duration: 300ms;
   --ds-motion-popover-timing: var(--ds-motion-timing-swift);
   --ds-motion-popover-duration: 200ms;
-  --ds-size-small: var(--geist-space-small);
-  --ds-size-medium: var(--geist-space-medium);
-  --ds-size-large: var(--geist-space-large);
+  --ds-size-small: 32px;
+  --ds-size-medium: 36px;
+  --ds-size-large: 40px;
   --ds-control-decoration-size: 14px;
   --ds-popover-padding: 6px;
-  --ds-popover-row-height: var(--geist-space-medium);
+  --ds-popover-row-height: 36px;
   --ds-popover-row-radius: 6px;
   --ds-popover-row-padding: 0 8px;
 }
 
-/* packages/geistcn/src/styles/components/design-system.css */
+/* Focus and contrast tokens */
 
 :root,
 :host,
@@ -207,12 +187,11 @@
   --ds-shadow-border-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
-/* packages/geistcn/src/styles/themes/dark.css */
+/* Dark theme shadows and overlays */
 
 .dark-theme,
 .invert-theme,
-.dark,
-.dark-theme .geist-disabled .geist-disabled-skip {
+.dark {
   --ds-shadow-background-border: 0 0 0 1px var(--ds-background-200);
   --ds-shadow-border-base: 0 0 0 1px rgba(255, 255, 255, 0.145);
   --ds-shadow-border: var(--ds-shadow-border-base), var(--ds-shadow-background-border);
@@ -249,7 +228,7 @@
   --ds-overlay-backdrop-color: var(--ds-background-200);
 }
 
-/* packages/geistcn/src/styles/tailwind.css */
+/* Tailwind theme */
 
 @custom-variant dark-theme (&:where(.dark-theme, .dark-theme *));
 @custom-variant light-theme (&:where(.light-theme, .light-theme *));
@@ -269,17 +248,6 @@
 .light-theme,
 .dark .invert-theme,
 .dark-theme .invert-theme {
-  /* --ds-font-sans: 'Geist', 'Inter', ui-sans-serif, system-ui, sans-serif,
-    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  ---ds-font-mono: 'Geist Mono', Menlo, Monaco, 'Lucida Console',
-    'Liberation Mono', 'DejaVu Sans Mono', 'Bitstream Vera Sans Mono',
-    'Courier New', monospace; */
-
-  /* Temporary Special Colors for Migration  */
-  --geist-cyan: #50e3c2;
-  --geist-warning: #f5a623;
-  --geist-error: #ee0000;
-
   --ds-black: oklch(0 0 0);
   --ds-white: oklch(1 0 0);
 
@@ -444,35 +412,10 @@
 
 @theme inline {
   /* Deactivating namespaces. When you do this, all of the default utilities that use that namespace (like bg-red-500) will be removed, and only your custom values (like bg-custom) will be available. https://tailwindcss.com/docs/theme#overriding-the-default-theme */
-  /* --color-*: initial; @sev:revert */
+  /* --color-*: initial; */
   --breakpoint-*: initial;
 
   --spacing: 0.25rem;
-
-  /* Geist Sans is loaded from the `geist` npm package, which hardcodes the
-     `--font-geist-sans` variable. Alias it so `font-sans` resolves correctly. */
-  --font-sans: var(--font-geist-sans);
-
-  /* Pixel Fonts */
-  --font-pixel-square: var(--font-geist-pixel-square);
-  --font-pixel-circle: var(--font-geist-pixel-circle);
-  --font-pixel-line: var(--font-geist-pixel-line);
-  --font-pixel-grid: var(--font-geist-pixel-grid);
-  --font-pixel-triangle: var(--font-geist-pixel-triangle);
-
-  --font-serif: var(
-    --font-geist-serif,
-    ui-serif,
-    Georgia,
-    Cambria,
-    'Times New Roman',
-    Times,
-    serif
-  );
-  --font-serif-regular: var(--font-geist-serif-regular);
-  --font-serif-square: var(--font-geist-serif-square);
-  --font-serif-triangle: var(--font-geist-serif-triangle);
-  --font-serif-heart: var(--font-geist-serif-heart);
 
   --radius-xs: 0.125rem; /* Previously xs: 2px */
   --radius-sm: 0.25rem; /* Previously sm: 4px */
@@ -481,7 +424,7 @@
   --radius-xl: 0.75rem; /* Previously lg: 12px */
   --radius-2xl: 1rem;
 
-  /* Override Tailwind default shadows with Geist's DS shadows */
+  /* Override Tailwind default shadows with the design-system shadows */
   --shadow-border: var(--ds-shadow-border);
 
   --shadow-2xs: var(--ds-shadow-2xs);
@@ -492,16 +435,16 @@
   --shadow-xl: var(--ds-shadow-xl);
   --shadow-2xl: var(--ds-shadow-2xl);
 
-  /* Geist Breakpoints */
+  /* Breakpoints */
   --breakpoint-sm: 401px;
   --breakpoint-md: 601px;
   --breakpoint-lg: 961px;
   --breakpoint-xl: 1200px;
   --breakpoint-2xl: 1400px;
 
-  --color-geist-cyan: var(--geist-cyan);
-  --color-geist-warning: var(--geist-warning);
-  --color-geist-error: var(--geist-error);
+  --color-geist-cyan: var(--geist-cyan, #50e3c2);
+  --color-geist-warning: var(--geist-warning, #f5a623);
+  --color-geist-error: var(--geist-error, var(--ds-red-700));
 
   --color-black: var(--ds-black);
   --color-white: var(--ds-white);
@@ -616,11 +559,6 @@
   Use the @utility directive to add custom utilities to your project that work with variants like hover, focus and lg. They are automatically inserted into the utilities layer.
   Read more: https://tailwindcss.com/docs/adding-custom-styles#adding-custom-utilities
 */
-
-/* tempory utility remove once front is fully migrated to geistcn */
-@utility geist-sr-only {
-  @apply sr-only;
-}
 
 @utility clearable-input {
   --duration: 561.04ms;
@@ -922,33 +860,8 @@
   @apply font-mono font-normal text-[13px] leading-[18px];
 }
 
-@utility font-v0 {
-  font-family: var(--font-mono);
-  font-feature-settings: 'tnum';
-}
-
 @utility container {
   @apply px-6 mx-auto w-full;
   max-width: calc(1200px + 48px);
 }
 
-/* geistcn:end */
-
-@keyframes wf-span-flash {
-  0%,
-  44%,
-  100% {
-    background-color: var(--ds-gray-100);
-  }
-  12%,
-  28%,
-  58%,
-  74% {
-    background-color: var(--ds-amber-200);
-  }
-}
-@media (prefers-reduced-motion: no-preference) {
-  [data-span-landing] [role='treeitem'][aria-selected='true'] {
-    animation: wf-span-flash 0.6s ease-in-out 0.15s backwards;
-  }
-}

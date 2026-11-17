@@ -40,8 +40,8 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        // geistcn's Button uses these literal hover fills for its inverted
-        // default type: no `--ds-*` token sits one step off gray-1000.
+        // Literal hover fills for the inverted default type: no `--ds-*`
+        // token sits one step off gray-1000.
         default: [
           '[--themed-hover-bg:_hsl(0,_0%,_22%)]',
           'dark:[--themed-hover-bg:_hsl(0,_0%,_80%)]',

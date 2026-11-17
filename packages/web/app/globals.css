@@ -30,10 +30,10 @@
 
 /*
  * shadcn/ui semantic colours still used by the app's `ui/` primitives,
- * remapped onto Geist tokens. The Geist tokens already flip with the theme, so
+ * remapped onto the design tokens. The tokens already flip with the theme, so
  * these are declared once, on every theme root, so a nested theme scope
  * resolves its own values. Everything else (palette, shadows, radii) comes from
- * web-shared's styles.css, which mirrors geistcn.
+ * web-shared's styles.css.
  */
 @theme inline {
   --color-background: var(--background);
