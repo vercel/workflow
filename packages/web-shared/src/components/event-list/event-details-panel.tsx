@@ -1,7 +1,7 @@
 'use client';
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
-import { Lock } from 'lucide-react';
+import { ChartGantt, Lock } from 'lucide-react';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
 import {
@@ -20,7 +20,6 @@ import { serializeForClipboard } from '../sidebar/copyable-data-block';
 import { CopyButton } from '../trace-viewer/components/copy-button';
 import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell';
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
-import { Button } from '../ui/button';
 import { Collapsible } from '../ui/collapsible';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { DecryptButton } from '../ui/decrypt-button';
@@ -29,7 +28,9 @@ import {
   isStructuredError,
   type StructuredErrorRecord,
 } from '../ui/error-stack-block';
+import { IconButton } from '../ui/icon-button';
 import { Skeleton } from '../ui/skeleton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -264,7 +265,7 @@ function EventDetailsBody({
   const structuredError = extractStructuredError(data, event.eventType);
 
   return (
-    <div className="@container px-4">
+    <div className="@container px-4 pb-8">
       {/* Start and since-start are already in the selected row; Timing adds
           the step's breakdown, or the duration for other events. */}
       {timingTotal > 0 ? (
@@ -376,26 +377,27 @@ export function EventDetailsPanel({
       width={width}
       itemLabel="event"
       title={
-        <span className="truncate text-label-16 font-semibold">
-          {row.name || event.eventType}
-        </span>
+        <span className="truncate block">{row.name || event.eventType}</span>
+      }
+      actions={
+        onViewInTrace ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <IconButton
+                aria-label="View in Trace"
+                onClick={() => onViewInTrace(getEventSpanId(event))}
+              >
+                <ChartGantt className="w-4 h-4" />
+              </IconButton>
+            </TooltipTrigger>
+            <TooltipContent>View in Trace</TooltipContent>
+          </Tooltip>
+        ) : null
       }
       onPrev={onPrev}
       onNext={onNext}
       onClose={onClose}
     >
-      {onViewInTrace ? (
-        <div className="flex px-4 pt-1 pb-2">
-          <Button
-            variant="secondary"
-            size="small"
-            className="min-w-0 shrink"
-            onClick={() => onViewInTrace(getEventSpanId(event))}
-          >
-            <span className="min-w-0 truncate">View in Trace</span>
-          </Button>
-        </div>
-      ) : null}
       <EventDetailsBody key={event.eventId} {...body} />
     </DetailPanelShell>
   );
