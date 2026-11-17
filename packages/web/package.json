@@ -50,8 +50,7 @@
   },
   "dependencies": {
     "@workflow/world-local": "workspace:*",
-    "srvx": "^0.12.4",
-    "swr": "^2.5.1"
+    "srvx": "^0.12.4"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
@@ -95,6 +94,7 @@
     "react-router": "7.18.5",
     "shiki": "4.0.0",
     "sonner": "2.0.8",
+    "swr": "^2.5.1",
     "tailwind-merge": "3.5.0",
     "tailwindcss": "4",
     "typescript": "catalog:",

@@ -2459,6 +2459,9 @@ export async function runWorkflowWithQuickJS(params: {
           ...(resume?.firstStartedAt
             ? { firstStartedAt: resume.firstStartedAt }
             : {}),
+          ...(resume?.lastStartedAt
+            ? { lastStartedAt: resume.lastStartedAt }
+            : {}),
           input,
           ...(ahead ? { started: ahead.started } : {}),
           forceOptimisticStart: optimistic && !resume,

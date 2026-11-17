@@ -5,7 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"
@@ -25,13 +27,9 @@
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
-    "@swc/core": "1.15.3",
     "@workflow/builders": "workspace:*",
     "@workflow/rollup": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
-    "@workflow/vite": "workspace:*",
-    "exsolve": "^1.2.0",
-    "pathe": "^2.0.3"
+    "@workflow/vite": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

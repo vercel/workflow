@@ -276,9 +276,17 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
   // A `.gitignore` that ignores everything in the directory, run data and the
   // queue auth key alike, whenever there is none. `wx` never overwrites one
   // that is already there, and a failure here never fails the World.
-  await writeFile(path.join(absolutePath, '.gitignore'), '*\n', {
-    flag: 'wx',
-  }).catch(() => {});
+  // The ignore comments keep Turbopack from tracing the app's own
+  // `.gitignore` into the server output: that file is not in a CLI-uploaded
+  // deployment's source, so a build restored from cache fails to deploy.
+  await writeFile(
+    /* turbopackIgnore: true */ path.join(
+      /* turbopackIgnore: true */ absolutePath,
+      '.gitignore'
+    ),
+    '*\n',
+    { flag: 'wx' }
+  ).catch(() => {});
 }
 
 /**

@@ -48,6 +48,52 @@ describe('recorded changes', () => {
   });
 });
 
+describe('several changes in one call', () => {
+  it('copies each container once and leaves the frozen base untouched', () => {
+    const deepFreeze = <T>(v: T): T => {
+      if (v && typeof v === 'object') {
+        for (const child of Object.values(v)) deepFreeze(child);
+        Object.freeze(v);
+      }
+      return v;
+    };
+    const base = deepFreeze({
+      session: { messages: [{ role: 'user', text: 'a' }], usage: { in: 1 } },
+      other: { kept: true },
+    });
+    const next = applyStateOps(base, [
+      {
+        op: 'append',
+        path: ['session', 'messages'],
+        items: [{ role: 'assistant', text: 'b' }],
+      },
+      {
+        op: 'append',
+        path: ['session', 'messages'],
+        items: [{ role: 'user', text: 'c' }],
+      },
+      { op: 'set', path: ['session', 'usage', 'in'], value: 2 },
+      { op: 'set', path: ['session', 'title'], value: 't' },
+      { op: 'del', path: ['session', 'title'] },
+    ]) as any;
+    expect(next).toEqual({
+      session: {
+        messages: [
+          { role: 'user', text: 'a' },
+          { role: 'assistant', text: 'b' },
+          { role: 'user', text: 'c' },
+        ],
+        usage: { in: 2 },
+      },
+      other: { kept: true },
+    });
+    expect(base.session.messages).toHaveLength(1);
+    expect(base.session.usage.in).toBe(1);
+    expect(next.other).toBe(base.other);
+    expect(next.session.messages[0]).toBe(base.session.messages[0]);
+  });
+});
+
 describe('reserved keys', () => {
   it('round-trips own properties named __proto__, constructor and prototype', () => {
     const base = JSON.parse(
