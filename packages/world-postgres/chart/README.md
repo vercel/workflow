@@ -76,15 +76,21 @@ const server = createServer(async (req, res) => {
     res.writeHead(reply.status, { 'content-type': 'application/json' });
     return res.end(JSON.stringify(reply.body));
   }
-  if (role === 'worker') return res.writeHead(404).end();
+  // A worker serves only the Workflow SDK's routes: the queue delivers each
+  // job to this pod's own flow route.
+  if (role === 'worker' && !pathname.startsWith('/.well-known/workflow/')) {
+    return res.writeHead(404).end();
+  }
   // …the application's own routes, including the Workflow SDK's.
 });
 server.listen(Number(process.env.PORT));
 
 const lifecycle = createLifecycle({
   close: async () => {
-    await new Promise((resolve) => server.close(resolve));
+    // The World first: it stops claiming jobs and waits for running
+    // deliveries, which reach this server's flow route.
     await world.close?.();
+    await new Promise((resolve) => server.close(resolve));
     await pool.end();
   },
 });

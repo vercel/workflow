@@ -1,7 +1,11 @@
 import { execFile } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { parseArgs, promisify } from 'node:util';
-import { formatPruneResult, pruneWorkersInCluster } from './in-cluster.js';
+import {
+  formatPruneResult,
+  parseMinAgeMinutes,
+  pruneWorkersInCluster,
+} from './in-cluster.js';
 import { kubectlApi } from './kube.js';
 import {
   httpBacklogSource,
@@ -58,7 +62,29 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   let result: PruneResult;
   let target: string;
   if (values['in-cluster']) {
-    result = await pruneWorkersInCluster();
+    // In the cluster, WORKFLOW_PRUNE_* configures everything; a flag that
+    // would be ignored is refused rather than silently dropped.
+    const ignored = [
+      'service',
+      'context',
+      'main-deployment',
+      'version',
+      'backlog-url',
+      'skip-image-check',
+    ].filter((flag) => values[flag as keyof typeof values]);
+    if (ignored.length > 0 || argv.includes('--namespace')) {
+      console.error(
+        `--in-cluster takes its settings from WORKFLOW_PRUNE_* variables, not --${[...ignored, ...(argv.includes('--namespace') ? ['namespace'] : [])].join(', --')}\n\n${USAGE}`
+      );
+      return 2;
+    }
+    result = await pruneWorkersInCluster({
+      ...process.env,
+      ...(values['dry-run'] ? { WORKFLOW_PRUNE_DRY_RUN: '1' } : {}),
+      ...(argv.some((arg) => arg.startsWith('--min-age-minutes'))
+        ? { WORKFLOW_PRUNE_MIN_AGE_MINUTES: values['min-age-minutes'] }
+        : {}),
+    });
     target = process.env.WORKFLOW_PRUNE_SERVICE ?? '';
   } else {
     if (!values.service) {
@@ -84,7 +110,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         : serviceProxyBacklogSource(api, namespace, values.service, {
             basePath: values['backlog-path'],
           }),
-      minAgeMs: Number(values['min-age-minutes']) * 60_000,
+      minAgeMs: parseMinAgeMinutes(values['min-age-minutes'] ?? '60') * 60_000,
       dryRun: values['dry-run'],
       imageExists: values['skip-image-check'] ? undefined : imageExists,
     });

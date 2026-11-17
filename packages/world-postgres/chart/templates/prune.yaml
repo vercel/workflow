@@ -1,5 +1,6 @@
 {{- if .Values.versionPinning.enabled }}
-{{- $name := printf "%s-workflow-prune" (include "workflow-postgres.name" . | trunc 46 | trimSuffix "-") }}
+{{- /* CronJob names are capped at 52 characters (Jobs get an 11-character suffix). */}}
+{{- $name := printf "%s-workflow-prune" (include "workflow-postgres.name" . | trunc 37 | trimSuffix "-") }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:

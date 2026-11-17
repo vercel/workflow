@@ -152,4 +152,44 @@ describe('planPrune', () => {
       false
     );
   });
+
+  it('repairs a kept worker that lost its ScaledObject', () => {
+    const actions = planPrune(
+      base({
+        workers: [worker('busy'), worker('scaled')],
+        scalers: [worker('scaled')],
+        backlogs: new Map([
+          ['busy', backlog('busy', 1)],
+          ['scaled', backlog('scaled', 1)],
+        ]),
+        activeVersions: new Map([
+          ['busy', 1],
+          ['scaled', 1],
+        ]),
+      })
+    );
+    expect(actions.filter((a) => a.kind === 'repair')).toEqual([
+      { kind: 'repair', worker: worker('busy') },
+    ]);
+  });
+
+  it('deletes a drained version’s ScaledObject left without its worker, and keeps a busy one’s', () => {
+    const actions = planPrune(
+      base({
+        scalers: [worker('drained'), worker('busy'), worker('fresh', 60_000)],
+        activeVersions: new Map([['busy', 2]]),
+      })
+    );
+    expect(actions).toEqual([
+      { kind: 'restore', version: 'busy', activeRuns: 2 },
+      { kind: 'delete-scaler', scaler: worker('drained') },
+    ]);
+  });
+
+  it('keeps an orphaned ScaledObject when the active versions cannot be listed', () => {
+    const actions = planPrune(
+      base({ scalers: [worker('drained')], activeVersions: new Error('down') })
+    );
+    expect(actions).toEqual([]);
+  });
 });

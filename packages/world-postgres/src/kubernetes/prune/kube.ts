@@ -34,16 +34,21 @@ export function kubectlApi(
       maxBuffer: 64 * 1024 * 1024,
     });
     if (input !== undefined) {
+      // kubectl can exit before reading stdin (a bad context, say): the write
+      // then fails with EPIPE, which the exit status below reports.
+      child.child.stdin?.on('error', () => {});
       child.child.stdin?.end(input);
     }
     try {
       return (await child).stdout;
     } catch (error) {
       const stderr = String((error as { stderr?: string }).stderr ?? error);
-      throw new KubeApiError(
-        stderr.trim(),
-        /NotFound|\(404\)/.test(stderr) ? 404 : undefined
-      );
+      const status = /NotFound|\(404\)/.test(stderr)
+        ? 404
+        : /AlreadyExists|\(409\)/.test(stderr)
+          ? 409
+          : undefined;
+      throw new KubeApiError(stderr.trim(), status);
     }
   };
   return {

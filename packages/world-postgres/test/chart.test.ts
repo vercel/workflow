@@ -129,10 +129,25 @@ describe.skipIf(!hasHelm)('Helm chart', () => {
     [{ 'image.tag': 'a'.repeat(41) }, /at most 40 characters/],
     [{ jobPrefix: 'p'.repeat(50) }, /at most 81 characters/],
     [{ serviceName: 'Billing' }, /DNS label/],
+    [{ 'image.tag': 'Abc1234' }, /may use only lowercase/],
+    [{ 'image.tag': 'a@b' }, /may use only lowercase/],
+    [{ 'image.tag': '-abc' }, /may use only lowercase/],
+    [{ 'image.tag': '1234567' }, /must be a string/],
     [{ 'migrations.enabled': 'true' }, /migrations.command is required/],
   ])('refuses %o', (sets, message) => {
     const result = render(sets as Record<string, string>);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(message);
+  });
+
+  it('keeps the prune CronJob within 52 characters for the longest service name', () => {
+    const serviceName = `${'b'.repeat(62)}x`;
+    // A short jobPrefix: the default (the service name) is too long for Graphile with a SHA tag.
+    const docs = documents({ serviceName, jobPrefix: 'b_' });
+    const cronJob = [...docs.keys()].find((key) => key.startsWith('CronJob/'));
+    expect(cronJob).toBeDefined();
+    expect(
+      (cronJob as string).slice('CronJob/'.length).length
+    ).toBeLessThanOrEqual(52);
   });
 });

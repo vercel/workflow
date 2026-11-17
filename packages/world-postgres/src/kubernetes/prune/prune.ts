@@ -68,6 +68,8 @@ export interface PruneResult {
   readonly actions: readonly PruneAction[];
   readonly deleted: readonly string[];
   readonly restored: readonly string[];
+  /** Versions whose missing ScaledObject was recreated. */
+  readonly repaired: readonly string[];
   readonly errors: readonly string[];
 }
 
@@ -134,6 +136,20 @@ export async function pruneWorkers(
     });
   }
 
+  const listedScalers = await api.get<List<{ metadata: Meta }>>(
+    `${keda}?labelSelector=${selector}`
+  );
+  const scalers: WorkerDeployment[] = [];
+  for (const item of listedScalers.items) {
+    const version = item.metadata.labels?.[WORKER_LABELS.version];
+    if (!version) continue;
+    scalers.push({
+      name: item.metadata.name,
+      version,
+      createdAt: new Date(item.metadata.creationTimestamp ?? 0),
+    });
+  }
+
   // Without the main Deployment there is no way to tell which versions can
   // still start runs, so nothing is pruned: this throws.
   const protectedVersions = await liveVersions(
@@ -161,12 +177,14 @@ export async function pruneWorkers(
     backlogs,
     activeVersions,
     minAgeMs: options.minAgeMs,
+    scalers,
   });
 
   const deleted: string[] = [];
   const restored: string[] = [];
+  const repaired: string[] = [];
   const errors: string[] = [];
-  if (options.dryRun) return { actions, deleted, restored, errors };
+  if (options.dryRun) return { actions, deleted, restored, repaired, errors };
 
   for (const action of actions) {
     try {
@@ -178,14 +196,50 @@ export async function pruneWorkers(
       } else if (action.kind === 'restore') {
         await restore(action.version);
         restored.push(action.version);
+      } else if (action.kind === 'repair') {
+        await createIfMissing(
+          keda,
+          await scaledObjectFor(action.worker.version)
+        );
+        repaired.push(action.worker.version);
+      } else if (action.kind === 'delete-scaler') {
+        await api.delete(`${keda}/${action.scaler.name}`);
+        deleted.push(action.scaler.version);
       }
     } catch (error) {
       const version =
-        action.kind === 'restore' ? action.version : action.worker.version;
+        action.kind === 'restore'
+          ? action.version
+          : action.kind === 'delete-scaler'
+            ? action.scaler.version
+            : action.worker.version;
       errors.push(`${action.kind} ${version}: ${toError(error).message}`);
     }
   }
-  return { actions, deleted, restored, errors };
+  return { actions, deleted, restored, repaired, errors };
+
+  /** Creates an object, treating one that already exists as created. */
+  async function createIfMissing(path: string, body: unknown) {
+    try {
+      await api.create(path, body);
+    } catch (error) {
+      if ((error as { status?: number }).status !== 409) throw error;
+    }
+  }
+
+  /**
+   * A version's ScaledObject, copied from the newest other version that has
+   * one, with the version swapped in (name, labels, scale target, backlog URL).
+   */
+  async function scaledObjectFor(version: string) {
+    const template = newest(scalers.filter((s) => s.version !== version));
+    if (!template) throw new Error('no ScaledObject of any version to copy');
+    assertSwappable(version, template.version);
+    const scaledObject = await api.get<{ metadata: Meta }>(
+      `${keda}/${template.name}`
+    );
+    return swapVersion(toManifest(scaledObject), template.version, version);
+  }
 
   /**
    * Repair path: clones the workers of a version that has them (the newest),
@@ -197,36 +251,46 @@ export async function pruneWorkers(
     if (!template) {
       throw new Error('no worker Deployment of any version to copy');
     }
-    // The version is swapped as a string, so it must not occur by accident
-    // (as `v1` does in `apps/v1`): restore only commit-SHA-like versions.
-    if (
-      !/^[0-9a-f]{7,64}$/.test(version) ||
-      !/^[0-9a-f]{7,64}$/.test(template.version)
-    ) {
-      throw new Error(
-        `cannot restore non-SHA version ${version} from ${template.version}`
-      );
-    }
-    const swap = <T>(object: T): T =>
-      JSON.parse(
-        JSON.stringify(object).replaceAll(template.version, version)
-      ) as T;
-
-    const deployment = swap(
-      toManifest(byVersion.get(template.version) as Deployment)
+    assertSwappable(version, template.version);
+    const deployment = swapVersion(
+      toManifest(byVersion.get(template.version) as Deployment),
+      template.version,
+      version
     );
+    // The template's replica count is whatever KEDA last set for its own
+    // version, possibly zero. One pod lets this version's runs progress
+    // until its ScaledObject takes over.
+    deployment.spec.replicas = 1;
     const image = deployment.spec.template.spec?.containers?.[0]?.image;
     if (image && options.imageExists && !(await options.imageExists(image))) {
       throw new Error(
         `image ${image} is gone; its runs cannot be resumed without it`
       );
     }
-    const scaledObject = await api.get<{ metadata: Meta }>(
-      `${keda}/${template.name}`
-    );
-    await api.create(`${apps}/deployments`, deployment);
-    await api.create(keda, swap(toManifest(scaledObject)));
+    // Both creates tolerate an object left by an earlier, interrupted
+    // attempt (or a ScaledObject whose Deployment alone was deleted), so a
+    // restore that fails halfway completes on the next prune.
+    if (!scalers.some((s) => s.version === version)) {
+      await createIfMissing(keda, await scaledObjectFor(version));
+    }
+    await createIfMissing(`${apps}/deployments`, deployment);
   }
+}
+
+/**
+ * The version is swapped as a string, so it must not occur by accident (as
+ * `v1` does in `apps/v1`): copy only between commit-SHA-like versions.
+ */
+function assertSwappable(version: string, template: string) {
+  if (!/^[0-9a-f]{7,64}$/.test(version) || !/^[0-9a-f]{7,64}$/.test(template)) {
+    throw new Error(
+      `cannot restore non-SHA version ${version} from ${template}`
+    );
+  }
+}
+
+function swapVersion<T>(object: T, from: string, to: string): T {
+  return JSON.parse(JSON.stringify(object).replaceAll(from, to)) as T;
 }
 
 async function liveVersions(

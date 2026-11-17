@@ -14,9 +14,11 @@
 
 {{/* The image tag, which is the deployment ID runs are pinned to. */}}
 {{- define "workflow-postgres.tag" -}}
-{{- $tag := required "image.tag is required: one immutable tag per build, such as the commit SHA" .Values.image.tag | toString -}}
+{{- if not (kindIs "string" (required "image.tag is required: one immutable tag per build, such as the commit SHA" .Values.image.tag)) -}}{{- fail "image.tag must be a string: quote it, or use --set-string (an all-digit SHA is read as a number)" -}}{{- end -}}
+{{- $tag := .Values.image.tag -}}
 {{- if gt (len $tag) 40 -}}{{- fail "image.tag must be at most 40 characters (a commit SHA)" -}}{{- end -}}
-{{- if not (regexMatch "^[A-Za-z0-9._@-]+$" $tag) -}}{{- fail "image.tag may use only letters, digits, '.', '-', '_' and '@'" -}}{{- end -}}
+{{- /* It names the version's worker Deployment and ScaledObject and labels them, so it must suit both. */}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$" $tag) -}}{{- fail "image.tag may use only lowercase letters, digits, '.', '-' and '_', and must start and end with a letter or digit (it names Kubernetes objects)" -}}{{- end -}}
 {{- if eq $tag "postgres" -}}{{- fail "image.tag must not be 'postgres': it is reserved for unpinned runs" -}}{{- end -}}
 {{- if gt (add (len (include "workflow-postgres.jobPrefix" .)) (len $tag) 1) 82 -}}{{- fail "jobPrefix and image.tag together must be at most 81 characters (Graphile Worker's 128 character names)" -}}{{- end -}}
 {{- $tag -}}

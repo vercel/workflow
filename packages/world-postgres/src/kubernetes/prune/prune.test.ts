@@ -73,6 +73,14 @@ const cluster = (workers: unknown[]): Record<string, unknown> => ({
       },
     ],
   },
+  [KEDA]: {
+    items: workers.map((w) => {
+      const { name, labels } = (
+        w as { metadata: { name: string; labels: Record<string, string> } }
+      ).metadata;
+      return { metadata: { name, labels } };
+    }),
+  },
   [`${KEDA}/svc-wf-${CURRENT}`]: {
     metadata: { name: `svc-wf-${CURRENT}` },
     spec: {},
@@ -127,9 +135,11 @@ describe('pruneWorkers', () => {
     });
 
     expect(result.restored).toEqual([OLD]);
+    // The ScaledObject first, so a restore interrupted halfway never leaves
+    // a Deployment that nothing scales.
     expect(calls.filter((c) => c.startsWith('POST'))).toEqual([
-      `POST ${NS}/deployments svc-wf-${OLD}`,
       `POST ${KEDA} svc-wf-${OLD}`,
+      `POST ${NS}/deployments svc-wf-${OLD}`,
     ]);
   });
 

@@ -38,9 +38,25 @@ export async function pruneWorkersInCluster(
       if (!res.ok) throw new Error(`GET ${baseUrl}${path}: ${res.status}`);
       return res.json();
     }),
-    minAgeMs: Number(env.WORKFLOW_PRUNE_MIN_AGE_MINUTES || 60) * 60_000,
+    minAgeMs:
+      parseMinAgeMinutes(env.WORKFLOW_PRUNE_MIN_AGE_MINUTES || '60') * 60_000,
     dryRun: env.WORKFLOW_PRUNE_DRY_RUN === '1',
   });
+}
+
+/**
+ * A minimum age in minutes. Anything that is not a finite, non-negative
+ * number is refused: `NaN` would silently disable the minimum age, letting
+ * pruning delete a version's workers before its first run is recorded.
+ */
+export function parseMinAgeMinutes(value: string): number {
+  const minutes = Number(value);
+  if (value.trim() === '' || !Number.isFinite(minutes) || minutes < 0) {
+    throw new Error(
+      `The minimum worker age must be a non-negative number of minutes, got ${JSON.stringify(value)}`
+    );
+  }
+  return minutes;
 }
 
 /** One line per action, for logs and CI summaries. */
@@ -51,6 +67,12 @@ export function formatPruneResult(result: PruneResult): string[] {
         return `restore ${action.version} (${action.activeRuns} unfinished runs, no workers)`;
       }
       if (action.kind === 'delete') return `delete  ${action.worker.version}`;
+      if (action.kind === 'delete-scaler') {
+        return `delete  ${action.scaler.version} (ScaledObject left without its worker)`;
+      }
+      if (action.kind === 'repair') {
+        return `repair  ${action.worker.version} (worker without a ScaledObject)`;
+      }
       return `keep    ${action.worker.version} (${action.reason})`;
     }),
     ...result.errors.map((error) => `error   ${error}`),
