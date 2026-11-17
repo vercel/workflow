@@ -43,9 +43,16 @@ const SNAPSHOT_MIN_BYTES = 64 * 1024;
 const SNAPSHOT_MAX_RECORDS = 1_000;
 /** Shorter strings are not worth a reference. */
 const SOURCE_STRING_MIN = 128;
+/**
+ * How many source strings one context indexes for writing references. Later
+ * strings are written as they are; reading references is not limited.
+ */
+const MAX_SOURCE_STRINGS = 10_000;
 const MAX_ID = 256;
 const MAX_PATH = 64;
 const MAX_DEPTH = 256;
+/** How many objects an inspection-only placeholder scan reads (see `holdsPlaceholder`). */
+const MAX_SCAN = 100_000;
 /** How many recent step-input versions a new value is compared with by value. */
 const MAX_RECENT_INPUTS = 4;
 
@@ -89,6 +96,29 @@ export function stateSourceId(
     ? `hook:${event.eventId}`
     : undefined;
 }
+/**
+ * A source's long strings, in a tree keyed by the payload's own keys and
+ * indexes (numbers for array items, so `0` and `"0"` stay apart).
+ */
+type SourceNode = string | ReadonlyMap<string | number, SourceNode>;
+const EMPTY_SOURCE: SourceNode = new Map();
+
+/** The string a source holds at a path, as it was registered. */
+function sourceString(node: SourceNode, path: unknown): string | undefined {
+  if (!Array.isArray(path)) return undefined;
+  let at: SourceNode | undefined = node;
+  for (const key of path) {
+    if (typeof at === 'string' || at === undefined) return undefined;
+    if (typeof key !== 'string' && typeof key !== 'number') return undefined;
+    at = at.get(key);
+  }
+  return typeof at === 'string' ? at : undefined;
+}
+
+function jsonLength(value: string): number {
+  return JSON.stringify(value).length;
+}
+
 interface SourceString {
   readonly id: string;
   readonly path: readonly (string | number)[];
@@ -242,11 +272,20 @@ function hasBrand(check: () => unknown): boolean {
  * Whether a trusted leaf holds only what tracked state may: a `Map` or `Set`
  * whose keys and values are primitives, trusted leaves or frozen state. A
  * class instance inside one couldn't be rebuilt without workflow code, so the
- * value holding it is stored in full. Not cached: a `Map` or `Set` can change.
+ * value holding it is stored in full. Not cached across checks, as a `Map` or
+ * `Set` can change, but once per check and depth (`leaves`): a value may hold
+ * one many times.
  */
-function holdsOnlyState(leaf: object, depth: number): boolean {
+function holdsOnlyState(
+  leaf: object,
+  depth: number,
+  leaves: Map<object, number>
+): boolean {
   const tag = Object.prototype.toString.call(leaf);
   if (tag !== '[object Map]' && tag !== '[object Set]') return true;
+  // Found to hold only state at this depth or deeper: its contents fit
+  // within the depth limit from here too.
+  if ((leaves.get(leaf) ?? -1) >= depth) return true;
   if (depth > MAX_DEPTH) return false;
   let ok = true;
   const check = (entry: unknown) => {
@@ -257,10 +296,10 @@ function holdsOnlyState(leaf: object, depth: number): boolean {
     }
     if (frozenState.has(entry)) return;
     if (isTrustedLeaf(entry)) {
-      if (!holdsOnlyState(entry, depth + 1)) ok = false;
+      if (!holdsOnlyState(entry, depth + 1, leaves)) ok = false;
       return;
     }
-    if (!isFrozenState(entry, depth + 1)) ok = false;
+    if (!isFrozenState(entry, depth + 1, leaves)) ok = false;
   };
   // The built-in methods, not the value's own: it may come from another realm.
   if (tag === '[object Map]')
@@ -269,6 +308,7 @@ function holdsOnlyState(leaf: object, depth: number): boolean {
       check(value);
     });
   else Set.prototype.forEach.call(leaf, (value: unknown) => check(value));
+  if (ok) leaves.set(leaf, depth);
   return ok;
 }
 
@@ -284,11 +324,16 @@ const frozenState = globalSingleton(
  * only primitives, trusted leaves and more such values. Anything else (class
  * instances, functions, streams) is stored as it was before.
  */
-export function isFrozenState(value: unknown, depth = 0): boolean {
+export function isFrozenState(
+  value: unknown,
+  depth = 0,
+  leaves?: Map<object, number>
+): boolean {
   if (value === null || typeof value !== 'object') return false;
   if (frozenState.has(value)) return true;
   if (depth > MAX_DEPTH || !Object.isFrozen(value)) return false;
   if (!Array.isArray(value) && !isPlainObject(value)) return false;
+  leaves ??= new Map();
   // Freezing an accessor does not freeze the value it returns.
   for (const key of Object.keys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -306,10 +351,10 @@ export function isFrozenState(value: unknown, depth = 0): boolean {
     // Checked first: the children of a growing value are mostly known.
     if (frozenState.has(child)) continue;
     if (isTrustedLeaf(child)) {
-      if (!holdsOnlyState(child, depth + 1)) return false;
+      if (!holdsOnlyState(child, depth + 1, leaves)) return false;
       continue;
     }
-    if (!isFrozenState(child, depth + 1)) return false;
+    if (!isFrozenState(child, depth + 1, leaves)) return false;
   }
   frozenState.add(value);
   return true;
@@ -430,7 +475,12 @@ export class StateContext {
    * first seen. Code may edit a revived hook payload or run input later; state
    * changes must still resolve to the strings that were stored.
    */
-  private sources = new Map<string, Map<string, string>>();
+  private sources = new Map<string, SourceNode>();
+  /**
+   * Where each indexed string is held, for writing references to it. At most
+   * {@link MAX_SOURCE_STRINGS}, and only strings longer than their reference:
+   * the rest are written as they are.
+   */
   private strings = new Map<string, SourceString>();
   /**
    * The context a step's output is written against (see `forStep`): its
@@ -794,21 +844,61 @@ export class StateContext {
   addSource(id: string, value: unknown): void {
     checkedId(id, 'state source id');
     if (this.sources.has(id)) return;
-    const captured = new Map<string, string>();
-    this.sources.set(id, captured);
-    const walk = (v: unknown, path: (string | number)[]) => {
-      if (path.length > MAX_PATH) return;
+    // The strings are kept in a tree of the payload's own keys, not by their
+    // whole path: a key is held once however many strings sit below it.
+    // Complete, so a reference any writer made still resolves: every path to
+    // a string within `MAX_PATH`, through an object held twice or a cycle
+    // too. An object reached again at a depth it was already read at gets the
+    // same subtree, so it is read once per depth and its subtree is shared:
+    // work and memory are linear in the payload (times `MAX_PATH` at worst).
+    const path: (string | number)[] = [];
+    const read = new Map<object, Map<number, SourceNode | undefined>>();
+    // Bytes `path` takes in a reference, to write one only when it is shorter
+    // than the string.
+    const idBytes = jsonLength(id);
+    const walk = (v: unknown, pathBytes: number): SourceNode | undefined => {
+      if (path.length > MAX_PATH) return undefined;
       if (typeof v === 'string') {
-        if (v.length < SOURCE_STRING_MIN) return;
-        captured.set(JSON.stringify(path), v);
-        if (!this.strings.has(v)) this.strings.set(v, { id, path });
-      } else if (Array.isArray(v)) {
-        for (let i = 0; i < v.length; i++) walk(v[i], [...path, i]);
-      } else if (isPlainObject(v)) {
-        for (const key of Object.keys(v)) walk(v[key], [...path, key]);
+        if (v.length < SOURCE_STRING_MIN) return undefined;
+        if (
+          idBytes + pathBytes < v.length &&
+          this.strings.size < MAX_SOURCE_STRINGS &&
+          !this.strings.has(v)
+        )
+          this.strings.set(v, { id, path: path.slice() });
+        return v;
       }
+      if (v === null || typeof v !== 'object') return undefined;
+      const depth = path.length;
+      let atDepth = read.get(v);
+      if (atDepth?.has(depth)) return atDepth.get(depth);
+      if (atDepth === undefined) {
+        atDepth = new Map();
+        read.set(v, atDepth);
+      }
+      let node: Map<string | number, SourceNode> | undefined;
+      const visit = (key: string | number, child: unknown) => {
+        path.push(key);
+        const found = walk(
+          child,
+          pathBytes +
+            1 +
+            (typeof key === 'number' ? String(key).length : jsonLength(key))
+        );
+        path.pop();
+        if (found === undefined) return;
+        node ??= new Map();
+        node.set(key, found);
+      };
+      if (Array.isArray(v)) {
+        for (let i = 0; i < v.length; i++) visit(i, v[i]);
+      } else if (isPlainObject(v)) {
+        for (const key of Object.keys(v)) visit(key, v[key]);
+      }
+      atDepth.set(depth, node);
+      return node;
     };
-    walk(value, []);
+    this.sources.set(id, walk(value, 2) ?? EMPTY_SOURCE);
   }
 
   private reviveSource(d: Dict): unknown {
@@ -847,7 +937,7 @@ export class StateContext {
         throw new WorkflowStateMissingError(
           `Missing workflow state source ${v.id}`
         );
-      const value = captured.get(JSON.stringify(v.path));
+      const value = sourceString(captured, v.path);
       if (value === undefined)
         throw new WorkflowStateMissingError(
           'Missing workflow state source field'
@@ -882,36 +972,56 @@ export class StateContext {
     return text;
   }
 
-  private holdsPlaceholder(value: unknown, depth = 0): boolean {
-    if (typeof value === 'string') return this.placeholders.has(value);
-    if (depth > 256 || value === null || typeof value !== 'object')
+  /**
+   * Whether a value holds a placeholder. Each object is read once (again only
+   * if reached nearer the top, where the depth limit cuts less), so a value
+   * that holds one object many times is not read once per path to it. Past
+   * {@link MAX_SCAN} objects it is taken to hold one: such a value is then
+   * not remembered, which inspection only needs to rebuild it again.
+   */
+  private holdsPlaceholder(value: unknown): boolean {
+    const seen = new Map<object, number>();
+    let budget = MAX_SCAN;
+    const scan = (v: unknown, depth: number): boolean => {
+      if (typeof v === 'string') return this.placeholders.has(v);
+      if (depth > MAX_DEPTH || v === null || typeof v !== 'object')
+        return false;
+      if ((seen.get(v) ?? Infinity) <= depth) return false;
+      seen.set(v, depth);
+      if (--budget < 0) return true;
+      for (const child of childrenOf(v))
+        if (scan(child, depth + 1)) return true;
       return false;
-    for (const child of childrenOf(value))
-      if (this.holdsPlaceholder(child, depth + 1)) return true;
-    return false;
+    };
+    return scan(value, 0);
   }
 
-  private assertKnownTypes(value: unknown, depth = 0): void {
+  private assertKnownTypes(value: unknown): void {
     if (this.allowPlaceholders) return;
-    if (depth > 256 || value === null || typeof value !== 'object') return;
-    if ((value as Dict)[OPAQUE as unknown as string] === true)
-      throw new Error(
-        'Workflow state holds a value that cannot be recovered without running workflow code'
-      );
-    // Placeholders can sit inside a Map or Set as well as an object.
-    const tag = Object.prototype.toString.call(value);
-    if (tag === '[object Map]')
-      Map.prototype.forEach.call(value, (entry: unknown, key: unknown) => {
-        this.assertKnownTypes(key, depth + 1);
-        this.assertKnownTypes(entry, depth + 1);
-      });
-    else if (tag === '[object Set]')
-      Set.prototype.forEach.call(value, (entry: unknown) =>
-        this.assertKnownTypes(entry, depth + 1)
-      );
-    else
-      for (const key of Object.keys(value))
-        this.assertKnownTypes((value as Dict)[key], depth + 1);
+    // Each object once, as in `holdsPlaceholder`.
+    const seen = new Map<object, number>();
+    const check = (v: unknown, depth: number): void => {
+      if (depth > MAX_DEPTH || v === null || typeof v !== 'object') return;
+      if ((seen.get(v) ?? Infinity) <= depth) return;
+      seen.set(v, depth);
+      if ((v as Dict)[OPAQUE as unknown as string] === true)
+        throw new Error(
+          'Workflow state holds a value that cannot be recovered without running workflow code'
+        );
+      // Placeholders can sit inside a Map or Set as well as an object.
+      const tag = Object.prototype.toString.call(v);
+      if (tag === '[object Map]')
+        Map.prototype.forEach.call(v, (entry: unknown, key: unknown) => {
+          check(key, depth + 1);
+          check(entry, depth + 1);
+        });
+      else if (tag === '[object Set]')
+        Set.prototype.forEach.call(v, (entry: unknown) =>
+          check(entry, depth + 1)
+        );
+      else for (const key of Object.keys(v)) check((v as Dict)[key], depth + 1);
+    };
+    check(value, 0);
   }
 
   /**

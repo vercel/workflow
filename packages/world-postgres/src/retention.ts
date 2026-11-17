@@ -1,5 +1,6 @@
+import { debugLog } from '@workflow/utils';
 import { readRunRetention } from '@workflow/world';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { type DrizzleHandle, Schema } from './drizzle/index.js';
 
 /**
@@ -49,10 +50,14 @@ const NULL = sql`NULL`;
  * keeps both behaviors intact.
  *
  * Bounded by the transaction's snapshot: a chunk or event written concurrently
- * by a writer that has not yet committed is neither cleared here nor covered
- * by anything that retries. In practice nothing writes to a finished run — the
- * terminal transition rejects further writes — and the same bound exists in
- * the Vercel World.
+ * by a writer that has not yet committed is not cleared here. The writes a
+ * finished run still takes are covered where they are made: a step still
+ * running when the run finished (a `Promise.race` loser) settles with
+ * `scrubStepWriteIfRunPurged` after its write, and a stream chunk is not
+ * written to a purged run at all (see the streamer). Both take the run's row
+ * lock to read `expired_at`, so they wait for a purge in progress, and a purge
+ * waits for them. That depends on the purge updating the run row first,
+ * before any row it clears: keep that statement first.
  */
 export async function purgeRunUserData(
   drizzle: DrizzleHandle,
@@ -62,6 +67,8 @@ export async function purgeRunUserData(
   const { runs, steps, events, hooks, streams, invocations } = Schema;
 
   await drizzle.transaction(async (tx) => {
+    // First: it takes the run's row lock the late-write guards wait on (see
+    // above), so nothing they let through can commit behind the clears below.
     await tx
       .update(runs)
       .set({
@@ -167,6 +174,63 @@ export async function purgeRunUserDataIfZeroRetention(
   } catch (cause) {
     console.error(
       `[workflow] failed to purge user data for zero-retention run "${runId}"`,
+      cause
+    );
+  }
+}
+
+/**
+ * After a step event commits on a run: if the run's data was purged, clears
+ * what the event wrote. A step still running when its zero-retention run
+ * finished (a `Promise.race` loser, or one on another delivery) settles after
+ * the purge, and step events are not refused on a finished run.
+ *
+ * Reads `expired_at` under the run's row lock, so a purge that has updated
+ * the run but not committed is waited for. A purge that has not reached the
+ * run yet sees the committed write and clears it itself.
+ */
+export async function scrubStepWriteIfRunPurged(
+  drizzle: DrizzleHandle,
+  runId: string,
+  stepId: string,
+  eventType: string,
+  eventId: string | undefined
+): Promise<void> {
+  const { runs, steps, events } = Schema;
+  try {
+    const [run] = await drizzle
+      .select({ expiredAt: runs.expiredAt })
+      .from(runs)
+      .where(eq(runs.runId, runId))
+      .for('share');
+    if (!run?.expiredAt) return;
+    await drizzle.transaction(async (tx) => {
+      await tx
+        .update(steps)
+        .set({
+          input: NULL,
+          inputJson: NULL,
+          output: NULL,
+          outputJson: NULL,
+          error: NULL,
+          errorJson: NULL,
+        })
+        .where(and(eq(steps.runId, runId), eq(steps.stepId, stepId)));
+      if (eventId !== undefined)
+        await tx
+          .update(events)
+          .set({ eventData: NULL, eventDataJson: NULL })
+          .where(and(eq(events.runId, runId), eq(events.eventId, eventId)));
+    });
+    debugLog(
+      `[world-postgres] cleared a ${eventType} written after zero-retention run "${runId}" was purged`
+    );
+  } catch (cause) {
+    // The step's write has committed: failing it now would only make the
+    // caller retry a write that is done. As for the purge itself, the run
+    // keeps data it asked to have deleted, and that is logged.
+    console.error(
+      `[workflow] failed to clear a late step write on zero-retention run "${runId}"`,
       cause
     );
   }

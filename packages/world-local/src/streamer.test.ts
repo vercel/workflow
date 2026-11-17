@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { databaseFor } from './db/index.js';
+import { Database, databaseFor } from './db/index.js';
 import { createStreamer } from './streamer.js';
 
 const TEST_RUN_ID = 'wrun_test12345678901234';
@@ -693,6 +693,54 @@ describe('streamer', () => {
       expect(live.received).toEqual(['data']);
       expect(intervals.open()).toBe(0);
       expect(signalListeners()).toBe(listenersBefore);
+    });
+
+    it('reads a long backlog a bounded batch at a time, as the consumer asks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'backlog';
+      const chunk = new Uint8Array(1024);
+      for (let i = 0; i < 4; i++)
+        await streamer.streams.writeMulti(
+          TEST_RUN_ID,
+          streamName,
+          Array.from({ length: 500 }, () => chunk)
+        );
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const batches: number[] = [];
+      const all = Database.prototype.all;
+      const spy = vi
+        .spyOn(Database.prototype, 'all')
+        .mockImplementation(function (this: Database, sql, ...params) {
+          const rows = all.call(this, sql, ...params);
+          if (sql.includes('FROM stream_chunks WHERE name = ? AND idx > ?'))
+            batches.push(rows.length);
+          return rows as never;
+        });
+      onTestFinished(() => spy.mockRestore());
+
+      const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+      // Opening the reader reads at most one batch.
+      await settle();
+      expect(batches.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(16);
+      const reader = stream.getReader();
+      for (let i = 0; i < 40; i++)
+        expect((await reader.read()).done).toBe(false);
+      await settle();
+      // What was read is what the consumer took, plus one batch at most.
+      expect(Math.max(...batches)).toBeLessThanOrEqual(16);
+      expect(batches.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(40 + 16);
+      await reader.cancel();
+      const afterCancel = batches.length;
+      await settle();
+      expect(batches.length).toBe(afterCancel);
+
+      // Read to the end, every chunk arrives in order.
+      spy.mockRestore();
+      const chunks = await readAll(
+        await streamer.streams.get(TEST_RUN_ID, streamName)
+      );
+      expect(chunks).toHaveLength(2000);
     });
 
     it('reads only the stream asked for, however busy the others are', async () => {
