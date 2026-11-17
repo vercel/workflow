@@ -18,6 +18,7 @@ Experimental. Runs must be created at spec version 10 ([`WORKFLOW_SPEC_VERSION=1
 
 ```typescript lineNumbers
 import { experimental_rateLimit } from "workflow"
+declare function callModel(doc: string): Promise<void>; // @setup
 
 export async function summarize(docs: string[]) {
   "use workflow"
@@ -53,6 +54,7 @@ showSections={['parameters']}
 ```typescript lineNumbers
 import { experimental_rateLimit } from "workflow"
 import { RateLimitTimeoutError } from "workflow/errors"
+declare function sendSms(userId: string): Promise<void>; // @setup
 
 export async function notify(userId: string) {
   "use workflow"

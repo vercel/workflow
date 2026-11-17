@@ -4,6 +4,7 @@ import {
   EncryptionKeyLookupError,
   FatalError,
   HookConflictError,
+  RateLimitTimeoutError,
   RetryableError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
@@ -4850,6 +4851,17 @@ describe('Workflow error serialization', () => {
     expect(hydrated.stage).toBe('admission');
     expect(hydrated.message).toBe(error.message);
     expect((hydrated.cause as Error).message).toBe('gateway timed out');
+  });
+
+  it('should round-trip RateLimitTimeoutError preserving the key and slot', async () => {
+    const wouldAcquireAt = new Date('2026-01-01T00:05:00.000Z');
+    const error = new RateLimitTimeoutError('openai', wouldAcquireAt);
+    const hydrated = (await roundTrip(error)) as RateLimitTimeoutError;
+    expect(hydrated).toBeInstanceOf(RateLimitTimeoutError);
+    expect(RateLimitTimeoutError.is(hydrated)).toBe(true);
+    expect(hydrated.key).toBe('openai');
+    expect(hydrated.wouldAcquireAt).toEqual(wouldAcquireAt);
+    expect(hydrated.message).toBe(error.message);
   });
 
   it('should serialize WorkflowStartError using its dedicated reducer key', async () => {

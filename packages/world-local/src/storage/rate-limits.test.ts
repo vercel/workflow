@@ -19,7 +19,7 @@ import {
   SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorage } from '../storage.js';
 
 let testDir: string;
@@ -31,6 +31,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await fs.rm(testDir, { recursive: true, force: true });
 });
 
@@ -150,11 +151,12 @@ describe('rate limits on the Local World', () => {
   });
 
   it('accepts rate_acquired once, after acquireAt, for its own rate_created', async () => {
+    // The World's clock, held still between the writes and then moved past
+    // the slot, so a slow machine cannot turn the wait into a grant.
+    vi.useFakeTimers({ toFake: ['Date'] });
     const runId = await createRun();
-    // Ten per second: the second call waits 100ms.
-    const fast = { limit: 10, periodMs: 1_000 };
-    committed(await inBand(runId, rateCreated(fast)));
-    const waiting = committed(await inBand(runId, rateCreated(fast)));
+    committed(await inBand(runId, rateCreated()));
+    const waiting = committed(await inBand(runId, rateCreated()));
     if (waiting.eventType !== 'rate_created') throw new Error('not waiting');
     const createdSlot = eventIdToSlot(waiting.eventId) as number;
     const acquired = {
@@ -172,12 +174,7 @@ describe('rate limits on the Local World', () => {
       inBand(runId, { ...acquired, eventData: { createdSlot: 1 } })
     ).rejects.toThrow(EntityConflictError);
 
-    await new Promise((resolve) =>
-      setTimeout(
-        resolve,
-        waiting.eventData.acquireAt!.getTime() - Date.now() + 20
-      )
-    );
+    vi.setSystemTime(waiting.eventData.acquireAt!.getTime());
     const done = committed(await inBand(runId, acquired));
     expect(done.eventType).toBe('rate_acquired');
     if (done.eventType !== 'rate_acquired') return;
