@@ -11,7 +11,6 @@ import {
   hasEncryptedFields,
   hydrateResourceIO,
   hydrateResourceIOAsync,
-  hydrateResourceIOWithKey,
   isEncryptedMarker,
 } from '../src/lib/hydration.js';
 
@@ -211,7 +210,7 @@ describe('front hydration — encrypted compressed payloads', () => {
     expect(isEncryptedMarker(hydrated.error)).toBe(true);
     expect(hasEncryptedFields(hydrated)).toBe(true);
 
-    const decrypted = await hydrateResourceIOWithKey(hydrated, rawKey);
+    const decrypted = await hydrateResourceIOAsync(hydrated, rawKey);
     expect(decrypted.error).toBeInstanceOf(Error);
     expect((decrypted.error as Error).message).toBe(original.message);
   });
@@ -268,7 +267,7 @@ describe('front hydration — encrypted compressed payloads', () => {
     expect(isEncryptedMarker(hydrated.eventData.input)).toBe(true);
     expect(hasEncryptedFields(hydrated)).toBe(true);
 
-    const decrypted = await hydrateResourceIOWithKey(hydrated, rawKey);
+    const decrypted = await hydrateResourceIOAsync(hydrated, rawKey);
     expect(decrypted.eventData.input).toEqual(input);
   });
 });

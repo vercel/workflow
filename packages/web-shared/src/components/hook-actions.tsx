@@ -165,4 +165,3 @@ export function HookResolveModalWrapper({
 }
 
 // Re-export the modal for direct use
-export { ResolveHookModal } from './sidebar/resolve-hook-modal';

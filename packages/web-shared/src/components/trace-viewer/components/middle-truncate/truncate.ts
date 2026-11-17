@@ -128,5 +128,4 @@ function middleTruncate(
   return buildCandidate(graphemes, best);
 }
 
-export { middleTruncate, toGraphemes, ELLIPSIS, MIN_START, MIN_END };
-export type { MeasureFn, TruncateResult };
+export { middleTruncate, toGraphemes, ELLIPSIS };
