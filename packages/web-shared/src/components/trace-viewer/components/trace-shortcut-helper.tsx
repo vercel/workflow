@@ -105,11 +105,11 @@ export function TraceShortcutHelper({
       </span>
       <button
         type="button"
-        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none"
+        className="inline-flex size-5 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 text-gray-900 opacity-0 transition-opacity hover:bg-gray-alpha-200 hover:text-gray-1000 focus-visible:opacity-100 focus-visible:shadow-[var(--ds-focus-ring)] focus-visible:outline-none group-hover:opacity-100 motion-reduce:transition-none"
         onClick={dismiss}
         aria-label="Dismiss trace shortcuts helper"
       >
-        <X className="h-3 w-3" />
+        <X className="size-3" aria-hidden />
       </button>
     </div>
   );

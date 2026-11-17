@@ -5,7 +5,15 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useContext, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useContext,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { cn } from '../../lib/cn';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
@@ -34,48 +42,9 @@ import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
 /**
- * Tab button for conversation/JSON toggle
- */
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      tabIndex={active ? 0 : -1}
-      onClick={onClick}
-      className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
-      style={{
-        // Explicit styles to prevent app-level button overrides when web-shared
-        // is embedded in a self-hosted app.
-        backgroundColor: 'transparent',
-        borderTop: 'none',
-        borderLeft: 'none',
-        borderRight: 'none',
-        borderBottom: `2px solid ${active ? 'var(--ds-blue-600)' : 'transparent'}`,
-        borderRadius: 0,
-        outline: 'none',
-        boxShadow: 'none',
-        cursor: 'pointer',
-        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-/**
- * Shared tabbed container with accessible ARIA roles and keyboard navigation.
- * Used by ConversationWithTabs for the conversation/JSON toggle.
+ * Shared tabbed container with accessible ARIA roles and keyboard navigation
+ * (arrow keys move both the selection and focus). Used by
+ * ConversationWithTabs for the conversation/JSON toggle.
  */
 function TabbedContainer<T extends string>({
   tabs,
@@ -90,6 +59,10 @@ function TabbedContainer<T extends string>({
   ariaLabel: string;
   children: ReactNode;
 }) {
+  const baseId = useId();
+  const tabId = (id: T) => `${baseId}-tab-${id}`;
+  const panelId = `${baseId}-panel`;
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
@@ -100,40 +73,50 @@ function TabbedContainer<T extends string>({
           ? (currentIndex + 1) % tabs.length
           : (currentIndex - 1 + tabs.length) % tabs.length;
       onTabChange(tabs[nextIndex].id);
+      event.currentTarget
+        .querySelectorAll<HTMLButtonElement>('[role="tab"]')
+        [nextIndex]?.focus();
     },
     [tabs, activeTab, onTabChange]
   );
 
   return (
-    <div
-      className="rounded-md border"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'transparent',
-      }}
-    >
+    <div className="rounded-md border border-gray-alpha-400">
       <div
-        className="flex gap-1 border-b"
+        className="flex gap-4 border-b border-gray-alpha-400 px-3"
         role="tablist"
         aria-label={ariaLabel}
         onKeyDown={handleKeyDown}
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'transparent',
-        }}
       >
-        {tabs.map((tab) => (
-          <TabButton
-            key={tab.id}
-            active={activeTab === tab.id}
-            onClick={() => onTabChange(tab.id)}
-          >
-            {tab.label}
-          </TabButton>
-        ))}
+        {tabs.map((tab) => {
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              id={tabId(tab.id)}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls={panelId}
+              tabIndex={active ? 0 : -1}
+              onClick={() => onTabChange(tab.id)}
+              className={cn(
+                '-mb-px cursor-pointer rounded-none border-0 border-b-2 border-solid bg-transparent px-0.5 py-2 text-label-13 outline-none transition-colors duration-150',
+                'focus-visible:rounded-sm focus-visible:shadow-[var(--ds-focus-ring)]',
+                active
+                  ? 'border-gray-1000 text-gray-1000'
+                  : 'border-transparent text-gray-900 hover:text-gray-1000'
+              )}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
-      <div role="tabpanel">{children}</div>
+      <div role="tabpanel" id={panelId} aria-labelledby={tabId(activeTab)}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -534,7 +517,7 @@ const attributeToDisplayFn: Record<
                 </Collapsible>
               )}
               {hasThisVal && (
-                <Collapsible label="This Value">
+                <Collapsible label="Context">
                   <CopyableDataBlock data={thisVal} />
                 </Collapsible>
               )}

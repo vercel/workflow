@@ -498,7 +498,7 @@ function TraceViewerContent({
           scrollContainerRef={scrollContainerRef}
           startHeader={
             <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
-              <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
+              <Search className="size-3.5 shrink-0 text-gray-700" aria-hidden />
               <input
                 id="trace-viewer-search"
                 name="trace-viewer-search"
@@ -512,9 +512,9 @@ function TraceViewerContent({
                     setSearchQuery('');
                   }
                 }}
-                placeholder="Search spans..."
+                placeholder="Search spans…"
                 aria-label="Search spans"
-                className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none"
+                className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-700 outline-none"
               />
               {searchQuery && (
                 <button
@@ -543,7 +543,7 @@ function TraceViewerContent({
             />
             <div ref={loadMoreSentinelRef} className="flex justify-center">
               {isLoadingMore ? (
-                <div className="flex items-center justify-center gap-2 py-3 text-label-14 text-gray-800">
+                <div className="flex items-center justify-center gap-2 py-3 text-label-14 text-gray-900">
                   <Spinner size={14} />
                   <span>Loading spans…</span>
                 </div>

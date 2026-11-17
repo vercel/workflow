@@ -662,7 +662,7 @@ export function TimelineHeader({
         ))}
         {hoverInfo && (
           <span
-            className="absolute top-1 pointer-events-none z-10 font-mono text-[11px] leading-4 text-gray-1000 whitespace-nowrap bg-background-100 border border-gray-alpha-400 rounded px-1 -translate-x-1/2"
+            className="pointer-events-none absolute top-1 z-10 -translate-x-1/2 whitespace-nowrap rounded-sm border border-gray-alpha-400 bg-background-100 px-1 text-label-12-mono text-gray-1000"
             style={{ left: `${hoverInfo.fraction * 100}%` }}
           >
             {hoverInfo.label}

@@ -13,7 +13,7 @@ export function EventListToolbar({
 }) {
   return (
     <div className="flex h-10 min-h-10 shrink-0 items-center gap-1.5 border-b border-gray-alpha-400 bg-background-100 pl-[34px] pr-2">
-      <Search className="h-3.5 w-3.5 shrink-0 text-gray-800" />
+      <Search className="size-3.5 shrink-0 text-gray-700" aria-hidden />
       <input
         type="text"
         name="event-list-search"
@@ -28,7 +28,7 @@ export function EventListToolbar({
             onQueryChange('');
           }
         }}
-        className="min-w-0 flex-1 bg-transparent text-label-14 text-gray-1000 outline-none placeholder:text-gray-800"
+        className="min-w-0 flex-1 bg-transparent text-label-14 text-gray-1000 outline-none placeholder:text-gray-700"
       />
       {query ? (
         <button

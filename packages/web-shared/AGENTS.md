@@ -32,3 +32,15 @@ Use the same tokens as the Vercel dashboard:
 | Text on an inverted surface (tooltip, selection bar) | inherit the surface's foreground. Don't add `text-foreground` / `text-muted-foreground`, which are meant for the light surface |
 
 Content inside the shared `Tooltip` renders on a `gray-1000` pill with `background-100` text. Use the standard single tooltip: plain content in one colour, with no colour or text-size overrides.
+
+## Reuse the shared primitives
+
+Build controls from the components in `src/components/ui/` instead of restyling raw elements:
+
+- Buttons use `Button` or `IconButton`. Copying uses `CopyButton`, decryption uses `DecryptButton`, and pending states use `Spinner`.
+- Overlays use the Radix primitives this package already depends on (dialog, dropdown menu, tooltip), so focus trapping, keyboard support and focus return come for free.
+- Don't inject a `<style>` tag per component instance. Put utilities in class names. If a component must ship its own keyframes for hosts that don't load `styles.css`, use React's deduped `<style href="…" precedence="default">`.
+- Use the type-scale utilities (`text-label-*`, `text-copy-*`, `text-heading-*`), not `text-xs`/`text-sm` or arbitrary pixel sizes, and nothing below 12px outside the dense timeline.
+- Use a `Tooltip` rather than a native `title` for explanations, such as why a control is disabled.
+
+Copy follows the dashboard: Title Case for buttons, labels, tabs and titles; sentence case for descriptions, errors, toasts and tooltips; `…` rather than `...`. Errors start with "Couldn’t…" for user-fixable problems and "Failed to…" for system failures, and avoid "Unable to" and "An error occurred".
