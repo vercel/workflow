@@ -2,21 +2,25 @@
 
 These rules apply to `packages/web-shared` and `packages/web` (which consumes it).
 
+## Design tokens live in one place
+
+The design tokens are defined once, in `src/styles.css`. Don't tweak individual values, and don't redeclare the tokens anywhere else, including for `prefers-color-scheme`. The tokens flip with the theme class, so don't add `dark:` overrides for colours that already do.
+
 ## Never use opacity to set a text colour
 
-Text colour always comes from a Geist token or the surface's inherited foreground. Don't make text lighter by fading it:
+Text colour always comes from a design token or the surface's inherited foreground. Don't make text lighter by fading it:
 
 - no `opacity-*` on an element to mute its text (`<span className="opacity-60">`)
 - no text-colour alpha modifiers (`text-muted-foreground/70`, `text-foreground/50`)
 - no inline or CSS `color` with alpha (`rgba(…, 0.8)`)
 
-A faded text colour depends on whatever is underneath it, so it becomes unreadable on another surface: the inverted tooltip pill, dark mode, or a coloured row. Geist tokens are defined for both themes.
+A faded text colour depends on whatever is underneath it, so it becomes unreadable on another surface: the inverted tooltip pill, dark mode, or a coloured row. The tokens are defined for both themes.
 
 Opacity is fine for anything else, such as disabled controls, overlays, fades and animations, or dimming a whole row.
 
 ### Follow the dashboard's patterns
 
-Use the same tokens as the dashboard in `vercel/front` (`apps/vercel-site`):
+Use the same tokens as the Vercel dashboard:
 
 | Need | Use |
 | --- | --- |
