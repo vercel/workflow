@@ -13,7 +13,7 @@ import {
   XCircle,
   Zap,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import {
   DropdownMenu,
@@ -497,46 +497,4 @@ export function RunActionsButtons({
       </DropdownMenu>
     </>
   );
-}
-
-// ============================================================================
-// Hook for lazy loading events (alternative approach)
-// ============================================================================
-
-export function useLazyEvents(
-  fetchEvents: () => Promise<Event[]>,
-  enabled: boolean
-) {
-  const [events, setEvents] = useState<Event[] | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
-  const [hasFetched, setHasFetched] = useState(false);
-
-  useEffect(() => {
-    if (!enabled || hasFetched) return;
-
-    let cancelled = false;
-    setLoading(true);
-
-    fetchEvents()
-      .then((result) => {
-        if (!cancelled) {
-          setEvents(result);
-          setHasFetched(true);
-        }
-      })
-      .catch((err) => {
-        console.error('Failed to fetch events:', err);
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, hasFetched, fetchEvents]);
-
-  return { events, loading };
 }
