@@ -324,17 +324,7 @@ and its token can be reused. If the token is never reused, the expired
 
 ## Kubernetes
 
-With [`deploymentId`](#environment-variables) set to the image tag, runs stay on the version that started them. Older versions then need workers until their runs finish. `chart/` is a Helm chart that deploys this, and `@workflow/world-postgres/kubernetes` exports the pieces it relies on:
-
-| Export | Purpose |
-| --- | --- |
-| `getDeploymentBacklog`, `listActiveDeployments` | A pinned deployment's unfinished runs and due jobs; every deployment with unfinished runs |
-| `createBacklogEndpoints` | `GET <base>/backlog/<version>` and `GET <base>/versions`, for KEDA's `metrics-api` trigger and the prune job |
-| `pruneWorkers`, `pruneWorkersInCluster`, `planPrune` | Delete drained versions' workers, restore missing ones |
-| `kubectlApi`, `inClusterApi` | The few Kubernetes API calls pruning makes, through `kubectl` or a pod's service account |
-| `createLifecycle`, `resolveWorkflowRole` | Drain on SIGTERM, liveness and readiness probes, and the `WORKFLOW_ROLE` a chart pod runs as |
-
-The `workflow-postgres-prune` binary runs pruning from a deploy pipeline (with `--context`), or in a cluster (with `--in-cluster`). See [`chart/README.md`](./chart/README.md) for the application entrypoint, migrations, and how long old versions run.
+World postgres comes with optional kubernetes support. See `chart/README.md`](./chart/README.md) for more information.
 
 ## Features
 
