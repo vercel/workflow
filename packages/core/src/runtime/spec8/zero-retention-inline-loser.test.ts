@@ -1,9 +1,9 @@
 /**
- * A run started with `experimental_retention: 0` has its data deleted when
- * its terminal event is written. An inline step still running then (the
- * loser of a step-only `Promise.race`, which early advance lets the run
- * finish without) must settle before that write: its output, written after
- * the deletion, would be kept.
+ * A `Promise.race` loser still running when the run ends (early advance lets
+ * the run finish without it) must not hold up the run's end, whatever its
+ * retention: `Promise.race([oneMinuteStep(), thirtyMinuteStep()])` ends after
+ * one minute. For an `experimental_retention: 0` run, what the loser writes
+ * after the purge is discarded by the World.
  */
 import {
   type Event,
@@ -179,18 +179,24 @@ describe('a Promise.race loser still running when the run ends', () => {
     expect(run.loserCompleted()).toBe(true);
   });
 
-  it('settles before the end of a zero-retention run, so nothing is written after its data goes', async () => {
+  // Regression: a zero-retention run must end when its race is decided, as a
+  // default run does. Holding `run_completed` until the loser settles makes
+  // `Promise.race([oneMinuteStep(), thirtyMinuteStep()])` take 30 minutes
+  // (and, past the function's lifetime, re-runs the loser on redelivery).
+  // Late writes after the purge are the World's to discard, not a reason to
+  // delay the run's end.
+  it('does not hold up the end of a zero-retention run either', async () => {
     const run = await raceRun({ [RETENTION_ATTRIBUTE]: '0' });
-    await vi.waitFor(() =>
-      expect(run.types().some((type) => type === 'step_completed')).toBe(true)
-    );
-    // The winner is in; the run waits for the loser before it ends.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(run.types()).not.toContain('run_completed');
-    releaseLoser();
-    await run.delivery;
-    const types = run.types();
+    try {
+      await vi.waitFor(() => expect(run.types()).toContain('run_completed'), {
+        timeout: 2_000,
+      });
+      expect(run.loserCompleted()).toBe(false);
+    } finally {
+      releaseLoser();
+      await run.delivery;
+    }
+    // Its body still finishes before the delivery returns.
     expect(run.loserCompleted()).toBe(true);
-    expect(types.at(-1)).toBe('run_completed');
   });
 });
