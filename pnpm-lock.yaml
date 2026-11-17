@@ -1148,9 +1148,6 @@ importers:
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
-      clsx:
-        specifier: 2.1.1
-        version: 2.1.1
       cross-env:
         specifier: ^7.0.3
         version: 7.0.3
@@ -1187,9 +1184,6 @@ importers:
       swr:
         specifier: ^2.5.1
         version: 2.5.1(react@19.3.1)
-      tailwind-merge:
-        specifier: 3.5.0
-        version: 3.5.0
       tailwindcss:
         specifier: '4'
         version: 4.3.5
