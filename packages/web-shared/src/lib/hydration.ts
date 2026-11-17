@@ -25,16 +25,13 @@ export {
   ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   isClassInstanceRef,
-  isEncryptedData,
   isRunRef,
   isStreamId,
   isStreamRef,
   type Revivers,
-  RUN_REF_TYPE,
   type RunRef,
   STREAM_REF_TYPE,
   type StreamRef,
-  serializedInstanceToRef,
   truncateId,
 } from '@workflow/core/serialization-format';
 
@@ -179,7 +176,7 @@ export function getWebRevivers(): Revivers {
     // doesn't need `instanceof FatalError` to pass (no user code runs
     // here). The web o11y UI needs `name`, `message`, `stack`, and any extra
     // enumerable fields to render. Construct a plain `Error` with `name`
-    // set; ObjectInspector reads `constructor.name` for the displayed
+    // set; DataInspector reads `constructor.name` for the displayed
     // class label, but we don't have the real class, so we emit a tagged
     // Error whose `name` field carries the class identity. This matches
     // how the existing base `Error` reviver presents unknown subclasses.
@@ -410,8 +407,8 @@ export const ENCRYPTED_DISPLAY_NAME = 'Encrypted';
  * Create a display-friendly object for encrypted data.
  *
  * Uses the same named-constructor trick as the Instance reviver so that
- * ObjectInspector renders the constructor name ("🔒 Encrypted") with no
- * expandable children. The original encrypted bytes are stored in a
+ * DataInspector recognizes it by constructor name (see `isEncryptedMarker`)
+ * and renders it as a leaf. The original encrypted bytes are stored in a
  * non-enumerable property for later decryption.
  */
 function createEncryptedMarker(data: Uint8Array): object {
@@ -421,7 +418,7 @@ function createEncryptedMarker(data: Uint8Array): object {
   ]!;
   const obj = Object.create(ctor.prototype);
   // Store original bytes for decryption, but non-enumerable so
-  // ObjectInspector doesn't show them as children
+  // DataInspector doesn't list them as entries
   Object.defineProperty(obj, '__encryptedData', {
     value: data,
     enumerable: false,
@@ -443,14 +440,14 @@ export function isEncryptedMarker(value: unknown): boolean {
 // Expired data display markers
 // ---------------------------------------------------------------------------
 
-export const EXPIRED_DISPLAY_NAME = 'Expired Data';
+const EXPIRED_DISPLAY_NAME = 'Expired Data';
 
 /**
  * Create a display-friendly object for expired data.
  *
  * Uses the same named-constructor trick as the encrypted marker so that
- * ObjectInspector renders the constructor name ("Expired Data") with no
- * expandable children.
+ * DataInspector shows the constructor name ("Expired Data") with no
+ * entries.
  */
 function createExpiredMarker(): object {
   // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
@@ -517,23 +514,6 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
   }
 
   return result as T;
-}
-
-/**
- * Hydrate resource data with decryption support.
- *
- * When a key is provided, encrypted fields are decrypted before hydration.
- * This is the async version used when the user clicks "Decrypt" in the web UI.
- *
- * Handles both top-level fields (input, output, metadata) and nested eventData
- * payload fields for that event type.
- */
-export async function hydrateResourceIOWithKey<T>(
-  resource: T,
-  key: Uint8Array,
-  extraRevivers?: Revivers
-): Promise<T> {
-  return hydrateResourceIOAsync(resource, key, extraRevivers);
 }
 
 /**
@@ -611,6 +591,16 @@ export async function hydrateResourceIOAsync<T>(
 
   return replaceEncryptedAndExpiredWithMarkers(result as T);
 }
+
+/**
+ * @deprecated Use {@link hydrateResourceIOAsync}, which takes the same
+ * arguments. Kept as an alias for existing consumers.
+ */
+export const hydrateResourceIOWithKey: <T>(
+  resource: T,
+  key: Uint8Array,
+  extraRevivers?: Revivers
+) => Promise<T> = hydrateResourceIOAsync;
 
 /**
  * Check whether a hydrated resource (event, step, run, etc.) contains any

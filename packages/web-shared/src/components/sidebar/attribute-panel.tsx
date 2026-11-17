@@ -191,8 +191,7 @@ function ConversationWithTabs({
 }
 
 /**
- * Render a value with the shared DataInspector (ObjectInspector with
- * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
+ * Placeholder for a field whose data is still encrypted.
  */
 function EncryptedFieldBlock() {
   return <EncryptedDataBlock />;
@@ -789,7 +788,7 @@ const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
   dynamicWorkflowCode: 'Workflow Code',
 };
 
-export const AttributeBlock = ({
+const AttributeBlock = ({
   attribute,
   value,
   isLoading,
