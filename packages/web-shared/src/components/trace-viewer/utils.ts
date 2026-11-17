@@ -1,10 +1,7 @@
 import { isRunCreationEvent } from '@workflow/world';
+import { highResTimeToMs } from '../../lib/time';
+import { formatDuration, formatDurationPrecise } from '../../lib/utils';
 import type { Span, SpanEvent } from './types';
-import {
-  formatDuration,
-  formatDurationPrecise,
-  getHighResInMs,
-} from './util/timing';
 
 // ---------------------------------------------------------------------------
 // Root bounds
@@ -21,8 +18,8 @@ export function computeRootBounds(spans: Span[]): RootBounds {
   let maxEnd = Number.NEGATIVE_INFINITY;
 
   for (const span of spans) {
-    const s = getHighResInMs(span.startTime);
-    const e = getHighResInMs(span.endTime);
+    const s = highResTimeToMs(span.startTime);
+    const e = highResTimeToMs(span.endTime);
     if (s < minStart) minStart = s;
     if (e > maxEnd) maxEnd = e;
   }
@@ -38,7 +35,7 @@ export function computeRootBounds(spans: Span[]): RootBounds {
 export function getSpanDurationMs(span: Span): number {
   return Math.max(
     0,
-    getHighResInMs(span.endTime) - getHighResInMs(span.startTime)
+    highResTimeToMs(span.endTime) - highResTimeToMs(span.startTime)
   );
 }
 
@@ -196,8 +193,8 @@ export function computeSpanGaps(
 
   const gaps: SpanGap[] = [];
   for (let i = 0; i < spans.length - 1; i++) {
-    const endTime = getHighResInMs(spans[i].endTime);
-    const startTime = getHighResInMs(spans[i + 1].startTime);
+    const endTime = highResTimeToMs(spans[i].endTime);
+    const startTime = highResTimeToMs(spans[i + 1].startTime);
     const gapMs = startTime - endTime;
     if (gapMs <= 0) continue;
 
@@ -248,11 +245,11 @@ export function computeSpanDelta(
   const range = viewEnd - viewStart;
   if (range <= 0) return null;
 
-  const anchorStart = getHighResInMs(anchor.startTime);
-  const hoveredStart = getHighResInMs(hovered.startTime);
+  const anchorStart = highResTimeToMs(anchor.startTime);
+  const hoveredStart = highResTimeToMs(hovered.startTime);
   const anchorIsEarlier = anchorStart <= hoveredStart;
   const earlierStart = anchorIsEarlier ? anchorStart : hoveredStart;
-  const earlierEnd = getHighResInMs(
+  const earlierEnd = highResTimeToMs(
     anchorIsEarlier ? anchor.endTime : hovered.endTime
   );
   const laterStart = anchorIsEarlier ? hoveredStart : anchorStart;
@@ -270,7 +267,7 @@ export function computeSpanDelta(
   const originFrac = toViewportFrac(originMs, viewStart, range);
   const laterFrac = toViewportFrac(laterStart, viewStart, range);
 
-  const hoveredEnd = getHighResInMs(hovered.endTime);
+  const hoveredEnd = highResTimeToMs(hovered.endTime);
 
   return {
     deltaMs,
@@ -370,7 +367,7 @@ function sortedEventMarks(
 ): EventMark[] {
   return events
     .filter((e) => relevantNames.includes(e.name))
-    .map((e) => ({ time: getHighResInMs(e.timestamp), type: e.name }))
+    .map((e) => ({ time: highResTimeToMs(e.timestamp), type: e.name }))
     .sort((a, b) => a.time - b.time);
 }
 
@@ -516,7 +513,7 @@ function computeRunSegmentsFromSpan(
     .map((e) => ({
       name: e.name,
       eventId: e.attributes?.eventId,
-      time: getHighResInMs(e.timestamp),
+      time: highResTimeToMs(e.timestamp),
     }))
     .sort((a, b) => a.time - b.time);
 
@@ -596,10 +593,10 @@ function computeV1RunSegments(
  * Returns an empty array for generic (non-workflow) spans.
  */
 export function computeSpanSegments(span: Span): Segment[] {
-  const startMs = getHighResInMs(span.startTime);
+  const startMs = highResTimeToMs(span.startTime);
   const duration = getSpanDurationMs(span);
   const activeStartMs = span.activeStartTime
-    ? getHighResInMs(span.activeStartTime)
+    ? highResTimeToMs(span.activeStartTime)
     : undefined;
 
   switch (span.resource) {

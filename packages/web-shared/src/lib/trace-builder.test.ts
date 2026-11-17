@@ -1,6 +1,6 @@
 import type { Event, EventType, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
+import { highResTimeToMs } from './time';
 import { buildTrace, filterSpanRawEvents } from './trace-builder';
 
 const BASE_TIME = Date.parse('2026-01-01T00:00:00.000Z');
@@ -90,7 +90,7 @@ describe('buildTrace', () => {
     const stepSpan = trace.spans.find((span) => span.resource === 'step');
 
     expect(stepSpan).toBeDefined();
-    expect(otelTimeToMs(stepSpan?.endTime ?? [0, 0])).toBe(BASE_TIME + 4000);
+    expect(highResTimeToMs(stepSpan?.endTime ?? [0, 0])).toBe(BASE_TIME + 4000);
     expect(trace.knownDurationMs).toBe(4000);
   });
 
@@ -109,7 +109,9 @@ describe('buildTrace', () => {
     const trace = buildTrace(run, events, new Date(BASE_TIME + 30_000));
     const stepSpan = trace.spans.find((span) => span.resource === 'step');
 
-    expect(otelTimeToMs(stepSpan?.endTime ?? [0, 0])).toBe(BASE_TIME + 20_000);
+    expect(highResTimeToMs(stepSpan?.endTime ?? [0, 0])).toBe(
+      BASE_TIME + 20_000
+    );
     expect(trace.duplicateEventIds.size).toBe(0);
   });
 

@@ -1,9 +1,9 @@
 import type { Event, EventType, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { analyzeEvents } from './event-analysis';
 import { materializeHooks } from './event-materialization';
 import { findStartHookCreation } from './start-hook';
+import { highResTimeToMs } from './time';
 import { buildTrace } from './trace-builder';
 
 const RUN_ID = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -73,7 +73,7 @@ describe('start Hook', () => {
     const [hookSpan] = hookSpans;
     expect(hookSpan.spanId).toBe(START_HOOK_ID);
     expect(hookSpan.name).toBe(TOKEN);
-    expect(otelTimeToMs(hookSpan.startTime)).toBe(BASE_TIME);
+    expect(highResTimeToMs(hookSpan.startTime)).toBe(BASE_TIME);
     expect(hookSpan.events.map((spanEvent) => spanEvent.name)).toEqual([
       'hook_received',
       'hook_received',
@@ -117,7 +117,7 @@ describe('start Hook', () => {
     const trace = buildTrace(run, events, new Date(BASE_TIME + 61_000));
     const [hookSpan] = trace.spans.filter((span) => span.resource === 'hook');
 
-    expect(otelTimeToMs(hookSpan.endTime)).toBe(BASE_TIME + 10_000);
+    expect(highResTimeToMs(hookSpan.endTime)).toBe(BASE_TIME + 10_000);
   });
 
   it('recognizes a start Hook listed without event data by its id', () => {

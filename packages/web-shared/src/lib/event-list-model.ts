@@ -16,24 +16,18 @@ import { DUPLICATE_EVENT_MESSAGE } from './duplicate-events';
 import type { ExactWorkflowSearchId } from './exact-event-search-id';
 import { isEncryptedMarker } from './hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from './sealed-events';
+import { formatTime, parseDateValue } from './time';
 import { formatDurationPrecise } from './utils';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Time
 // ──────────────────────────────────────────────────────────────────────────
 
-export function parseEventDate(value: unknown): Date | null {
-  if (value == null) return null;
-
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 /** When the event happened: `occurredAt` when recorded, else `createdAt`. */
 export function getEffectiveEventDate(
   event: Pick<Event, 'createdAt' | 'occurredAt'>
 ): Date {
-  return parseEventDate(event.occurredAt) ?? new Date(event.createdAt);
+  return parseDateValue(event.occurredAt) ?? new Date(event.createdAt);
 }
 
 export function getEffectiveEventTime(
@@ -42,25 +36,9 @@ export function getEffectiveEventTime(
   return getEffectiveEventDate(event).getTime();
 }
 
-const pad = (n: number, width = 2) => n.toString().padStart(width, '0');
-
-/** Timestamp parts: dimmed `NOV 06`, clock, dimmed `.123`. */
-export function formatTimestampParts(date: Date): {
-  day: string;
-  clock: string;
-  ms: string;
-} {
-  const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase();
-  return {
-    day: `${month} ${pad(date.getDate())}`,
-    clock: `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
-    ms: `.${pad(date.getMilliseconds(), 3)}`,
-  };
-}
-
 function formatClock(value: unknown): string | null {
-  const date = parseEventDate(value);
-  return date ? formatTimestampParts(date).clock : null;
+  const date = parseDateValue(value);
+  return date ? formatTime(date) : null;
 }
 
 export function formatSinceStart(ms: number): string {
@@ -446,7 +424,7 @@ function getRunStartMs(
   events: readonly Event[],
   run: WorkflowRun | null
 ): number | undefined {
-  const created = parseEventDate(run?.createdAt);
+  const created = parseDateValue(run?.createdAt);
   if (created) return created.getTime();
   let min: number | undefined;
   for (const event of events) {

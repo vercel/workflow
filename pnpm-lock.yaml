@@ -1151,9 +1151,6 @@ importers:
       cross-env:
         specifier: ^7.0.3
         version: 7.0.3
-      date-fns:
-        specifier: 4.4.0
-        version: 4.4.0
       geist:
         specifier: ^1.9.2
         version: 1.9.2(next@16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))
@@ -1229,9 +1226,6 @@ importers:
       clsx:
         specifier: 2.1.1
         version: 2.1.1
-      date-fns:
-        specifier: 4.4.0
-        version: 4.4.0
       lucide-react:
         specifier: 0.575.0
         version: 0.575.0(react@19.3.1)

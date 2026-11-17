@@ -16,7 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { GitBranch, Loader2, RotateCw, Timer, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import { formatDuration } from '@workflow/web-shared';
+import { formatDuration, formatTimestamp } from '@workflow/web-shared';
 import { StatusBadge } from '~/components/display-utils/status-badge';
 import { Badge } from '~/components/ui/badge';
 import type {
@@ -797,7 +797,7 @@ function GraphNodeDetailPanel({
                     startedAt
                   </span>
                   <span className="text-[11px] font-mono">
-                    {new Date(latestExecution.startedAt).toLocaleString()}
+                    {formatTimestamp(new Date(latestExecution.startedAt))}
                   </span>
                 </div>
               )}
@@ -807,7 +807,7 @@ function GraphNodeDetailPanel({
                     completedAt
                   </span>
                   <span className="text-[11px] font-mono">
-                    {new Date(latestExecution.completedAt).toLocaleString()}
+                    {formatTimestamp(new Date(latestExecution.completedAt))}
                   </span>
                 </div>
               )}

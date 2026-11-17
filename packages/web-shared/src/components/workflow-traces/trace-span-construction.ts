@@ -10,6 +10,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import type { StartHookCreation } from '../../lib/start-hook';
+import { getEventTimestamp } from '../../lib/time';
 import type { Span, SpanEvent } from '../../lib/trace-types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
@@ -34,16 +35,6 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'wait_completed',
   'attr_set',
 ]);
-
-export const getEventTimestamp = (
-  event: Event | undefined
-): Date | undefined => {
-  const value = event?.occurredAt ?? event?.createdAt;
-  if (!value) return undefined;
-
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date;
-};
 
 /**
  * Convert workflow events to span events

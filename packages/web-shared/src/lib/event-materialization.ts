@@ -19,6 +19,7 @@ import {
 } from '@workflow/world';
 import { findDuplicateEventIds } from './duplicate-events';
 import { findStartHookCreation } from './start-hook';
+import { getEventTimestamp } from './time';
 
 // ---------------------------------------------------------------------------
 // Materialized entity types
@@ -88,14 +89,6 @@ function groupByCorrelationId(
     }
   }
   return groups;
-}
-
-function getEventTimestamp(event: Event | undefined): Date | undefined {
-  const value = event?.occurredAt ?? event?.createdAt;
-  if (!value) return undefined;
-
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 // ---------------------------------------------------------------------------

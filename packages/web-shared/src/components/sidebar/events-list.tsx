@@ -3,11 +3,13 @@
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
+import { getEffectiveEventDate } from '../../lib/event-list-model';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from '../../lib/sealed-events';
+import { formatTime, formatTimestamp, parseDateValue } from '../../lib/time';
 import {
   Collapsible,
   CollapsibleContent,
@@ -22,28 +24,6 @@ import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-
-const parseDateValue = (value: unknown): Date | null => {
-  if (value == null) return null;
-
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-
-const getEffectiveEventDate = (
-  event: Pick<Event, 'createdAt' | 'occurredAt'>
-): Date => parseDateValue(event.occurredAt) ?? new Date(event.createdAt);
-
-const formatEventTimestamp = (date: Date): string =>
-  date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    fractionalSecondDigits: 3,
-    timeZoneName: 'short',
-  });
 
 /**
  * A single event row that can lazy-load its eventData when expanded.
@@ -127,14 +107,7 @@ function EventItem({
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
     : getEffectiveEventDate(event);
-  const displayedCreatedAtTime = displayedCreatedAt.toLocaleTimeString(
-    undefined,
-    {
-      hour: 'numeric',
-      minute: 'numeric',
-      second: 'numeric',
-    }
-  );
+  const displayedCreatedAtTime = formatTime(displayedCreatedAt);
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
@@ -173,7 +146,7 @@ function EventItem({
               <span className="text-label-12 text-gray-900">Occurred</span>
               <TimestampTooltip date={occurredAt}>
                 <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-                  {formatEventTimestamp(occurredAt)}
+                  {formatTimestamp(occurredAt)}
                 </span>
               </TimestampTooltip>
             </div>
