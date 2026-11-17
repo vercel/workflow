@@ -249,9 +249,9 @@ export function formatRelativeTime(
 
 /**
  * Relative time in up to three units, e.g. "2 hours, 15 minutes, 30 seconds
- * ago", "in 3 days, 0 hours, 5 minutes" or "Just now". This is the Geist
- * relative time card's label, and like it is English only: the platform has no
- * locale-aware multi-unit relative format.
+ * ago", "in 3 days, 0 hours, 5 minutes" or "Just now". This is the label of
+ * the timestamp hover card (`RelativeTimeCard`). It is English only: the
+ * platform has no locale-aware multi-unit relative format.
  */
 export function formatRelativeTimeDetailed(
   date: Date,
