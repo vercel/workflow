@@ -10,6 +10,7 @@ import {
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
+import { getDecoratorOptions } from './decorator-options.js';
 
 export interface WorkflowTransformPluginOptions {
   /**
@@ -142,6 +143,7 @@ export function workflowTransformPlugin(
 
       // Resolve module specifier for packages (node_modules or workspace packages)
       const { moduleSpecifier } = resolveModuleSpecifier(id, workingDir);
+      const decoratorOptions = await getDecoratorOptions(workingDir);
 
       // Transform with SWC
       const result = await transform(code, {
@@ -157,6 +159,7 @@ export function workflowTransformPlugin(
                   syntax: 'ecmascript',
                   jsx: id.endsWith('.jsx'),
                 }),
+            decorators: decoratorOptions.decorators,
           },
           target: 'es2022',
           experimental: {
@@ -166,6 +169,8 @@ export function workflowTransformPlugin(
             react: {
               runtime: 'preserve',
             },
+            legacyDecorator: decoratorOptions.legacyDecorator,
+            decoratorMetadata: decoratorOptions.decoratorMetadata,
           },
         },
         minify: false,
