@@ -13,8 +13,8 @@ import {
   parseEventDate,
 } from '../../lib/event-list-model';
 import { formatDurationPrecise } from '../../lib/utils';
+import { EventTypeLabel } from '../event-details/event-type-label';
 import { ResourceIcon } from '../trace-viewer/components/event-list';
-import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 
@@ -256,14 +256,7 @@ export function EventRow({
           : ''}
       </div>
       <div className={cn(CELL, COL.event)}>
-        <EventNoticeTooltip notice={notice}>
-          <span
-            className={cn('truncate', notice && 'line-through')}
-            title={event.eventType}
-          >
-            {event.eventType}
-          </span>
-        </EventNoticeTooltip>
+        <EventTypeLabel eventType={event.eventType} notice={notice} />
       </div>
       <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
         <ResourceIcon
