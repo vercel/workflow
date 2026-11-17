@@ -6,12 +6,15 @@
   "main": "dist/index.js",
   "bin": {
     "bootstrap": "./bin/setup.js",
-    "workflow-postgres-setup": "./bin/setup-deprecated.js"
+    "workflow-postgres-setup": "./bin/setup-deprecated.js",
+    "workflow-postgres-prune": "./bin/prune.js"
   },
   "files": [
     "dist",
     "bin",
     "src/drizzle/migrations",
+    "chart",
+    "!chart/tests",
     "!dist/**/*.test.*",
     "!dist/**/*.d.ts.map"
   ],
@@ -37,10 +40,14 @@
       "types": "./dist/cli.d.ts",
       "default": "./dist/cli.js"
     },
+    "./kubernetes": {
+      "types": "./dist/kubernetes/index.d.ts",
+      "default": "./dist/kubernetes/index.js"
+    },
     "./migrations/*.sql": "./src/drizzle/migrations/*.sql"
   },
   "scripts": {
-    "build": "tsc && chmod +x bin/setup.js bin/setup-deprecated.js",
+    "build": "tsc && chmod +x bin/setup.js bin/setup-deprecated.js bin/prune.js",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
     "test": "vitest run --config=../../vitest.config.ts",

@@ -1,0 +1,84 @@
+# The application's name: names its Deployments, Service and worker labels.
+serviceName: ''
+
+# `jobPrefix` of every World in the release (WORKFLOW_POSTGRES_JOB_PREFIX).
+# Default: serviceName, lowercased, with runs of other characters replaced
+# by `_`, and a trailing `_`. Give each application sharing a database its
+# own prefix, not a prefix of another's.
+jobPrefix: ''
+
+image:
+  repository: ''
+  # The release's version. With version pinning, every run this release
+  # starts is pinned to it (WORKFLOW_POSTGRES_DEPLOYMENT_ID), and its workers
+  # are named by it, so use one immutable tag per build: the commit SHA.
+  # Restoring a version's lost workers requires a SHA.
+  tag: ''
+  pullPolicy: IfNotPresent
+
+# Overrides of the image's entrypoint, for every container but the prune
+# job's (see versionPinning.prune.command).
+command: []
+args: []
+
+# The main Deployment: serves the application and runs this release's
+# workflows.
+replicas: 2
+port: 3000
+resources: {}
+# Keep it above the longest delivery you expect: a delivery still running when
+# the pod is killed is redelivered from the start once its job lock goes stale.
+terminationGracePeriodSeconds: 400
+nodeSelector: {}
+tolerations: []
+
+probes:
+  livenessPath: /healthz
+  readinessPath: /readyz
+
+# Where the application serves `createBacklogEndpoints` on `port`.
+backlogPath: /internal/workflow
+
+# Extra env for every container: the database URL (WORKFLOW_POSTGRES_URL) or
+# your own connection settings, and tuning (WORKFLOW_POSTGRES_*).
+env: {}
+# Env from Secrets or ConfigMaps, as in a container's `envFrom`.
+envFrom: []
+
+serviceAccount:
+  create: true
+  name: ''
+  annotations: {}
+
+# Applies this World's migrations in an init container of every pod of the
+# release, before the application starts, for example
+#   command: [node, node_modules/@workflow/world-postgres/bin/setup.js]
+# `bootstrap` is idempotent, and safe to run from several pods at once.
+migrations:
+  enabled: false
+  command: []
+
+versionPinning:
+  enabled: true
+  workers:
+    # Most worker pods one version scales to.
+    maxReplicas: 4
+    # Due deliveries per worker pod KEDA aims for; match
+    # WORKFLOW_POSTGRES_WORKER_CONCURRENCY.
+    deliveriesPerWorker: 10
+    # Seconds without due deliveries before a version's workers scale to zero.
+    cooldownSeconds: 300
+    # Seconds between KEDA's backlog reads.
+    pollingInterval: 15
+  prune:
+    # Deletes the workers of versions whose runs have all finished, and
+    # restores those of versions with unfinished runs but no workers.
+    schedule: '*/15 * * * *'
+    # Workers younger than this are never deleted.
+    minAgeMinutes: 60
+    dryRun: false
+    # The prune container's command. Default: the image's entrypoint, which
+    # sees WORKFLOW_ROLE=prune and calls `pruneWorkersInCluster()`. Or run the
+    # bundled CLI, for example
+    #   command: [node, node_modules/@workflow/world-postgres/bin/prune.js, --in-cluster]
+    command: []
