@@ -21,6 +21,7 @@ import {
 } from '../../test-support/orchestrator-harness.js';
 import { setWorld } from '../world.js';
 import { __resetConsumedPositionsForTests } from './consumed-position.js';
+import { DEFAULT_ORCHESTRATOR_LINGER_MS } from './live-feed.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -48,6 +49,14 @@ const hookOrSleep = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_H
   async function workflow() {
     const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
     return await Promise.race([hook, sleep("3s").then(() => "timeout")]);
+  }${registerWorkflow()}`;
+
+const stepThenSleep = `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("wait_linger_step");
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow(duration) {
+    const n = await step(1);
+    await sleep(duration);
+    return n;
   }${registerWorkflow()}`;
 
 const lonelySleep = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
@@ -259,6 +268,27 @@ describe.each([
     }
   }, 30_000);
 
+  // A loop whose sleep is exactly the linger window, at the default: the
+  // wait is due a few ms more than a window after the suspend decision only
+  // if the World's clock runs ahead, which the slack covers.
+  it(
+    'lingers through a sleep as long as the default window',
+    async () => {
+      const { world, start } = await setupOrchestratorRun(
+        stepThenSleep,
+        [`${DEFAULT_ORCHESTRATOR_LINGER_MS}ms`],
+        { subscribe: true },
+        engine
+      );
+      await world.deliver(start);
+
+      expect(await runResult(world)).toBe(1);
+      expect(eventsOf(world, 'wait_completed')).toHaveLength(1);
+      expect(orchestratorDeliveriesOf(world)).toHaveLength(1);
+    },
+    3 * DEFAULT_ORCHESTRATOR_LINGER_MS + 10_000
+  );
+
   it('suspends with a queued timer for a wait due past the inline deadline', async () => {
     vi.stubEnv('WORKFLOW_V2_TIMEOUT_MS', '3000');
     const { world, start } = await setupOrchestratorRun(
@@ -346,7 +376,7 @@ describe.each([
   it('stops when the run is cancelled while it lingers on a wait', async () => {
     const { world, runId, start } = await setupOrchestratorRun(
       lonelySleep,
-      ['10s'],
+      [`${DEFAULT_ORCHESTRATOR_LINGER_MS}ms`],
       { subscribe: true },
       engine
     );
@@ -362,7 +392,7 @@ describe.each([
     } as Partial<Event>);
     await delivery;
 
-    expect(Date.now() - startedAt).toBeLessThan(8000);
+    expect(Date.now() - startedAt).toBeLessThan(DEFAULT_ORCHESTRATOR_LINGER_MS);
     expect(eventsOf(world, 'wait_completed')).toHaveLength(0);
     expect(eventsOf(world, 'run_completed')).toHaveLength(0);
   });

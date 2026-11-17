@@ -192,9 +192,13 @@ describe('linger windows', () => {
     ).toBe('hook');
   });
 
-  it('lingers 5 s on hooks alone and the full window on a background step', () => {
-    expect(DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS).toBe(5_000);
-    expect(getOrchestratorLingerMsFor('hook', {})).toBe(5_000);
+  it('lingers on hooks alone for the hook window, never past the full window of a background step', () => {
+    expect(getOrchestratorLingerMsFor('hook', {})).toBe(
+      Math.min(
+        DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS,
+        DEFAULT_ORCHESTRATOR_LINGER_MS
+      )
+    );
     expect(getOrchestratorLingerMsFor('step', {})).toBe(
       DEFAULT_ORCHESTRATOR_LINGER_MS
     );
@@ -212,7 +216,12 @@ describe('linger windows', () => {
     ).toBe(0);
     expect(
       getOrchestratorHookLingerMs({ WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS: 'x' })
-    ).toBe(5_000);
+    ).toBe(
+      Math.min(
+        DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS,
+        DEFAULT_ORCHESTRATOR_LINGER_MS
+      )
+    );
     // Never longer than the linger, and off with it.
     expect(
       getOrchestratorHookLingerMs({ WORKFLOW_ORCHESTRATOR_LINGER_MS: '1000' })
@@ -259,7 +268,8 @@ describe('external work: open hooks', () => {
 
 describe('linger through near-due waits', () => {
   const nowMs = 1_000_000;
-  const capMs = nowMs + 60_000;
+  const windowMs = DEFAULT_ORCHESTRATOR_LINGER_MS;
+  const capMs = nowMs + 100 * windowMs;
 
   it('reads the wait window from its own setting, capped by the linger', () => {
     expect(getOrchestratorWaitLingerMs({})).toBe(
@@ -273,9 +283,18 @@ describe('linger through near-due waits', () => {
     ).toBe(DEFAULT_ORCHESTRATOR_LINGER_MS);
     expect(
       getOrchestratorWaitLingerMs({
+        WORKFLOW_ORCHESTRATOR_LINGER_MS: '60000',
         WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS: '10000',
       })
     ).toBe(10_000);
+    // Never longer than the linger at its default.
+    expect(
+      getOrchestratorWaitLingerMs({
+        WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS: String(
+          2 * DEFAULT_ORCHESTRATOR_LINGER_MS
+        ),
+      })
+    ).toBe(DEFAULT_ORCHESTRATOR_LINGER_MS);
     expect(
       getOrchestratorWaitLingerMs({
         WORKFLOW_ORCHESTRATOR_LINGER_MS: '1000',
@@ -288,7 +307,7 @@ describe('linger through near-due waits', () => {
   });
 
   it('lingers until a wait due within the window, past the deadline never', () => {
-    const waitInMs = DEFAULT_ORCHESTRATOR_LINGER_MS / 2;
+    const waitInMs = windowMs / 2;
     expect(
       orchestratorLingerUntil(
         { work: undefined, nextWaitAtMs: nowMs + waitInMs, nowMs, capMs },
@@ -298,14 +317,15 @@ describe('linger through near-due waits', () => {
       untilMs: nowMs + waitInMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
       forWait: true,
     });
-    // Due past the window.
+    // Due past the window, beyond the slack.
     expect(
       orchestratorLingerUntil(
         {
           work: undefined,
-          nextWaitAtMs: nowMs + DEFAULT_ORCHESTRATOR_LINGER_MS + 1,
+          nextWaitAtMs:
+            nowMs + windowMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS + 1,
           nowMs,
-          capMs: nowMs + 10 * DEFAULT_ORCHESTRATOR_LINGER_MS,
+          capMs,
         },
         {}
       )
@@ -338,13 +358,38 @@ describe('linger through near-due waits', () => {
     ).toBeUndefined();
   });
 
+  // A sleep as long as the window lingers, even when the deadline the
+  // workflow computed is a little ahead of this host's clock, or the
+  // suspend decision comes a few ms after the `wait_created`.
+  it('lingers for a wait due exactly one window ahead, and within the slack past it', () => {
+    for (const aheadMs of [
+      windowMs - 5,
+      windowMs,
+      windowMs + 5,
+      windowMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
+    ]) {
+      expect(
+        orchestratorLingerUntil(
+          { work: undefined, nextWaitAtMs: nowMs + aheadMs, nowMs, capMs },
+          {}
+        )
+      ).toEqual({
+        untilMs: nowMs + aheadMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
+        forWait: true,
+      });
+    }
+  });
+
   it('takes the later of the external window and the wait, capped', () => {
     const hookMs = DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS;
     // A wait due after the hook window extends the linger to it.
     expect(
       orchestratorLingerUntil(
         { work: 'hook', nextWaitAtMs: nowMs + 2 * hookMs, nowMs, capMs },
-        {}
+        {
+          WORKFLOW_ORCHESTRATOR_LINGER_MS: String(4 * hookMs),
+          WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS: String(hookMs),
+        }
       )
     ).toEqual({
       untilMs: nowMs + 2 * hookMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
@@ -356,10 +401,14 @@ describe('linger through near-due waits', () => {
         { work: 'step', nextWaitAtMs: nowMs + 1, nowMs, capMs },
         {}
       )
-    ).toEqual({
-      untilMs: nowMs + DEFAULT_ORCHESTRATOR_LINGER_MS,
-      forWait: false,
-    });
+    ).toEqual(
+      windowMs >= 1 + ORCHESTRATOR_WAIT_LINGER_SLACK_MS
+        ? { untilMs: nowMs + windowMs, forWait: false }
+        : {
+            untilMs: nowMs + 1 + ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
+            forWait: true,
+          }
+    );
     // The deadline caps the slack.
     expect(
       orchestratorLingerUntil(

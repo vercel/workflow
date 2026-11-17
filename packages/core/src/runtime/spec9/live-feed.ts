@@ -88,7 +88,7 @@ export const ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR = 2;
 export const ORCHESTRATOR_POLL_MAX_INTERVAL_MS = 10_000;
 
 /** Default of {@link getOrchestratorLingerMs}, in milliseconds. */
-export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
+export const DEFAULT_ORCHESTRATOR_LINGER_MS = 5_000;
 
 /** Default of {@link getOrchestratorHookLingerMs}, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
@@ -105,8 +105,10 @@ export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
  * World without one, a subscription that failed, or one that goes down
  * during the linger ends it, since waiting on the poll alone costs a
  * function held open for a poll's latency (`LiveLogFeed.isLive`). A run that
- * waits only on open hooks lingers for the shorter
- * {@link getOrchestratorHookLingerMs}. `0` disables both.
+ * waits only on open hooks lingers for {@link getOrchestratorHookLingerMs},
+ * which is never longer (the two defaults are equal); a step that takes
+ * longer than the window ends the delivery, and its outcome's wake starts the
+ * next one. `0` disables every linger.
  */
 export function getOrchestratorLingerMs(
   env: Record<string, string | undefined> = process.env
@@ -124,7 +126,8 @@ export function getOrchestratorLingerMs(
  * {@link getOrchestratorLingerMs}) when the run waits on open hooks and no
  * background step (`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`, default
  * {@link DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS}), and never longer than
- * `WORKFLOW_ORCHESTRATOR_LINGER_MS`. Any open hook is enough to take it (see
+ * `WORKFLOW_ORCHESTRATOR_LINGER_MS` (whose default it equals, so it is
+ * shorter only when either is set). Any open hook is enough to take it (see
  * `externalWorkOf`), however rarely it is resumed, so a run with a long-lived
  * approval or cancel hook beside a polling `sleep()` holds each of its
  * deliveries this long after its last pass; the short default keeps that
@@ -169,6 +172,12 @@ export function getOrchestratorLingerMsFor(
  * `WORKFLOW_ORCHESTRATOR_LINGER_MS`, and never more than it). `0` disables
  * it.
  *
+ * The window compares with the wait's deadline less
+ * {@link ORCHESTRATOR_WAIT_LINGER_SLACK_MS}, inclusively, so a sleep as long as
+ * the window still lingers when the deadline the workflow computed runs a
+ * little ahead of this host's clock (the VM's clock follows event times the
+ * World stamped).
+ *
  * Without it, a run that loops on a short `sleep()` ends its delivery at
  * every sleep, and the wait's timer starts a new invocation, which loads the
  * run's whole log again. Lingering keeps the replay session and reads only
@@ -194,8 +203,10 @@ export function getOrchestratorWaitLingerMs(
 
 /**
  * How long a linger taken for a wait runs past the wait's deadline, so that a
- * timer that fires a little before the deadline does not end it first. The
- * linger ends as soon as the wait is due; this only bounds it.
+ * timer that fires a little before the deadline does not end it first, and
+ * how far past the wait window a wait may be due and still count (see
+ * {@link getOrchestratorWaitLingerMs}). The linger ends as soon as the wait
+ * is due; this only bounds it.
  */
 export const ORCHESTRATOR_WAIT_LINGER_SLACK_MS = 1_000;
 
@@ -204,7 +215,8 @@ export const ORCHESTRATOR_WAIT_LINGER_SLACK_MS = 1_000;
  * `undefined` when it does not linger: the later of the window for what the
  * run waits on outside its orchestrator ({@link getOrchestratorLingerMsFor})
  * and, when the earliest open wait is due within
- * {@link getOrchestratorWaitLingerMs} and no later than `capMs`, that wait's
+ * {@link getOrchestratorWaitLingerMs} (plus
+ * {@link ORCHESTRATOR_WAIT_LINGER_SLACK_MS}) and no later than `capMs`, that wait's
  * deadline (plus {@link ORCHESTRATOR_WAIT_LINGER_SLACK_MS}). Never past
  * `capMs`, the inline deadline less its margin. A wait due past the cap does
  * not count: the delivery could not complete it, and its queued timer does.
@@ -221,13 +233,14 @@ export function orchestratorLingerUntil(
 ): { untilMs: number; forWait: boolean } | undefined {
   const { work, nextWaitAtMs, nowMs, capMs } = params;
   const externalMs = getOrchestratorLingerMsFor(work, env);
+  const waitWindowMs = getOrchestratorWaitLingerMs(env);
   let untilMs = externalMs > 0 ? nowMs + externalMs : nowMs;
   let forWait = false;
   if (
     nextWaitAtMs !== undefined &&
+    waitWindowMs > 0 &&
     nextWaitAtMs <= capMs &&
-    nextWaitAtMs - nowMs <= getOrchestratorWaitLingerMs(env) &&
-    getOrchestratorWaitLingerMs(env) > 0
+    nextWaitAtMs - ORCHESTRATOR_WAIT_LINGER_SLACK_MS - nowMs <= waitWindowMs
   ) {
     const waitUntilMs = nextWaitAtMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS;
     if (waitUntilMs > untilMs) {
