@@ -26,4 +26,13 @@ export interface InProcessWorkerState {
   registered: boolean;
   /** The route last handed to the World, so the same one is not handed twice. */
   route: unknown;
+  /**
+   * The step functions the registered route's own build registered, as the
+   * route saw the step registry when it was built. Step lookups prefer them:
+   * the registry is shared by every module graph of the process (a Next.js
+   * server evaluates the Pages Router and the App Router apart, each with its
+   * own copy of the workflow files), and the last graph to evaluate wins it,
+   * whereas the World delivers to this route.
+   */
+  steps?: ReadonlyMap<string, unknown>;
 }

@@ -27,6 +27,7 @@ import {
 import { isRetryableWorldError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { type Logger, runtimeLogger } from './logger.js';
+import { snapshotRegisteredSteps } from './private.js';
 import { afterRunFailed } from './runtime/after-terminal-write.js';
 import { getComputeInstanceId } from './runtime/compute-instance.js';
 import { getMaxQueueDeliveries } from './runtime/constants.js';
@@ -47,6 +48,7 @@ import {
   type QueueAuthRefusalReason,
 } from './runtime/queue-auth.js';
 import {
+  ROUTE_STEPS,
   refreshWorkflowRoute,
   registerRequestedWorkflowRoute,
 } from './runtime/register-handler.js';
@@ -871,6 +873,14 @@ export function workflowEntrypoint(
   // HTTP, and only a World handed the route itself finds the entry.
   Object.defineProperty(route, IN_PROCESS_QUEUE_HANDLER, {
     value: deliverInProcess,
+    enumerable: false,
+  });
+  // The step functions this route's build registered, which the route's
+  // module graph evaluated just before this: a World that delivers in process
+  // runs this route's deliveries, and the shared step registry may later hold
+  // another graph's copies of the same steps (see `getStepFunction`).
+  Object.defineProperty(route, ROUTE_STEPS, {
+    value: snapshotRegisteredSteps(),
     enumerable: false,
   });
   // A route rebuilt in development replaces the one the World was handed;

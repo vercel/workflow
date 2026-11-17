@@ -10,6 +10,13 @@ import {
 } from '@workflow/world';
 import { getWorld } from './world.js';
 
+/**
+ * Where `workflowEntrypoint()` keeps, on the route it builds (not
+ * enumerable), the step functions its build registered: the step registry
+ * as the route saw it when it was built.
+ */
+export const ROUTE_STEPS = Symbol.for('@workflow/core//routeSteps');
+
 export interface RegisterWorkflowHandlerOptions {
   /**
    * The queue namespace the route was built with (`WORKFLOW_QUEUE_NAMESPACE`
@@ -49,6 +56,11 @@ export async function registerWorkflowHandler(
   const state = workerState();
   state.registered = true;
   state.route = route;
+  // The steps this route's build registered (see `getStepFunction`); a route
+  // built elsewhere without them leaves lookups to the shared registry.
+  state.steps = (route as { [ROUTE_STEPS]?: ReadonlyMap<string, unknown> })[
+    ROUTE_STEPS
+  ];
   return true;
 }
 

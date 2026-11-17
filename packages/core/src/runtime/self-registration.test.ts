@@ -9,7 +9,9 @@ import {
   SPEC_VERSION_CURRENT,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getStepFunction, registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
+import { registerWorkflowHandler } from './register-handler.js';
 import { setWorld } from './world.js';
 
 /**
@@ -169,5 +171,86 @@ describe('a route built in a process whose World already has one', () => {
     workflowEntrypoint(CODE);
     await new Promise((resolve) => setImmediate(resolve));
     expect(registerHandler).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The step registry is shared by every module graph of the process, and the
+ * last graph to evaluate a workflow file wins it. A Next.js server evaluates
+ * the Pages Router apart from the App Router, each with its own copy of the
+ * workflow files, and its Pages Router copy can load `workflow` unbundled
+ * (its `Run` then has no `classId`). The route a World that delivers in
+ * process was handed runs the steps its own build registered, whichever
+ * graph evaluated last.
+ */
+describe('the step functions a registered route runs', () => {
+  const STEP_ID = 'step//./workflows/registry-order//spawn';
+  const LATER_STEP_ID = 'step//./workflows/registry-order//later';
+  const registry = () =>
+    (globalThis as unknown as Record<symbol, Map<string, unknown>>)[
+      Symbol.for('@workflow/core//registeredSteps')
+    ];
+  const step = () => Object.assign(async () => undefined, {});
+
+  afterEach(() => {
+    registry().delete(STEP_ID);
+    registry().delete(LATER_STEP_ID);
+  });
+
+  it("are its own build's, though another module graph registered the same steps after it was built", async () => {
+    denyWorld();
+    const own = step();
+    registerStepFunction(STEP_ID, own);
+    const route = workflowEntrypoint(CODE);
+    // Another module graph evaluates the same workflow file afterwards.
+    const other = step();
+    registerStepFunction(STEP_ID, other);
+    // Nothing registered yet: the shared registry decides, as before.
+    expect(getStepFunction(STEP_ID)).toBe(other);
+
+    await registerWorkflowHandler(route);
+
+    expect(getStepFunction(STEP_ID)).toBe(own);
+    // A step the route's build did not register still comes from the
+    // registry.
+    const later = step();
+    registerStepFunction(LATER_STEP_ID, later);
+    expect(getStepFunction(LATER_STEP_ID)).toBe(later);
+  });
+
+  it('are the rebuilt route’s once a development rebuild replaces the registered route', async () => {
+    const registerHandler = denyWorld();
+    registerStepFunction(STEP_ID, step());
+    await registerWorkflowHandler(workflowEntrypoint(CODE));
+    const rebuiltStep = step();
+    registerStepFunction(STEP_ID, rebuiltStep);
+
+    const rebuilt = workflowEntrypoint(CODE);
+
+    await vi.waitFor(() =>
+      expect(registerHandler).toHaveBeenLastCalledWith(
+        '__wkf_workflow_',
+        rebuilt
+      )
+    );
+    expect(getStepFunction(STEP_ID)).toBe(rebuiltStep);
+  });
+
+  it('are left to the shared registry on a World that does not deliver in process', async () => {
+    setWorld({
+      queueAuthMode: 'loopback',
+      specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: async () => 'dpl_test',
+      createQueueHandler: vi.fn(),
+      registerHandler: vi.fn(),
+    } as any);
+    registerStepFunction(STEP_ID, step());
+    const route = workflowEntrypoint(CODE);
+    const other = step();
+    registerStepFunction(STEP_ID, other);
+
+    await expect(registerWorkflowHandler(route)).resolves.toBe(false);
+
+    expect(getStepFunction(STEP_ID)).toBe(other);
   });
 });
