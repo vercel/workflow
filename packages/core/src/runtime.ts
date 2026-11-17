@@ -777,7 +777,12 @@ export function workflowEntrypoint(
         // that does not carry the app's queue key, or any request when the
         // route refuses HTTP deliveries, is refused and dropped (see
         // `authorizeQueueDelivery`). Covers every delivery to this route,
-        // health checks and invocations included.
+        // invocations included. `?__health` requests never get here:
+        // `withHealthCheck` answers them first, unauthenticated, and the
+        // health check `world.start()` sends to hand this route to a World
+        // that delivers in process depends on that, since the route refuses
+        // every HTTP delivery on such a World. Do not route health checks
+        // through this check.
         const refusal = await authorizeQueueDelivery(route.world, req);
         if (refusal) {
           route.logQueueAuthRefusal(refusal.reason);

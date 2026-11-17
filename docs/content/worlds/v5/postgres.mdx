@@ -269,6 +269,7 @@ Before you go live, make sure that:
 - The app can reach your PostgreSQL database, and `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL` are set in its runtime environment
 - `bootstrap` runs on every deploy, for example as a post-deployment lifecycle script (see [Upgrading](#upgrading))
 - The World starts when the server starts (see [Start the World when your server starts](#start-the-world-when-your-server-starts))
+- Each process has an address of its own: on startup, `world.start()` sends a health check to the process's own flow route to register its worker. Run one process per address and scale by running more processes against the shared database, not several behind one shared port (`node:cluster`, PM2 cluster mode, `SO_REUSEPORT`), where the health check can reach a sibling and the process never registers
 - If more than one process shares the database, you have set [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) to the same value on every process, so another process picks up the jobs of one that dies
 - When you upgrade, you drain the processes on the previous release before the new one starts (see [Rolling upgrades](#rolling-upgrades))
 
@@ -276,7 +277,7 @@ Before you go live, make sure that:
 
 Jobs run inside the app's process, so a worker is a copy of the app. To run workers on their own machines, deploy the same build there with the same environment variables, started the same way, and send it no web traffic: its `start()` gets the route and runs jobs all the same, and the copies share the work through the database. Nothing has to reach a worker over the network, and a worker reaches nothing but the database. Scale the two tiers independently by running more copies of one or the other. A worker copy keeps serving the app's routes, so put it behind no public address, or restrict it at your network edge like any internal service.
 
-Several processes on one machine (PM2 with `-i N`, `node:cluster`, Nitro's `node-cluster` preset) work the same way: each one's `start()` gets the route, and each runs jobs.
+Several processes on one machine work the same way only if each has an address of its own: `start()` sends its health check to the process's own flow route, so run one process per address, each started the same way, against the shared database. Do not run several behind one shared port (PM2 with `-i N`, `node:cluster`, Nitro's `node-cluster` preset, `SO_REUSEPORT`): a process's health check can reach a sibling, and that process never registers and runs no jobs (see the checklist above).
 
 ### Steps and request-only framework APIs
 
