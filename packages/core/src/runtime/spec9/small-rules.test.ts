@@ -20,6 +20,8 @@ import {
   getOrchestratorHookLingerMs,
   getOrchestratorLingerMsFor,
   getOrchestratorWaitLingerMs,
+  LingerTimes,
+  lingerKindOf,
   ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
   orchestratorLingerUntil,
 } from './live-feed.js';
@@ -458,5 +460,24 @@ describe('leftover timers of completed waits', () => {
     expect(
       isNoopDelivery({ world, runId: 'wrun_a', tailSlot: 5, nowMs: 0 })
     ).toBe(true);
+  });
+});
+
+describe('linger telemetry', () => {
+  it('names what a linger was taken for', () => {
+    expect(lingerKindOf({ forWait: true }, 'step')).toBe('wait');
+    expect(lingerKindOf({ forWait: false }, 'step')).toBe('step');
+    expect(lingerKindOf({ forWait: false }, 'hook')).toBe('hook');
+  });
+
+  it('keeps a total per kind across the lingers of one delivery', () => {
+    const times = new LingerTimes();
+    times.add('wait', 300);
+    times.add('step', 50);
+    expect(times.add('wait', 200)).toEqual({
+      'workflow.linger.wait_ms': 500,
+      'workflow.linger.step_ms': 50,
+      'workflow.linger.hook_ms': 0,
+    });
   });
 });

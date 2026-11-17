@@ -5,6 +5,7 @@ import {
   type World,
 } from '@workflow/world';
 import { runtimeLogger } from '../../logger.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { REPLAY_RESOLVE_DATA } from '../helpers.js';
 import type { ExternalWork } from './log-state.js';
 import {
@@ -250,6 +251,39 @@ export function orchestratorLingerUntil(
   }
   untilMs = Math.min(untilMs, capMs);
   return untilMs > nowMs ? { untilMs, forWait } : undefined;
+}
+
+/** What a linger was taken for: a wait due soon, or work done elsewhere. */
+export type LingerKind = 'wait' | ExternalWork;
+
+/** The kind of a linger {@link orchestratorLingerUntil} decided. */
+export function lingerKindOf(
+  linger: { forWait: boolean },
+  work: ExternalWork | undefined
+): LingerKind {
+  return linger.forWait || work === undefined ? 'wait' : work;
+}
+
+/**
+ * Time one delivery lingered, by kind, as span attributes. A delivery can
+ * linger several times and for different reasons, so each kind keeps its own
+ * total rather than the last linger overwriting one value.
+ */
+export class LingerTimes {
+  private readonly totals: Record<LingerKind, number> = {
+    wait: 0,
+    step: 0,
+    hook: 0,
+  };
+
+  add(kind: LingerKind, ms: number): Record<string, number> {
+    this.totals[kind] += ms;
+    return {
+      ...Attribute.WorkflowLingerWaitMs(this.totals.wait),
+      ...Attribute.WorkflowLingerStepMs(this.totals.step),
+      ...Attribute.WorkflowLingerHookMs(this.totals.hook),
+    };
+  }
 }
 
 /**

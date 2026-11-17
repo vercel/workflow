@@ -183,7 +183,9 @@ import {
 import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
+  LingerTimes,
   LiveLogFeed,
+  lingerKindOf,
   orchestratorLingerUntil,
 } from './live-feed.js';
 import { EventLogIndex } from './log-index.js';
@@ -1113,7 +1115,10 @@ async function runDelivery(
       delaySeconds: next.delaySeconds,
       intermediate: next.waitContinuation.resumeAtMs !== undefined,
     });
-    span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+    span?.setAttributes({
+      ...Attribute.WorkflowNoopDelivery(true),
+      ...Attribute.WorkflowNoopDeliveryReason('hop'),
+    });
     // Keyed by the next hop's deadline: a redelivery of this hop, or of a
     // hop another sender started for the same deadline, is deduped.
     await wakeSelf(
@@ -1207,7 +1212,10 @@ async function runDelivery(
   // would return as soon as it read the run's status, before
   // the re-send pass, so it returns without reading.
   if (!runInput && !hookInput && isTerminalRun(world, runId)) {
-    span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+    span?.setAttributes({
+      ...Attribute.WorkflowNoopDelivery(true),
+      ...Attribute.WorkflowNoopDeliveryReason('terminal'),
+    });
     runtimeLogger.debug(
       'Run already ended in this process; acknowledging without a read',
       { workflowRunId: runId }
@@ -1240,7 +1248,10 @@ async function runDelivery(
         nowMs: Date.now(),
       })
     ) {
-      span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+      span?.setAttributes({
+        ...Attribute.WorkflowNoopDelivery(true),
+        ...Attribute.WorkflowNoopDeliveryReason('tail'),
+      });
       runtimeLogger.debug(
         'Nothing new since the last consumed position; acknowledging without a replay',
         { workflowRunId: runId, tailSlot }
@@ -2854,6 +2865,7 @@ async function runDelivery(
      * each to one send), so a linger sends no timer the
      * suspend would not have sent.
      */
+    const lingerTimes = new LingerTimes();
     const lingerForExternalWork = async (
       observedHookIds?: ReadonlySet<string>
     ): Promise<boolean> => {
@@ -2862,8 +2874,9 @@ async function runDelivery(
       // shorter hook window, and a wait due within the wait window and
       // before the inline deadline keeps the delivery until it is due.
       // An idle completion hook is not external work.
+      const work = externalWorkOf(log.events, observedHookIds);
       const linger = orchestratorLingerUntil({
-        work: externalWorkOf(log.events, observedHookIds),
+        work,
         nextWaitAtMs: nextTimerAt(log.events).nextTimerAtMs,
         nowMs: Date.now(),
         capMs: inlineDeadlineMs - inlineMarginMs,
@@ -2881,7 +2894,13 @@ async function runDelivery(
         await armNearDueTimers(log.events);
         await armTimers(log.events);
       }
+      const kind = lingerKindOf(linger, work);
       const startedAtMs = Date.now();
+      const lingered = (): number => {
+        const ms = Date.now() - startedAtMs;
+        span?.setAttributes(lingerTimes.add(kind, ms));
+        return ms;
+      };
       // Waiting is not replay work.
       replayBudget.pause();
       try {
@@ -2903,7 +2922,8 @@ async function runDelivery(
           ) {
             runtimeLogger.debug('Lingering delivery resumed', {
               workflowRunId: runId,
-              lingeredMs: Date.now() - startedAtMs,
+              kind,
+              lingeredMs: lingered(),
             });
             return true;
           }
@@ -2912,7 +2932,8 @@ async function runDelivery(
               'Lingering delivery ended: live event feed went down',
               {
                 workflowRunId: runId,
-                lingeredMs: Date.now() - startedAtMs,
+                kind,
+                lingeredMs: lingered(),
               }
             );
             return false;
@@ -2923,7 +2944,8 @@ async function runDelivery(
       }
       runtimeLogger.debug('Lingering delivery found no new work', {
         workflowRunId: runId,
-        lingeredMs: Date.now() - startedAtMs,
+        kind,
+        lingeredMs: lingered(),
       });
       return false;
     };

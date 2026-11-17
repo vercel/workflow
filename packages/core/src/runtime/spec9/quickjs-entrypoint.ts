@@ -142,7 +142,9 @@ import {
 import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
+  LingerTimes,
   LiveLogFeed,
+  lingerKindOf,
   orchestratorLingerUntil,
 } from './live-feed.js';
 import {
@@ -2734,6 +2736,7 @@ export async function runWorkflowWithQuickJS(params: {
    * the wait is still woken if this invocation dies mid-sleep; the exit sweep
    * then skips them (`scheduledWaitContinuations`).
    */
+  const lingerTimes = new LingerTimes();
   const lingerForExternalWork = async (
     external: ExternalWork | undefined,
     pendingOperations: PendingOperation[]
@@ -2750,10 +2753,14 @@ export async function runWorkflowWithQuickJS(params: {
     const waits = pendingWaitTimers(pendingOperations);
     const linger = orchestratorLingerUntil({
       work: external,
+      // A reduce, not a spread: a run may hold any number of open waits.
       nextWaitAtMs:
         waits.length === 0
           ? undefined
-          : Math.min(...waits.map((wait) => wait.resumeAtMs)),
+          : waits.reduce(
+              (earliest, wait) => Math.min(earliest, wait.resumeAtMs),
+              Number.POSITIVE_INFINITY
+            ),
       nowMs: Date.now(),
       capMs: params.inlineDeadlineMs - inlineMarginMs,
     });
@@ -2768,8 +2775,14 @@ export async function runWorkflowWithQuickJS(params: {
       await armNearDueWaitTimers(waits);
       await armWaitTimers(waits);
     }
+    const kind = lingerKindOf(linger, external);
     const fedBefore = fedEventCount;
     const startedAtMs = Date.now();
+    const lingered = (): number => {
+      const ms = Date.now() - startedAtMs;
+      parentSpan?.setAttributes(lingerTimes.add(kind, ms));
+      return ms;
+    };
     budget.pause();
     try {
       while (Date.now() < untilMs) {
@@ -2791,14 +2804,16 @@ export async function runWorkflowWithQuickJS(params: {
         if (fedEventCount > fedBefore || waitDue) {
           wfdiag('linger', {
             outcome: 'resumed',
-            lingeredMs: Date.now() - startedAtMs,
+            kind,
+            lingeredMs: lingered(),
           });
           return true;
         }
         if (!inlineFeed?.isLive) {
           wfdiag('linger', {
             outcome: 'feed-down',
-            lingeredMs: Date.now() - startedAtMs,
+            kind,
+            lingeredMs: lingered(),
           });
           return false;
         }
@@ -2808,7 +2823,8 @@ export async function runWorkflowWithQuickJS(params: {
     }
     wfdiag('linger', {
       outcome: 'idle',
-      lingeredMs: Date.now() - startedAtMs,
+      kind,
+      lingeredMs: lingered(),
     });
     return false;
   };

@@ -9,6 +9,7 @@ import type { Event } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
+import * as telemetry from '../../telemetry.js';
 import type {
   AppendOnlyWorld,
   HeldMessage,
@@ -210,6 +211,62 @@ describe.each([
     // No more timers than without the linger: one per wait.
     expect(after.timersSent).toBe(before.timersSent);
     expect(after.timersSent).toBe(ITERATIONS);
+  }, 30_000);
+
+  it('records the wait linger and the terminal no-ops on the delivery spans', async () => {
+    const original = telemetry.trace;
+    const spans: Record<string, unknown>[] = [];
+    const traceSpy = vi.spyOn(telemetry, 'trace').mockImplementation(((
+      name: string,
+      ...args: unknown[]
+    ) => {
+      if (!name.startsWith('workflow.execute')) {
+        return (original as (...a: unknown[]) => Promise<unknown>)(
+          name,
+          ...args
+        );
+      }
+      const fn = args[args.length - 1] as (span: unknown) => Promise<unknown>;
+      const attributes: Record<string, unknown> = {};
+      spans.push(attributes);
+      return fn({
+        setAttributes: (attrs: Record<string, unknown>) =>
+          Object.assign(attributes, attrs),
+        setAttribute: (key: string, value: unknown) => {
+          attributes[key] = value;
+        },
+        setStatus: () => {},
+        recordException: () => {},
+        addEvent: () => {},
+        end: () => {},
+        isRecording: () => true,
+        spanContext: () => ({ traceId: '0', spanId: '0', traceFlags: 0 }),
+      });
+    }) as never);
+    try {
+      const { world, start } = await loop();
+      await world.deliver(start);
+      await drive(world);
+      const lingered = spans.filter(
+        (attributes) => (attributes['workflow.linger.wait_ms'] as number) > 0
+      );
+      expect(lingered).toHaveLength(1);
+      expect(lingered[0]).toMatchObject({
+        'workflow.linger.step_ms': 0,
+        'workflow.linger.hook_ms': 0,
+      });
+      // The leftover timers, delivered after the run ended, read nothing.
+      const terminal = spans.filter(
+        (attributes) =>
+          attributes['workflow.noop_delivery.reason'] === 'terminal'
+      );
+      expect(terminal).toHaveLength(ITERATIONS);
+      for (const attributes of terminal) {
+        expect(attributes['workflow.noop_delivery']).toBe(true);
+      }
+    } finally {
+      traceSpy.mockRestore();
+    }
   }, 30_000);
 
   it('runs every iteration before any timer is delivered', async () => {

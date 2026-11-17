@@ -14,6 +14,15 @@ import type { World } from '@workflow/world';
  * Recorded only after a delivery finished cleanly: its writes committed and
  * it scheduled what it had to (step messages, timers). A position recorded
  * before that would let a wake skip work the crashed delivery never did.
+ *
+ * One exception: {@link recordTerminalRun} records a run as ended as soon as
+ * its terminal event commits, before the delivery runs its post-terminal
+ * hooks (`afterRunCompleted` / `afterRunFailed`). That is safe because a
+ * redelivery of a terminal run returns at its status check without re-running
+ * those hooks either, so nothing may be put behind a redelivery of a
+ * terminal run. Terminal entries stay in the same {@link MAX_ENTRIES} LRU as
+ * live runs' positions, so on a busy instance they evict those a little
+ * sooner; a miss only costs the normal replay.
  */
 export interface ConsumedPosition {
   /** Highest slot the orchestrator had consumed when it suspended. */
