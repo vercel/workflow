@@ -10,7 +10,16 @@ import {
 } from 'react';
 import { cn } from '../../lib/cn';
 
-type CollapsibleVariant = 'section' | 'card';
+/**
+ * - `section`: a full-width panel section with a top divider.
+ * - `card`: a row in a stacked list of cards.
+ * - `inline`: a bare disclosure that inherits its surroundings' colour, e.g.
+ *   "Details" inside a `Note`.
+ *
+ * Every variant is a native `<details>`/`<summary>`, so browsers expose the
+ * trigger's expanded state to assistive tech without an `aria-expanded`.
+ */
+type CollapsibleVariant = 'section' | 'card' | 'inline';
 
 type CollapsibleContextValue = {
   variant: CollapsibleVariant;
@@ -70,9 +79,9 @@ export function CollapsibleRoot({
       open={open}
       onToggle={disabled ? undefined : handleToggle}
       className={cn(
-        variant === 'card'
-          ? 'group/card border-gray-alpha-400 last:border-b'
-          : 'group',
+        variant === 'card' && 'group/card border-gray-alpha-400 last:border-b',
+        variant === 'inline' && 'group/inline',
+        variant === 'section' && 'group',
         className
       )}
     >
@@ -82,7 +91,7 @@ export function CollapsibleRoot({
     </details>
   );
 
-  if (variant === 'card') {
+  if (variant !== 'section') {
     return details;
   }
 
@@ -104,6 +113,25 @@ export function CollapsibleTrigger({
   className,
 }: CollapsibleTriggerProps) {
   const { variant, disabled } = useCollapsibleContext('Trigger');
+
+  if (variant === 'inline') {
+    return (
+      <summary
+        data-slot="collapsible-trigger"
+        className={cn(
+          'inline-flex cursor-pointer list-none items-center gap-1 rounded-[4px] font-medium hover:underline focus-visible:[outline:2px_solid_var(--ds-focus-color)] focus-visible:[outline-offset:2px] [&::-webkit-details-marker]:hidden',
+          className
+        )}
+      >
+        <ChevronRight
+          size={14}
+          aria-hidden
+          className="shrink-0 transition-transform duration-150 group-open/inline:rotate-90"
+        />
+        {children}
+      </summary>
+    );
+  }
 
   if (variant === 'card') {
     return (

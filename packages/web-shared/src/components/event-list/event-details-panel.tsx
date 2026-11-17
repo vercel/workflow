@@ -1,7 +1,7 @@
 'use client';
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
-import { ChartGantt, Lock } from 'lucide-react';
+import { ChartGantt } from 'lucide-react';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
 import {
@@ -22,13 +22,14 @@ import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell'
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
 import { Collapsible } from '../ui/collapsible';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
-import { DecryptButton } from '../ui/decrypt-button';
+import { EncryptedDataNote } from '../ui/data-state-notes';
 import {
   ErrorStackBlock,
   isStructuredError,
   type StructuredErrorRecord,
 } from '../ui/error-stack-block';
 import { IconButton } from '../ui/icon-button';
+import { Note, NoteContent } from '../ui/note';
 import { Skeleton } from '../ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
@@ -116,18 +117,7 @@ function PayloadView({
   if (encrypted && decrypt) {
     return (
       <Collapsible defaultOpen label="Payload">
-        <div className="flex items-center gap-2 rounded-md border border-gray-alpha-400 bg-gray-100 py-1.5 pl-3 pr-1.5">
-          <Lock className="h-4 w-4 shrink-0 text-gray-900" />
-          <span className="min-w-0 flex-1 text-copy-13 text-gray-900">
-            Encrypted with this run’s key.
-          </span>
-          <DecryptButton
-            loading={decrypt.isDecrypting}
-            disabled={decrypt.isDecryptDisabled}
-            disabledReason={decrypt.decryptDisabledReason}
-            onClick={decrypt.onDecrypt}
-          />
-        </div>
+        <EncryptedDataNote />
       </Collapsible>
     );
   }
@@ -304,9 +294,9 @@ function EventDetailsBody({
       ) : loading || loadError ? (
         <Collapsible defaultOpen label="Payload">
           {loadError ? (
-            <div className="rounded-md border border-red-400 bg-red-100 px-2 py-1.5 text-copy-13-mono text-red-1000">
-              {loadError}
-            </div>
+            <Note variant="error" size="small" role="alert">
+              <NoteContent>{loadError}</NoteContent>
+            </Note>
           ) : (
             <div className="flex flex-col gap-2 py-1">
               <Skeleton className="h-3" style={{ width: '70%' }} />
