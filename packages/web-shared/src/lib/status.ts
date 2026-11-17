@@ -6,16 +6,15 @@ import type { StepStatus, WorkflowRunStatus } from '@workflow/world';
  * from here, so a status looks the same in the runs table, the trace
  * timeline, the event details and the dashboard that embeds these components.
  *
- * The palette follows the Vercel dashboard (`vercel/front`):
- * - in progress is amber, as Geist's `StatusDot` shows a building deployment
- *   and the dashboard's workflow runs table shows a running run;
+ * The palette follows the Vercel dashboard:
+ * - in progress is amber, as the dashboard shows a building deployment and a
+ *   running workflow run;
  * - a persistent success (a completed run) is `teal-600`, and a positive
- *   action outcome (a decrypted payload) is blue, per the product-design
- *   interface-quality guidance; generic green is not used;
+ *   action outcome (a decrypted payload) is blue; generic green is not used;
  * - failure is red, and anything idle, queued or cancelled is gray.
  *
- * Dots use themed Geist scale steps, so they adapt to dark mode, unlike the
- * fixed `geist-cyan` and `geist-warning` migration colours.
+ * Dots use themed colour scale steps from the design tokens, so they adapt to
+ * dark mode, unlike the fixed `geist-cyan` and `geist-warning` colours.
  */
 export type StatusTone =
   | 'neutral'
@@ -25,13 +24,13 @@ export type StatusTone =
   | 'error';
 
 export interface StatusToneStyle {
-  /** Geist colour scale, for CSS that reads `var(--ds-<hue>-<step>)`. */
+  /** Colour scale, for CSS that reads `var(--ds-<hue>-<step>)`. */
   hue: 'gray' | 'amber' | 'teal' | 'blue' | 'red';
   /** Solid fill for a status dot or a solid bar segment. */
   dot: string;
   /** Status text on a neutral surface (the `-800` step, see AGENTS.md). */
   text: string;
-  /** Variant for a Geist `Badge` that shows this status. */
+  /** Variant for a `Badge` that shows this status. */
   badgeVariant:
     | 'gray-subtle'
     | 'amber-subtle'

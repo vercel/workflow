@@ -2,8 +2,9 @@ import { cn } from '../../lib/cn';
 import { STATUS, type Status } from '../../lib/status';
 
 /**
- * A status dot with Geist `StatusDot` geometry, coloured from the shared
- * status map. It is decorative: always show the status label next to it.
+ * A status dot with the design system's status dot geometry, coloured from
+ * the shared status map. It is decorative: always show the status label next
+ * to it.
  */
 export function StatusDot({
   status,
