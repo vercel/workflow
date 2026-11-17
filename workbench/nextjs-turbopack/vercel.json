@@ -88,6 +88,18 @@
     },
     "app/api/e2e-stream-read/sfo1/route.ts": {
       "regions": ["sfo1"]
+    },
+    "app/api/bp/plain/route.ts": {
+      "maxDuration": 61
+    },
+    "app/api/bp/light/route.ts": {
+      "maxDuration": 62
+    },
+    "app/api/bp/heavy/route.ts": {
+      "maxDuration": 63
+    },
+    "app/api/bp/eager/route.ts": {
+      "maxDuration": 64
     }
   }
 }
