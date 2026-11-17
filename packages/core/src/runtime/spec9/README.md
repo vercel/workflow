@@ -181,6 +181,7 @@ Steps and waits are folded from the run's events, not kept as state the World ch
 - **Attempts.** A step's attempt count is the number of its `step_started` events. One after a `step_retrying` is a retry; one after another `step_started` is a redelivery.
 - **Waits.** Only the orchestrator writes `wait_created` and `wait_completed`; a second `wait_completed` is inert.
 - **Inert after terminal.** Once a step's outcome, `wait_completed`, `hook_disposed` or workflow `attr_set` is consumed, later events under that correlation ID are stepped over (see [Duplicate events](https://workflow-sdk.dev/docs/how-it-works/event-sourcing#duplicate-events)). That covers the duplicates that can still occur, such as a second `step_started` from a background step redelivered after its lease expired.
+- **Event ceiling.** Every orchestrator delivery enforces the run's `maxEvents`, failing the run with `MAX_EVENTS_EXCEEDED` once the log holds that many events (sealed `noop`s not counted). Only the first delivery writes `run_started`, so later ones take the ceiling from their full load's `EventListResponse.maxEvents`. That load stops following `hasMore` once it holds the ceiling, so a run already past it fails on its next delivery without reading the rest of its log. A World that reports no ceiling on a list (world-postgres) leaves later deliveries with only `WORKFLOW_MAX_EVENTS_OVERRIDE`.
 
 #### Events returned on a write
 
@@ -714,6 +715,7 @@ A World written to the earlier "Building a World" guide (`specVersion: mintedSpe
 |---|---|
 | `capabilities.inBandFence` | **Required** to create spec 9 runs, and the only new capability. The runtime refuses a spec 9 run without it, in `start()` and at the start of every spec 9 delivery. Passing it to `mintedSpecVersion` lets the World's users opt in with `WORKFLOW_SPEC_VERSION=9`. |
 | `CreateEventParams.inBand`, `expectedSeqInBand`; list `snapshot`; `EventResult.allocated`, `hasMore` | The [in-band fence](#storage-the-in-band-fence) and its bookkeeping. |
+| List `maxEvents` | Optional. The run's event ceiling, the value `run_started` reports, so deliveries after the first enforce it (see [The event log](#the-event-log)). |
 | Step and wait events | Plain appends on spec 9 runs; see [event rules](#spec-9-event-rules). |
 | `{ timeoutSeconds }` | Read by the message's run spec (`messageRunSpecVersion`). Spec 9: `n > 0` redelivers the same message, `0` is a **handoff**, required and not counted toward `attempt`. Spec 8 and unstamped: unchanged. See [queue rules](#spec-9-queue-rules). |
 | One orchestrator delivery per run | Hold or coalesce a spec 9 run's other orchestrator messages while one is in flight (`singleOrchestratorRunIdOf`). |

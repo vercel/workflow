@@ -33,6 +33,7 @@ import {
   type EventBatchResult,
   type EventResult,
   eventIdToSlot,
+  isSealedNoopEvent,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   type SerializedData,
@@ -1195,20 +1196,32 @@ export async function runWorkflowWithQuickJS(params: {
   // pre-snapshot event against the ceiling (tripping
   // MaxEventsExceededError below the real limit) and stamp the inflated
   // total into the next save's `eventCount`, compounding.
+  //
+  // Units: the delta counts workflow events (sealed `noop`s excluded, as
+  // the node engine counts), but the snapshot's `eventCount` is the log
+  // positions through its cursor (`eventsThroughCursor`), noops included.
+  // The total over-counts by the noops before the snapshot, so a resumed
+  // snapshot run can fail slightly before the node engine would. A run the
+  // World exempts (a persisted positive snapshot threshold) has no finite
+  // ceiling unless `WORKFLOW_MAX_EVENTS_OVERRIDE` sets one. A noop-free
+  // count would need a new snapshot metadata field.
   let restoredEventCount = existingSnapshot?.metadata.eventCount ?? 0;
+  const workflowEventCount = events.filter(
+    (event) => !isSealedNoopEvent(event)
+  ).length;
   if (
     maxEventsLimit !== undefined &&
-    restoredEventCount + events.length >= maxEventsLimit
+    restoredEventCount + workflowEventCount >= maxEventsLimit
   ) {
     throw new MaxEventsExceededError(
-      restoredEventCount + events.length,
+      restoredEventCount + workflowEventCount,
       maxEventsLimit
     );
   }
   maybeWarnApproachingEventLimit({
     runId,
     workflowName,
-    eventCount: restoredEventCount + events.length,
+    eventCount: restoredEventCount + workflowEventCount,
     limit: maxEventsLimit,
     isQuickJS: true,
   });
@@ -1436,8 +1449,14 @@ export async function runWorkflowWithQuickJS(params: {
   // possible in-process, the replay budget is exhausted, or the run is
   // gone.
   const seenEventIds = new Set<string>();
+  const seenNoopIds = new Set<string>();
+  const noteSeenEvent = (event: Event): void => {
+    if (!event.eventId) return;
+    seenEventIds.add(event.eventId);
+    if (isSealedNoopEvent(event)) seenNoopIds.add(event.eventId);
+  };
   for (const e of events) {
-    if (e.eventId) seenEventIds.add(e.eventId);
+    noteSeenEvent(e);
   }
   // Events processed since the restored snapshot (or since run start when
   // booting fresh) — compared against snapshotThreshold at suspension
@@ -1572,7 +1591,7 @@ export async function runWorkflowWithQuickJS(params: {
         logView.screen(e);
         screenWrittenEvents([e], 'listing');
         if (e.eventId && seenEventIds.has(e.eventId)) continue;
-        if (e.eventId) seenEventIds.add(e.eventId);
+        noteSeenEvent(e);
         unseen.push(e);
       }
       if (response.cursor) {
@@ -1604,7 +1623,7 @@ export async function runWorkflowWithQuickJS(params: {
   const takeQueuedEvents = (): Event[] => {
     const queued = logView.takeContiguous();
     for (const e of queued) {
-      if (e.eventId) seenEventIds.add(e.eventId);
+      noteSeenEvent(e);
     }
     noteFedOutcomes(queued);
     return queued;
@@ -2726,15 +2745,15 @@ export async function runWorkflowWithQuickJS(params: {
       // Re-check the event ceiling every turn: the loop appends events on
       // each continueWithEvents, so a single invocation can otherwise grow
       // the log arbitrarily far past the operator's limit (the node engine
-      // re-checks per replay for the same reason). `seenEventIds` counts
-      // every event this invocation has observed: initial log + all
-      // feeds.
+      // re-checks per replay for the same reason). Count workflow events
+      // from the initial log and all feeds, excluding sealed noops.
       if (
         maxEventsLimit !== undefined &&
-        restoredEventCount + seenEventIds.size >= maxEventsLimit
+        restoredEventCount + seenEventIds.size - seenNoopIds.size >=
+          maxEventsLimit
       ) {
         throw new MaxEventsExceededError(
-          restoredEventCount + seenEventIds.size,
+          restoredEventCount + seenEventIds.size - seenNoopIds.size,
           maxEventsLimit
         );
       }
