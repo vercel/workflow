@@ -10,12 +10,8 @@ import { Spinner, type SpinnerSize } from './spinner';
  * Fill, text and border are painted from four custom properties —
  * `--themed-bg`, `--themed-fg`, `--themed-border` and `--themed-hover-bg` — so
  * a variant only redeclares the tokens it changes and the base rules stay the
- * same. Sizes are 32/36/40px tall for small/medium/large.
- *
- * Inside the button, the label sits in its own span with 6px of padding on
- * each side, which truncates when the button is squeezed. The prefix slot is
- * at least 20px wide with 3px after it, and the suffix slot has 4px before it
- * and 2px after it. The button's own padding (6/10/14px) is what's left.
+ * same. The label's span holds 6px of the horizontal padding so the label
+ * can truncate, which is why each size's own padding is 6px short.
  */
 const buttonVariants = cva(
   [
@@ -32,7 +28,6 @@ const buttonVariants = cva(
     // hover fill replaces it in both themes at once.
     'hover:bg-[var(--themed-hover-bg)]',
     'transition-all duration-150 ease-in-out',
-    // The keyboard focus ring replaces the border and appears at once.
     'focus-visible:shadow-[var(--ds-focus-ring)] focus-visible:transition-none',
     '[&_svg]:shrink-0',
     // Icons in the prefix and suffix slots use the decoration size. The
@@ -70,7 +65,6 @@ const buttonVariants = cva(
           'aria-disabled:bg-transparent aria-disabled:text-gray-1000 aria-disabled:opacity-50 aria-disabled:shadow-none aria-disabled:hover:bg-transparent',
         ],
       },
-      // Labels are set at 1.5x line height.
       size: {
         small:
           'h-8 rounded-md px-1.5 text-[14px] leading-normal [&_svg]:size-4',
@@ -119,7 +113,6 @@ export type ButtonProps = Omit<
     suffix?: React.ReactNode;
   };
 
-/** The prefix slot, the label and the suffix slot. */
 function ButtonContent({
   size,
   iconOnly,
@@ -207,10 +200,9 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     // With `asChild`, the child element (a link, usually) becomes the button
     // and its own children go in the label slot.
     if (asChild) {
-      const child = React.Children.only(children);
-      if (!React.isValidElement<{ children?: React.ReactNode }>(child)) {
-        return null;
-      }
+      const child = React.Children.only(children) as React.ReactElement<{
+        children?: React.ReactNode;
+      }>;
       return (
         <Slot {...shared} aria-disabled={disabled || loading || undefined}>
           {React.cloneElement(child, undefined, content(child.props.children))}
