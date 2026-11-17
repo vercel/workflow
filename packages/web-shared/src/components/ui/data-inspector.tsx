@@ -12,7 +12,7 @@
  * class instances.
  */
 
-import { Lock } from 'lucide-react';
+import { ChevronDown, ChevronRight, Lock, Radio } from 'lucide-react';
 import {
   createContext,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -34,6 +34,7 @@ import {
 } from '../../lib/stream-display';
 import { Button } from './button';
 import { CLS, JSON_VIEW_STYLES } from './data-inspector.styles';
+import { Spinner } from './spinner';
 
 // ---------------------------------------------------------------------------
 // StreamRef / ClassInstanceRef type detection
@@ -168,16 +169,19 @@ function EncryptedInlineLabel() {
       <Button
         size="tiny"
         className="align-baseline"
-        loading={ctx.isDecrypting}
-        disabled={ctx.isDecryptDisabled}
-        prefix={<Lock />}
+        disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
         title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
         onClick={(e) => {
           e.stopPropagation();
           ctx.onDecrypt();
         }}
       >
-        Decrypt
+        {ctx.isDecrypting ? (
+          <Spinner size={10} />
+        ) : (
+          <Lock className="h-3 w-3" />
+        )}
+        <span>Decrypt</span>
       </Button>
     );
   }
@@ -201,7 +205,7 @@ function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
       }}
       title={`View stream: ${streamRef.streamId}`}
     >
-      <span>📡</span>
+      <Radio className="size-3 shrink-0" aria-hidden />
       <span>{streamRef.streamId}</span>
     </button>
   );
@@ -303,8 +307,12 @@ function DecodedBytesInspector({
         onClick={() => setExpanded((value) => !value)}
         title={`${source.type} decoded as ${source.encoding.toUpperCase()} text`}
       >
-        <span className="select-none text-gray-700">
-          {expanded ? '▼' : '▶'}
+        <span className="flex h-[1lh] shrink-0 items-center text-gray-700">
+          {expanded ? (
+            <ChevronDown className="size-3" aria-hidden />
+          ) : (
+            <ChevronRight className="size-3" aria-hidden />
+          )}
         </span>
         <span className="min-w-0 break-words">{source.rawSummary}</span>
       </button>
