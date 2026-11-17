@@ -23,20 +23,17 @@ const singleFlight = globalSingleton(
   2,
   () => ({ inFlight: new Map<string, InFlightExecution>() })
 );
-// In-flight executions that entered at `debug`: fresh inline claims, whose
-// overlap with another delivery is an ordinary wake race. A separate singleton
-// (not a new field on the one above) so copies of this module from different
-// package versions in one process still share `inFlight`.
-const quietWinners = globalSingleton(
-  '@workflow/core//stepSingleFlightQuietWinners',
-  1,
-  () => ({ executions: new WeakSet<Promise<unknown>>() })
-);
 
 interface InFlightExecution {
   settlement: Promise<unknown>;
   /** The winner's `winnerState`, handed to each loser's `loserResult`. */
   state: unknown;
+  /**
+   * The winner entered at `debug`: an inline execution whose caller expects
+   * overlap (a fresh claim racing an ordinary wake replay). Optional so the map
+   * stays shared with copies of this module that predate it.
+   */
+  quiet?: boolean;
 }
 
 /** A settled winner, as a loser's `loserResult` sees it. */
@@ -67,14 +64,12 @@ export async function runSingleFlight<R, S = undefined>(
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
   if (existing) {
-    // Fresh inline claims can overlap during ordinary wake replays, whichever
-    // side loses: a queued delivery of a step that a fresh inline claim is
-    // already running is the same race. Only contention between two
-    // non-fresh executions (queued or owned recovery) warns: repeated overlap
-    // there can indicate expiring leases.
-    const level = quietWinners.executions.has(existing.settlement)
-      ? 'debug'
-      : logLevel;
+    // Inline executions overlap during ordinary wake replays, whichever side
+    // loses: a queued delivery of a step an inline claim is already running
+    // is the same race (workflow#4545). Only contention where neither side
+    // expects overlap (queued or owned recovery) warns: repeated overlap there
+    // can indicate expiring leases.
+    const level = existing.quiet ? 'debug' : logLevel;
     runtimeLogger[level](
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
@@ -106,8 +101,11 @@ export async function runSingleFlight<R, S = undefined>(
   }
 
   const promise = execute();
-  singleFlight.inFlight.set(key, { settlement: promise, state: winnerState });
-  if (logLevel === 'debug') quietWinners.executions.add(promise);
+  singleFlight.inFlight.set(key, {
+    settlement: promise,
+    state: winnerState,
+    quiet: logLevel === 'debug',
+  });
   try {
     return await promise;
   } finally {
