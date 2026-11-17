@@ -30,7 +30,10 @@ const NULL = sql`NULL`;
  *
  * **The rows themselves stay.** Only user data goes, so a purged run is still
  * listable and still traceable — it just reads back as expired. That is the
- * contract the Vercel World implements and this one matches it.
+ * contract the Vercel World implements and this one matches it. An event
+ * loses its whole `eventData`, which most event types require, so the event
+ * reads go through `parseStoredEvent` (`./stored-event.ts`) and return it with
+ * its id, type, correlation id and time.
  *
  * **Ordering is a non-issue here, deliberately.** The rule it would otherwise
  * have to satisfy is that data must become *unreadable* no later than it

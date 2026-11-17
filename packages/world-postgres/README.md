@@ -322,6 +322,10 @@ retained Hook's run ends and its deadline passes, reads treat the Hook as absent
 and its token can be reused. If the token is never reused, the expired
 `workflow_hooks` row remains.
 
+A run started with `experimental_retention: 0` has its user data deleted when it
+finishes. Its run, step, event and hook rows stay. Each of its events reads back
+with its id, type, correlation id and time, and without `eventData`.
+
 ## Features
 
 - **Durable storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
