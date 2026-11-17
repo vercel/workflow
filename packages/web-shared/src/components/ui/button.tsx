@@ -1,7 +1,8 @@
-import { Slot } from '@radix-ui/react-slot';
+import { Slot, Slottable } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import * as React from 'react';
 import { cn } from '../../lib/cn';
+import { Spinner } from './spinner';
 
 /**
  * The button for the observability UI.
@@ -97,29 +98,101 @@ const buttonVariants = cva(
   }
 );
 
-export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
+export type ButtonProps = Omit<
+  React.ButtonHTMLAttributes<HTMLButtonElement>,
+  'prefix'
+> &
   VariantProps<typeof buttonVariants> & {
     /** Render the child element instead of a `<button>`, keeping the styles. */
     asChild?: boolean;
+    /**
+     * Show a spinner in place of `prefix`, disable the button and set
+     * `aria-busy`. The label stays, and with a `prefix` the width does not
+     * change, because the spinner takes the prefix's slot.
+     */
+    loading?: boolean;
+    /** Element before the label, usually an icon. */
+    prefix?: React.ReactNode;
+    /** Element after the label, usually an icon. */
+    suffix?: React.ReactNode;
   };
+
+/**
+ * A fixed slot, as wide as the size's icon, so swapping the prefix for the
+ * spinner doesn't move the label.
+ */
+function PrefixSlot({
+  size,
+  loading,
+  children,
+}: Pick<ButtonProps, 'size' | 'loading' | 'children'>) {
+  const small = size === 'tiny' || size === 'small';
+  return (
+    <span
+      aria-hidden={loading || undefined}
+      className={cn(
+        'inline-flex shrink-0 items-center justify-center',
+        size === 'tiny' ? 'min-w-3' : 'min-w-4'
+      )}
+    >
+      {loading ? (
+        <Spinner size={small ? 'sm' : 'md'} className="text-current" />
+      ) : (
+        children
+      )}
+    </span>
+  );
+}
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   (
-    { className, variant, size, shape, asChild = false, type, ...props },
+    {
+      className,
+      variant,
+      size,
+      shape,
+      asChild = false,
+      loading = false,
+      prefix,
+      suffix,
+      disabled,
+      type,
+      children,
+      ...props
+    },
     ref
   ) => {
     const Comp = asChild ? Slot : 'button';
+    const hasPrefix = loading || prefix != null;
+    const shared = {
+      ref,
+      // `type` only means anything on a real <button>; forwarding it to the
+      // anchor (or whatever else) an `asChild` call site renders would be
+      // invalid HTML.
+      type: asChild ? type : (type ?? 'button'),
+      className: cn(buttonVariants({ variant, size, shape, className })),
+      disabled: asChild ? disabled : disabled || loading,
+      'aria-busy': loading || undefined,
+      'aria-disabled': asChild && loading ? true : undefined,
+      ...props,
+    };
+
+    // Without a prefix or suffix the children go through untouched, which
+    // `asChild` needs: Slot only accepts a single child element.
+    if (!hasPrefix && suffix == null) {
+      return <Comp {...shared}>{children}</Comp>;
+    }
 
     return (
-      <Comp
-        ref={ref}
-        // `type` only means anything on a real <button>; forwarding it to the
-        // anchor (or whatever else) an `asChild` call site renders would be
-        // invalid HTML.
-        type={asChild ? type : (type ?? 'button')}
-        className={cn(buttonVariants({ variant, size, shape, className }))}
-        {...props}
-      />
+      <Comp {...shared}>
+        {hasPrefix ? (
+          <PrefixSlot size={size} loading={loading}>
+            {prefix}
+          </PrefixSlot>
+        ) : null}
+        {asChild ? <Slottable>{children}</Slottable> : children}
+        {suffix}
+      </Comp>
     );
   }
 );

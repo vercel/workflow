@@ -1,6 +1,7 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   Button,
+  Spinner,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -15,7 +16,6 @@ import {
   AlertCircle,
   ArrowDownAZ,
   ArrowUpAZ,
-  Loader2,
   MoreHorizontal,
   RefreshCw,
   XCircle,
@@ -853,7 +853,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                 <TableRow>
                   <TableCell colSpan={7} className="h-[400px]">
                     <div className="flex items-center justify-center h-full">
-                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                      <Spinner size="2xl" />
                     </div>
                   </TableCell>
                 </TableRow>
@@ -946,7 +946,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                 <TableRow>
                   <TableCell colSpan={7} className="py-3">
                     <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Spinner size="md" />
                       Loading more runs…
                     </div>
                   </TableCell>
@@ -992,13 +992,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                   size="small"
                   className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                   onClick={handleBulkReenqueue}
-                  disabled={isBulkReenqueuing || selectedRuns.length === 0}
+                  loading={isBulkReenqueuing}
+                  disabled={selectedRuns.length === 0}
+                  prefix={<Zap />}
                 >
-                  {isBulkReenqueuing ? (
-                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  ) : (
-                    <Zap className="h-4 w-4 mr-1" />
-                  )}
                   {isBulkReenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
                 </Button>
               </TooltipTrigger>
@@ -1018,13 +1015,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                       size="small"
                       className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                       onClick={handleBulkCancel}
-                      disabled={isBulkCancelling || exceedsBulkCancelLimit}
+                      loading={isBulkCancelling}
+                      disabled={exceedsBulkCancelLimit}
+                      prefix={<XCircle />}
                     >
-                      {isBulkCancelling ? (
-                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                      ) : (
-                        <XCircle className="h-4 w-4 mr-1" />
-                      )}
                       Cancel{' '}
                       {cancellableSelectedRuns.length !==
                       selection.selectionCount

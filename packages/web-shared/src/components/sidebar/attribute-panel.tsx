@@ -23,6 +23,7 @@ import {
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { Spinner } from '../ui/spinner';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import {
   DetailMonoKeyValueRow,
@@ -861,10 +862,7 @@ export const AttributeBlock = ({
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
         <div className="absolute top-9 right-4">
-          <div
-            className="animate-spin rounded-full h-4 w-4 border-b-2"
-            style={{ borderColor: 'var(--ds-gray-900)' }}
-          />
+          <Spinner size="md" />
         </div>
       )}
       <div key={attribute} className="my-2 flex flex-col gap-0">

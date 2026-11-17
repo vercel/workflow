@@ -724,3 +724,14 @@
     transform: scale(1);
   }
 }
+
+/* Spinner fade. Same name and frames as geistcn's, so the Vercel dashboard's
+   copy and this one are interchangeable. */
+@keyframes spinner-opacity {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.15;
+  }
+}

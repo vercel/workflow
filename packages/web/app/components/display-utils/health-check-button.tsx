@@ -4,7 +4,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@workflow/web-shared';
-import { Activity, Loader2 } from 'lucide-react';
+import { Activity } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { runHealthCheck } from '~/lib/rpc-client';
@@ -49,14 +49,10 @@ export function HealthCheckButton() {
           variant="tertiary"
           size="small"
           onClick={runChecks}
-          disabled={isChecking}
+          loading={isChecking}
+          prefix={<Activity />}
           className="gap-1.5"
         >
-          {isChecking ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Activity className="h-4 w-4" />
-          )}
           <span className="hidden sm:inline">
             {isChecking ? 'Checking...' : 'Health Check'}
           </span>

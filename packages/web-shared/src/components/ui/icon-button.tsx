@@ -14,8 +14,6 @@ const iconButtonVariants = cva(
       variant: {
         tertiary:
           'text-gray-900 enabled:hover:bg-gray-alpha-200 enabled:hover:text-gray-1000 enabled:active:bg-gray-alpha-200 focus-visible:text-gray-1000',
-        muted:
-          'text-gray-900 enabled:hover:bg-gray-alpha-200 enabled:hover:text-gray-1000 enabled:active:bg-gray-alpha-200 focus-visible:text-gray-1000',
       },
       size: {
         tiny: 'h-6 w-6 rounded-[4px] [&_svg]:h-4 [&_svg]:w-4',

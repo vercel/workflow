@@ -1,5 +1,10 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
-import { Check, Copy, Loader2 } from 'lucide-react';
+import {
+  Spinner,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
+import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 import type { EnvMap } from '~/lib/types';
 import { fetchHookToken } from '~/lib/workflow-api-client';
@@ -59,7 +64,7 @@ export function HookTokenCell({ env, runId, hookId }: HookTokenCellProps) {
             aria-label="Copy token"
           >
             {status === 'loading' ? (
-              <Loader2 className="h-3 w-3 text-muted-foreground animate-spin" />
+              <Spinner size="sm" />
             ) : status === 'copied' ? (
               <Check className="h-3 w-3 text-muted-foreground" />
             ) : (

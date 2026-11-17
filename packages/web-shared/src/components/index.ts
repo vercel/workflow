@@ -43,7 +43,7 @@ export { IconButton } from './ui/icon-button';
 export { Kbd } from './ui/kbd';
 export { LoadMoreButton } from './ui/load-more-button';
 export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';
-export { Spinner } from './ui/spinner';
+export { Spinner, type SpinnerProps, type SpinnerSize } from './ui/spinner';
 export {
   Tooltip,
   TooltipContent,

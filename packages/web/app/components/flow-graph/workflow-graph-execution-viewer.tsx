@@ -14,9 +14,9 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
-import { GitBranch, Loader2, X } from 'lucide-react';
+import { GitBranch, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import { formatDuration } from '@workflow/web-shared';
+import { formatDuration, Spinner } from '@workflow/web-shared';
 import { StatusBadge } from '~/components/display-utils/status-badge';
 import { Badge } from '~/components/ui/badge';
 import type {
@@ -816,7 +816,7 @@ function GraphNodeDetailPanel({
         {/* Loading indicator for resolved data */}
         {stepLoading && stepId && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <Spinner size="sm" />
             <span>Loading step data...</span>
           </div>
         )}
