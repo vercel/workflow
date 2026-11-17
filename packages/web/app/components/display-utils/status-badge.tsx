@@ -118,16 +118,16 @@ function ErrorCodeBadge({
           <span className="text-xs font-mono">{errorCode}</span>
           <Button
             variant="tertiary"
-            size="tiny"
+            size="small"
             shape="square"
-            className="h-5 w-5 shrink-0"
+            className="h-5 w-5 shrink-0 [&_svg]:size-3"
             aria-label="Copy error code"
             onClick={handleCopy}
           >
             {copied ? (
-              <Check className="h-2.5 w-2.5 text-muted-foreground" />
+              <Check className="text-muted-foreground" />
             ) : (
-              <Copy className="h-2.5 w-2.5 text-muted-foreground" />
+              <Copy className="text-muted-foreground" />
             )}
           </Button>
         </div>

@@ -42,7 +42,6 @@ import {
 } from '../../lib/stream-display';
 import { Button } from './button';
 import { CLS, JSON_VIEW_STYLES } from './data-inspector.styles';
-import { Spinner } from './spinner';
 
 // ---------------------------------------------------------------------------
 // Decoded byte display (built by `collapseRefs`, rendered by `DataRender`)
@@ -123,21 +122,18 @@ function EncryptedInlineLabel() {
   if (ctx) {
     return (
       <Button
-        size="tiny"
+        size="small"
         className="align-baseline"
-        disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
+        loading={ctx.isDecrypting}
+        disabled={ctx.isDecryptDisabled}
+        prefix={<Lock />}
         title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
         onClick={(e) => {
           e.stopPropagation();
           ctx.onDecrypt();
         }}
       >
-        {ctx.isDecrypting ? (
-          <Spinner size={10} />
-        ) : (
-          <Lock className="h-3 w-3" />
-        )}
-        <span>Decrypt</span>
+        Decrypt
       </Button>
     );
   }
