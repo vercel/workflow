@@ -1725,6 +1725,41 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       const field = `inlineWorkflowNames: ${JSON.stringify(names)}`;
       return base ? base.replace(/ }$/, `, ${field} }`) : `, { ${field} }`;
     };
+    // The app's serde registrations (classes the VM revives) go in one shared
+    // prelude rather than in every entry: each entry evaluates it, in its own
+    // function scope, before its workflow code, so a Function holding several
+    // entries carries it once.
+    let hasPrelude = false;
+    if (discoveredEntries.discoveredSerdeFiles.size > 0) {
+      const preludeFile = join(outDir, '_serde-prelude.js');
+      const tmp = `${preludeFile}.__wf_tmp.js`;
+      const prelude = await this.createWorkflowsBundle({
+        inputFiles: [],
+        outfile: tmp,
+        bundleFinalOutput: false,
+        keepInterimBundleContext: false,
+        tsconfigPath,
+        discoveredEntries: {
+          ...discoveredEntries,
+          discoveredWorkflows: new Set(),
+        },
+      });
+      const { unlink } = await import('node:fs/promises');
+      await Promise.all(
+        [tmp, `${tmp}.debug.json`].map((f) => unlink(f).catch(() => {}))
+      );
+      if (prelude.interimBundleText) {
+        const escaped = prelude.interimBundleText.replace(/[\\`$]/g, '\\$&');
+        await this.writeGeneratedFile(
+          preludeFile,
+          `// biome-ignore-all lint: generated file
+/* eslint-disable */
+export const serdePrelude = \`(function () {\n${escaped}\n})();\n\`;
+`
+        );
+        hasPrelude = true;
+      }
+    }
     for (const file of [...discoveredEntries.discoveredWorkflows].sort()) {
       const real = await realpath(file).catch(() => file);
       const slug = `${basename(file)
@@ -1747,9 +1782,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           // Measurement knob for the bundling prototype: leave out the
           // app-wide serde registrations (not safe in general: a class the
           // workflow's VM must revive may live in one of them).
-          ...(process.env.WORKFLOW_INLINE_ENTRY_SERDE === 'none'
-            ? { discoveredSerdeFiles: new Set<string>() }
-            : {}),
+          // In the shared prelude instead (see above).
+          discoveredSerdeFiles: new Set<string>(),
         },
       });
       const { unlink } = await import('node:fs/promises');
@@ -1769,8 +1803,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
-
-const workflowCode = \`${escaped}\`;
+${hasPrelude ? "import { serdePrelude } from './_serde-prelude.js';\n" : ''}
+const workflowCode = ${hasPrelude ? 'serdePrelude + ' : ''}\`${escaped}\`;
 
 workflowEntrypoint(workflowCode${optionsCode(workflowIds)});
 `
