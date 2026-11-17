@@ -163,6 +163,12 @@ function TraceViewerContent({
 
   const reducedMotion = useReducedMotion();
 
+  const [isLanding, setIsLanding] = useState(activeSpanId !== null);
+  useEffect(() => {
+    const timer = setTimeout(() => setIsLanding(false), 1000);
+    return () => clearTimeout(timer);
+  }, []);
+
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
 
@@ -477,6 +483,7 @@ function TraceViewerContent({
     >
       <div
         id="trace-parent"
+        data-span-landing={isLanding || undefined}
         className="@container flex-1 min-w-0 grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <Minimap
