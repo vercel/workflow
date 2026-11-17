@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-cloudflare",
-  "version": "5.0.0",
+  "version": "0.0.0",
   "description": "Experimental Workflow World for Cloudflare Workers: each run is a Durable Object that stores and runs it",
   "type": "module",
   "main": "dist/index.js",
