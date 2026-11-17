@@ -397,14 +397,16 @@ export function createEventsStorage(
     }
     store.setRateTat(call.key, decision.tatUs);
     if (decision.acquireAtUs <= nowUs) {
-      // Rounded down, so never after the event's own createdAt.
+      // Never after the event's own createdAt: rounded down, and that time
+      // was read a moment before this one.
+      const acquireAtMs = Math.min(
+        Math.floor(decision.acquireAtUs / 1000),
+        new Date(event.createdAt).getTime()
+      );
       return {
         ...event,
         eventType: 'rate_acquired',
-        eventData: {
-          ...request,
-          acquireAt: new Date(Math.floor(decision.acquireAtUs / 1000)),
-        },
+        eventData: { ...request, acquireAt: new Date(acquireAtMs) },
       } as Event;
     }
     // Rounded up, so the run never wakes before its slot.
