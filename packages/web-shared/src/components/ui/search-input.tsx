@@ -1,7 +1,14 @@
 'use client';
 
 import { Search, X } from 'lucide-react';
-import { type ComponentProps, type ReactNode, useId, useRef } from 'react';
+import {
+  type ComponentProps,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 import { cn } from '../../lib/cn';
 import { Kbd } from './kbd';
 
@@ -23,7 +30,7 @@ export type SearchInputProps = Omit<
  * The search bar at the top of a list or trace pane: a search icon, the
  * field, and a clear button that shows while there is a query. Escape clears
  * a non-empty query. The whole bar shows Geist's focus outline while the
- * field has focus.
+ * field has keyboard focus.
  */
 export function SearchInput({
   value,
@@ -32,11 +39,36 @@ export function SearchInput({
   className,
   id,
   onKeyDown,
+  onFocus,
+  onBlur,
   ...props
 }: SearchInputProps): ReactNode {
   const generatedId = useId();
   const inputId = id ?? generatedId;
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Text fields match `:focus-visible` however they were focused, clicks
+  // included, so the bar tracks the last input instead and draws its outline
+  // only when the field gains focus from the keyboard.
+  const lastInputRef = useRef<'keyboard' | 'pointer'>('keyboard');
+  const [focusVisible, setFocusVisible] = useState(false);
+
+  useEffect(() => {
+    const onPointerDown = () => {
+      lastInputRef.current = 'pointer';
+    };
+    const onDocumentKeyDown = (e: KeyboardEvent) => {
+      // Shortcuts such as Cmd+Tab don't move focus within the page.
+      if (e.metaKey || e.altKey || e.ctrlKey) return;
+      lastInputRef.current = 'keyboard';
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onDocumentKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onDocumentKeyDown, true);
+    };
+  }, []);
 
   const clear = () => {
     onValueChange('');
@@ -49,7 +81,8 @@ export function SearchInput({
         '@container flex h-10 min-h-10 shrink-0 items-center gap-1.5 border-b border-gray-alpha-400 bg-background-100 pr-2',
         // Geist's focus outline token; the fallback is its value, for hosts
         // that only define `--ds-focus-color`.
-        'has-[input:focus-visible]:[outline:var(--ds-focus-ring-outline,2px_solid_var(--ds-focus-color))] has-[input:focus-visible]:-outline-offset-2',
+        focusVisible &&
+          '[outline:var(--ds-focus-ring-outline,2px_solid_var(--ds-focus-color))] -outline-offset-2',
         className
       )}
     >
@@ -66,6 +99,14 @@ export function SearchInput({
         spellCheck={false}
         value={value}
         onChange={(e) => onValueChange(e.target.value)}
+        onFocus={(e) => {
+          onFocus?.(e);
+          setFocusVisible(lastInputRef.current === 'keyboard');
+        }}
+        onBlur={(e) => {
+          onBlur?.(e);
+          setFocusVisible(false);
+        }}
         onKeyDown={(e) => {
           onKeyDown?.(e);
           if (e.defaultPrevented) return;
