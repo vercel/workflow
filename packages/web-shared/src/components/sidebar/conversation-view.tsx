@@ -1,4 +1,5 @@
 import type { ModelMessage } from 'ai';
+import { Check, Wrench } from 'lucide-react';
 import { Streamdown } from 'streamdown';
 import { DataInspector } from '../ui/data-inspector';
 
@@ -80,7 +81,7 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
     return (
       <div className="rounded border border-purple-400 bg-purple-100 px-2 py-1.5">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
-          <span>🔧</span>
+          <Wrench className="size-3 shrink-0 text-purple-900" aria-hidden />
           <span className="text-purple-900">{part.toolName}</span>
         </div>
         {part.input != null && (
@@ -100,7 +101,7 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
     return (
       <div className="rounded border border-green-400 bg-green-100 px-2 py-1.5">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
-          <span>✓</span>
+          <Check className="size-3 shrink-0 text-green-900" aria-hidden />
           <span className="text-green-900">{part.toolName} result</span>
         </div>
         {part.output != null && (

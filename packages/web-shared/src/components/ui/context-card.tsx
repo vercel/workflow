@@ -274,7 +274,7 @@ export function ContextCardProvider({
               >
                 <div
                   className={cn(
-                    'absolute bg-background-100 bg-clip-padding rounded-[6px] overflow-visible pointer-events-none z-[1000000] shadow-[var(--ds-shadow-tooltip),0_0_0_1px_var(--ds-background-100)] w-fit [--context-card-tip-stroke:#DBDBDB] dark-theme:[--context-card-tip-stroke:#252525]',
+                    'absolute bg-background-100 bg-clip-padding rounded-[6px] overflow-visible pointer-events-none z-[1000000] shadow-[var(--ds-shadow-tooltip)] w-fit',
                     skipTransition
                       ? '!transition-none'
                       : 'transition-[transform,width,height] duration-[250ms] ease-[easing-function:cubic-bezier(0.29,0.31,0.05,0.96)] will-change-[transform,width,height] motion-reduce:!transition-none'
@@ -328,7 +328,7 @@ export function ContextCardProvider({
                         <path
                           d="M15 -0.5V0.5H12.9834L12.8184 0.508789C12.4377 0.550822 12.0853 0.738056 11.8359 1.03418L8.53027 4.95996C7.73114 5.90893 6.26886 5.90892 5.46973 4.95996L2.16406 1.03418C1.87905 0.695733 1.45907 0.5 1.0166 0.5H-1V-0.5H15Z"
                           fill="var(--ds-background-100)"
-                          className="fill-background-100 stroke-[var(--context-card-tip-stroke)]"
+                          className="fill-background-100 stroke-gray-alpha-400"
                         />
                       </g>
                       <defs>
