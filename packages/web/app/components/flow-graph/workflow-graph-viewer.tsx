@@ -28,7 +28,7 @@ import type {
 // SHARED TYPES
 // ============================================================================
 
-interface NodeStyleResult {
+export interface NodeStyleResult {
   color: string;
   backgroundColor: string;
   borderColor: string;
@@ -98,7 +98,7 @@ interface WorkflowGraphViewerProps {
 // ============================================================================
 
 // Custom Loop Node component with left-side handles for self-loop edge
-function LoopNodeComponent({ data, selected }: NodeProps) {
+export function LoopNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as LoopNodeData;
 
   return (
@@ -180,7 +180,7 @@ export function ParallelGroupComponent({ data }: { data: ParallelGroupData }) {
 }
 
 // Custom Diamond Node component for conditional nodes
-function DiamondNodeComponent({ data, selected }: NodeProps) {
+export function DiamondNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as DiamondNodeData;
 
   // Diamond size
@@ -250,7 +250,7 @@ function DiamondNodeComponent({ data, selected }: NodeProps) {
 }
 
 // Custom node components - base types for static graph viewing
-const baseNodeTypes = {
+export const baseNodeTypes = {
   loopNode: LoopNodeComponent,
   parallelGroup: ParallelGroupComponent,
   diamondNode: DiamondNodeComponent,
@@ -266,21 +266,21 @@ export interface SelfLoopEdgeStyle {
 }
 
 // Default self-loop edge style (gray for static view)
-const defaultSelfLoopStyle: SelfLoopEdgeStyle = {
+export const defaultSelfLoopStyle: SelfLoopEdgeStyle = {
   strokeColor: '#6b7280', // gray-500
-  labelBgClass:
-    'bg-gray-200 dark:bg-gray-700 text-black dark:text-gray-200 border-gray-400 dark:border-gray-500',
+  labelBgClass: 'bg-gray-200 text-gray-1000 border-gray-400',
 };
 
 // Execution self-loop edge style (purple for execution view)
 export const executionSelfLoopStyle: SelfLoopEdgeStyle = {
   strokeColor: '#a855f7', // purple-500
-  labelBgClass:
-    'bg-purple-200 dark:bg-purple-900/50 text-black dark:text-purple-200 border-purple-400 dark:border-purple-600',
+  labelBgClass: 'bg-purple-200 text-purple-1000 border-purple-400',
 };
 
 // Factory to create a self-loop edge component with custom styling
-function createSelfLoopEdge(style: SelfLoopEdgeStyle = defaultSelfLoopStyle) {
+export function createSelfLoopEdge(
+  style: SelfLoopEdgeStyle = defaultSelfLoopStyle
+) {
   return function SelfLoopEdge({
     id,
     sourceX,
@@ -364,26 +364,26 @@ export function createEdgeTypes(
 // Get base node background color based on node kind
 export function getNodeBackgroundColor(nodeKind: string): string {
   if (nodeKind === 'workflow_start' || nodeKind === 'workflow_end') {
-    return 'var(--node-bg-start)'; // blue
+    return 'var(--ds-blue-100)';
   }
   if (nodeKind === 'primitive') {
-    return 'var(--node-bg-primitive)'; // orange
+    return 'var(--ds-amber-100)';
   }
   if (nodeKind === 'agent') {
-    return 'var(--node-bg-agent)'; // pink
+    return 'var(--ds-pink-100)';
   }
   if (nodeKind === 'tool') {
-    return 'var(--node-bg-tool)'; // purple
+    return 'var(--ds-purple-100)';
   }
   if (nodeKind === 'conditional') {
-    return 'var(--node-bg-conditional)'; // red
+    return 'var(--ds-red-100)';
   }
   // Default for steps - green
-  return 'var(--node-bg-step)';
+  return 'var(--ds-green-100)';
 }
 
 // Get default border color for a node kind
-function getNodeBorderColor(nodeKind: string): string {
+export function getNodeBorderColor(nodeKind: string): string {
   if (nodeKind === 'workflow_start' || nodeKind === 'workflow_end') {
     return '#60a5fa'; // blue-400
   }
@@ -404,7 +404,7 @@ function getNodeBorderColor(nodeKind: string): string {
 }
 
 // Get node styling based on node kind - theme-aware colors using CSS variables
-function getNodeStyle(nodeKind: string): NodeStyleResult {
+export function getNodeStyle(nodeKind: string): NodeStyleResult {
   return {
     color: 'var(--card-foreground)',
     backgroundColor: getNodeBackgroundColor(nodeKind),
@@ -415,53 +415,31 @@ function getNodeStyle(nodeKind: string): NodeStyleResult {
 // Get node icon based on node kind
 export function getNodeIcon(nodeKind: string, label?: string) {
   if (nodeKind === 'workflow_start') {
-    return (
-      <PlayCircle className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
-    );
+    return <PlayCircle className="h-3.5 w-3.5 text-blue-900" />;
   }
   if (nodeKind === 'workflow_end') {
-    return (
-      <StopCircle className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
-    );
+    return <StopCircle className="h-3.5 w-3.5 text-blue-900" />;
   }
   if (nodeKind === 'primitive') {
     if (label === 'sleep') {
-      return (
-        <Clock className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
-      );
+      return <Clock className="h-3.5 w-3.5 text-amber-900" />;
     }
     if (label === 'createHook' || label === 'createWebhook') {
-      return (
-        <Link2 className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
-      );
+      return <Link2 className="h-3.5 w-3.5 text-amber-900" />;
     }
-    return (
-      <Clock className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
-    );
+    return <Clock className="h-3.5 w-3.5 text-amber-900" />;
   }
   if (nodeKind === 'agent') {
-    return (
-      <span className="h-3.5 w-3.5 text-pink-600 dark:text-pink-400 text-xs">
-        🤖
-      </span>
-    );
+    return <span className="h-3.5 w-3.5 text-pink-900 text-xs">🤖</span>;
   }
   if (nodeKind === 'tool') {
-    return (
-      <span className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 text-xs">
-        🔧
-      </span>
-    );
+    return <span className="h-3.5 w-3.5 text-purple-900 text-xs">🔧</span>;
   }
   if (nodeKind === 'conditional') {
-    return (
-      <span className="h-3.5 w-3.5 text-red-600 dark:text-red-400 text-xs">
-        ◇
-      </span>
-    );
+    return <span className="h-3.5 w-3.5 text-red-900 text-xs">◇</span>;
   }
   // Default for steps - use Zap icon
-  return <Zap className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
+  return <Zap className="h-3.5 w-3.5 text-green-900" />;
 }
 
 // Layout result type

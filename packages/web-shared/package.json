@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web-shared",
   "description": "Shared components for Workflow Observability UI",
-  "version": "5.1.1",
+  "version": "5.2.0",
   "private": false,
   "files": [
     "dist",
@@ -64,6 +64,7 @@
     "react-dom": "19.3.1",
     "react-use-measure": "2.1.7",
     "react-virtuoso": "4.18.20",
+    "shiki": "4.0.0",
     "sonner": "2.0.8",
     "streamdown": "2.7.1",
     "tailwind-merge": "3.5.0",
