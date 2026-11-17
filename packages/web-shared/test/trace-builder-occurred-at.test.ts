@@ -1,6 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { otelTimeToMs } from '../src/components/workflow-traces/trace-time-utils.js';
+import { highResTimeToMs } from '../src/lib/time.js';
 import { buildTrace } from '../src/lib/trace-builder.js';
 
 const BASE_TIME = new Date('2026-03-16T00:00:00Z');
@@ -77,20 +77,20 @@ describe('trace builder occurredAt timing', () => {
       throw new Error('Expected step span to be built');
     }
 
-    expect(otelTimeToMs(stepSpan.startTime)).toBe(
+    expect(highResTimeToMs(stepSpan.startTime)).toBe(
       stepCreatedOccurredAt.getTime()
     );
     expect(stepSpan.activeStartTime).toBeDefined();
     if (!stepSpan.activeStartTime) {
       throw new Error('Expected step span active start time to be built');
     }
-    expect(otelTimeToMs(stepSpan.activeStartTime)).toBe(
+    expect(highResTimeToMs(stepSpan.activeStartTime)).toBe(
       stepStartedOccurredAt.getTime()
     );
-    expect(otelTimeToMs(stepSpan.endTime)).toBe(
+    expect(highResTimeToMs(stepSpan.endTime)).toBe(
       stepCompletedOccurredAt.getTime()
     );
-    expect(otelTimeToMs(stepSpan.duration)).toBe(
+    expect(highResTimeToMs(stepSpan.duration)).toBe(
       stepCompletedOccurredAt.getTime() - stepCreatedOccurredAt.getTime()
     );
 
@@ -101,7 +101,7 @@ describe('trace builder occurredAt timing', () => {
     if (!startMarker) {
       throw new Error('Expected step_started marker to be built');
     }
-    expect(otelTimeToMs(startMarker.timestamp)).toBe(
+    expect(highResTimeToMs(startMarker.timestamp)).toBe(
       stepStartedOccurredAt.getTime()
     );
     const stepData = stepSpan.attributes.data as {

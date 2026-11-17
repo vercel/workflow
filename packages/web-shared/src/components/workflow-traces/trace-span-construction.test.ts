@@ -1,7 +1,7 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
+import { highResTimeToMs } from '../../lib/time';
 import { runToSpan, stepToSpan } from './trace-span-construction';
-import { otelTimeToMs } from './trace-time-utils';
 
 const date = (ms: number) => new Date(ms);
 
@@ -62,11 +62,11 @@ describe('runToSpan', () => {
       date(10_000)
     );
 
-    expect(otelTimeToMs(span.startTime)).toBe(100);
+    expect(highResTimeToMs(span.startTime)).toBe(100);
     expect(
-      span.activeStartTime ? otelTimeToMs(span.activeStartTime) : undefined
+      span.activeStartTime ? highResTimeToMs(span.activeStartTime) : undefined
     ).toBe(200);
-    expect(otelTimeToMs(span.endTime)).toBe(500);
+    expect(highResTimeToMs(span.endTime)).toBe(500);
     expect(
       span.events.find((e) => e.name === 'run_created')?.timestamp
     ).toEqual([0, 100_000_000]);
@@ -105,7 +105,7 @@ describe('runToSpan', () => {
       date(10_000)
     );
 
-    expect(otelTimeToMs(span.startTime)).toBe(300);
+    expect(highResTimeToMs(span.startTime)).toBe(300);
     // Created and started at once: no queued period.
     expect(span.activeStartTime).toBeUndefined();
     expect((span.attributes.data as { createdAt: Date }).createdAt).toEqual(
@@ -197,6 +197,6 @@ describe('stepToSpan', () => {
       status: 'completed',
       attempt: 1,
     });
-    expect(otelTimeToMs(span!.startTime)).toBe(1_000);
+    expect(highResTimeToMs(span!.startTime)).toBe(1_000);
   });
 });

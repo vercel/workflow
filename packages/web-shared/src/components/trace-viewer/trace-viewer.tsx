@@ -12,6 +12,8 @@ import {
 } from 'react';
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
+import { highResTimeToMs } from '../../lib/time';
+import { formatDurationPrecise } from '../../lib/utils';
 import { IconButton } from '../ui/icon-button';
 import { Kbd } from '../ui/kbd';
 import { Spinner } from '../ui/spinner';
@@ -32,7 +34,6 @@ import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
 import type { TraceWithMeta } from './types';
-import { formatDurationPrecise, getHighResInMs } from './util/timing';
 import {
   clampViewportToRoot,
   computeRootBounds,
@@ -280,8 +281,8 @@ function TraceViewerContent({
       const span = trace.spans.find((s) => s.spanId === spanId);
       if (!span) return;
 
-      const spanStart = getHighResInMs(span.startTime);
-      const spanEnd = getHighResInMs(span.endTime);
+      const spanStart = highResTimeToMs(span.startTime);
+      const spanEnd = highResTimeToMs(span.endTime);
       const spanDuration = spanEnd - spanStart;
 
       if (spanDuration > root.duration * 0.8) {

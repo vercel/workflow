@@ -3,10 +3,10 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
+import { formatTimestamp, parseDateValue } from '../../lib/time';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
   Collapsible,
@@ -374,48 +374,12 @@ const getModuleSpecifierFromName = (value: unknown): string => {
   return raw;
 };
 
-const parseDateValue = (value: unknown): Date | null => {
-  if (value == null) {
-    return null;
-  }
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-  if (typeof value === 'string' && value.trim().length === 0) {
-    return null;
-  }
-
-  const date =
-    typeof value === 'number' ? new Date(value) : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-
-const formatLocalMillisecondTime = (date: Date): string =>
-  format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
-
-export const localMillisecondTime = (value: unknown): string => {
-  const date = parseDateValue(value);
-  if (!date) {
-    return '-';
-  }
-
-  return formatLocalMillisecondTime(date);
-};
-
-const localMillisecondTimeOrNull = (value: unknown): string | null => {
-  const date = parseDateValue(value);
-  if (!date) {
-    return null;
-  }
-  return formatLocalMillisecondTime(date);
-};
-
 const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
   const date = parseDateValue(value);
   if (!date) return null;
   return (
     <TimestampTooltip date={date}>
-      <span>{formatLocalMillisecondTime(date)}</span>
+      <span>{formatTimestamp(date)}</span>
     </TimestampTooltip>
   );
 };
@@ -461,8 +425,8 @@ const attributeToDisplayFn: Record<
   isWebhook: (value: unknown) => String(value),
   isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),
-  lastReceivedAt: localMillisecondTimeOrNull,
-  disposedAt: localMillisecondTimeOrNull,
+  lastReceivedAt: timestampWithTooltipOrNull,
+  disposedAt: timestampWithTooltipOrNull,
   // Internal resume plumbing, not surfaced in the UI
   resumeContext: (_value: unknown) => null,
   resumeId: (_value: unknown) => null,

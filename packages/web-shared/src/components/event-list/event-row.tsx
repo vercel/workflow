@@ -8,10 +8,9 @@ import {
   type EventLevel,
   type EventListRow,
   formatSinceStart,
-  formatTimestampParts,
   getEffectiveEventDate,
-  parseEventDate,
 } from '../../lib/event-list-model';
+import { formatTimestampSegments, parseDateValue } from '../../lib/time';
 import { formatDurationPrecise } from '../../lib/utils';
 import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
@@ -24,7 +23,7 @@ import { TimestampTooltip } from '../ui/timestamp-tooltip';
 
 const COL = {
   level: 'w-6 justify-center',
-  time: 'w-[172px]',
+  time: 'w-[192px]',
   since: 'w-[100px]',
   event: 'w-[136px]',
   name: 'w-[200px]',
@@ -62,16 +61,23 @@ function TimestampCell({
   date: Date;
   secondaryClass?: string;
 }) {
-  const parts = formatTimestampParts(date);
+  const segments = formatTimestampSegments(date);
   return (
     <div className={cn(CELL, COL.time, 'tabular-nums')}>
       <TimestampTooltip date={date}>
         {/* The tooltip trigger lays this span out as a flex row, which would
-            trim the space after the day unless whitespace is preserved. */}
+            trim the spaces between segments unless whitespace is preserved. */}
         <span className="whitespace-pre">
-          <span className={secondaryClass}>{`${parts.day} `}</span>
-          {parts.clock}
-          <span className={secondaryClass}>{parts.ms}</span>
+          {segments.map((segment, i) =>
+            segment.secondary ? (
+              // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional
+              <span key={i} className={secondaryClass}>
+                {segment.text}
+              </span>
+            ) : (
+              segment.text
+            )
+          )}
         </span>
       </TimestampTooltip>
     </div>
@@ -211,7 +217,7 @@ export function EventRow({
   showSeparateEventOccurrenceTimestamps = false,
 }: EventRowProps) {
   const { event, level, name, message, notice } = row;
-  const occurredAt = parseEventDate(event.occurredAt);
+  const occurredAt = parseDateValue(event.occurredAt);
   const displayedAt = showSeparateEventOccurrenceTimestamps
     ? new Date(event.createdAt)
     : getEffectiveEventDate(event);

@@ -12,9 +12,10 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
+import { highResTimeToMs } from '../../../lib/time';
+import { formatDurationPrecise } from '../../../lib/utils';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
-import { formatDurationPrecise, getHighResInMs } from '../util/timing';
 import type {
   OffscreenMarkers,
   Segment,
@@ -392,8 +393,8 @@ const TimelineBar = memo(function TimelineBar({
   onSelect: (spanId: string) => void;
   onRevealTime?: (timeMs: number) => void;
 }): ReactNode {
-  const startMs = getHighResInMs(span.startTime);
-  const endMs = getHighResInMs(span.endTime);
+  const startMs = highResTimeToMs(span.startTime);
+  const endMs = highResTimeToMs(span.endTime);
   const totalDurationMs = getSpanDurationMs(span);
 
   const geometry = useMemo(

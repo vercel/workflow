@@ -9,6 +9,7 @@ import {
   buildEventLookups,
   buildEventRow,
 } from '../src/lib/event-list-model.js';
+import { formatTimestampSegments } from '../src/lib/time.js';
 
 const eventsTabEvent = {
   eventId: 'evnt_run_created',
@@ -42,16 +43,21 @@ function renderEventsTabRow(
 }
 
 /**
- * Every timestamp a row shows, in column order. Each is rendered as day,
- * clock and milliseconds in separate elements.
+ * Every timestamp a row shows, in column order, as text. Formatting itself is
+ * covered in `src/lib/time.test.ts`; this checks the row renders it.
  */
 function timestampsIn(markup: string): string[] {
   return [
     ...markup.matchAll(
-      /<span[^>]*>([A-Z]{3} \d{2} )<\/span>(\d{2}:\d{2}:\d{2})<span[^>]*>(\.\d{3})<\/span>/g
+      /<span[^>]*whitespace-pre[^>]*>((?:<span[^>]*>[^<]*<\/span>|<!--[^>]*-->|[^<])*)<\/span>/g
     ),
-  ].map(([, day, clock, ms]) => `${day}${clock}${ms}`);
+  ].map(([, inner]) => inner.replace(/<[^>]+>/g, ''));
 }
+
+const tableTimestamp = (date: Date) =>
+  formatTimestampSegments(date)
+    .map((segment) => segment.text)
+    .join('');
 
 describe('event occurredAt display', () => {
   it('omits cancellation reasons from sidebar event details', () => {
@@ -143,7 +149,9 @@ describe('event occurredAt display', () => {
   it('uses occurrence time as the created timestamp in each Events tab row by default', () => {
     const markup = renderEventsTabRow(eventsTabEvent);
 
-    expect(timestampsIn(markup)).toEqual(['MAR 16 12:34:56.789']);
+    expect(timestampsIn(markup)).toEqual([
+      tableTimestamp(eventsTabEvent.occurredAt as Date),
+    ]);
   });
 
   it('shows separate occurrence and created times in each Events tab row when enabled', () => {
@@ -152,9 +160,24 @@ describe('event occurredAt display', () => {
     });
 
     expect(timestampsIn(markup)).toEqual([
-      'MAR 16 12:34:56.789',
-      'MAR 16 12:34:57.123',
+      tableTimestamp(eventsTabEvent.occurredAt as Date),
+      tableTimestamp(eventsTabEvent.createdAt),
     ]);
+  });
+
+  it('de-emphasises the day and milliseconds in Events tab rows', () => {
+    const markup = renderEventsTabRow(eventsTabEvent);
+
+    for (const segment of formatTimestampSegments(
+      eventsTabEvent.occurredAt as Date
+    )) {
+      if (segment.secondary) {
+        expect(markup).toContain(
+          `<span class="text-gray-900">${segment.text}</span>`
+        );
+      }
+    }
+    expect(markup).toContain('.789');
   });
 
   it('omits the detail panel occurrence row for events without occurredAt', () => {

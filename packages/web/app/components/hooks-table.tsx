@@ -252,7 +252,6 @@ export function HooksTable({
             <RelativeTime
               date={lastRefreshTime}
               className="text-sm text-muted-foreground"
-              type="distance"
             />
           )}
         </div>

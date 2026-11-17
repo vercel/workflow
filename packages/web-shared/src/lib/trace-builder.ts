@@ -15,17 +15,16 @@ import {
 } from '@workflow/world';
 import {
   type GetStepAttributes,
-  getEventTimestamp,
   hookToSpan,
   runToSpan,
   stepToSpan,
   WORKFLOW_LIBRARY,
   waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
-import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { findDuplicateEventIds } from './duplicate-events';
 import { isSealedNoopEvent } from './sealed-events';
 import { findStartHookCreation, type StartHookCreation } from './start-hook';
+import { getEventTimestamp, highResTimeToMs } from './time';
 import type { Span } from './trace-types';
 
 /**
@@ -188,8 +187,8 @@ function cascadeSpans(runSpan: Span, spans: Span[]) {
   const sortedSpans = [
     runSpan,
     ...spans.slice().sort((a, b) => {
-      const aStart = otelTimeToMs(a.startTime);
-      const bStart = otelTimeToMs(b.startTime);
+      const aStart = highResTimeToMs(a.startTime);
+      const bStart = highResTimeToMs(b.startTime);
       return aStart - bStart;
     }),
   ];
@@ -266,7 +265,7 @@ export function buildTrace(
   const sortedCascadingSpans = cascadeSpans(runSpan, spans);
 
   // Compute known duration relative to trace start
-  const traceStartMs = otelTimeToMs(runSpan.startTime);
+  const traceStartMs = highResTimeToMs(runSpan.startTime);
   const knownDurationMs = latestKnownTime.getTime() - traceStartMs;
 
   return {

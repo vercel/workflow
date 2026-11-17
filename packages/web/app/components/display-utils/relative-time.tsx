@@ -1,35 +1,20 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
-import { formatDistanceToNowStrict, formatRelative } from 'date-fns';
+import {
+  formatRelativeTime,
+  formatTimestamp,
+  parseDateValue,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
 import { useEffect, useState } from 'react';
 
 interface RelativeTimeProps {
   date: Date | string;
   className?: string;
-  type?: 'relative' | 'distance';
 }
 
-export function RelativeTime({
-  date,
-  className = '',
-  type = 'relative',
-}: RelativeTimeProps) {
-  const [, setNow] = useState(Date.now());
-  if (typeof date === 'string') {
-    date = new Date(date);
-  }
-  const relativeTime =
-    type === 'relative'
-      ? formatRelative(new Date(date), new Date())
-      : formatDistanceToNowStrict(new Date(date), { addSuffix: true });
-  const absoluteTime = new Date(date).toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    timeZoneName: 'short',
-  });
+export function RelativeTime({ date, className = '' }: RelativeTimeProps) {
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -38,15 +23,18 @@ export function RelativeTime({
     return () => clearInterval(interval);
   }, []);
 
+  const parsed = parseDateValue(date);
+  if (!parsed) return null;
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span className={`${className} cursor-help border-b border-dotted`}>
-          {relativeTime}
+          {formatRelativeTime(parsed, { now })}
         </span>
       </TooltipTrigger>
       <TooltipContent>
-        <p>{absoluteTime}</p>
+        <p>{formatTimestamp(parsed)}</p>
       </TooltipContent>
     </Tooltip>
   );

@@ -1,6 +1,7 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
+import { formatDurationPrecise } from '../../../lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import {
   SleepIcon,
@@ -10,7 +11,6 @@ import {
 } from '../icons';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
-import { formatDurationPrecise } from '../util/timing';
 import { getSpanDurationMs, isSpanCancelled, isSpanErrored } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
