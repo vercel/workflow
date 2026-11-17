@@ -37,6 +37,7 @@ import {
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
+import { getStepFunction } from '../../private.js';
 import { getComputeInstanceId } from '../compute-instance.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
 import {
@@ -52,6 +53,7 @@ import {
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
 import { isWorldValidationFailure } from '../hook-creation.js';
+import { currentInlineDelivery } from '../inline-orchestrator.js';
 import { republishOwedForceClaimVictimWakes } from '../hook-wake.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { settlePhase, startSuspensionHookWrites } from '../suspension-hooks.js';
@@ -814,8 +816,16 @@ export async function handleSuspension({
   const hasHookConflictAwaiter = hooksNeedingCreation.some(
     (item) => item.hasConflictAwaiter === true
   );
-  const inlineCandidates = stepItems.filter((item) =>
-    stepsNeedingCreation.has(item.correlationId)
+  // In an inline delivery (in the route that called `start()` or
+  // `resumeHook()`), a step this process has no function for is not run
+  // here: it is queued to the flow route, which has every step. A
+  // per-workflow inline entry relies on the route's own module graph for the
+  // workflow's steps (see `INLINE_WORKFLOW_LOADERS_KEY`).
+  const runnableHere = (item: StepInvocationQueueItem) =>
+    currentInlineDelivery() === undefined ||
+    getStepFunction(item.stepName) !== undefined;
+  const inlineCandidates = stepItems.filter(
+    (item) => stepsNeedingCreation.has(item.correlationId) && runnableHere(item)
   );
   const inlineSlots = Math.max(
     0,

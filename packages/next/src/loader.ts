@@ -1,5 +1,86 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+
+/** `withWorkflow()`'s loader options (production builds only). */
+type WorkflowLoaderOptions = {
+  /** Path of the per-workflow inline entries' `manifest.json`. */
+  inlineManifest?: string;
+};
+
+let cachedInlineManifest:
+  | {
+      path: string;
+      mtimeMs: number;
+      entries: Record<string, { entry: string; workflowIds: string[] }>;
+    }
+  | undefined;
+
+function readInlineManifest(
+  path: string
+): Record<string, { entry: string; workflowIds: string[] }> | undefined {
+  try {
+    const { mtimeMs } = statSync(path);
+    if (
+      cachedInlineManifest?.path !== path ||
+      cachedInlineManifest.mtimeMs !== mtimeMs
+    ) {
+      cachedInlineManifest = {
+        path,
+        mtimeMs,
+        entries: JSON.parse(readFileSync(path, 'utf-8')),
+      };
+    }
+    return cachedInlineManifest.entries;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Code appended to a workflow module (production server builds): registers,
+ * for each of its workflows, a lazy import of the generated inline entry that
+ * holds the module's workflow code (see `@workflow/core`'s
+ * `INLINE_WORKFLOW_LOADERS_KEY`). The `NEXT_RUNTIME` guard is replaced at
+ * compile time, so browser and edge bundles drop the import.
+ */
+export function inlineEntryRegistrationCode(
+  code: string,
+  filename: string,
+  manifestPath: string | undefined
+): string | undefined {
+  if (!manifestPath) return undefined;
+  const manifest = readInlineManifest(manifestPath);
+  if (!manifest) return undefined;
+  let real = filename;
+  try {
+    real = realpathSync(filename);
+  } catch {
+    // Keep the path as given.
+  }
+  const record = manifest[real] ?? manifest[filename];
+  if (!record) return undefined;
+  // The IDs this module's own stubs carry (`workflow.workflowId`), which is
+  // what `start()` looks the entry up by.
+  const ids = new Set<string>();
+  for (const match of code.matchAll(/\.workflowId = ("[^"\n]+");/g)) {
+    ids.add(JSON.parse(match[1]));
+  }
+  if (ids.size === 0) return undefined;
+  let specifier = relative(dirname(filename), record.entry).replace(/\\/g, '/');
+  if (!specifier.startsWith('.')) specifier = `./${specifier}`;
+  return [
+    '',
+    ';if (process.env.NEXT_RUNTIME === "nodejs") {',
+    '  const __wkf_inline_loaders = (globalThis[Symbol.for("@workflow/core//inlineWorkflowLoaders")] ??= new Map());',
+    `  const __wkf_inline_load = () => import(${JSON.stringify(specifier)});`,
+    ...[...ids].map(
+      (id) =>
+        `  __wkf_inline_loaders.set(${JSON.stringify(id)}, __wkf_inline_load);`
+    ),
+    '}',
+    '',
+  ].join('\n');
+}
 import { transform } from '@swc/core';
 
 type DecoratorOptionsWithConfigPath =
@@ -221,6 +302,7 @@ type WorkflowLoaderContext = {
   ) => void;
   addDependency?: (dependency: string) => void;
   addBuildDependency?: (dependency: string) => void;
+  getOptions?: () => WorkflowLoaderOptions;
 };
 
 export default function workflowLoader(
@@ -319,7 +401,17 @@ export default function workflowLoader(
       transformedMap = result.map;
     }
 
-    return { code: result.code, map: transformedMap };
+    const inlineManifest = this.getOptions?.()?.inlineManifest;
+    if (inlineManifest) registerFileDependency(this, inlineManifest);
+    const registration = inlineEntryRegistrationCode(
+      result.code,
+      filename,
+      inlineManifest
+    );
+    return {
+      code: registration ? `${result.code}${registration}` : result.code,
+      map: transformedMap,
+    };
   };
 
   if (!callback) {
