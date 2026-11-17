@@ -1,98 +1,25 @@
 'use client';
 
-import { type Event, getEventDataRefFields } from '@workflow/world';
-import { ChartGantt, Lock } from 'lucide-react';
-import { useContext, useEffect, useMemo, useState } from 'react';
+import type { Event } from '@workflow/world';
+import { ChartGantt } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import {
   type EventListRow,
-  hasEncryptedValues,
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
-import {
-  AttrSetEventBlock,
-  DetailMonoKeyValueRow,
-} from '../sidebar/attributes-block';
-import { serializeForClipboard } from '../sidebar/copyable-data-block';
-import { CopyButton } from '../trace-viewer/components/copy-button';
+import { EventIdentifiers } from '../event-details/event-identifiers';
+import { EventPayloadSection } from '../event-details/event-payload-section';
+import { EventTypeLabel } from '../event-details/event-type-label';
+import { useEventPayload } from '../event-details/use-event-payload';
+import { DetailMonoKeyValueRow } from '../sidebar/attributes-block';
 import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell';
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
 import { Collapsible } from '../ui/collapsible';
-import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
-import { DecryptButton } from '../ui/decrypt-button';
-import {
-  ErrorStackBlock,
-  isStructuredError,
-  type StructuredErrorRecord,
-} from '../ui/error-stack-block';
 import { IconButton } from '../ui/icon-button';
-import { Skeleton } from '../ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
-
-/**
- * Event types whose eventData contains an error field with a StructuredError.
- */
-const ERROR_EVENT_TYPES = new Set([
-  'step_failed',
-  'step_retrying',
-  'run_failed',
-]);
-
-/** Recursively parse stringified JSON values so escaped slashes / quotes are cleaned up */
-function deepParseJson(value: unknown): unknown {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (
-      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-      (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
-      (trimmed.startsWith('"') && trimmed.endsWith('"'))
-    ) {
-      try {
-        return deepParseJson(JSON.parse(trimmed));
-      } catch {
-        return value;
-      }
-    }
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map(deepParseJson);
-  }
-  if (value !== null && typeof value === 'object') {
-    // Preserve objects with custom constructors (e.g., encrypted markers,
-    // class instance refs); don't destructure them into plain objects
-    if (value.constructor !== Object) {
-      return value;
-    }
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) {
-      result[k] = deepParseJson(v);
-    }
-    return result;
-  }
-  return value;
-}
-
-/**
- * Extracts a structured error from event data, if present.
- * Returns the error object to render with ErrorStackBlock, or null if not applicable.
- */
-function extractStructuredError(
-  data: unknown,
-  eventType?: string
-): StructuredErrorRecord | null {
-  if (!eventType || !ERROR_EVENT_TYPES.has(eventType)) return null;
-  if (data == null || typeof data !== 'object') return null;
-  const record = data as Record<string, unknown>;
-  // Check the nested `error` field first (the StructuredError)
-  if (isStructuredError(record.error)) return record.error;
-  // Some error formats put the message/stack at the top level of eventData.
-  if (isStructuredError(record)) return record;
-  return null;
-}
 
 const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
   queued: 'bg-gray-400',
@@ -100,59 +27,6 @@ const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
   backoff: 'bg-amber-300',
   ok: 'bg-green-700',
 };
-
-function PayloadView({
-  data,
-  eventType,
-  encrypted,
-}: {
-  data: unknown;
-  eventType: string;
-  /** Still sealed with the run's key. */
-  encrypted: boolean;
-}) {
-  const decrypt = useContext(DecryptClickContext);
-  const cleaned = useMemo(() => deepParseJson(data), [data]);
-  if (encrypted && decrypt) {
-    return (
-      <Collapsible defaultOpen label="Payload">
-        <div className="flex items-center gap-2 rounded-md border border-gray-alpha-400 bg-gray-100 py-1.5 pl-3 pr-1.5">
-          <Lock className="h-4 w-4 shrink-0 text-gray-900" />
-          <span className="min-w-0 flex-1 text-copy-13 text-gray-900">
-            Encrypted with this run’s key.
-          </span>
-          <DecryptButton
-            loading={decrypt.isDecrypting}
-            disabled={decrypt.isDecryptDisabled}
-            disabledReason={decrypt.decryptDisabledReason}
-            onClick={decrypt.onDecrypt}
-          />
-        </div>
-      </Collapsible>
-    );
-  }
-  return (
-    <Collapsible
-      defaultOpen
-      label="Payload"
-      actions={
-        <CopyButton
-          copyText={serializeForClipboard(cleaned)}
-          ariaLabel="Copy payload"
-          className="flex h-6 w-6 items-center justify-center rounded-md p-0 hover:bg-gray-alpha-200"
-        />
-      }
-    >
-      {eventType === 'attr_set' ? (
-        <AttrSetEventBlock data={cleaned} />
-      ) : (
-        <div className="overflow-x-auto">
-          <DataInspector data={cleaned} />
-        </div>
-      )}
-    </Collapsible>
-  );
-}
 
 function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
   return (
@@ -220,49 +94,17 @@ function EventDetailsBody({
   encryptionKey,
 }: EventDetailsBodyProps) {
   const { event } = row;
-  // Inline eventData is complete only when the event type has no ref fields
-  // (list endpoints strip input/result/error/payload) or there is no loader.
-  const inlineIsComplete =
-    event.eventData != null &&
-    (!onLoadEventData || getEventDataRefFields(event.eventType).length === 0);
-  const [data, setData] = useState<unknown | null>(
-    cachedEventData ?? (inlineIsComplete ? event.eventData : null)
-  );
-  const [loading, setLoading] = useState(data === null && !!onLoadEventData);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  // Load (or reload once decryption is available) the full payload.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the event or key changes
-  useEffect(() => {
-    if (!onLoadEventData || (inlineIsComplete && !encryptionKey)) return;
-    if (data !== null && !encryptionKey) return;
-    let cancelled = false;
-    setLoadError(null);
-    if (data === null) setLoading(true);
-    onLoadEventData(event)
-      .then((loaded) => {
-        if (cancelled || loaded == null) return;
-        setData(loaded);
-        onCacheEventData(event.eventId, loaded);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setLoadError(
-          err instanceof Error ? err.message : 'Failed to load event details'
-        );
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [event.eventId, encryptionKey]);
+  const payload = useEventPayload({
+    event,
+    onLoadEventData,
+    encryptionKey,
+    initialData: cachedEventData,
+    onLoaded: onCacheEventData,
+  });
 
   const timingTotal = row.segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
   const createdAt = new Date(event.createdAt);
-  const structuredError = extractStructuredError(data, event.eventType);
 
   return (
     <div className="@container px-4 pb-8">
@@ -289,47 +131,16 @@ function EventDetailsBody({
         </Collapsible>
       ) : null}
 
-      {structuredError ? (
-        <Collapsible defaultOpen label="Error">
-          <ErrorStackBlock value={structuredError} />
-        </Collapsible>
-      ) : null}
-
-      {data != null ? (
-        <PayloadView
-          data={data}
-          eventType={event.eventType}
-          encrypted={!encryptionKey && hasEncryptedValues(data)}
-        />
-      ) : loading || loadError ? (
-        <Collapsible defaultOpen label="Payload">
-          {loadError ? (
-            <div className="rounded-md border border-red-400 bg-red-100 px-2 py-1.5 text-copy-13-mono text-red-1000">
-              {loadError}
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2 py-1">
-              <Skeleton className="h-3" style={{ width: '70%' }} />
-              <Skeleton className="h-3" style={{ width: '45%' }} />
-            </div>
-          )}
-        </Collapsible>
-      ) : null}
+      <EventPayloadSection
+        eventType={event.eventType}
+        payload={payload}
+        variant="section"
+        encryptionKey={encryptionKey}
+      />
 
       <Collapsible defaultOpen label="Identifiers">
         <div className="flex flex-col">
-          <DetailMonoKeyValueRow
-            label="Event ID"
-            value={event.eventId}
-            copyText={event.eventId}
-          />
-          {event.correlationId ? (
-            <DetailMonoKeyValueRow
-              label="Correlation ID"
-              value={event.correlationId}
-              copyText={event.correlationId}
-            />
-          ) : null}
+          <EventIdentifiers event={event} />
           <DetailMonoKeyValueRow
             label="Created"
             value={createdAt.toLocaleString()}
@@ -377,7 +188,12 @@ export function EventDetailsPanel({
       width={width}
       itemLabel="event"
       title={
-        <span className="truncate block">{row.name || event.eventType}</span>
+        <EventTypeLabel
+          eventType={event.eventType}
+          label={row.name || event.eventType}
+          notice={row.notice}
+          className={cn('block', row.notice && 'text-gray-700')}
+        />
       }
       actions={
         onViewInTrace ? (
