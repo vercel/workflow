@@ -195,7 +195,7 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 /**
- * Listing-window presets, mirroring front's workflows o11y period picker.
+ * Listing-window presets, mirroring the dashboard's period picker.
  * The selected preset is sent to the backend as an explicit
  * startTime/endTime window so the analytics scan stays bounded. Presets
  * longer than the plan's observability lookback are disabled in the picker

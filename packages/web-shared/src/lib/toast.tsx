@@ -22,8 +22,8 @@ const ToastContext = createContext<ToastAdapter>(defaultAdapter);
  * Provide a custom toast implementation to web-shared components.
  *
  * When not provided, falls back to sonner (works in packages/web).
- * Host apps like vercel-site can supply their own adapter
- * (e.g. Geist useToasts) so toasts render in the host's toast system.
+ * Host apps can supply their own adapter so toasts render in the host's
+ * toast system.
  */
 export function ToastProvider({
   toast,
