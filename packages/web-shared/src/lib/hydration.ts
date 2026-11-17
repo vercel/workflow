@@ -410,7 +410,7 @@ export const ENCRYPTED_DISPLAY_NAME = 'Encrypted';
  * Create a display-friendly object for encrypted data.
  *
  * Uses the same named-constructor trick as the Instance reviver so that
- * ObjectInspector renders the constructor name ("🔒 Encrypted") with no
+ * the inspector renders the constructor name ("Encrypted") with no
  * expandable children. The original encrypted bytes are stored in a
  * non-enumerable property for later decryption.
  */
