@@ -338,6 +338,39 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
 
+  /**
+   * Inserts data chunks in one statement, unless the run's data has been
+   * purged (zero retention): a step still running when its run finished
+   * would otherwise write past the purge. The run's row lock is taken to read
+   * `expired_at`, so a purge in progress is waited for, and a purge that has
+   * not reached the run yet waits for this insert and then clears it.
+   * Whether the chunks were written.
+   */
+  const insertDataChunks = async (
+    runId: string,
+    name: string,
+    chunkIds: string[],
+    chunks: (string | Uint8Array)[]
+  ): Promise<boolean> => {
+    const rows = sql.join(
+      chunks.map(
+        (chunk, i) =>
+          sql`(${chunkIds[i]}, ${name}, ${runId}, ${toBuffer(chunk)}::bytea)`
+      ),
+      sql`, `
+    );
+    const result = await drizzle.execute(sql`
+      INSERT INTO ${streams} (id, stream_id, run_id, data, eof)
+      SELECT v.id, v.stream_id, v.run_id, v.data, false
+      FROM (VALUES ${rows}) AS v (id, stream_id, run_id, data)
+      WHERE NOT COALESCE(
+        (SELECT r.expired_at IS NOT NULL FROM ${Schema.runs} r
+         WHERE r.id = ${runId} FOR SHARE),
+        false
+      )`);
+    return (result.rowCount ?? 0) > 0;
+  };
+
   return {
     streams: {
       async write(
@@ -349,13 +382,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         const chunkId = genChunkId();
-        await drizzle.insert(streams).values({
-          chunkId,
-          streamId: name,
-          runId,
-          chunkData: toBuffer(chunk),
-          eof: false,
-        });
+        if (!(await insertDataChunks(runId, name, [chunkId], [chunk]))) return;
         await notifyStream(
           JSON.stringify(
             StreamPublishMessage.encode({
@@ -380,15 +407,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         // Batch insert all chunks in a single query
-        await drizzle.insert(streams).values(
-          chunks.map((chunk, i) => ({
-            chunkId: chunkIds[i],
-            streamId: name,
-            runId,
-            chunkData: toBuffer(chunk),
-            eof: false,
-          }))
-        );
+        if (!(await insertDataChunks(runId, name, chunkIds, chunks))) return;
 
         // Notify for each chunk (could be batched in future if needed)
         for (const chunkId of chunkIds) {

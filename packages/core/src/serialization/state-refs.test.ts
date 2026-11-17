@@ -261,6 +261,71 @@ describe('frozen values stored by reference', () => {
     expect(read(output2, replay).session.history.at(-1).content).toBe(message);
   });
 
+  it('indexes a source in memory linear in its size, and refers only where that is shorter', () => {
+    const { output1 } = session();
+    // A long key above many long strings: each string's path holds the key.
+    const key = 'k'.repeat(256 * 1024);
+    const leaves = Array.from({ length: 4096 }, (_, i) =>
+      `${i}`.padEnd(128, '.')
+    );
+    const short = 'Weather in Oslo for the next three days, please. '.repeat(4);
+    const payload = { [key]: leaves, short };
+    const replay = new StateContext();
+    const started = Date.now();
+    replay.addSource('run', payload);
+    expect(Date.now() - started).toBeLessThan(2_000);
+
+    const v1 = read(output1, replay).session;
+    const s2 = produce(v1 as Session, (d) => {
+      d.history.push(
+        { role: 'user', content: leaves[7] },
+        { role: 'user', content: short }
+      );
+    });
+    const output2 = write({ session: s2 }, replay);
+    // The string below the long key is written as it is, not as a reference
+    // larger than itself; the other one is a reference.
+    expect(output2.byteLength).toBeLessThan(2_000);
+    expect(text(output2)).toContain(leaves[7]);
+    expect(text(output2)).not.toContain('Weather in Oslo');
+    const recovered = cold(output1);
+    recovered.addSource('run', payload);
+    expect(read(output2, recovered).session).toStrictEqual(s2);
+  });
+
+  it('indexes a source that holds one object many times once', () => {
+    const long = 'x'.repeat(200);
+    let shared: Record<string, unknown> = { long };
+    for (let i = 0; i < 60; i++) shared = { a: shared, b: shared };
+    const context = new StateContext();
+    const started = Date.now();
+    context.addSource('run', shared);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('resolves references from writers that indexed every string', () => {
+    const { output1 } = session();
+    const message = 'Weather in Oslo for the next three days, please. '.repeat(
+      4
+    );
+    const payload = { a: [{ b: message }] };
+    const writer = new StateContext();
+    writer.addSource('run', payload);
+    const v1 = read(output1, writer).session;
+    const s2 = produce(v1 as Session, (d) => {
+      d.history.push({ role: 'user', content: message });
+    });
+    const output2 = write({ session: s2 }, writer);
+    expect(text(output2)).toContain('StateSrcV1');
+    const reader = cold(output1);
+    reader.addSource('run', payload);
+    expect(read(output2, reader).session).toStrictEqual(s2);
+    // A path the source does not hold, or one with an index as a key, is missing.
+    const other = cold(output1);
+    other.addSource('run', { a: { 0: { b: message } } });
+    expect(() => read(output2, other)).toThrow(/Missing workflow state source/);
+  });
+
   it('never refers to a version that only a step input carried', () => {
     const { body, output1 } = session();
     const v1 = read(output1, body).session as Session;
@@ -658,6 +723,30 @@ describe('frozen values stored by reference', () => {
     expect(() => new StateContext().ingest(payload)).toThrow(
       /cannot be recovered without running workflow code/
     );
+  });
+
+  it('checks state that holds one Map many times once', () => {
+    let shared: Map<string, unknown> = new Map([['leaf', 1]]);
+    for (let i = 0; i < 40; i++)
+      shared = new Map<string, unknown>([
+        ['a', shared],
+        ['b', shared],
+      ]);
+    const value = Object.freeze({ m: shared });
+    const started = Date.now();
+    expect(isFrozenState(value)).toBe(true);
+    const output = write({ value }, new StateContext());
+    expect(text(output)).toContain('"full"');
+    // Cold recovery checks the value for placeholders, as does inspection.
+    cold(output);
+    const inspecting = new StateContext();
+    inspecting.allowPlaceholders = true;
+    inspecting.placeholderFor({ kind: 'patch', version: 'v0' });
+    inspecting.ingest(
+      decodeFormatPrefix(output).payload as Uint8Array,
+      getCommonRevivers(globalThis) as Record<string, (v: unknown) => unknown>
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('serializes a large frozen array', () => {

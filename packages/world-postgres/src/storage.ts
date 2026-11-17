@@ -97,7 +97,10 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
-import { purgeRunUserDataIfZeroRetention } from './retention.js';
+import {
+  purgeRunUserDataIfZeroRetention,
+  scrubStepWriteIfRunPurged,
+} from './retention.js';
 import { announceRunEvents, type RunEventsFeed } from './run-events.js';
 import {
   notifyRunTerminal,
@@ -2692,6 +2695,12 @@ function createUnfencedEventsStorage(
           eventId = eventValue.eventId;
           return { createdAt: eventValue.createdAt };
         }, SLOT_INSERT_TRANSACTION);
+        await scrubStepWriteIfRunPurged(
+          drizzle,
+          effectiveRunId,
+          data.correlationId!,
+          eventId
+        );
       }
 
       // Handle step_retrying event: sets status back to 'pending', records error
@@ -2747,6 +2756,12 @@ function createUnfencedEventsStorage(
           }
           return insertOwnEvent(tx);
         }, SLOT_INSERT_TRANSACTION);
+        await scrubStepWriteIfRunPurged(
+          drizzle,
+          effectiveRunId,
+          data.correlationId!,
+          eventId
+        );
       }
 
       // Handle hook_created event: create hook entity

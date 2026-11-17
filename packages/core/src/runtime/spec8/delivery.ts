@@ -40,6 +40,7 @@ import {
   isSealedNoopEvent,
   isTerminalRunEventType,
   isTerminalWorkflowRunStatus,
+  purgesUserDataOnFinish,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
@@ -2543,6 +2544,30 @@ async function runDelivery(
     );
   };
 
+  /**
+   * Called just before this delivery writes the run's terminal event. A run
+   * started with `experimental_retention: 0` has its data deleted by that
+   * write, once: an inline step still running (a `Promise.race` loser) would
+   * write its output or error after the deletion, and the World would keep
+   * it. So for such a run every inline step settles first, as without early
+   * advance; other runs end without waiting (see
+   * `settleInlineStepsAfterTerminal`).
+   */
+  const settleInlineStepsBeforeTerminal = async (
+    terminal: 'run_completed' | 'run_failed'
+  ): Promise<void> => {
+    if (inlineStepsInFlight.size === 0) return;
+    // Without the run's attributes, assume its data goes.
+    if (workflowRun && !purgesUserDataOnFinish(workflowRun.attributes)) return;
+    // Step bodies are not replay time.
+    replayBudget.pause();
+    try {
+      await settleInlineStepsAfterTerminal(terminal);
+    } finally {
+      replayBudget.resume();
+    }
+  };
+
   let inlineEarlyAdvances = 0;
   let inlineSlotsHeldBack = 0;
 
@@ -3064,6 +3089,7 @@ async function runDelivery(
         // here before the backgrounded run_started; order the
         // terminal write after it so the run exists.
         await awaitRunReady();
+        await settleInlineStepsBeforeTerminal('run_completed');
         await createEvent(
           {
             eventType: 'run_completed',
@@ -3265,6 +3291,7 @@ async function runDelivery(
               (workflowRun?.specVersion ?? 0) >=
                 SPEC_VERSION_SUPPORTS_COMPRESSION
             );
+            await settleInlineStepsBeforeTerminal('run_failed');
             await createEvent(
               {
                 eventType: 'run_failed',
@@ -5008,6 +5035,7 @@ async function runDelivery(
             globalThis,
             (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
           );
+          await settleInlineStepsBeforeTerminal('run_failed');
           await createEvent(
             {
               eventType: 'run_failed',

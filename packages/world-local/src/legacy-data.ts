@@ -1,9 +1,11 @@
 import fs from 'node:fs';
+import { readdir, rm, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
  * What earlier releases stored as JSON files, one per entity. This release
- * stores everything in `world.db` and neither reads nor deletes them.
+ * stores everything in `world.db` and does not read them; only `clear()`
+ * deletes them (see `removeLegacyData`).
  */
 const LEGACY_ENTRIES = [
   'runs',
@@ -52,4 +54,50 @@ export function noticeLegacyData(dataDir: string): void {
     `[world-local] Runs recorded by an earlier version of @workflow/world-local are no longer read (this version keeps its data in ${path.join(dir, 'world.db')}), so the CLI and the web UI do not list them. ` +
       `Their files are still in ${legacy.map((entry) => path.join(dir, entry)).join(', ')}, and can be deleted.`
   );
+}
+
+/**
+ * Deletes the run data of earlier releases, as their `clear()` did: all of
+ * it, or for a tag only the files of that tag (`<id>.<tag>.json` and
+ * `<id>.<tag>.bin`), and the directories that leaves empty. Without it a
+ * cleared data directory would keep the payloads recorded before the
+ * upgrade. A failure rejects: the data directory was not cleared.
+ */
+export async function removeLegacyData(
+  dataDir: string,
+  tag?: string
+): Promise<void> {
+  const entries = legacyEntriesIn(dataDir).map((entry) =>
+    path.join(/* turbopackIgnore: true */ dataDir, entry)
+  );
+  if (tag === undefined) {
+    // Not following symbolic links: only what is in the data directory goes.
+    await Promise.all(
+      entries.map((dir) => rm(dir, { recursive: true, force: true }))
+    );
+    return;
+  }
+  const suffixes = [`.${tag}.json`, `.${tag}.bin`];
+  /** Deletes the tag's files under `dir`; whether it is now empty. */
+  const removeTagged = async (dir: string): Promise<boolean> => {
+    let left = 0;
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const at = path.join(/* turbopackIgnore: true */ dir, entry.name);
+      if (entry.isDirectory()) {
+        if (await removeTagged(at)) await rmdir(at);
+        else left++;
+      } else if (
+        entry.isFile() &&
+        suffixes.some((suffix) => entry.name.endsWith(suffix))
+      ) {
+        await unlink(at);
+      } else {
+        left++;
+      }
+    }
+    return left === 0;
+  };
+  for (const dir of entries) {
+    if (await removeTagged(dir)) await rmdir(dir);
+  }
 }
