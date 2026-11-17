@@ -7,19 +7,19 @@
  * (`withRunPayloadsPurged` in `events-storage.ts`); everything else it owns
  * (step payloads, event payloads, hook metadata, stream chunks) is scrubbed
  * by `purgeRunData` in the same transaction, so a purged run is never
- * observable with any of its data left. A step still running when the run
- * ended may finish afterwards (`step_completed`, `step_failed`,
- * `step_retrying`); that write scrubs what it stored (`purgeLateStepWrite`)
- * in its own transaction, so the late payload is never left behind either.
- * The
- * connection zeroes freed pages (`secure_delete`), and the WAL, which still
- * holds the old pages, is checkpointed and truncated right after the purge
- * commits.
+ * observable with any of its data left. The connection zeroes freed pages
+ * (`secure_delete`), and the WAL, which still holds the old pages, is
+ * checkpointed and truncated right after the purge commits.
+ *
+ * A step still running when the run finished (a `Promise.race` loser) may
+ * settle after it, and a stream may first be written after it: those writes
+ * are scrubbed (`purgeLateStepWrite`) or refused as they land (`ranPurge`).
  */
 
-import type { Event, Hook, Step } from '@workflow/world';
+import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import {
   getEventDataRefFields,
+  isTerminalWorkflowRunStatus,
   RETENTION_ATTRIBUTE,
   readRunRetention,
 } from '@workflow/world';
@@ -37,6 +37,18 @@ export function purgesUserDataOnFinish(
     );
   }
   return retention.mode === 'none';
+}
+
+/**
+ * Whether a run's user data was purged when it finished: it is terminal and
+ * asked for zero retention. Not `expiredAt`, which is a retention deadline.
+ */
+export function ranPurge(run: WorkflowRun | undefined): boolean {
+  return (
+    run !== undefined &&
+    isTerminalWorkflowRunStatus(run.status) &&
+    readRunRetention(run.attributes).mode === 'none'
+  );
 }
 
 /** Scrubs a finished run's user data. Runs inside a transaction. */
@@ -73,12 +85,11 @@ export function purgeRunData(db: Database, runId: string): void {
 }
 
 /**
- * Scrubs what a step write on an already-purged run stored: the step's
- * payloads and the event at `seq` it appended. The rest of the run was
- * scrubbed by its purge, so this costs the same whatever the run's size,
- * which matters when many steps were running when the run ended. Streams
- * are dropped again too, in case the step wrote to them after the purge.
- * Runs inside a transaction.
+ * Scrubs what a late step write on a purged run stored: the step's output and
+ * error, and the payload of the event at `seq` it appended. The rest of the
+ * run was scrubbed by its purge (and stream writes are refused), so this
+ * costs the same whatever the run's size, which matters when many steps were
+ * running when the run ended. Runs inside a transaction.
  */
 export function purgeLateStepWrite(
   db: Database,
@@ -86,19 +97,31 @@ export function purgeLateStepWrite(
   stepId: string,
   seq: number
 ): void {
-  const step = db.get<{ doc: string }>(
+  const stepRow = db.get<{ doc: string }>(
     'SELECT doc FROM steps WHERE run_id = ? AND step_id = ?',
     runId,
     stepId
   );
-  if (step) writeScrubbedStep(db, runId, stepId, step.doc);
+  if (stepRow) {
+    // Not the input: a purged run's purge already dropped it, and a run that
+    // ended keeping its data (given `$retention: '0'` only afterwards) keeps
+    // it. Only what this write brought is dropped.
+    const step = decode<Step>(stepRow.doc);
+    step.output = undefined;
+    step.error = undefined;
+    db.run(
+      'UPDATE steps SET doc = ? WHERE run_id = ? AND step_id = ?',
+      encode(step),
+      runId,
+      stepId
+    );
+  }
   const event = db.get<{ doc: string }>(
     'SELECT doc FROM events WHERE run_id = ? AND seq = ?',
     runId,
     seq
   );
   if (event) writeScrubbedEvent(db, runId, seq, event.doc);
-  purgeRunStreams(db, runId);
 }
 
 function writeScrubbedStep(

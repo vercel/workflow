@@ -351,6 +351,57 @@ describe('run retention (world-local)', () => {
       }
     });
 
+    // A step still running when the run ends (a `Promise.race` loser) may
+    // settle after the purge; what it writes must not bring the data back.
+    for (const [eventType, eventData] of [
+      ['step_completed', { result: STEP_OUTPUT }],
+      ['step_failed', { error: STEP_OUTPUT }],
+      ['step_retrying', { error: STEP_OUTPUT }],
+    ] as const) {
+      it(`scrubs the payload of a ${eventType} that lands after the purge`, async () => {
+        const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
+        await createStep(storage, run.runId, {
+          stepId: 'step_late',
+          stepName: 'step//./mod//slow',
+          input: STEP_INPUT,
+        });
+        await updateStep(storage, run.runId, 'step_late', 'step_started');
+        await complete(run.runId);
+
+        await updateStep(
+          storage,
+          run.runId,
+          'step_late',
+          eventType,
+          eventData as never
+        );
+
+        const step = await storage.steps.get(run.runId, 'step_late');
+        expect(step.output).toBeUndefined();
+        expect(step.error).toBeUndefined();
+        expect(step.input).toBeUndefined();
+        expect(await eventPayloads(run.runId)).toEqual([]);
+      });
+    }
+
+    it('ends a stream first written after the purge, with nothing in it', async () => {
+      const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
+      await complete(run.runId);
+
+      await streamer.streams.write(run.runId, 'stream-late', 'secret payload');
+      await streamer.streams.write(run.runId, 'stream-late', 'more');
+      await streamer.streams.write(run.runId, 'stream-a', 'secret payload');
+
+      for (const name of ['stream-late', 'stream-a']) {
+        const chunks = await streamer.streams.getChunks(run.runId, name);
+        expect({ name, data: chunks.data, done: chunks.done }).toEqual({
+          name,
+          data: [],
+          done: true,
+        });
+      }
+    });
+
     it('scrubs the metadata of a hook that outlives the run', async () => {
       const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
       // Terminal cleanup deletes a run's hooks outright, except one whose
@@ -659,10 +710,11 @@ describe('run retention (world-local)', () => {
       expect((await storage.runs.get(runId)).input).toEqual(RUN_INPUT);
     });
 
-    it("keeps a late result on a run that ended before it was given $retention: '0'", async () => {
-      // The run was never purged: it finished keeping its data, and a
-      // retention attribute set afterwards does not delete anything. A late
-      // step write must not be the thing that finally does.
+    it("deletes nothing a run kept when it was given $retention: '0' after it ended", async () => {
+      // The run finished keeping its data, and a retention attribute set
+      // afterwards does not delete it. It does count as zero retention from
+      // then on (`ranPurge`), so the late result itself is not stored, as a
+      // stream first written then is refused.
       const runId = await runWithRunningStep(undefined);
       await cancel(runId);
       await storage.runs.experimentalSetAttributes?.(
@@ -674,8 +726,12 @@ describe('run retention (world-local)', () => {
       await finishStep(runId);
 
       const step = await storage.steps.get(runId, STEP_ID);
+      expect(step.status).toBe('completed');
       expect(step.input).toEqual(LATE_INPUT);
-      expect(step.output).toEqual(LATE_RESULT);
+      expect(step.output).toBeUndefined();
+      expect((await eventData(runId, 'step_created'))?.input).toEqual(
+        LATE_INPUT
+      );
       const run = await storage.runs.get(runId);
       expect(run.input).toEqual(RUN_INPUT);
       expect(run.expiredAt).toBeUndefined();
@@ -754,6 +810,26 @@ describe('run retention (world-local)', () => {
       expect(persisted.output).toEqual(RUN_OUTPUT);
       const steps = await storage.steps.list({ runId: run.runId });
       expect(steps.data[0].output).toEqual(STEP_OUTPUT);
+    });
+
+    it('keeps the output of a step that settles after the run ends', async () => {
+      const run = await startRun();
+      await createStep(storage, run.runId, {
+        stepId: 'step_late',
+        stepName: 'step//./mod//slow',
+        input: STEP_INPUT,
+      });
+      await updateStep(storage, run.runId, 'step_late', 'step_started');
+      await complete(run.runId);
+      await updateStep(storage, run.runId, 'step_late', 'step_completed', {
+        result: STEP_OUTPUT,
+      });
+      await streamer.streams.write(run.runId, 'stream-late', 'kept');
+
+      const step = await storage.steps.get(run.runId, 'step_late');
+      expect(step.output).toEqual(STEP_OUTPUT);
+      const chunks = await streamer.streams.getChunks(run.runId, 'stream-late');
+      expect(chunks.data).toHaveLength(1);
     });
 
     it('keeps the data for an unrelated reserved attribute', async () => {

@@ -43,7 +43,20 @@
  * A gap that outlives the budget is real and needs a person. 5.0.0-beta.48 left
  * `@workflow/web` staged for about a day, which no retry budget can wait out.
  *
+ * `--packages-exist` checks something narrower, for pull requests: that every
+ * publishable package already exists on npm, in any version. The Release job
+ * publishes with npm trusted publishing (OIDC, no token), and npm only accepts
+ * a trusted publish for a package that already exists and has this repository
+ * configured as its trusted publisher. A new public package therefore fails
+ * with E404 on its first publish, and `changeset publish` then skips every
+ * package that depends on one in its batch or a later one: the 5.6.0 release
+ * shipped `@workflow/core` without `workflow` because a new package was public
+ * before it existed on npm. A maintainer has to publish the first version by
+ * hand and configure the trusted publisher; until then the package must stay
+ * `"private": true`.
+ *
  * Usage: node scripts/check-published.mjs [--tag <dist-tag>] [--ref <git-ref>]
+ *        node scripts/check-published.mjs --packages-exist [--ref <git-ref>]
  */
 
 import { execFileSync } from 'node:child_process';
@@ -163,6 +176,33 @@ async function check(pkg, tag) {
   const visible = Object.hasOwn(versions, pkg.version);
   const tagged = distTags[tag] === pkg.version;
   return { ...pkg, visible, tagged, actualTag: distTags[tag] };
+}
+
+if (process.argv.includes('--packages-exist')) {
+  const packages = publishablePackages();
+  const results = await Promise.all(
+    packages.map(async (pkg) => {
+      const { versions } = await registryState(pkg.name);
+      return { ...pkg, exists: Object.keys(versions).length > 0 };
+    })
+  );
+  const absent = results.filter((r) => !r.exists);
+  if (absent.length === 0) {
+    console.log(
+      `✓ all ${results.length} publishable packages already exist on npm.`
+    );
+    process.exit(0);
+  }
+  console.error('✗ These public packages have never been published to npm:');
+  for (const r of absent) console.error(`    ${r.name}`);
+  console.error(
+    '\n  The Release job publishes with npm trusted publishing, which cannot\n' +
+      '  create a package: its first publish fails with E404 and holds back the\n' +
+      '  packages published after it. Keep the package `"private": true` until a\n' +
+      '  maintainer has published its first version by hand and added\n' +
+      '  vercel/workflow (release.yml) as its trusted publisher on npmjs.com.'
+  );
+  process.exit(1);
 }
 
 const tag = distTagForBranch();

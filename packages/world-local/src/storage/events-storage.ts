@@ -79,6 +79,7 @@ import {
   purgeLateStepWrite,
   purgeRunData,
   purgesUserDataOnFinish,
+  ranPurge,
 } from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { startHookRecord, withStartHookId } from './start-hook.js';
@@ -995,16 +996,18 @@ export function createEventsStorage(
       );
     }
 
-    // A step that was running when its zero-retention run ended may still
-    // finish, fail or record a retry (only a running step writes on an ended
-    // run, see Step ordering). The run's purge has already run, so this
-    // write's payload is scrubbed the same way, in the same transaction.
+    // A step still running when its zero-retention run ended (a
+    // `Promise.race` loser, or one on another delivery) settles after the
+    // purge: only a running step writes on an ended run (see Step ordering).
+    // What it writes is scrubbed here, in the same transaction, so the run's
+    // data stays gone.
     const lateOnPurgedRun =
-      validatedStep !== null &&
+      !runPurged &&
+      step !== undefined &&
       (data.eventType === 'step_completed' ||
         data.eventType === 'step_failed' ||
         data.eventType === 'step_retrying') &&
-      wasPurgedOnFinish(runId, run);
+      ranPurge(runForLateStepCheck());
 
     let reported = stored;
     if (runPurged) {
@@ -1029,6 +1032,18 @@ export function createEventsStorage(
       wait,
       stepCreatedLazily,
     });
+
+    /**
+     * The run, for the late-step check. step_completed and step_retrying do
+     * not read it up front, so only its status is read, and its document
+     * only when it is terminal.
+     */
+    function runForLateStepCheck(): WorkflowRun | undefined {
+      if (run) return run;
+      const status = store.getRunStatus(runId);
+      if (!status || !isTerminalWorkflowRunStatus(status)) return undefined;
+      return store.getRun(runId)?.run;
+    }
 
     function finish(
       committed: Event,
@@ -1065,29 +1080,6 @@ export function createEventsStorage(
       };
       return delta ? ({ ...result, ...delta } as EventResult) : result;
     }
-  }
-
-  /**
-   * Whether `runId` ended under `$retention: '0'` and its purge ran (the
-   * purge stamps `expiredAt`). `loaded` is the run when the caller already
-   * read it; otherwise only a terminal run's document is read.
-   */
-  function wasPurgedOnFinish(
-    runId: string,
-    loaded: WorkflowRun | null
-  ): boolean {
-    let run = loaded;
-    if (!run) {
-      const status = store.getRunStatus(runId);
-      if (!status || !isTerminalWorkflowRunStatus(status)) return false;
-      run = store.getRun(runId)?.run ?? null;
-    }
-    return (
-      run !== null &&
-      isTerminalWorkflowRunStatus(run.status) &&
-      run.expiredAt !== undefined &&
-      purgesUserDataOnFinish(run.attributes)
-    );
   }
 
   function committedResume(
@@ -1436,13 +1428,10 @@ export function createEventsStorage(
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       // Read before the page: a load that follows its cursor to the end sees
       // every in-band write this count stands for.
-      const runRow = db.get<{ seq: number; seq_in_band: number }>(
-        'SELECT seq, seq_in_band FROM runs WHERE run_id = ?',
-        params.runId
-      );
+      const runRow = store.getRunAnyTag(params.runId);
       const snapshot = {
-        seq: Number(runRow?.seq ?? 0),
-        seqInBand: Number(runRow?.seq_in_band ?? IN_BAND_SEQ_AT_RUN_CREATION),
+        seq: runRow?.seq ?? 0,
+        seqInBand: runRow?.seqInBand ?? IN_BAND_SEQ_AT_RUN_CREATION,
       };
       const result = store.listEvents(params.runId, {
         cursor: params.pagination?.cursor,
@@ -1459,6 +1448,9 @@ export function createEventsStorage(
                 stripEventDataRefs(event, resolveData)
               ),
         snapshot,
+        // The ceiling `run_started` reports, so a delivery that did not
+        // write it enforces the same one.
+        ...(runRow ? { maxEvents: getMaxEventsForRun(runRow.run) } : {}),
       };
     },
 

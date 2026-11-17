@@ -2,4 +2,4 @@
 "@workflow/world-local": patch
 ---
 
-Scrub the result of a step that finishes after its `experimental_retention: 0` run has ended, so the late `step_completed`, `step_failed` or `step_retrying` payload is not left behind
+Scrub only what a step that settles after its `experimental_retention: 0` run ended wrote, instead of the whole run again, and answer that write with the scrubbed step and event

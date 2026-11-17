@@ -1,56 +1,256 @@
 /**
  * @workflow/web-shared default theme
  *
- * This file provides default values for the Geist design system CSS variables
- * used by @workflow/web-shared components. Import this file if your application
- * does not already provide Geist styles (e.g., via the `geist` package).
+ * Design tokens for @workflow/web-shared components. Import this file if your
+ * application does not already provide these tokens:
  *
- * If you are using this inside a Vercel dashboard app that already imports
- * Geist styles, you do NOT need to import this file.
- *
- * Usage:
  *   import '@workflow/web-shared/styles.css';
+ *
+ * Hosts that already define the tokens only need to scan this package's
+ * `dist` for class names and should NOT import this file.
  */
 
-@custom-variant dark-theme (&:where(.dark-theme, .dark-theme *, .dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
-@custom-variant light-theme (&:where(.light-theme, .light-theme *, .light, .light *));
+/*
+ * `dark:` follows the theme class rather than the OS setting. `.dark` is the
+ * class next-themes sets in @workflow/web; `.dark-theme` is also supported.
+ */
+@custom-variant dark (&:where(.dark, .dark *, .dark-theme, .dark-theme *));
 
-:root {
+/*
+ * Design tokens. Keep these values in sync as a whole; don't tweak individual
+ * values here.
+ */
+
+/* Neutral palette.
+   Gray-alpha pairs target background-100: white in light, 4% gray in dark.
+   Keep the raw HSL tuples for consumers that supply their own opacity. */
+:root,
+:host,
+.light-theme,
+.dark .invert-theme,
+.dark-theme .invert-theme {
+  --ds-gray-100-value: 0, 0%, 95%;
+  --ds-gray-200-value: 0, 0%, 92%;
+  --ds-gray-300-value: 0, 0%, 90%;
+  --ds-gray-400-value: 0, 0%, 92%;
+  --ds-gray-500-value: 0, 0%, 79%;
+  --ds-gray-600-value: 0, 0%, 66%;
+  --ds-gray-700-value: 0, 0%, 56%;
+  --ds-gray-800-value: 0, 0%, 49%;
+  --ds-gray-900-value: 0, 0%, 30%;
+  --ds-gray-1000-value: 0, 0%, 9%;
+  --ds-gray-alpha-100: rgba(0, 0, 0, 0.05);
+  --ds-gray-alpha-200: hsla(0, 0%, 0%, 0.08);
+  --ds-gray-alpha-300: hsla(0, 0%, 0%, 0.1);
+  --ds-gray-alpha-400: hsla(0, 0%, 0%, 0.08);
+  --ds-gray-alpha-500: hsla(0, 0%, 0%, 0.21);
+  --ds-gray-alpha-600: hsla(0, 0%, 0%, 0.34);
+  --ds-gray-alpha-700: hsla(0, 0%, 0%, 0.44);
+  --ds-gray-alpha-800: hsla(0, 0%, 0%, 0.51);
+  --ds-gray-alpha-900: hsla(0, 0%, 0%, 0.7);
+  --ds-gray-alpha-1000: hsla(0, 0%, 0%, 0.91);
+  --ds-background-100-value: 0, 0%, 100%;
+  --ds-background-200-value: 0, 0%, 98%;
+}
+
+:root,
+:host,
+.light-theme,
+.dark,
+.dark-theme,
+.invert-theme {
+  --ds-gray-100: hsla(var(--ds-gray-100-value), 1);
+  --ds-gray-200: hsla(var(--ds-gray-200-value), 1);
+  --ds-gray-300: hsla(var(--ds-gray-300-value), 1);
+  --ds-gray-400: hsla(var(--ds-gray-400-value), 1);
+  --ds-gray-500: hsla(var(--ds-gray-500-value), 1);
+  --ds-gray-600: hsla(var(--ds-gray-600-value), 1);
+  --ds-gray-700: hsla(var(--ds-gray-700-value), 1);
+  --ds-gray-800: hsla(var(--ds-gray-800-value), 1);
+  --ds-gray-900: hsla(var(--ds-gray-900-value), 1);
+  --ds-gray-1000: hsla(var(--ds-gray-1000-value), 1);
+  --ds-background-100: hsla(var(--ds-background-100-value), 1);
+  --ds-background-200: hsla(var(--ds-background-200-value), 1);
+}
+
+.dark,
+.dark-theme,
+.invert-theme {
+  --ds-gray-100-value: 0, 0%, 10%;
+  --ds-gray-200-value: 0, 0%, 12%;
+  --ds-gray-300-value: 0, 0%, 16%;
+  --ds-gray-400-value: 0, 0%, 18%;
+  --ds-gray-500-value: 0, 0%, 27%;
+  --ds-gray-600-value: 0, 0%, 53%;
+  --ds-gray-700-value: 0, 0%, 56%;
+  --ds-gray-800-value: 0, 0%, 49%;
+  --ds-gray-900-value: 0, 0%, 63%;
+  --ds-gray-1000-value: 0, 0%, 93%;
+  --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
+  --ds-gray-alpha-200: hsla(0, 0%, 100%, 0.09);
+  --ds-gray-alpha-300: hsla(0, 0%, 100%, 0.13);
+  --ds-gray-alpha-400: hsla(0, 0%, 100%, 0.14);
+  --ds-gray-alpha-500: hsla(0, 0%, 100%, 0.24);
+  --ds-gray-alpha-600: hsla(0, 0%, 100%, 0.51);
+  --ds-gray-alpha-700: hsla(0, 0%, 100%, 0.54);
+  --ds-gray-alpha-800: hsla(0, 0%, 100%, 0.47);
+  --ds-gray-alpha-900: hsla(0, 0%, 100%, 0.61);
+  --ds-gray-alpha-1000: hsla(0, 0%, 100%, 0.92);
+  --ds-background-100-value: 0, 0%, 4%;
+  --ds-background-200-value: 0, 0%, 0%;
+}
+
+/* Base tokens */
+
+:root,
+:host {
+  --ds-page-width: 1400px;
+  --ds-page-width-with-margin: calc(
+    var(--ds-page-width) + calc(2 * 24px)
+  );
+  --ds-z-drawer: 200;
+  --ds-z-modal: 300;
+  --ds-z-menu: 2001;
+  --ds-z-toast: 5000;
+  --ds-z-tooltip: 99999;
+  --ds-shadow-background-border: 0 0 0 1px var(--ds-background-200);
+  --ds-shadow-border-base: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --ds-shadow-border-inset: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --ds-shadow-border: var(--ds-shadow-border-base), var(--ds-shadow-background-border);
+  --ds-shadow-2xs: 0px 1px 1px rgba(0, 0, 0, 0.04);
+  --ds-shadow-xs: 0px 1px 2px rgba(0, 0, 0, 0.04);
+  --ds-shadow-small: 0px 2px 2px rgba(0, 0, 0, 0.04);
+  --ds-shadow-border-small: var(--ds-shadow-border-base), var(--ds-shadow-small),
+    var(--ds-shadow-background-border);
+  --ds-shadow-medium: 0px 2px 2px rgba(0, 0, 0, 0.04), 0px 8px 8px -8px rgba(0, 0, 0, 0.04);
+  --ds-shadow-border-medium: var(--ds-shadow-border-base), var(--ds-shadow-medium),
+    var(--ds-shadow-background-border);
+  --ds-shadow-large: 0px 2px 2px rgba(0, 0, 0, 0.04), 0px 8px 16px -4px rgba(0, 0, 0, 0.04);
+  --ds-shadow-border-large: var(--ds-shadow-border-base), var(--ds-shadow-large),
+    var(--ds-shadow-background-border);
+  --ds-shadow-xl: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 4px 8px -4px rgba(0, 0, 0, 0.04),
+    0px 16px 24px -8px rgba(0, 0, 0, 0.06);
+  --ds-shadow-2xl: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 8px 16px -4px rgba(0, 0, 0, 0.04),
+    0px 24px 32px -8px rgba(0, 0, 0, 0.06);
+  --ds-shadow-tooltip: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), var(--ds-shadow-background-border);
+  --ds-shadow-menu: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px -4px rgba(0, 0, 0, 0.04),
+    0px 16px 24px -8px rgba(0, 0, 0, 0.06), var(--ds-shadow-background-border);
+  --ds-shadow-modal: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 8px 16px -4px rgba(0, 0, 0, 0.04),
+    0px 24px 32px -8px rgba(0, 0, 0, 0.06), var(--ds-shadow-background-border);
+  --ds-shadow-modal-elevated: 0px 0px 0px 1px rgba(0, 0, 0, 0.08),
+    0px 32px 72px -12px rgba(0, 0, 0, 0.06),
+    0px 8px 32px -12px rgba(0, 0, 0, 0.08),
+    0px 8px 24px -12px rgba(0, 0, 0, 0.12);
+  --ds-shadow-fullscreen: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 8px 16px -4px rgba(0, 0, 0, 0.04),
+    0px 24px 32px -8px rgba(0, 0, 0, 0.06), var(--ds-shadow-background-border);
+  --ds-focus-ring: 0 0 0 2px var(--ds-background-100), 0 0 0 4px var(--ds-focus-color);
+  --ds-focus-ring-outline: 2px solid var(--ds-focus-color);
+  --ds-overlay-backdrop-color: var(--ds-gray-100);
+  --ds-overlay-backdrop-opacity: 0.8;
+  --ds-motion-timing-swift: cubic-bezier(0.175, 0.885, 0.32, 1.1);
+  --ds-motion-overlay-scale: 0.96;
+  --ds-motion-overlay-timing: var(--ds-motion-timing-swift);
+  --ds-motion-overlay-duration: 300ms;
+  --ds-motion-popover-timing: var(--ds-motion-timing-swift);
+  --ds-motion-popover-duration: 200ms;
+  --ds-size-small: 32px;
+  --ds-size-medium: 36px;
+  --ds-size-large: 40px;
+  --ds-control-decoration-size: 14px;
+  --ds-popover-padding: 6px;
+  --ds-popover-row-height: 36px;
+  --ds-popover-row-radius: 6px;
+  --ds-popover-row-padding: 0 8px;
+}
+
+/* Focus and contrast tokens */
+
+:root,
+:host,
+.dark .invert-theme,
+.dark-theme .invert-theme {
+  --ds-contrast-fg: #ffffff;
+  --ds-focus-border: 0 0 0 1px var(--ds-gray-alpha-600), 0px 0px 0px 4px rgba(0, 0, 0, 0.16);
+  --ds-focus-color: var(--ds-blue-700);
+}
+
+.dark,
+.dark-theme,
+.invert-theme {
+  --ds-focus-border: 0 0 0 1px var(--ds-gray-alpha-600),
+    0px 0px 0px 4px rgba(255, 255, 255, 0.24);
+  --ds-focus-color: var(--ds-blue-900);
+  --ds-shadow-border-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+/* Dark theme shadows and overlays */
+
+.dark-theme,
+.invert-theme,
+.dark {
+  --ds-shadow-background-border: 0 0 0 1px var(--ds-background-200);
+  --ds-shadow-border-base: 0 0 0 1px rgba(255, 255, 255, 0.145);
+  --ds-shadow-border: var(--ds-shadow-border-base), var(--ds-shadow-background-border);
+  --ds-shadow-2xs: 0px 1px 1px rgba(0, 0, 0, 0.16);
+  --ds-shadow-xs: 0px 1px 2px rgba(0, 0, 0, 0.16);
+  --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.16);
+  --ds-shadow-border-small: var(--ds-shadow-border-base), var(--ds-shadow-small),
+    var(--ds-shadow-background-border);
+  --ds-shadow-medium: 0px 2px 2px rgba(0, 0, 0, 0.32), 0px 8px 8px -8px rgba(0, 0, 0, 0.16);
+  --ds-shadow-border-medium: var(--ds-shadow-border-base), var(--ds-shadow-medium),
+    var(--ds-shadow-background-border);
+  --ds-shadow-large: 0px 2px 2px rgba(0, 0, 0, 0.04), 0px 8px 16px -4px rgba(0, 0, 0, 0.04);
+  --ds-shadow-border-large: var(--ds-shadow-border-base), var(--ds-shadow-large),
+    var(--ds-shadow-background-border);
+  --ds-shadow-xl: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 4px 8px -4px rgba(0, 0, 0, 0.04),
+    0px 16px 24px -8px rgba(0, 0, 0, 0.06);
+  --ds-shadow-2xl: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 8px 16px -4px rgba(0, 0, 0, 0.04),
+    0px 24px 32px -8px rgba(0, 0, 0, 0.06);
+  --ds-shadow-tooltip: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), var(--ds-shadow-background-border);
+  --ds-shadow-menu: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px -4px rgba(0, 0, 0, 0.04),
+    0px 16px 24px -8px rgba(0, 0, 0, 0.06), var(--ds-shadow-background-border);
+  --ds-shadow-modal: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 8px 16px -4px rgba(0, 0, 0, 0.04),
+    0px 24px 32px -8px rgba(0, 0, 0, 0.06), var(--ds-shadow-background-border);
+  --ds-shadow-modal-elevated: 0 0 0 1px var(--ds-gray-alpha-400), 0px 32px 72px -12px rgba(0, 0, 0, 0.06),
+    0px 8px 32px -12px rgba(0, 0, 0, 0.08),
+    0px 8px 24px -12px rgba(0, 0, 0, 0.12);
+  --ds-shadow-fullscreen: var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 8px 16px -4px rgba(0, 0, 0, 0.04),
+    0px 24px 32px -8px rgba(0, 0, 0, 0.06), var(--ds-shadow-background-border);
+  --ds-focus-ring: 0 0 0 2px var(--ds-background-100), 0 0 0 4px var(--ds-focus-color);
+  --ds-overlay-backdrop-color: var(--ds-background-200);
+}
+
+/* Tailwind theme */
+
+@custom-variant dark-theme (&:where(.dark-theme, .dark-theme *));
+@custom-variant light-theme (&:where(.light-theme, .light-theme *));
+
+@custom-variant hocus {
+  @media (hover: hover) {
+    &:hover {
+      @slot;
+    }
+  }
+  &:focus-visible {
+    @slot;
+  }
+}
+
+:root,
+.light-theme,
+.dark .invert-theme,
+.dark-theme .invert-theme {
   --ds-black: oklch(0 0 0);
   --ds-white: oklch(1 0 0);
 
-  /* Background */
-  --ds-background-100: oklch(1 0 0);
-  --ds-background-200: oklch(0.984 0 0);
-
-  /* Gray */
-  --ds-gray-100: oklch(0.961 0 0);
-  --ds-gray-200: oklch(0.94 0 0);
-  --ds-gray-300: oklch(0.925 0 0);
-  --ds-gray-400: oklch(0.937 0 0);
-  --ds-gray-500: oklch(0.836 0 0);
-  --ds-gray-600: oklch(0.732 0 0);
-  --ds-gray-700: oklch(0.65 0 0);
-  --ds-gray-800: oklch(0.59 0 0);
-  --ds-gray-900: oklch(0.42 0 0);
-  --ds-gray-1000: oklch(0.205 0 0);
-
-  /* Gray Alpha */
-  --ds-gray-alpha-100: oklch(0 0 0 / 0.05);
-  --ds-gray-alpha-200: oklch(0 0 0 / 0.081);
-  --ds-gray-alpha-300: oklch(0 0 0 / 0.1);
-  --ds-gray-alpha-400: oklch(0 0 0 / 0.08);
-  --ds-gray-alpha-500: oklch(0 0 0 / 0.21);
-  --ds-gray-alpha-600: oklch(0 0 0 / 0.24);
-  --ds-gray-alpha-700: oklch(0 0 0 / 0.44);
-  --ds-gray-alpha-800: oklch(0 0 0 / 0.51);
-  --ds-gray-alpha-900: oklch(0 0 0 / 0.7);
-  --ds-gray-alpha-1000: oklch(0 0 0 / 0.91);
-
-  /* Focus */
-  --ds-focus-color: var(--ds-blue-700);
-
-  /* Blue */
   --ds-blue-100: oklch(97.32% 0.0141 251.56);
   --ds-blue-200: oklch(96.29% 0.0195 250.59);
   --ds-blue-300: oklch(94.58% 0.0293 249.84870859673202);
@@ -62,7 +262,6 @@
   --ds-blue-900: oklch(53.18% 0.2399 256.9900584162342);
   --ds-blue-1000: oklch(26.67% 0.1099 254.34);
 
-  /* Red */
   --ds-red-100: oklch(96.5% 0.0223 13.09);
   --ds-red-200: oklch(95.41% 0.0299 14.252646656611997);
   --ds-red-300: oklch(94.33% 0.0369 15.011509923860523);
@@ -74,7 +273,6 @@
   --ds-red-900: oklch(54.99% 0.232 25.29);
   --ds-red-1000: oklch(24.8% 0.1041 18.86);
 
-  /* Amber */
   --ds-amber-100: oklch(97.48% 0.0331 85.79);
   --ds-amber-200: oklch(96.81% 0.0495 90.24227879900472);
   --ds-amber-300: oklch(95.93% 0.0636 90.52);
@@ -86,7 +284,6 @@
   --ds-amber-900: oklch(52.79% 0.1496 54.65);
   --ds-amber-1000: oklch(30.83% 0.099 45.48);
 
-  /* Green */
   --ds-green-100: oklch(97.59% 0.0289 145.42);
   --ds-green-200: oklch(96.92% 0.037 147.15);
   --ds-green-300: oklch(94.6% 0.0674 144.23);
@@ -98,7 +295,6 @@
   --ds-green-900: oklch(51.75% 0.1453 147.65);
   --ds-green-1000: oklch(29.15% 0.1197 147.38);
 
-  /* Teal */
   --ds-teal-100: oklch(97.72% 0.0359 186.7);
   --ds-teal-200: oklch(97.06% 0.0347 180.66);
   --ds-teal-300: oklch(94.92% 0.0478 182.07);
@@ -110,7 +306,6 @@
   --ds-teal-900: oklch(52.08% 0.1251 182.93);
   --ds-teal-1000: oklch(32.11% 0.0788 179.82);
 
-  /* Purple */
   --ds-purple-100: oklch(96.65% 0.0244 312.1890119359961);
   --ds-purple-200: oklch(96.73% 0.0228 309.8);
   --ds-purple-300: oklch(94.85% 0.0364 310.15);
@@ -122,7 +317,6 @@
   --ds-purple-900: oklch(47.18% 0.2579 304);
   --ds-purple-1000: oklch(23.96% 0.13 305.66);
 
-  /* Pink */
   --ds-pink-100: oklch(95.69% 0.0359 344.6218910697224);
   --ds-pink-200: oklch(95.71% 0.0321 353.14);
   --ds-pink-300: oklch(93.83% 0.0451 356.29);
@@ -133,45 +327,11 @@
   --ds-pink-800: oklch(59.51% 0.2339 4.21);
   --ds-pink-900: oklch(53.5% 0.2058 2.84);
   --ds-pink-1000: oklch(26% 0.0977 359);
-
-  /* Shadows */
-  --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.04);
-  --ds-shadow-tooltip:
-    0 0 0 1px rgba(0, 0, 0, 0.08), 0px 1px 1px rgba(0, 0, 0, 0.02),
-    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
-/* Dark theme defaults */
-.dark-theme,
 .dark,
-[data-theme="dark"] {
-  --ds-background-100: oklch(0 0 0);
-  --ds-background-200: oklch(0.027 0 0);
-
-  --ds-gray-100: oklch(0.218 0 0);
-  --ds-gray-200: oklch(0.239 0 0);
-  --ds-gray-300: oklch(0.281 0 0);
-  --ds-gray-400: oklch(0.301 0 0);
-  --ds-gray-500: oklch(0.39 0 0);
-  --ds-gray-600: oklch(0.623 0 0);
-  --ds-gray-700: oklch(0.65 0 0);
-  --ds-gray-800: oklch(0.59 0 0);
-  --ds-gray-900: oklch(0.706 0 0);
-  --ds-gray-1000: oklch(0.946 0 0);
-
-  --ds-gray-alpha-100: oklch(1 0 0 / 0.07);
-  --ds-gray-alpha-200: oklch(1 0 0 / 0.09);
-  --ds-gray-alpha-300: oklch(1 0 0 / 0.13);
-  --ds-gray-alpha-400: oklch(1 0 0 / 0.14);
-  --ds-gray-alpha-500: oklch(1 0 0 / 0.24);
-  --ds-gray-alpha-600: oklch(1 0 0 / 0.51);
-  --ds-gray-alpha-700: oklch(1 0 0 / 0.54);
-  --ds-gray-alpha-800: oklch(1 0 0 / 0.47);
-  --ds-gray-alpha-900: oklch(1 0 0 / 0.61);
-  --ds-gray-alpha-1000: oklch(1 0 0 / 0.92);
-
-  --ds-focus-color: var(--ds-blue-900);
-
+.dark-theme,
+.invert-theme {
   --ds-blue-100: oklch(22.17% 0.069 259.89);
   --ds-blue-200: oklch(25.45% 0.0811 255.8);
   --ds-blue-300: oklch(30.86% 0.1022 255.21);
@@ -248,26 +408,14 @@
   --ds-pink-800: oklch(59.51% 0.2429 4.21);
   --ds-pink-900: oklch(69.36% 0.2223 3.91);
   --ds-pink-1000: oklch(95.74% 0.0326 350.08);
-
-  --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.3);
-  --ds-shadow-tooltip:
-    0 0 0 1px rgba(255, 255, 255, 0.145), 0px 1px 1px rgba(0, 0, 0, 0.02),
-    0px 4px 8px rgba(0, 0, 0, 0.04), 0 0 0 1px var(--ds-background-200);
 }
 
 @theme inline {
   /* Deactivating namespaces. When you do this, all of the default utilities that use that namespace (like bg-red-500) will be removed, and only your custom values (like bg-custom) will be available. https://tailwindcss.com/docs/theme#overriding-the-default-theme */
-  /* --color-*: initial; @sev:revert */
+  /* --color-*: initial; */
   --breakpoint-*: initial;
 
   --spacing: 0.25rem;
-
-  /* Pixel Fonts */
-  --font-pixel-square: var(--font-geist-pixel-square);
-  --font-pixel-circle: var(--font-geist-pixel-circle);
-  --font-pixel-line: var(--font-geist-pixel-line);
-  --font-pixel-grid: var(--font-geist-pixel-grid);
-  --font-pixel-triangle: var(--font-geist-pixel-triangle);
 
   --radius-xs: 0.125rem; /* Previously xs: 2px */
   --radius-sm: 0.25rem; /* Previously sm: 4px */
@@ -276,7 +424,7 @@
   --radius-xl: 0.75rem; /* Previously lg: 12px */
   --radius-2xl: 1rem;
 
-  /* Override Tailwind default shadows with Geist's DS shadows */
+  /* Override Tailwind default shadows with the design-system shadows */
   --shadow-border: var(--ds-shadow-border);
 
   --shadow-2xs: var(--ds-shadow-2xs);
@@ -287,7 +435,7 @@
   --shadow-xl: var(--ds-shadow-xl);
   --shadow-2xl: var(--ds-shadow-2xl);
 
-  /* Geist Breakpoints */
+  /* Breakpoints */
   --breakpoint-sm: 401px;
   --breakpoint-md: 601px;
   --breakpoint-lg: 961px;
@@ -296,7 +444,7 @@
 
   --color-geist-cyan: var(--geist-cyan, #50e3c2);
   --color-geist-warning: var(--geist-warning, #f5a623);
-  --color-geist-error: var(--geist-error, var(--ds-red-700));
+  --color-geist-error: var(--geist-error, #ee0000);
 
   --color-black: var(--ds-black);
   --color-white: var(--ds-white);
@@ -325,6 +473,9 @@
   --color-gray-alpha-800: var(--ds-gray-alpha-800);
   --color-gray-alpha-900: var(--ds-gray-alpha-900);
   --color-gray-alpha-1000: var(--ds-gray-alpha-1000);
+
+  --color-surface-hover: var(--ds-gray-alpha-100);
+  --color-surface-active: var(--ds-gray-alpha-200);
 
   --color-blue-100: var(--ds-blue-100);
   --color-blue-200: var(--ds-blue-200);
@@ -404,10 +555,10 @@
   --color-pink-1000: var(--ds-pink-1000);
 }
 
-/* tempory utility remove once front is fully migrated to geistcn */
-@utility geist-sr-only {
-  @apply sr-only;
-}
+/*
+  Use the @utility directive to add custom utilities to your project that work with variants like hover, focus and lg. They are automatically inserted into the utilities layer.
+  Read more: https://tailwindcss.com/docs/adding-custom-styles#adding-custom-utilities
+*/
 
 @utility clearable-input {
   --duration: 561.04ms;
@@ -678,31 +829,31 @@
 /* Typography Copy */
 
 @utility text-copy-24 {
-  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[24px] leading-[36px];
+  @apply font-sans font-normal [&>strong]:text-gray-1000 text-[24px] leading-[36px] [&>strong]:font-[550];
 }
 
 @utility text-copy-20 {
-  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[20px] leading-[36px];
+  @apply font-sans font-normal [&>strong]:text-gray-1000 text-[20px] leading-[36px] [&>strong]:font-[550];
 }
 
 @utility text-copy-18 {
-  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[18px] leading-[28px];
+  @apply font-sans font-normal [&>strong]:text-gray-1000 text-[18px] leading-[28px] [&>strong]:font-[550];
 }
 
 @utility text-copy-16 {
-  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[16px] leading-[24px];
+  @apply font-sans font-normal [&>strong]:text-gray-1000 text-[16px] leading-[24px] [&>strong]:font-[550];
 }
 
 @utility text-copy-14 {
-  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[14px] leading-[20px];
+  @apply font-sans font-normal [&>strong]:text-gray-1000 text-[14px] leading-[20px] [&>strong]:font-[550];
 }
 
 @utility text-copy-14-mono {
-  @apply font-mono font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[14px] leading-[20px];
+  @apply font-mono font-normal [&>strong]:text-gray-1000 text-[14px] leading-[20px] [&>strong]:font-[550];
 }
 
 @utility text-copy-13 {
-  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[13px] leading-[18px];
+  @apply font-sans font-normal [&>strong]:text-gray-1000 text-[13px] leading-[18px] [&>strong]:font-[550];
 }
 
 @utility text-copy-13-mono {
@@ -714,13 +865,21 @@
   max-width: calc(1200px + 48px);
 }
 
-@keyframes tooltip-enter {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
+@keyframes wf-span-flash {
+  0%,
+  44%,
+  100% {
+    background-color: var(--ds-gray-100);
   }
-  to {
-    opacity: 1;
-    transform: scale(1);
+  12%,
+  28%,
+  58%,
+  74% {
+    background-color: var(--ds-amber-200);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-span-landing] [role='treeitem'][aria-selected='true'] {
+    animation: wf-span-flash 0.6s ease-in-out 0.15s backwards;
   }
 }

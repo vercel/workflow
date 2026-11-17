@@ -1,3 +1,4 @@
+import '../../../test-utils/vercel-request-context.js';
 import {
   EntityConflictError,
   PreconditionFailedError,

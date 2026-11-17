@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 5.0.2
+
+### Patch Changes
+
+- [#5503](https://github.com/vercel/workflow/pull/5503) [`e6f5bc7`](https://github.com/vercel/workflow/commit/e6f5bc7251f0c8daa8f03c1dd29fce04b6f57fa5) Thanks [@pranaygp](https://github.com/pranaygp)! - A `"use step"` function expression bound to a variable inside a workflow or another function (`const send = async function () { "use step"; ... }`) is now a nested step like the arrow form: hoisted, namespaced by the enclosing function and given the variables it captures. It was treated as a module-level step, so its step was never registered and the run failed with "Step ... is not registered".
+
 ## 5.0.1
 
 ### Patch Changes
