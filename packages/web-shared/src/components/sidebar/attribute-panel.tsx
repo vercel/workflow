@@ -177,30 +177,20 @@ function ConversationWithTabs({
           <ConversationView messages={conversation} />
         ) : (
           <div className="p-3">
-            {Array.isArray(args)
-              ? args.map((v, i) => (
-                  <div className="mt-2 first:mt-0" key={i}>
-                    {JsonBlock(v)}
-                  </div>
-                ))
-              : JsonBlock(args)}
+            {Array.isArray(args) ? (
+              args.map((v, i) => (
+                <div className="mt-2 first:mt-0" key={i}>
+                  <CopyableDataBlock data={v} />
+                </div>
+              ))
+            ) : (
+              <CopyableDataBlock data={args} />
+            )}
           </div>
         )}
       </TabbedContainer>
     </Collapsible>
   );
-}
-
-/**
- * Render a value with the shared DataInspector (ObjectInspector with
- * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
- */
-function EncryptedFieldBlock() {
-  return <EncryptedDataBlock />;
-}
-
-function JsonBlock(value: unknown) {
-  return <CopyableDataBlock data={value} />;
 }
 
 const hasDisplayContent = (value: unknown): boolean => {
@@ -510,7 +500,7 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
@@ -540,12 +530,12 @@ const attributeToDisplayFn: Record<
               />
               {hasClosureVars && (
                 <Collapsible label="Closure Variables">
-                  {JsonBlock(closureVars)}
+                  <CopyableDataBlock data={closureVars} />
                 </Collapsible>
               )}
               {hasThisVal && (
-                <Collapsible label="This Value">
-                  {JsonBlock(thisVal)}
+                <Collapsible label="Context">
+                  <CopyableDataBlock data={thisVal} />
                 </Collapsible>
               )}
             </>
@@ -565,21 +555,25 @@ const attributeToDisplayFn: Record<
             defaultOpen={context?.sectionOpen}
             onOpenChange={context?.onSectionOpenChange}
           >
-            {Array.isArray(args)
-              ? args.map((v, i) => (
-                  <div className="mt-2 first:mt-0" key={i}>
-                    {JsonBlock(v)}
-                  </div>
-                ))
-              : JsonBlock(args)}
+            {Array.isArray(args) ? (
+              args.map((v, i) => (
+                <div className="mt-2 first:mt-0" key={i}>
+                  <CopyableDataBlock data={v} />
+                </div>
+              ))
+            ) : (
+              <CopyableDataBlock data={args} />
+            )}
           </Collapsible>
           {hasClosureVars && (
             <Collapsible label="Closure Variables">
-              {JsonBlock(closureVars)}
+              <CopyableDataBlock data={closureVars} />
             </Collapsible>
           )}
           {hasThisVal && (
-            <Collapsible label="Context">{JsonBlock(thisVal)}</Collapsible>
+            <Collapsible label="Context">
+              <CopyableDataBlock data={thisVal} />
+            </Collapsible>
           )}
         </>
       );
@@ -595,13 +589,15 @@ const attributeToDisplayFn: Record<
         defaultOpen={context?.sectionOpen}
         onOpenChange={context?.onSectionOpenChange}
       >
-        {Array.isArray(value)
-          ? value.map((v, i) => (
-              <div className="mt-2 first:mt-0" key={i}>
-                {JsonBlock(v)}
-              </div>
-            ))
-          : JsonBlock(value)}
+        {Array.isArray(value) ? (
+          value.map((v, i) => (
+            <div className="mt-2 first:mt-0" key={i}>
+              <CopyableDataBlock data={v} />
+            </div>
+          ))
+        ) : (
+          <CopyableDataBlock data={value} />
+        )}
       </Collapsible>
     );
   },
@@ -613,7 +609,7 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
@@ -625,7 +621,7 @@ const attributeToDisplayFn: Record<
         defaultOpen={context?.sectionOpen}
         onOpenChange={context?.onSectionOpenChange}
       >
-        {JsonBlock(value)}
+        <CopyableDataBlock data={value} />
       </Collapsible>
     );
   },
@@ -633,7 +629,7 @@ const attributeToDisplayFn: Record<
     if (isEncryptedMarker(value)) {
       return (
         <Collapsible label="Error" defaultOpen>
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
@@ -652,7 +648,7 @@ const attributeToDisplayFn: Record<
 
     return (
       <Collapsible label="Error" defaultOpen>
-        {JsonBlock(value)}
+        <CopyableDataBlock data={value} />
       </Collapsible>
     );
   },
@@ -660,7 +656,7 @@ const attributeToDisplayFn: Record<
     if (isEncryptedMarker(value)) {
       return (
         <Collapsible label="Event Data" defaultOpen>
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
@@ -668,7 +664,7 @@ const attributeToDisplayFn: Record<
     if (!hasDisplayContent(value)) return null;
     return (
       <Collapsible label="Event Data" defaultOpen>
-        {JsonBlock(value)}
+        <CopyableDataBlock data={value} />
       </Collapsible>
     );
   },
@@ -701,7 +697,7 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
@@ -719,6 +715,8 @@ const attributeToDisplayFn: Record<
   },
 };
 
+// Attributes rendered as their own collapsible sections (resolved lazily).
+// Each displayFn draws its own section header, so AttributeBlock adds none.
 const resolvableAttributes = [
   'input',
   'output',
@@ -728,18 +726,6 @@ const resolvableAttributes = [
   'eventData',
   'dynamicWorkflowCode',
 ];
-
-// Attributes whose displayFn renders its own section header via Collapsible,
-// so the outer AttributeBlock should not duplicate the label.
-const selfHeaderedAttributes = new Set([
-  'input',
-  'output',
-  'error',
-  'metadata',
-  'attributes',
-  'eventData',
-  'dynamicWorkflowCode',
-]);
 
 const copyableBasicAttributes = new Set<AttributeKey>([
   'stepId',
@@ -759,17 +745,15 @@ const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
   dynamicWorkflowCode: 'Workflow Code',
 };
 
-export const AttributeBlock = ({
+const AttributeBlock = ({
   attribute,
   value,
   isLoading,
-  inline = false,
   context,
 }: {
   attribute: string;
   value: unknown;
   isLoading?: boolean;
-  inline?: boolean;
   context?: DisplayContext;
 }) => {
   const decryptCtx = useContext(DecryptClickContext);
@@ -786,7 +770,7 @@ export const AttributeBlock = ({
           defaultOpen={attribute === 'eventData' || sectionOpenRef.current}
           onOpenChange={handleSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
@@ -803,53 +787,7 @@ export const AttributeBlock = ({
     sectionOpen: sectionOpenRef.current,
     onSectionOpenChange: handleSectionOpenChange,
   });
-  if (!displayValue) {
-    return null;
-  }
-
-  if (inline) {
-    return (
-      <div className="flex items-center gap-1.5">
-        <span
-          className="text-[11px] font-medium"
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
-          {attribute}
-        </span>
-        <span className="text-[11px]" style={{ color: 'var(--ds-gray-1000)' }}>
-          {displayValue}
-        </span>
-      </div>
-    );
-  }
-
-  if (selfHeaderedAttributes.has(attribute)) {
-    return <>{displayValue}</>;
-  }
-
-  return (
-    <div className="relative">
-      {typeof isLoading === 'boolean' && isLoading && (
-        <div className="absolute top-9 right-4">
-          <div
-            className="animate-spin rounded-full h-4 w-4 border-b-2"
-            style={{ borderColor: 'var(--ds-gray-900)' }}
-          />
-        </div>
-      )}
-      <div key={attribute} className="my-2 flex flex-col gap-0">
-        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
-          {attribute}
-        </span>
-        <span
-          className="text-label-12"
-          style={{ color: 'var(--ds-gray-1000)' }}
-        >
-          {displayValue}
-        </span>
-      </div>
-    </div>
-  );
+  return displayValue;
 };
 
 export const AttributePanel = ({
