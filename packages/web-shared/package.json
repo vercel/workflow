@@ -49,6 +49,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "1.3.1",
     "@radix-ui/react-slot": "1.5.0",
     "@radix-ui/react-tooltip": "1.4.1",
     "@tailwindcss/postcss": "4",
