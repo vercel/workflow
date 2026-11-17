@@ -31,7 +31,7 @@ export default function Chat() {
   return (
     <div>
       {messages.map((m) => (
-        <div key={m.id}>{m.content}</div>
+        <div key={m.id}>{m.parts.map((part) => (part.type === "text" ? part.text : "")).join("")}</div>
       ))}
     </div>
   );
@@ -96,7 +96,7 @@ export default function BasicChat() {
       <div className="space-y-4">
         {messages.map((m) => (
           <div key={m.id}>
-            <strong>{m.role}:</strong> {m.content}
+            <strong>{m.role}:</strong> {m.parts.map((part) => (part.type === "text" ? part.text : "")).join("")}
           </div>
         ))}
       </div>
@@ -164,7 +164,7 @@ export default function ChatWithResumption() {
       <div className="space-y-4">
         {messages.map((m) => (
           <div key={m.id}>
-            <strong>{m.role}:</strong> {m.content}
+            <strong>{m.role}:</strong> {m.parts.map((part) => (part.type === "text" ? part.text : "")).join("")}
           </div>
         ))}
       </div>
@@ -231,7 +231,7 @@ export default function ChatWithCustomConfig() {
       <div className="space-y-4">
         {messages.map((m) => (
           <div key={m.id}>
-            <strong>{m.role}:</strong> {m.content}
+            <strong>{m.role}:</strong> {m.parts.map((part) => (part.type === "text" ? part.text : "")).join("")}
           </div>
         ))}
       </div>

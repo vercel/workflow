@@ -202,6 +202,66 @@ describe('resumeHook durable resume', () => {
     });
   });
 
+  it("names a spec 9 run's workflow on hook_received, on the ordinary route", async () => {
+    // The backend keys the payload ref by workflow name; without it, it reads
+    // the run stamp for the name before the write path reads it again.
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { createEvent } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    const [runId, event, params] = createEvent.mock.calls[0];
+    expect(runId).toBe(hook.runId);
+    expect(event).toEqual({
+      eventType: 'hook_received',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      correlationId: hook.hookId,
+      eventData: {
+        token: hook.token,
+        workflowName: currentContext.workflowName,
+        payload: PAYLOAD_BYTES,
+      },
+    });
+    // Same route as before: a by-token resume is not a resolved delivery.
+    expect(params.requireHookResumeDedup).toBeUndefined();
+    expect(params).toMatchObject({ inBand: false, v1Compat: false });
+  });
+
+  it('names the workflow on a cached-handle resolved delivery too', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { createEvent, getByToken } = makeWorld(hook, undefined, {
+      resolvedHookResume: true,
+    });
+
+    await resumeHook(hook, { foo: 'bar' });
+
+    expect(getByToken).not.toHaveBeenCalled();
+    const [, event, params] = createEvent.mock.calls[0];
+    expect(params.requireHookResumeDedup).toBe(true);
+    expect(event.eventData.workflowName).toBe(currentContext.workflowName);
+  });
+
+  it.each([
+    ['spec 8', 8],
+    ['spec 2', 2],
+  ])('leaves the workflow name off a %s run', async (_label, runSpecVersion) => {
+    const hook = {
+      ...baseHook,
+      specVersion: runSpecVersion,
+      resumeContext: { ...currentContext, runSpecVersion },
+    } satisfies Hook;
+    const { createEvent } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    const [, event] = createEvent.mock.calls[0];
+    expect(event.eventData).toEqual({
+      token: hook.token,
+      payload: PAYLOAD_BYTES,
+    });
+  });
+
   it('uses invoke only when advertised and leaves event persistence to the executor', async () => {
     const hook = { ...baseHook, resumeContext: currentContext };
     const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });

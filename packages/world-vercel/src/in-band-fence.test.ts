@@ -399,6 +399,31 @@ describe('in-band writer fence counts (world-vercel)', () => {
     }
   });
 
+  it("passes on the run's event ceiling from a list response's header", async () => {
+    const agent = listing({}, { 'x-wf-max-events': '25' });
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1', specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(page.maxEvents).toBe(25);
+  });
+
+  it('lists no event ceiling when the header is absent or malformed', async () => {
+    for (const agent of [
+      listing({}),
+      ...['', '0', '-1', '2.5', '1e3', '0x10', 'abc'].map((value) =>
+        listing({}, { 'x-wf-max-events': value })
+      ),
+    ]) {
+      const page = await getWorkflowRunEvents(
+        { runId: 'wrun_1', specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+        { token: 'test-token', dispatcher: agent }
+      );
+      expect(page.data).toHaveLength(1);
+      expect(page).not.toHaveProperty('maxEvents');
+    }
+  });
+
   it('falls back to the headers when the end frame carries a malformed snapshot', async () => {
     const agent = listing(
       { snapshot: { seq: 1, seqInBand: 5 } },

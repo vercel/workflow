@@ -8,6 +8,7 @@ keywords:
   - hydrateResourceIO
   - observabilityRevivers
   - hydrateData
+  - createStateResolver
   - parseStepName
   - parseWorkflowName
   - parseClassName
@@ -23,6 +24,7 @@ import { // [!code highlight]
   hydrateResourceIO, // [!code highlight]
   observabilityRevivers, // [!code highlight]
   hydrateData, // [!code highlight]
+  createStateResolver, // [!code highlight]
   parseStepName, // [!code highlight]
   parseWorkflowName, // [!code highlight]
   parseClassName, // [!code highlight]
@@ -40,6 +42,9 @@ import { // [!code highlight]
     </Card>
     <Card href="/docs/api-reference/workflow-observability/hydrate-data" title="hydrateData()">
         Hydrate a single serialized value (lower-level than hydrateResourceIO).
+    </Card>
+    <Card href="/docs/api-reference/workflow-observability/create-state-resolver" title="createStateResolver()">
+        Rebuild frozen state a run stored by reference, so inspected values show in full.
     </Card>
 </Cards>
 

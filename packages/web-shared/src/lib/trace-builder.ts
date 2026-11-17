@@ -25,6 +25,7 @@ import {
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { findDuplicateEventIds } from './duplicate-events';
 import { isSealedNoopEvent } from './sealed-events';
+import { findStartHookCreation, type StartHookCreation } from './start-hook';
 import type { Span } from './trace-types';
 
 /**
@@ -58,11 +59,6 @@ export function filterSpanRawEvents(
   return events.filter((e) => e.correlationId === spanId);
 }
 
-/**
- * The ID of the span an event is drawn under: the run's root span for
- * run-level events (see {@link isRunLevelEvent}), else the child span that
- * shares the event's correlationId.
- */
 export function getEventSpanId(event: Event): string {
   const { correlationId } = event;
   return correlationId && !isRunLevelEvent(event) ? correlationId : event.runId;
@@ -149,6 +145,7 @@ function buildSpans(
   groupedEvents: GroupedEvents,
   now: Date,
   latestKnownTime: Date,
+  startHook: StartHookCreation | undefined,
   getStepAttributes?: GetStepAttributes
 ) {
   // Active child spans cap at latestKnownTime so they don't extend into
@@ -161,8 +158,20 @@ function buildSpans(
     .map((events) => stepToSpan(events, childMaxEnd, getStepAttributes))
     .filter((span): span is Span => span !== null);
 
-  const hookSpans = Array.from(groupedEvents.hookEvents.values())
-    .map((events) => hookToSpan(events, childMaxEnd))
+  // A start Hook exists from the run's creation, before (and whether or not)
+  // anything is delivered to it, and has no `hook_created` of its own.
+  const hookEventGroups = new Map(groupedEvents.hookEvents);
+  if (startHook && !hookEventGroups.has(startHook.hookId)) {
+    hookEventGroups.set(startHook.hookId, []);
+  }
+  const hookSpans = Array.from(hookEventGroups)
+    .map(([hookId, events]) =>
+      hookToSpan(
+        events,
+        childMaxEnd,
+        hookId === startHook?.hookId ? startHook : undefined
+      )
+    )
     .filter((span): span is Span => span !== null);
 
   const waitSpans = Array.from(groupedEvents.timerEvents.values())
@@ -251,6 +260,7 @@ export function buildTrace(
     groupedEvents,
     now,
     latestKnownTime,
+    findStartHookCreation(actedOnEvents, run),
     getStepAttributes
   );
   const sortedCascadingSpans = cascadeSpans(runSpan, spans);

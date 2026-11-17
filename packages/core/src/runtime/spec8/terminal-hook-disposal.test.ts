@@ -439,7 +439,14 @@ describe.each([
       expect(claim.event?.eventType).toBe('hook_created');
     } finally {
       setWorld(undefined);
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, {
+        recursive: true,
+        force: true,
+        // Windows: world-local closes its connection to the database a moment
+        // after the last operation; until then the file cannot be deleted.
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     }
   });
 

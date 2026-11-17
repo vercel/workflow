@@ -90,10 +90,7 @@ function LevelIcon({ level }: { level: EventLevel }) {
 
 export type EventSortOrder = 'asc' | 'desc';
 
-/**
- * The sort chevrons from the dashboard's Sonar tables: the active direction's
- * chevron slides to the middle and the other fades out.
- */
+/** The active direction's chevron slides to the middle; the other fades out. */
 function SortIndicator({ order }: { order: EventSortOrder }) {
   return (
     <span aria-hidden className="flex flex-col gap-px">
@@ -271,10 +268,7 @@ export function EventRow({
       <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
         <ResourceIcon
           resource={row.resource}
-          isErrored={
-            event.eventType === 'step_failed' ||
-            event.eventType === 'run_failed'
-          }
+          isErrored={level === 'error'}
           isCancelled={event.eventType === 'run_cancelled'}
         />
         {name ? (

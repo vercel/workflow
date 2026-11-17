@@ -1,11 +1,10 @@
 'use client';
 
 import type { Event } from '@workflow/world';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { EventSearchState } from '../../lib/event-list-model';
 import {
   type ExactIdSearchResult,
-  type ExactWorkflowSearchId,
   type ExactWorkflowSearchIdKind,
   parseExactWorkflowSearchId,
 } from '../../lib/exact-event-search-id';
@@ -30,89 +29,54 @@ export type ExactSearchHandler = (
  * The Events tab search box. The input text is the only thing typed; the
  * search state is derived from it plus the latest settled exact-ID lookup, so
  * a lookup that answered an older query is never shown for the current one.
- *
- * `onExactResult` is called with the events of an exact-ID lookup when it
- * finds some, and with null when the search is cleared or a lookup finds
- * nothing or fails.
  */
-export function useEventSearch({
-  onExactIdSearch,
-  onExactResult,
-}: {
-  onExactIdSearch?: ExactSearchHandler;
-  onExactResult?: (
-    result: { id: ExactWorkflowSearchId; events: Event[] } | null
-  ) => void;
-}): {
+export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
   query: string;
   setQuery: (query: string) => void;
   search: EventSearchState;
 } {
   const [query, setQuery] = useState('');
   const [outcome, setOutcome] = useState<ExactSearchOutcome | null>(null);
-  const requestRef = useRef(0);
-  const onExactResultRef = useRef(onExactResult);
-  onExactResultRef.current = onExactResult;
 
   const trimmed = query.trim();
   const parsed = useMemo(() => parseExactWorkflowSearchId(trimmed), [trimmed]);
 
   useEffect(() => {
-    if (!trimmed) {
-      requestRef.current += 1;
-      onExactResultRef.current?.(null);
-      return;
-    }
     if (!parsed || !onExactIdSearch) return;
 
-    const requestId = ++requestRef.current;
+    // Aborted when the query changes, so a superseded lookup never settles.
     const abortController = new AbortController();
-    const isCurrent = () =>
-      !abortController.signal.aborted && requestRef.current === requestId;
-    const settle = (next: ExactSearchOutcome) => {
-      setOutcome(next);
-      onExactResultRef.current?.(
-        next.status === 'ok' ? { id: parsed, events: next.events } : null
-      );
-    };
-
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          const result = await onExactIdSearch(
-            parsed.id,
-            parsed.kind,
-            abortController.signal
-          );
-          if (!isCurrent()) return;
-          if (result.status === 'error') {
-            settle({
-              query: trimmed,
-              status: 'error',
-              message: result.message,
-            });
-          } else if (
-            result.status === 'not_found' ||
-            result.events.length === 0
-          ) {
-            settle({ query: trimmed, status: 'not_found' });
-          } else {
-            settle({
-              query: trimmed,
-              status: 'ok',
-              events: result.events,
-              truncated: Boolean(result.truncated),
-            });
-          }
-        } catch {
-          if (!isCurrent()) return;
-          settle({
+    const timer = setTimeout(async () => {
+      let next: ExactSearchOutcome;
+      try {
+        const result = await onExactIdSearch(
+          parsed.id,
+          parsed.kind,
+          abortController.signal
+        );
+        if (result.status === 'error') {
+          next = { query: trimmed, status: 'error', message: result.message };
+        } else if (
+          result.status === 'not_found' ||
+          result.events.length === 0
+        ) {
+          next = { query: trimmed, status: 'not_found' };
+        } else {
+          next = {
             query: trimmed,
-            status: 'error',
-            message: 'Failed to search events. Try again.',
-          });
+            status: 'ok',
+            events: result.events,
+            truncated: Boolean(result.truncated),
+          };
         }
-      })();
+      } catch {
+        next = {
+          query: trimmed,
+          status: 'error',
+          message: 'Failed to search events. Try again.',
+        };
+      }
+      if (!abortController.signal.aborted) setOutcome(next);
     }, EXACT_SEARCH_DEBOUNCE_MS);
 
     return () => {

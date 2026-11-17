@@ -11,6 +11,9 @@
  * 3. On suspension: creates events + queues steps for new pending ops
  * 4. On completion: creates run_completed
  * 5. On failure: creates run_failed
+ *
+ * This is the spec 9 QuickJS orchestrator. `./README.md` is the spec 9
+ * reference; "QuickJS differences" there lists where the two engines differ.
  */
 
 import type { Span } from '@opentelemetry/api';
@@ -30,6 +33,7 @@ import {
   type EventBatchResult,
   type EventResult,
   eventIdToSlot,
+  isSealedNoopEvent,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   type SerializedData,
@@ -57,7 +61,7 @@ import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
 import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
@@ -1192,20 +1196,32 @@ export async function runWorkflowWithQuickJS(params: {
   // pre-snapshot event against the ceiling (tripping
   // MaxEventsExceededError below the real limit) and stamp the inflated
   // total into the next save's `eventCount`, compounding.
+  //
+  // Units: the delta counts workflow events (sealed `noop`s excluded, as
+  // the node engine counts), but the snapshot's `eventCount` is the log
+  // positions through its cursor (`eventsThroughCursor`), noops included.
+  // The total over-counts by the noops before the snapshot, so a resumed
+  // snapshot run can fail slightly before the node engine would. A run the
+  // World exempts (a persisted positive snapshot threshold) has no finite
+  // ceiling unless `WORKFLOW_MAX_EVENTS_OVERRIDE` sets one. A noop-free
+  // count would need a new snapshot metadata field.
   let restoredEventCount = existingSnapshot?.metadata.eventCount ?? 0;
+  const workflowEventCount = events.filter(
+    (event) => !isSealedNoopEvent(event)
+  ).length;
   if (
     maxEventsLimit !== undefined &&
-    restoredEventCount + events.length >= maxEventsLimit
+    restoredEventCount + workflowEventCount >= maxEventsLimit
   ) {
     throw new MaxEventsExceededError(
-      restoredEventCount + events.length,
+      restoredEventCount + workflowEventCount,
       maxEventsLimit
     );
   }
   maybeWarnApproachingEventLimit({
     runId,
     workflowName,
-    eventCount: restoredEventCount + events.length,
+    eventCount: restoredEventCount + workflowEventCount,
     limit: maxEventsLimit,
     isQuickJS: true,
   });
@@ -1433,8 +1449,14 @@ export async function runWorkflowWithQuickJS(params: {
   // possible in-process, the replay budget is exhausted, or the run is
   // gone.
   const seenEventIds = new Set<string>();
+  const seenNoopIds = new Set<string>();
+  const noteSeenEvent = (event: Event): void => {
+    if (!event.eventId) return;
+    seenEventIds.add(event.eventId);
+    if (isSealedNoopEvent(event)) seenNoopIds.add(event.eventId);
+  };
   for (const e of events) {
-    if (e.eventId) seenEventIds.add(e.eventId);
+    noteSeenEvent(e);
   }
   // Events processed since the restored snapshot (or since run start when
   // booting fresh) — compared against snapshotThreshold at suspension
@@ -1569,7 +1591,7 @@ export async function runWorkflowWithQuickJS(params: {
         logView.screen(e);
         screenWrittenEvents([e], 'listing');
         if (e.eventId && seenEventIds.has(e.eventId)) continue;
-        if (e.eventId) seenEventIds.add(e.eventId);
+        noteSeenEvent(e);
         unseen.push(e);
       }
       if (response.cursor) {
@@ -1601,7 +1623,7 @@ export async function runWorkflowWithQuickJS(params: {
   const takeQueuedEvents = (): Event[] => {
     const queued = logView.takeContiguous();
     for (const e of queued) {
-      if (e.eventId) seenEventIds.add(e.eventId);
+      noteSeenEvent(e);
     }
     noteFedOutcomes(queued);
     return queued;
@@ -1619,6 +1641,8 @@ export async function runWorkflowWithQuickJS(params: {
   const inFlightInline = new Map<string, Promise<void>>();
   const settledInline: InlineSettled[] = [];
   let inlineFeed: LiveLogFeed | undefined;
+  /** Removes the live feed's listener on the writer's commits. */
+  let stopInlineFeedActivity: (() => void) | undefined;
   /** Events the live feed delivered so far in this invocation. */
   let fedEventCount = 0;
   /**
@@ -1654,6 +1678,12 @@ export async function runWorkflowWithQuickJS(params: {
       onFeedDown: () => notifyProgress(),
     });
     inlineFeed.start();
+    // Without a push, the poll's backoff starts over on each write of this
+    // delivery (see `LiveLogFeed.noteActivity`).
+    const feed = inlineFeed;
+    stopInlineFeedActivity = writer?.addCommitListener(() =>
+      feed.noteActivity()
+    );
   };
   let progressDirty = false;
   let progressWaiter: (() => void) | undefined;
@@ -2118,7 +2148,7 @@ export async function runWorkflowWithQuickJS(params: {
       events.map((event) => ({
         event,
         occurredAt,
-        computeInstanceId: COMPUTE_INSTANCE_ID,
+        computeInstanceId: getComputeInstanceId(),
       })),
       {
         ...logView.snapshotParams(),
@@ -2311,7 +2341,7 @@ export async function runWorkflowWithQuickJS(params: {
   ): Promise<CallerStart> => {
     const postSentAtMs = Date.now();
     const written = await createEvent(inlineCreationEvent(step, input), {
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
       ...(requestId ? { requestId } : {}),
     });
     return {
@@ -2448,6 +2478,9 @@ export async function runWorkflowWithQuickJS(params: {
           ...(resume?.firstStartedAt
             ? { firstStartedAt: resume.firstStartedAt }
             : {}),
+          ...(resume?.lastStartedAt
+            ? { lastStartedAt: resume.lastStartedAt }
+            : {}),
           input,
           ...(ahead ? { started: ahead.started } : {}),
           forceOptimisticStart: optimistic && !resume,
@@ -2496,6 +2529,8 @@ export async function runWorkflowWithQuickJS(params: {
     // Speculative writes settle before the delivery ends, whichever way it
     // ends.
     await settleRunAhead();
+    stopInlineFeedActivity?.();
+    stopInlineFeedActivity = undefined;
     inlineFeed?.stop();
     inlineFeed = undefined;
   };
@@ -2615,7 +2650,13 @@ export async function runWorkflowWithQuickJS(params: {
     ) {
       return 'step';
     }
-    const logged = externalWorkOf(fullLog());
+    const observedHookIds = new Set(
+      session
+        .openHooks?.()
+        .filter((hook) => hook.observed)
+        .map((hook) => hook.correlationId) ?? []
+    );
+    const logged = externalWorkOf(fullLog(), observedHookIds);
     if (logged !== undefined) return logged;
     if (pendingOperations.some((op) => op.type === 'hook')) return 'hook';
     return undefined;
@@ -2704,15 +2745,15 @@ export async function runWorkflowWithQuickJS(params: {
       // Re-check the event ceiling every turn: the loop appends events on
       // each continueWithEvents, so a single invocation can otherwise grow
       // the log arbitrarily far past the operator's limit (the node engine
-      // re-checks per replay for the same reason). `seenEventIds` counts
-      // every event this invocation has observed: initial log + all
-      // feeds.
+      // re-checks per replay for the same reason). Count workflow events
+      // from the initial log and all feeds, excluding sealed noops.
       if (
         maxEventsLimit !== undefined &&
-        restoredEventCount + seenEventIds.size >= maxEventsLimit
+        restoredEventCount + seenEventIds.size - seenNoopIds.size >=
+          maxEventsLimit
       ) {
         throw new MaxEventsExceededError(
-          restoredEventCount + seenEventIds.size,
+          restoredEventCount + seenEventIds.size - seenNoopIds.size,
           maxEventsLimit
         );
       }
@@ -3764,7 +3805,8 @@ export async function runWorkflowWithQuickJS(params: {
     // The VM serializes errors as `{ name, message, stack }`, so we
     // reconstruct a host-side Error of the correct class based on the
     // VM-side `name`: specific WorkflowRuntimeError subclasses need
-    // to be preserved so classifyRunError() tags them as RUNTIME_ERROR.
+    // to be preserved so classifyRunError() tags them with their own
+    // code (WORKFLOW_NOT_REGISTERED for WorkflowNotRegisteredError).
     const reconstructed: Error =
       result.failed.name === 'WorkflowNotRegisteredError'
         ? new WorkflowNotRegisteredError(workflowName)

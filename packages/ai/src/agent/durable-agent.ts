@@ -66,6 +66,8 @@ export type InferDurableAgentUIMessage<
 /**
  * Output specification interface for structured outputs.
  * Use `Output.object({ schema })` or `Output.text()` to create an output specification.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export interface OutputSpecification<OUTPUT, PARTIAL> {
   readonly name: string;
@@ -85,11 +87,15 @@ export interface OutputSpecification<OUTPUT, PARTIAL> {
 
 /**
  * Provider-specific options type. This is equivalent to SharedV3ProviderOptions from @ai-sdk/provider.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type ProviderOptions = SharedV3ProviderOptions;
 
 /**
  * Telemetry settings for observability.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export interface TelemetrySettings {
   /**
@@ -139,6 +145,8 @@ export interface TelemetrySettings {
 
 /**
  * A transformation that is applied to the stream.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type StreamTextTransform<TTools extends ToolSet> = (options: {
   tools: TTools;
@@ -147,6 +155,8 @@ export type StreamTextTransform<TTools extends ToolSet> = (options: {
 
 /**
  * Function to repair a tool call that failed to parse.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type ToolCallRepairFunction<TTools extends ToolSet> = (options: {
   toolCall: LanguageModelV3ToolCall;
@@ -159,6 +169,8 @@ export type ToolCallRepairFunction<TTools extends ToolSet> = (options: {
  * Custom download function for URLs.
  * The function receives an array of URLs with information about whether
  * the model supports them directly.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type DownloadFunction = (
   options: {
@@ -172,6 +184,8 @@ export type DownloadFunction = (
 /**
  * Generation settings that can be passed to the model.
  * These map directly to LanguageModelV3CallOptions.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export interface GenerationSettings {
   /**
@@ -255,6 +269,8 @@ export interface GenerationSettings {
 
 /**
  * Information passed to the prepareStep callback.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
   /**
@@ -288,6 +304,8 @@ export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
 /**
  * Return type from the prepareStep callback.
  * All properties are optional - only return the ones you want to override.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export interface PrepareStepResult extends Partial<GenerationSettings> {
   /**
@@ -328,6 +346,8 @@ export interface PrepareStepResult extends Partial<GenerationSettings> {
 /**
  * Callback function called before each step in the agent loop.
  * Use this to modify settings, manage context, or implement dynamic behavior.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type PrepareStepCallback<TTools extends ToolSet = ToolSet> = (
   info: PrepareStepInfo<TTools>
@@ -408,6 +428,8 @@ export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
 
 /**
  * Callback that is called when the LLM response and all request tool executions are finished.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type StreamTextOnFinishCallback<
   TTools extends ToolSet = ToolSet,
@@ -452,6 +474,8 @@ export type StreamTextOnFinishCallback<
 
 /**
  * Callback that is invoked when an error occurs during streaming.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type StreamTextOnErrorCallback = (event: {
   error: unknown;
@@ -459,6 +483,8 @@ export type StreamTextOnErrorCallback = (event: {
 
 /**
  * Callback that is set using the `onAbort` option.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export type StreamTextOnAbortCallback<TTools extends ToolSet = ToolSet> =
   (event: {
@@ -671,6 +697,8 @@ export interface DurableAgentStreamOptions<
 
 /**
  * A tool call made by the model. Matches the AI SDK's tool call shape.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export interface ToolCall {
   /** Discriminator for content part arrays */
@@ -685,6 +713,8 @@ export interface ToolCall {
 
 /**
  * A tool result from executing a tool. Matches the AI SDK's tool result shape.
+ *
+ * @deprecated `DurableAgent` is deprecated; use `WorkflowAgent` and its types from `@ai-sdk/workflow`.
  */
 export interface ToolResult {
   /** Discriminator for content part arrays */

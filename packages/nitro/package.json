@@ -1,11 +1,13 @@
 {
   "name": "@workflow/nitro",
-  "version": "5.0.8",
+  "version": "5.0.11",
   "description": "Nitro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"
@@ -24,17 +26,14 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run src"
+    "test": "vitest run --config=../../vitest.config.ts src"
   },
   "dependencies": {
-    "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/rollup": "workspace:*",
-    "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
     "@workflow/web": "workspace:*",
-    "exsolve": "1.0.8",
     "pathe": "2.0.3"
   },
   "devDependencies": {
@@ -42,7 +41,7 @@
     "@workflow/tsconfig": "workspace:*",
     "nitro": "catalog:",
     "typescript": "catalog:",
-    "vite": "7.3.6",
+    "vite": "7.3.7",
     "vitest": "catalog:"
   }
 }

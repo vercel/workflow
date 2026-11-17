@@ -18,6 +18,7 @@ import {
   type StepStatus,
 } from '@workflow/world';
 import { findDuplicateEventIds } from './duplicate-events';
+import { findStartHookCreation } from './start-hook';
 
 // ---------------------------------------------------------------------------
 // Materialized entity types
@@ -198,14 +199,35 @@ export function materializeSteps(
 
 /**
  * Group hook_* events by correlationId and build Hook-like entities.
+ *
+ * A run's start Hook has no `hook_created`: the run's creation event stands
+ * for it (see {@link findStartHookCreation}), so it is materialized from that
+ * even before anything is delivered to it.
  */
 export function materializeHooks(events: Event[]): MaterializedHook[] {
   const groups = groupByCorrelationId(events, isHookLifecycleEventType);
   const hooks: MaterializedHook[] = [];
 
+  const startHook = findStartHookCreation(events);
+  if (startHook && !groups.has(startHook.hookId)) {
+    groups.set(startHook.hookId, []);
+  }
+
   for (const [correlationId, hookEvents] of groups) {
     const created = hookEvents.find((e) => e.eventType === 'hook_created');
-    if (!created) continue;
+    const creation = created
+      ? {
+          runId: created.runId,
+          token:
+            created.eventType === 'hook_created'
+              ? created.eventData?.token
+              : undefined,
+          createdAt: getEventTimestamp(created) ?? created.createdAt,
+        }
+      : correlationId === startHook?.hookId
+        ? startHook
+        : undefined;
+    if (!creation) continue;
 
     const receivedEvents = hookEvents.filter(
       (e) => e.eventType === 'hook_received'
@@ -215,12 +237,9 @@ export function materializeHooks(events: Event[]): MaterializedHook[] {
 
     hooks.push({
       hookId: correlationId,
-      runId: created.runId,
-      token:
-        created.eventType === 'hook_created'
-          ? created.eventData?.token
-          : undefined,
-      createdAt: getEventTimestamp(created) ?? created.createdAt,
+      runId: creation.runId,
+      token: creation.token,
+      createdAt: creation.createdAt,
       receivedCount: receivedEvents.length,
       lastReceivedAt: getEventTimestamp(lastReceived),
       disposedAt: getEventTimestamp(disposed),

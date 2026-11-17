@@ -8,21 +8,14 @@ import { findDuplicateEventIds } from '../lib/duplicate-events';
 import {
   buildEventLookups,
   buildEventRow,
-  buildEventRows,
   buildListItems,
   getEmptyMessage,
   getEventEntity,
-  getExactSearchEvents,
   getFooterLabel,
-  getStepSegments,
+  getListSource,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
-import type {
-  ExactIdSearchResult,
-  ExactWorkflowSearchId,
-  ExactWorkflowSearchIdKind,
-} from '../lib/exact-event-search-id';
 import { EventDetailsPanel } from './event-list/event-details-panel';
 import { EventListToolbar } from './event-list/event-list-toolbar';
 import {
@@ -32,7 +25,10 @@ import {
   type EventSortOrder,
   IdleGapRow,
 } from './event-list/event-row';
-import { useEventSearch } from './event-list/use-event-search';
+import {
+  type ExactSearchHandler,
+  useEventSearch,
+} from './event-list/use-event-search';
 import { useDetailPanelWidth } from './trace-viewer/components/use-detail-panel-width';
 import { ContextCardProvider } from './ui/context-card';
 import { DecryptClickContext } from './ui/data-inspector';
@@ -63,14 +59,9 @@ interface EventsListProps {
   /** Explains why decryption is unavailable. */
   decryptDisabledReason?: string;
   /** Fetch events for an exact correlation or event ID. */
-  onExactIdSearch?: (
-    id: string,
-    kind: ExactWorkflowSearchIdKind,
-    signal?: AbortSignal
-  ) => Promise<ExactIdSearchResult>;
+  onExactIdSearch?: ExactSearchHandler;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
-  /** Shows "View in Trace" in the details panel, with the trace span ID to select. */
   onViewInTrace?: (spanId: string) => void;
 }
 
@@ -100,58 +91,28 @@ function EventListViewInner({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // Selecting an event marks every event of the same step, hook, wait or run.
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>();
-  const [relatedKey, setRelatedKey] = useState<string | undefined>();
+  const { query, setQuery, search } = useEventSearch(onExactIdSearch);
+  const list = getListSource(search, { events, hasMore: hasMoreEvents });
 
-  // An exact-ID search marks the entity it found and scrolls to the top.
-  const handleExactResult = useCallback(
-    (result: { id: ExactWorkflowSearchId; events: Event[] } | null) => {
-      if (!result) {
-        setRelatedKey(undefined);
-        return;
-      }
-      setRelatedKey(
-        result.id.kind === 'event'
-          ? (getEventEntity(result.events[0]).key ?? undefined)
-          : result.id.id
-      );
-      virtuosoRef.current?.scrollToIndex({
-        index: 0,
-        align: 'start',
-        behavior: 'smooth',
-      });
-    },
-    []
-  );
-  const { query, setQuery, search } = useEventSearch({
-    onExactIdSearch,
-    onExactResult: handleExactResult,
-  });
-  const exactEvents = getExactSearchEvents(search);
-  const isExactSearchActive = exactEvents !== null;
-
-  // Rows come from the list on display: the exact-search results, else the
-  // loaded page. Names and timings come from every event on hand.
-  const displayedEvents = exactEvents ?? events;
+  // Rows come from the list's source; names and timings from every event on
+  // hand.
   const sortedEvents = useMemo(
-    () => sortEventsByTime(displayedEvents ?? [], sortOrder),
-    [displayedEvents, sortOrder]
+    () => sortEventsByTime(list.events, sortOrder),
+    [list.events, sortOrder]
   );
   const knownEvents = useMemo(
-    () => mergeEventsById(events ?? [], exactEvents ?? []),
-    [events, exactEvents]
+    () => mergeEventsById(events ?? [], list.events),
+    [events, list.events]
   );
 
   // Events every replay reads past as repeats. A page short of the whole log,
   // or an exact-ID search, cannot answer that question, so both classify
   // nothing (see findDuplicateEventIds).
+  const isCompleteHistory = list.isLog && !list.hasMore;
   const duplicateEventIds = useMemo(
-    () =>
-      findDuplicateEventIds(events ?? [], {
-        isCompleteHistory: !hasMoreEvents && !isExactSearchActive,
-      }),
-    [events, hasMoreEvents, isExactSearchActive]
+    () => findDuplicateEventIds(events ?? [], { isCompleteHistory }),
+    [events, isCompleteHistory]
   );
 
   const lookups = useMemo(
@@ -159,33 +120,37 @@ function EventListViewInner({
     [knownEvents, run, duplicateEventIds]
   );
   const rows = useMemo(
-    () => buildEventRows(sortedEvents, lookups),
+    () => sortedEvents.map((event) => buildEventRow(event, lookups)),
     [sortedEvents, lookups]
   );
   const listItems = useMemo(
     () =>
       buildListItems(rows, {
-        showGaps: !isExactSearchActive,
+        showGaps: list.isLog,
         hookNameMap: lookups.names.hookNameMap,
       }),
-    [rows, isExactSearchActive, lookups]
+    [rows, list.isLog, lookups]
   );
 
-  const selectEvent = useCallback((event: Event | undefined) => {
-    setSelectedEventId(event?.eventId);
-    setRelatedKey(event ? (getEventEntity(event).key ?? undefined) : undefined);
+  const toggleSelectedEvent = useCallback((event: Event) => {
+    setSelectedEventId((id) =>
+      id === event.eventId ? undefined : event.eventId
+    );
   }, []);
-  const toggleSelectedEvent = useCallback(
-    (event: Event) => {
-      selectEvent(event.eventId === selectedEventId ? undefined : event);
-    },
-    [selectedEventId, selectEvent]
-  );
   const selectedRow = useMemo(() => {
     if (!selectedEventId) return undefined;
     const event = knownEvents.find((e) => e.eventId === selectedEventId);
     return event ? buildEventRow(event, lookups) : undefined;
   }, [selectedEventId, knownEvents, lookups]);
+
+  // Every event of the step, hook, wait or run an exact-ID search found is
+  // marked; with no search result, those of the selected event's.
+  const relatedKey =
+    search.status === 'ok'
+      ? search.id.kind === 'event'
+        ? getEventEntity(search.events[0]).key
+        : search.id.id
+      : (selectedRow?.entity.key ?? null);
 
   // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
@@ -215,7 +180,7 @@ function EventListViewInner({
           ? 0
           : Math.min(Math.max(selectedIndex + delta, 0), rows.length - 1);
       const next = rows[nextIndex].event;
-      selectEvent(next);
+      setSelectedEventId(next.eventId);
       const itemIndex = listItems.findIndex(
         (item) =>
           item.kind === 'event' && item.row.event.eventId === next.eventId
@@ -231,7 +196,7 @@ function EventListViewInner({
           ?.focus();
       });
     },
-    [selectedIndex, selectEvent, rows, listItems]
+    [selectedIndex, rows, listItems]
   );
 
   // With no listed row selected, Up/Down or J/K select the first one. Once a
@@ -317,14 +282,9 @@ function EventListViewInner({
                     : item.row.event.eventId;
                 }}
                 endReached={() => {
-                  if (
-                    isExactSearchActive ||
-                    !hasMoreEvents ||
-                    isLoadingMoreEvents
-                  ) {
-                    return;
+                  if (list.hasMore && !isLoadingMoreEvents) {
+                    void onLoadMoreEvents?.();
                   }
-                  void onLoadMoreEvents?.();
                 }}
                 components={{ Footer: () => <div className="h-2" /> }}
                 itemContent={(i: number) => {
@@ -343,8 +303,7 @@ function EventListViewInner({
                         selectedIndex === -1 ? item.index === 0 : isSelected
                       }
                       isRelated={
-                        relatedKey !== undefined &&
-                        row.entity.key === relatedKey
+                        relatedKey !== null && row.entity.key === relatedKey
                       }
                       onSelect={toggleSelectedEvent}
                       showSeparateEventOccurrenceTimestamps={
@@ -364,7 +323,7 @@ function EventListViewInner({
                   hasMoreEvents,
                 })}
               </span>
-              {!isExactSearchActive && hasMoreEvents && (
+              {list.hasMore && (
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="pointer-events-auto">
                     <LoadMoreButton
@@ -380,23 +339,12 @@ function EventListViewInner({
           {selectedRow ? (
             <EventDetailsPanel
               row={selectedRow}
-              segments={getStepSegments(selectedRow.entity, lookups.timing)}
               onLoadEventData={onLoadEventData}
               cachedEventData={
                 eventDataCacheRef.current.get(selectedRow.event.eventId) ?? null
               }
               onCacheEventData={cacheEventData}
               encryptionKey={encryptionKey}
-              decrypt={
-                onDecrypt
-                  ? {
-                      onDecrypt,
-                      isDecrypting,
-                      isDecryptDisabled,
-                      decryptDisabledReason,
-                    }
-                  : undefined
-              }
               width={panelWidth}
               onPrev={selectedIndex > 0 ? () => moveSelection(-1) : undefined}
               onNext={
@@ -404,7 +352,7 @@ function EventListViewInner({
                   ? () => moveSelection(1)
                   : undefined
               }
-              onClose={() => selectEvent(undefined)}
+              onClose={() => setSelectedEventId(undefined)}
               onViewInTrace={onViewInTrace}
             />
           ) : null}

@@ -8,7 +8,7 @@
  * is not acked, it redelivers, the workflow replays, and the step's user code is
  * re-executed with `attempt++` even though it already ran to completion once.
  *
- * That re-execution is avoidable, because workflow-server makes event writes
+ * That re-execution is avoidable, because the backend makes event writes
  * idempotent *in outcome*: the entity handlers run before the event-log row is
  * inserted, and state transitions are conditional writes that exclude
  * already-terminal states. A retry whose original already landed therefore
@@ -147,8 +147,8 @@ export interface EventRetryPolicy {
 }
 
 /**
- * Validated per-event idempotency-on-retry classification, derived from reading
- * every handler in workflow-server's event create path. `retryable: true` means
+ * Validated per-event idempotency-on-retry classification, derived from the
+ * backend's event create handlers. `retryable: true` means
  * a retry whose original already landed produces no duplicate event row and no
  * double-applied state (it surfaces a 409 the SDK already handles).
  *

@@ -9,7 +9,7 @@ import type { PaginationOptions, ResolveData } from './shared.js';
  * enough for encryption-key resolution, serialization/compression capability
  * selection, queue routing, and trace linking, without fetching the full run.
  *
- * Persisted on new hook records (workflow-server) and also returned inline by
+ * Persisted on new hook records (world-vercel) and also returned inline by
  * `getByToken`, so a resume can skip the separate `runs.get`. Deliberately
  * excludes the run's mutable state (e.g. status), inputs/outputs, attributes,
  * and any secret: only fields that are fixed at hook-creation time.

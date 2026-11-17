@@ -14,8 +14,6 @@ import {
   type World,
 } from '@workflow/world';
 import chalk from 'chalk';
-
-import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
@@ -26,6 +24,8 @@ import {
   isEncryptedRef,
   isExpiredRef,
 } from './hydration.js';
+import { stringifyJSON } from './json.js';
+import { formatRelativeTime } from './relative-time.js';
 import { resolveTimeWindow } from './time-window.js';
 import { resolveWorkflowNameFilter } from './workflow-name.js';
 
@@ -346,7 +346,7 @@ export const formatTableValue = (
   }
 
   if (prop === 'eventData') {
-    return truncateString(JSON.stringify(value));
+    return truncateString(stringifyJSON(value));
   }
 
   if (prop === 'hasResponse') {
@@ -439,7 +439,7 @@ const showTable = (
 };
 
 const showJson = (data: unknown) => {
-  const json = JSON.stringify(data, null, 2);
+  const json = stringifyJSON(data, 2);
   process.stdout.write(`${json}\n`);
 };
 
@@ -534,7 +534,7 @@ const formatTableTimestamp = (
     !opts.disableRelativeDates;
 
   if (shouldShowRelative) {
-    const relative = formatDistance(value, new Date(), { addSuffix: true });
+    const relative = formatRelativeTime(value, new Date());
     return `${isoTime} (${relative})`;
   }
 
@@ -654,9 +654,9 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
     if (io instanceof Date) {
       value = io.toISOString();
     } else {
-      value = truncateString(JSON.stringify(io));
+      value = truncateString(stringifyJSON(io));
     }
-  } else if (['string', 'number', 'boolean'].includes(type)) {
+  } else if (['string', 'number', 'boolean', 'bigint'].includes(type)) {
     if (isStreamId(io as string)) {
       value = io.toString();
     } else if (type === 'string' && (io as string).includes('strm_')) {

@@ -133,7 +133,7 @@ describe('injectTraceContextIntoHeaders', () => {
 describe('makeRequest trace propagation', () => {
   const schema = z.object({ value: z.string() });
 
-  it('sends traceparent on the outgoing workflow-server request, parented to the client span', async () => {
+  it('sends traceparent on the outgoing backend request, parented to the client span', async () => {
     const fetchMock = vi.fn().mockResolvedValue(cborResponse({ value: 'ok' }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -161,7 +161,7 @@ describe('makeRequest trace propagation', () => {
 });
 
 describe('v4 event requests (fetchV4) trace propagation', () => {
-  it('sends traceparent on the outgoing v4 request, propagating the active context to workflow-server', async () => {
+  it('sends traceparent on the outgoing v4 request, propagating the active context to the backend', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -197,7 +197,7 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const calledInit = fetchSpy.mock.calls[0][1];
     const sent = new Headers(calledInit?.headers as HeadersInit);
-    // Without the fetchV4 injection this header is absent and workflow-server
+    // Without the fetchV4 injection this header is absent and the backend
     // cannot parent its spans to the flow-route invocation.
     const traceparent = sent.get('traceparent');
     expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
@@ -307,7 +307,7 @@ describe('streamer write trace propagation', () => {
     const sent = new Headers(calledInit?.headers as HeadersInit);
     const traceparent = sent.get('traceparent');
     // Stream writes previously skipped trace-context injection; they now share
-    // the instrumented envelope, so workflow-server can correlate the write.
+    // the instrumented envelope, so the backend can correlate the write.
     expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
 
     // The stream write shares the instrumented envelope but is named for the
@@ -329,7 +329,7 @@ describe('streamer write trace propagation', () => {
 });
 
 describe('snapshot requests trace propagation', () => {
-  it('injects traceparent on snapshots.load, propagating the active context to workflow-server', async () => {
+  it('injects traceparent on snapshots.load, propagating the active context to the backend', async () => {
     const { encodeSnapshotEnvelope } = await import('@workflow/world');
     const body = encodeSnapshotEnvelope(
       { eventsCursor: 'evnt_1', createdAt: new Date() },

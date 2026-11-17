@@ -4,7 +4,7 @@ description: >-
   Upgrades a custom Workflow SDK World implementation from the v4 spec, or from a 5.0.0 beta, to the current v5 spec (spec version 8). Use when a package implements the `World` interface from `@workflow/world` and is moving to 5.x, or is on a 5.0.0 beta and the runtime reports `This Workflow runtime supports Worlds with spec version 6 through 8, but the configured World declares spec version N`; or when it shows event IDs that are ULIDs rather than slot positions, `Event id is not slot-numbered` at replay time, a `specVersion` the runtime refuses, `writeToStream` / `closeStream` / `readFromStream` as top-level World methods, `steps.get` or `events.listByCorrelationId` without a `runId`, a `'step'` queue kind or `__wkf_step_*` topics, a `preconditionGuard` capability, or a `createLocalWorld` / `createVercelWorld` factory.
 metadata:
   author: Vercel Inc.
-  version: '0.4.0'
+  version: '0.4.1'
 ---
 
 # Migrating a World from the v4 spec to v5
@@ -127,11 +127,11 @@ export function createWorld(): World {
 
 The runtime checks the declaration against a supported range before it creates or replays anything, and refuses a World outside it, naming both the range and what the World declared. The floor is the version that introduced slot-numbered IDs, because a World below it allocates IDs the runtime cannot read positions out of. The ceiling is the highest version the runtime can read.
 
-`mintedSpecVersion()` is a function because the version a World stamps is a deployment choice: it answers with the current version (8) by default, and with the slot-identity version (6) when `WORKFLOW_SEALED_LOG=0` opts new runs out. Both are inside the accepted range. Call it inside `createWorld()` rather than caching it at module load, so one process can create Worlds in both modes.
+`mintedSpecVersion()` is a function because the version a World stamps is a deployment choice: it answers with the current version (8) by default, and with the version `WORKFLOW_SPEC_VERSION` selects (such as the slot-identity version, 6) when that is set. Every version it accepts is inside the accepted range. Call it inside `createWorld()` rather than caching it at module load, so one process can create Worlds with different settings.
 
 Its parameter defaults to `process.env`. Where `process` does not exist (a browser, a Worker without `nodejs_compat`) the bare call throws a `ReferenceError`. Pass the environment explicitly: `mintedSpecVersion(config.env ?? globalThis.process?.env ?? {})`.
 
-When an event or run arrives without a `specVersion` and the World fills one in, use the version the World declared, not `SPEC_VERSION_CURRENT`, which ignores `WORKFLOW_SEALED_LOG`.
+When an event or run arrives without a `specVersion` and the World fills one in, use the version the World declared, not `SPEC_VERSION_CURRENT`, which ignores `WORKFLOW_SPEC_VERSION`.
 
 If `@workflow/world` is only a type-level or peer dependency and the World reimplements `mintedSpecVersion()` locally to avoid a runtime import, the local copy pins a number by another route and falls behind on the next bump. Report it as a finding.
 
@@ -385,7 +385,7 @@ Fail the migration if any of these are true:
 
 ## Spec 9 (experimental)
 
-A World does not implement the in-band fence to migrate to v5. Spec 9 is opt-in (`WORKFLOW_SPEC_VERSION=9`), and `mintedSpecVersion()` called with no options never returns 9. A World that opts in declares `capabilities.inBandFence: true`, calls `mintedSpecVersion(process.env, { inBandFence: true })`, and tells its users to upgrade the whole fleet first and not to roll back below that release once spec 9 runs exist. See <https://workflow.dev/docs/changelog/spec-9#implementing-spec-9-in-a-world>.
+A World does not implement the in-band fence to migrate to v5. Spec 9 is opt-in (`WORKFLOW_SPEC_VERSION=9`), and `mintedSpecVersion()` called with no options never returns 9. A World that opts in declares `capabilities.inBandFence: true`, calls `mintedSpecVersion(process.env, { inBandFence: true })`, and tells its users to upgrade the whole fleet first and not to roll back below that release once spec 9 runs exist. See [Implementing spec 9 in a World](https://github.com/vercel/workflow/blob/main/packages/core/src/runtime/spec9/README.md#implementing-spec-9-in-a-world).
 
 ## Reference
 

@@ -131,6 +131,12 @@ export interface QueueAuthKey {
   reload(): Promise<string | undefined>;
   /** Writes this process's key again, after `clear()` removed the directory. */
   restore(): Promise<void>;
+  /**
+   * Settles once this process's new key is in the file (or failed to be
+   * written, which is logged). Resolves at once for a World that never
+   * writes one.
+   */
+  written(): Promise<void>;
 }
 
 /**
@@ -206,6 +212,9 @@ export function createQueueAuthKey(
       await writeQueueAuthKeyFile(dir, state.key).catch((error) =>
         logWriteFailure(state, dir, error)
       );
+    },
+    async written() {
+      if (state.regenerated) await state.regenerated;
     },
   };
 }

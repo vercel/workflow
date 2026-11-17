@@ -903,24 +903,7 @@ describe('log-order draws turnstile above a parked chain', () => {
     expectSuspendedWithPendingSteps(ctx, error, ['afterBoth']);
   };
 
-  it('terminates and suspends with log-order draws on', async () => {
-    // Pin the flag rather than inherit the ambient environment: a suite-wide
-    // WORKFLOW_LOG_ORDER_DRAWS=0 sweep would otherwise silently run the off
-    // path twice and this test would prove nothing about the turnstile.
-    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '1');
-    try {
-      await scenario();
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
-  it('terminates and suspends with log-order draws off', async () => {
-    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '0');
-    try {
-      await scenario();
-    } finally {
-      vi.unstubAllEnvs();
-    }
+  it('terminates and suspends', async () => {
+    await scenario();
   });
 });

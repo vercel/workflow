@@ -88,13 +88,11 @@ export function ResourceIcon({
 const EventRow = ({
   span,
   isSelected,
-  isFlashing,
   isDimmed,
   onSelectSpan,
 }: {
   span: Span;
   isSelected: boolean;
-  isFlashing: boolean;
   isDimmed?: boolean;
   onSelectSpan: (spanId: string) => void;
 }) => {
@@ -104,7 +102,7 @@ const EventRow = ({
   return (
     <li
       className={cn(
-        'relative overflow-clip group transition-opacity',
+        'relative overflow-clip transition-opacity hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200',
         ROW_HEIGHT_CLASS,
         isDimmed && 'opacity-35'
       )}
@@ -114,28 +112,21 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div
-        className={cn(
-          'h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200',
-          isFlashing && 'wf-span-flash'
-        )}
-      >
-        <div className="flex h-full min-w-0 items-center pl-4 pr-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <ResourceIcon
-              resource={span.resource}
-              isErrored={isErrored}
-              isCancelled={isCancelled}
-            />
-            <span className="min-w-0 text-label-14">
-              <MiddleTruncate value={span.name} />
-            </span>
-          </div>
-          <div className="ml-2 shrink-0">
-            <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDurationPrecise(durationMs)}
-            </span>
-          </div>
+      <div className="flex h-full min-w-0 items-center pl-4 pr-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ResourceIcon
+            resource={span.resource}
+            isErrored={isErrored}
+            isCancelled={isCancelled}
+          />
+          <span className="min-w-0 text-label-14">
+            <MiddleTruncate value={span.name} />
+          </span>
+        </div>
+        <div className="ml-2 shrink-0">
+          <span className="text-label-14 text-gray-900 tabular-nums">
+            {formatDurationPrecise(durationMs)}
+          </span>
         </div>
       </div>
     </li>
@@ -145,14 +136,11 @@ const EventRow = ({
 const EventList = ({
   spans,
   activeSpanId,
-  flashSpanId,
   searchResult,
   onSelectSpan,
 }: {
   spans: Span[];
   activeSpanId: string | null;
-  /** Span whose row plays the one-shot `wf-span-flash` highlight. */
-  flashSpanId: string | null;
   searchResult: SpanSearchResult;
   onSelectSpan: (spanId: string) => void;
 }) => {
@@ -175,7 +163,6 @@ const EventList = ({
           key={span.spanId}
           span={span}
           isSelected={span.spanId === activeSpanId}
-          isFlashing={span.spanId === flashSpanId}
           isDimmed={isSpanDimmedBySearch(span.spanId, searchResult)}
           onSelectSpan={onSelectSpan}
         />

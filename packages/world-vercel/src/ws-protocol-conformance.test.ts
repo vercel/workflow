@@ -3,7 +3,7 @@
  *
  * `ws-transport.test.ts` drives the client against a socket that replies with
  * whatever the test hands it, which proves the transport's lifecycle but not
- * that the bytes it emits are the bytes workflow-server accepts — a client and
+ * that the bytes it emits are the bytes the backend accepts — a client and
  * server can each pass their own suites while disagreeing on the envelope.
  *
  * So this file pairs the real client stack (including
@@ -16,7 +16,7 @@
  * That schema copy is the one thing here that can drift from the server. The
  * golden-byte fixtures are the backstop: they pin the encoding, so a one-sided
  * envelope change fails `encodes a known request frame to stable bytes`. The
- * matching half of this interop test still needs to land in workflow-server.
+ * matching half of this interop test still needs to land in the backend.
  */
 
 import { EntityConflictError } from '@workflow/errors';
@@ -27,7 +27,7 @@ import { createWorkflowRunEventV4 } from './events-v4.js';
 import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
 
 // ---------------------------------------------------------------------------
-// Mirror of workflow-server's lib/handlers/v4/frames.ts
+// Mirror of the backend's v4 frame codec
 // ---------------------------------------------------------------------------
 
 const WsRequestFrameSchema = z.discriminatedUnion('type', [

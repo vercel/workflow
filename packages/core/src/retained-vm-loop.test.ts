@@ -509,7 +509,7 @@ type DriveWorldOptions = {
    */
   staleFirstReload?: boolean;
   /**
-   * Honor `resolveData: 'skip-step-inputs'` the way workflow-server does: every replay event
+   * Honor `resolveData: 'skip-step-inputs'` the way world-vercel does: every replay event
    * the World hands back (a list page, the `run_started` preload, an inline
    * delta) leaves `input` out of `step_created` / `step_started`, while the
    * created event and the `step` entity a `step_started` returns keep it.

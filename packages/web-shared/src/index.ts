@@ -10,6 +10,7 @@ export {
   stepEventsToStepEntity,
   waitEventsToWaitEntity,
 } from './components/workflow-traces/trace-span-construction';
+export { cn } from './lib/cn';
 export {
   DUPLICATE_EVENT_MESSAGE,
   findDuplicateEventIds,
@@ -70,7 +71,14 @@ export {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from './lib/sealed-events';
+export {
+  createRunStateHydrator,
+  type RunStateHydrator,
+  type RunStateHydratorOptions,
+  type StateHistoryPage,
+} from './lib/state-hydration';
 export type { DecodedStreamChunkSource } from './lib/stream-display';
+export { getStreamImageType } from './lib/stream-image';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider, useToast } from './lib/toast';
 export type { StreamStep } from './lib/utils';

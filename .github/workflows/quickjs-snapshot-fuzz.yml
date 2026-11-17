@@ -31,7 +31,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -43,7 +43,7 @@ jobs:
 
       - name: Run snapshot fuzz
         working-directory: packages/core
-        run: pnpm exec vitest run src/runtime/quickjs-snapshot-fuzz.test.ts
+        run: pnpm exec vitest run --config=../../vitest.config.ts src/runtime/quickjs-snapshot-fuzz.test.ts
         env:
           FUZZ_TRIALS: ${{ inputs.trials || '200' }}
           FUZZ_STEPS: ${{ inputs.steps || '300' }}

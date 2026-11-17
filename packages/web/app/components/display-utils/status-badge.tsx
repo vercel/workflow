@@ -1,5 +1,6 @@
 import {
   Button,
+  cn,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -8,7 +9,7 @@ import type { Step, WorkflowRun } from '@workflow/world';
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 import { getStatusColorClass } from '~/lib/status-colors';
-import { cn, formatDuration } from '~/lib/utils';
+import { formatDuration } from '~/lib/utils';
 
 /** Extract the error code from an unknown error value (StructuredError shape). */
 function getErrorCode(error: unknown): string | undefined {
@@ -51,7 +52,7 @@ export function StatusBadge({
         </span>
       </span>
       {durationMs !== undefined && (
-        <span className="text-muted-foreground/70 text-xs">
+        <span className="text-gray-700 text-xs">
           ({formatDuration(durationMs)})
         </span>
       )}

@@ -2,7 +2,7 @@
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { ChartGantt, Lock } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
 import {
   type EventListRow,
@@ -21,17 +21,17 @@ import { serializeForClipboard } from '../sidebar/copyable-data-block';
 import { CopyButton } from '../trace-viewer/components/copy-button';
 import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell';
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
-import { Button } from '../ui/button';
 import { Collapsible } from '../ui/collapsible';
-import { DataInspector } from '../ui/data-inspector';
+import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { DecryptButton } from '../ui/decrypt-button';
 import {
   ErrorStackBlock,
   isStructuredError,
   type StructuredErrorRecord,
 } from '../ui/error-stack-block';
+import { IconButton } from '../ui/icon-button';
 import { Skeleton } from '../ui/skeleton';
-import type { DecryptControl } from './event-list-toolbar';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -100,21 +100,21 @@ const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
   failed: 'bg-amber-700',
   backoff: 'bg-amber-300',
   ok: 'bg-green-700',
-  running: 'bg-blue-700',
 };
 
 function PayloadView({
   data,
   eventType,
-  decrypt,
+  encrypted,
 }: {
   data: unknown;
   eventType: string;
-  /** Set while the payload is still encrypted. */
-  decrypt?: DecryptControl;
+  /** Still sealed with the run's key. */
+  encrypted: boolean;
 }) {
+  const decrypt = useContext(DecryptClickContext);
   const cleaned = useMemo(() => deepParseJson(data), [data]);
-  if (decrypt) {
+  if (encrypted && decrypt) {
     return (
       <Collapsible defaultOpen label="Payload">
         <div className="flex items-center gap-2 rounded-md border border-gray-alpha-400 bg-gray-100 py-1.5 pl-3 pr-1.5">
@@ -201,19 +201,12 @@ function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
   );
 }
 
-interface EventPayloadProps {
+interface EventDetailsBodyProps {
+  row: EventListRow;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
   cachedEventData: unknown | null;
   onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
-  /** Offered on a payload that is still encrypted. */
-  decrypt?: DecryptControl;
-}
-
-interface EventDetailsBodyProps extends EventPayloadProps {
-  row: EventListRow;
-  /** The step's queued, attempt and backoff breakdown; empty for other events. */
-  segments: TimingSegment[];
 }
 
 /**
@@ -222,12 +215,10 @@ interface EventDetailsBodyProps extends EventPayloadProps {
  */
 function EventDetailsBody({
   row,
-  segments,
   onLoadEventData,
   cachedEventData,
   onCacheEventData,
   encryptionKey,
-  decrypt,
 }: EventDetailsBodyProps) {
   const { event } = row;
   // Inline eventData is complete only when the event type has no ref fields
@@ -238,13 +229,9 @@ function EventDetailsBody({
   const [data, setData] = useState<unknown | null>(
     cachedEventData ?? (inlineIsComplete ? event.eventData : null)
   );
-  const [loading, setLoading] = useState(
-    data === null && !!onLoadEventData && !!event.correlationId
-  );
+  const [loading, setLoading] = useState(data === null && !!onLoadEventData);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Load the full payload. Arriving at a key does not re-run this: decryption
-  // opens the payload already in hand, below.
   // biome-ignore lint/correctness/useExhaustiveDependencies: load once per event
   useEffect(() => {
     if (!onLoadEventData || inlineIsComplete || data !== null) return;
@@ -271,11 +258,6 @@ function EventDetailsBody({
     };
   }, [event.eventId]);
 
-  // Open the payload already on screen when the run key arrives. Markers keep
-  // their ciphertext and the event type names the sealed fields, so this needs
-  // no request. Refetching here is what used to render the ciphertext with live
-  // inline Decrypt buttons until the second response landed. If the key does not
-  // open it, the markers stay put.
   const encrypted = hasEncryptedValues(data);
   // biome-ignore lint/correctness/useExhaustiveDependencies: opens the current payload once per key
   useEffect(() => {
@@ -291,13 +273,13 @@ function EventDetailsBody({
     };
   }, [encryptionKey, encrypted]);
 
-  const timingTotal = segments.reduce((sum, s) => sum + s.ms, 0);
+  const timingTotal = row.segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
   const createdAt = new Date(event.createdAt);
   const structuredError = extractStructuredError(data, event.eventType);
 
   return (
-    <div className="@container px-4">
+    <div className="@container px-4 pb-8">
       {/* Start and since-start are already in the selected row; Timing adds
           the step's breakdown, or the duration for other events. */}
       {timingTotal > 0 ? (
@@ -310,7 +292,7 @@ function EventDetailsBody({
             </span>
           }
         >
-          <TimingBreakdown segments={segments} />
+          <TimingBreakdown segments={row.segments} />
         </Collapsible>
       ) : row.durationMs !== undefined ? (
         <Collapsible defaultOpen label="Timing">
@@ -331,7 +313,7 @@ function EventDetailsBody({
         <PayloadView
           data={data}
           eventType={event.eventType}
-          decrypt={encrypted ? decrypt : undefined}
+          encrypted={encrypted}
         />
       ) : loading || loadError ? (
         <Collapsible defaultOpen label="Payload">
@@ -386,7 +368,6 @@ export interface EventDetailsPanelProps extends EventDetailsBodyProps {
   onPrev?: () => void;
   onNext?: () => void;
   onClose: () => void;
-  /** Shows "View in Trace", called with the trace span ID to select. */
   onViewInTrace?: (spanId: string) => void;
 }
 
@@ -395,19 +376,14 @@ export interface EventDetailsPanelProps extends EventDetailsBodyProps {
  * selection moves; only the body is keyed per event.
  */
 export function EventDetailsPanel({
-  row,
-  segments,
-  onLoadEventData,
-  cachedEventData,
-  onCacheEventData,
-  encryptionKey,
-  decrypt,
   width,
   onPrev,
   onNext,
   onClose,
   onViewInTrace,
+  ...body
 }: EventDetailsPanelProps) {
+  const { row } = body;
   const { event } = row;
   return (
     <DetailPanelShell
@@ -415,41 +391,28 @@ export function EventDetailsPanel({
       width={width}
       itemLabel="event"
       title={
-        <span className="flex min-w-0 flex-col">
-          <span className="truncate font-mono text-label-12 font-normal text-gray-900">
-            {event.eventType}
-          </span>
-          <span className="truncate text-label-16 font-semibold">
-            {row.name || event.eventType}
-          </span>
-        </span>
+        <span className="truncate block">{row.name || event.eventType}</span>
+      }
+      actions={
+        onViewInTrace ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <IconButton
+                aria-label="View in Trace"
+                onClick={() => onViewInTrace(getEventSpanId(event))}
+              >
+                <ChartGantt className="w-4 h-4" />
+              </IconButton>
+            </TooltipTrigger>
+            <TooltipContent>View in Trace</TooltipContent>
+          </Tooltip>
+        ) : null
       }
       onPrev={onPrev}
       onNext={onNext}
       onClose={onClose}
     >
-      {onViewInTrace ? (
-        <div className="px-4 pb-2">
-          <Button
-            variant="secondary"
-            size="small"
-            onClick={() => onViewInTrace(getEventSpanId(event))}
-          >
-            <ChartGantt />
-            View in Trace
-          </Button>
-        </div>
-      ) : null}
-      <EventDetailsBody
-        key={event.eventId}
-        row={row}
-        segments={segments}
-        onLoadEventData={onLoadEventData}
-        cachedEventData={cachedEventData}
-        onCacheEventData={onCacheEventData}
-        encryptionKey={encryptionKey}
-        decrypt={decrypt}
-      />
+      <EventDetailsBody key={event.eventId} {...body} />
     </DetailPanelShell>
   );
 }

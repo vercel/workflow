@@ -13,6 +13,7 @@ import {
   RetryAgent,
   type RetryHandler,
 } from 'undici';
+import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import type { APIConfig } from './utils.js';
 import { version } from './version.js';
 
@@ -191,8 +192,27 @@ export const getQueueRequestTimeoutMs = (): number =>
   });
 
 /**
+ * How long an idle queue connection stays in the pool.
+ *
+ * A Fluid instance publishes in bursts (one or two sends per invocation), so
+ * the gap between sends on one connection is set by traffic, not by the
+ * request. Any gap above `keepAliveTimeout` reopens the connection inside the
+ * send, adding a TCP and TLS handshake to the send's latency. 60s keeps
+ * instances that publish every 10-60s on a warm connection.
+ *
+ * The queue endpoint sends no `Keep-Alive` hint, so this value must stay below
+ * the endpoint's own idle timeout; otherwise the client could reuse a socket
+ * the server has already closed.
+ *
+ * Override with `WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS`; the clamp ceiling keeps
+ * a misconfigured value below the endpoint's idle timeout.
+ */
+export const QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS = 60_000;
+
+/**
  * Options for the queue client's undici Agent: the default H1 configuration,
- * with its own connection budget (see QUEUE_AGENT_CONNECTIONS) and explicit
+ * with its own connection budget (see QUEUE_AGENT_CONNECTIONS), a longer idle
+ * timeout (see QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS), and explicit
  * per-phase deadlines rather than undici's 300s defaults, since nothing else
  * bounds this path.
  */
@@ -204,6 +224,11 @@ export function getQueueAgentOptions() {
       'WORKFLOW_VERCEL_QUEUE_CONNECTIONS',
       QUEUE_AGENT_CONNECTIONS,
       { integer: true, min: 1, max: 1024 }
+    ),
+    keepAliveTimeout: envNumber(
+      'WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS',
+      QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS,
+      { integer: true, min: 1_000, max: 240_000 }
     ),
     headersTimeout: timeoutMs,
     bodyTimeout: timeoutMs,
@@ -296,7 +321,11 @@ function deadlineInterceptor(
 
     #abort(): void {
       this.#controller?.abort(
-        new Error(`Queue request exceeded its ${timeoutMs}ms deadline`)
+        Object.assign(
+          new Error(`Queue request exceeded its ${timeoutMs}ms deadline`),
+          // Lets a send's retry policy tell it apart (queue-send-retry.ts).
+          { code: QUEUE_REQUEST_DEADLINE_CODE }
+        )
       );
     }
 

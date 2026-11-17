@@ -1,5 +1,5 @@
 import type { Event, WorkflowRun } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { WorkflowSuspension } from './global.js';
 import {
   dehydrateStepReturnValue,
@@ -8,7 +8,7 @@ import {
 import { runWorkflow } from './workflow.js';
 
 /**
- * Offline regression coverage for `WORKFLOW_LOG_ORDER_DRAWS=1`: correlation-id
+ * Offline regression coverage for log-order draws: correlation-id
  * draw order pinned to event-log order, so draw bindings are stable under
  * dense-prefix extension and concurrent replays of different-length prefixes
  * mint compatible ids.
@@ -192,54 +192,7 @@ function suspensionBindings(
     .sort();
 }
 
-describe('arrival-order draws (opt-out, WORKFLOW_LOG_ORDER_DRAWS=0)', () => {
-  const original = process.env.WORKFLOW_LOG_ORDER_DRAWS;
-
-  beforeEach(() => {
-    process.env.WORKFLOW_LOG_ORDER_DRAWS = '0';
-  });
-
-  afterEach(() => {
-    if (original === undefined) {
-      delete process.env.WORKFLOW_LOG_ORDER_DRAWS;
-    } else {
-      process.env.WORKFLOW_LOG_ORDER_DRAWS = original;
-    }
-  });
-
-  // Deliberate CONTROL: asserts the arrival-order BUG still reproduces with
-  // the flag off. If this stops failing-to-bind (i.e. `rebound` comes back
-  // empty), the control is obsolete, not broken — most likely because
-  // positional rebinding was fixed independently of draw scheduling, e.g.
-  // call-site-addressed correlation ids (vercel/workflow#3179) landing, which
-  // removes the rebinding in BOTH modes. Delete this block then; do not chase
-  // it as a regression.
-  it('rebinds an ordinal from a step to a wait under extension (the control)', async () => {
-    const { shorter, longer } = await blockedBranchPrefixes();
-    const stale = await blockedBranchEntities(shorter);
-    const fresh = await blockedBranchEntities(longer);
-    const staleFinalizes = stale
-      .filter((item) => item.stepName === 'finalizeTask')
-      .map((item) => item.correlationId);
-    const freshIds = new Set(fresh.map((item) => item.correlationId));
-    const rebound = staleFinalizes.filter((id) => !freshIds.has(id));
-    expect(rebound.length).toBeGreaterThan(0);
-  });
-});
-
-describe('log-order draws (the default)', () => {
-  const original = process.env.WORKFLOW_LOG_ORDER_DRAWS;
-
-  beforeEach(() => {
-    delete process.env.WORKFLOW_LOG_ORDER_DRAWS;
-  });
-
-  afterEach(() => {
-    if (original !== undefined) {
-      process.env.WORKFLOW_LOG_ORDER_DRAWS = original;
-    }
-  });
-
+describe('log-order draws', () => {
   it('keeps every binding of the shorter prefix under extension', async () => {
     const { shorter, longer } = await blockedBranchPrefixes();
     const stale = await blockedBranchEntities(shorter);

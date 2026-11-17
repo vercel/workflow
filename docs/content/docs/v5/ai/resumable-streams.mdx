@@ -117,7 +117,7 @@ Replace the default transport in AI SDK's `useChat` with [`WorkflowChatTransport
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@ai-sdk/workflow"; // [!code highlight]
+import { WorkflowChatTransport } from "@ai-sdk/workflow/client"; // [!code highlight]
 import { useMemo, useState } from "react";
 
 export default function ChatPage() {

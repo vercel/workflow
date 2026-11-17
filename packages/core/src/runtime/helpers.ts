@@ -21,6 +21,7 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  isSealedNoopEvent,
   parseWorldCapabilities,
   ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
@@ -312,7 +313,7 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * Race a promise against a deadline. Rejects with a timeout error when the
  * deadline elapses first. Used to bound `world.streams.get()` inside the
  * health-check poll loop: some worlds hold that request open until the
- * stream has data (e.g. workflow-server holds unwritten streams open for
+ * stream has data (e.g. world-vercel holds unwritten streams open for
  * ~2 minutes), which would otherwise blow through the configured health
  * check timeout, since the `while` condition is only re-checked between
  * iterations.
@@ -687,14 +688,26 @@ export function withReplayDelta(
  * @param options.specVersion - The run's spec version, handed to every page
  *   read as `ListEventsParams.specVersion`. The spec 9 orchestrator passes it
  *   so the World reads from where the fence `snapshot` is reported.
+ * @param options.eventLimit - Maps the World's reported
+ *   {@link EventListResponse.maxEvents} to the ceiling the caller enforces.
+ *   When given, the load stops following `hasMore` once it holds that many
+ *   workflow events (sealed `noop`s are not counted): a run already past its
+ *   ceiling fails on what it holds, rather than reading its whole log first.
+ *   The returned log then ends at its cursor with more events after it, and
+ *   carries the ceiling as {@link LoadedEventLog.stoppedAtEventLimit}.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
   afterCursor?: string,
-  options?: { signal?: AbortSignal; specVersion?: number }
+  options?: {
+    signal?: AbortSignal;
+    specVersion?: number;
+    eventLimit?: (maxEvents: number | undefined) => number | undefined;
+  }
 ): Promise<LoadedEventLog> {
   const signal = options?.signal;
   const specVersion = options?.specVersion;
+  const eventLimit = options?.eventLimit;
   const incremental = afterCursor !== undefined;
   return trace('workflow.replay.load', async (span) => {
     span?.setAttributes({
@@ -709,6 +722,9 @@ export async function loadWorkflowRunEvents(
     // the sequencer state the listing as a whole covers.
     let snapshot: EventLogSnapshot | undefined;
     let snapshotTaken = false;
+    let maxEvents: number | undefined;
+    let workflowEventCount = 0;
+    let stoppedAtLimit: number | undefined;
     const loadedEventIds = new Set<string>();
     const requestedCursors = new Set<string>();
     let cursor: string | null = afterCursor ?? null;
@@ -755,6 +771,7 @@ export async function loadWorkflowRunEvents(
           loadedEventIds.clear();
           snapshotTaken = false;
           snapshot = undefined;
+          workflowEventCount = 0;
           requestedCursors.clear();
           cursor = null;
           retriedWithoutCursor = true;
@@ -767,7 +784,14 @@ export async function loadWorkflowRunEvents(
         snapshotTaken = true;
         snapshot = response.snapshot;
       }
+      maxEvents = response.maxEvents ?? maxEvents;
+      const before = loadedEvents.length;
       appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      if (eventLimit) {
+        for (let i = before; i < loadedEvents.length; i++) {
+          if (!isSealedNoopEvent(loadedEvents[i])) workflowEventCount++;
+        }
+      }
       hasMore = response.hasMore;
       assertEventPaginationProgress(
         runId,
@@ -795,6 +819,18 @@ export async function loadWorkflowRunEvents(
         hasMore,
         pageMs: Date.now() - pageStart,
       });
+
+      const limit = eventLimit?.(maxEvents);
+      if (hasMore && limit !== undefined && workflowEventCount >= limit) {
+        stoppedAtLimit = limit;
+        runtimeLogger.info('Event load stopped at the run event ceiling', {
+          workflowRunId: runId,
+          totalEvents: loadedEvents.length,
+          workflowEvents: workflowEventCount,
+          limit,
+        });
+        break;
+      }
     }
 
     runtimeLogger.debug('Event load complete', {
@@ -808,11 +844,25 @@ export async function loadWorkflowRunEvents(
     span?.setAttributes({
       ...Attribute.WorkflowEventsCount(loadedEvents.length),
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+      ...(eventLimit
+        ? Attribute.WorkflowEventsLoadStoppedAtLimit(
+            stoppedAtLimit !== undefined
+          )
+        : {}),
+      ...(stoppedAtLimit !== undefined
+        ? Attribute.WorkflowEventsLimit(stoppedAtLimit)
+        : {}),
     });
 
-    return snapshot === undefined
-      ? { events: loadedEvents, cursor }
-      : { events: loadedEvents, cursor, snapshot };
+    return {
+      events: loadedEvents,
+      cursor,
+      ...(snapshot !== undefined ? { snapshot } : {}),
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+      ...(stoppedAtLimit !== undefined
+        ? { stoppedAtEventLimit: stoppedAtLimit }
+        : {}),
+    };
   });
 }
 
@@ -829,6 +879,17 @@ export interface LoadedEventLog {
    * returned one. Absent on incremental loads.
    */
   snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling the World reported on the load
+   * ({@link EventListResponse.maxEvents}), when it did.
+   */
+  maxEvents?: number;
+  /**
+   * The ceiling the load stopped at (see `eventLimit`), when it stopped
+   * before the end of the log: the log holds at least that many workflow
+   * events, and more after the returned cursor.
+   */
+  stoppedAtEventLimit?: number;
 }
 
 /**
@@ -850,28 +911,13 @@ export function appendEventLog(
 
 /**
  * Whether a replay refuses to run over a log with a hole in it (see
- * {@link findEventSlotGap}). **On by default**; set
- * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
+ * {@link findEventSlotGap}). Always `true`: the `WORKFLOW_SLOT_GAP_CHECK`
+ * opt-out is no longer read.
  *
- * A World that allocates a position at the moment it commits leaves no hole
- * behind when a write fails, so density is a property the log has by
- * construction rather than one this check maintains. What the check is for is
- * the reads and the Worlds where that does not hold, and by the time it runs
- * the benign explanations are spent: a position missing because a concurrent
- * commit is not visible yet clears on a re-read, which is what
- * {@link settleEventSlotGap} does first.
- *
- * What is left is a hole that persists, and its two causes are
- * indistinguishable from the log. Either a World allocated the position outside
- * the commit and lost the write, in which case nothing happened there and
- * replaying past it is correct, or an event that did happen is missing, in
- * which case replaying past it decides a branch on absence and produces a wrong
- * result with nothing to show for it. Failing is the recoverable side of that
- * trade, and this is the way back out if a fleet turns out to carry holes of
- * the first kind.
+ * @deprecated No longer read by the runtime; always returns `true`.
  */
 export function isSlotGapCheckEnabled(): boolean {
-  return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
+  return true;
 }
 
 /*

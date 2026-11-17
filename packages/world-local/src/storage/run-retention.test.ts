@@ -10,7 +10,8 @@ import {
 } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { writeJSON } from '../fs.js';
+import { decode, encode } from '../db/codec.js';
+import { databaseFor } from '../db/index.js';
 import { createStorage } from '../storage.js';
 import { createStreamer } from '../streamer.js';
 import { createHook, createStep, updateStep } from '../test-helpers.js';
@@ -115,6 +116,41 @@ describe('run retention (world-local)', () => {
   // ---------------------------------------------------------------------
 
   describe("$retention: '0'", () => {
+    it('leaves no trace of the payloads in the database files', async () => {
+      // A payload long and distinctive enough to find as raw bytes.
+      const marker = 'purge-marker-'.repeat(40);
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_test',
+          workflowName: 'retention-workflow',
+          input: new TextEncoder().encode(marker),
+          attributes: { [RETENTION_ATTRIBUTE]: '0' },
+          allowReservedAttributes: true,
+        },
+      });
+      const runId = created.run?.runId as string;
+      await storage.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      } as never);
+      await complete(runId);
+
+      const needles = [
+        Buffer.from(marker),
+        Buffer.from(Buffer.from(marker).toString('base64').slice(0, 64)),
+      ];
+      for (const file of ['world.db', 'world.db-wal']) {
+        const bytes = await fs
+          .readFile(path.join(testDir, file))
+          .catch(() => Buffer.alloc(0));
+        for (const needle of needles) {
+          expect(bytes.includes(needle)).toBe(false);
+        }
+      }
+    });
+
     it('drops the run payloads and stamps expiredAt', async () => {
       const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
       const before = Date.now();
@@ -171,16 +207,16 @@ describe('run retention (world-local)', () => {
       const hookId = startHookId(run.runId);
       await complete(run.runId);
 
-      const onDisk = JSON.parse(
-        await fs.readFile(
-          path.join(testDir, 'runs', `${run.runId}.json`),
-          'utf8'
-        )
+      const stored = decode<{ startHook: unknown }>(
+        databaseFor(testDir).get<{ doc: string }>(
+          'SELECT doc FROM runs WHERE run_id = ?',
+          run.runId
+        )?.doc
       );
-      expect(onDisk.startHook).toEqual({
+      expect(stored.startHook).toEqual({
         token,
         hookId,
-        tokenRetentionUntil: tokenRetentionUntil.toISOString(),
+        tokenRetentionUntil,
       });
       expect((await storage.runs.get(run.runId)).startHook).toEqual({
         token,
@@ -315,6 +351,57 @@ describe('run retention (world-local)', () => {
       }
     });
 
+    // A step still running when the run ends (a `Promise.race` loser) may
+    // settle after the purge; what it writes must not bring the data back.
+    for (const [eventType, eventData] of [
+      ['step_completed', { result: STEP_OUTPUT }],
+      ['step_failed', { error: STEP_OUTPUT }],
+      ['step_retrying', { error: STEP_OUTPUT }],
+    ] as const) {
+      it(`scrubs the payload of a ${eventType} that lands after the purge`, async () => {
+        const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
+        await createStep(storage, run.runId, {
+          stepId: 'step_late',
+          stepName: 'step//./mod//slow',
+          input: STEP_INPUT,
+        });
+        await updateStep(storage, run.runId, 'step_late', 'step_started');
+        await complete(run.runId);
+
+        await updateStep(
+          storage,
+          run.runId,
+          'step_late',
+          eventType,
+          eventData as never
+        );
+
+        const step = await storage.steps.get(run.runId, 'step_late');
+        expect(step.output).toBeUndefined();
+        expect(step.error).toBeUndefined();
+        expect(step.input).toBeUndefined();
+        expect(await eventPayloads(run.runId)).toEqual([]);
+      });
+    }
+
+    it('ends a stream first written after the purge, with nothing in it', async () => {
+      const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
+      await complete(run.runId);
+
+      await streamer.streams.write(run.runId, 'stream-late', 'secret payload');
+      await streamer.streams.write(run.runId, 'stream-late', 'more');
+      await streamer.streams.write(run.runId, 'stream-a', 'secret payload');
+
+      for (const name of ['stream-late', 'stream-a']) {
+        const chunks = await streamer.streams.getChunks(run.runId, name);
+        expect({ name, data: chunks.data, done: chunks.done }).toEqual({
+          name,
+          data: [],
+          done: true,
+        });
+      }
+    });
+
     it('scrubs the metadata of a hook that outlives the run', async () => {
       const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
       // Terminal cleanup deletes a run's hooks outright, except one whose
@@ -360,33 +447,6 @@ describe('run retention (world-local)', () => {
       expect(persisted.input).toBeUndefined();
       expect(persisted.expiredAt).toBeInstanceOf(Date);
       expect(await eventPayloads(run.runId)).toEqual([]);
-    });
-
-    it('purges a legacy run cancelled through the pre-event-sourcing path', async () => {
-      // `start()` refuses to seed `$retention` below spec version 4, so this
-      // is believed unreachable in practice — but the legacy shortcut writes
-      // the run file itself instead of going through the lifecycle helper,
-      // and the guarantee is enforced there rather than assumed.
-      const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
-      await writeJSON(
-        path.join(testDir, 'runs', `${run.runId}.json`),
-        { ...run, status: 'running', specVersion: 1 },
-        { overwrite: true }
-      );
-
-      await storage.events.create(run.runId, {
-        eventType: 'run_cancelled',
-        specVersion: SPEC_VERSION_CURRENT,
-      });
-
-      const persisted = await storage.runs.get(run.runId);
-      expect(persisted.status).toBe('cancelled');
-      expect(persisted.input).toBeUndefined();
-      expect(persisted.expiredAt).toBeInstanceOf(Date);
-
-      const steps = await storage.steps.list({ runId: run.runId });
-      expect(steps.data).toHaveLength(1);
-      expect(steps.data[0].output).toBeUndefined();
     });
 
     it('reads the freshest attributes, not the pre-validation snapshot', async () => {
@@ -483,10 +543,10 @@ describe('run retention (world-local)', () => {
       const run = await startRun();
       const deadline = new Date(Date.now() + 86_400_000);
       const stored = await storage.runs.get(run.runId);
-      await writeJSON(
-        path.join(testDir, 'runs', `${run.runId}.json`),
-        { ...stored, expiredAt: deadline },
-        { overwrite: true }
+      databaseFor(testDir).run(
+        'UPDATE runs SET doc = ? WHERE run_id = ?',
+        encode({ ...stored, expiredAt: deadline }),
+        run.runId
       );
 
       await complete(run.runId);
@@ -497,6 +557,26 @@ describe('run retention (world-local)', () => {
       expect(persisted.output).toEqual(RUN_OUTPUT);
       const steps = await storage.steps.list({ runId: run.runId });
       expect(steps.data[0].output).toEqual(STEP_OUTPUT);
+    });
+
+    it('keeps the output of a step that settles after the run ends', async () => {
+      const run = await startRun();
+      await createStep(storage, run.runId, {
+        stepId: 'step_late',
+        stepName: 'step//./mod//slow',
+        input: STEP_INPUT,
+      });
+      await updateStep(storage, run.runId, 'step_late', 'step_started');
+      await complete(run.runId);
+      await updateStep(storage, run.runId, 'step_late', 'step_completed', {
+        result: STEP_OUTPUT,
+      });
+      await streamer.streams.write(run.runId, 'stream-late', 'kept');
+
+      const step = await storage.steps.get(run.runId, 'step_late');
+      expect(step.output).toEqual(STEP_OUTPUT);
+      const chunks = await streamer.streams.getChunks(run.runId, 'stream-late');
+      expect(chunks.data).toHaveLength(1);
     });
 
     it('keeps the data for an unrelated reserved attribute', async () => {

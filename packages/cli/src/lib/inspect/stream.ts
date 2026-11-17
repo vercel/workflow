@@ -1,5 +1,6 @@
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
+import { stringifyJSON } from './json.js';
 
 /**
  * This function will read from a deserialized stream and write the output to the console.
@@ -28,11 +29,11 @@ export const streamToConsole = async (
       }
 
       if (opts.json) {
-        process.stdout.write(`${JSON.stringify(value)}\n`);
+        process.stdout.write(`${stringifyJSON(value)}\n`);
       } else {
         // Format the value for display
         const text =
-          typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+          typeof value === 'string' ? value : stringifyJSON(value, 2);
         logger.log(`[${chunkIndex}] ${text}`);
         chunkIndex++;
       }

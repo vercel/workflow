@@ -1,6 +1,6 @@
 'use client';
 
-import { RotateCcw, Search, ZoomIn, ZoomOut } from 'lucide-react';
+import { RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -13,7 +13,7 @@ import {
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { IconButton } from '../ui/icon-button';
-import { Kbd } from '../ui/kbd';
+import { SearchInput } from '../ui/search-input';
 import { Spinner } from '../ui/spinner';
 import { TooltipProvider } from '../ui/tooltip';
 import { TraceDetailPanel } from './components/detail-panel';
@@ -47,7 +47,6 @@ interface TraceViewerProps {
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
-  /** Span to select, and highlight once, on mount. */
   initialSelectedSpanId?: string;
 }
 
@@ -148,7 +147,6 @@ export function TraceViewer({
           onLoadMore={onLoadMore}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
-          initialSelectedSpanId={initialSelectedSpanId}
         />
       </ActiveSpanProvider>
     </TooltipProvider>
@@ -160,19 +158,14 @@ function TraceViewerContent({
   onLoadMore,
   hasMore,
   isLoadingMore,
-  initialSelectedSpanId,
 }: TraceViewerProps): ReactNode {
   const { activeSpanId, setActiveSpan, clearActiveSpan } = useActiveSpan();
 
   const reducedMotion = useReducedMotion();
 
-  // The initial span's row and bar play `wf-span-flash` once.
-  // ponytail: cleared by a timer that outlasts the CSS animation (0.15s delay
-  // + 0.6s), so a row scrolled out and back does not replay it. Listen for
-  // animationend instead if that duration ever stops being a constant.
-  const [flashSpanId, setFlashSpanId] = useState(initialSelectedSpanId ?? null);
+  const [isLanding, setIsLanding] = useState(activeSpanId !== null);
   useEffect(() => {
-    const timer = setTimeout(() => setFlashSpanId(null), 1000);
+    const timer = setTimeout(() => setIsLanding(false), 1000);
     return () => clearTimeout(timer);
   }, []);
 
@@ -490,6 +483,7 @@ function TraceViewerContent({
     >
       <div
         id="trace-parent"
+        data-span-landing={isLanding || undefined}
         className="@container flex-1 min-w-0 grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <Minimap
@@ -503,38 +497,15 @@ function TraceViewerContent({
         <SplitPane
           scrollContainerRef={scrollContainerRef}
           startHeader={
-            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
-              <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
-              <input
-                id="trace-viewer-search"
-                name="trace-viewer-search"
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape' && searchQuery) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setSearchQuery('');
-                  }
-                }}
-                placeholder="Search spans..."
-                aria-label="Search spans"
-                className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  aria-label="Clear search"
-                  onClick={() => setSearchQuery('')}
-                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-label-16 text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
-                >
-                  <Kbd variant="outline" size="search">
-                    Esc
-                  </Kbd>
-                </button>
-              )}
-            </div>
+            <SearchInput
+              id="trace-viewer-search"
+              name="trace-viewer-search"
+              label="Search spans"
+              placeholder="Search spans…"
+              value={searchQuery}
+              onValueChange={setSearchQuery}
+              className="pl-4"
+            />
           }
           endHeader={
             <TimelineHeader markers={timeMarkers} hoverInfo={hoverInfo} />
@@ -544,7 +515,6 @@ function TraceViewerContent({
             <EventList
               spans={trace.spans}
               activeSpanId={activeSpanId}
-              flashSpanId={flashSpanId}
               searchResult={searchResult}
               onSelectSpan={handleSelectSpan}
             />
@@ -572,7 +542,6 @@ function TraceViewerContent({
               viewEnd={viewport.end}
               markers={timeMarkers}
               selectedId={activeSpanId}
-              flashSpanId={flashSpanId}
               searchResult={searchResult}
               onSelect={handleSelectSpan}
               onRevealTime={handleRevealTime}
