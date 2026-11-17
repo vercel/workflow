@@ -234,7 +234,7 @@ export function EventRow({
         }
       }}
       className={cn(
-        'mx-1 mt-px flex h-6 cursor-pointer items-center rounded-md font-mono text-[13px] leading-5 outline-none focus-visible:relative focus-visible:z-10 focus-visible:shadow-[0_0_0_2px_var(--ds-focus-color)]',
+        'mx-1 mt-px flex h-6 cursor-pointer items-center rounded-md text-label-13-mono outline-none focus-visible:relative focus-visible:z-10 focus-visible:shadow-[0_0_0_2px_var(--ds-focus-color)]',
         LEVEL_ROW_CLASS[level],
         zebra && 'bg-gray-alpha-100',
         isSelected && LEVEL_SELECTED_CLASS[level]
