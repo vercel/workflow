@@ -16,6 +16,7 @@ import {
   type AnyEventRequest,
   type Event,
   eventIdToSlot,
+  RATE_ACQUIRE_GRACE_MS,
   SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
@@ -182,6 +183,38 @@ describe('rate limits on the Local World', () => {
     expect(done.eventData.acquireAt).toEqual(waiting.eventData.acquireAt);
     expect(done.eventData.createdSlot).toBe(createdSlot);
 
+    await expect(inBand(runId, acquired)).rejects.toThrow(EntityConflictError);
+  });
+
+  it('reserves a call again when it wakes past its grace window', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const runId = await createRun();
+    committed(await inBand(runId, rateCreated()));
+    const waiting = committed(await inBand(runId, rateCreated()));
+    if (waiting.eventType !== 'rate_created') throw new Error('not waiting');
+    const slot = waiting.eventData.acquireAt!.getTime();
+    const acquired = {
+      eventType: 'rate_acquired',
+      specVersion: SPEC_VERSION_RATE_LIMITS,
+      correlationId: waiting.correlationId,
+      eventData: { createdSlot: eventIdToSlot(waiting.eventId) },
+    };
+
+    // Overslept, and meanwhile a third call took the key's next slot.
+    vi.setSystemTime(slot + RATE_ACQUIRE_GRACE_MS + 1);
+    const third = committed(await inBand(runId, rateCreated()));
+    expect(third.eventType).toBe('rate_created');
+
+    const late = committed(await inBand(runId, acquired));
+    expect(late.eventType).toBe('rate_created');
+    expect(late.correlationId).toBe(waiting.correlationId);
+    if (late.eventType !== 'rate_created' || third.eventType !== 'rate_created')
+      throw new Error('unexpected');
+    // Behind the third call, not next to it.
+    expect(late.eventData.acquireAt!.getTime()).toBe(
+      third.eventData.acquireAt!.getTime() + 60_000
+    );
+    // The old rate_created is settled; the new one is the call's.
     await expect(inBand(runId, acquired)).rejects.toThrow(EntityConflictError);
   });
 

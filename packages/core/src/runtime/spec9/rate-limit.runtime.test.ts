@@ -4,8 +4,12 @@
  * same delivery, a call that has to wait sleeps on a timer until its slot and
  * records `rate_acquired`, and a call past its timeout rejects.
  */
-import { SPEC_VERSION_RATE_LIMITS } from '@workflow/world';
+import {
+  RATE_ACQUIRE_GRACE_MS,
+  SPEC_VERSION_RATE_LIMITS,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { HeldMessage } from '../../test-support/append-only-world.js';
 import {
   dataOf,
   eventsOf,
@@ -79,6 +83,38 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     }
     const at = (await runResult(world)) as number[];
     expect(at).toHaveLength(3);
+  }, 60_000);
+
+  it('reserves a call again when its timer is delivered past the grace window', async () => {
+    const { world } = await setupOrchestratorRun(sequential, [2], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+    });
+    let delayed = false;
+    await world.runOnClock({
+      deliverAs: (held: HeldMessage) => {
+        const timer = (held.message as { waitContinuation?: unknown })
+          .waitContinuation;
+        if (timer !== undefined && !delayed) {
+          // A queue outage: the timer arrives well after the slot.
+          delayed = true;
+          vi.setSystemTime(Date.now() + RATE_ACQUIRE_GRACE_MS + 2_000);
+        }
+        return held;
+      },
+    });
+
+    expect(delayed).toBe(true);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    const waiting = eventsOf(world, 'rate_created')[0];
+    const slot = new Date(dataOf(waiting)?.acquireAt as Date).getTime();
+    const second = eventsOf(world, 'rate_acquired').find(
+      (event) => event.correlationId === waiting!.correlationId
+    );
+    // Not on its old slot: reserved again, and granted at the new one.
+    expect(dataOf(second)?.createdSlot).toBeUndefined();
+    expect(
+      new Date(dataOf(second)?.acquireAt as Date).getTime() - slot
+    ).toBeGreaterThan(RATE_ACQUIRE_GRACE_MS);
   }, 60_000);
 
   it('rejects a call whose slot is past its timeout, reserving nothing', async () => {

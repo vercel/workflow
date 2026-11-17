@@ -16,6 +16,7 @@ import {
   type ListEventsParams,
   orchestratorRunIdOf,
   type QueueBatchResult,
+  RATE_ACQUIRE_GRACE_MS,
   rateLimitIntervalUs,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorContinuationPayload,
@@ -686,11 +687,12 @@ export class AppendOnlyWorld {
           `Slot ${eventData.createdSlot} does not hold the rate_created of ${data.correlationId}`
         );
       }
+      // Settled: acquired, failed, or reserved again past its grace window.
       if (
         this.events.some(
           (event) =>
-            event.eventType === 'rate_acquired' &&
-            event.correlationId === data.correlationId
+            event.correlationId === data.correlationId &&
+            event.eventId > createdId
         )
       ) {
         throw new EntityConflictError(
@@ -702,6 +704,14 @@ export class AppendOnlyWorld {
         throw new TooEarlyError(`${data.correlationId} is not due`, {
           retryAfter: Math.ceil((acquireAt.getTime() - Date.now()) / 1000),
         });
+      }
+      if (Date.now() - acquireAt.getTime() > RATE_ACQUIRE_GRACE_MS) {
+        // Woken past its grace window: reserved again from the recorded call.
+        return this.committedRate({
+          ...data,
+          eventType: 'rate_created',
+          eventData: created.eventData,
+        } as Partial<Event>);
       }
       const { creatorMessageId: _creator, ...recorded } = created.eventData;
       const acquired = {
