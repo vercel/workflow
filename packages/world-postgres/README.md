@@ -324,7 +324,7 @@ and its token can be reused. If the token is never reused, the expired
 
 ## Kubernetes
 
-World postgres comes with optional kubernetes support. See `chart/README.md`](./chart/README.md) for more information.
+World postgres comes with optional Kubernetes support. See [`chart/README.md`](./chart/README.md) for more information.
 
 ## Features
 

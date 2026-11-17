@@ -5,6 +5,7 @@
  * `chart` directory deploys them together; see its README.
  */
 export {
+  countUnpinnedRuns,
   type DeploymentBacklog,
   getDeploymentBacklog,
   listActiveDeployments,
@@ -30,6 +31,7 @@ export {
 export { inClusterApi, type KubeApi, kubectlApi } from './prune/kube.js';
 export {
   APP_VERSION_LABEL,
+  UNPINNED_WORKER_ROLE,
   WORKER_LABELS,
   WORKER_ROLE,
 } from './prune/labels.js';

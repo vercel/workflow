@@ -58,6 +58,16 @@ migrations:
   enabled: false
   command: []
 
+# A worker for unpinned runs: those started without a deployment ID, such as
+# the in-flight runs of an application that adopts this chart, or a run
+# created by a tool that doesn't set WORKFLOW_POSTGRES_DEPLOYMENT_ID. Every
+# other pod is pinned, so without it nothing claims them; the prune job warns
+# while there are any. Runs them on this release's image. Disable it once they
+# have finished.
+unpinnedWorker:
+  enabled: false
+  replicas: 1
+
 versionPinning:
   enabled: true
   workers:

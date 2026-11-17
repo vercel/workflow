@@ -76,5 +76,6 @@ export function formatPruneResult(result: PruneResult): string[] {
       return `keep    ${action.worker.version} (${action.reason})`;
     }),
     ...result.errors.map((error) => `error   ${error}`),
+    ...result.warnings.map((warning) => `warning ${warning}`),
   ];
 }

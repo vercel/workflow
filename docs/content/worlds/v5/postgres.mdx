@@ -222,7 +222,7 @@ Before you go live, make sure that:
 
 ### Kubernetes
 
-The package includes a Helm chart for Kubernetes in`@workflow/world-postgres/kubernetes`. Each release pins its runs to its image tag with [`WORKFLOW_POSTGRES_DEPLOYMENT_ID`](#workflow_postgres_deployment_id), and older releases keep worker pods that finish their own runs:
+The package includes a Helm chart for Kubernetes in its `chart` directory, and the helpers it relies on in `@workflow/world-postgres/kubernetes`. Each release pins its runs to its image tag with [`WORKFLOW_POSTGRES_DEPLOYMENT_ID`](#workflow_postgres_deployment_id), and older releases keep worker pods that finish their own runs:
 
 - **Workers per version.** Each release gets a worker Deployment that runs only the runs it started. A rollout leaves the previous release's workers in place.
 - **Scale to zero.** KEDA scales each version's workers on its due deliveries, which the application reports through `createBacklogEndpoints`. Workers drop to zero while that version's runs sleep or wait on a hook.

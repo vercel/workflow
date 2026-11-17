@@ -8,6 +8,7 @@ import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createWorld } from '../src/index.js';
 import {
+  countUnpinnedRuns,
   createBacklogEndpoints,
   getDeploymentBacklog,
   listActiveDeployments,
@@ -118,6 +119,13 @@ describe.skipIf(process.platform === 'win32')(
       ).resolves.toMatchObject({ activeRuns: 0, wanted: 0 });
     });
 
+    it('counts the unfinished runs started without a deployment ID', async () => {
+      await expect(countUnpinnedRuns(pool, config)).resolves.toBe(1);
+      await expect(
+        countUnpinnedRuns(pool, { jobPrefix: 'other_' })
+      ).resolves.toBe(0);
+    });
+
     it('lists the pinned deployments with unfinished runs, and no other application’s', async () => {
       await expect(listActiveDeployments(pool, config)).resolves.toEqual(
         new Map([
@@ -141,12 +149,14 @@ describe.skipIf(process.platform === 'win32')(
       expect(versions?.status).toBe(200);
       await expect(versions?.json()).resolves.toEqual({
         versions: { v1: 2, 'svc@abc': 3 },
+        unpinnedRuns: 1,
       });
       await expect(
         endpoints.respond('POST', '/internal/workflow/versions')
       ).resolves.toMatchObject({ status: 405 });
       // `postgres` is reserved for unpinned runs, and `/` names no version.
-      for (const path of ['postgres', 'a%2Fb']) {
+      // A malformed escape is refused, not thrown.
+      for (const path of ['postgres', 'a%2Fb', '%E0']) {
         await expect(
           endpoints.respond('GET', `/internal/workflow/backlog/${path}`)
         ).resolves.toMatchObject({ status: 400 });
@@ -174,7 +184,7 @@ describe.skipIf(process.platform === 'win32')(
       });
       await expect(mapped.respond('GET', '/wf/versions')).resolves.toEqual({
         status: 200,
-        body: { versions: { abc: 3 } },
+        body: { versions: { abc: 3 }, unpinnedRuns: 1 },
       });
     });
   }

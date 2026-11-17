@@ -1,12 +1,22 @@
 import type { VersionBacklog } from '../backlog-handler.js';
 import type { KubeApi } from './kube.js';
-import { APP_VERSION_LABEL, WORKER_LABELS, WORKER_ROLE } from './labels.js';
+import {
+  APP_VERSION_LABEL,
+  UNPINNED_WORKER_ROLE,
+  WORKER_LABELS,
+  WORKER_ROLE,
+} from './labels.js';
 import { type PruneAction, planPrune, type WorkerDeployment } from './plan.js';
 
 /** Where a version's backlog is read from. */
 export interface BacklogSource {
   backlog(version: string): Promise<VersionBacklog>;
   activeVersions(): Promise<Map<string, number>>;
+  /**
+   * Unfinished runs no version claims (see `countUnpinnedRuns`), reported as
+   * a warning while no unpinned worker is deployed. Optional.
+   */
+  unpinnedRuns?(): Promise<number>;
 }
 
 /**
@@ -26,6 +36,12 @@ export function httpBacklogSource(
         versions: Record<string, number>;
       };
       return new Map(Object.entries(versions));
+    },
+    unpinnedRuns: async () => {
+      const { unpinnedRuns } = (await get('/versions')) as {
+        unpinnedRuns?: number;
+      };
+      return unpinnedRuns ?? 0;
     },
   };
 }
@@ -71,6 +87,8 @@ export interface PruneResult {
   /** Versions whose missing ScaledObject was recreated. */
   readonly repaired: readonly string[];
   readonly errors: readonly string[];
+  /** Conditions that need attention but changed nothing, such as stranded unpinned runs. */
+  readonly warnings: readonly string[];
 }
 
 interface Meta {
@@ -184,7 +202,10 @@ export async function pruneWorkers(
   const restored: string[] = [];
   const repaired: string[] = [];
   const errors: string[] = [];
-  if (options.dryRun) return { actions, deleted, restored, repaired, errors };
+  const warnings = await unpinnedWarnings();
+  if (options.dryRun) {
+    return { actions, deleted, restored, repaired, errors, warnings };
+  }
 
   for (const action of actions) {
     try {
@@ -216,7 +237,29 @@ export async function pruneWorkers(
       errors.push(`${action.kind} ${version}: ${toError(error).message}`);
     }
   }
-  return { actions, deleted, restored, repaired, errors };
+  return { actions, deleted, restored, repaired, errors, warnings };
+
+  /**
+   * Unfinished runs started without a deployment ID wait for a process
+   * without one, which a chart deploys only with `unpinnedWorker.enabled`.
+   * Reported, never acted on; a failed check reports nothing.
+   */
+  async function unpinnedWarnings(): Promise<string[]> {
+    const count = await options.backlog.unpinnedRuns?.().catch(() => 0);
+    if (!count) return [];
+    const unpinnedSelector = encodeURIComponent(
+      `${WORKER_LABELS.service}=${service},${WORKER_LABELS.role}=${UNPINNED_WORKER_ROLE}`
+    );
+    const unpinned = await api
+      .get<List<Deployment>>(
+        `${apps}/deployments?labelSelector=${unpinnedSelector}`
+      )
+      .catch(() => undefined);
+    if (!unpinned || unpinned.items.length > 0) return [];
+    return [
+      `${count} unfinished run(s) were started without a deployment ID, and no worker claims them: enable unpinnedWorker to drain them`,
+    ];
+  }
 
   /** Creates an object, treating one that already exists as created. */
   async function createIfMissing(path: string, body: unknown) {

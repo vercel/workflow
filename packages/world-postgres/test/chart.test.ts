@@ -111,6 +111,23 @@ describe.skipIf(!hasHelm)('Helm chart', () => {
     );
   });
 
+  it('runs unpinned runs on an opt-in worker without a deployment ID, outside pruning', () => {
+    expect(documents().has('Deployment/billing-wf-unpinned')).toBe(false);
+    const docs = documents({
+      'unpinnedWorker.enabled': 'true',
+      'unpinnedWorker.replicas': '2',
+    });
+    const unpinned = get(docs, 'Deployment/billing-wf-unpinned');
+    expect(unpinned).toContain('replicas: 2');
+    expect(unpinned).toContain('workflow.vercel.com/role: unpinned-worker');
+    expect(unpinned).not.toContain('workflow.vercel.com/role: worker');
+    expect(unpinned).not.toContain('helm.sh/resource-policy');
+    expect(unpinned).toMatch(
+      /- name: WORKFLOW_ROLE\s+value: worker\s+- name: PORT\s+value: "3000"\s+- name: WORKFLOW_POSTGRES_JOB_PREFIX\s+value: "billing_"/
+    );
+    expect(unpinned).not.toContain('WORKFLOW_POSTGRES_DEPLOYMENT_ID');
+  });
+
   it('renders no workers or prune job without version pinning', () => {
     const docs = documents({ 'versionPinning.enabled': 'false' });
     expect([...docs.keys()].sort()).toEqual([

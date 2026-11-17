@@ -29,7 +29,8 @@ function fakeApi(objects: Record<string, unknown>) {
   const api: KubeApi = {
     get: async <T>(path: string) => {
       calls.push(`GET ${path}`);
-      const key = path.split('?')[0] as string;
+      // A path with its query, when given, before the path without it.
+      const key = path in objects ? path : (path.split('?')[0] as string);
       if (!(key in objects)) throw new Error(`404 ${key}`);
       return objects[key] as T;
     },
@@ -175,6 +176,56 @@ describe('pruneWorkers', () => {
     expect(calls).toContain(
       'GET /api/v1/namespaces/default/services/svc:http/proxy/wf/backlog/x'
     );
+  });
+
+  const unpinnedPath = `${NS}/deployments?labelSelector=${encodeURIComponent(
+    'workflow.vercel.com/service=svc,workflow.vercel.com/role=unpinned-worker'
+  )}`;
+
+  it('warns about unpinned runs while no unpinned worker is deployed, and changes nothing for them', async () => {
+    const withUnpinned = { ...drained, unpinnedRuns: async () => 3 };
+    const none = fakeApi({
+      ...cluster([worker(CURRENT)]),
+      [unpinnedPath]: { items: [] },
+    });
+    const warned = await pruneWorkers({
+      ...options,
+      api: none.api,
+      backlog: withUnpinned,
+      dryRun: true,
+    });
+    expect(warned.warnings).toEqual([
+      expect.stringContaining(
+        '3 unfinished run(s) were started without a deployment ID'
+      ),
+    ]);
+    expect(none.calls.some((c) => !c.startsWith('GET'))).toBe(false);
+
+    // Deployed: nothing to report.
+    const deployed = fakeApi({
+      ...cluster([worker(CURRENT)]),
+      [unpinnedPath]: { items: [worker('unpinned')] },
+    });
+    await expect(
+      pruneWorkers({ ...options, api: deployed.api, backlog: withUnpinned })
+    ).resolves.toMatchObject({ warnings: [] });
+
+    // No unpinned runs, a source that doesn't report them, or a failed
+    // check: nothing to report either.
+    for (const backlog of [
+      { ...drained, unpinnedRuns: async () => 0 },
+      drained,
+      {
+        ...drained,
+        unpinnedRuns: async () => {
+          throw new Error('down');
+        },
+      },
+    ]) {
+      await expect(
+        pruneWorkers({ ...options, api: none.api, backlog })
+      ).resolves.toMatchObject({ warnings: [] });
+    }
   });
 
   it('prunes nothing when the main Deployment cannot be read', async () => {

@@ -11,5 +11,12 @@ export const WORKER_LABELS = {
 
 export const WORKER_ROLE = 'worker';
 
+/**
+ * The role label of the chart's opt-in worker for unpinned runs
+ * (`unpinnedWorker`). Pruning never lists it; it reports unpinned runs while
+ * no Deployment with this role exists.
+ */
+export const UNPINNED_WORKER_ROLE = 'unpinned-worker';
+
 /** The version label the main Deployment's pod template carries. */
 export const APP_VERSION_LABEL = 'app.kubernetes.io/version';

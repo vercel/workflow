@@ -96,6 +96,18 @@ envFrom: {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end -}}
 
+{{/* baseEnv without WORKFLOW_POSTGRES_DEPLOYMENT_ID: the unpinned worker's. */}}
+{{- define "workflow-postgres.unpinnedEnv" -}}
+- name: PORT
+  value: {{ .Values.port | quote }}
+- name: WORKFLOW_POSTGRES_JOB_PREFIX
+  value: {{ include "workflow-postgres.jobPrefix" . | quote }}
+{{- range $name, $value := .Values.env }}
+- name: {{ $name }}
+  value: {{ $value | quote }}
+{{- end }}
+{{- end -}}
+
 {{- define "workflow-postgres.initContainers" -}}
 {{- if .Values.migrations.enabled }}
 {{- if not .Values.migrations.command }}{{- fail "migrations.command is required when migrations.enabled is true" }}{{- end }}

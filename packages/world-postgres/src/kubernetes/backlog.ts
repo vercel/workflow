@@ -107,3 +107,21 @@ export async function listActiveDeployments(
   }
   return deployments;
 }
+
+/**
+ * Unfinished runs of this `jobPrefix` started without a `deploymentId`
+ * (unpinned): a run from before the application pinned its runs, or one
+ * created by a tool that doesn't set `WORKFLOW_POSTGRES_DEPLOYMENT_ID`. Only
+ * a process without a deployment ID claims them.
+ */
+export async function countUnpinnedRuns(
+  pool: Pool,
+  config: BacklogConfig
+): Promise<number> {
+  const { rows } = await pool.query<{ count: string }>(
+    `SELECT count(*) FROM workflow.workflow_runs
+      WHERE job_prefix = $1 AND status IN ('pending', 'running')`,
+    [resolveJobPrefix({ jobPrefix: config.jobPrefix })]
+  );
+  return Number(rows[0]?.count ?? 0);
+}

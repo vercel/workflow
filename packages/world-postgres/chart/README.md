@@ -154,8 +154,42 @@ If any of these can't be checked, the workers are kept.
 Things to plan for:
 - **Runs that never finish** keep their version forever. Give hooks a timeout.
 - **Child runs** inherit their parent's version.
-- **Runs started without a deployment ID** (from a CLI or dashboard that doesn't set `WORKFLOW_POSTGRES_DEPLOYMENT_ID`) are unpinned. Only a process without a deployment ID claims them, and pruning doesn't count them.
+- **Runs started without a deployment ID** are unpinned, and every pod this chart renders is pinned, so nothing claims them by default. See [Unpinned runs](#unpinned-runs).
 - **A delivery still running when its pod stops** is redelivered from the start once its job lock goes stale. Keep `terminationGracePeriodSeconds` above your longest delivery.
+
+## Unpinned runs
+
+A run started without a deployment ID waits for a process without one. Two kinds exist:
+- the in-flight runs of an application that adopts this chart, started before its runs were pinned;
+- runs created by a tool that doesn't set `WORKFLOW_POSTGRES_DEPLOYMENT_ID`, such as a re-run from a CLI or dashboard.
+
+Enable `unpinnedWorker` to run them on the current release's image, with a fixed number of pods:
+
+```yaml
+unpinnedWorker:
+  enabled: true
+  replicas: 1
+```
+
+The backlog endpoints report how many there are (`unpinnedRuns` in `<backlogPath>/versions`), and the prune job logs a warning while there are any and no unpinned worker is deployed.
+
+When adopting the chart, either let the previous deployment finish its in-flight runs before you switch, or enable `unpinnedWorker` until `unpinnedRuns` reaches zero. Leave it on if tools outside the release start runs. Give those tools `WORKFLOW_POSTGRES_DEPLOYMENT_ID` instead to pin their runs to a version.
+
+## Uninstalling
+
+The per-version worker Deployments and ScaledObjects carry `helm.sh/resource-policy: keep`, so `helm uninstall` leaves them behind. It still deletes:
+- the ServiceAccount they run as;
+- the Service KEDA reads their backlog from;
+- the prune job, which would otherwise delete them.
+
+Their pods can't start again, and a reinstall under another release name conflicts with them. Once their runs have finished, delete them:
+
+```sh
+kubectl delete deployment,scaledobject \
+  -l workflow.vercel.com/service=<serviceName>,workflow.vercel.com/role=worker
+```
+
+To keep their runs going instead, uninstall only after every version but the current one has been pruned.
 
 ## Images
 

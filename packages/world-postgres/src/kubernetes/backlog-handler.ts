@@ -1,6 +1,10 @@
 import type { Pool } from 'pg';
 import type { PostgresWorldConfig } from '../config.js';
-import { getDeploymentBacklog, listActiveDeployments } from './backlog.js';
+import {
+  countUnpinnedRuns,
+  getDeploymentBacklog,
+  listActiveDeployments,
+} from './backlog.js';
 
 /**
  * The backlog of one version, as the HTTP endpoints report it. A version is
@@ -41,8 +45,9 @@ export interface BacklogEndpoints {
    *
    * - `GET {basePath}/backlog/{version}`: a {@link VersionBacklog}. A KEDA
    *   `metrics-api` trigger reads `wanted`.
-   * - `GET {basePath}/versions`: `{ versions: { [version]: activeRuns } }`,
-   *   every version with unfinished runs.
+   * - `GET {basePath}/versions`: `{ versions: { [version]: activeRuns },
+   *   unpinnedRuns }`, every version with unfinished runs, and how many
+   *   unfinished runs no version claims (see `countUnpinnedRuns`).
    */
   respond(
     method: string,
@@ -76,20 +81,27 @@ export function createBacklogEndpoints({
     if (pathname === `${base}/versions`) {
       if (method !== 'GET')
         return { status: 405, body: { error: 'method_not_allowed' } };
+      const [active, unpinnedRuns] = await Promise.all([
+        listActiveDeployments(pool, config),
+        countUnpinnedRuns(pool, config),
+      ]);
       const versions: Record<string, number> = {};
-      for (const [deploymentId, count] of await listActiveDeployments(
-        pool,
-        config
-      )) {
+      for (const [deploymentId, count] of active) {
         const version = versionOf(deploymentId);
         if (version !== undefined) versions[version] = count;
       }
-      return { status: 200, body: { versions } };
+      return { status: 200, body: { versions, unpinnedRuns } };
     }
     if (pathname.startsWith(backlogPrefix)) {
       if (method !== 'GET')
         return { status: 405, body: { error: 'method_not_allowed' } };
-      const version = decodeURIComponent(pathname.slice(backlogPrefix.length));
+      let version: string;
+      try {
+        version = decodeURIComponent(pathname.slice(backlogPrefix.length));
+      } catch {
+        // A malformed escape (`%E0`) names no version.
+        return { status: 400, body: { error: 'invalid_version' } };
+      }
       if (!VERSION.test(version)) {
         return { status: 400, body: { error: 'invalid_version' } };
       }
