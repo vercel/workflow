@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { cn } from './cn';
 
 describe('cn', () => {
-  it('keeps Geist type classes next to colour classes', () => {
+  it('keeps type-scale classes next to colour classes', () => {
     // Plain `twMerge` reads `text-label-14` as a text colour and drops it here.
     expect(cn('text-label-14 text-gray-900')).toBe(
       'text-label-14 text-gray-900'
