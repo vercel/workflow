@@ -87,7 +87,7 @@ export function SearchInput({
       <label htmlFor={inputId} className="sr-only">
         {label}
       </label>
-      <Search aria-hidden className="size-3.5 shrink-0 text-gray-800" />
+      <Search aria-hidden className="size-3.5 shrink-0 text-gray-700" />
       <input
         {...props}
         ref={inputRef}
@@ -114,7 +114,7 @@ export function SearchInput({
             onValueChange('');
           }
         }}
-        className="min-w-0 flex-1 appearance-none bg-transparent text-label-14 text-gray-1000 outline-none placeholder:text-gray-800 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
+        className="min-w-0 flex-1 appearance-none bg-transparent text-label-14 text-gray-1000 outline-none placeholder:text-gray-700 [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none"
       />
       {value ? (
         <button
