@@ -34,6 +34,10 @@ AGENTS:
 - The What and Why should each be 1-3 sentences.
 - Write your answers based off of your conversation with the user, not purely based on the changed code
   - It's helpful to understand the reasoning behind an approach, what alternatives were considered, and why this approach was ultimately selected, rather than a summary of the lines changed
+- Make the description easy to parse and understand for a reviewer who hasn't seen your conversation:
+  - Use plain words and short sentences, and lead with the outcome before the details
+  - Break up anything longer than a few sentences with lists, tables, or `####` headings, one idea per item
+  - Explain terms and internal names the first time they appear, and put code identifiers in backticks
 - If the PR changes docs pages or the observability UI:
   - Add the preview sections described under "Pull requests" in AGENTS.md after the Why
 - For complex changes (>1k lines, not counting lockfiles):
