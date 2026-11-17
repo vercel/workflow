@@ -47,8 +47,6 @@ export function SearchInput({
     <div
       className={cn(
         '@container flex h-10 min-h-10 shrink-0 items-center gap-1.5 border-b border-gray-alpha-400 bg-background-100 pr-2',
-        // Geist's focus outline token; the fallback is its value, for hosts
-        // that only define `--ds-focus-color`.
         'has-[input:focus-visible]:[outline:var(--ds-focus-ring-outline,2px_solid_var(--ds-focus-color))] has-[input:focus-visible]:-outline-offset-2',
         className
       )}
