@@ -2,7 +2,7 @@ import { Slot, Slottable } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import * as React from 'react';
 import { cn } from '../../lib/cn';
-import { Spinner } from './spinner';
+import { Spinner, type SpinnerSize } from './spinner';
 
 /**
  * The button for the observability UI.
@@ -18,14 +18,13 @@ import { Spinner } from './spinner';
  * `@workflow/web-shared`, so:
  *   - dark mode is matched with ancestor selectors rather than a `dark-theme:`
  *     variant, which only exists once our `styles.css` is imported;
- *   - the focus ring is written as arbitrary properties, because bare
- *     `outline` and arbitrary-colour utilities differ between Tailwind v3
- *     and v4.
+ *   - the focus ring is an arbitrary box-shadow, because bare `outline` and
+ *     arbitrary-colour utilities differ between Tailwind v3 and v4.
  */
 const buttonVariants = cva(
   [
     'group/trigger relative m-0 inline-flex max-w-full shrink-0 items-center justify-center gap-2',
-    'cursor-pointer select-none whitespace-nowrap border-0 align-baseline font-medium no-underline outline-none',
+    'cursor-pointer select-none whitespace-nowrap border-0 align-baseline font-sans font-medium no-underline outline-none',
     'transform translate-z-0',
     // Fill, text and border all come from --themed-*; the fallbacks below are
     // the inverted `default` variant, so it declares no colour tokens at all.
@@ -36,9 +35,15 @@ const buttonVariants = cva(
     // `hover:bg-*` utility on the element and a call site that needs its own
     // hover fill replaces it in both themes at once.
     'hover:bg-[var(--themed-hover-bg)]',
-    'transition-[border-color,background,color,transform,box-shadow] duration-150 ease-in-out',
-    'focus-visible:[outline:2px_solid_var(--ds-focus-color)] focus-visible:[outline-offset:2px]',
+    'transition-all duration-150 ease-in-out',
+    // The ring replaces the border: a 2px gap in the page colour, then 2px of
+    // the focus colour. It appears at once rather than fading in.
+    'focus-visible:shadow-[0_0_0_2px_var(--ds-background-100),0_0_0_4px_var(--ds-focus-color)] focus-visible:transition-none',
     '[&_svg]:shrink-0',
+    // Icons in the prefix and suffix slots are a step smaller than an
+    // icon-only button's. The attribute keeps this rule more specific than
+    // each size's `[&_svg]` rule.
+    '[&_[data-button-slot]_svg]:size-3.5',
     // Disabled buttons flatten to the gray-100 fill with a gray-400 border.
     'disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-700 disabled:[--themed-border:_var(--ds-gray-400)] disabled:hover:bg-gray-100',
     'aria-disabled:cursor-not-allowed aria-disabled:bg-gray-100 aria-disabled:text-gray-700 aria-disabled:[--themed-border:_var(--ds-gray-400)] aria-disabled:hover:bg-gray-100',
@@ -65,25 +70,28 @@ const buttonVariants = cva(
           '[[data-theme=dark]_&]:[--themed-hover-bg:_var(--ds-gray-200)]',
         ],
         // Tertiary is the one variant allowed to go borderless when disabled;
-        // it drops to 50% opacity instead.
+        // it keeps its text colour and drops to 50% opacity instead.
         tertiary: [
           '[--themed-bg:_transparent]',
           '[--themed-fg:_var(--ds-gray-1000)]',
           '[--themed-border:_transparent]',
           // The alpha token already flips with the theme.
           '[--themed-hover-bg:_var(--ds-gray-alpha-200)]',
-          'disabled:bg-transparent disabled:opacity-50 disabled:shadow-none disabled:hover:bg-transparent',
-          'aria-disabled:bg-transparent aria-disabled:opacity-50 aria-disabled:shadow-none aria-disabled:hover:bg-transparent',
+          'disabled:bg-transparent disabled:text-gray-1000 disabled:opacity-50 disabled:shadow-none disabled:hover:bg-transparent',
+          'aria-disabled:bg-transparent aria-disabled:text-gray-1000 aria-disabled:opacity-50 aria-disabled:shadow-none aria-disabled:hover:bg-transparent',
         ],
       },
       // Radii are literal rather than `rounded-md`/`rounded-lg`: apps that
       // still carry a shadcn theme redefine the `--radius-*` scale, and these
-      // corners should not move with it.
+      // corners should not move with it. Labels are set at 1.5x line height.
       size: {
-        tiny: 'h-6 gap-1 rounded-[4px] px-1.5 text-button-12 [&_svg]:size-3',
-        small: 'h-8 rounded-[6px] px-3 text-button-14 [&_svg]:size-4',
-        medium: 'h-9 rounded-[6px] px-4 text-button-14 [&_svg]:size-4',
-        large: 'h-10 rounded-[8px] px-5 text-button-16 [&_svg]:size-4',
+        tiny: 'h-6 gap-1 rounded-[4px] px-1.5 text-button-12 [&_svg]:size-3 [&_[data-button-slot]_svg]:size-3',
+        small:
+          'h-8 rounded-[6px] px-3 text-[14px] leading-normal [&_svg]:size-4',
+        medium:
+          'h-9 rounded-[6px] px-4 text-[14px] leading-normal [&_svg]:size-4',
+        large:
+          'h-10 rounded-[8px] px-5 text-[16px] leading-normal [&_svg]:size-4',
       },
       // Icon-only buttons: square keeps the size's radius, circle is a pill.
       shape: {
@@ -97,6 +105,55 @@ const buttonVariants = cva(
     },
   }
 );
+
+type Size = NonNullable<VariantProps<typeof buttonVariants>['size']>;
+
+/**
+ * Slot geometry per size. The label sits 6px in from whatever is beside it,
+ * so a side with a slot gives up those 6px of padding and the slot adds them
+ * back after the 8px gap: a 20px prefix slot with 1px of margin, and a suffix
+ * slot 2px further out with 2px of margin on its far side. Tiny keeps its own
+ * compact layout, with 12px slots and no extra spacing.
+ */
+const SLOTS: Record<
+  Size,
+  {
+    prefix: string;
+    suffix: string;
+    padStart: string;
+    padEnd: string;
+    spinner: SpinnerSize;
+  }
+> = {
+  tiny: {
+    prefix: 'min-w-3',
+    suffix: '',
+    padStart: '',
+    padEnd: '',
+    spinner: 'sm',
+  },
+  small: {
+    prefix: 'min-w-5 mr-px',
+    suffix: 'mx-0.5',
+    padStart: 'pl-1.5',
+    padEnd: 'pr-1.5',
+    spinner: 'sm',
+  },
+  medium: {
+    prefix: 'min-w-5 mr-px',
+    suffix: 'mx-0.5',
+    padStart: 'pl-2.5',
+    padEnd: 'pr-2.5',
+    spinner: 'md',
+  },
+  large: {
+    prefix: 'min-w-5 mr-px',
+    suffix: 'mx-0.5',
+    padStart: 'pl-3.5',
+    padEnd: 'pr-3.5',
+    spinner: 'lg',
+  },
+};
 
 export type ButtonProps = Omit<
   React.ButtonHTMLAttributes<HTMLButtonElement>,
@@ -117,29 +174,43 @@ export type ButtonProps = Omit<
     suffix?: React.ReactNode;
   };
 
+/** The padding a side gives up to the slot beside the label. */
+function slotPadding(
+  size: Size,
+  shape: ButtonProps['shape'],
+  hasPrefix: boolean,
+  hasSuffix: boolean
+) {
+  if (shape) return undefined;
+  return cn(hasPrefix && SLOTS[size].padStart, hasSuffix && SLOTS[size].padEnd);
+}
+
 /**
- * A fixed slot, as wide as the size's icon, so swapping the prefix for the
- * spinner doesn't move the label.
+ * The prefix or suffix slot. The prefix is a fixed width, so swapping it for
+ * the spinner doesn't move the label.
  */
-function PrefixSlot({
+function ButtonSlot({
+  side,
   size,
   loading,
   children,
-}: Pick<ButtonProps, 'size' | 'loading' | 'children'>) {
-  const small = size === 'tiny' || size === 'small';
+}: {
+  side: 'prefix' | 'suffix';
+  size: Size;
+  loading?: boolean;
+  children: React.ReactNode;
+}) {
+  const slots = SLOTS[size];
   return (
     <span
+      data-button-slot={side}
       aria-hidden={loading || undefined}
       className={cn(
         'inline-flex shrink-0 items-center justify-center',
-        size === 'tiny' ? 'min-w-3' : 'min-w-4'
+        slots[side]
       )}
     >
-      {loading ? (
-        <Spinner size={small ? 'sm' : 'md'} className="text-current" />
-      ) : (
-        children
-      )}
+      {loading ? <Spinner size={slots.spinner} /> : children}
     </span>
   );
 }
@@ -164,13 +235,19 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ) => {
     const Comp = asChild ? Slot : 'button';
     const hasPrefix = loading || prefix != null;
+    const hasSuffix = suffix != null;
+    const slotSize = size ?? 'medium';
     const shared = {
       ref,
       // `type` only means anything on a real <button>; forwarding it to the
       // anchor (or whatever else) an `asChild` call site renders would be
       // invalid HTML.
       type: asChild ? type : (type ?? 'button'),
-      className: cn(buttonVariants({ variant, size, shape, className })),
+      className: cn(
+        buttonVariants({ variant, size, shape }),
+        slotPadding(slotSize, shape, hasPrefix, hasSuffix),
+        className
+      ),
       disabled: asChild ? disabled : disabled || loading,
       'aria-busy': loading || undefined,
       'aria-disabled': asChild && loading ? true : undefined,
@@ -179,19 +256,23 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 
     // Without a prefix or suffix the children go through untouched, which
     // `asChild` needs: Slot only accepts a single child element.
-    if (!hasPrefix && suffix == null) {
+    if (!hasPrefix && !hasSuffix) {
       return <Comp {...shared}>{children}</Comp>;
     }
 
     return (
       <Comp {...shared}>
         {hasPrefix ? (
-          <PrefixSlot size={size} loading={loading}>
+          <ButtonSlot side="prefix" size={slotSize} loading={loading}>
             {prefix}
-          </PrefixSlot>
+          </ButtonSlot>
         ) : null}
         {asChild ? <Slottable>{children}</Slottable> : children}
-        {suffix}
+        {hasSuffix ? (
+          <ButtonSlot side="suffix" size={slotSize}>
+            {suffix}
+          </ButtonSlot>
+        ) : null}
       </Comp>
     );
   }

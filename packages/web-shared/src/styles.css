@@ -1,12 +1,9 @@
 /**
  * @workflow/web-shared default theme
  *
- * This file provides default values for the Geist design system CSS variables
- * used by @workflow/web-shared components. Import this file if your application
- * does not already provide Geist styles (e.g., via the `geist` package).
- *
- * If you are using this inside a Vercel dashboard app that already imports
- * Geist styles, you do NOT need to import this file.
+ * This file provides default values for the design system CSS variables
+ * (`--ds-*`) used by @workflow/web-shared components. Import it unless your
+ * application already defines them.
  *
  * Usage:
  *   import '@workflow/web-shared/styles.css';
@@ -276,7 +273,7 @@
   --radius-xl: 0.75rem; /* Previously lg: 12px */
   --radius-2xl: 1rem;
 
-  /* Override Tailwind default shadows with Geist's DS shadows */
+  /* Override Tailwind's default shadows with the design system's */
   --shadow-border: var(--ds-shadow-border);
 
   --shadow-2xs: var(--ds-shadow-2xs);
@@ -287,7 +284,7 @@
   --shadow-xl: var(--ds-shadow-xl);
   --shadow-2xl: var(--ds-shadow-2xl);
 
-  /* Geist Breakpoints */
+  /* Breakpoints */
   --breakpoint-sm: 401px;
   --breakpoint-md: 601px;
   --breakpoint-lg: 961px;
@@ -404,7 +401,7 @@
   --color-pink-1000: var(--ds-pink-1000);
 }
 
-/* tempory utility remove once front is fully migrated to geistcn */
+/* `sr-only` under an older class name, kept for markup that still uses it. */
 @utility geist-sr-only {
   @apply sr-only;
 }
@@ -725,8 +722,7 @@
   }
 }
 
-/* Spinner fade. Same name and frames as geistcn's, so the Vercel dashboard's
-   copy and this one are interchangeable. */
+/* The fade each of `Spinner`'s lines runs, offset by its own delay. */
 @keyframes spinner-opacity {
   0% {
     opacity: 1;

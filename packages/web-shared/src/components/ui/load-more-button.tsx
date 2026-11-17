@@ -11,8 +11,8 @@ interface LoadMoreButtonProps {
 }
 
 /**
- * A "Load more" button: a small secondary `Button` that shows a spinner while
- * loading, as geistcn's LoadMoreButton does.
+ * A full-width secondary `Button` for loading the next page, with a spinner
+ * while loading. Spacing around it is up to the caller.
  */
 export function LoadMoreButton({
   loading = false,
@@ -23,7 +23,7 @@ export function LoadMoreButton({
   return (
     <Button
       variant="secondary"
-      size="small"
+      className="w-full"
       loading={loading}
       onClick={onClick}
     >
