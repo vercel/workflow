@@ -1,6 +1,6 @@
 # Spec 9: single orchestrator
 
-Spec 9 is an opt-in run format driven by a single orchestrator per run. New runs stay on spec 8 unless you set [`WORKFLOW_SPEC_VERSION=9`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_spec_version), on a World that implements the in-band fence (the Vercel, Local and Postgres Worlds do). Nothing in this document applies to spec 8 runs.
+Spec 9 is an opt-in run format driven by a single orchestrator per run. New runs stay on spec 8 unless you set [`WORKFLOW_SPEC_VERSION=9`](#workflow_spec_version), on a World that implements the in-band fence (the Vercel, Local and Postgres Worlds do). Nothing in this document applies to spec 8 runs.
 
 This document is the reference for spec 9, kept next to the runtime that implements it (`packages/core/src/runtime/spec9/`). Update it in the same change when spec 9 behaviour, the World contract, or a decision recorded here changes. It is long, and its sections serve different readers:
 
@@ -30,7 +30,7 @@ On spec 8 runs the World refuses a second start or a second outcome by checking 
 
 ### Opting in
 
-Set [`WORKFLOW_SPEC_VERSION=9`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_spec_version). The Vercel, Local and Postgres Worlds implement the in-band fence spec 9 runs need. A World that does not declare the fence (`capabilities.inBandFence`) keeps creating spec 8 runs, and logs a one-time warning if `WORKFLOW_SPEC_VERSION=9` asks it for spec 9.
+Set [`WORKFLOW_SPEC_VERSION=9`](#workflow_spec_version). The Vercel, Local and Postgres Worlds implement the in-band fence spec 9 runs need. A World that does not declare the fence (`capabilities.inBandFence`) keeps creating spec 8 runs, and logs a one-time warning if `WORKFLOW_SPEC_VERSION=9` asks it for spec 9.
 
 - **Upgrade the whole fleet first.** Every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release or later before any of them sets `WORKFLOW_SPEC_VERSION=9`.
 - **Every caller of `start()` decides too.** A start that targets another deployment stamps the lower of the caller's and the target's versions, so a spec 9 run needs `WORKFLOW_SPEC_VERSION=9` on both.
@@ -81,7 +81,7 @@ Lazy inline step start, batched step claims, optimistic inline start outside tur
 
 ## Settings and behaviour on spec 9 runs
 
-The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9-experimental) lists the spec 9 settings briefly and links here.
+The public docs on workflow-sdk.dev describe spec 8 runs only. This section collects what differs for a spec 9 run, and is the only place the spec 9 settings are documented.
 
 ### Runtime settings
 
@@ -1871,7 +1871,7 @@ By default a background step's body runs only once its out-of-band `step_started
 
 The opposite default, starting the body of a first delivery while its `step_started` is in flight (as turbo does for inline steps), was tried and reverted: a step queued before `run.cancel()` ran its side effects after the cancel, and a throttled start ran the body, discarded its outcome and ran it again, several times per step under throttling at scale. A background step has already paid a queue hop, so the start's round trip is a small share of its latency.
 
-It remains an opt-in, [`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_optimistic_background_start). Under it the outcome is still written only once the start committed, and a `maxRetries: 0` step, every delivery that reads the log, and an explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` keep the awaited start. `WORKFLOW_OPTIMISTIC_INLINE_START` was not reused because on spec 9 it is an opt-out for inline steps.
+It remains an opt-in, [`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`](#workflow_optimistic_background_start). Under it the outcome is still written only once the start committed, and a `maxRetries: 0` step, every delivery that reads the log, and an explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` keep the awaited start. `WORKFLOW_OPTIMISTIC_INLINE_START` was not reused because on spec 9 it is an opt-out for inline steps.
 
 ### `run.wakeUp()` stays best-effort
 
@@ -1930,7 +1930,7 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 
 ### `run.wakeUp()` is best-effort on Vercel and Postgres
 
-A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
+A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
 
 ### An open hook keeps every invocation lingering
 

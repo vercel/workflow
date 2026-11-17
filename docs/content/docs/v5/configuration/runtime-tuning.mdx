@@ -380,54 +380,10 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
 - QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
 
-## Spec 9 (experimental)
-
-Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below.
+## Run format
 
 ### `WORKFLOW_SPEC_VERSION`
 
 - Default: unset. New runs use spec version 8.
-- `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
+- `6` to `8` select that version for new runs. A run keeps the version it was created with.
 - `6` creates new runs on the scheme from before the [sealed log](/docs/how-it-works/event-sourcing), where each event position is allocated by the write that occupies it. Use it in an environment shared with a runtime that cannot read sealed logs yet, such as one that pins its own accepted spec range (the Python runtime). Runs below `8` cannot have their hook tokens taken over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds): a forced hook in another run gets `HookConflictError` instead.
-- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist.
-
-### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
-
-- Default: `2000`
-- Log-tail poll interval of a busy orchestrator while no live event feed covers the run. `0` turns polling off.
-
-### `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`
-
-- Default: `10000`
-- Log-tail poll interval while the World's live event feed is up.
-
-### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
-
-- Default: `30000`
-- How long an orchestrator with nothing left to run stays live on the event feed while the run waits on a background step. `0` turns it off, for hooks too.
-
-### `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`
-
-- Default: `5000`, and never more than [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms)
-- How long an orchestrator with nothing left to run stays live on the event feed while the run waits only on open hooks. Any hook that is created and not disposed counts, however rarely it is resumed. `0` turns it off.
-
-### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
-
-- Default: `5000`
-- Deadline for one incremental read of the event log before the orchestrator sends it again. `0` turns the deadline off.
-
-### `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`
-
-- Default: `60000`
-- How long before the inline window ends the orchestrator stops starting inline steps.
-
-### `WORKFLOW_OPTIMISTIC_BACKGROUND_START`
-
-- Default: unset
-- `1` or `true` starts a background step's body before its `step_started` commits. Use only when background step bodies are idempotent.
-
-### `WORKFLOW_RUN_AHEAD_DEPTH`
-
-- Default: `10`
-- Clamp: `0` to `16`
-- How many inline step outcomes may be unconfirmed at once while the orchestrator runs ahead of its writes. `0` disables run-ahead.
