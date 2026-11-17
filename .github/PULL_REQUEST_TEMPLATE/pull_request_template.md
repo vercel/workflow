@@ -1,7 +1,13 @@
-### Description
+### What
 
 <!--
-  ✍️ Write a short summary of your work. Screenshots and videos are welcome!
+  ✍️ A short summary of what this pull request accomplishes. Screenshots and videos are welcome!
+-->
+
+### Why
+
+<!--
+  ✍️ The motivation for making this change.
 -->
 
 ### How did you test your changes?
@@ -21,3 +27,19 @@
   - Use `pnpm changeset --empty` if you are changing documentation or workbench apps
 - [ ] 🔒 DCO sign-off passes (run `git commit --signoff` on your commits)
 - [ ] 📝 Ping `@vercel/workflow` in a comment once the PR is ready, and the above checklist is complete
+
+<!--
+
+AGENTS:
+- The What and Why should each be 1-3 sentences.
+- Write your answers based off of your conversation with the user, not purely based on the changed code
+  - It's helpful to understand the reasoning behind an approach, what alternatives were considered, and why this approach was ultimately selected, rather than a summary of the lines changed
+- If the PR changes docs pages or the observability UI:
+  - Add the preview sections described under "Pull requests" in AGENTS.md after the Why
+- For complex changes (>1k lines, not counting lockfiles):
+  - Add a `### Walkthrough` section after How did you test your changes? which breaks down the primary changes into easy-to-follow `#### Sub-Sections`
+- For all changes:
+  - Add a line to end that indicates what model you are (e.g. "_Written by Claude Opus 5_")
+  - You must also add an empty line above this line
+
+-->
