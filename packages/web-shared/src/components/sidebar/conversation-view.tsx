@@ -78,7 +78,7 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
 
   if (part.type === 'tool-call') {
     return (
-      <div className="rounded border border-purple-300 bg-purple-100 px-2 py-1.5">
+      <div className="rounded border border-purple-400 bg-purple-100 px-2 py-1.5">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
           <span>🔧</span>
           <span className="text-purple-900">{part.toolName}</span>
@@ -98,7 +98,7 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
 
   if (part.type === 'tool-result') {
     return (
-      <div className="rounded border border-green-300 bg-green-100 px-2 py-1.5">
+      <div className="rounded border border-green-400 bg-green-100 px-2 py-1.5">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
           <span>✓</span>
           <span className="text-green-900">{part.toolName} result</span>
@@ -123,28 +123,28 @@ function getRoleClasses(role: string): { bubble: string; label: string } {
   switch (role) {
     case 'user':
       return {
-        bubble: 'border-blue-300 bg-blue-100',
-        label: 'border-blue-300 text-blue-700',
+        bubble: 'border-blue-400 bg-blue-100',
+        label: 'border-blue-400 text-blue-700',
       };
     case 'assistant':
       return {
-        bubble: 'border-gray-300 bg-gray-100',
-        label: 'border-gray-300 text-gray-700',
+        bubble: 'border-gray-400 bg-gray-100',
+        label: 'border-gray-400 text-gray-700',
       };
     case 'system':
       return {
-        bubble: 'border-amber-300 bg-amber-100',
-        label: 'border-amber-300 text-amber-700',
+        bubble: 'border-amber-400 bg-amber-100',
+        label: 'border-amber-400 text-amber-700',
       };
     case 'tool':
       return {
-        bubble: 'border-green-300 bg-green-100',
-        label: 'border-green-300 text-green-700',
+        bubble: 'border-green-400 bg-green-100',
+        label: 'border-green-400 text-green-700',
       };
     default:
       return {
-        bubble: 'border-gray-300 bg-gray-100',
-        label: 'border-gray-300 text-gray-700',
+        bubble: 'border-gray-400 bg-gray-100',
+        label: 'border-gray-400 text-gray-700',
       };
   }
 }

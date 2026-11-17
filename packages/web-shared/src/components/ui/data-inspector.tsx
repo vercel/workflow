@@ -198,7 +198,7 @@ function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   return (
     <button
       type="button"
-      className="inline-flex cursor-pointer items-center gap-1 rounded border border-blue-300 bg-blue-100 px-1.5 py-0.5 font-mono text-[10px] text-blue-900 underline decoration-transparent transition-colors hover:bg-blue-200"
+      className="inline-flex cursor-pointer items-center gap-1 rounded border border-blue-400 bg-blue-100 px-1.5 py-0.5 font-mono text-[10px] text-blue-900 underline decoration-transparent transition-colors hover:bg-blue-200"
       onClick={(e) => {
         e.stopPropagation();
         onStreamClick?.(streamRef.streamId);
@@ -216,7 +216,7 @@ function RunRefInline({ runRef }: { runRef: RunRef }) {
   return (
     <button
       type="button"
-      className="inline-flex cursor-pointer items-center gap-1 rounded border border-purple-300 bg-purple-100 px-1.5 py-0.5 font-mono text-[10px] text-purple-900 underline decoration-transparent transition-colors hover:bg-purple-200"
+      className="inline-flex cursor-pointer items-center gap-1 rounded border border-purple-400 bg-purple-100 px-1.5 py-0.5 font-mono text-[10px] text-purple-900 underline decoration-transparent transition-colors hover:bg-purple-200"
       onClick={(e) => {
         e.stopPropagation();
         onRunClick?.(runRef.runId);

@@ -10,6 +10,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { STATUS, type Status } from '../../lib/status';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -30,6 +31,7 @@ import {
   type StructuredErrorRecord,
 } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { StatusDot } from '../ui/status-dot';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -93,11 +95,12 @@ function extractStructuredError(
   return null;
 }
 
-const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
-  queued: 'bg-gray-400',
-  failed: 'bg-amber-700',
-  backoff: 'bg-amber-300',
-  ok: 'bg-green-700',
+/** The status each timing segment shows, so it matches the timeline. */
+const SEGMENT_STATUS: Record<TimingSegment['kind'], Status> = {
+  queued: 'queued',
+  failed: 'failed',
+  backoff: 'retrying',
+  ok: 'succeeded',
 };
 
 function PayloadView({
@@ -166,7 +169,7 @@ function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
             key={i}
             className={cn(
               'h-full min-w-1 basis-0',
-              SEGMENT_COLOR[segment.kind]
+              STATUS[SEGMENT_STATUS[segment.kind]].dot
             )}
             style={{ flexGrow: segment.ms }}
           />
@@ -180,13 +183,7 @@ function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
             className="flex items-center gap-1.5 text-label-14"
           >
             <span className="flex size-4 shrink-0 items-center justify-center">
-              <span
-                aria-hidden
-                className={cn(
-                  'block size-2.5 rounded-full',
-                  SEGMENT_COLOR[segment.kind]
-                )}
-              />
+              <StatusDot status={SEGMENT_STATUS[segment.kind]} />
             </span>
             <span className="text-gray-900">{segment.label}</span>
             <span className="tabular-nums text-gray-1000">
