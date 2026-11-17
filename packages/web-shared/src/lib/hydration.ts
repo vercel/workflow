@@ -212,6 +212,20 @@ export function getWebRevivers(): Revivers {
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
+    RateLimitTimeoutError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        key?: string;
+        wouldAcquireAt?: Date;
+      };
+      error.name = 'RateLimitTimeoutError';
+      error.key = value.key;
+      if (value.wouldAcquireAt !== undefined) {
+        error.wouldAcquireAt = value.wouldAcquireAt;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
     WorkflowStartError: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
       const error = new Error(value.message, opts) as Error & {
