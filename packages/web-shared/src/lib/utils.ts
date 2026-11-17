@@ -1,4 +1,3 @@
-import type { Step } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 
 const MS_IN_SECOND = 1000;
@@ -162,33 +161,4 @@ export function extractConversation(stepInput: unknown): ModelMessage[] | null {
   }
 
   return firstArg as ModelMessage[];
-}
-
-/**
- * A doStreamStep with its conversation input extracted
- */
-export interface StreamStep {
-  stepId: string;
-  stepName: string;
-  displayName: string;
-  conversation: ModelMessage[];
-}
-
-/**
- * Identifies all stream steps (doStreamStep) in a run and extracts their conversations.
- */
-export function identifyStreamSteps(steps: Step[]): StreamStep[] {
-  return steps
-    .filter((step) => isDoStreamStep(step.stepName))
-    .map((step) => {
-      const functionName = step.stepName.split('//').pop() ?? 'unknown';
-      const conversation = extractConversation(step.input) ?? [];
-
-      return {
-        stepId: step.stepId,
-        stepName: step.stepName,
-        displayName: functionName,
-        conversation,
-      };
-    });
 }

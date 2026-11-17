@@ -327,7 +327,7 @@ export function stepToSpan(
  * (the run's creation stands for it), so pass its `startHook` creation from
  * `findStartHookCreation` to build it from deliveries alone.
  */
-export const hookEventsToHookEntity = (
+const hookEventsToHookEntity = (
   events: Event[],
   startHook?: StartHookCreation
 ): {

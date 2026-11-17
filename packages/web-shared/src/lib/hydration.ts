@@ -20,19 +20,14 @@ import { getEventDataRefFields } from '@workflow/world';
 
 // Re-export types and utilities that consumers need
 export {
-  CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
   ENCRYPTED_PLACEHOLDER,
-  extractStreamIds,
   isClassInstanceRef,
   isRunRef,
-  isStreamId,
   isStreamRef,
   type Revivers,
   type RunRef,
-  STREAM_REF_TYPE,
   type StreamRef,
-  truncateId,
 } from '@workflow/core/serialization-format';
 
 // ---------------------------------------------------------------------------
@@ -591,16 +586,6 @@ export async function hydrateResourceIOAsync<T>(
 
   return replaceEncryptedAndExpiredWithMarkers(result as T);
 }
-
-/**
- * @deprecated Use {@link hydrateResourceIOAsync}, which takes the same
- * arguments. Kept as an alias for existing consumers.
- */
-export const hydrateResourceIOWithKey: <T>(
-  resource: T,
-  key: Uint8Array,
-  extraRevivers?: Revivers
-) => Promise<T> = hydrateResourceIOAsync;
 
 /**
  * Check whether a hydrated resource (event, step, run, etc.) contains any

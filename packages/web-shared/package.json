@@ -21,18 +21,7 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./components": {
-      "types": "./dist/components/index.d.ts",
-      "default": "./dist/components/index.js"
-    },
     "./styles.css": "./dist/styles.css"
-  },
-  "typesVersions": {
-    "*": {
-      "components": [
-        "dist/components/index.d.ts"
-      ]
-    }
   },
   "repository": {
     "type": "git",
