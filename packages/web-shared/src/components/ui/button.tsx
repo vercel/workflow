@@ -14,12 +14,8 @@ import { Spinner, type SpinnerSize } from './spinner';
  * tiny/small/medium/large, a 6px radius (4px at tiny, 8px at large), and 16px
  * of horizontal padding at medium.
  *
- * The styles have to resolve in whichever app consumes
- * `@workflow/web-shared`, so:
- *   - dark mode is matched with ancestor selectors rather than a `dark-theme:`
- *     variant, which only exists once our `styles.css` is imported;
- *   - the focus ring is an arbitrary box-shadow, because bare `outline` and
- *     arbitrary-colour utilities differ between Tailwind v3 and v4.
+ * The focus ring is an arbitrary box-shadow, because bare `outline` and
+ * arbitrary-colour utilities differ between Tailwind v3 and v4.
  */
 const buttonVariants = cva(
   [
@@ -51,23 +47,18 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        // No `--ds-*` token sits one step lighter/darker than the inverted
-        // fill, so its hover colours are literal — and they have to flip with
-        // the theme, because the fill itself does.
+        // Literal hover fills for the inverted default type: no `--ds-*`
+        // token sits one step off gray-1000.
         default: [
           '[--themed-hover-bg:_hsl(0,_0%,_22%)]',
-          '[.dark_&]:[--themed-hover-bg:_hsl(0,_0%,_80%)]',
-          '[.dark-theme_&]:[--themed-hover-bg:_hsl(0,_0%,_80%)]',
-          '[[data-theme=dark]_&]:[--themed-hover-bg:_hsl(0,_0%,_80%)]',
+          'dark:[--themed-hover-bg:_hsl(0,_0%,_80%)]',
         ],
         secondary: [
           '[--themed-bg:_var(--ds-background-100)]',
           '[--themed-fg:_var(--ds-gray-1000)]',
           '[--themed-border:_var(--ds-gray-400)]',
           '[--themed-hover-bg:_var(--ds-gray-100)]',
-          '[.dark_&]:[--themed-hover-bg:_var(--ds-gray-200)]',
-          '[.dark-theme_&]:[--themed-hover-bg:_var(--ds-gray-200)]',
-          '[[data-theme=dark]_&]:[--themed-hover-bg:_var(--ds-gray-200)]',
+          'dark:[--themed-hover-bg:_var(--ds-gray-200)]',
         ],
         // Tertiary is the one variant allowed to go borderless when disabled;
         // it keeps its text colour and drops to 50% opacity instead.
@@ -81,17 +72,12 @@ const buttonVariants = cva(
           'aria-disabled:bg-transparent aria-disabled:text-gray-1000 aria-disabled:opacity-50 aria-disabled:shadow-none aria-disabled:hover:bg-transparent',
         ],
       },
-      // Radii are literal rather than `rounded-md`/`rounded-lg`: apps that
-      // still carry a shadcn theme redefine the `--radius-*` scale, and these
-      // corners should not move with it. Labels are set at 1.5x line height.
+      // Labels are set at 1.5x line height.
       size: {
-        tiny: 'h-6 gap-1 rounded-[4px] px-1.5 text-button-12 [&_svg]:size-3 [&_[data-button-slot]_svg]:size-3',
-        small:
-          'h-8 rounded-[6px] px-3 text-[14px] leading-normal [&_svg]:size-4',
-        medium:
-          'h-9 rounded-[6px] px-4 text-[14px] leading-normal [&_svg]:size-4',
-        large:
-          'h-10 rounded-[8px] px-5 text-[16px] leading-normal [&_svg]:size-4',
+        tiny: 'h-6 gap-1 rounded-sm px-1.5 text-button-12 [&_svg]:size-3 [&_[data-button-slot]_svg]:size-3',
+        small: 'h-8 rounded-md px-3 text-[14px] leading-normal [&_svg]:size-4',
+        medium: 'h-9 rounded-md px-4 text-[14px] leading-normal [&_svg]:size-4',
+        large: 'h-10 rounded-lg px-5 text-[16px] leading-normal [&_svg]:size-4',
       },
       // Icon-only buttons: square keeps the size's radius, circle is a pill.
       shape: {

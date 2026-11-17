@@ -1,5 +1,15 @@
 # @workflow/next
 
+## 5.1.2
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`bb100a9`](https://github.com/vercel/workflow/commit/bb100a9decb69483bb9342dc1062b0c3118b0763), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`e6f5bc7`](https://github.com/vercel/workflow/commit/e6f5bc7251f0c8daa8f03c1dd29fce04b6f57fa5), [`f957b8e`](https://github.com/vercel/workflow/commit/f957b8ea5de0d155c02b5c6c4cbf474556971ede), [`d18aff2`](https://github.com/vercel/workflow/commit/d18aff22acec8a3f57237e58624d7a4d25ca7eed), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`b1f9269`](https://github.com/vercel/workflow/commit/b1f92691bcc3bc18b9df094d45379c6464cf4d65), [`021723b`](https://github.com/vercel/workflow/commit/021723bc679a0788332e6ebba9d58da55ba4333c), [`87cde0b`](https://github.com/vercel/workflow/commit/87cde0b52c59bded6ce98a87aef5c2582ac6b19c), [`e4ec16f`](https://github.com/vercel/workflow/commit/e4ec16f9b2aa092782bbd43c9f9fc50083f926f5)]:
+  - @workflow/core@5.6.1
+  - @workflow/swc-plugin@5.0.2
+  - @workflow/builders@5.1.2
+
 ## 5.1.1
 
 ### Patch Changes
