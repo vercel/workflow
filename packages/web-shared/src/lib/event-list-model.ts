@@ -651,12 +651,20 @@ export function getEmptyMessage(search: EventSearchState): string {
   switch (search.status) {
     case 'not_found':
       return `No events found for ${search.query}`;
-    case 'error':
-      return search.message;
-    case 'unavailable':
-      return 'Exact ID search is unavailable in this view.';
     default:
       return 'No events found';
+  }
+}
+
+/** Shown under the search box while the query cannot be looked up. */
+export function getSearchHint(search: EventSearchState): string | null {
+  switch (search.status) {
+    case 'incomplete':
+      return 'Enter a full step, wait, hook, or event ID to search';
+    case 'unavailable':
+      return 'Search is unavailable in this view';
+    default:
+      return null;
   }
 }
 
@@ -667,17 +675,15 @@ export function getFooterLabel(
     total: number;
     hasMoreEvents: boolean;
   }
-): string {
+): string | null {
   const { total, hasMoreEvents } = counts;
   switch (search.status) {
     case 'ok':
       return `${countEvents(total)} for ${search.query}${search.truncated ? ' (results may be truncated)' : ''}`;
+    case 'loading':
     case 'not_found':
-      return `No events found for ${search.query}`;
     case 'error':
-      return search.message;
-    case 'incomplete':
-      return 'Enter a full step ID, wait ID, hook ID, or event ID';
+      return null;
     default:
       return `${countEvents(total)}${hasMoreEvents ? ' loaded' : ''}`;
   }

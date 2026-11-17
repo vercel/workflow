@@ -1,7 +1,7 @@
 'use client';
 
 import type { Event } from '@workflow/world';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { EventSearchState } from '../../lib/event-list-model';
 import {
   type ExactIdSearchResult,
@@ -34,13 +34,16 @@ export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
   query: string;
   setQuery: (query: string) => void;
   search: EventSearchState;
+  retry: () => void;
 } {
   const [query, setQuery] = useState('');
   const [outcome, setOutcome] = useState<ExactSearchOutcome | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   const trimmed = query.trim();
   const parsed = useMemo(() => parseExactWorkflowSearchId(trimmed), [trimmed]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a retry repeats the lookup
   useEffect(() => {
     if (!parsed || !onExactIdSearch) return;
 
@@ -73,7 +76,7 @@ export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
         next = {
           query: trimmed,
           status: 'error',
-          message: 'Failed to search events. Try again.',
+          message: 'Something went wrong.',
         };
       }
       if (!abortController.signal.aborted) setOutcome(next);
@@ -86,7 +89,9 @@ export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
       // answer it had before.
       setOutcome(null);
     };
-  }, [trimmed, parsed, onExactIdSearch]);
+  }, [trimmed, parsed, onExactIdSearch, attempt]);
+
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
 
   const search = useMemo((): EventSearchState => {
     if (!trimmed) return { status: 'idle' };
@@ -100,5 +105,5 @@ export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
     return { ...outcome, id: parsed };
   }, [trimmed, parsed, onExactIdSearch, outcome]);
 
-  return { query, setQuery, search };
+  return { query, setQuery, search, retry };
 }
