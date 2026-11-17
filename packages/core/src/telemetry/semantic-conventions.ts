@@ -544,6 +544,56 @@ export const WorkflowInlineNotHeldReason = SemanticConvention<
   | 'error'
 >('workflow.inline.not_held_reason');
 
+/** **Experimental.** Round trip of the held send, in ms. */
+export const WorkflowInlineHoldSendMs = SemanticConvention<number>(
+  'workflow.inline.hold_send_ms'
+);
+
+/**
+ * **Experimental.** Whether the delivery's setup was started while the hold's
+ * answer was in flight: `started`, `disabled` (`WORKFLOW_INLINE_SPECULATION=0`)
+ * or `unavailable` (the flow entry offers none).
+ */
+export const WorkflowInlineSpeculation = SemanticConvention<
+  'started' | 'disabled' | 'unavailable'
+>('workflow.inline.speculation');
+
+/** **Experimental.** How long the speculative setup took, in ms. */
+export const WorkflowInlineSpeculationMs = SemanticConvention<number>(
+  'workflow.inline.speculation_ms'
+);
+
+/** **Experimental.** From the hold being consumed to the first step body, ms. */
+export const WorkflowInlineFirstStepMs = SemanticConvention<number>(
+  'workflow.inline.first_step_ms'
+);
+
+/**
+ * **Experimental.** From the `start()` / `resumeHook()` call to the inline
+ * delivery's first step body, in ms.
+ */
+export const WorkflowInlineTimeToFirstStepMs = SemanticConvention<number>(
+  'workflow.inline.time_to_first_step_ms'
+);
+
+/**
+ * **Experimental.** `start()` phase timings, in ms (see `workflow.start`):
+ * waiting for the flow entry, the inline checks, `run_created`, and the
+ * orchestrator send.
+ */
+export const WorkflowStartEntryLoadMs = SemanticConvention<number>(
+  'workflow.start.inline_entry_load_ms'
+);
+export const WorkflowStartInlineChecksMs = SemanticConvention<number>(
+  'workflow.start.inline_checks_ms'
+);
+export const WorkflowStartRunCreatedMs = SemanticConvention<number>(
+  'workflow.start.run_created_ms'
+);
+export const WorkflowStartEnqueueMs = SemanticConvention<number>(
+  'workflow.start.enqueue_ms'
+);
+
 // Route attributes
 
 /**

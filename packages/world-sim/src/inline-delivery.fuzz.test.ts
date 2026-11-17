@@ -99,7 +99,7 @@ const WORKFLOWS = {
 } as const;
 
 type WorkflowKey = keyof typeof WORKFLOWS;
-type Fault = 'none' | 'lapse' | 'crash' | 'resume';
+type Fault = 'none' | 'lapse' | 'crash' | 'resume' | 'not_held';
 
 // ---------------------------------------------------------------------------
 // Seeded choices
@@ -139,8 +139,8 @@ function caseFor(seed: number): Case {
     specVersion: pick([8, 9] as const),
     fault: pick(
       workflow === 'hook'
-        ? (['none', 'lapse', 'crash', 'resume'] as const)
-        : (['none', 'lapse', 'crash'] as const)
+        ? (['none', 'lapse', 'crash', 'resume', 'not_held'] as const)
+        : (['none', 'lapse', 'crash', 'not_held'] as const)
     ),
     ordinal: 1 + Math.floor(next() * 12),
     phase: pick(['before', 'after'] as const),
@@ -222,7 +222,7 @@ function scriptFor(c: Case): ScenarioScript {
     if (c.workflow === 'hook' && c.fault !== 'resume') {
       jobs.push(deliverHookWhenCreated(sim));
     }
-    if (c.fault !== 'none') {
+    if (c.fault !== 'none' && c.fault !== 'not_held') {
       jobs.push(
         (async () => {
           let seen = 0;
@@ -280,6 +280,14 @@ function scenarioFor(c: Case, script: ScenarioScript) {
       input: [...wf.input],
       // A World that can hold: start() and resumeHook() inline by default.
       queueHold: true,
+      // `not_held`: the start's held send is refused after a round trip, by
+      // which time the sender has started preparing the delivery.
+      ...(c.fault === 'not_held' && {
+        holdAnswer: (payload: unknown) =>
+          (payload as { runInput?: unknown }).runInput !== undefined
+            ? { answer: 'lost' as const, latencyMs: 5 }
+            : undefined,
+      }),
       startOptions: { specVersion: c.specVersion },
       script,
       expect: { status: 'completed', output: wf.output },
@@ -302,7 +310,7 @@ function scenarioFor(c: Case, script: ScenarioScript) {
  */
 async function play(c: Case): Promise<{ c: Case; result: ScenarioResult }> {
   let played = c;
-  if (c.fault !== 'none') {
+  if (c.fault !== 'none' && c.fault !== 'not_held') {
     const counter = { calls: 0 };
     await scenarioFor(c, countingScriptFor(c, counter));
     played =
@@ -384,7 +392,26 @@ describe('inline orchestrator delivery under faults', () => {
         expect(count, `${name}\n${detail}`).toBe(1);
       }
     }
-    const key = `${c.workflow}/spec${c.specVersion}/${c.fault}`;
+    if (c.killSwitch || c.fault === 'not_held') {
+      // Nothing ran inline before the queue delivered the start message:
+      // every event after `run_created` (and its `run_started`, which the
+      // resilient path may write first) comes after the loop's first
+      // delivery. A speculation that wrote, or ran a step, would show here.
+      const firstDelivery = result.trace.findIndex(
+        (t) => t.kind === 'delivery'
+      );
+      expect(firstDelivery, detail).toBeGreaterThanOrEqual(0);
+      const before = result.trace
+        .slice(0, firstDelivery)
+        .filter((t) => t.kind === 'event')
+        .map((t) => (t as { event: { eventType: string } }).event.eventType);
+      expect(before, detail).toEqual(['run_created']);
+      // And nothing ran twice.
+      for (const [name, count] of executions) {
+        expect(count, `${name}\n${detail}`).toBe(1);
+      }
+    }
+    const key = `${c.workflow}/spec${c.specVersion}/${c.killSwitch ? 'kill-switch' : c.fault}`;
     summary.set(key, (summary.get(key) ?? 0) + 1);
   }, 30_000);
 });

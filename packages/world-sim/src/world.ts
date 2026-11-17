@@ -39,6 +39,7 @@ import {
   createSimQueue,
   type DirectHandler,
   heldDeliveryContext,
+  type SimHoldAnswer,
   type SimQueue,
 } from './queue.js';
 import { createSimStore, type SimStore } from './store.js';
@@ -92,6 +93,8 @@ export interface SimWorldOptions {
    * loop unless it asks for this.
    */
   queueHold?: boolean;
+  /** Overrides how a held send is answered (see `SimHoldAnswer`). */
+  holdAnswer?: (payload: QueuePayload) => SimHoldAnswer | undefined;
 }
 
 export interface SimWorld extends World {
@@ -204,6 +207,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     now: () => clock.now(),
     ids,
     deploymentId,
+    holdAnswer: options.holdAnswer,
   });
   const streamer = createSimStreamer();
 

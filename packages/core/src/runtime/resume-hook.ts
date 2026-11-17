@@ -1260,6 +1260,16 @@ async function resumeHookAttempt<T = any>(
         }),
         runId: hook.runId,
         span,
+        // The wake carries no run input, so speculation only loads the
+        // run's orchestrator and the World (see `InlinePrewarm`).
+        message: {
+          runId: hook.runId,
+          ...(resumeContext.runSpecVersion !== undefined && {
+            runSpecVersion: resumeContext.runSpecVersion,
+          }),
+        },
+        queueName,
+        callStartedAt: resumeRequestedAtMs,
         send: (hold) =>
           hold.experimental_hold
             ? publishWake(hold)

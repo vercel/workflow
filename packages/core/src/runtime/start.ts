@@ -918,6 +918,7 @@ export async function start<TArgs extends unknown[], TResult>(
       } as Record<string, string | number | boolean>);
     };
     const startBody = async (span: Span | undefined): Promise<Run<TResult>> => {
+      const startCalledAt = Date.now();
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -933,6 +934,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // orchestrator handler is registered by the time the message is sent
       // (see `inline-orchestrator.ts`). Only where a send could be held.
       const inlineGateReason = inlineGate(world);
+      const inlineEntryLoadStartedAt = Date.now();
       const inlineEntryLoad =
         !startHook && inlineGateReason === undefined
           ? loadInlineEntry()
@@ -1566,35 +1568,32 @@ export async function start<TArgs extends unknown[], TResult>(
           },
           { v1Compat, inBand: false }
         );
+      const startMessage = {
+        runId,
+        traceCarrier,
+        ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+          ? {
+              runInput: {
+                ...runCreationData,
+                specVersion,
+                ...(creatorEnvironment !== undefined
+                  ? { environment: creatorEnvironment }
+                  : {}),
+              },
+            }
+          : {}),
+      } satisfies WorkflowInvokePayload;
       const enqueueRun = (extra?: QueueOptions) =>
-        world.queue(
-          queueName,
-          {
-            runId,
-            traceCarrier,
-            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-              ? {
-                  runInput: {
-                    ...runCreationData,
-                    specVersion,
-                    ...(creatorEnvironment !== undefined
-                      ? { environment: creatorEnvironment }
-                      : {}),
-                  },
-                }
-              : {}),
-          } satisfies WorkflowInvokePayload,
-          {
-            deploymentId,
-            specVersion,
-            // Forward any caller-supplied region hint so worlds with
-            // per-region queue routing (e.g. world-vercel) can target the
-            // matching queue. Worlds without a regional dimension ignore
-            // this field.
-            ...(opts.region !== undefined ? { region: opts.region } : {}),
-            ...extra,
-          }
-        );
+        world.queue(queueName, startMessage, {
+          deploymentId,
+          specVersion,
+          // Forward any caller-supplied region hint so worlds with
+          // per-region queue routing (e.g. world-vercel) can target the
+          // matching queue. Worlds without a regional dimension ignore
+          // this field.
+          ...(opts.region !== undefined ? { region: opts.region } : {}),
+          ...extra,
+        });
 
       // These argument-stream ops are flushed in the background; the promise
       // handed to waitUntil must never reject (an unconsumed waitUntil
@@ -1777,7 +1776,17 @@ export async function start<TArgs extends unknown[], TResult>(
         return new Run<TResult>(runId, { resilientStart: false });
       }
 
+      const runCreatedAt = Date.now();
       const runCreated = createRun();
+      // Phase timing for the span: how long `run_created` took, beside the
+      // send (they run concurrently).
+      void runCreated.then(
+        () =>
+          span?.setAttributes(
+            Attribute.WorkflowStartRunCreatedMs(Date.now() - runCreatedAt)
+          ),
+        () => {}
+      );
 
       // A dynamic run publishes only once the backend has confirmed it stored
       // the code. The queue message carries that code too, and its first
@@ -1818,10 +1827,17 @@ export async function start<TArgs extends unknown[], TResult>(
       // fast path creates the run from `runInput` if that write has not
       // landed yet (resilient start), exactly as a queue delivery that
       // outruns it does. Everywhere else the send is the plain queued one.
-      const enqueue = inlineEntryLoad
-        ? inlineEntryLoad.then(async () =>
-            sendOrchestratorMessage({
-              decision: decideInline({
+      const enqueueStartedAt = Date.now();
+      const enqueue = (
+        inlineEntryLoad
+          ? inlineEntryLoad.then(async () => {
+              span?.setAttributes(
+                Attribute.WorkflowStartEntryLoadMs(
+                  Date.now() - inlineEntryLoadStartedAt
+                )
+              );
+              const checksStartedAt = Date.now();
+              const decision = decideInline({
                 world,
                 queueName,
                 runId,
@@ -1831,21 +1847,37 @@ export async function start<TArgs extends unknown[], TResult>(
                   dynamicWorkflow !== undefined ||
                   (opts.world !== undefined &&
                     opts.world !== (await getWorldLazy())),
-              }),
-              runId,
-              span,
-              // One key for the held attempt and a plain resend after it
-              // throws, so a held attempt that did enqueue is not delivered
-              // twice. A fresh run ID has no other message to collide with.
-              send: (hold, inlineAttempt) =>
-                enqueueRun(
-                  inlineAttempt
-                    ? { idempotencyKey: `wkf-start-${runId}`, ...hold }
-                    : undefined
-                ),
+              });
+              span?.setAttributes(
+                Attribute.WorkflowStartInlineChecksMs(
+                  Date.now() - checksStartedAt
+                )
+              );
+              return sendOrchestratorMessage({
+                decision,
+                runId,
+                span,
+                message: startMessage,
+                queueName,
+                callStartedAt: startCalledAt,
+                // One key for the held attempt and a plain resend after it
+                // throws, so a held attempt that did enqueue is not delivered
+                // twice. A fresh run ID has no other message to collide with.
+                send: (hold, inlineAttempt) =>
+                  enqueueRun(
+                    inlineAttempt
+                      ? { idempotencyKey: `wkf-start-${runId}`, ...hold }
+                      : undefined
+                  ),
+              });
             })
-          )
-        : enqueueRun();
+          : enqueueRun()
+      ).then((result) => {
+        span?.setAttributes(
+          Attribute.WorkflowStartEnqueueMs(Date.now() - enqueueStartedAt)
+        );
+        return result;
+      });
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
         enqueue,

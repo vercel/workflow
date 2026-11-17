@@ -50,11 +50,11 @@ import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
 import { spec8Orchestrator } from './runtime/spec8/delivery.js';
+import { useQuickJSVm } from './runtime/vm-mode.js';
 
 import { getWorld } from './runtime/world.js';
 
 import { dehydrateRunError, type PayloadKey } from './serialization.js';
-
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
   buildInvocationSpanLinks,
@@ -67,6 +67,7 @@ import {
   withTraceContext,
   withWorkflowBaggage,
 } from './telemetry.js';
+import { compileWorkflowBundle } from './workflow.js';
 
 export type { Event, WorkflowRun };
 
@@ -675,7 +676,35 @@ export function workflowEntrypoint(
   // Lets `start()` / `resumeHook()` run this entry's orchestrator inline in a
   // process that loaded it outside the flow route (any route, through
   // `@workflow/core/inline-entry`). Builds nothing until then.
-  registerInlineOrchestrator(workflowPrefix, orchestratorHandler);
+  registerInlineOrchestrator(
+    workflowPrefix,
+    orchestratorHandler,
+    async (message, queueName) => {
+      // What a delivery of `message` sets up before its first world write,
+      // into the process caches it reads: the run's orchestrator, the World,
+      // and the compiled workflow (node:vm scripts, or QuickJS's modules and
+      // baseline snapshot). No run state, no writes.
+      const parsed = WorkflowInvokePayloadSchema.safeParse(message);
+      if (!parsed.success) return;
+      const { runInput, runSpecVersion } = parsed.data;
+      const specVersion = runInput?.specVersion ?? runSpecVersion;
+      const workflowName = queueName.slice(workflowPrefix.length);
+      await Promise.all([
+        specVersion === undefined
+          ? undefined
+          : orchestratorForSpecVersion(specVersion),
+        getWorld(),
+        // The engine is known from the start message's run input.
+        runInput === undefined
+          ? undefined
+          : useQuickJSVm({ executionContext: runInput.executionContext })
+            ? import('./runtime/quickjs-runtime.js').then((quickjs) =>
+                quickjs.prewarmQuickJS(workflowCode, workflowName)
+              )
+            : compileWorkflowBundle(workflowCode, workflowName),
+      ]);
+    }
+  );
 
   // The handler, with the World it was built for (which declares how its
   // deliveries are authenticated) and the refusal log (process-wide; see

@@ -36,6 +36,7 @@ import {
   type Queue,
   type QueueHandler,
   type QueueHoldResult,
+  type QueueNotHeldReason,
   type QueueOptions,
   type QueuePayload,
   type QueuePrefix,
@@ -193,10 +194,26 @@ export function decodeMessage(body: string): unknown {
   return JSON.parse(body, reviver);
 }
 
+/**
+ * How the simulated queue answers a held send, for scenarios that need an
+ * answer other than the natural one (see `SimWorldOptions.holdAnswer`).
+ */
+export interface SimHoldAnswer {
+  /** `held`, or the `not_held` reason to answer with (the queue delivers). */
+  answer: 'held' | QueueNotHeldReason;
+  /**
+   * Real milliseconds to wait before answering: the send's round trip, during
+   * which the sender may already be preparing the delivery.
+   */
+  latencyMs?: number;
+}
+
 export function createSimQueue(opts: {
   now(): number;
   ids: IdFactory;
   deploymentId: string;
+  /** Overrides the answer to a held send (default: the natural one). */
+  holdAnswer?: (payload: QueuePayload) => SimHoldAnswer | undefined;
 }): SimQueue {
   const messages: QueuedMessage[] = [];
   const handlers = new Map<string, DirectHandler>();
@@ -263,6 +280,18 @@ export function createSimQueue(opts: {
         throw new TypeError(
           'experimental_hold cannot be combined with delaySeconds'
         );
+      }
+      const override = opts.holdAnswer?.(payload);
+      if (override?.latencyMs) {
+        await new Promise((resolve) => setTimeout(resolve, override.latencyMs));
+      }
+      if (override && override.answer !== 'held') {
+        messages.push(entry);
+        notifyChange();
+        return {
+          messageId: MessageId.parse(messageId),
+          experimental_hold: { status: 'not_held', reason: override.answer },
+        };
       }
       return {
         messageId: MessageId.parse(messageId),

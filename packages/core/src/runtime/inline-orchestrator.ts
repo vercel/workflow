@@ -81,7 +81,30 @@ interface InlineEntry {
   /** Builds the handler for a World; called at most once per World. */
   createHandler(world: World): QueueHandler;
   handlers: WeakMap<World, QueueHandler>;
+  /** See {@link InlinePrewarm}. */
+  prewarm?: InlinePrewarm;
 }
+
+/**
+ * Speculative, side-effect-free preparation for running `message` here: what
+ * an orchestrator delivery of it would set up before its first world write
+ * (loading the run's orchestrator, compiling the workflow bundle or the
+ * QuickJS baseline, building the World), into the process caches the
+ * delivery reads. It writes nothing, holds no lease, starts no step and leaves
+ * no timer or stream open, so it is safe to start before the queue has said
+ * whether this process holds the message, and to abandon if it does not.
+ */
+export type InlinePrewarm = (
+  message: unknown,
+  queueName: string
+) => Promise<void>;
+
+/**
+ * `WORKFLOW_INLINE_SPECULATION=0` stops a held send from preparing its
+ * delivery while the hold's answer is in flight (see {@link InlinePrewarm});
+ * the delivery then prepares itself after the answer, as before.
+ */
+export const INLINE_SPECULATION_ENV = 'WORKFLOW_INLINE_SPECULATION';
 
 // On `globalThis` so the registry is shared by every copy of this module a
 // bundler emits: the flow entry and the calling route can resolve
@@ -106,12 +129,14 @@ const registry = globalSingleton(
  */
 export function registerInlineOrchestrator(
   prefix: string,
-  createHandler: (world: World) => QueueHandler
+  createHandler: (world: World) => QueueHandler,
+  prewarm?: InlinePrewarm
 ): void {
   registry.entries.set(prefix, {
     prefix,
     createHandler,
     handlers: new WeakMap(),
+    ...(prewarm && { prewarm }),
   });
 }
 
@@ -257,7 +282,7 @@ export interface InlineRequest {
 }
 
 export type InlineDecision =
-  | { inline: true; handler: QueueHandler }
+  | { inline: true; handler: QueueHandler; prewarm?: InlinePrewarm }
   | { inline: false; reason: InlineSkipReason };
 
 /**
@@ -299,7 +324,11 @@ export function decideInline(request: InlineRequest): InlineDecision {
     return { inline: false, reason: 'no_handler' };
   }
   try {
-    return { inline: true, handler: handlerFor(entry, request.world) };
+    return {
+      inline: true,
+      handler: handlerFor(entry, request.world),
+      ...(entry.prewarm && { prewarm: entry.prewarm }),
+    };
   } catch (error) {
     runtimeLogger.warn(
       'Could not build the inline orchestrator handler; the run is queued as usual',
@@ -321,6 +350,12 @@ export function decideInline(request: InlineRequest): InlineDecision {
 interface InlineDeliveryContext {
   /** When the held message started running here (epoch ms). */
   startedAt: number;
+  /** The `workflow.inline.consume` span, for the first-step timing. */
+  span?: Span;
+  /** When the sending call began (epoch ms), if it says. */
+  sendStartedAt?: number;
+  /** Set once the delivery's first step body started. */
+  firstStepNoted?: boolean;
 }
 
 const inlineDeliveryStorage = globalSingleton(
@@ -332,6 +367,25 @@ const inlineDeliveryStorage = globalSingleton(
 /** The inline delivery this code runs in, if any. @internal */
 export function currentInlineDelivery(): InlineDeliveryContext | undefined {
   return inlineDeliveryStorage.getStore();
+}
+
+/**
+ * Called by the step executors as a step body starts: the first one in an
+ * inline delivery stamps the delivery's span with how long it took to get
+ * there, from the hold being consumed and from the sending call. A no-op
+ * outside an inline delivery and after the first step. @internal
+ */
+export function noteInlineStepStarted(): void {
+  const context = inlineDeliveryStorage.getStore();
+  if (!context || context.firstStepNoted) return;
+  context.firstStepNoted = true;
+  const now = Date.now();
+  context.span?.setAttributes({
+    ...Attribute.WorkflowInlineFirstStepMs(now - context.startedAt),
+    ...(context.sendStartedAt !== undefined
+      ? Attribute.WorkflowInlineTimeToFirstStepMs(now - context.sendStartedAt)
+      : {}),
+  });
 }
 
 /** What an inline delivery leaves of its route's deadline for the handoff. */
@@ -380,6 +434,11 @@ export async function sendOrchestratorMessage(params: {
     hold: Pick<QueueOptions, 'experimental_hold'>,
     inlineAttempt: boolean
   ) => Promise<QueueResult>;
+  /** The message `send` sends, for speculation (see {@link InlinePrewarm}). */
+  message?: unknown;
+  queueName?: string;
+  /** When the calling `start()` / `resumeHook()` began (epoch ms). */
+  callStartedAt?: number;
 }): Promise<QueueResult> {
   const { decision, runId, span } = params;
   if (!decision.inline) {
@@ -389,9 +448,17 @@ export async function sendOrchestratorMessage(params: {
     });
     return params.send({}, false);
   }
+  // Overlap the hold's round trip with the delivery's deterministic setup.
+  // Nothing it does needs the hold, so it starts before the answer; the
+  // delivery itself, and every write and step, still waits for `held`.
+  const speculation = speculate(decision, params, span);
+  const sendStartedAt = Date.now();
   let result: QueueResult;
   try {
     result = await params.send({ experimental_hold: true }, true);
+    span?.setAttributes(
+      Attribute.WorkflowInlineHoldSendMs(Date.now() - sendStartedAt)
+    );
   } catch (error) {
     // Fail closed: whatever the held attempt did, it did not hand this
     // process a message. Send as usual; the shared idempotency key (where the
@@ -426,9 +493,24 @@ export async function sendOrchestratorMessage(params: {
         ...Attribute.FaasInstance(getComputeInstanceId()),
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.MessagingMessageId(hold.messageId),
+        ...Attribute.WorkflowInlineSpeculation(speculation.state),
       });
-      await inlineDeliveryStorage.run({ startedAt: Date.now() }, () =>
-        hold.consume(handler)
+      // Recorded once the speculation settles, while the delivery (and so
+      // this span) is still running in the common case.
+      void speculation.done.then((elapsedMs) => {
+        if (elapsedMs !== undefined) {
+          consumeSpan?.setAttributes(
+            Attribute.WorkflowInlineSpeculationMs(elapsedMs)
+          );
+        }
+      });
+      await inlineDeliveryStorage.run(
+        {
+          startedAt: Date.now(),
+          span: consumeSpan,
+          sendStartedAt: params.callStartedAt,
+        },
+        () => hold.consume(handler)
       );
     }),
     (error) => {
@@ -446,4 +528,44 @@ export async function sendOrchestratorMessage(params: {
     }
   );
   return result;
+}
+
+/**
+ * Starts the decision's {@link InlinePrewarm} for the message being sent, if
+ * there is one and speculation is on. Never rejects: a failed speculation
+ * only means the delivery prepares itself, as it would have anyway.
+ */
+function speculate(
+  decision: Extract<InlineDecision, { inline: true }>,
+  params: { message?: unknown; queueName?: string },
+  span: Span | undefined
+): {
+  state: 'started' | 'disabled' | 'unavailable';
+  /** Resolves with how long it took, `undefined` if it did not run. */
+  done: Promise<number | undefined>;
+} {
+  if (process.env[INLINE_SPECULATION_ENV] === '0') {
+    return { state: 'disabled', done: Promise.resolve(undefined) };
+  }
+  if (!decision.prewarm || params.queueName === undefined) {
+    return { state: 'unavailable', done: Promise.resolve(undefined) };
+  }
+  const startedAt = Date.now();
+  span?.setAttributes(Attribute.WorkflowInlineSpeculation('started'));
+  let done: Promise<number | undefined>;
+  try {
+    done = decision.prewarm(params.message, params.queueName).then(
+      () => Date.now() - startedAt,
+      (error: unknown) => {
+        runtimeLogger.debug(
+          'Inline delivery: speculative preparation failed; the delivery prepares itself',
+          { error: error instanceof Error ? error.message : String(error) }
+        );
+        return undefined;
+      }
+    );
+  } catch {
+    done = Promise.resolve(undefined);
+  }
+  return { state: 'started', done };
 }

@@ -1617,6 +1617,25 @@ function getBaselineEntry(
 }
 
 /**
+ * Prepares what a QuickJS run of `workflowCode` would prepare on its first
+ * use in this process, into the same caches: the compiled QuickJS modules,
+ * and the bundle's baseline snapshot when snapshots are on. Deterministic and
+ * free of run state (the baseline is hydrated with a fixed clock and
+ * placeholder host functions), so it can run before a held message is known
+ * to be this process's (see `InlinePrewarm`). @internal
+ */
+export async function prewarmQuickJS(
+  workflowCode: string,
+  workflowId: string
+): Promise<void> {
+  if (isQuickJSBaselineSnapshotEnabled()) {
+    await getBaselineEntry(workflowCode, workflowId);
+  } else {
+    await getCompiledAssets();
+  }
+}
+
+/**
  * Continue a monotonic ULID sequence from a persisted last value:
  * re-implements the `ulid` package's same-timestamp step (Crockford
  * base32 +1 on the 16-char random part, carrying left; the 10-char time

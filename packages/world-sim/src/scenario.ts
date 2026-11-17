@@ -24,6 +24,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { resumeHook, setWorld, start } from '@workflow/core/runtime';
 import {
   type Event,
+  type QueuePayload,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type WorkflowRunStatus,
@@ -38,6 +39,7 @@ import {
   type SelectNext,
 } from './drive.js';
 import { checkInvariants } from './invariants.js';
+import type { SimHoldAnswer } from './queue.js';
 import { verifyReplay } from './replay.js';
 import { createTempo, ScenarioAborted } from './tempo.js';
 import type {
@@ -136,6 +138,11 @@ export interface ScenarioSpec {
    * inline delivery is the run's orchestrator, and must stay a call point.
    */
   queueHold?: boolean;
+  /**
+   * With `queueHold`, overrides how a held send is answered, e.g. a
+   * `not_held` that arrives after a round trip (see `SimHoldAnswer`).
+   */
+  holdAnswer?: (payload: QueuePayload) => SimHoldAnswer | undefined;
   /** Options for the scenario's `start()` call, e.g. `{ specVersion: 8 }`. */
   startOptions?: { specVersion?: number };
   /**
@@ -223,7 +230,11 @@ export async function runScenario(
   // One expectation, whichever world this is. Aliased rather than read inline
   // so the outcome check and the output check below cannot drift apart.
   const expected = spec.expect;
-  const world = createSimWorld({ clock, queueHold: spec.queueHold });
+  const world = createSimWorld({
+    clock,
+    queueHold: spec.queueHold,
+    holdAnswer: spec.holdAnswer,
+  });
 
   const workflowId =
     typeof spec.workflow === 'string'
