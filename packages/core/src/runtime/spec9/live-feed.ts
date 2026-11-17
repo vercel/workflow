@@ -163,6 +163,83 @@ export function getOrchestratorLingerMsFor(
 }
 
 /**
+ * How far ahead an open wait may be due for an orchestrator delivery with
+ * nothing left to run to stay live until it is, and complete it in process
+ * (`WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`, default
+ * `WORKFLOW_ORCHESTRATOR_LINGER_MS`, and never more than it). `0` disables
+ * it.
+ *
+ * Without it, a run that loops on a short `sleep()` ends its delivery at
+ * every sleep, and the wait's timer starts a new invocation, which loads the
+ * run's whole log again. Lingering keeps the replay session and reads only
+ * the events after it. The timer is armed before the delivery lingers, so a
+ * delivery that dies mid-sleep still has the run woken. It holds a function
+ * open for at most the sleep's length, which the full window bounds the same
+ * way it bounds the linger on a background step. Taken under the same
+ * conditions as that linger: only while the live feed is live, and only for
+ * a wait due before the invocation's inline deadline less its margin.
+ */
+export function getOrchestratorWaitLingerMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const lingerMs = getOrchestratorLingerMs(env);
+  const raw = env.WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS;
+  if (raw === undefined || raw === '') return lingerMs;
+  const value = Number(raw);
+  return Math.min(
+    Number.isFinite(value) && value >= 0 ? value : lingerMs,
+    lingerMs
+  );
+}
+
+/**
+ * How long a linger taken for a wait runs past the wait's deadline, so that a
+ * timer that fires a little before the deadline does not end it first. The
+ * linger ends as soon as the wait is due; this only bounds it.
+ */
+export const ORCHESTRATOR_WAIT_LINGER_SLACK_MS = 1_000;
+
+/**
+ * When a delivery with nothing left to run stops lingering (epoch ms), or
+ * `undefined` when it does not linger: the later of the window for what the
+ * run waits on outside its orchestrator ({@link getOrchestratorLingerMsFor})
+ * and, when the earliest open wait is due within
+ * {@link getOrchestratorWaitLingerMs} and no later than `capMs`, that wait's
+ * deadline (plus {@link ORCHESTRATOR_WAIT_LINGER_SLACK_MS}). Never past
+ * `capMs`, the inline deadline less its margin. A wait due past the cap does
+ * not count: the delivery could not complete it, and its queued timer does.
+ */
+export function orchestratorLingerUntil(
+  params: {
+    work: ExternalWork | undefined;
+    /** The earliest open wait's deadline, epoch ms. */
+    nextWaitAtMs: number | undefined;
+    nowMs: number;
+    capMs: number;
+  },
+  env: Record<string, string | undefined> = process.env
+): { untilMs: number; forWait: boolean } | undefined {
+  const { work, nextWaitAtMs, nowMs, capMs } = params;
+  const externalMs = getOrchestratorLingerMsFor(work, env);
+  let untilMs = externalMs > 0 ? nowMs + externalMs : nowMs;
+  let forWait = false;
+  if (
+    nextWaitAtMs !== undefined &&
+    nextWaitAtMs <= capMs &&
+    nextWaitAtMs - nowMs <= getOrchestratorWaitLingerMs(env) &&
+    getOrchestratorWaitLingerMs(env) > 0
+  ) {
+    const waitUntilMs = nextWaitAtMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS;
+    if (waitUntilMs > untilMs) {
+      untilMs = waitUntilMs;
+      forWait = true;
+    }
+  }
+  untilMs = Math.min(untilMs, capMs);
+  return untilMs > nowMs ? { untilMs, forWait } : undefined;
+}
+
+/**
  * Feeds the events other writers append to a run into a live orchestrator,
  * in slot order and without gaps.
  *

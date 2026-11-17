@@ -2,8 +2,12 @@ import type { Event } from '@workflow/world';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   __resetConsumedPositionsForTests,
+  isCompletedWaitTimer,
   isNoopDelivery,
+  isTerminalRun,
+  recordCompletedWait,
   recordConsumedPosition,
+  recordTerminalRun,
 } from './consumed-position.js';
 import {
   DEFAULT_INLINE_STEP_DEADLINE_MARGIN_MS,
@@ -15,6 +19,9 @@ import {
   DEFAULT_ORCHESTRATOR_LINGER_MS,
   getOrchestratorHookLingerMs,
   getOrchestratorLingerMsFor,
+  getOrchestratorWaitLingerMs,
+  ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
+  orchestratorLingerUntil,
 } from './live-feed.js';
 import {
   analyzeLogSteps,
@@ -247,5 +254,160 @@ describe('external work: open hooks', () => {
     expect(awaitsExternalWork([completion], new Set(['hook_c']))).toBe(true);
     // No observation recorded (QuickJS): every open hook counts.
     expect(awaitsExternalWork([completion])).toBe(true);
+  });
+});
+
+describe('linger through near-due waits', () => {
+  const nowMs = 1_000_000;
+  const capMs = nowMs + 60_000;
+
+  it('reads the wait window from its own setting, capped by the linger', () => {
+    expect(getOrchestratorWaitLingerMs({})).toBe(
+      DEFAULT_ORCHESTRATOR_LINGER_MS
+    );
+    expect(
+      getOrchestratorWaitLingerMs({ WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS: '0' })
+    ).toBe(0);
+    expect(
+      getOrchestratorWaitLingerMs({ WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS: 'x' })
+    ).toBe(DEFAULT_ORCHESTRATOR_LINGER_MS);
+    expect(
+      getOrchestratorWaitLingerMs({
+        WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS: '10000',
+      })
+    ).toBe(10_000);
+    expect(
+      getOrchestratorWaitLingerMs({
+        WORKFLOW_ORCHESTRATOR_LINGER_MS: '1000',
+        WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS: '10000',
+      })
+    ).toBe(1_000);
+    expect(
+      getOrchestratorWaitLingerMs({ WORKFLOW_ORCHESTRATOR_LINGER_MS: '0' })
+    ).toBe(0);
+  });
+
+  it('lingers until a wait due within the window, past the deadline never', () => {
+    const waitInMs = DEFAULT_ORCHESTRATOR_LINGER_MS / 2;
+    expect(
+      orchestratorLingerUntil(
+        { work: undefined, nextWaitAtMs: nowMs + waitInMs, nowMs, capMs },
+        {}
+      )
+    ).toEqual({
+      untilMs: nowMs + waitInMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
+      forWait: true,
+    });
+    // Due past the window.
+    expect(
+      orchestratorLingerUntil(
+        {
+          work: undefined,
+          nextWaitAtMs: nowMs + DEFAULT_ORCHESTRATOR_LINGER_MS + 1,
+          nowMs,
+          capMs: nowMs + 10 * DEFAULT_ORCHESTRATOR_LINGER_MS,
+        },
+        {}
+      )
+    ).toBeUndefined();
+    // Due past the inline deadline less its margin.
+    expect(
+      orchestratorLingerUntil(
+        {
+          work: undefined,
+          nextWaitAtMs: nowMs + waitInMs,
+          nowMs,
+          capMs: nowMs + waitInMs - 1,
+        },
+        {}
+      )
+    ).toBeUndefined();
+    // Off.
+    expect(
+      orchestratorLingerUntil(
+        { work: undefined, nextWaitAtMs: nowMs + waitInMs, nowMs, capMs },
+        { WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS: '0' }
+      )
+    ).toBeUndefined();
+    // No wait, no external work.
+    expect(
+      orchestratorLingerUntil(
+        { work: undefined, nextWaitAtMs: undefined, nowMs, capMs },
+        {}
+      )
+    ).toBeUndefined();
+  });
+
+  it('takes the later of the external window and the wait, capped', () => {
+    const hookMs = DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS;
+    // A wait due after the hook window extends the linger to it.
+    expect(
+      orchestratorLingerUntil(
+        { work: 'hook', nextWaitAtMs: nowMs + 2 * hookMs, nowMs, capMs },
+        {}
+      )
+    ).toEqual({
+      untilMs: nowMs + 2 * hookMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS,
+      forWait: true,
+    });
+    // A wait due within the step window keeps the step window.
+    expect(
+      orchestratorLingerUntil(
+        { work: 'step', nextWaitAtMs: nowMs + 1, nowMs, capMs },
+        {}
+      )
+    ).toEqual({
+      untilMs: nowMs + DEFAULT_ORCHESTRATOR_LINGER_MS,
+      forWait: false,
+    });
+    // The deadline caps the slack.
+    expect(
+      orchestratorLingerUntil(
+        {
+          work: undefined,
+          nextWaitAtMs: nowMs + 1_000,
+          nowMs,
+          capMs: nowMs + 1_000,
+        },
+        {}
+      )
+    ).toEqual({ untilMs: nowMs + 1_000, forWait: true });
+  });
+});
+
+describe('leftover timers of completed waits', () => {
+  const world = {} as never;
+  afterEach(() => __resetConsumedPositionsForTests(world));
+
+  it('knows the final timer of a wait this process completed', () => {
+    recordCompletedWait(world, 'wrun_a', 'wait_1');
+    expect(
+      isCompletedWaitTimer(world, 'wrun_a', { correlationId: 'wait_1' })
+    ).toBe(true);
+    // An intermediate hop still sends the next hop.
+    expect(
+      isCompletedWaitTimer(world, 'wrun_a', {
+        correlationId: 'wait_1',
+        resumeAtMs: 1,
+      })
+    ).toBe(false);
+    expect(
+      isCompletedWaitTimer(world, 'wrun_a', { correlationId: 'wait_2' })
+    ).toBe(false);
+    expect(
+      isCompletedWaitTimer(world, 'wrun_b', { correlationId: 'wait_1' })
+    ).toBe(false);
+  });
+
+  it('treats every delivery of a run that ended here as a no-op', () => {
+    recordConsumedPosition(world, 'wrun_a', { slot: 4 });
+    expect(
+      isNoopDelivery({ world, runId: 'wrun_a', tailSlot: 5, nowMs: 0 })
+    ).toBe(false);
+    recordTerminalRun(world, 'wrun_a');
+    expect(isTerminalRun(world, 'wrun_a')).toBe(true);
+    expect(
+      isNoopDelivery({ world, runId: 'wrun_a', tailSlot: 5, nowMs: 0 })
+    ).toBe(true);
   });
 });

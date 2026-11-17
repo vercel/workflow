@@ -141,9 +141,9 @@ import {
 } from './in-band-writer.js';
 import {
   getOrchestratorFeedPollIntervalMs,
-  getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
+  orchestratorLingerUntil,
 } from './live-feed.js';
 import {
   analyzeLogSteps,
@@ -2663,35 +2663,110 @@ export async function runWorkflowWithQuickJS(params: {
   };
 
   /**
-   * Keeps this delivery live while the run waits on work done elsewhere (see
-   * `getOrchestratorLingerMsFor`: the full window for a background step, the
-   * hook window for open hooks alone). `true` once the feed delivered an
-   * event or a wait fell due, so the loop takes another turn; `false` when
-   * the time ran out without either, or the live feed is not (or stops being)
-   * live.
+   * The open waits of `pendingOperations` this invocation has not completed,
+   * as timer candidates (`armWaitTimers`). An elapsed wait still gets a
+   * continuation (clamped to 1s).
+   */
+  const pendingWaitTimers = (pendingOperations: PendingOperation[]) => {
+    const now = Date.now();
+    const timers: {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[] = [];
+    for (const op of pendingOperations) {
+      if (op.type !== 'wait') continue;
+      const wait = op as PendingWait;
+      if (completedWaitIds2.has(wait.correlationId)) continue;
+      const resumeAtMs = new Date(wait.resumeAt).getTime();
+      timers.push({
+        correlationId: wait.correlationId,
+        resumeAtMs,
+        seconds: Math.max(1, Math.ceil((resumeAtMs - now) / 1000)),
+      });
+    }
+    return timers;
+  };
+
+  /**
+   * Arms, on a delivery that may hold a timer the queue coalesced into it a
+   * little before its wait was due (`armsNearDueWaits`), the timer of every
+   * wait due within the near-due window whatever chain it is in (see
+   * `getNearDueWaitWindowSeconds`), keyed so that the re-arms of one wait
+   * within a second are one message. The first delivery of a message (a
+   * wake that brought nothing new included) holds none.
+   */
+  const armNearDueWaitTimers = async (
+    waits: readonly {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[]
+  ): Promise<void> => {
+    if (!armsNearDueWaits) return;
+    const nearDueHorizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
+    for (const wait of waits) {
+      if (wait.resumeAtMs > nearDueHorizonMs) continue;
+      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+      scheduledWaitContinuations.add(wait.correlationId);
+      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
+        nearDue: true,
+      });
+      wfdiag('wait_continuation_scheduled', {
+        correlationId: wait.correlationId,
+        delaySeconds: wait.seconds,
+        nearDue: true,
+      });
+    }
+  };
+
+  /**
+   * Keeps this delivery live while the run waits on work done elsewhere, or
+   * on a wait due soon enough (see `orchestratorLingerUntil`: the full window
+   * for a background step, the hook window for open hooks alone, until the
+   * earliest open wait is due when it falls within the wait window and before
+   * the inline deadline). `true` once the feed delivered an event or a wait
+   * fell due, so the loop takes another turn, which completes the wait;
+   * `false` when the time ran out without either, or the live feed is not (or
+   * stops being) live.
+   *
+   * A linger taken for a wait arms the timers the exit sweep would first, so
+   * the wait is still woken if this invocation dies mid-sleep; the exit sweep
+   * then skips them (`scheduledWaitContinuations`).
    */
   const lingerForExternalWork = async (
     external: ExternalWork | undefined,
     pendingOperations: PendingOperation[]
   ): Promise<boolean> => {
-    const lingerMs = getOrchestratorLingerMsFor(external);
+    // A run another writer ended (a cancel) has nothing left to wait for.
     if (
-      lingerMs <= 0 ||
+      runEndSeen ||
       params.inlineDeadlineMs === undefined ||
       !world.events.subscribe ||
       !logView.tracking
     ) {
       return false;
     }
-    const untilMs = Math.min(
-      Date.now() + lingerMs,
-      params.inlineDeadlineMs - inlineMarginMs
-    );
-    if (untilMs <= Date.now()) return false;
+    const waits = pendingWaitTimers(pendingOperations);
+    const linger = orchestratorLingerUntil({
+      work: external,
+      nextWaitAtMs:
+        waits.length === 0
+          ? undefined
+          : Math.min(...waits.map((wait) => wait.resumeAtMs)),
+      nowMs: Date.now(),
+      capMs: params.inlineDeadlineMs - inlineMarginMs,
+    });
+    if (!linger) return false;
+    const { untilMs } = linger;
     ensureInlineFeed();
     if (!inlineFeed?.isLive) {
       wfdiag('linger', { outcome: 'feed-down', lingeredMs: 0 });
       return false;
+    }
+    if (linger.forWait) {
+      await armNearDueWaitTimers(waits);
+      await armWaitTimers(waits);
     }
     const fedBefore = fedEventCount;
     const startedAtMs = Date.now();
@@ -3739,22 +3814,7 @@ export async function runWorkflowWithQuickJS(params: {
     // `getNearDueWaitWindowSeconds`), keyed so that the re-arms of one wait
     // within a second are one message. The first delivery of a message
     // (a wake that brought nothing new included) holds none.
-    const nearDueHorizonMs = armsNearDueWaits
-      ? Date.now() + getNearDueWaitWindowSeconds() * 1000
-      : Number.NEGATIVE_INFINITY;
-    for (const wait of exitSweep) {
-      if (wait.resumeAtMs > nearDueHorizonMs) continue;
-      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
-      scheduledWaitContinuations.add(wait.correlationId);
-      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
-        nearDue: true,
-      });
-      wfdiag('wait_continuation_scheduled', {
-        correlationId: wait.correlationId,
-        delaySeconds: wait.seconds,
-        nearDue: true,
-      });
-    }
+    await armNearDueWaitTimers(exitSweep);
 
     if (
       exitSweep.some(
