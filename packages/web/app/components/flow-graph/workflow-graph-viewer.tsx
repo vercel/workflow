@@ -17,7 +17,16 @@ import {
 } from '@xyflow/react';
 import { useEffect, useMemo } from 'react';
 import '@xyflow/react/dist/style.css';
-import { Clock, Link2, PlayCircle, StopCircle, Zap } from 'lucide-react';
+import {
+  Bot,
+  Clock,
+  Diamond,
+  Link2,
+  PlayCircle,
+  StopCircle,
+  Wrench,
+  Zap,
+} from 'lucide-react';
 import './workflow-graph-viewer.css';
 import type {
   GraphNode,
@@ -430,13 +439,13 @@ export function getNodeIcon(nodeKind: string, label?: string) {
     return <Clock className="h-3.5 w-3.5 text-amber-900" />;
   }
   if (nodeKind === 'agent') {
-    return <span className="h-3.5 w-3.5 text-pink-900 text-xs">🤖</span>;
+    return <Bot className="h-3.5 w-3.5 text-pink-900" />;
   }
   if (nodeKind === 'tool') {
-    return <span className="h-3.5 w-3.5 text-purple-900 text-xs">🔧</span>;
+    return <Wrench className="h-3.5 w-3.5 text-purple-900" />;
   }
   if (nodeKind === 'conditional') {
-    return <span className="h-3.5 w-3.5 text-red-900 text-xs">◇</span>;
+    return <Diamond className="h-3.5 w-3.5 text-red-900" />;
   }
   // Default for steps - use Zap icon
   return <Zap className="h-3.5 w-3.5 text-green-900" />;

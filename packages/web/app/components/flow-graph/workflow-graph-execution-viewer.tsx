@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
-import { GitBranch, Loader2, X } from 'lucide-react';
+import { GitBranch, Loader2, RotateCw, Timer, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
 import { formatDuration, formatTimestamp } from '@workflow/web-shared';
 import { StatusBadge } from '~/components/display-utils/status-badge';
@@ -350,9 +350,10 @@ function renderNodeLabel(
         {hasRetries && (
           <Badge
             variant="outline"
-            className="text-xs px-1.5 py-0 border-amber-500 text-amber-900"
+            className="gap-1 text-xs px-1.5 py-0 border-amber-500 text-amber-900"
           >
-            ↻ {totalAttempts}x
+            <RotateCw className="size-3" aria-hidden />
+            {totalAttempts}x
           </Badge>
         )}
 
@@ -360,9 +361,10 @@ function renderNodeLabel(
         {latestExecution.duration && latestExecution.duration > 0 && (
           <Badge
             variant="secondary"
-            className="text-xs px-1.5 py-0 bg-gray-alpha-200 border-0"
+            className="gap-1 text-xs px-1.5 py-0 bg-gray-alpha-200 border-0"
           >
-            ⏱ {formatDuration(latestExecution.duration, true)}
+            <Timer className="size-3" aria-hidden />
+            {formatDuration(latestExecution.duration, true)}
           </Badge>
         )}
       </div>
