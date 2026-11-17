@@ -73,7 +73,9 @@ export function useHookActions({
         console.error('Failed to resolve hook:', err);
         toast.error('Failed to resolve hook', {
           description:
-            err instanceof Error ? err.message : 'An unknown error occurred',
+            err instanceof Error
+              ? err.message
+              : 'Something went wrong. Try again.',
         });
       } finally {
         setIsResolving(false);

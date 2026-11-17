@@ -205,7 +205,7 @@ export function EntityDetailPanel({
   const handleWakeUp = async () => {
     if (stoppingSleep || !resourceId) return;
     if (!onWakeUpSleep) {
-      toast.error('Unable to wake up sleep', {
+      toast.error('Couldn’t wake up sleep', {
         description: 'No wake-up handler provided.',
       });
       return;
@@ -228,7 +228,9 @@ export function EntityDetailPanel({
       console.error('Failed to wake up run:', err);
       toast.error('Failed to wake up run', {
         description:
-          err instanceof Error ? err.message : 'An unknown error occurred',
+          err instanceof Error
+            ? err.message
+            : 'Something went wrong. Try again.',
       });
     } finally {
       setStoppingSleep(false);
@@ -239,15 +241,15 @@ export function EntityDetailPanel({
     async (payload: unknown) => {
       if (resolvingHook) return;
       if (!onResolveHook) {
-        toast.error('Unable to resolve hook', {
+        toast.error('Couldn’t resolve hook', {
           description: 'No resolve handler provided.',
         });
         return;
       }
       if (!hookToken) {
-        toast.error('Unable to resolve hook', {
+        toast.error('Couldn’t resolve hook', {
           description:
-            'Missing hook token. Try refreshing the run data and retry.',
+            'The hook token is missing. Refresh the run data, then try again.',
         });
         return;
       }
@@ -269,7 +271,9 @@ export function EntityDetailPanel({
         console.error('Failed to resolve hook:', err);
         toast.error('Failed to resolve hook', {
           description:
-            err instanceof Error ? err.message : 'An unknown error occurred',
+            err instanceof Error
+              ? err.message
+              : 'Something went wrong. Try again.',
         });
       } finally {
         setResolvingHook(false);
