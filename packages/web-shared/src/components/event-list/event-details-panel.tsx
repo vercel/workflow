@@ -17,10 +17,10 @@ import {
   DetailMonoKeyValueRow,
 } from '../sidebar/attributes-block';
 import { serializeForClipboard } from '../sidebar/copyable-data-block';
-import { CopyButton } from '../trace-viewer/components/copy-button';
 import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell';
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
 import { Collapsible } from '../ui/collapsible';
+import { CopyButton } from '../ui/copy-button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { DecryptButton } from '../ui/decrypt-button';
 import {
@@ -139,7 +139,6 @@ function PayloadView({
         <CopyButton
           copyText={serializeForClipboard(cleaned)}
           ariaLabel="Copy payload"
-          className="flex h-6 w-6 items-center justify-center rounded-md p-0 hover:bg-gray-alpha-200"
         />
       }
     >

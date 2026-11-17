@@ -22,6 +22,7 @@ import {
 } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
+import { ExpiredDataNotice } from '../ui/expired-data-notice';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import {
@@ -176,48 +177,20 @@ function ConversationWithTabs({
           <ConversationView messages={conversation} />
         ) : (
           <div className="p-3">
-            {Array.isArray(args)
-              ? args.map((v, i) => (
-                  <div className="mt-2 first:mt-0" key={i}>
-                    {JsonBlock(v)}
-                  </div>
-                ))
-              : JsonBlock(args)}
+            {Array.isArray(args) ? (
+              args.map((v, i) => (
+                <div className="mt-2 first:mt-0" key={i}>
+                  <CopyableDataBlock data={v} />
+                </div>
+              ))
+            ) : (
+              <CopyableDataBlock data={args} />
+            )}
           </div>
         )}
       </TabbedContainer>
     </Collapsible>
   );
-}
-
-/**
- * Render a value with the shared DataInspector (ObjectInspector with
- * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
- */
-function EncryptedFieldBlock() {
-  return <EncryptedDataBlock />;
-}
-
-/**
- * Inline display for an expired field: flat label indicating data is no longer available.
- */
-function ExpiredFieldBlock() {
-  return (
-    <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-    >
-      <span className="font-medium">Data expired</span>
-    </div>
-  );
-}
-
-function JsonBlock(value: unknown) {
-  return <CopyableDataBlock data={value} />;
 }
 
 const hasDisplayContent = (value: unknown): boolean => {
@@ -513,7 +486,7 @@ const attributeToDisplayFn: Record<
     if (isExpiredMarker(value)) {
       return (
         <Collapsible label="Metadata">
-          <ExpiredFieldBlock />
+          <ExpiredDataNotice />
         </Collapsible>
       );
     }
@@ -527,11 +500,11 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNotice />;
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
       const { args, closureVars, thisVal } = value as {
@@ -557,12 +530,12 @@ const attributeToDisplayFn: Record<
               />
               {hasClosureVars && (
                 <Collapsible label="Closure Variables">
-                  {JsonBlock(closureVars)}
+                  <CopyableDataBlock data={closureVars} />
                 </Collapsible>
               )}
               {hasThisVal && (
                 <Collapsible label="This Value">
-                  {JsonBlock(thisVal)}
+                  <CopyableDataBlock data={thisVal} />
                 </Collapsible>
               )}
             </>
@@ -582,21 +555,25 @@ const attributeToDisplayFn: Record<
             defaultOpen={context?.sectionOpen}
             onOpenChange={context?.onSectionOpenChange}
           >
-            {Array.isArray(args)
-              ? args.map((v, i) => (
-                  <div className="mt-2 first:mt-0" key={i}>
-                    {JsonBlock(v)}
-                  </div>
-                ))
-              : JsonBlock(args)}
+            {Array.isArray(args) ? (
+              args.map((v, i) => (
+                <div className="mt-2 first:mt-0" key={i}>
+                  <CopyableDataBlock data={v} />
+                </div>
+              ))
+            ) : (
+              <CopyableDataBlock data={args} />
+            )}
           </Collapsible>
           {hasClosureVars && (
             <Collapsible label="Closure Variables">
-              {JsonBlock(closureVars)}
+              <CopyableDataBlock data={closureVars} />
             </Collapsible>
           )}
           {hasThisVal && (
-            <Collapsible label="Context">{JsonBlock(thisVal)}</Collapsible>
+            <Collapsible label="Context">
+              <CopyableDataBlock data={thisVal} />
+            </Collapsible>
           )}
         </>
       );
@@ -612,13 +589,15 @@ const attributeToDisplayFn: Record<
         defaultOpen={context?.sectionOpen}
         onOpenChange={context?.onSectionOpenChange}
       >
-        {Array.isArray(value)
-          ? value.map((v, i) => (
-              <div className="mt-2 first:mt-0" key={i}>
-                {JsonBlock(v)}
-              </div>
-            ))
-          : JsonBlock(value)}
+        {Array.isArray(value) ? (
+          value.map((v, i) => (
+            <div className="mt-2 first:mt-0" key={i}>
+              <CopyableDataBlock data={v} />
+            </div>
+          ))
+        ) : (
+          <CopyableDataBlock data={value} />
+        )}
       </Collapsible>
     );
   },
@@ -630,19 +609,19 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
     if (!hasDisplayContent(value)) return null;
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNotice />;
     return (
       <Collapsible
         label="Output"
         defaultOpen={context?.sectionOpen}
         onOpenChange={context?.onSectionOpenChange}
       >
-        {JsonBlock(value)}
+        <CopyableDataBlock data={value} />
       </Collapsible>
     );
   },
@@ -650,11 +629,11 @@ const attributeToDisplayFn: Record<
     if (isEncryptedMarker(value)) {
       return (
         <Collapsible label="Error" defaultOpen>
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNotice />;
     if (!hasDisplayContent(value)) return null;
 
     // Structured workflow errors may be persisted as either `{ message }` or
@@ -669,7 +648,7 @@ const attributeToDisplayFn: Record<
 
     return (
       <Collapsible label="Error" defaultOpen>
-        {JsonBlock(value)}
+        <CopyableDataBlock data={value} />
       </Collapsible>
     );
   },
@@ -677,15 +656,15 @@ const attributeToDisplayFn: Record<
     if (isEncryptedMarker(value)) {
       return (
         <Collapsible label="Event Data" defaultOpen>
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNotice />;
     if (!hasDisplayContent(value)) return null;
     return (
       <Collapsible label="Event Data" defaultOpen>
-        {JsonBlock(value)}
+        <CopyableDataBlock data={value} />
       </Collapsible>
     );
   },
@@ -718,11 +697,11 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNotice />;
     if (typeof value !== 'string' || value.trim().length === 0) return null;
     return (
       <Collapsible
@@ -736,6 +715,8 @@ const attributeToDisplayFn: Record<
   },
 };
 
+// Attributes rendered as their own collapsible sections (resolved lazily).
+// Each displayFn draws its own section header, so AttributeBlock adds none.
 const resolvableAttributes = [
   'input',
   'output',
@@ -745,31 +726,6 @@ const resolvableAttributes = [
   'eventData',
   'dynamicWorkflowCode',
 ];
-
-// Attributes whose displayFn renders its own section header via Collapsible,
-// so the outer AttributeBlock should not duplicate the label.
-const selfHeaderedAttributes = new Set([
-  'input',
-  'output',
-  'error',
-  'metadata',
-  'attributes',
-  'eventData',
-  'dynamicWorkflowCode',
-]);
-
-const ExpiredDataMessage = () => (
-  <div
-    className="text-label-12 rounded-md border p-4 my-2"
-    style={{
-      borderColor: 'var(--ds-gray-300)',
-      backgroundColor: 'var(--ds-gray-100)',
-      color: 'var(--ds-gray-700)',
-    }}
-  >
-    <span>The data for this run has expired and is no longer available.</span>
-  </div>
-);
 
 const copyableBasicAttributes = new Set<AttributeKey>([
   'stepId',
@@ -789,17 +745,15 @@ const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
   dynamicWorkflowCode: 'Workflow Code',
 };
 
-export const AttributeBlock = ({
+const AttributeBlock = ({
   attribute,
   value,
   isLoading,
-  inline = false,
   context,
 }: {
   attribute: string;
   value: unknown;
   isLoading?: boolean;
-  inline?: boolean;
   context?: DisplayContext;
 }) => {
   const decryptCtx = useContext(DecryptClickContext);
@@ -816,7 +770,7 @@ export const AttributeBlock = ({
           defaultOpen={attribute === 'eventData' || sectionOpenRef.current}
           onOpenChange={handleSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataBlock />
         </Collapsible>
       );
     }
@@ -833,53 +787,7 @@ export const AttributeBlock = ({
     sectionOpen: sectionOpenRef.current,
     onSectionOpenChange: handleSectionOpenChange,
   });
-  if (!displayValue) {
-    return null;
-  }
-
-  if (inline) {
-    return (
-      <div className="flex items-center gap-1.5">
-        <span
-          className="text-[11px] font-medium"
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
-          {attribute}
-        </span>
-        <span className="text-[11px]" style={{ color: 'var(--ds-gray-1000)' }}>
-          {displayValue}
-        </span>
-      </div>
-    );
-  }
-
-  if (selfHeaderedAttributes.has(attribute)) {
-    return <>{displayValue}</>;
-  }
-
-  return (
-    <div className="relative">
-      {typeof isLoading === 'boolean' && isLoading && (
-        <div className="absolute top-9 right-4">
-          <div
-            className="animate-spin rounded-full h-4 w-4 border-b-2"
-            style={{ borderColor: 'var(--ds-gray-900)' }}
-          />
-        </div>
-      )}
-      <div key={attribute} className="my-2 flex flex-col gap-0">
-        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
-          {attribute}
-        </span>
-        <span
-          className="text-label-12"
-          style={{ color: 'var(--ds-gray-1000)' }}
-        >
-          {displayValue}
-        </span>
-      </div>
-    </div>
-  );
+  return displayValue;
 };
 
 export const AttributePanel = ({
@@ -1072,7 +980,9 @@ export const AttributePanel = ({
                 className="my-4"
               />
             ) : hasExpired ? (
-              <ExpiredDataMessage />
+              <ExpiredDataNotice className="my-2">
+                The data for this run has expired and is no longer available.
+              </ExpiredDataNotice>
             ) : resolvedAttributes.length > 0 ? (
               resolvedAttributes.map((attribute) => (
                 <AttributeBlock
