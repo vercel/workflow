@@ -5,21 +5,21 @@ import {
   type Event,
   type Hook,
   isTerminalWorkflowRunStatus,
-  type WorkflowRun,
 } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
+import { HookResolveModalWrapper, useHookActions } from '../hook-actions';
 import { Button } from '../ui/button';
-import { DecryptClickContext } from '../ui/data-inspector';
+import {
+  DecryptClickContext,
+  type DecryptClickContextValue,
+} from '../ui/data-inspector';
 import { Spinner } from '../ui/spinner';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
-import { ResolveHookModal } from './resolve-hook-modal';
-import { useSidebarDataOptional } from './sidebar-data-context';
-import {
-  type FetchSpanDetail,
-  useSelectedSpanDetail,
-} from './use-selected-span-detail';
+import { useSidebarData } from './sidebar-data-context';
+import { getSpanEntityName } from './span-name';
+import { useSelectedSpanDetail } from './use-selected-span-detail';
 
 // Type guard for runtime validation of span attribute data
 function isHook(data: unknown): data is Hook {
@@ -55,78 +55,62 @@ export interface SelectedSpanInfo {
 }
 
 /**
- * Panel component for workflow traces that displays entity details.
- *
- * This component is rendered OUTSIDE the trace viewer context: it
- * receives all data via props rather than reading from context.
+ * The selected span's details: pending actions (wake a sleep, resolve a
+ * hook), its attributes and its events. Everything but the selection comes
+ * from `SidebarDataContext`. It renders no scroll container of its own: the
+ * surrounding `DetailPanelShell` body scrolls.
  */
 export function EntityDetailPanel({
-  run,
-  onStreamClick,
-  onRunClick,
-  fetchSpanDetail,
-  onWakeUpSleep,
-  onLoadEventData,
-  onResolveHook,
-  encryptionKey,
-  onDecrypt,
-  isDecrypting = false,
-  isDecryptDisabled = false,
-  decryptDisabledReason,
   selectedSpan,
-  showSeparateEventOccurrenceTimestamps = false,
-  getModuleSourceUrl,
 }: {
-  run: WorkflowRun;
-  /** Callback when a stream reference is clicked */
-  onStreamClick?: (streamId: string) => void;
-  /** Callback when a run reference is clicked */
-  onRunClick?: (runId: string) => void;
-  fetchSpanDetail: FetchSpanDetail;
-  /** Callback to wake up a pending sleep call. */
-  onWakeUpSleep?: (
-    runId: string,
-    correlationId: string
-  ) => Promise<{ stoppedCount: number }>;
-  /** Callback to load event data for a specific event (lazy loading) */
-  onLoadEventData?: (event: Event) => Promise<unknown | null>;
-  /** Callback to resolve a hook with a payload. */
-  onResolveHook?: (
-    hookToken: string,
-    payload: unknown,
-    hook?: Hook
-  ) => Promise<void>;
-  /** Encryption key (available after Decrypt is clicked), used to re-load event data */
-  encryptionKey?: Uint8Array;
-  /** Callback to initiate decryption of encrypted run data */
-  onDecrypt?: () => void;
-  /** Whether the encryption key is currently being fetched */
-  isDecrypting?: boolean;
-  /** Whether decryption is unavailable */
-  isDecryptDisabled?: boolean;
-  /** Explains why decryption is unavailable */
-  decryptDisabledReason?: string;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
-  /** Show occurredAt separately instead of folding it into the Created timestamp. */
-  showSeparateEventOccurrenceTimestamps?: boolean;
-  getModuleSourceUrl?: (info: {
-    moduleSpecifier: string;
-    deploymentId: string;
-  }) => string | undefined;
 }): React.JSX.Element | null {
+  const {
+    run,
+    onStreamClick,
+    onRunClick,
+    fetchSpanDetail,
+    onWakeUpSleep,
+    onLoadEventData,
+    onResolveHook,
+    encryptionKey,
+    onDecrypt,
+    isDecrypting = false,
+    isDecryptDisabled = false,
+    decryptDisabledReason,
+    hasEncryptedData: runHasEncryptedData,
+    showSeparateEventOccurrenceTimestamps = false,
+    getModuleSourceUrl,
+  } = useSidebarData();
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
-  const [showResolveHookModal, setShowResolveHookModal] = useState(false);
-  const [resolvingHook, setResolvingHook] = useState(false);
   // Track hooks that were resolved in this session so the button hides
   // immediately without waiting for the next event poll.
   const [resolvedHookIds, setResolvedHookIds] = useState<Set<string>>(
     new Set()
   );
 
-  const sidebar = useSidebarDataOptional();
-  const hasEncryptedData = Boolean(sidebar?.hasEncryptedData && !encryptionKey);
+  const hasEncryptedData = Boolean(runHasEncryptedData && !encryptionKey);
+  const decryptContext = useMemo<DecryptClickContextValue | undefined>(
+    () =>
+      onDecrypt
+        ? {
+            onDecrypt,
+            isDecrypting,
+            isDecryptDisabled,
+            decryptDisabledReason,
+            hasEncryptedData,
+          }
+        : undefined,
+    [
+      onDecrypt,
+      isDecrypting,
+      isDecryptDisabled,
+      decryptDisabledReason,
+      hasEncryptedData,
+    ]
+  );
 
   const data = selectedSpan?.data;
   const rawEvents = selectedSpan?.rawEvents;
@@ -180,19 +164,46 @@ export function EntityDetailPanel({
     resolvedHookIds,
   ]);
 
-  // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
-  const hookToken = useMemo(() => {
+  // The hook to resolve, carrying the token to resolve it with: prefer the
+  // fetched detail, then the span's inline data (rebuilt from hook_created).
+  const hookToResolve = useMemo((): Hook | undefined => {
     if (resource !== 'hook' || !resourceId) return undefined;
-    // 1. Try the externally-fetched detail data first
-    if (isHook(matchedSpanDetailData) && matchedSpanDetailData.token) {
-      return matchedSpanDetailData.token;
-    }
-    // 2. Try the span's inline data (reconstructed from hook_created event)
-    if (isHook(data) && (data as Hook).token) {
-      return (data as Hook).token;
-    }
-    return undefined;
+    const detailHook = isHook(matchedSpanDetailData)
+      ? matchedSpanDetailData
+      : undefined;
+    const inlineHook = isHook(data) ? data : undefined;
+    const token = detailHook?.token || inlineHook?.token;
+    const hook = detailHook ?? inlineHook;
+    return hook && token ? { ...hook, token } : undefined;
   }, [resource, resourceId, matchedSpanDetailData, data]);
+
+  const resolveHook = useCallback(
+    async (hook: Hook, payload: unknown) => {
+      if (!onResolveHook) return;
+      await onResolveHook(hook.token, payload, hook);
+      // Mark this hook as resolved locally so the button hides immediately
+      setResolvedHookIds((prev) => new Set(prev).add(hook.hookId));
+    },
+    [onResolveHook]
+  );
+  const hookActions = useHookActions({ onResolve: resolveHook });
+
+  const openResolveHookModal = () => {
+    if (!onResolveHook) {
+      toast.error('Unable to resolve hook', {
+        description: 'No resolve handler provided.',
+      });
+      return;
+    }
+    if (!hookToResolve) {
+      toast.error('Unable to resolve hook', {
+        description:
+          'Missing hook token. Try refreshing the run data and retry.',
+      });
+      return;
+    }
+    hookActions.openResolveModal(hookToResolve);
+  };
 
   useEffect(() => {
     if (error && selectedSpan && resource) {
@@ -235,64 +246,9 @@ export function EntityDetailPanel({
     }
   };
 
-  const handleResolveHook = useCallback(
-    async (payload: unknown) => {
-      if (resolvingHook) return;
-      if (!onResolveHook) {
-        toast.error('Unable to resolve hook', {
-          description: 'No resolve handler provided.',
-        });
-        return;
-      }
-      if (!hookToken) {
-        toast.error('Unable to resolve hook', {
-          description:
-            'Missing hook token. Try refreshing the run data and retry.',
-        });
-        return;
-      }
-
-      try {
-        setResolvingHook(true);
-        const candidate = matchedSpanDetailData ?? data;
-        const hook = isHook(candidate) ? candidate : undefined;
-        await onResolveHook(hookToken, payload, hook);
-        toast.success('Hook resolved', {
-          description: 'The payload has been sent and the hook resolved.',
-        });
-        setShowResolveHookModal(false);
-        // Mark this hook as resolved locally so the button hides immediately
-        if (resourceId) {
-          setResolvedHookIds((prev) => new Set(prev).add(resourceId));
-        }
-      } catch (err) {
-        console.error('Failed to resolve hook:', err);
-        toast.error('Failed to resolve hook', {
-          description:
-            err instanceof Error ? err.message : 'An unknown error occurred',
-        });
-      } finally {
-        setResolvingHook(false);
-      }
-    },
-    [onResolveHook, hookToken, resolvingHook, matchedSpanDetailData, data]
-  );
-
-  const moduleSpecifier = useMemo(() => {
-    const displayRecord = displayData as Record<string, unknown>;
-    const displayStepName = displayRecord.stepName;
-    const displayWorkflowName = displayRecord.workflowName;
-    if (typeof displayStepName === 'string') {
-      return displayStepName;
-    }
-    if (typeof displayWorkflowName === 'string') {
-      return displayWorkflowName;
-    }
-    if (typeof run.workflowName === 'string') {
-      return run.workflowName;
-    }
-    return undefined;
-  }, [displayData, run.workflowName]);
+  const moduleSpecifier =
+    getSpanEntityName(displayData) ??
+    (typeof run.workflowName === 'string' ? run.workflowName : undefined);
 
   const moduleSourceUrl = useMemo(() => {
     if (!getModuleSourceUrl || !moduleSpecifier) return undefined;
@@ -318,21 +274,9 @@ export function EntityDetailPanel({
     (resource === 'hook' && canResolveHook);
 
   return (
-    <div className="flex h-full flex-col">
-      <DecryptClickContext.Provider
-        value={
-          onDecrypt
-            ? {
-                onDecrypt,
-                isDecrypting,
-                isDecryptDisabled,
-                decryptDisabledReason,
-                hasEncryptedData,
-              }
-            : undefined
-        }
-      >
-        <div className="flex-1 overflow-y-auto px-4 pb-8">
+    <>
+      <DecryptClickContext.Provider value={decryptContext}>
+        <div className="px-4 pb-8">
           {hasPendingActions && (
             <div className="mb-4 flex flex-col gap-2">
               {/* Wake up button for pending sleep calls */}
@@ -356,11 +300,11 @@ export function EntityDetailPanel({
                   variant="secondary"
                   size="small"
                   className="w-full"
-                  onClick={() => setShowResolveHookModal(true)}
-                  disabled={resolvingHook}
-                  aria-busy={resolvingHook}
+                  onClick={openResolveHookModal}
+                  disabled={hookActions.isResolving}
+                  aria-busy={hookActions.isResolving}
                 >
-                  {resolvingHook ? <Spinner size={16} /> : null}
+                  {hookActions.isResolving ? <Spinner size={16} /> : null}
                   Resolve Hook
                 </Button>
               )}
@@ -376,10 +320,6 @@ export function EntityDetailPanel({
             error={error ?? undefined}
             onStreamClick={onStreamClick}
             onRunClick={onRunClick}
-            onDecrypt={onDecrypt}
-            isDecrypting={isDecrypting}
-            isDecryptDisabled={isDecryptDisabled}
-            decryptDisabledReason={decryptDisabledReason}
             resource={resource}
           />
 
@@ -399,13 +339,7 @@ export function EntityDetailPanel({
         </div>
       </DecryptClickContext.Provider>
 
-      {/* Resolve Hook Modal */}
-      <ResolveHookModal
-        isOpen={showResolveHookModal}
-        onClose={() => setShowResolveHookModal(false)}
-        onSubmit={handleResolveHook}
-        isSubmitting={resolvingHook}
-      />
-    </div>
+      <HookResolveModalWrapper hookActions={hookActions} />
+    </>
   );
 }
