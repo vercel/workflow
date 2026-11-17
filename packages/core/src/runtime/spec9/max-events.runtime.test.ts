@@ -142,6 +142,19 @@ describe.each([
     expect(eventsOf(world, 'hook_created')).toHaveLength(1);
   });
 
+  it('does not count sealed noops on a later delivery', async () => {
+    const maxEvents = (await firstDeliveryEventCount()) + 10;
+    const { world } = await setup({ maxEvents });
+    await world.runUntilIdle();
+    for (let i = 0; i < maxEvents; i++) {
+      world.appendOutOfBand({ eventType: 'noop' } as Partial<Event>);
+    }
+    await resumeHook('loop-0', { value: 0 });
+    await world.runUntilIdle();
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'hook_created')).toHaveLength(2);
+  });
+
   it('keeps running against a World that reports the ceiling on run_started only', async () => {
     const maxEvents = (await firstDeliveryEventCount()) + 1;
     const { world } = await setup({ maxEvents, maxEventsOnStartOnly: true });
