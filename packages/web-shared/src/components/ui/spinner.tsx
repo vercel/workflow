@@ -1,7 +1,7 @@
 import type * as React from 'react';
 import { cn } from '../../lib/cn';
 
-/** geistcn's named spinner sizes, in pixels. */
+/** Named spinner sizes, in pixels. */
 const NAMED_SIZES = {
   sm: 12,
   md: 16,
@@ -18,7 +18,7 @@ export type SpinnerProps = Omit<
   React.HTMLAttributes<HTMLSpanElement>,
   'color'
 > & {
-  /** A geistcn size name (`sm` is 12px, `md` 16px, …) or a size in pixels. */
+  /** A size name (`sm` is 12px, `md` 16px, …) or a size in pixels. */
   size?: SpinnerSize | number;
   /**
    * Line colour. Prefer a text colour class in `className`: the lines paint
@@ -31,9 +31,9 @@ export type SpinnerProps = Omit<
  * Spinner matching Geist's multi-line fade spinner.
  * At size ≤12: 8 lines, ≤16: 10 lines, else: 12 lines.
  *
- * The fade uses geistcn's `spinner-opacity` keyframes, which the Vercel
- * dashboard already ships and our `styles.css` defines for everyone else, so
- * nothing is injected at render time.
+ * The fade uses the `spinner-opacity` keyframes defined in `styles.css` (the
+ * same name and frames as the dashboard's design system), so nothing is
+ * injected at render time.
  */
 export function Spinner({
   size = 14,
@@ -72,7 +72,7 @@ export function Spinner({
           };
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: geistcn's Spinner is a status region too; <output> is a form control
+    // biome-ignore lint/a11y/useSemanticElements: a spinner is a status region; <output> is a form control
     <span
       role="status"
       aria-label="Loading"

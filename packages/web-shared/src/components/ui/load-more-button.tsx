@@ -12,7 +12,7 @@ interface LoadMoreButtonProps {
 
 /**
  * A "Load more" button: a small secondary `Button` that shows a spinner while
- * loading, as geistcn's LoadMoreButton does.
+ * loading.
  */
 export function LoadMoreButton({
   loading = false,

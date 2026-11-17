@@ -884,8 +884,8 @@
   }
 }
 
-/* Spinner fade. Same name and frames as geistcn's, so the Vercel dashboard's
-   copy and this one are interchangeable. */
+/* Spinner fade. Same name and frames as the dashboard design system's
+   keyframes, so either definition works. */
 @keyframes spinner-opacity {
   0% {
     opacity: 1;
