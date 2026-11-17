@@ -21,6 +21,7 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  isSealedNoopEvent,
   parseWorldCapabilities,
   ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
@@ -687,14 +688,25 @@ export function withReplayDelta(
  * @param options.specVersion - The run's spec version, handed to every page
  *   read as `ListEventsParams.specVersion`. The spec 9 orchestrator passes it
  *   so the World reads from where the fence `snapshot` is reported.
+ * @param options.eventLimit - Maps the World's reported
+ *   {@link EventListResponse.maxEvents} to the ceiling the caller enforces.
+ *   When given, the load stops following `hasMore` once it holds that many
+ *   workflow events (sealed `noop`s are not counted): a run already past its
+ *   ceiling fails on what it holds, rather than reading its whole log first.
+ *   The returned log then ends at its cursor with more events after it.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
   afterCursor?: string,
-  options?: { signal?: AbortSignal; specVersion?: number }
+  options?: {
+    signal?: AbortSignal;
+    specVersion?: number;
+    eventLimit?: (maxEvents: number | undefined) => number | undefined;
+  }
 ): Promise<LoadedEventLog> {
   const signal = options?.signal;
   const specVersion = options?.specVersion;
+  const eventLimit = options?.eventLimit;
   const incremental = afterCursor !== undefined;
   return trace('workflow.replay.load', async (span) => {
     span?.setAttributes({
@@ -709,6 +721,8 @@ export async function loadWorkflowRunEvents(
     // the sequencer state the listing as a whole covers.
     let snapshot: EventLogSnapshot | undefined;
     let snapshotTaken = false;
+    let maxEvents: number | undefined;
+    let workflowEventCount = 0;
     const loadedEventIds = new Set<string>();
     const requestedCursors = new Set<string>();
     let cursor: string | null = afterCursor ?? null;
@@ -755,6 +769,7 @@ export async function loadWorkflowRunEvents(
           loadedEventIds.clear();
           snapshotTaken = false;
           snapshot = undefined;
+          workflowEventCount = 0;
           requestedCursors.clear();
           cursor = null;
           retriedWithoutCursor = true;
@@ -767,7 +782,14 @@ export async function loadWorkflowRunEvents(
         snapshotTaken = true;
         snapshot = response.snapshot;
       }
+      maxEvents = response.maxEvents ?? maxEvents;
+      const before = loadedEvents.length;
       appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      if (eventLimit) {
+        for (let i = before; i < loadedEvents.length; i++) {
+          if (!isSealedNoopEvent(loadedEvents[i])) workflowEventCount++;
+        }
+      }
       hasMore = response.hasMore;
       assertEventPaginationProgress(
         runId,
@@ -795,6 +817,16 @@ export async function loadWorkflowRunEvents(
         hasMore,
         pageMs: Date.now() - pageStart,
       });
+
+      const limit = eventLimit?.(maxEvents);
+      if (hasMore && limit !== undefined && workflowEventCount >= limit) {
+        runtimeLogger.debug('Event load stopped at the run event ceiling', {
+          workflowRunId: runId,
+          totalEvents: loadedEvents.length,
+          limit,
+        });
+        break;
+      }
     }
 
     runtimeLogger.debug('Event load complete', {
@@ -810,9 +842,12 @@ export async function loadWorkflowRunEvents(
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
     });
 
-    return snapshot === undefined
-      ? { events: loadedEvents, cursor }
-      : { events: loadedEvents, cursor, snapshot };
+    return {
+      events: loadedEvents,
+      cursor,
+      ...(snapshot !== undefined ? { snapshot } : {}),
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+    };
   });
 }
 
@@ -829,6 +864,11 @@ export interface LoadedEventLog {
    * returned one. Absent on incremental loads.
    */
   snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling the World reported on the load
+   * ({@link EventListResponse.maxEvents}), when it did.
+   */
+  maxEvents?: number;
 }
 
 /**

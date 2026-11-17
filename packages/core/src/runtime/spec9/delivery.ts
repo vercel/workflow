@@ -879,12 +879,18 @@ async function runDelivery(
     const loaded = await writer.exclusive(async () => {
       const read = await loadWorkflowRunEvents(runId, undefined, {
         specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        // A run past its ceiling fails on the first `limit` events
+        // (the guard in the loop), so the rest are not read.
+        eventLimit: clampMaxEvents,
       });
       // Throws a World contract error for a log without a
       // snapshot, except a resilient start's empty one.
       writer.adoptSnapshot(requireLoadSnapshot(runId, read));
       return read;
     });
+    if (loaded.maxEvents !== undefined) {
+      maxEventsLimit = clampMaxEvents(loaded.maxEvents);
+    }
     for (const event of loaded.events) {
       prepareReplayEvent(event);
     }
@@ -930,8 +936,9 @@ async function runDelivery(
   };
 
   let workflowRun: WorkflowRun | undefined;
-  // Server-supplied per-run event ceiling, from the
-  // `run_started` response of the delivery that wrote it.
+  // The World's per-run event ceiling: from every full load
+  // when the World reports it there, and from the `run_started`
+  // response of the delivery that wrote it.
   let maxEventsLimit: number | undefined = clampMaxEvents(undefined);
   let workflowStartedAt = -1;
   // Latency telemetry (TTFS / STSO / RSFS), see
@@ -2855,6 +2862,25 @@ async function runDelivery(
       return false;
     };
 
+    /** Throws `MaxEventsExceededError` for a log at the run's ceiling. */
+    const enforceEventLimit = (events: readonly Event[]): void => {
+      if (maxEventsLimit === undefined) return;
+      const workflowEventCount = events.reduce(
+        (n, e) => (isSealedNoopEvent(e) ? n : n + 1),
+        0
+      );
+      if (workflowEventCount >= maxEventsLimit) {
+        throw new MaxEventsExceededError(workflowEventCount, maxEventsLimit);
+      }
+      maybeWarnApproachingEventLimit({
+        runId,
+        workflowName,
+        eventCount: workflowEventCount,
+        limit: maxEventsLimit,
+        isQuickJS: false,
+      });
+    };
+
     // Main loop: replay, decide, write, run inline steps.
     try {
       while (true) {
@@ -2901,6 +2927,10 @@ async function runDelivery(
             await repairRunAhead();
           }
           flushPending();
+          // A delivery whose load already reached the ceiling (a load
+          // stops there, see `fullLoad`) fails before it reads or
+          // writes anything more.
+          if (loopIteration === 1) enforceEventLimit(log.events);
           if (logBehind) await loadAfter();
           assert(log, 'The event log is loaded in the loop');
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
@@ -2997,25 +3027,7 @@ async function runDelivery(
             return undefined;
           }
 
-          if (maxEventsLimit !== undefined) {
-            const workflowEventCount = log.events.reduce(
-              (n, e) => (isSealedNoopEvent(e) ? n : n + 1),
-              0
-            );
-            if (workflowEventCount >= maxEventsLimit) {
-              throw new MaxEventsExceededError(
-                workflowEventCount,
-                maxEventsLimit
-              );
-            }
-            maybeWarnApproachingEventLimit({
-              runId,
-              workflowName,
-              eventCount: workflowEventCount,
-              limit: maxEventsLimit,
-              isQuickJS: false,
-            });
-          }
+          enforceEventLimit(log.events);
 
           runtimeLogger.debug('Starting workflow execution', {
             workflowRunId: runId,
