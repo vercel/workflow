@@ -1,5 +1,42 @@
 # @workflow/core
 
+## 5.6.1
+
+### Patch Changes
+
+- [#5426](https://github.com/vercel/workflow/pull/5426) [`bb100a9`](https://github.com/vercel/workflow/commit/bb100a9decb69483bb9342dc1062b0c3118b0763) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Name the attempt that never recorded a result in a step's "exceeded max retries" error
+
+- [#5263](https://github.com/vercel/workflow/pull/5263) [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1) Thanks [@pranaygp](https://github.com/pranaygp)! - Mint the compute instance id on first use instead of at module load, so the runtime can be loaded where random values are forbidden in global scope (Cloudflare Workers).
+
+- [#5285](https://github.com/vercel/workflow/pull/5285) [`f957b8e`](https://github.com/vercel/workflow/commit/f957b8ea5de0d155c02b5c6c4cbf474556971ede) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix an unhandled rejection that could end the process when a stream passed across a workflow boundary (a step return value, a workflow argument, or a stream written into `getWritable()`) failed before its pipe was awaited, such as a returned `fetch()` body whose socket closed (`TypeError: terminated`). The pipe's error still surfaces to the runtime's stream-op handling.
+
+- [#4910](https://github.com/vercel/workflow/pull/4910) [`d18aff2`](https://github.com/vercel/workflow/commit/d18aff22acec8a3f57237e58624d7a4d25ca7eed) Thanks [@dretanacr](https://github.com/dretanacr)! - Fix a run stalling after a failed inline step attempt when a queued delivery of the same step was waiting on it in the same process: the inline retry was folded into that delivery's message, which then acked as skipped. The waiting delivery now carries the retry.
+
+- [#5263](https://github.com/vercel/workflow/pull/5263) [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `setPrecompiledQuickJSModules()` to `@workflow/core/runtime`, so a host whose runtime forbids compiling WebAssembly from bytes (Cloudflare Workers) can hand the QuickJS engine modules compiled at deploy time.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5506](https://github.com/vercel/workflow/pull/5506) [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a bug where spec 9 runs inconsistently enforced the max events per run limit
+
+- [#5410](https://github.com/vercel/workflow/pull/5410) [`b1f9269`](https://github.com/vercel/workflow/commit/b1f92691bcc3bc18b9df094d45379c6464cf4d65) Thanks [@benpankow](https://github.com/benpankow)! - Rebuild state passed between steps by reference with one copy per changed container per step result, and plain assignment instead of `Object.defineProperty`, so replaying a long run spends far less time rehydrating step results.
+
+- [#4334](https://github.com/vercel/workflow/pull/4334) [`021723b`](https://github.com/vercel/workflow/commit/021723bc679a0788332e6ebba9d58da55ba4333c) Thanks [@pranaygp](https://github.com/pranaygp)! - Fail a live stream read with a `StreamError` naming the index when consecutive reads stall at a chunk the stream reports but never serves, instead of reconnecting to it until the reconnect budget runs out
+
+- [#5402](https://github.com/vercel/workflow/pull/5402) [`87cde0b`](https://github.com/vercel/workflow/commit/87cde0b52c59bded6ce98a87aef5c2582ac6b19c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Update `quickjs-wasi` to 3.7.0 (QuickJS-NG v0.18.0). The QuickJS runtime now reads engine-captured Error stacks through the `Error.prototype.stack` accessor, so errors thrown from workflows keep their stack traces.
+
+- [#5443](https://github.com/vercel/workflow/pull/5443) [`e4ec16f`](https://github.com/vercel/workflow/commit/e4ec16f9b2aa092782bbd43c9f9fc50083f926f5) Thanks [@benpankow](https://github.com/benpankow)! - Skip loading `@vercel/functions` for `waitUntil` outside Vercel, where it has no request context to extend. A local or self-hosted process's first `start()` no longer evaluates the whole module.
+- Updated dependencies [[`e6a3975`](https://github.com/vercel/workflow/commit/e6a3975c953b366497c29749d7f1ab2e7c17732c), [`24d000a`](https://github.com/vercel/workflow/commit/24d000a31a685bc1c430132e20824521985e455e), [`eb47074`](https://github.com/vercel/workflow/commit/eb4707435329ba0dd9a10501db14354275058673), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/world-local@5.4.1
+  - @workflow/world-vercel@5.6.1
+  - @workflow/errors@5.1.3
+  - @workflow/serde@5.0.1
+  - @workflow/utils@5.1.1
+  - @workflow/world@5.2.2
+
 ## 5.6.0
 
 ### Patch Changes

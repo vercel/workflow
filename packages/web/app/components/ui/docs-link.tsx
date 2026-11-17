@@ -1,7 +1,6 @@
+import { cn } from '@workflow/web-shared';
 import * as React from 'react';
 import { Link } from 'react-router';
-
-import { cn } from '~/lib/utils';
 
 export interface DocsLinkProps
   extends React.AnchorHTMLAttributes<HTMLAnchorElement> {

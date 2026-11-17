@@ -1,5 +1,26 @@
 # @workflow/world-postgres
 
+## 5.3.0
+
+### Minor Changes
+
+- [#5397](https://github.com/vercel/workflow/pull/5397) [`90e8d72`](https://github.com/vercel/workflow/commit/90e8d723b9fd1873270916f8a20b715ed33455f8) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `deploymentId` (`WORKFLOW_POSTGRES_DEPLOYMENT_ID`), which pins every run to the deployment that started it. Each deployment claims and recovers only its own runs, a message for another deployment's run (such as a hook resumed from a newer deployment) is routed to that deployment's jobs, `getDeploymentId()` returns it, and the World declares deployment affinity. Runs started without it stay on the unpinned task, which a process without `deploymentId` claims.
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5435](https://github.com/vercel/workflow/pull/5435) [`be8a7ce`](https://github.com/vercel/workflow/commit/be8a7ce296d3654be5e1df18f86195a58abc0ddf) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Serialize a spec 9 run's orchestrator deliveries, and invoke mode's executor deliveries, with a per-run delivery lease (`workflow.workflow_run_delivery_leases`, migration 0031) in place of a Graphile named queue per run. Graphile never deletes a named queue's row, and its job fetch locks every available queue row on each poll, so throughput fell as runs accumulated: about 1,200 jobs/s at 1,000 queue rows, 60 at 52,000 and 7 at 302,000, against about 4,500 for jobs outside named queues. A lease row exists only while a delivery holds it. A delivery that finds the run's lease held leaves its message for the holder, which re-runs for it (coalescing) or re-adds it as a job when it releases. Run `bootstrap` before upgrading. During a rolling upgrade, deliveries of processes on the earlier version are not serialized with those of upgraded processes; the in-band fence refuses an overlapping delivery's writes. Earlier versions' empty queue rows stay until Graphile Worker's `GC_JOB_QUEUES` cleanup task removes them.
+- Updated dependencies [[`e6a3975`](https://github.com/vercel/workflow/commit/e6a3975c953b366497c29749d7f1ab2e7c17732c), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/world-local@5.4.1
+  - @workflow/errors@5.1.3
+  - @workflow/utils@5.1.1
+  - @workflow/world@5.2.2
+
 ## 5.2.1
 
 ### Patch Changes

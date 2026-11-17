@@ -18,10 +18,9 @@ export function LiveStatus({ hasError, errorMessage }: LiveStatusProps) {
               }`}
             />
             <span
-              className={`text-xs $
-                      hasError
-                        ? 'text-red-600 dark:text-red-400'
-                        : 'text-muted-foreground'`}
+              className={`text-xs ${
+                hasError ? 'text-red-600' : 'text-muted-foreground'
+              }`}
             >
               {hasError ? 'Error' : 'Live'}
             </span>
