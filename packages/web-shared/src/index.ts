@@ -10,6 +10,7 @@ export {
   stepEventsToStepEntity,
   waitEventsToWaitEntity,
 } from './components/workflow-traces/trace-span-construction';
+export { cn } from './lib/cn';
 export {
   DUPLICATE_EVENT_MESSAGE,
   findDuplicateEventIds,
@@ -76,14 +77,6 @@ export {
   type RunStateHydratorOptions,
   type StateHistoryPage,
 } from './lib/state-hydration';
-export {
-  STATUS,
-  STATUS_TONES,
-  type Status,
-  type StatusStyle,
-  type StatusTone,
-  type StatusToneStyle,
-} from './lib/status';
 export type { DecodedStreamChunkSource } from './lib/stream-display';
 export { getStreamImageType } from './lib/stream-image';
 export type { ToastAdapter } from './lib/toast';
