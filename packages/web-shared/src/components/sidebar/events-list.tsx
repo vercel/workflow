@@ -1,13 +1,17 @@
 'use client';
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
-import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
+import { sortEventsByTime } from '../../lib/event-list-model';
 import {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from '../../lib/sealed-events';
+import { EventIdentifiers } from '../event-details/event-identifiers';
+import { EventPayloadSection } from '../event-details/event-payload-section';
+import { EventTypeLabel } from '../event-details/event-type-label';
+import { useEventPayload } from '../event-details/use-event-payload';
 import {
   Collapsible,
   CollapsibleContent,
@@ -15,13 +19,9 @@ import {
   CollapsibleTrigger,
 } from '../ui/collapsible';
 import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
-import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
-import { ErrorCard } from '../ui/error-card';
-import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { AttrSetEventBlock } from './attributes-block';
-import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
+import { DetailMonoKeyValueRow } from './attributes-block';
 
 const parseDateValue = (value: unknown): Date | null => {
   if (value == null) return null;
@@ -57,65 +57,27 @@ function EventItem({
 }: {
   event: Event;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
-  /** When this changes (e.g., Decrypt was clicked), invalidate cached data */
+  /** When this changes (e.g., Decrypt was clicked), reload the payload decrypted */
   encryptionKey?: Uint8Array;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
   /** The event repeats a class already in the log, so the runtime ignored it. */
   isDuplicate?: boolean;
 }) {
-  const [loadedData, setLoadedData] = useState<unknown | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const wasExpandedRef = useRef(false);
-  /** Mirrors whether we have a fetched payload; avoids stale `loadedData` in load closure. */
-  const loadedDataRef = useRef<unknown | null>(null);
-
-  // Check if the event already has eventData from the store
-  const existingData =
-    'eventData' in event && event.eventData != null ? event.eventData : null;
-  const mergedDisplay = loadedData ?? existingData;
+  // Cancellation reasons are left out of the sidebar's event details, and an
+  // event with no data and no ref fields has nothing to load.
   const canHaveData =
     event.eventType !== 'run_cancelled' &&
-    (existingData !== null ||
+    (event.eventData != null ||
       getEventDataRefFields(event.eventType).length > 0);
-
-  const loadEventData = useCallback(
-    async (force: boolean) => {
-      if (!onLoadEventData) return;
-      if (!force && loadedDataRef.current !== null) {
-        return;
-      }
-
-      try {
-        setIsLoading(true);
-        setLoadError(null);
-        const data = await onLoadEventData(event);
-        loadedDataRef.current = data;
-        setLoadedData(data);
-      } catch (err) {
-        setLoadError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [onLoadEventData, event]
-  );
-
-  const handleExpand = useCallback(() => {
-    if (isLoading) return;
-    wasExpandedRef.current = true;
-    void loadEventData(false);
-  }, [isLoading, loadEventData]);
-
-  // When the encryption key changes and this event was previously expanded,
-  // re-load the data so it gets decrypted
-  useLayoutEffect(() => {
-    if (!encryptionKey || !wasExpandedRef.current) return;
-    loadedDataRef.current = null;
-    setLoadedData(null);
-    void loadEventData(true);
-  }, [encryptionKey, loadEventData]);
+  // Load only once the card has been expanded, then keep it current.
+  const [wasExpanded, setWasExpanded] = useState(false);
+  const payload = useEventPayload({
+    event,
+    onLoadEventData,
+    encryptionKey,
+    enabled: wasExpanded && canHaveData,
+  });
 
   const rowNotice = isDuplicate
     ? DUPLICATE_EVENT_MESSAGE
@@ -136,30 +98,22 @@ function EventItem({
     }
   );
 
-  const displayPayload = isLoading ? loadedData : mergedDisplay;
-
   return (
     <CollapsibleRoot
       variant="card"
-      onOpenChange={
-        canHaveData
-          ? (open) => {
-              if (open) handleExpand();
-            }
-          : undefined
-      }
+      onOpenChange={(open) => {
+        if (open) setWasExpanded(true);
+      }}
     >
       <CollapsibleTrigger className="px-3 py-2">
         <div className="flex w-full items-center justify-between gap-3">
-          <EventNoticeTooltip notice={rowNotice}>
-            <span
-              className={`text-label-12 font-mono ${
-                rowNotice ? 'text-gray-700' : 'text-gray-1000'
-              }`}
-            >
-              {event.eventType}
-            </span>
-          </EventNoticeTooltip>
+          <EventTypeLabel
+            eventType={event.eventType}
+            notice={rowNotice}
+            className={`text-label-12 font-mono ${
+              rowNotice ? 'text-gray-700' : 'text-gray-1000'
+            }`}
+          />
           <span className="shrink-0 text-label-13 text-gray-900">
             {displayedCreatedAtTime}
           </span>
@@ -167,144 +121,30 @@ function EventItem({
       </CollapsibleTrigger>
       <CollapsibleContent>
         {/* Event attributes */}
-        <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
+        <div className="flex flex-col bg-background-200 px-3 py-2 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
           {showSeparateEventOccurrenceTimestamps && occurredAt && (
-            <div className="flex items-center justify-between gap-2 py-2 px-3">
-              <span className="text-label-12 text-gray-900">Occurred</span>
-              <TimestampTooltip date={occurredAt}>
-                <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-                  {formatEventTimestamp(occurredAt)}
-                </span>
-              </TimestampTooltip>
-            </div>
+            <DetailMonoKeyValueRow
+              label="Occurred"
+              value={
+                <TimestampTooltip date={occurredAt}>
+                  <span>{formatEventTimestamp(occurredAt)}</span>
+                </TimestampTooltip>
+              }
+            />
           )}
-          <div className="flex items-center justify-between gap-2 py-2 px-3">
-            <span className="text-label-12 text-gray-900">Event ID</span>
-            <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-              {event.eventId}
-            </span>
-          </div>
-          {event.correlationId && (
-            <div className="flex items-center justify-between gap-2 py-2 px-3">
-              <span className="text-label-12 text-gray-900">
-                Correlation ID
-              </span>
-              <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-                {event.correlationId}
-              </span>
-            </div>
-          )}
+          <EventIdentifiers event={event} />
         </div>
 
-        {/* Loading state */}
-        {isLoading && (
-          <div className="p-3">
-            <Skeleton className="h-4 w-[35%]" />
-            <Skeleton className="mt-2 h-4 w-[90%]" />
-            <Skeleton className="mt-2 h-4 w-[75%]" />
-          </div>
-        )}
-
-        {/* Error state */}
-        {loadError && (
-          <ErrorCard
-            title="Failed to load event data"
-            details={loadError}
-            className="mt-2"
+        {canHaveData && (
+          <EventPayloadSection
+            eventType={event.eventType}
+            payload={payload}
+            variant="card"
           />
-        )}
-
-        {/* Event data */}
-        {displayPayload != null && event.eventType !== 'run_cancelled' && (
-          <div className="[&>div]:border-none [&>div]:rounded-none">
-            <EventDataBlock eventType={event.eventType} data={displayPayload} />
-          </div>
         )}
       </CollapsibleContent>
     </CollapsibleRoot>
   );
-}
-
-/**
- * Check if an eventData object has only expired marker values in ref/payload
- * fields for this event type (see {@link getEventDataRefFields}). Other keys
- * (e.g. `resumeAt`, `stepName`) are ignored.
- */
-function hasOnlyExpiredFields(data: unknown, eventType: string): boolean {
-  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
-    return false;
-  }
-  const record = data as Record<string, unknown>;
-  const refKeys = getEventDataRefFields(eventType);
-  const presentKeys = refKeys.filter((k) => k in record);
-  return (
-    presentKeys.length > 0 &&
-    presentKeys.every((k) => isExpiredMarker(record[k]))
-  );
-}
-
-/**
- * Renders event data, using ErrorStackBlock for error events that contain a
- * structured error, and CopyableDataBlock otherwise.
- */
-function EventDataBlock({
-  eventType,
-  data,
-}: {
-  eventType: string;
-  data: unknown;
-}) {
-  // Expired data: show a message instead of the raw stub.
-  // Check both the top-level eventData and nested sub-fields (result, input, etc.)
-  // since the server stubs each ref field independently.
-  if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
-    return (
-      <div
-        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-700)',
-        }}
-      >
-        <span className="font-medium">Data expired</span>
-      </div>
-    );
-  }
-
-  if (hasEncryptedFields({ eventType, eventData: data })) {
-    return <EncryptedDataBlock />;
-  }
-
-  // Attribute changes: render the changed keys and the writer instead of
-  // the raw JSON payload.
-  if (eventType === 'attr_set') {
-    return <AttrSetEventBlock data={data} />;
-  }
-
-  // Error events carry a StructuredError in eventData.error. Check both the
-  // nested field and the top-level value for legacy payloads.
-  if (
-    getEventDataRefFields(eventType).includes('error') &&
-    data != null &&
-    typeof data === 'object'
-  ) {
-    const record = data as Record<string, unknown>;
-
-    // Check the nested `error` field first (the StructuredError)
-    if (isStructuredError(record.error)) {
-      return <ErrorStackBlock value={record.error} />;
-    }
-
-    // Some error formats put the message/stack at the top level of eventData.
-    if (isStructuredError(record)) {
-      return <ErrorStackBlock value={record} />;
-    }
-  }
-
-  // For non-error events or errors without a stack, fall back to the
-  // generic JSON viewer.
-  return <CopyableDataBlock data={data} />;
 }
 
 export function EventsList({
@@ -336,15 +176,7 @@ export function EventsList({
   duplicateEventIds?: ReadonlySet<string>;
 }) {
   // Sort by the timestamp shown as Created by default.
-  const sortedEvents = useMemo(
-    () =>
-      [...events].sort(
-        (a, b) =>
-          getEffectiveEventDate(a).getTime() -
-          getEffectiveEventDate(b).getTime()
-      ),
-    [events]
-  );
+  const sortedEvents = useMemo(() => sortEventsByTime(events, 'asc'), [events]);
 
   const hasEvents = sortedEvents.length > 0 && !error;
 
