@@ -57,6 +57,7 @@ import {
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import { getRunReplayDisabledReason } from '~/lib/run-replay';
+import { getStatusColorClass } from '~/lib/status-colors';
 import type { EnvMap } from '~/lib/types';
 import {
   bulkCancelRuns,
@@ -184,11 +185,11 @@ interface RunsTableProps {
 }
 
 const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'bg-neutral-600 dark:bg-neutral-400' },
-  running: { label: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
-  completed: { label: 'Completed', color: 'bg-green-600 dark:bg-green-400' },
-  failed: { label: 'Failed', color: 'bg-red-600 dark:bg-red-400' },
-  cancelled: { label: 'Cancelled', color: 'bg-gray-600 dark:bg-gray-400' },
+  pending: { label: 'Pending', color: getStatusColorClass('pending') },
+  running: { label: 'Running', color: getStatusColorClass('running') },
+  completed: { label: 'Completed', color: getStatusColorClass('completed') },
+  failed: { label: 'Failed', color: getStatusColorClass('failed') },
+  cancelled: { label: 'Cancelled', color: getStatusColorClass('cancelled') },
 };
 
 const HOUR_MS = 60 * 60 * 1000;
