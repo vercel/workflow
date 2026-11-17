@@ -37,7 +37,7 @@ import type {
 // SHARED TYPES
 // ============================================================================
 
-export interface NodeStyleResult {
+interface NodeStyleResult {
   color: string;
   backgroundColor: string;
   borderColor: string;
@@ -107,7 +107,7 @@ interface WorkflowGraphViewerProps {
 // ============================================================================
 
 // Custom Loop Node component with left-side handles for self-loop edge
-export function LoopNodeComponent({ data, selected }: NodeProps) {
+function LoopNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as LoopNodeData;
 
   return (
@@ -189,7 +189,7 @@ export function ParallelGroupComponent({ data }: { data: ParallelGroupData }) {
 }
 
 // Custom Diamond Node component for conditional nodes
-export function DiamondNodeComponent({ data, selected }: NodeProps) {
+function DiamondNodeComponent({ data, selected }: NodeProps) {
   const nodeData = data as DiamondNodeData;
 
   // Diamond size
@@ -259,7 +259,7 @@ export function DiamondNodeComponent({ data, selected }: NodeProps) {
 }
 
 // Custom node components - base types for static graph viewing
-export const baseNodeTypes = {
+const baseNodeTypes = {
   loopNode: LoopNodeComponent,
   parallelGroup: ParallelGroupComponent,
   diamondNode: DiamondNodeComponent,
@@ -275,7 +275,7 @@ export interface SelfLoopEdgeStyle {
 }
 
 // Default self-loop edge style (gray for static view)
-export const defaultSelfLoopStyle: SelfLoopEdgeStyle = {
+const defaultSelfLoopStyle: SelfLoopEdgeStyle = {
   strokeColor: '#6b7280', // gray-500
   labelBgClass: 'bg-gray-200 text-gray-1000 border-gray-400',
 };
@@ -287,9 +287,7 @@ export const executionSelfLoopStyle: SelfLoopEdgeStyle = {
 };
 
 // Factory to create a self-loop edge component with custom styling
-export function createSelfLoopEdge(
-  style: SelfLoopEdgeStyle = defaultSelfLoopStyle
-) {
+function createSelfLoopEdge(style: SelfLoopEdgeStyle = defaultSelfLoopStyle) {
   return function SelfLoopEdge({
     id,
     sourceX,
@@ -392,7 +390,7 @@ export function getNodeBackgroundColor(nodeKind: string): string {
 }
 
 // Get default border color for a node kind
-export function getNodeBorderColor(nodeKind: string): string {
+function getNodeBorderColor(nodeKind: string): string {
   if (nodeKind === 'workflow_start' || nodeKind === 'workflow_end') {
     return '#60a5fa'; // blue-400
   }
@@ -413,7 +411,7 @@ export function getNodeBorderColor(nodeKind: string): string {
 }
 
 // Get node styling based on node kind - theme-aware colors using CSS variables
-export function getNodeStyle(nodeKind: string): NodeStyleResult {
+function getNodeStyle(nodeKind: string): NodeStyleResult {
   return {
     color: 'var(--card-foreground)',
     backgroundColor: getNodeBackgroundColor(nodeKind),
