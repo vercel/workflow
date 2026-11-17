@@ -24,5 +24,5 @@ Every call on a key takes the next slot, `period / limit` after the one before. 
 ## How to fix it
 
 - Catch it with `RateLimitTimeoutError.is(error)` from `workflow/errors` and skip, defer or report the work. `error.wouldAcquireAt` is when the call would have gone ahead.
-- Raise the `timeout`, or leave it out to wait as long as it takes (up to a year).
+- Raise the `timeout`, or leave it out to wait as long as it takes (up to 30 days).
 - Spread the work across keys that the upstream limits separately.

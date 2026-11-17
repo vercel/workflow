@@ -1,9 +1,6 @@
-import { validateRateLimitCall } from '@workflow/world';
+import { MAX_RATE_WAIT_MS, validateRateLimitCall } from '@workflow/world';
 import ms, { type StringValue } from 'ms';
 import type { RateLimitOptions } from '../rate-limit.js';
-
-/** How long a call without a `timeout` may wait for its slot. */
-const UNTIMED_CALL_MAX_WAIT_MS = 365 * 24 * 60 * 60 * 1000;
 
 function durationMs(value: StringValue | number, name: string): number {
   const parsed = typeof value === 'number' ? value : ms(value);
@@ -41,9 +38,11 @@ export function resolveRateLimitCall(
       `experimental_rateLimit(): ${(error as Error).message}`
     );
   }
+  // Without a timeout, or with a longer one, a call waits up to 30 days, the
+  // most a World lets it.
   const waitMs =
     options.timeout === undefined
-      ? UNTIMED_CALL_MAX_WAIT_MS
-      : durationMs(options.timeout, 'timeout');
+      ? MAX_RATE_WAIT_MS
+      : Math.min(durationMs(options.timeout, 'timeout'), MAX_RATE_WAIT_MS);
   return { ...call, expiresAt: new Date(nowMs + waitMs) };
 }

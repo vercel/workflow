@@ -45,7 +45,7 @@ showSections={['parameters']}
 - Calls on one key share it across runs, so they are admitted in the order the World receives them. Calls that ask for different rates on one key each use up their own share of its time.
 - The rate is per project and environment: preview and production deployments have separate budgets for the same key.
 - Keys are stored as-is in the run's event log. Don't put personal data in them.
-- A call that cannot get a slot before its `timeout` rejects with [`RateLimitTimeoutError`](/docs/errors/rate-limit-timeout) and uses up none of the key's capacity. Without a `timeout`, a call waits up to a year.
+- A call that cannot get a slot before its `timeout` rejects with [`RateLimitTimeoutError`](/docs/errors/rate-limit-timeout) and uses up none of the key's capacity. Without a `timeout`, a call waits up to 30 days, which is also the longest a `timeout` can be.
 
 ## Examples
 

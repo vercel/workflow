@@ -37,6 +37,13 @@ export const MAX_RATE_PERIOD_MS = 365 * 24 * 60 * 60 * 1000;
  */
 export const RATE_ACQUIRE_GRACE_MS = 5_000;
 
+/**
+ * The longest a call may wait for its slot: a later deadline is capped to 30
+ * days after the World decides the call, and the committed event records the
+ * capped one. The Vercel World's backend uses the same cap.
+ */
+export const MAX_RATE_WAIT_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** What a call asks for, as its `rate_created` carries it. */
 export interface RateLimitCall {
   key: string;

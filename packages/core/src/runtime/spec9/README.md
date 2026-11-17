@@ -1633,7 +1633,7 @@ The two engines implement these timer rules separately, on top of shared creator
 
 `experimental_rateLimit()` exists only on runs stamped at `SPEC_VERSION_RATE_LIMITS` (10). Spec 10 is capability-only: a spec 10 run is a spec 9 run that may hold rate events, so it runs on this orchestrator. `mintedSpecVersion` returns 10 only for a World that declares both `inBandFence` and `rateLimits`, and the primitive throws on a run below 10 before it draws a correlation id. The QuickJS engine does not implement it yet: its call rejects, also before drawing an id.
 
-One call is one `rate_<ulid>` correlation id. The workflow queues it (`RateInvocationQueueItem`) and the suspension writes its `rate_created` in-band through `handleSuspension`, carrying `key`, `limit`, `periodMs`, `expiresAt` (the workflow clock plus the call's timeout, or a year) and `creatorMessageId`. The World reserves the call's slot and commits what it decided in place of the request:
+One call is one `rate_<ulid>` correlation id. The workflow queues it (`RateInvocationQueueItem`) and the suspension writes its `rate_created` in-band through `handleSuspension`, carrying `key`, `limit`, `periodMs`, `expiresAt` (the workflow clock plus the call's timeout, at most 30 days; the World caps it there too) and `creatorMessageId`. The World reserves the call's slot and commits what it decided in place of the request:
 
 | Committed | Meaning | What the orchestrator does |
 |---|---|---|

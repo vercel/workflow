@@ -16,6 +16,7 @@ import {
   type AnyEventRequest,
   type Event,
   eventIdToSlot,
+  MAX_RATE_WAIT_MS,
   RATE_ACQUIRE_GRACE_MS,
   SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -134,6 +135,18 @@ describe('rate limits on the Local World', () => {
     if (next.eventType !== 'rate_created' || failed.eventType !== 'rate_failed')
       throw new Error('unexpected');
     expect(next.eventData.acquireAt).toEqual(failed.eventData.acquireAt);
+  });
+
+  it('caps a far-future deadline at 30 days, and records the capped one', async () => {
+    const runId = await createRun();
+    const before = Date.now();
+    const event = committed(
+      await inBand(runId, rateCreated({ expiresAt: new Date(8.64e15) }))
+    );
+    if (event.eventType !== 'rate_acquired') throw new Error('not granted');
+    const expiresAt = event.eventData.expiresAt!.getTime();
+    expect(expiresAt).toBeGreaterThanOrEqual(before + MAX_RATE_WAIT_MS);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + MAX_RATE_WAIT_MS);
   });
 
   it('shares a key across runs', async () => {
