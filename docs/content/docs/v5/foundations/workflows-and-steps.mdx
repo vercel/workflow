@@ -149,7 +149,7 @@ The compiler hoists the inner step and records the variables it captures with th
 - **They are copies.** A change the step makes to a captured object is not visible to the workflow.
 - **Writes to them fail.** The compiler binds captured variables as constants inside the step, so assigning to one (`count++`) fails at build time, or when the step runs, rather than being lost silently. Return the new value from the step instead.
 
-Declare an inner step as an arrow function or a function declaration. Its step name is namespaced by the enclosing function (`receiptWorkflow/send`).
+An inner step can be a function declaration, an arrow function or a function expression. Its step name is namespaced by the enclosing function: `receiptWorkflow/send` for the step above. A step assigned to a variable takes the variable's name, and a function declaration takes its own.
 
 ### Suspension and resumption
 
