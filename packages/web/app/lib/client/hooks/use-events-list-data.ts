@@ -10,6 +10,7 @@ import { useCallback, useRef } from 'react';
 import {
   unwrapOrThrow,
   unwrapServerActionResult,
+  type WorkflowWebAPIError,
 } from '~/lib/client/workflow-errors';
 import {
   fetchEvent,
@@ -31,6 +32,13 @@ const PAGE_SIZE = 100;
 const MAX_CORRELATION_SEARCH_PAGES = 5;
 
 const getEventId = (event: Event) => event.eventId;
+
+/** A 404 for an exact ID means nothing matched it, not that the search failed. */
+function toSearchFailure(error: WorkflowWebAPIError): ExactIdSearchResult {
+  return error.request?.status === 404
+    ? { status: 'not_found' }
+    : { status: 'error', message: error.message };
+}
 
 /**
  * Independent event fetching for the Events tab.
@@ -95,7 +103,7 @@ export function useEventsListData(
         );
         if (fetchError || signal?.aborted) {
           return fetchError
-            ? { status: 'error', message: fetchError.message }
+            ? toSearchFailure(fetchError)
             : (() => {
                 throw new DOMException('Aborted', 'AbortError');
               })();
@@ -125,7 +133,7 @@ export function useEventsListData(
           })
         );
         if (fetchError) {
-          return { status: 'error', message: fetchError.message };
+          return toSearchFailure(fetchError);
         }
         if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');
