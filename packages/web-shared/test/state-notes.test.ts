@@ -7,11 +7,11 @@ import { ErrorCard } from '../src/components/ui/error-card.js';
 import { Note, NoteAction, NoteContent } from '../src/components/ui/note.js';
 
 /**
- * The error, expired and encrypted states all render through the Geist-style
+ * The error, expired and encrypted states all render through the shared
  * `Note` primitive, so they share one set of tokens and one structure.
  */
 describe('Note', () => {
-  it('maps each variant to its Geist tokens without inline styles', () => {
+  it('maps each variant to its design tokens without inline styles', () => {
     const markup = renderToStaticMarkup(
       createElement(
         Note,
@@ -28,7 +28,7 @@ describe('Note', () => {
     expect(markup).toContain('data-slot="note-icon"');
   });
 
-  it('uses the filled Geist background when fill is set', () => {
+  it('uses the filled background when fill is set', () => {
     const markup = renderToStaticMarkup(
       createElement(Note, { variant: 'warning', fill: true }, 'Heads up')
     );

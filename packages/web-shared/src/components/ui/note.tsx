@@ -4,12 +4,9 @@ import * as React from 'react';
 import { cn } from '../../lib/cn';
 
 /**
- * Port of geistcn's `Note` (`packages/geistcn/src/components/note` in
- * `vercel/front`): the same variants, fill and size scale, built on Geist
- * colour tokens so it renders the same in the dashboard and in `@workflow/web`.
- *
- * The radius is literal rather than `rounded-md`: apps that still carry a
- * shadcn theme redefine the `--radius-*` scale (see `button.tsx`).
+ * Persistent inline message, following the dashboard's design system: the
+ * same variants, fill and size scale, built on the design tokens in
+ * `styles.css` so it renders the same wherever `@workflow/web-shared` is used.
  */
 const noteVariants = cva(
   [
@@ -80,7 +77,7 @@ const noteVariants = cva(
 
 type NoteVariant = NonNullable<VariantProps<typeof noteVariants>['variant']>;
 
-/** The icon a variant shows when no `icon` prop is passed (as in Geist). */
+/** The icon a variant shows when no `icon` prop is passed. */
 function defaultVariantIcon(variant: NoteVariant): React.ReactNode {
   switch (variant) {
     case 'success':
@@ -105,7 +102,7 @@ export interface NoteProps
 }
 
 /**
- * Persistent inline message (Geist `Note`). Compose the body from
+ * Persistent inline message. Compose the body from
  * {@link NoteContent}, an optional {@link NoteLabel} and {@link NoteAction}:
  *
  * ```tsx
