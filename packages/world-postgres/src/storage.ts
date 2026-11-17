@@ -56,6 +56,7 @@ import {
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isLegacySpecVersion,
+  isRateEventType,
   isStartHookId,
   isTerminalRunEventType,
   isTerminalStepStatus,
@@ -1424,6 +1425,15 @@ export function createEventsStorage(
     data: AnyEventRequest,
     params?: CreateEventParams
   ): Promise<EventResult> => {
+    // This World does not reserve rate limit slots (no
+    // `capabilities.rateLimits`), so it never records a rate event it did
+    // not decide.
+    if (isRateEventType(data.eventType)) {
+      throw new WorkflowWorldError(
+        `${data.eventType}: experimental_rateLimit() is not supported by the Postgres World`,
+        { status: 400 }
+      );
+    }
     const result = await createFenced(runId, data, params);
     // Wakes the live feed (see run-events.ts), in any process, of every
     // spec 9 run the write committed an event to. Only a spec 9 run has

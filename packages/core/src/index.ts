@@ -25,6 +25,10 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
+export {
+  experimental_rateLimit,
+  type RateLimitOptions,
+} from './rate-limit.js';
 export type { Serializable } from './schemas.js';
 export {
   type SetAttributesOptions,

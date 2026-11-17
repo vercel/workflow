@@ -31,6 +31,7 @@ export const WorldCapabilitiesSchema = z
     maxConcurrency: flag,
     experimental_queueHold: flag,
     inBandFence: flag,
+    rateLimits: flag,
     hookResumeDedup: flag,
     resolvedHookResume: flag,
     hookForceClaim: flag,

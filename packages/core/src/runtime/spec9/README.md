@@ -57,7 +57,7 @@ Spec 8 runs are unaffected: upgrading, rolling back, and mixing old and new proc
 | `6` to `8` | any | that value |
 | any other value | any | 8 (the default), with a one-time warning naming it |
 
-`mintedSpecVersion(env, { inBandFence })` in `@workflow/world` implements the table. A call with no options never returns 9, so a custom World written to the earlier guide (`specVersion: mintedSpecVersion()`) keeps creating spec 8 runs. `SPEC_VERSION_CURRENT` stays 8, the version assumed for a run that reports none; `SPEC_VERSION_DEFAULT_MINTED` (8) names the default, and `SPEC_VERSION_MAX_SUPPORTED` is 9.
+`mintedSpecVersion(env, { inBandFence })` in `@workflow/world` implements the table. A call with no options never returns 9, so a custom World written to the earlier guide (`specVersion: mintedSpecVersion()`) keeps creating spec 8 runs. `SPEC_VERSION_CURRENT` stays 8, the version assumed for a run that reports none; `SPEC_VERSION_DEFAULT_MINTED` (8) names the default, and `SPEC_VERSION_MAX_SUPPORTED` is 10 (see [Rate limits (spec 10)](#rate-limits-spec-10)).
 
 ### Runs already created as spec 9 when the variable is unset
 
@@ -1628,6 +1628,24 @@ On world-vercel a fractional `delaySeconds` is rounded up, so a timer can land u
 - **Unsetting `WORKFLOW_SPEC_VERSION`** (or setting `8`) does not change runs already created as spec 9: their timers keep spec 9's rules, because routing follows the run's stamped version.
 
 The two engines implement these timer rules separately, on top of shared creator rules and key builders; sharing the timer sender itself is still open.
+
+#### Rate limits (spec 10)
+
+`experimental_rateLimit()` exists only on runs stamped at `SPEC_VERSION_RATE_LIMITS` (10). Spec 10 is capability-only: a spec 10 run is a spec 9 run that may hold rate events, so it runs on this orchestrator. `mintedSpecVersion` returns 10 only for a World that declares both `inBandFence` and `rateLimits`, and the primitive throws on a run below 10 before it draws a correlation id. The QuickJS engine does not implement it yet: its call rejects, also before drawing an id.
+
+One call is one `rate_<ulid>` correlation id. The workflow queues it (`RateInvocationQueueItem`) and the suspension writes its `rate_created` in-band through `handleSuspension`, carrying `key`, `limit`, `periodMs`, `expiresAt` (the workflow clock plus the call's timeout, or a year) and `creatorMessageId`. The World reserves the call's slot and commits what it decided in place of the request:
+
+| Committed | Meaning | What the orchestrator does |
+|---|---|---|
+| `rate_acquired` | the slot is now | continues the pass (`resolvedRateCorrelationIds`), as after a hook conflict |
+| `rate_failed` | the slot is past `expiresAt`; nothing reserved | continues the pass; the call rejects with `RateLimitTimeoutError` |
+| `rate_created` with `acquireAt` | the slot is later | treats the call as an open wait |
+
+A waiting call is an open wait in `openWaits` (`kind: 'rate'`, `resumeAt` = `acquireAt`) until its `rate_acquired`, so it gets everything a sleep does: the creating message's chain arms its timer (the World keeps `creatorMessageId` on the committed event), near-due re-arms, linger, and the redelivery rules. `run.wakeUp()` never completes one early, because the slot is the World's. The delivery that finds it due writes `rate_acquired` with `createdSlot`, the slot of the call's `rate_created`: the World reads that event back and commits its recorded `acquireAt`, never one the request carries. A `TooEarlyError` (the World's clock behind this one) re-arms the timer for what is left; an `EntityConflictError` (already acquired, or no such `rate_created`) reloads the log.
+
+`rate_acquired` after a wait is what gives the end of the wait a position in the log, as `wait_completed` does for a sleep. The resolution is a `step`-kind delivery barrier: it resumes a branch that may draw the next id.
+
+What can go wrong costs capacity, never over-admission: a reservation whose `rate_created` is then refused, or whose delivery dies before the event is consumed, is a slot nobody uses. The end-of-run drain writes no `rate_created`: a finished run has nobody to wait for a slot.
 
 ### The live event feed and polling
 

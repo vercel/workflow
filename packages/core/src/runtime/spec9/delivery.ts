@@ -18,6 +18,7 @@ import {
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RunExpiredError,
+  TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -39,6 +40,7 @@ import {
   isTerminalWorkflowRunStatus,
   type RunInput,
   type SerializedData,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   slotToEventId,
@@ -201,6 +203,7 @@ import {
   externalWorkOf,
   type InlineStepSpec,
   nextTimerAt,
+  type OpenWait,
   openWaits,
   type StepMessageSpec,
   stepCreationOf,
@@ -639,12 +642,23 @@ async function runDelivery(
     ) {
       // A step with an outcome needs no message.
       unsentStepMessages.delete(id);
-    } else if (event.eventType === 'wait_created') {
+    } else if (
+      event.eventType === 'wait_created' ||
+      // A rate call that has to wait: open like a wait until its
+      // `rate_acquired` (see `openWaits`).
+      (event.eventType === 'rate_created' &&
+        event.eventData.acquireAt !== undefined)
+    ) {
       ownOpenWaits.set(id, event);
-    } else if (event.eventType === 'wait_completed') {
+    } else if (
+      event.eventType === 'wait_completed' ||
+      event.eventType === 'rate_acquired'
+    ) {
       ownOpenWaits.delete(id);
       completedWaits.add(id);
       recordCompletedWait(world, runId, id);
+    } else if (event.eventType === 'rate_failed') {
+      ownOpenWaits.delete(id);
     }
   };
   const noteStepMessageSent = (correlationId: string): void => {
@@ -3344,15 +3358,19 @@ async function runDelivery(
           }
           for (const wait of due) {
             wakeUpWaits.delete(wait.correlationId);
-            const completed = await createEvent(
-              {
-                eventType: 'wait_completed' as const,
-                specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-                correlationId: wait.correlationId,
-                eventData: { resumeAt: wait.resumeAt },
-              },
-              { requestId }
-            );
+            const completed =
+              wait.kind === 'rate'
+                ? await acquireRate(wait)
+                : await createEvent(
+                    {
+                      eventType: 'wait_completed' as const,
+                      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+                      correlationId: wait.correlationId,
+                      eventData: { resumeAt: wait.resumeAt },
+                    },
+                    { requestId }
+                  );
+            if (completed === undefined) continue;
             if (
               consumeOwnResolvingWrite(
                 indexOf(log.events),
@@ -3791,6 +3809,7 @@ async function runDelivery(
             run,
             span,
             requestId,
+            creatorMessageId,
             eventLog: loaded,
             replayRecoveryReporter,
             forceClaimVictimWakes,
@@ -3831,6 +3850,19 @@ async function runDelivery(
         continuation.exit = 'hook-conflict';
         await wakeSelf();
         return { type: 'return', result: undefined };
+      }
+      // A rate limit call the World answered at once (`rate_acquired`, or
+      // `rate_failed` past its timeout) settles its awaiter: the workflow
+      // goes on over the committed event, as after a hook conflict. A call
+      // that has to wait is a timer, armed at suspend.
+      if (hookResult && hookResult.resolvedRateCorrelationIds.length > 0) {
+        const fresh = hookResult.resolvedRateCorrelationIds.filter(
+          (id) => !continuedHookIds.has(id)
+        );
+        if (fresh.length > 0) {
+          for (const id of fresh) continuedHookIds.add(id);
+          return { type: 'continue', retainSession: true };
+        }
       }
       if (hasAttributes) {
         // The committed `attr_set` decides races against the
@@ -4921,6 +4953,50 @@ async function runDelivery(
         if (!timedWaits.has(wait.correlationId)) {
           await sendWaitTimer(wait, { nearDue: true });
         }
+      }
+    }
+
+    /**
+     * Records the end of a rate call's wait: the `rate_acquired` naming its
+     * `rate_created`'s slot (the World commits the `acquireAt` recorded
+     * there). Returns undefined when the World refused it and nothing was
+     * written:
+     *
+     * - too early by the World's clock (`TooEarlyError`, a clock a little
+     *   behind this one): the call's timer is sent again for what is left;
+     * - already acquired, or no such `rate_created` (`EntityConflictError`):
+     *   another delivery wrote it, so the log is read again.
+     */
+    async function acquireRate(
+      wait: OpenWait
+    ): Promise<EventResult | undefined> {
+      const createdSlot = eventIdToSlot(wait.event.eventId);
+      assert(createdSlot !== null, 'A rate_created has a slot id');
+      try {
+        return await createEvent(
+          {
+            eventType: 'rate_acquired' as const,
+            specVersion: SPEC_VERSION_RATE_LIMITS,
+            correlationId: wait.correlationId,
+            eventData: { createdSlot },
+          },
+          { requestId }
+        );
+      } catch (error) {
+        if (TooEarlyError.is(error)) {
+          const retryAfterMs = Math.max(1, error.retryAfter ?? 1) * 1000;
+          await sendWaitTimer({
+            correlationId: wait.correlationId,
+            resumeAtMs: Math.max(wait.resumeAtMs, Date.now() + retryAfterMs),
+          });
+          return undefined;
+        }
+        if (EntityConflictError.is(error)) {
+          session = null;
+          await fullLoad();
+          return undefined;
+        }
+        throw error;
       }
     }
 

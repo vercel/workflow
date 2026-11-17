@@ -127,6 +127,21 @@ export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
 export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
 
 /**
+ * Runs at this spec version or later may call `experimental_rateLimit()`, and
+ * so may hold `rate_created`, `rate_acquired` and `rate_failed` events. A
+ * World only accepts rate events on a run stamped at or above this version,
+ * so an older reader, which cannot parse them, never meets one: it refuses
+ * the whole run via `requiresNewerWorld()` instead.
+ *
+ * Capability-only: nothing already in a run's log changes meaning, so a
+ * backend may raise a spec 9 run to it. It builds on
+ * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}: a rate-limited call is decided
+ * when the orchestrator's fenced `rate_created` is written, and the end of
+ * its wait is the orchestrator's own `rate_acquired`.
+ */
+export const SPEC_VERSION_RATE_LIMITS = 10 as SpecVersion;
+
+/**
  * Current spec version: event-sourced architecture with native attributes,
  * compressed payloads, slot-numbered event ids, sealed-log sequencing, and
  * involuntary hook disposal.
@@ -181,6 +196,12 @@ export interface MintedSpecVersionOptions {
    * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}.
    */
   inBandFence?: boolean;
+  /**
+   * The World reserves rate limit slots (`WorldCapabilities.rateLimits`).
+   * Without it {@link mintedSpecVersion} never returns
+   * {@link SPEC_VERSION_RATE_LIMITS}.
+   */
+  rateLimits?: boolean;
 }
 
 /**
@@ -191,6 +212,9 @@ export interface MintedSpecVersionOptions {
  * | unset | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8) |
  * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
  * | `9` | not `true` | the default, with a warning once per process |
+ * | `10` | `true`, and `rateLimits` | {@link SPEC_VERSION_RATE_LIMITS} |
+ * | `10` | `true`, no `rateLimits` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, with a warning once per process |
+ * | `10` | not `true` | the default, with a warning once per process |
  * | `6` to `8` | any | that version |
  * | anything else | any | the default (8), with a warning once per process that names it |
  *
@@ -240,6 +264,13 @@ export function mintedSpecVersion(
         );
         return fallback;
       }
+      if (version >= SPEC_VERSION_RATE_LIMITS && options.rateLimits !== true) {
+        warnOnce(
+          `${SPEC_VERSION_ENV_VAR}=${requested}:no-rate-limits`,
+          `Ignoring ${SPEC_VERSION_ENV_VAR}=${version}: the World does not reserve rate limit slots (capabilities.rateLimits) that spec ${SPEC_VERSION_RATE_LIMITS} runs need, so new runs use spec ${SPEC_VERSION_SINGLE_ORCHESTRATOR}.`
+        );
+        return SPEC_VERSION_SINGLE_ORCHESTRATOR;
+      }
       return version as SpecVersion;
     }
     warnOnce(
@@ -261,7 +292,7 @@ export function mintedSpecVersion(
  * everywhere.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
-  SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
+  SPEC_VERSION_RATE_LIMITS as SpecVersion;
 
 /**
  * Spec versions whose only effect is to switch on capabilities of a run's
@@ -282,6 +313,7 @@ export const CAPABILITY_ONLY_SPEC_VERSIONS: ReadonlySet<number> = new Set([
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  SPEC_VERSION_RATE_LIMITS,
 ]);
 
 /** The structural spec versions; see {@link CAPABILITY_ONLY_SPEC_VERSIONS}. */

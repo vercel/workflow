@@ -712,6 +712,13 @@ globalThis[Symbol.for("WORKFLOW_SLEEP")] = function(param) {
   });
 };
 
+// experimental_rateLimit() is implemented by the node:vm engine only. Throwing
+// before drawing a correlation id keeps the run's id sequence the same as
+// if the call were never made.
+globalThis[Symbol.for("WORKFLOW_RATE_LIMIT")] = function() {
+  return Promise.reject(new Error("experimental_rateLimit() is not available in the QuickJS workflow engine yet. Start the run with WORKFLOW_VM=node."));
+};
+
 // Response/Request polyfills — .json()/.text()/.arrayBuffer() are useStep
 // proxies that execute on the host side. The proxies are assigned directly
 // to the prototypes so that 'this' (the Response/Request instance) is

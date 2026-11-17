@@ -68,12 +68,14 @@ export {
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
+  isRateEventType,
   isRunEventType,
   isSealedNoopEvent,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,
   isWaitEventType,
+  RATE_EVENT_TYPES,
   RUN_ENTITY_KEY,
   RUN_EVENT_TYPES,
   STEP_EVENT_TYPES,
@@ -130,6 +132,14 @@ export {
   WORKFLOW_FLOW_ROUTE,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
+export {
+  decideRateLimit,
+  MAX_RATE_KEY_BYTES,
+  MAX_RATE_PERIOD_MS,
+  type RateLimitDecision,
+  rateLimitIntervalUs,
+  validateRateLimitCall,
+} from './rate-limits.js';
 export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
@@ -200,6 +210,7 @@ export {
   SPEC_VERSION_ENV_VAR,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
