@@ -18,7 +18,7 @@ interface DecryptButtonProps {
 }
 
 /**
- * Decrypt/Decrypted button using Geist secondary style.
+ * Decrypt/Decrypted button in the secondary button style.
  * Three states: idle (secondary gray), decrypting (spinner), decrypted (green success).
  */
 export function DecryptButton({

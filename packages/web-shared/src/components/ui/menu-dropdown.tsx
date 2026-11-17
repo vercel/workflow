@@ -17,7 +17,7 @@ interface MenuDropdownProps<T extends string = string> {
 }
 
 /**
- * A dropdown menu that matches Geist's MenuButton (secondary) + Menu styling.
+ * A dropdown menu with a secondary-button trigger.
  * Uses CSS classes with proper :hover specificity (no inline background).
  */
 export function MenuDropdown<T extends string = string>({

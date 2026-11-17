@@ -14,9 +14,8 @@ interface UseIntersectionObserverArgs
 }
 
 /**
- * Returns the latest IntersectionObserverEntry for `elementRef`.
- * Ported from vercel/front's `@vercel/hooks` `useIntersectionObserver`, with
- * `root` threaded as a ref so we can observe inside a custom scroll container.
+ * Returns the latest IntersectionObserverEntry for `elementRef`. `root` is
+ * threaded as a ref so we can observe inside a custom scroll container.
  */
 export function useIntersectionObserver(
   elementRef: RefObject<Element | null>,

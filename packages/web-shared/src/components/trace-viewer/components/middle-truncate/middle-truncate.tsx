@@ -50,12 +50,8 @@ function getRangeOffsets(
 }
 
 /**
- * @gdoc
- *
  * Truncates text from the middle with an ellipsis when it overflows, preserving the beginning and end (e.g. file paths, URLs). Copy behavior restores the full untruncated text to the clipboard.
  * Renders a `<span>` element.
- *
- * Documentation: [Geist Middle Truncate](https://vercel.com/geist/middle-truncate)
  *
  * @param value - Full text string to display.
  */
