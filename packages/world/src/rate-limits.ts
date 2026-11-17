@@ -26,6 +26,17 @@ export const MAX_RATE_KEY_BYTES = 512;
 /** The longest period a call may use: 365 days. */
 export const MAX_RATE_PERIOD_MS = 365 * 24 * 60 * 60 * 1000;
 
+/**
+ * How long after its slot a call may still go ahead. A `rate_acquired` later
+ * than this (an orchestrator woken late by a queue delay or a cold start, or
+ * every waiter resuming at once after an outage) does not go ahead on its old
+ * slot: the World reserves the call again and commits what that decided in
+ * place of the `rate_acquired`. Calls go ahead at least `T - grace` apart, so
+ * a period can admit up to `limit + ceil(grace / T)` of them. The Vercel
+ * World's backend uses the same window.
+ */
+export const RATE_ACQUIRE_GRACE_MS = 5_000;
+
 /** What a call asks for, as its `rate_created` carries it. */
 export interface RateLimitCall {
   key: string;

@@ -296,17 +296,29 @@ export function openWaits(events: readonly Event[]): OpenWait[] {
     } else {
       continue;
     }
-    if (completed.has(event.correlationId) || seen.has(event.correlationId)) {
-      continue;
-    }
-    seen.add(event.correlationId);
-    out.push({
+    if (completed.has(event.correlationId)) continue;
+    const open: OpenWait = {
       kind,
       correlationId: event.correlationId,
       resumeAt,
       resumeAtMs: resumeAt.getTime(),
       event,
-    });
+    };
+    if (seen.has(event.correlationId)) {
+      // A rate call woken past its grace window is reserved again: the World
+      // commits a new `rate_created` in place of its `rate_acquired`, and the
+      // call waits for the newest one's slot. A repeated `wait_created` keeps
+      // the first.
+      if (kind === 'rate') {
+        const at = out.findIndex(
+          (wait) => wait.correlationId === event.correlationId
+        );
+        out[at] = open;
+      }
+      continue;
+    }
+    seen.add(event.correlationId);
+    out.push(open);
   }
   return out;
 }

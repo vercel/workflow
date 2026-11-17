@@ -60,6 +60,7 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  RATE_ACQUIRE_GRACE_MS,
   rateLimitIntervalUs,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
@@ -453,7 +454,9 @@ export function createEventsStorage(
         `Slot ${createdSlot} does not hold the rate_created of ${correlationId}`
       );
     }
-    if (store.findEvent(runId, correlationId, 'rate_acquired')) {
+    // Settled: acquired, failed, or reserved again past its grace window
+    // (anything of the call's after it in the log).
+    if (store.hasCorrelationEventAfter(runId, correlationId, createdSlot)) {
       throw new EntityConflictError(`${correlationId} was already acquired`);
     }
     const acquireAt = new Date(created.eventData.acquireAt);
@@ -462,6 +465,14 @@ export function createEventsStorage(
       throw new TooEarlyError(
         `Cannot acquire ${correlationId} before ${acquireAt.toISOString()}`,
         { retryAfter: Math.ceil(waitMs / 1000) }
+      );
+    }
+    if (-waitMs > RATE_ACQUIRE_GRACE_MS) {
+      // Woken past its grace window: reserved again from what the call
+      // recorded, and what that decided is committed in its place.
+      return decideRateCreated(
+        { ...event, eventType: 'rate_created' } as Event,
+        created.eventData
       );
     }
     const { creatorMessageId: _creator, ...call } = created.eventData;

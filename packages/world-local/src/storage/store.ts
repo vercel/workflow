@@ -383,6 +383,24 @@ export class Store {
 
   // --------------------------------------------------------- rate limits
 
+  /** Whether `correlationId` has an event in `runId`'s log after `seq`. */
+  hasCorrelationEventAfter(
+    runId: string,
+    correlationId: string,
+    seq: number
+  ): boolean {
+    return (
+      this.db.get<{ seq: number }>(
+        `SELECT seq FROM ${EVENTS_BY_CORRELATION}
+         WHERE run_id = ? AND correlation_id = ? AND seq > ?
+         LIMIT 1`,
+        runId,
+        correlationId,
+        seq
+      ) !== undefined
+    );
+  }
+
   /** A rate limit key's next free slot (epoch µs), or undefined if idle. */
   getRateTat(key: string): number | undefined {
     const row = this.db.get<{ tat_us: number }>(
