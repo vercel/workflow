@@ -314,7 +314,8 @@ export function ownedWaitChains(params: {
     waitCreatorMessageId(
       events.find(
         (event) =>
-          event.eventType === 'wait_created' &&
+          (event.eventType === 'wait_created' ||
+            event.eventType === 'rate_created') &&
           event.correlationId === correlationId
       )
     );
@@ -422,11 +423,16 @@ export function waitTimersToArm<
   return out;
 }
 
-/** The message whose invocation wrote `wait`'s `wait_created`, if recorded. */
+/**
+ * The message whose invocation wrote `wait`'s `wait_created`, or a rate
+ * call's `rate_created`, if recorded.
+ */
 export function waitCreatorMessageId(
   wait: Event | undefined
 ): string | undefined {
-  return wait?.eventType === 'wait_created'
-    ? wait.eventData.creatorMessageId
-    : undefined;
+  if (wait?.eventType === 'wait_created')
+    return wait.eventData.creatorMessageId;
+  if (wait?.eventType === 'rate_created')
+    return wait.eventData.creatorMessageId;
+  return undefined;
 }

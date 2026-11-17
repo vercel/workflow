@@ -802,6 +802,35 @@ export interface WorldCapabilities {
   inBandFence?: boolean;
 
   /**
+   * The World reserves rate limit slots for `experimental_rateLimit()`, and
+   * so may mint runs at `SPEC_VERSION_RATE_LIMITS` (pass it to
+   * `mintedSpecVersion`). It requires {@link inBandFence}.
+   *
+   * What a World that declares this does with the rate events (see
+   * `events.ts`):
+   *
+   * - **`rate_created`** (in-band only, on a run at spec 10 or later): reserve
+   *   the call's slot on its key, scoped to the project, then commit what the
+   *   reservation decided IN PLACE of the request: `rate_acquired` with
+   *   `acquireAt` when the slot is now, `rate_created` with `acquireAt` when
+   *   it is later, `rate_failed` (`reason: 'timeout'`) when it is past
+   *   `expiresAt`. Reserve nothing for a write the fence or the run's state
+   *   would refuse. `rateLimitIntervalUs` and `decideRateLimit` in
+   *   `@workflow/world` are the algorithm.
+   * - **`rate_acquired`** (in-band only): `eventData.createdSlot` names the
+   *   call's `rate_created`. Refuse it with `EntityConflictError` when that
+   *   slot holds no `rate_created` of the same correlation id or the call was
+   *   already acquired, and with `TooEarlyError` (`retryAfter` in seconds)
+   *   before that event's `acquireAt` by the World's clock. Commit the
+   *   recorded `acquireAt`, never one the request carries.
+   * - **`rate_failed`** is never accepted from a client.
+   *
+   * A World without it refuses every rate event, so a spec 10 run never
+   * records one it did not decide.
+   */
+  rateLimits?: boolean;
+
+  /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
    * that carry the same `(runId, resumeId)`, collapsing them onto a single
    * committed event and returning the canonical one to every caller. Two

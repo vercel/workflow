@@ -446,9 +446,16 @@ interface CreateEventV4InputBase {
   expectedSeqInBand?: number;
   /** step_created: whether the orchestrator may run the step in-process. */
   inline?: boolean;
-  /** step_created / wait_created: queue message id of the orchestrator
-   *  delivery that wrote the event. */
+  /** step_created / wait_created / rate_created: queue message id of the
+   *  orchestrator delivery that wrote the event. */
   creatorMessageId?: string;
+  /** rate_created (spec >= 10): the call's key, limit, period and deadline. */
+  rateKey?: string;
+  rateLimit?: number;
+  ratePeriodMs?: number;
+  rateExpiresAt?: Date;
+  /** rate_acquired after a wait: the log slot of the call's rate_created. */
+  rateCreatedSlot?: number;
   /** Content digest of the serialized resume payload. Forwarded alongside
    *  `resumeId` so the direct write and the queue re-ensure record an identical
    *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
@@ -623,6 +630,9 @@ const CreateEventV4BodySchemas: {
   hook_conflict: CreateEventV4BodySchema,
   wait_created: CreateEventV4BodySchema,
   wait_completed: CreateEventV4BodySchema,
+  rate_created: CreateEventV4BodySchema,
+  rate_acquired: CreateEventV4BodySchema,
+  rate_failed: CreateEventV4BodySchema,
   // Never POSTed by the SDK (server-originated sealed-log filler); present
   // only because the map is exhaustive over EventType.
   noop: CreateEventV4BodySchema,
@@ -865,6 +875,15 @@ function buildPostFrameMeta(
   if (input.inline !== undefined) meta.inline = input.inline;
   if (input.creatorMessageId !== undefined) {
     meta.creatorMessageId = input.creatorMessageId;
+  }
+  if (input.rateKey !== undefined) meta.rateKey = input.rateKey;
+  if (input.rateLimit !== undefined) meta.rateLimit = input.rateLimit;
+  if (input.ratePeriodMs !== undefined) meta.ratePeriodMs = input.ratePeriodMs;
+  if (input.rateExpiresAt !== undefined) {
+    meta.rateExpiresAt = input.rateExpiresAt;
+  }
+  if (input.rateCreatedSlot !== undefined) {
+    meta.rateCreatedSlot = input.rateCreatedSlot;
   }
   return meta;
 }
@@ -1302,7 +1321,12 @@ export function createEventResponseSchema<T extends EventType>(
   return CreateEventV4BodySchemas[eventType].refine(
     ({ event }) =>
       event.eventType === eventType ||
-      (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
+      (eventType === 'hook_created' && event.eventType === 'hook_conflict') ||
+      // The World commits what a rate_created's reservation decided in its
+      // place (see the rate events in @workflow/world).
+      (eventType === 'rate_created' &&
+        (event.eventType === 'rate_acquired' ||
+          event.eventType === 'rate_failed')),
     { path: ['event', 'eventType'] }
   );
 }

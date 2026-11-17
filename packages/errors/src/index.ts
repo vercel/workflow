@@ -113,6 +113,7 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   HOOK_FORCE_CLAIMED: 'hook-force-claimed',
+  RATE_LIMIT_TIMEOUT: 'rate-limit-timeout',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
@@ -1004,6 +1005,38 @@ export class HookForceClaimedError extends WorkflowError {
 }
 
 /**
+ * Thrown by `experimental_rateLimit()` in a workflow when the call's earliest
+ * slot on its key is past its `timeout`. Nothing was reserved, so the call
+ * used up none of the key's capacity.
+ *
+ * Use the static `RateLimitTimeoutError.is()` method for type-safe checking
+ * in catch blocks; the class identity differs between the workflow VM and the
+ * host, so `instanceof` is not reliable across that boundary.
+ */
+export class RateLimitTimeoutError extends WorkflowError {
+  key: string;
+  /** When the call would have gone ahead, had it waited. */
+  wouldAcquireAt?: Date;
+
+  constructor(key: string, wouldAcquireAt?: Date) {
+    super(
+      `Rate limit "${key}" has no slot before the call's timeout` +
+        (wouldAcquireAt
+          ? ` (next slot at ${wouldAcquireAt.toISOString()})`
+          : ''),
+      { slug: ERROR_SLUGS.RATE_LIMIT_TIMEOUT }
+    );
+    this.name = 'RateLimitTimeoutError';
+    this.key = key;
+    if (wouldAcquireAt !== undefined) this.wouldAcquireAt = wouldAcquireAt;
+  }
+
+  static is(value: unknown): value is RateLimitTimeoutError {
+    return isError(value) && value.name === 'RateLimitTimeoutError';
+  }
+}
+
+/**
  * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
  * does not match any active hook.
  *
@@ -1475,6 +1508,9 @@ const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
 const HOOK_FORCE_CLAIMED_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookForceClaimedError'
 );
+const RATE_LIMIT_TIMEOUT_ERROR_KEY = Symbol.for(
+  '@workflow/errors//RateLimitTimeoutError'
+);
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
@@ -1511,6 +1547,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY, {
       value: HookForceClaimedError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RATE_LIMIT_TIMEOUT_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RATE_LIMIT_TIMEOUT_ERROR_KEY, {
+      value: RateLimitTimeoutError,
       writable: false,
       enumerable: false,
       configurable: false,
