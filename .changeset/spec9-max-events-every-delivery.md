@@ -5,4 +5,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Enforce the max events per run limit on every spec 9 invocation
+Fix a bug where spec 9 runs inconsistently enforced the max events per run limit
