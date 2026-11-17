@@ -2,6 +2,10 @@
 
 These rules apply to `packages/web-shared` and `packages/web` (which consumes it).
 
+## Design tokens come from geistcn
+
+The block between `geistcn:begin` and `geistcn:end` in `src/styles.css` is a 1:1 copy of geistcn's tokens in `vercel/front`. Don't edit it by hand: run `pnpm --filter @workflow/web-shared sync-geist-tokens <absolute-path-to-vercel-front>` to regenerate it. Don't redeclare Geist tokens anywhere else, including for `prefers-color-scheme`; the tokens flip with the theme class, so don't add `dark:` overrides for colours that already do.
+
 ## Never use opacity to set a text colour
 
 Text colour always comes from a Geist token or the surface's inherited foreground. Don't make text lighter by fading it:

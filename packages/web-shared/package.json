@@ -46,7 +46,8 @@
     "test": "vitest run --config=../../vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
-    "format": "biome format --write"
+    "format": "biome format --write",
+    "sync-geist-tokens": "node scripts/sync-geist-tokens.mjs"
   },
   "dependencies": {
     "@radix-ui/react-slot": "1.5.0",
