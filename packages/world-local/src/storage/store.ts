@@ -22,7 +22,7 @@ import type { Database } from '../db/index.js';
 /** Rows one batch of a capped `listEvents` page reads (see `maxBytes`). */
 const EVENT_READ_BATCH = 64;
 
-/** world-local never collects planner stats, and without them SQLite scans the run by primary key. */
+/** Pins correlation lookups to `events_by_correlation`: world-local collects no planner stats, so SQLite would scan the run by primary key. */
 const EVENTS_BY_CORRELATION = 'events INDEXED BY events_by_correlation';
 
 export interface RunRow {
