@@ -22,7 +22,7 @@ import {
   hydrateStepError,
 } from '../../serialization.js';
 import { runWorkflow } from '../../workflow.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from '../helpers.js';
 import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from '../hook-wake.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
@@ -2668,7 +2668,7 @@ describe('handleSuspension batched fan-out', () => {
       expect(s1Created.eventData.input).toBeDefined();
       expect(s1Started.eventData.input).toBeUndefined();
       expect(s1Started.eventData.ownerMessageId).toBe('msg_owner_1');
-      expect(events[1].computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
+      expect(events[1].computeInstanceId).toBe(getComputeInstanceId());
       expect(events[0].computeInstanceId).toBeUndefined();
       // Claims: both inline steps owned, running attempt 1, input attached
       // (batch responses return refs lazily — the body hydrates local bytes).

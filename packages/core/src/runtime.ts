@@ -25,7 +25,7 @@ import { isRetryableWorldError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { type Logger, runtimeLogger } from './logger.js';
 import { afterRunFailed } from './runtime/after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
+import { getComputeInstanceId } from './runtime/compute-instance.js';
 import { getMaxQueueDeliveries } from './runtime/constants.js';
 import type { Orchestrator } from './runtime/delivery.js';
 import {
@@ -101,6 +101,10 @@ export {
   type HealthCheckResult,
   healthCheck,
 } from './runtime/helpers.js';
+export {
+  type PrecompiledQuickJSModules,
+  setPrecompiledQuickJSModules,
+} from './runtime/quickjs-precompiled.js';
 export {
   getHookByToken,
   type Hook,
@@ -701,7 +705,7 @@ export function workflowEntrypoint(
         kind: spanKind,
         attributes: {
           ...Attribute.WorkflowRouteType('flow'),
-          ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
+          ...Attribute.FaasInstance(getComputeInstanceId()),
           ...Attribute.WorkflowRouteHandlerCached(handlerCached),
           ...Attribute.WorkflowRouteInvocationCount(invocationCount),
           ...Attribute.WorkflowRouteEntrypointAgeMs(

@@ -1,3 +1,4 @@
+import '../../test-utils/vercel-request-context.js';
 import { FatalError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

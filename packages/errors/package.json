@@ -1,11 +1,13 @@
 {
   "name": "@workflow/errors",
   "description": "A package for standardizing errors in Workflow SDK",
-  "version": "5.1.1",
+  "version": "5.1.2",
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"

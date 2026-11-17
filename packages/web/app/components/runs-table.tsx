@@ -543,7 +543,6 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     hasMore,
     loadMore,
     reload,
-    refresh,
     pageInfo: analyticsPageInfo,
   } = useWorkflowRunsInfinite(env, {
     sortOrder,
@@ -627,8 +626,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const onRefresh = useCallback(() => {
     setLastRefreshTime(() => new Date());
     refreshListingWindow();
-    refresh();
-  }, [refresh, refreshListingWindow]);
+    reload();
+  }, [reload, refreshListingWindow]);
 
   // Get selected runs that are cancellable (pending or running)
   const selectedRuns = useMemo(() => {

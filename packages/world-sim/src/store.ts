@@ -61,6 +61,15 @@ const MAX_EVENTS_PER_RUN = 25_000;
 
 const DEFAULT_PAGE_LIMIT = 20;
 
+/**
+ * Store-internal `events.create` params, supplied by a World facade rather
+ * than by the runtime under test.
+ */
+export interface SimCreateParams extends CreateEventParams {
+  /** See the `hook_created` case: a token owner held outside this store. */
+  externalTokenOwner?: string;
+}
+
 export interface SimStoreOptions {
   now(): number;
   ids: IdFactory;
@@ -910,7 +919,15 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       case 'hook_created': {
         const { token } = data.eventData;
         const owner = tokenOwners.get(token);
-        if (owner && owner !== data.correlationId) {
+        // The run that holds this token in a token registry *outside* this
+        // store. A store that holds a single run (one per Durable Object, in
+        // world-cloudflare) cannot see other runs' hooks, so its facade claims
+        // the token first and passes the current owner here. Journals a
+        // `hook_conflict` naming that run, exactly as a conflict this store
+        // detected itself would.
+        const externalOwner = (params as SimCreateParams | undefined)
+          ?.externalTokenOwner;
+        if ((owner && owner !== data.correlationId) || externalOwner) {
           // Someone else holds the token. This is not an error for the
           // *caller* (the workflow needs to observe it and fail its awaited
           // hook), so it is journaled as a `hook_conflict` event instead.
@@ -923,7 +940,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             correlationId: data.correlationId,
             eventData: {
               token,
-              conflictingRunId: hooks.get(owner)?.runId,
+              conflictingRunId:
+                externalOwner ?? (owner ? hooks.get(owner)?.runId : undefined),
             },
           } as Event);
           // The conflict answers the inline delta the same way the

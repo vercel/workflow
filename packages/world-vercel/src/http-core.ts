@@ -44,6 +44,7 @@ import {
   NODE_HTTP_BODY_TIMEOUT_MS,
   NODE_HTTP_HEADERS_TIMEOUT_MS,
 } from './http-client.js';
+import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import {
   ErrorType,
   getSpanKind,
@@ -90,6 +91,8 @@ const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'EAI_AGAIN',
   'EPIPE',
   'ETIMEDOUT',
+  // The queue dispatcher's own request deadline (see http-client.ts).
+  QUEUE_REQUEST_DEADLINE_CODE,
 ]);
 
 export function getTransientTransportCode(error: unknown): string | undefined {

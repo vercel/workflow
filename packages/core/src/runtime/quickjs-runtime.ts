@@ -71,6 +71,7 @@ import {
   quickjsWasiVersion,
   quickjsWasm,
 } from './quickjs-assets.generated.js';
+import { getPrecompiledQuickJSModules } from './quickjs-precompiled.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -1317,6 +1318,24 @@ const quickjsAssets = globalSingleton(
 
 function getCompiledAssets() {
   if (!quickjsAssets.promise) {
+    const precompiled = getPrecompiledQuickJSModules();
+    if (precompiled) {
+      // The host compiled the modules at deploy time (runtimes that forbid
+      // compiling WebAssembly from bytes). See `quickjs-precompiled.ts`.
+      quickjsAssets.promise = Promise.resolve({
+        wasm: precompiled.quickjs,
+        extensions: quickjsExtensions.map((ext) => {
+          const wasm = precompiled.extensions[ext.name];
+          if (!wasm) {
+            throw new Error(
+              `setPrecompiledQuickJSModules() is missing the "${ext.name}" QuickJS extension`
+            );
+          }
+          return { ...ext, wasm: wasm as ExtensionDescriptor['wasm'] };
+        }),
+      });
+      return quickjsAssets.promise;
+    }
     quickjsAssets.promise = (async () => {
       const [wasm, ...extensionModules] = await Promise.all([
         WebAssemblyGlobal.compile(quickjsWasm),

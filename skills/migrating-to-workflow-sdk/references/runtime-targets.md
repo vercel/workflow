@@ -21,7 +21,7 @@ State this explicitly in the migration output:
 
 - The workflow and step code can stay the same.
 - The app still needs a `World` implementation for storage, queueing, and streaming.
-- The server startup path must call `await getWorld().start?.()` when the selected world requires background workers.
+- The server startup path must await `getWorld()` and then call `await world.start?.()` when the selected world requires background workers.
 
 Minimum interface to mention:
 
@@ -37,7 +37,9 @@ Bootstrap example for self-hosted runtimes:
 import { getWorld } from 'workflow/runtime';
 
 export async function startWorkflowWorld(): Promise<void> {
-  await getWorld().start?.();
+  // getWorld() is async in v5: await it before calling start()
+  const world = await getWorld();
+  await world.start?.();
 }
 ```
 
@@ -51,7 +53,7 @@ export async function startWorkflowWorld(): Promise<void> {
 
 When the target is self-hosted, include this explanation almost verbatim:
 
-> The workflow and step code can stay the same. Because this target is self-hosted, the app still needs a `World` implementation for storage, queueing, and streaming, plus a startup path that calls `await getWorld().start?.()` when the selected world runs background workers.
+> The workflow and step code can stay the same. Because this target is self-hosted, the app still needs a `World` implementation for storage, queueing, and streaming, plus a startup path that awaits `getWorld()` and then calls `await world.start?.()` when the selected world runs background workers.
 
 Framework-agnostic app boundary:
 
@@ -90,7 +92,9 @@ Startup bootstrap:
 import { getWorld } from 'workflow/runtime';
 
 export async function startWorkflowWorld(): Promise<void> {
-  await getWorld().start?.();
+  // getWorld() is async in v5: await it before calling start()
+  const world = await getWorld();
+  await world.start?.();
 }
 ```
 

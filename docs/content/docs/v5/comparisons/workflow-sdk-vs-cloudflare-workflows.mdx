@@ -28,7 +28,7 @@ related:
 | **Versioning** | Runs pinned to their immutable deployment, making them safe by default | **No version pinning**; running instances resume on the *latest* deployed code, and changing step names/order can desync the cached replay. No patching API |
 | **Encryption** | Per-run AES-256-GCM **end-to-end** encryption | **At-rest only** (AES-256, Cloudflare-managed keys) + TLS; no E2E, no customer-managed keys |
 | **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Durable agents via Workflows + the Agents SDK; resumable streaming buffered in SQLite (mid-call eviction needs opt-in `chatRecovery`) |
-| **Performance** | No-penalty resume; scale-to-zero; up to 100K concurrency (Vercel) | **~0 ms isolate cold starts**; 50K concurrent instances; global Anycast (330+ cities), providing the strongest cold-start and edge story |
+| **Performance** | No-penalty resume; several steps execute inline per invocation; scale-to-zero; up to 100K concurrency (Vercel) | **~0 ms isolate cold starts**; 50K concurrent instances; global Anycast (330+ cities), providing the strongest cold-start and edge story |
 | **Portability** | Apache-2.0; World abstraction; self-hostable | Engine proprietary; tied to Durable Objects; **highest lock-in** of these tools |
 | **Pricing** | SDK free; pay your platform | Workers Standard: requests + CPU-time + storage + per-step ($0.80 / 100K steps); idle/sleep not billed |
 | **Limits** | 50 MB payloads; 2 GB/run; 10K steps ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | **1 MiB** step result & event payload; 1 GB state/instance; 10K steps (up to 25K) |
@@ -64,6 +64,9 @@ There's no automated migration skill for Cloudflare specifically, but the mappin
 | `step.waitForEvent` | `createHook()` / `createWebhook()` |
 | Per-step `retries` config (`limit`, `delay`, `backoff`) | `maxRetries` caps attempts; any backoff curve via [`RetryableError`](/docs/api-reference/workflow/retryable-error)'s `retryAfter` derived from [`getStepMetadata().attempt`](/docs/api-reference/workflow/get-step-metadata); `FatalError` stops retries. See [Errors & Retrying](/docs/foundations/errors-and-retries#advanced-example) |
 | `env.MY_WORKFLOW.create(...)` binding | `start(workflow, [args])` from your app |
+| Custom instance `id` on `create({ id })` | `start(workflow, args, { experimental_hook: { token } })`; a duplicate start throws `HookConflictError` naming the owner. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) |
+| `instance.sendEvent({ type, payload })` | `resumeHook(token, payload)` for a `createHook({ token })` in the workflow |
+| `instance.terminate()` | `run.cancel({ cancelReason })` |
 
 Side effects that lived in `step.do` callbacks move into named `"use step"` functions; the orchestration becomes plain `await` / `if` / `Promise.all` instead of the `WorkflowEntrypoint` class.
 

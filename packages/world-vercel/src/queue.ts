@@ -32,6 +32,8 @@ import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getQueueDispatcher } from './http-client.js';
+import { getTransientTransportCode } from './http-core.js';
+import { withQueueSendRetry } from './queue-send-retry.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { getTraceContextHeaders } from './telemetry.js';
@@ -448,6 +450,55 @@ function warnHandoffOutcomesUnobserved(): void {
   console.warn(
     '[workflow] This @vercel/queue version exposes no API client to observe, so the outcome of each handoff is not logged'
   );
+}
+
+/**
+ * What a send-retry log line names: the run a message is for, or the runs of a
+ * batch. It carries them because the queue may never have seen the failed
+ * send, so this line can be its only record.
+ */
+function sendRetrySubject(payloads: readonly QueuePayload[]): string {
+  const runIds = [
+    ...new Set(
+      payloads.flatMap((payload) =>
+        'runId' in payload && typeof payload.runId === 'string'
+          ? [payload.runId]
+          : []
+      )
+    ),
+  ];
+  const runs =
+    runIds.length === 0
+      ? ''
+      : runIds.length <= 5
+        ? ` for run ${runIds.map((id) => `"${id}"`).join(', ')}`
+        : ` for ${runIds.length} runs (first "${runIds[0]}")`;
+  return payloads.length > 1 ? ` (${payloads.length} messages${runs})` : runs;
+}
+
+/** An error's name, message and transport code, without its stack. */
+function describeSendError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const code = getTransientTransportCode(error);
+  return `${error.name}: ${error.message}${code ? ` (${code})` : ''}`;
+}
+
+/** Hooks that log a send's re-sends and, if they did not help, its failure. */
+function sendRetryLogging(
+  queueName: string,
+  payloads: readonly QueuePayload[]
+): Parameters<typeof withQueueSendRetry>[1] {
+  const subject = sendRetrySubject(payloads);
+  return {
+    onRetry: (error, attempt, delayMs) =>
+      console.warn(
+        `[workflow] Queue send to "${queueName}"${subject} failed on attempt ${attempt}; re-sending in ${delayMs}ms: ${describeSendError(error)}`
+      ),
+    onExhausted: (error, attempts) =>
+      console.error(
+        `[workflow] Queue send to "${queueName}"${subject} still failed after ${attempts} attempts: ${describeSendError(error)}`
+      ),
+  };
 }
 
 /** Exported for unit tests. */
@@ -1014,10 +1065,16 @@ export function createQueue(config?: APIConfig): Queue {
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
     // returns a fresh message ID and only one of the messages is delivered, so
     // there is no conflict for the caller to handle here.
-    const sent = await client.send(prepared.topic, prepared.wrapper, {
-      ...prepared.sendOptions,
-      ...(hold && { experimental_hold: hold }),
-    });
+    // Re-sent after a transient failure (see queue-send-retry.ts): a failed
+    // `start()` send would otherwise leave a created run that never runs.
+    const sent = await withQueueSendRetry(
+      () =>
+        client.send(prepared.topic, prepared.wrapper, {
+          ...prepared.sendOptions,
+          ...(hold && { experimental_hold: hold }),
+        }),
+      sendRetryLogging(queueName, [payload])
+    );
     const { messageId, experimental_held, experimental_notHeld } = sent;
     let holdResult: QueueHoldResult | undefined;
     if (experimental_held) {
@@ -1101,6 +1158,8 @@ export function createQueue(config?: APIConfig): Queue {
         entries: {
           index: number;
           topic: string;
+          /** The World payload, for logging; `message` carries its wrapper. */
+          payload: QueuePayload;
           message: Parameters<QueueClient['sendBatch']>[1][number];
         }[];
       }
@@ -1115,6 +1174,7 @@ export function createQueue(config?: APIConfig): Queue {
       group.entries.push({
         index,
         topic: prepared.topic,
+        payload: entry.message,
         message: {
           payload: prepared.wrapper,
           ...prepared.sendOptions,
@@ -1135,10 +1195,17 @@ export function createQueue(config?: APIConfig): Queue {
           offset += MAX_QUEUE_SEND_BATCH
         ) {
           const chunk = entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH);
-          const sent = await client.sendBatch(
-            // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
-            chunk[0]!.topic,
-            chunk.map((entry) => entry.message)
+          const sent = await withQueueSendRetry(
+            () =>
+              client.sendBatch(
+                // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
+                chunk[0]!.topic,
+                chunk.map((entry) => entry.message)
+              ),
+            sendRetryLogging(
+              queueName,
+              chunk.map((entry) => entry.payload)
+            )
           );
           for (const [position, entry] of chunk.entries()) {
             results[entry.index] = toBatchResult(sent[position]);

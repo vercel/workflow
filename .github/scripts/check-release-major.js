@@ -39,8 +39,10 @@ function findPackagesOutsideReleaseMajor({
       continue;
     }
 
+    // A 0.x package is experimental and versions on its own line until it
+    // is ready to join the release major (e.g. @workflow/world-cloudflare).
     const major = parseMajor(pkg.version);
-    if (major === releaseVersion) {
+    if (major === releaseVersion || major === 0) {
       continue;
     }
 
@@ -92,7 +94,7 @@ function readChangesetIgnorePatterns(rootDir = process.cwd()) {
 
 function renderMarkdownSummary({ mismatches, releaseVersion }) {
   if (mismatches.length === 0) {
-    return `### Major Version Guard\n\nAll public workspace package versions match release major \`${releaseVersion}\`.\n`;
+    return `### Major Version Guard\n\nAll public workspace package versions match release major \`${releaseVersion}\` or are 0.x.\n`;
   }
 
   const rows = mismatches
@@ -105,7 +107,7 @@ function renderMarkdownSummary({ mismatches, releaseVersion }) {
   return [
     '### Major Version Guard',
     '',
-    `Failing because these public workspace package versions do not match release major \`${releaseVersion}\`.`,
+    `Failing because these public workspace package versions do not match release major \`${releaseVersion}\` (or 0.x, for experimental packages).`,
     '',
     '| Package | Version | Path |',
     '| --- | --- | --- |',
