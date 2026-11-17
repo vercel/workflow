@@ -451,6 +451,60 @@ async function allEvents(runId: string) {
   return events;
 }
 
+/**
+ * Every step of a run, across pages, read from the World's primary storage.
+ *
+ * Assertions on a run's steps read here rather than through
+ * `workflow inspect steps`, whose listing prefers the World's eventually
+ * ingested `analytics` namespace and can return a page missing the freshest
+ * rows.
+ */
+async function allSteps(runId: string) {
+  const world = await getWorld();
+  const steps: Awaited<ReturnType<typeof world.steps.list>>['data'] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const page = await world.steps.list({
+      runId,
+      resolveData: 'none',
+      pagination: { limit: 100, cursor },
+    });
+    steps.push(...page.data);
+    if (!page.cursor || !page.hasMore) break;
+    cursor = page.cursor;
+  }
+  return steps;
+}
+
+/**
+ * Repeat `read` until `predicate` holds or `timeoutMs` passes, and return the
+ * last read either way so the caller's assertions report what was seen.
+ * Storage can still trail a just-finished run (on world-vercel a
+ * single-orchestrator run's step list lags its events), so a read moments
+ * after `returnValue` settles may not have converged yet.
+ */
+async function readUntil<T>(
+  read: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  {
+    timeoutMs = 30_000,
+    intervalMs = 1_000,
+  }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await read();
+    let satisfied = false;
+    try {
+      satisfied = predicate(value);
+    } catch {
+      // A malformed intermediate state counts as not yet converged.
+    }
+    if (satisfied || Date.now() >= deadline) return value;
+    await sleep(intervalMs);
+  }
+}
+
 /** The `hook_created` events of a parent's child-run completion hook. */
 function completionHooks(
   events: Awaited<ReturnType<typeof allEvents>>,
@@ -1936,8 +1990,8 @@ describe.concurrent('e2e', () => {
           expect(runData.status).toBe('completed');
 
           // … and the step itself is recorded as failed.
-          const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId}`,
+          const steps = await readUntil(
+            () => allSteps(run.runId),
             (json) =>
               json.some(
                 (s: any) =>
@@ -2069,8 +2123,8 @@ describe.concurrent('e2e', () => {
           expect(runData.status).toBe('completed');
 
           // Verify the step itself failed
-          const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId}`,
+          const steps = await readUntil(
+            () => allSteps(run.runId),
             (json) =>
               json.some(
                 (s: any) =>
@@ -4421,14 +4475,14 @@ describe.concurrent('e2e', () => {
       // Verify that exactly 2 steps were executed:
       // 1. stepWithStepFunctionArg(doubleNumber)
       //   (doubleNumber(10) is run inside the stepWithStepFunctionArg step)
-      const eventsData = await cliInspectJsonUntil(
-        `events --run ${run.runId} --json`,
+      const eventsData = await readUntil(
+        () => allEvents(run.runId),
         (json) =>
           json.filter((event: any) => event.eventType === 'step_completed')
             .length >= 1
       );
       const stepCompletedEvents = eventsData.filter(
-        (event) => event.eventType === 'step_completed'
+        (event: any) => event.eventType === 'step_completed'
       );
       expect(stepCompletedEvents).toHaveLength(1);
     }
@@ -4997,8 +5051,8 @@ describe.concurrent('e2e', () => {
       // - 2 lexical-`this` arrow steps from `makeAdder` (direct + via-step)
       // - 1 invokeAdderFromStep wrapper (which itself triggers another
       //   makeAdder arrow step inside it)
-      const steps = await cliInspectJsonUntil(
-        `steps --runId ${run.runId}`,
+      const steps = await readUntil(
+        () => allSteps(run.runId),
         (json) => {
           const byName = (needle: string) =>
             json.filter((s: any) => s.stepName.includes(needle));

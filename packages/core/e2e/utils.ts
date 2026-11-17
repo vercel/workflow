@@ -599,14 +599,7 @@ export const cliInspectJson = async (args: string) => {
       ...inspectArgs,
       ...cliArgs,
     ],
-    cliAppPath,
-    undefined,
-    {
-      // e2e assertions read entities immediately after writing them; the
-      // analytics store ingests asynchronously and can miss the freshest
-      // rows. Force the storage-backed list paths for determinism.
-      WORKFLOW_DISABLE_ANALYTICS_READS: '1',
-    }
+    cliAppPath
   );
   if (!result.stdout.trim()) {
     throw new Error(
