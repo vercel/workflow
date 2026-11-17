@@ -7865,6 +7865,84 @@ impl VisitMut for StepTransform {
                                     // It's valid - proceed with transformation
                                     self.step_function_names.insert(name.clone());
 
+                                    // Inside a function (for example a workflow body), a
+                                    // `const name = async function () { "use step" }` is a
+                                    // nested step, exactly like the arrow form below: it is
+                                    // hoisted, namespaced by the enclosing function and
+                                    // handed the closure variables it captures.
+                                    if !self.in_module_level {
+                                        match self.mode {
+                                            TransformMode::Step => {
+                                                let mut cloned_function = fn_expr.function.clone();
+                                                self.remove_use_step_directive(
+                                                    &mut cloned_function.body,
+                                                );
+                                                let closure_vars =
+                                                    ClosureVariableCollector::collect_from_function(
+                                                        &cloned_function,
+                                                        &self.module_imports,
+                                                        &self.declared_identifiers,
+                                                    );
+                                                let hoisted_fn_expr = FnExpr {
+                                                    ident: Some(Ident::new(
+                                                        name.clone().into(),
+                                                        DUMMY_SP,
+                                                        SyntaxContext::empty(),
+                                                    )),
+                                                    function: cloned_function,
+                                                };
+                                                self.nested_step_functions.push((
+                                                    name.clone(),
+                                                    hoisted_fn_expr,
+                                                    fn_expr.function.span,
+                                                    closure_vars,
+                                                    false, // Not an arrow function
+                                                    self.current_parent_function_name
+                                                        .clone()
+                                                        .unwrap_or_default(),
+                                                    false, // Regular functions have their own `this`
+                                                ));
+                                                // Keep the original with the directive stripped, so
+                                                // direct (non-workflow) calls keep normal closure semantics.
+                                                self.remove_use_step_directive(
+                                                    &mut fn_expr.function.body,
+                                                );
+                                            }
+                                            TransformMode::Workflow => {
+                                                let parent_workflow = self
+                                                    .current_parent_function_name
+                                                    .clone()
+                                                    .unwrap_or_default();
+                                                let step_fn_name = self.record_nested_step_name(
+                                                    &name,
+                                                    &parent_workflow,
+                                                );
+                                                let step_id = self.create_id(
+                                                    Some(&step_fn_name),
+                                                    fn_expr.function.span,
+                                                    false,
+                                                );
+                                                let closure_vars =
+                                                    ClosureVariableCollector::collect_from_function(
+                                                        &fn_expr.function,
+                                                        &self.module_imports,
+                                                        &self.declared_identifiers,
+                                                    );
+                                                *init = Box::new(self.create_step_proxy_reference(
+                                                    &step_id,
+                                                    &closure_vars,
+                                                ));
+                                            }
+                                            TransformMode::Client => {
+                                                // Nested step: just remove the directive without registering
+                                                self.remove_use_step_directive(
+                                                    &mut fn_expr.function.body,
+                                                );
+                                            }
+                                        }
+                                        continue;
+                                    }
+
                                     match self.mode {
                                         TransformMode::Step => {
                                             self.remove_use_step_directive(

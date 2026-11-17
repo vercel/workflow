@@ -188,6 +188,8 @@ example.workflowId = "workflow//./input//example";
 registerStepFunction("step//./input//example/innerStep", example$innerStep);
 ```
 
+The same applies to every form of nested step: a function declaration (as above), an arrow function or function expression bound to a `const`/`let`/`var` (`const act = async () => { "use step"; ... }`, `const act = async function summarize() { "use step"; ... }`), and a function or arrow expression that is not bound to a variable (for example one that is returned). A step bound to a variable takes the variable's name (`example/act`), not the function expression's own name. An unbound function expression takes its own name, and an unbound anonymous one is named `_anonymousStepN`.
+
 ### Steps in Nested Object Properties
 
 Step functions can be defined inside deeply nested object properties, including function call arguments. The plugin recursively processes nested objects to find step functions, generating compound paths for the step IDs.
