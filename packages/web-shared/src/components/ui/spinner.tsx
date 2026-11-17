@@ -1,7 +1,7 @@
 const KEYFRAMES = `@keyframes wf-spinner-fade{0%{opacity:1}100%{opacity:.15}}`;
 
 /**
- * Spinner matching Geist's multi-line fade spinner.
+ * Multi-line fade spinner.
  * At size ≤12: 8 lines, ≤16: 10 lines, else: 12 lines.
  */
 export function Spinner({

@@ -52,8 +52,6 @@ function createFullState(
  * Middle-truncation logic. Returns refs to attach to the container and measurement elements, plus the truncated display text. Recalculates on resize, font loading, and value changes.
  * Powers the `<MiddleTruncate>` (`<span>`) component.
  *
- * Documentation: [Geist Middle Truncate](https://vercel.com/geist/middle-truncate)
- *
  * @param value - Full text string to truncate.
  */
 function useMiddleTruncate(value: string): {

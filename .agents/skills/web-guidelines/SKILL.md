@@ -12,7 +12,7 @@ Before finalizing a review or implementation, inspect the rendering tree of the 
 | Existing guideline violations, `BROKEN-WINDOWS.md` records, or UI debt                                | [Broken Windows](./broken-windows/GUIDE.md)                                     |
 | Skeletons, loading indicators, list fallbacks, or data that arrives after first render                | [Loading States](./loading-states/GUIDE.md)                                     |
 | Sheets, alert dialogs, or modals, including their dynamic content, scrolling, sizing, or footer actions | [Dialogs](./dialogs/GUIDE.md)                                                   |
-| Text colour, typography, or other Geist tokens                                                        | [`packages/web-shared/AGENTS.md`](../../../packages/web-shared/AGENTS.md)       |
+| Text colour, typography, or other design tokens                                                       | [`packages/web-shared/AGENTS.md`](../../../packages/web-shared/AGENTS.md)       |
 | Any change to code in either package, including logic, styles, layout, and loading states             | [Validation](./validation/GUIDE.md)                                             |
 
 ## Guide Structure

@@ -2,7 +2,6 @@ const WorkflowIcon = () => {
   return (
     <svg
       aria-hidden="true"
-      data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
       viewBox="0 0 16 16"
@@ -20,7 +19,6 @@ const WebhookIcon = () => {
   return (
     <svg
       aria-hidden="true"
-      data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
       viewBox="0 0 16 16"
@@ -40,7 +38,6 @@ const SleepIcon = () => {
   return (
     <svg
       aria-hidden="true"
-      data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
       viewBox="0 0 16 16"
@@ -60,7 +57,6 @@ const StepForwardIcon = () => {
   return (
     <svg
       aria-hidden="true"
-      data-testid="geist-icon"
       height="16"
       strokeLinejoin="round"
       viewBox="0 0 16 16"

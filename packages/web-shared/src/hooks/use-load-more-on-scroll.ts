@@ -15,8 +15,7 @@ interface UseLoadMoreOnScrollOptions {
 /**
  * Triggers `loadMore` when a sentinel element scrolls into view.
  * Returns a ref to attach to an invisible sentinel `<div>` placed after the
- * list content. Ported from vercel/front's `@vercel/hooks`
- * `useLoadMoreOnScroll`.
+ * list content.
  *
  * Because it keys off `isIntersecting`/`isLoadingMore`, it self-continues:
  * if the sentinel is still in view once a page finishes loading, the next

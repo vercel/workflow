@@ -12,8 +12,8 @@ interface LoadMoreButtonProps {
 }
 
 /**
- * A "Load more" button matching Geist's Button type="secondary" size="small"
- * with a spinner prefix when loading.
+ * A "Load more" button in the small secondary button style, with a spinner
+ * prefix when loading.
  */
 export function LoadMoreButton({
   loading = false,
