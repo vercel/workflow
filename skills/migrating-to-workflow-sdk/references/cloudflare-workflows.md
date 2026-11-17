@@ -13,7 +13,7 @@ npx workflow migrate cloudflare-workflows --report cloudflare-migration.md      
 - It reads `tsconfig.json` for the files, and `wrangler.jsonc` / `wrangler.json` / `wrangler.toml` for `vars`, bindings, and which class each `[[workflows]]` binding runs.
 - It does the mechanical part: each `class X extends WorkflowEntrypoint` becomes an exported `"use workflow"` function named `X` taking `{ payload, timestamp, instanceId, workflowName }`; each `step.do()` callback becomes a module-level `"use step"` function whose parameters are the variables it captured from `run()`; the report lists them.
 - Everything it could not do safely stays in place under `// TODO(workflow-migrate): ...`. Resolve those, then replace the Worker's binding calls with the `workflowInstances()` adapter from the report (`env.MY_WORKFLOW` -> `workflowInstances('MyWorkflow', MyWorkflow)`).
-- Verify each captured variable is serializable.
+- Verify each captured variable is serializable. Captured values are serialized like arguments, so this holds for an inline `"use step"` callback too; the codemod lifts callbacks to module scope because that is the recommended style, not because inline steps can't capture.
 
 When you cannot run it, apply the same rules by hand with the table below. Use the adapter from `docs/content/docs/v5/comparisons/workflow-sdk-vs-cloudflare-workflows.mdx` -> `### Replace the Workflow bindings` for the app boundary.
 

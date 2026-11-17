@@ -49,10 +49,12 @@ export interface CaptureOptions {
 }
 
 /**
- * What a step body reads from the enclosing workflow function. A step
- * function only gets its arguments, so every binding the closure reads from
- * `scope` becomes a parameter. Bindings at module scope stay visible to a
- * module-level step and are not captured. Anything that cannot cross the
+ * What a step body reads from the enclosing workflow function. The codemods
+ * lift step bodies into module-level step functions (the recommended style;
+ * an inline "use step" closure would also work), and a module-level function
+ * cannot see the workflow's locals, so every binding the closure reads from
+ * `scope` becomes a parameter. Bindings at module scope stay visible and are
+ * not captured. Anything that cannot cross the
  * boundary by value (a write to a captured variable, a captured function,
  * `this` from the enclosing method) is a blocker.
  */
@@ -134,7 +136,7 @@ export function analyzeCaptures(options: CaptureOptions): CaptureAnalysis {
     if (inTypePosition(ts, node)) return;
     if (isFunctionOrClassDeclaration(ts, declaration)) {
       result.blockers.push(
-        `The step calls \`${node.text}\`, a function or class declared inside the workflow. Functions are not serializable step arguments: move \`${node.text}\` to module scope and run the codemod again.`
+        `The step calls \`${node.text}\`, a function or class declared inside the workflow. Functions are not serializable, whether passed to a step or captured by one: move \`${node.text}\` to module scope and run the codemod again.`
       );
       return;
     }

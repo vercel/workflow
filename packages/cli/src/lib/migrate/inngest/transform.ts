@@ -29,9 +29,10 @@ import type {
  * Inngest -> Workflow SDK codemod for one file.
  *
  * The heart of it is lifting `step.run(id, closure)` into a module-level
- * `"use step"` function. A closure can read anything in scope; a step
- * function cannot, because its arguments are serialized into the event log.
- * So every binding the closure reads from the Inngest handler (handler
+ * `"use step"` function, the style the Workflow SDK recommends (an inline
+ * "use step" closure would also work and read the handler's variables). A
+ * module-level function cannot see the handler's locals, so every binding
+ * the closure reads from the Inngest handler (handler
  * parameters, earlier step results, loop variables) is found with the
  * TypeScript binder, becomes a parameter of the new step function, and is
  * passed at the call site. Bindings declared at module scope stay as they
@@ -1530,7 +1531,7 @@ export function transformInngestFile(
 
       if (isFunctionOrClassDeclaration(ts, declaration)) {
         result.blockers.push(
-          `The step closure calls \`${node.text}\`, a function or class declared inside the handler. Functions are not serializable step arguments: move \`${node.text}\` to module scope and run the codemod again.`
+          `The step closure calls \`${node.text}\`, a function or class declared inside the handler. Functions are not serializable, whether passed to a step or captured by one: move \`${node.text}\` to module scope and run the codemod again.`
         );
         return;
       }

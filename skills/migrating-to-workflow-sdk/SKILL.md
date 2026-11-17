@@ -43,7 +43,7 @@ Use this skill when converting an existing orchestration system to the Workflow 
   - If a callback-URL prompt does not specify response semantics, default to `resume/url/default` and make the assumption explicit in `## Open Questions`.
 - Never pair `createWebhook()` with `resumeHook()`, and never pass `token:` to `createWebhook()`.
 - Call `start()` directly in the workflow for child runs, keep the returned `Run`, and `await run.returnValue` for the result. Call `getRun()` only inside a `"use step"` function.
-- When `step.run()`-style closures become `"use step"` functions, pass every variable the closure read from the enclosing function as an argument. A closure that assigns to such a variable must return the new value instead.
+- Prefer lifting `step.run()`-style closures into named, module-level `"use step"` functions, and pass every variable the closure read from the enclosing function as an argument (a module-level function can't see them). A `"use step"` closure kept inline in the workflow also works and reads those variables directly; use it for small one-off steps. Either way the values are serialized copies: a closure that assigns to such a variable must return the new value instead (an inline step that assigns to a captured variable fails).
 - For duplicate-start protection (Inngest `idempotency`, Trigger.dev `idempotencyKey`, Temporal workflow IDs), use `start(wf, args, { experimental_hook: { token } })`.
 - Use `getStepMetadata().stepId` as the idempotency key for external writes.
 - Use `getWritable()` in workflow context to obtain the stream, but interact with it (write, close) only inside `"use step"` functions.
