@@ -493,6 +493,50 @@ describe('Retention ($retention: 0)', () => {
       });
     }
 
+    it('takes no lock on a run that keeps its data when a step settles or a stream is written', async () => {
+      const { runId } = await seedRun();
+      const stepId = `step_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'step_created',
+        correlationId: stepId,
+        eventData: { stepName: 'slow-step', input: new Uint8Array([4, 5]) },
+      });
+      await events.create(runId, {
+        eventType: 'step_started',
+        correlationId: stepId,
+      });
+      // Another writer holds the run row: a write that locked it would wait.
+      const holder = await pool.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query(
+          'SELECT id FROM workflow.workflow_runs WHERE id = $1 FOR UPDATE',
+          [runId]
+        );
+        const within = <T>(p: Promise<T>) =>
+          Promise.race([
+            p,
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error('blocked on the run row')),
+                3_000
+              )
+            ),
+          ]);
+        await within(streamer.streams.write(runId, 'unlocked', 'chunk'));
+        await within(
+          events.create(runId, {
+            eventType: 'step_completed',
+            correlationId: stepId,
+            eventData: { result: new Uint8Array([6, 7]) },
+          })
+        );
+      } finally {
+        await holder.query('ROLLBACK');
+        holder.release();
+      }
+    });
+
     it('keeps what a step and a stream write after a run that keeps its data ends', async () => {
       const { runId } = await seedRun();
       const stepId = `step_${ulid()}`;

@@ -12,9 +12,8 @@
  * Every tracked step is settled before the delivery acknowledges its message,
  * since crash recovery of an inline-owned step depends on the owning message
  * being redelivered. A run may end while steps are still running here (a
- * `Promise.race` loser), except one started with `experimental_retention: 0`:
- * its data is deleted when its terminal event is written, so its steps settle
- * before that write (see `settleInlineStepsBeforeTerminal` in delivery.ts).
+ * `Promise.race` loser), zero-retention runs included: what such a step
+ * writes after the run's data was deleted is the World's to discard.
  */
 
 export interface InlineStepSettlement<Step, Result> {

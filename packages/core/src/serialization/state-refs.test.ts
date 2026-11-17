@@ -303,6 +303,55 @@ describe('frozen values stored by reference', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  // A reference names the first path its writer found the string at, and
+  // earlier writers walked through cycles and repeated objects; their
+  // references must still resolve.
+  for (const [label, build] of [
+    [
+      'through a cycle',
+      (long: string) => {
+        const input: Record<string, unknown> = {};
+        input.self = input;
+        input.long = long;
+        return { input, path: [...Array(63).fill('self'), 'long'] };
+      },
+    ],
+    [
+      'through an object first reached past the depth limit',
+      (long: string) => {
+        const shared = { long };
+        let deep: Record<string, unknown> = { shared };
+        // `shared` is at depth 64, the limit: its string is just past it.
+        for (let i = 0; i < 62; i++) deep = { n: deep };
+        return {
+          input: { deep, alias: shared },
+          path: ['alias', 'long'],
+        };
+      },
+    ],
+  ] as const) {
+    it(`resolves a source reference ${label}`, () => {
+      const { output1 } = session();
+      const long = 'Weather in Oslo for the next three days, please. '.repeat(
+        20
+      );
+      const { input, path } = build(long);
+      const writer = new StateContext();
+      writer.addSource('run', input);
+      const v1 = read(output1, writer).session;
+      const s2 = produce(v1 as Session, (d) => {
+        d.history.push({ role: 'user', content: long });
+      });
+      const output2 = write({ session: s2 }, writer);
+      expect(text(output2)).toContain('StateSrcV1');
+      expect(text(output2)).not.toContain('Weather in Oslo');
+      expect(text(output2)).toContain(JSON.stringify(path.at(-2)));
+      const reader = cold(output1);
+      reader.addSource('run', input);
+      expect(read(output2, reader).session).toStrictEqual(s2);
+    });
+  }
+
   it('resolves references from writers that indexed every string', () => {
     const { output1 } = session();
     const message = 'Weather in Oslo for the next three days, please. '.repeat(

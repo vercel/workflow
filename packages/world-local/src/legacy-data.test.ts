@@ -107,3 +107,16 @@ it("a tagged clear() deletes only that tag's files of an earlier release", async
   expect(exists('steps/wrun_B')).toBe(false);
   expect(exists('streams/chunks/s2')).toBe(false);
 });
+
+it('tagged clear()s running side by side do not trip over each other', async () => {
+  const files = writeLegacyData();
+  mkdirSync(path.join(dataDir, 'waits'));
+  const worlds = ['vitest-0', 'vitest-1', 'vitest-2', 'vitest-3'].map((tag) =>
+    createWorld({ dataDir, tag })
+  );
+  await Promise.all(worlds.map((world) => world.clear()));
+  await Promise.all(worlds.map((world) => world.close?.()));
+  for (const file of [...files.tagged, ...files.otherTag])
+    expect(exists(file), file).toBe(false);
+  for (const file of files.untagged) expect(exists(file), file).toBe(true);
+});

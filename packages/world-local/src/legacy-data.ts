@@ -78,19 +78,39 @@ export async function removeLegacyData(
     return;
   }
   const suffixes = [`.${tag}.json`, `.${tag}.bin`];
+  // Workers clearing other tags walk the same directories at the same time:
+  // what one of them already removed is not an error.
+  const gone = (error: unknown) =>
+    (error as NodeJS.ErrnoException).code === 'ENOENT';
+  const removeDir = (dir: string) =>
+    rmdir(dir).catch((error: unknown) => {
+      // Not empty: another tag's file, or one written meanwhile, keeps it.
+      if (gone(error) || (error as NodeJS.ErrnoException).code === 'ENOTEMPTY')
+        return;
+      throw error;
+    });
   /** Deletes the tag's files under `dir`; whether it is now empty. */
   const removeTagged = async (dir: string): Promise<boolean> => {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (gone(error)) return false;
+      throw error;
+    }
     let left = 0;
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
+    for (const entry of entries) {
       const at = path.join(/* turbopackIgnore: true */ dir, entry.name);
       if (entry.isDirectory()) {
-        if (await removeTagged(at)) await rmdir(at);
+        if (await removeTagged(at)) await removeDir(at);
         else left++;
       } else if (
         entry.isFile() &&
         suffixes.some((suffix) => entry.name.endsWith(suffix))
       ) {
-        await unlink(at);
+        await unlink(at).catch((error: unknown) => {
+          if (!gone(error)) throw error;
+        });
       } else {
         left++;
       }
@@ -98,6 +118,6 @@ export async function removeLegacyData(
     return left === 0;
   };
   for (const dir of entries) {
-    if (await removeTagged(dir)) await rmdir(dir);
+    if (await removeTagged(dir)) await removeDir(dir);
   }
 }

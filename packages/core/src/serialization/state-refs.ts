@@ -273,16 +273,19 @@ function hasBrand(check: () => unknown): boolean {
  * whose keys and values are primitives, trusted leaves or frozen state. A
  * class instance inside one couldn't be rebuilt without workflow code, so the
  * value holding it is stored in full. Not cached across checks, as a `Map` or
- * `Set` can change, but once per check (`leaves`): a value may hold one many times.
+ * `Set` can change, but once per check and depth (`leaves`): a value may hold
+ * one many times.
  */
 function holdsOnlyState(
   leaf: object,
   depth: number,
-  leaves: Set<object>
+  leaves: Map<object, number>
 ): boolean {
   const tag = Object.prototype.toString.call(leaf);
   if (tag !== '[object Map]' && tag !== '[object Set]') return true;
-  if (leaves.has(leaf)) return true;
+  // Found to hold only state at this depth or deeper: its contents fit
+  // within the depth limit from here too.
+  if ((leaves.get(leaf) ?? -1) >= depth) return true;
   if (depth > MAX_DEPTH) return false;
   let ok = true;
   const check = (entry: unknown) => {
@@ -305,7 +308,7 @@ function holdsOnlyState(
       check(value);
     });
   else Set.prototype.forEach.call(leaf, (value: unknown) => check(value));
-  if (ok) leaves.add(leaf);
+  if (ok) leaves.set(leaf, depth);
   return ok;
 }
 
@@ -324,13 +327,13 @@ const frozenState = globalSingleton(
 export function isFrozenState(
   value: unknown,
   depth = 0,
-  leaves?: Set<object>
+  leaves?: Map<object, number>
 ): boolean {
   if (value === null || typeof value !== 'object') return false;
   if (frozenState.has(value)) return true;
   if (depth > MAX_DEPTH || !Object.isFrozen(value)) return false;
   if (!Array.isArray(value) && !isPlainObject(value)) return false;
-  leaves ??= new Set();
+  leaves ??= new Map();
   // Freezing an accessor does not freeze the value it returns.
   for (const key of Object.keys(value)) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -843,11 +846,13 @@ export class StateContext {
     if (this.sources.has(id)) return;
     // The strings are kept in a tree of the payload's own keys, not by their
     // whole path: a key is held once however many strings sit below it.
-    // Linear in the payload, so complete: a writer may have referred to any of
-    // its strings. An object the payload holds twice is read the first time
-    // only, as writers refer to the first path a string is found at.
+    // Complete, so a reference any writer made still resolves: every path to
+    // a string within `MAX_PATH`, through an object held twice or a cycle
+    // too. An object reached again at a depth it was already read at gets the
+    // same subtree, so it is read once per depth and its subtree is shared:
+    // work and memory are linear in the payload (times `MAX_PATH` at worst).
     const path: (string | number)[] = [];
-    const seen = new Set<object>();
+    const read = new Map<object, Map<number, SourceNode | undefined>>();
     // Bytes `path` takes in a reference, to write one only when it is shorter
     // than the string.
     const idBytes = jsonLength(id);
@@ -863,8 +868,11 @@ export class StateContext {
           this.strings.set(v, { id, path: path.slice() });
         return v;
       }
-      if (v === null || typeof v !== 'object' || seen.has(v)) return undefined;
-      seen.add(v);
+      if (v === null || typeof v !== 'object') return undefined;
+      const depth = path.length;
+      let atDepth = read.get(v);
+      if (atDepth?.has(depth)) return atDepth.get(depth);
+      if (atDepth === undefined) read.set(v, (atDepth = new Map()));
       let node: Map<string | number, SourceNode> | undefined;
       const visit = (key: string | number, child: unknown) => {
         path.push(key);
@@ -884,6 +892,7 @@ export class StateContext {
       } else if (isPlainObject(v)) {
         for (const key of Object.keys(v)) visit(key, v[key]);
       }
+      atDepth.set(depth, node);
       return node;
     };
     this.sources.set(id, walk(value, 2) ?? EMPTY_SOURCE);

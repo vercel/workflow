@@ -1,9 +1,11 @@
 import { EventEmitter } from 'node:events';
-import type {
-  GetChunksOptions,
-  StreamChunksResponse,
-  Streamer,
-  StreamInfoResponse,
+import {
+  type GetChunksOptions,
+  RETENTION_ATTRIBUTE,
+  RETENTION_ZERO,
+  type StreamChunksResponse,
+  type Streamer,
+  type StreamInfoResponse,
 } from '@workflow/world';
 import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
@@ -341,10 +343,12 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   /**
    * Inserts data chunks in one statement, unless the run's data has been
    * purged (zero retention): a step still running when its run finished
-   * would otherwise write past the purge. The run's row lock is taken to read
-   * `expired_at`, so a purge in progress is waited for, and a purge that has
-   * not reached the run yet waits for this insert and then clears it.
-   * Whether the chunks were written.
+   * would otherwise write past the purge. For a zero-retention run the run's
+   * row lock is taken to read `expired_at`, so a purge in progress is waited
+   * for, and a purge that has not reached the run yet waits for this insert
+   * and then clears it. `FOR SHARE` locks only the rows the subquery returns,
+   * so a run that keeps its data takes no lock (its retention is fixed when
+   * it starts). Whether the chunks were written.
    */
   const insertDataChunks = async (
     runId: string,
@@ -365,7 +369,9 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       FROM (VALUES ${rows}) AS v (id, stream_id, run_id, data)
       WHERE NOT COALESCE(
         (SELECT r.expired_at IS NOT NULL FROM ${Schema.runs} r
-         WHERE r.id = ${runId} FOR SHARE),
+         WHERE r.id = ${runId}
+           AND r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO}
+         FOR SHARE),
         false
       )`);
     return (result.rowCount ?? 0) > 0;
