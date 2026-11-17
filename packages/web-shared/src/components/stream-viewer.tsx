@@ -8,6 +8,7 @@ import { StreamImagePreview } from './stream-image-preview';
 import { StreamViewerSkeleton } from './stream-viewer-skeleton';
 import { CopyButton } from './trace-viewer/components/copy-button';
 import { DataInspector } from './ui/data-inspector';
+import { Note, NoteContent, NoteLabel } from './ui/note';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Types
@@ -111,16 +112,24 @@ export function StreamViewer({
       </div>
 
       {/* Content */}
-      <div className="flex-1 min-h-0">
+      <div className="flex min-h-0 flex-1 flex-col">
+        {/* A read error keeps the chunks received before it on screen. */}
         {error ? (
-          <div className="border-b border-red-400 bg-red-100 px-3 py-2 text-label-12 text-red-900">
-            <div>Error reading stream:</div>
-            <div>{error}</div>
+          <div className="shrink-0 border-b border-gray-alpha-400 p-2">
+            <Note variant="error" size="small" role="alert">
+              <NoteContent>
+                <NoteLabel>Error reading stream:</NoteLabel>
+                {error}
+              </NoteContent>
+            </Note>
           </div>
-        ) : chunks.length === 0 ? (
-          <div className="flex h-10 items-center border-b border-gray-alpha-400 bg-background-200 px-3 text-label-12 text-gray-900">
-            {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
-          </div>
+        ) : null}
+        {chunks.length === 0 ? (
+          error ? null : (
+            <div className="flex h-10 items-center border-b border-gray-alpha-400 bg-background-200 px-3 text-label-12 text-gray-900">
+              {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
+            </div>
+          )
         ) : (
           <Virtuoso
             ref={virtuosoRef}

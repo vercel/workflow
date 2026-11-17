@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
   CopyableDataBlock,
-  EncryptedDataBlock,
   serializeForClipboard,
 } from '../src/components/sidebar/copyable-data-block.js';
 import {
@@ -11,6 +10,7 @@ import {
   DecryptClickContext,
   type DecryptClickContextValue,
 } from '../src/components/ui/data-inspector.js';
+import { EncryptedDataNote } from '../src/components/ui/data-state-notes.js';
 import { DecryptButton } from '../src/components/ui/decrypt-button.js';
 
 /**
@@ -94,13 +94,12 @@ describe('CopyableDataBlock', () => {
   });
 });
 
-describe('EncryptedDataBlock', () => {
-  it('shows a static Encrypted badge when no decrypt context is provided', () => {
-    const markup = renderToStaticMarkup(createElement(EncryptedDataBlock));
+describe('EncryptedDataNote', () => {
+  it('explains the encrypted state without a Decrypt action when no decrypt context is provided', () => {
+    const markup = renderToStaticMarkup(createElement(EncryptedDataNote));
 
-    expect(markup).toContain('Encrypted');
-    // The blurred placeholder previews the encrypted shape to the user.
-    expect(markup).toContain('[encrypted]');
+    expect(markup).toContain('role="note"');
+    expect(markup).toContain('Encrypted with this run’s key.');
     expect(markup).not.toContain('Decrypt');
   });
 
@@ -114,7 +113,7 @@ describe('EncryptedDataBlock', () => {
       createElement(
         DecryptClickContext.Provider,
         { value: ctx },
-        createElement(EncryptedDataBlock)
+        createElement(EncryptedDataNote)
       )
     );
 
@@ -134,7 +133,7 @@ describe('EncryptedDataBlock', () => {
       createElement(
         DecryptClickContext.Provider,
         { value: ctx },
-        createElement(EncryptedDataBlock)
+        createElement(EncryptedDataNote)
       )
     );
 
@@ -154,7 +153,7 @@ describe('EncryptedDataBlock', () => {
       createElement(
         DecryptClickContext.Provider,
         { value: ctx },
-        createElement(EncryptedDataBlock)
+        createElement(EncryptedDataNote)
       )
     );
 

@@ -15,13 +15,14 @@ import {
   CollapsibleTrigger,
 } from '../ui/collapsible';
 import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
+import { EncryptedDataNote, ExpiredDataNote } from '../ui/data-state-notes';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
-import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
+import { CopyableDataBlock } from './copyable-data-block';
 
 const parseDateValue = (value: unknown): Date | null => {
   if (value == null) return null;
@@ -258,22 +259,11 @@ function EventDataBlock({
   // Check both the top-level eventData and nested sub-fields (result, input, etc.)
   // since the server stubs each ref field independently.
   if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
-    return (
-      <div
-        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-700)',
-        }}
-      >
-        <span className="font-medium">Data expired</span>
-      </div>
-    );
+    return <ExpiredDataNote />;
   }
 
   if (hasEncryptedFields({ eventType, eventData: data })) {
-    return <EncryptedDataBlock />;
+    return <EncryptedDataNote />;
   }
 
   // Attribute changes: render the changed keys and the writer instead of

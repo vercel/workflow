@@ -20,6 +20,7 @@ import {
   RunClickContext,
   StreamClickContext,
 } from '../ui/data-inspector';
+import { EncryptedDataNote, ExpiredDataNote } from '../ui/data-state-notes';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
@@ -30,7 +31,7 @@ import {
   RunMetadataCard,
 } from './attributes-block';
 import { ConversationView } from './conversation-view';
-import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
+import { CopyableDataBlock } from './copyable-data-block';
 
 /**
  * Tab button for conversation/JSON toggle
@@ -194,28 +195,6 @@ function ConversationWithTabs({
  * Render a value with the shared DataInspector (ObjectInspector with
  * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
  */
-function EncryptedFieldBlock() {
-  return <EncryptedDataBlock />;
-}
-
-/**
- * Inline display for an expired field: flat label indicating data is no longer available.
- */
-function ExpiredFieldBlock() {
-  return (
-    <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-    >
-      <span className="font-medium">Data expired</span>
-    </div>
-  );
-}
-
 function JsonBlock(value: unknown) {
   return <CopyableDataBlock data={value} />;
 }
@@ -506,14 +485,14 @@ const attributeToDisplayFn: Record<
     if (isEncryptedMarker(value)) {
       return (
         <Collapsible label="Metadata">
-          <EncryptedDataBlock />
+          <EncryptedDataNote />
         </Collapsible>
       );
     }
     if (isExpiredMarker(value)) {
       return (
         <Collapsible label="Metadata">
-          <ExpiredFieldBlock />
+          <ExpiredDataNote />
         </Collapsible>
       );
     }
@@ -527,11 +506,11 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataNote />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNote />;
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
       const { args, closureVars, thisVal } = value as {
@@ -630,12 +609,12 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataNote />
         </Collapsible>
       );
     }
     if (!hasDisplayContent(value)) return null;
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNote />;
     return (
       <Collapsible
         label="Output"
@@ -650,11 +629,11 @@ const attributeToDisplayFn: Record<
     if (isEncryptedMarker(value)) {
       return (
         <Collapsible label="Error" defaultOpen>
-          <EncryptedFieldBlock />
+          <EncryptedDataNote />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNote />;
     if (!hasDisplayContent(value)) return null;
 
     // Structured workflow errors may be persisted as either `{ message }` or
@@ -677,11 +656,11 @@ const attributeToDisplayFn: Record<
     if (isEncryptedMarker(value)) {
       return (
         <Collapsible label="Event Data" defaultOpen>
-          <EncryptedFieldBlock />
+          <EncryptedDataNote />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNote />;
     if (!hasDisplayContent(value)) return null;
     return (
       <Collapsible label="Event Data" defaultOpen>
@@ -718,11 +697,11 @@ const attributeToDisplayFn: Record<
           defaultOpen={context?.sectionOpen}
           onOpenChange={context?.onSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataNote />
         </Collapsible>
       );
     }
-    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredDataNote />;
     if (typeof value !== 'string' || value.trim().length === 0) return null;
     return (
       <Collapsible
@@ -757,19 +736,6 @@ const selfHeaderedAttributes = new Set([
   'eventData',
   'dynamicWorkflowCode',
 ]);
-
-const ExpiredDataMessage = () => (
-  <div
-    className="text-label-12 rounded-md border p-4 my-2"
-    style={{
-      borderColor: 'var(--ds-gray-300)',
-      backgroundColor: 'var(--ds-gray-100)',
-      color: 'var(--ds-gray-700)',
-    }}
-  >
-    <span>The data for this run has expired and is no longer available.</span>
-  </div>
-);
 
 const copyableBasicAttributes = new Set<AttributeKey>([
   'stepId',
@@ -816,7 +782,7 @@ export const AttributeBlock = ({
           defaultOpen={attribute === 'eventData' || sectionOpenRef.current}
           onOpenChange={handleSectionOpenChange}
         >
-          <EncryptedFieldBlock />
+          <EncryptedDataNote />
         </Collapsible>
       );
     }
@@ -1072,7 +1038,9 @@ export const AttributePanel = ({
                 className="my-4"
               />
             ) : hasExpired ? (
-              <ExpiredDataMessage />
+              <ExpiredDataNote className="my-2">
+                The data for this run has expired and is no longer available.
+              </ExpiredDataNote>
             ) : resolvedAttributes.length > 0 ? (
               resolvedAttributes.map((attribute) => (
                 <AttributeBlock
