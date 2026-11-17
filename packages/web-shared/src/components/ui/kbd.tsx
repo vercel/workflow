@@ -39,5 +39,3 @@ export function Kbd({
     </kbd>
   );
 }
-
-export { kbdVariants };

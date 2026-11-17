@@ -49,7 +49,7 @@ export const getEventTimestamp = (
  * Convert workflow events to span events
  * Only includes events that should be displayed as markers
  */
-export function convertEventsToSpanEvents(
+function convertEventsToSpanEvents(
   events: Event[],
   filterTypes = true,
   options: { preferOccurredAt?: boolean } = {}

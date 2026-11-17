@@ -26,7 +26,15 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../lib/cn';
-import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
+import {
+  type ClassInstanceRef,
+  isClassInstanceRef,
+  isEncryptedMarker,
+  isRunRef,
+  isStreamRef,
+  type RunRef,
+  type StreamRef,
+} from '../../lib/hydration';
 import {
   type DecodedStreamChunkSource,
   type FormattedStreamChunkDisplay,
@@ -37,36 +45,15 @@ import { CLS, JSON_VIEW_STYLES } from './data-inspector.styles';
 import { Spinner } from './spinner';
 
 // ---------------------------------------------------------------------------
-// StreamRef / ClassInstanceRef type detection
-// (inline to avoid circular deps with hydration module)
+// Decoded byte display (built by `collapseRefs`, rendered by `DataRender`)
 // ---------------------------------------------------------------------------
 
-const STREAM_REF_TYPE = '__workflow_stream_ref__';
-const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
-const RUN_REF_TYPE = '__workflow_run_ref__';
 const BYTES_DISPLAY_TYPE = '__workflow_bytes_display__';
-
-interface StreamRef {
-  __type: typeof STREAM_REF_TYPE;
-  streamId: string;
-}
-
-interface RunRef {
-  __type: typeof RUN_REF_TYPE;
-  runId: string;
-}
 
 interface BytesDisplay {
   __type: typeof BYTES_DISPLAY_TYPE;
   text: string;
   decodedFrom?: DecodedStreamChunkSource;
-}
-
-interface ClassInstanceRef {
-  __type: typeof CLASS_INSTANCE_REF_TYPE;
-  className: string;
-  classId: string;
-  data: unknown;
 }
 
 function deserializeChunkText(text: string): string {
@@ -89,41 +76,10 @@ function parseChunkData(text: string): unknown {
   }
 }
 
-function isStreamRef(value: unknown): value is StreamRef {
-  if (value === null || typeof value !== 'object') return false;
-  // Check both enumerable and non-enumerable __type (opaque refs use non-enumerable)
-  const desc = Object.getOwnPropertyDescriptor(value, '__type');
-  return desc?.value === STREAM_REF_TYPE;
-}
-
-function isRunRef(value: unknown): value is RunRef {
-  if (value === null || typeof value !== 'object') return false;
-  const desc = Object.getOwnPropertyDescriptor(value, '__type');
-  return desc?.value === RUN_REF_TYPE;
-}
-
 export function isBytesDisplay(value: unknown): value is BytesDisplay {
   if (value === null || typeof value !== 'object') return false;
   const desc = Object.getOwnPropertyDescriptor(value, '__type');
   return desc?.value === BYTES_DISPLAY_TYPE;
-}
-
-function isClassInstanceRef(value: unknown): value is ClassInstanceRef {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    '__type' in value &&
-    (value as Record<string, unknown>).__type === CLASS_INSTANCE_REF_TYPE
-  );
-}
-
-function isEncryptedMarker(value: unknown): boolean {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    (value as { constructor?: { name?: string } }).constructor?.name ===
-      ENCRYPTED_DISPLAY_NAME
-  );
 }
 
 // ---------------------------------------------------------------------------

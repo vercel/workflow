@@ -131,7 +131,7 @@ function DetailKeyValueRowBase({
   );
 }
 
-export function DetailKeyValueRow(props: DetailKeyValueRowProps) {
+function DetailKeyValueRow(props: DetailKeyValueRowProps) {
   return <DetailKeyValueRowBase {...props} />;
 }
 
@@ -158,7 +158,7 @@ function AttributeRow({
  * reserved `$`-prefixed keys (alphabetical), so framework metadata doesn't
  * crowd out user-set attributes.
  */
-export function sortAttributeKeys(keys: string[]): string[] {
+function sortAttributeKeys(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
     const aReserved = isReservedAttributeKey(a);
     const bReserved = isReservedAttributeKey(b);
