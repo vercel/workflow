@@ -10,8 +10,8 @@ interface ConversationViewProps {
 export function ConversationView({ messages }: ConversationViewProps) {
   if (messages.length === 0) {
     return (
-      <div className="py-8 text-center text-[11px] text-gray-600">
-        No messages
+      <div className="py-8 text-center text-copy-13 text-gray-900">
+        No Messages
       </div>
     );
   }
@@ -31,10 +31,10 @@ function MessageBubble({ message }: { message: ModelMessage }) {
   const roleClasses = getRoleClasses(role);
 
   return (
-    <div className={`rounded-md border text-[11px] ${roleClasses.bubble}`}>
+    <div className={`rounded-md border text-copy-13 ${roleClasses.bubble}`}>
       {/* Role header */}
       <div
-        className={`border-b px-2.5 py-1 font-medium text-[10px] uppercase tracking-wide ${roleClasses.label}`}
+        className={`border-b px-2.5 py-1 text-label-12 font-medium capitalize ${roleClasses.label}`}
       >
         {role}
       </div>
@@ -64,7 +64,7 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
     // Use Streamdown for assistant messages (they often contain markdown)
     if (role === 'assistant') {
       return (
-        <div className="prose prose-sm max-w-none text-[11px] text-gray-1000 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+        <div className="max-w-none text-copy-13 text-gray-1000 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
           <Streamdown>{part.text}</Streamdown>
         </div>
       );
@@ -79,15 +79,17 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
 
   if (part.type === 'tool-call') {
     return (
-      <div className="rounded border border-purple-300 bg-purple-100 px-2 py-1.5">
-        <div className="flex items-center gap-1.5 text-[10px] font-medium">
+      <div className="rounded-md border border-purple-400 bg-purple-100 px-2 py-1.5">
+        <div className="flex items-center gap-1.5 text-label-12 font-medium">
           <Wrench className="size-3 shrink-0 text-purple-900" aria-hidden />
           <span className="text-purple-900">{part.toolName}</span>
         </div>
         {part.input != null && (
-          <div className="mt-1.5 overflow-x-auto rounded bg-gray-100 p-1.5">
+          <div className="mt-1.5 overflow-x-auto rounded-sm bg-gray-100 p-1.5">
             {typeof part.input === 'string' ? (
-              <pre className="text-[10px] text-gray-800">{part.input}</pre>
+              <pre className="m-0 whitespace-pre-wrap break-words text-label-12-mono text-gray-900">
+                {part.input}
+              </pre>
             ) : (
               <DataInspector data={part.input} />
             )}
@@ -99,15 +101,17 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
 
   if (part.type === 'tool-result') {
     return (
-      <div className="rounded border border-green-300 bg-green-100 px-2 py-1.5">
-        <div className="flex items-center gap-1.5 text-[10px] font-medium">
+      <div className="rounded-md border border-green-400 bg-green-100 px-2 py-1.5">
+        <div className="flex items-center gap-1.5 text-label-12 font-medium">
           <Check className="size-3 shrink-0 text-green-900" aria-hidden />
           <span className="text-green-900">{part.toolName} result</span>
         </div>
         {part.output != null && (
-          <div className="mt-1.5 max-h-[200px] overflow-x-auto overflow-y-auto rounded bg-gray-100 p-1.5">
+          <div className="mt-1.5 max-h-[200px] overflow-auto rounded-sm bg-gray-100 p-1.5">
             {typeof part.output === 'string' ? (
-              <pre className="text-[10px] text-gray-800">{part.output}</pre>
+              <pre className="m-0 whitespace-pre-wrap break-words text-label-12-mono text-gray-900">
+                {part.output}
+              </pre>
             ) : (
               <DataInspector data={part.output} expandLevel={1} />
             )}
@@ -124,28 +128,28 @@ function getRoleClasses(role: string): { bubble: string; label: string } {
   switch (role) {
     case 'user':
       return {
-        bubble: 'border-blue-300 bg-blue-100',
-        label: 'border-blue-300 text-blue-700',
+        bubble: 'border-blue-400 bg-blue-100',
+        label: 'border-blue-400 text-blue-900',
       };
     case 'assistant':
       return {
-        bubble: 'border-gray-300 bg-gray-100',
-        label: 'border-gray-300 text-gray-700',
+        bubble: 'border-gray-400 bg-gray-100',
+        label: 'border-gray-400 text-gray-900',
       };
     case 'system':
       return {
-        bubble: 'border-amber-300 bg-amber-100',
-        label: 'border-amber-300 text-amber-700',
+        bubble: 'border-amber-400 bg-amber-100',
+        label: 'border-amber-400 text-amber-900',
       };
     case 'tool':
       return {
-        bubble: 'border-green-300 bg-green-100',
-        label: 'border-green-300 text-green-700',
+        bubble: 'border-green-400 bg-green-100',
+        label: 'border-green-400 text-green-900',
       };
     default:
       return {
-        bubble: 'border-gray-300 bg-gray-100',
-        label: 'border-gray-300 text-gray-700',
+        bubble: 'border-gray-400 bg-gray-100',
+        label: 'border-gray-400 text-gray-900',
       };
   }
 }

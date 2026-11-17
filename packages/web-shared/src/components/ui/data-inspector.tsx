@@ -176,8 +176,8 @@ function EncryptedInlineLabel() {
     );
   }
   return (
-    <span className="text-gray-600 italic">
-      <Lock className="-mt-px mr-[3px] inline h-3 w-3 align-middle" />
+    <span className="text-gray-900 italic">
+      <Lock className="-mt-px mr-1 inline size-3 align-middle" aria-hidden />
       Encrypted
     </span>
   );
@@ -188,12 +188,12 @@ function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   return (
     <button
       type="button"
-      className="inline-flex cursor-pointer items-center gap-1 rounded border border-blue-300 bg-blue-100 px-1.5 py-0.5 font-mono text-[10px] text-blue-900 underline decoration-transparent transition-colors hover:bg-blue-200"
+      className="inline-flex cursor-pointer items-center gap-1 rounded-sm border border-blue-300 bg-blue-100 px-1.5 text-label-12-mono text-blue-900 transition-colors hover:bg-blue-200 focus-visible:shadow-[var(--ds-focus-ring)] focus-visible:outline-none"
       onClick={(e) => {
         e.stopPropagation();
         onStreamClick?.(streamRef.streamId);
       }}
-      title={`View stream: ${streamRef.streamId}`}
+      aria-label={`View stream ${streamRef.streamId}`}
     >
       <Radio className="size-3 shrink-0" aria-hidden />
       <span>{streamRef.streamId}</span>
@@ -206,12 +206,12 @@ function RunRefInline({ runRef }: { runRef: RunRef }) {
   return (
     <button
       type="button"
-      className="inline-flex cursor-pointer items-center gap-1 rounded border border-purple-300 bg-purple-100 px-1.5 py-0.5 font-mono text-[10px] text-purple-900 underline decoration-transparent transition-colors hover:bg-purple-200"
+      className="inline-flex cursor-pointer items-center gap-1 rounded-sm border border-purple-300 bg-purple-100 px-1.5 text-label-12-mono text-purple-900 transition-colors hover:bg-purple-200 focus-visible:shadow-[var(--ds-focus-ring)] focus-visible:outline-none"
       onClick={(e) => {
         e.stopPropagation();
         onRunClick?.(runRef.runId);
       }}
-      title={`View run: ${runRef.runId}`}
+      aria-label={`View run ${runRef.runId}`}
     >
       <span>{runRef.runId}</span>
     </button>
@@ -253,7 +253,7 @@ function DecodedBytesChunk({
           <button
             type="button"
             className={cn(
-              'h-5 px-1.5 font-medium text-[10px] text-gray-900',
+              'h-5 px-1.5 text-label-12 font-medium text-gray-900',
               selectedView === 'decoded' ? 'bg-gray-200' : 'bg-gray-100'
             )}
             onClick={() => setSelectedView('decoded')}
@@ -265,7 +265,7 @@ function DecodedBytesChunk({
           <button
             type="button"
             className={cn(
-              'h-5 border-gray-400 border-l px-1.5 font-medium text-[10px] text-gray-900',
+              'h-5 border-gray-400 border-l px-1.5 text-label-12 font-medium text-gray-900',
               selectedView === 'bytes' ? 'bg-gray-200' : 'bg-gray-100'
             )}
             onClick={() => setSelectedView('bytes')}
