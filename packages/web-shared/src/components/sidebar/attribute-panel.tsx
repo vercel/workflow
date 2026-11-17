@@ -31,6 +31,7 @@ import {
 } from './attributes-block';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
+import { getSpanEntityName } from './span-name';
 
 /**
  * Tab button for conversation/JSON toggle
@@ -891,10 +892,6 @@ export const AttributePanel = ({
   expiredAt,
   onStreamClick,
   onRunClick,
-  onDecrypt,
-  isDecrypting = false,
-  isDecryptDisabled = false,
-  decryptDisabledReason,
   resource,
 }: {
   data: Record<string, unknown>;
@@ -907,14 +904,6 @@ export const AttributePanel = ({
   onStreamClick?: (streamId: string) => void;
   /** Callback when a run reference is clicked */
   onRunClick?: (runId: string) => void;
-  /** Callback when an encrypted marker is clicked (triggers decryption) */
-  onDecrypt?: () => void;
-  /** Whether decryption is currently in progress */
-  isDecrypting?: boolean;
-  /** Whether decryption is unavailable */
-  isDecryptDisabled?: boolean;
-  /** Explains why decryption is unavailable */
-  decryptDisabledReason?: string;
   /** Resource type of the selected span, used to show targeted loading skeletons. */
   resource?: string;
 }) => {
@@ -930,12 +919,9 @@ export const AttributePanel = ({
     if (typeof execCtx?.workflowVm === 'string') {
       result.workflowVm = execCtx.workflowVm;
     }
-    if (moduleSpecifier) {
-      result.moduleSpecifier = moduleSpecifier;
-    } else if (typeof data.stepName === 'string') {
-      result.moduleSpecifier = data.stepName;
-    } else if (typeof data.workflowName === 'string') {
-      result.moduleSpecifier = data.workflowName;
+    const specifier = moduleSpecifier || getSpanEntityName(data);
+    if (specifier) {
+      result.moduleSpecifier = specifier;
     }
     return result;
   }, [data, moduleSpecifier]);
@@ -1004,87 +990,74 @@ export const AttributePanel = ({
     }),
     [displayData.stepName]
   );
-  const outerDecryptCtx = useContext(DecryptClickContext);
-  const decryptValue = onDecrypt
-    ? {
-        onDecrypt,
-        isDecrypting,
-        isDecryptDisabled,
-        decryptDisabledReason,
-        hasEncryptedData: outerDecryptCtx?.hasEncryptedData,
-      }
-    : outerDecryptCtx;
 
   return (
     <ContextCardProvider>
       <RunClickContext.Provider value={onRunClick}>
         <StreamClickContext.Provider value={onStreamClick}>
-          <DecryptClickContext.Provider value={decryptValue}>
-            {visibleBasicAttributes.length > 0 && (
-              <CollapsibleRoot defaultOpen>
-                <CollapsibleTrigger>Metadata</CollapsibleTrigger>
-                <CollapsibleContent className="mt-0 mb-2">
-                  <div className="flex flex-col">
-                    {orderedBasicAttributes.map((attribute) => {
-                      const displayValue = attributeToDisplayFn[
-                        attribute as keyof typeof attributeToDisplayFn
-                      ]?.(displayData[attribute as keyof typeof displayData]);
-                      const isCopyableBasicAttribute =
-                        copyableBasicAttributes.has(
-                          attribute as AttributeKey
-                        ) && typeof displayValue === 'string';
-                      const label = getAttributeDisplayName(attribute);
+          {visibleBasicAttributes.length > 0 && (
+            <CollapsibleRoot defaultOpen>
+              <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+              <CollapsibleContent className="mt-0 mb-2">
+                <div className="flex flex-col">
+                  {orderedBasicAttributes.map((attribute) => {
+                    const displayValue = attributeToDisplayFn[
+                      attribute as keyof typeof attributeToDisplayFn
+                    ]?.(displayData[attribute as keyof typeof displayData]);
+                    const isCopyableBasicAttribute =
+                      copyableBasicAttributes.has(attribute as AttributeKey) &&
+                      typeof displayValue === 'string';
+                    const label = getAttributeDisplayName(attribute);
 
-                      return (
-                        <DetailMonoKeyValueRow
-                          key={attribute}
-                          label={label}
-                          value={displayValue}
-                          copyText={
-                            isCopyableBasicAttribute ? displayValue : undefined
-                          }
-                          href={
-                            attribute === 'moduleSpecifier'
-                              ? moduleSourceUrl
-                              : undefined
-                          }
-                        />
-                      );
-                    })}
-                    {isLoading &&
-                      resource === 'sleep' &&
-                      !displayData.resumeAt && (
-                        <div className="flex items-center justify-between gap-3 py-0.5">
-                          <span className="text-label-13 text-gray-900">
-                            Resume
-                          </span>
-                          <Skeleton className="h-4 w-[55%]" />
-                        </div>
-                      )}
-                  </div>
-                </CollapsibleContent>
-              </CollapsibleRoot>
-            )}
-            {error ? (
-              <ErrorCard
-                title="Failed to load resource details"
-                details={error.message}
-                className="my-4"
+                    return (
+                      <DetailMonoKeyValueRow
+                        key={attribute}
+                        label={label}
+                        value={displayValue}
+                        copyText={
+                          isCopyableBasicAttribute ? displayValue : undefined
+                        }
+                        href={
+                          attribute === 'moduleSpecifier'
+                            ? moduleSourceUrl
+                            : undefined
+                        }
+                      />
+                    );
+                  })}
+                  {isLoading &&
+                    resource === 'sleep' &&
+                    !displayData.resumeAt && (
+                      <div className="flex items-center justify-between gap-3 py-0.5">
+                        <span className="text-label-13 text-gray-900">
+                          Resume
+                        </span>
+                        <Skeleton className="h-4 w-[55%]" />
+                      </div>
+                    )}
+                </div>
+              </CollapsibleContent>
+            </CollapsibleRoot>
+          )}
+          {error ? (
+            <ErrorCard
+              title="Failed to load resource details"
+              details={error.message}
+              className="my-4"
+            />
+          ) : hasExpired ? (
+            <ExpiredDataMessage />
+          ) : resolvedAttributes.length > 0 ? (
+            resolvedAttributes.map((attribute) => (
+              <AttributeBlock
+                isLoading={isLoading}
+                key={attribute}
+                attribute={attribute}
+                value={displayData[attribute as keyof typeof displayData]}
+                context={displayContext}
               />
-            ) : hasExpired ? (
-              <ExpiredDataMessage />
-            ) : resolvedAttributes.length > 0 ? (
-              resolvedAttributes.map((attribute) => (
-                <AttributeBlock
-                  isLoading={isLoading}
-                  key={attribute}
-                  attribute={attribute}
-                  value={displayData[attribute as keyof typeof displayData]}
-                  context={displayContext}
-                />
-              ))
-            ) : null}
-          </DecryptClickContext.Provider>
+            ))
+          ) : null}
         </StreamClickContext.Provider>
       </RunClickContext.Provider>
     </ContextCardProvider>

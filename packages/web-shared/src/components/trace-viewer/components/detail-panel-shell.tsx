@@ -139,7 +139,8 @@ export function DetailPanelShell({
           </IconButton>
         </div>
       </div>
-      {/* Panel body */}
+      {/* Panel body: the panel's only scroll container, so children render
+          their content at full height instead of scrolling themselves. */}
       <div className="flex-1 overflow-y-auto">{children}</div>
     </aside>
   );

@@ -1,6 +1,5 @@
 'use client';
 
-import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import { type ReactNode, type RefObject, useCallback, useMemo } from 'react';
 import { filterSpanRawEvents } from '../../../lib/trace-builder';
 import { ErrorBoundary } from '../../error-boundary';
@@ -9,6 +8,7 @@ import {
   type SelectedSpanInfo,
 } from '../../sidebar/entity-detail-panel';
 import { useSidebarData } from '../../sidebar/sidebar-data-context';
+import { getSpanTitle } from '../../sidebar/span-name';
 import { useActiveSpan } from '../context';
 import { DetailPanelShell } from './detail-panel-shell';
 import { useDetailPanelWidth } from './use-detail-panel-width';
@@ -57,7 +57,6 @@ export function TraceDetailPanel({
   onClose: () => void;
 }): ReactNode {
   const { activeSpan, activeSpanId, spans } = useActiveSpan();
-  const sidebar = useSidebarData();
   const selectedSpan = useSelectedSpanInfo();
   const panelWidth = useDetailPanelWidth(containerRef, Boolean(activeSpan));
 
@@ -79,25 +78,10 @@ export function TraceDetailPanel({
     if (nextSpanId) onNavigateToSpan(nextSpanId);
   }, [nextSpanId, onNavigateToSpan]);
 
-  // Derive the selected span name for the panel header
-  const selectedSpanName = useMemo(() => {
-    if (!selectedSpan?.data) return 'Details';
-    const data = selectedSpan.data as Record<string, unknown>;
-    if (selectedSpan.resource === 'hook') {
-      return (data.token as string | undefined) ?? (data.hookId as string);
-    }
-
-    const stepName = data.stepName as string | undefined;
-    const workflowName = data.workflowName as string | undefined;
-    return (
-      (stepName ? parseStepName(stepName)?.shortName : undefined) ??
-      (workflowName ? parseWorkflowName(workflowName)?.shortName : undefined) ??
-      stepName ??
-      workflowName ??
-      (data.hookId as string) ??
-      'Details'
-    );
-  }, [selectedSpan?.data, selectedSpan?.resource]);
+  const selectedSpanName = getSpanTitle(
+    selectedSpan?.data,
+    selectedSpan?.resource
+  );
 
   if (!activeSpan) return null;
 
@@ -112,25 +96,7 @@ export function TraceDetailPanel({
       onClose={onClose}
     >
       <ErrorBoundary>
-        <EntityDetailPanel
-          run={sidebar.run}
-          onStreamClick={sidebar.onStreamClick}
-          onRunClick={sidebar.onRunClick}
-          fetchSpanDetail={sidebar.fetchSpanDetail}
-          onWakeUpSleep={sidebar.onWakeUpSleep}
-          onLoadEventData={sidebar.onLoadEventData}
-          onResolveHook={sidebar.onResolveHook}
-          encryptionKey={sidebar.encryptionKey}
-          onDecrypt={sidebar.onDecrypt}
-          isDecrypting={sidebar.isDecrypting}
-          isDecryptDisabled={sidebar.isDecryptDisabled}
-          decryptDisabledReason={sidebar.decryptDisabledReason}
-          selectedSpan={selectedSpan}
-          showSeparateEventOccurrenceTimestamps={
-            sidebar.showSeparateEventOccurrenceTimestamps
-          }
-          getModuleSourceUrl={sidebar.getModuleSourceUrl}
-        />
+        <EntityDetailPanel selectedSpan={selectedSpan} />
       </ErrorBoundary>
     </DetailPanelShell>
   );
