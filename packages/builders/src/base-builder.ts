@@ -1692,6 +1692,102 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
    * createWorkflowsBundle (for workflow VM code), then combines them into
    * a single route file using workflowEntrypoint().
    */
+  /**
+   * Per-workflow inline entries: for each workflow file, a module holding the
+   * workflow VM code of that file alone, registered for its workflows' queues
+   * (`workflowEntrypoint(code, { inlineWorkflowNames })`). A framework
+   * integration makes each workflow module import its entry lazily, so a
+   * route that starts or resumes a workflow carries only that workflow's code;
+   * its steps come from the route's own module graph.
+   *
+   * Writes `<outDir>/manifest.json`: `{ [realpath of source]: { entry,
+   * workflowIds } }`. Returns the manifest.
+   */
+  protected async createInlineWorkflowEntries({
+    discoveredEntries,
+    outDir,
+    tsconfigPath,
+  }: {
+    discoveredEntries: DiscoveredEntries;
+    outDir: string;
+    tsconfigPath?: string;
+  }): Promise<Record<string, { entry: string; workflowIds: string[] }>> {
+    const { createHash } = await import('node:crypto');
+    const { realpath, mkdir: mkdirp } = await import('node:fs/promises');
+    await mkdirp(outDir, { recursive: true });
+    const startedAt = Date.now();
+    const manifest: Record<string, { entry: string; workflowIds: string[] }> =
+      {};
+    const optionsCode = (names: string[]) => {
+      const base = createWorkflowEntrypointOptionsCode({
+        basePath: this.config.basePath,
+      });
+      const field = `inlineWorkflowNames: ${JSON.stringify(names)}`;
+      return base ? base.replace(/ }$/, `, ${field} }`) : `, { ${field} }`;
+    };
+    for (const file of [...discoveredEntries.discoveredWorkflows].sort()) {
+      const real = await realpath(file).catch(() => file);
+      const slug = `${basename(file)
+        .replace(/\.[^.]+$/, '')
+        .replace(
+          /[^A-Za-z0-9_-]/g,
+          '_'
+        )}-${createHash('sha256').update(real).digest('hex').slice(0, 10)}`;
+      const outfile = join(outDir, `${slug}.js`);
+      const tmp = `${outfile}.__wf_tmp.js`;
+      const result = await this.createWorkflowsBundle({
+        inputFiles: [file],
+        outfile: tmp,
+        bundleFinalOutput: false,
+        keepInterimBundleContext: false,
+        tsconfigPath,
+        discoveredEntries: {
+          ...discoveredEntries,
+          discoveredWorkflows: new Set([file]),
+          // Measurement knob for the bundling prototype: leave out the
+          // app-wide serde registrations (not safe in general: a class the
+          // workflow's VM must revive may live in one of them).
+          ...(process.env.WORKFLOW_INLINE_ENTRY_SERDE === 'none'
+            ? { discoveredSerdeFiles: new Set<string>() }
+            : {}),
+        },
+      });
+      const { unlink } = await import('node:fs/promises');
+      await Promise.all(
+        [tmp, `${tmp}.debug.json`].map((f) => unlink(f).catch(() => {}))
+      );
+      const code = result.interimBundleText;
+      if (!code) continue;
+      const workflowIds = Object.values(result.manifest.workflows ?? {})
+        .flatMap((byName) => Object.values(byName ?? {}))
+        .map((w) => (w as { workflowId: string }).workflowId)
+        .filter(Boolean);
+      if (workflowIds.length === 0) continue;
+      const escaped = code.replace(/[\\`$]/g, '\\$&');
+      await this.writeGeneratedFile(
+        outfile,
+        `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import { workflowEntrypoint } from 'workflow/runtime';
+
+const workflowCode = \`${escaped}\`;
+
+workflowEntrypoint(workflowCode${optionsCode(workflowIds)});
+`
+      );
+      manifest[real] = { entry: outfile, workflowIds };
+    }
+    await this.writeGeneratedFile(
+      join(outDir, 'manifest.json'),
+      JSON.stringify(manifest, null, 2)
+    );
+    this.logBaseBuilderInfo(
+      `Created ${Object.keys(manifest).length} inline workflow entries`,
+      `${Date.now() - startedAt}ms`
+    );
+    return manifest;
+  }
+
   protected async createCombinedBundle({
     inputFiles,
     stepsOutfile,

@@ -306,6 +306,13 @@ export function workflowEntrypoint(
     namespace?: string;
     routeModuleBodyStartedAt?: number;
     basePath?: string;
+    /**
+     * Set by a generated per-workflow inline entry: `workflowCode` holds
+     * only these workflows, and the entry is registered for their queues
+     * alone rather than as the app's flow entry.
+     * @internal
+     */
+    inlineWorkflowNames?: string[];
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
@@ -676,10 +683,7 @@ export function workflowEntrypoint(
   // Lets `start()` / `resumeHook()` run this entry's orchestrator inline in a
   // process that loaded it outside the flow route (any route, through
   // `@workflow/core/inline-entry`). Builds nothing until then.
-  registerInlineOrchestrator(
-    workflowPrefix,
-    orchestratorHandler,
-    async (message, queueName) => {
+  const prewarm: Parameters<typeof registerInlineOrchestrator>[2] = async (message, queueName) => {
       // What a delivery of `message` sets up before its first world write,
       // into the process caches it reads: the run's orchestrator, the World,
       // and the compiled workflow (node:vm scripts, or QuickJS's modules and
@@ -703,8 +707,21 @@ export function workflowEntrypoint(
               )
             : compileWorkflowBundle(workflowCode, workflowName),
       ]);
+    };
+  // A per-workflow inline entry (see `INLINE_WORKFLOW_LOADERS_KEY`) carries
+  // only its own workflows, so it serves only their queues.
+  if (options?.inlineWorkflowNames) {
+    for (const workflowName of options.inlineWorkflowNames) {
+      registerInlineOrchestrator(
+        `${workflowPrefix}${workflowName}`,
+        orchestratorHandler,
+        prewarm,
+        { exact: true }
+      );
     }
-  );
+  } else {
+    registerInlineOrchestrator(workflowPrefix, orchestratorHandler, prewarm);
+  }
 
   // The handler, with the World it was built for (which declares how its
   // deliveries are authenticated) and the refusal log (process-wide; see

@@ -1247,7 +1247,10 @@ async function resumeHookAttempt<T = any>(
     if (inlineGateReason === undefined) {
       // Inline delivery: one held attempt, then (if it throws) the usual
       // publish with its retries.
-      await loadInlineEntry();
+      await loadInlineEntry(undefined, {
+        queueName,
+        workflowName: resumeContext.workflowName,
+      });
       await sendOrchestratorMessage({
         decision: decideInline({
           world,
@@ -1257,6 +1260,7 @@ async function resumeHookAttempt<T = any>(
             world,
             resumeContext.deploymentId
           ),
+          runSpecVersion: resumeContext.runSpecVersion,
         }),
         runId: hook.runId,
         span,

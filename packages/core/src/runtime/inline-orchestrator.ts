@@ -25,13 +25,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Span } from '@opentelemetry/api';
 import { globalSingleton } from '@workflow/utils';
-import type {
-  QueueHandler,
-  QueueHoldResult,
-  QueueOptions,
-  QueueResult,
-  ValidQueueName,
-  World,
+import {
+  type QueueHandler,
+  type QueueHoldResult,
+  type QueueOptions,
+  type QueueResult,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type ValidQueueName,
+  type World,
 } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -78,6 +79,12 @@ export type InlineOutcome =
 interface InlineEntry {
   /** The queue prefix the flow route consumes (`__wkf_workflow_` etc.). */
   prefix: string;
+  /**
+   * The entry serves exactly one workflow's queue (`prefix` is its whole
+   * queue name): a per-workflow entry, which carries that workflow's code and
+   * relies on the calling route's own module graph for its steps.
+   */
+  exact: boolean;
   /** Builds the handler for a World; called at most once per World. */
   createHandler(world: World): QueueHandler;
   handlers: WeakMap<World, QueueHandler>;
@@ -111,13 +118,36 @@ export const INLINE_SPECULATION_ENV = 'WORKFLOW_INLINE_SPECULATION';
 // `@workflow/core` to different copies in one server build.
 const registry = globalSingleton(
   '@workflow/core//inlineOrchestrator',
-  2,
+  3,
   () => ({
     entries: new Map<string, InlineEntry>(),
     /** The one load of `@workflow/core/inline-entry` this process makes. */
     entryLoad: undefined as Promise<void> | undefined,
+    /** Loads of per-workflow entries, by workflow name. */
+    workflowLoads: new Map<string, Promise<void>>(),
   })
 );
+
+/**
+ * Where a framework integration registers per-workflow inline entries: a
+ * `Map` from workflow name (its `workflowId`) to a function importing the
+ * generated module that holds that workflow's code. The integration's
+ * transform adds the entries to the workflow's own module, so only routes
+ * that import a workflow carry its entry, and it is loaded on the first
+ * `start()` or `resumeHook()` of that workflow in the process.
+ */
+export const INLINE_WORKFLOW_LOADERS_KEY = Symbol.for(
+  '@workflow/core//inlineWorkflowLoaders'
+);
+
+function inlineWorkflowLoader(
+  workflowName: string
+): (() => Promise<unknown>) | undefined {
+  const loaders = (globalThis as Record<symbol, unknown>)[
+    INLINE_WORKFLOW_LOADERS_KEY
+  ] as Map<string, () => Promise<unknown>> | undefined;
+  return loaders?.get(workflowName);
+}
 
 /**
  * Registers the orchestrator handler of a flow entry so `start()` and
@@ -130,10 +160,13 @@ const registry = globalSingleton(
 export function registerInlineOrchestrator(
   prefix: string,
   createHandler: (world: World) => QueueHandler,
-  prewarm?: InlinePrewarm
+  prewarm?: InlinePrewarm,
+  options?: { exact?: boolean }
 ): void {
-  registry.entries.set(prefix, {
+  const exact = options?.exact === true;
+  registry.entries.set(exact ? `=${prefix}` : prefix, {
     prefix,
+    exact,
     createHandler,
     handlers: new WeakMap(),
     ...(prewarm && { prewarm }),
@@ -144,6 +177,7 @@ export function registerInlineOrchestrator(
 export function resetInlineOrchestratorsForTests(): void {
   registry.entries.clear();
   registry.entryLoad = undefined;
+  registry.workflowLoads.clear();
 }
 
 /**
@@ -207,21 +241,53 @@ export const INLINE_ENTRY_LOAD_WAIT_MS = 1_000;
  * route itself).
  */
 export function loadInlineEntry(
-  waitMs: number = INLINE_ENTRY_LOAD_WAIT_MS
+  waitMs: number = INLINE_ENTRY_LOAD_WAIT_MS,
+  target?: { queueName: string; workflowName: string }
 ): Promise<void> {
-  if (registry.entries.size > 0) return Promise.resolve();
-  registry.entryLoad ??= import('@workflow/core/inline-entry').then(
-    () => undefined,
-    (error: unknown) => {
-      runtimeLogger.debug(
-        'Could not load the workflow flow entry for inline delivery; runs are queued as usual',
-        { error: error instanceof Error ? error.message : String(error) }
-      );
+  let load: Promise<void>;
+  const loader = target && inlineWorkflowLoader(target.workflowName);
+  if (target && entryFor(target.queueName)) return Promise.resolve();
+  if (target && loader) {
+    // A per-workflow entry: only this workflow's code (see
+    // `INLINE_WORKFLOW_LOADERS_KEY`).
+    const name = target.workflowName;
+    let workflowLoad = registry.workflowLoads.get(name);
+    if (!workflowLoad) {
+      workflowLoad = Promise.resolve()
+        .then(loader)
+        .then(
+          () => undefined,
+          (error: unknown) => {
+            runtimeLogger.debug(
+              'Could not load the workflow inline entry; runs are queued as usual',
+              {
+                workflowName: name,
+                error: error instanceof Error ? error.message : String(error),
+              }
+            );
+          }
+        );
+      registry.workflowLoads.set(name, workflowLoad);
     }
-  );
+    load = workflowLoad;
+  } else {
+    if ([...registry.entries.values()].some((entry) => !entry.exact)) {
+      return Promise.resolve();
+    }
+    registry.entryLoad ??= import('@workflow/core/inline-entry').then(
+      () => undefined,
+      (error: unknown) => {
+        runtimeLogger.debug(
+          'Could not load the workflow flow entry for inline delivery; runs are queued as usual',
+          { error: error instanceof Error ? error.message : String(error) }
+        );
+      }
+    );
+    load = registry.entryLoad;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
-    registry.entryLoad,
+    load,
     new Promise<void>((resolve) => {
       timer = setTimeout(resolve, waitMs);
       timer.unref?.();
@@ -247,11 +313,14 @@ export function runAsOrchestratorDelivery<T>(fn: () => T): T {
 }
 
 function entryFor(queueName: string): InlineEntry | undefined {
+  const exact = registry.entries.get(`=${queueName}`);
+  if (exact) return exact;
   // The longest prefix that matches: a namespaced prefix
   // (`__eve_wkf_workflow_`) never matches the default one, but be exact.
   let best: InlineEntry | undefined;
   for (const entry of registry.entries.values()) {
     if (
+      !entry.exact &&
       queueName.startsWith(entry.prefix) &&
       (!best || entry.prefix.length > best.prefix.length)
     ) {
@@ -279,6 +348,8 @@ export interface InlineRequest {
   sameDeployment: boolean;
   /** Set when the caller's start shape cannot be inlined. */
   unsupported?: boolean;
+  /** The run's spec version, when known. */
+  runSpecVersion?: number;
 }
 
 export type InlineDecision =
@@ -322,6 +393,18 @@ export function decideInline(request: InlineRequest): InlineDecision {
     // Expected where the framework does not alias the flow entry: the run is
     // queued, as before.
     return { inline: false, reason: 'no_handler' };
+  }
+  // A per-workflow entry brings the workflow's code but not its steps: they
+  // run here only when this process has them (the route imports the
+  // workflow, so its module graph registered them), and are queued to the
+  // flow route otherwise. Only the spec 8 Node.js VM delivery makes that
+  // per-step choice so far; other runs go to the queue.
+  if (
+    entry.exact &&
+    ((request.runSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR ||
+      process.env.WORKFLOW_VM === 'quickjs')
+  ) {
+    return { inline: false, reason: 'unsupported_start' };
   }
   try {
     return {
