@@ -37,7 +37,7 @@ import { runtimeLogger } from '../logger.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { trace } from '../telemetry.js';
-import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { getComputeInstanceId } from './compute-instance.js';
 import { safeWaitUntil } from './wait-until.js';
 
 /**
@@ -423,7 +423,7 @@ export async function sendOrchestratorMessage(params: {
     trace('workflow.inline.consume', async (consumeSpan) => {
       consumeSpan?.setAttributes({
         ...Attribute.WorkflowRouteType('inline'),
-        ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
+        ...Attribute.FaasInstance(getComputeInstanceId()),
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.MessagingMessageId(hold.messageId),
       });
