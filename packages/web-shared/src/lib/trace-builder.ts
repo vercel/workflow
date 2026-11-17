@@ -59,6 +59,11 @@ export function filterSpanRawEvents(
   return events.filter((e) => e.correlationId === spanId);
 }
 
+export function getEventSpanId(event: Event): string {
+  const { correlationId } = event;
+  return correlationId && !isRunLevelEvent(event) ? correlationId : event.runId;
+}
+
 // ---------------------------------------------------------------------------
 // Event grouping
 // ---------------------------------------------------------------------------

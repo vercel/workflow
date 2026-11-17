@@ -20,7 +20,17 @@ const LEGACY_ENTRIES = [
 export function legacyEntriesIn(dataDir: string): string[] {
   return LEGACY_ENTRIES.filter((entry) => {
     try {
-      return fs.statSync(path.join(dataDir, entry)).isDirectory();
+      // The data directory is not part of the app: without the ignore
+      // comments, every Turbopack build warns that this dynamic path traces
+      // the whole project.
+      return fs
+        .statSync(
+          /* turbopackIgnore: true */ path.join(
+            /* turbopackIgnore: true */ dataDir,
+            entry
+          )
+        )
+        .isDirectory();
     } catch {
       return false;
     }
