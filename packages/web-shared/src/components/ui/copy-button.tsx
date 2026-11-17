@@ -49,9 +49,9 @@ export interface CopyButtonProps {
 }
 
 /**
- * Icon button that copies text to the clipboard, matching Geist's
- * `CopyButton`: the icon swaps to a check for one second, a failure shows an
- * error toast, and a polite live region announces the result.
+ * Icon button that copies text to the clipboard: the icon swaps to a check
+ * for one second, a failure shows an error toast, and a polite live region
+ * announces the result.
  */
 export function CopyButton({
   text,
