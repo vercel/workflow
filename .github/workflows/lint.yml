@@ -117,6 +117,16 @@ jobs:
       - name: Check pending changesets assemble into a release plan
         run: node scripts/check-changesets.mjs
 
+      # release.yml refuses to publish while any public package's version is
+      # outside the branch's release major, and a package that lands with
+      # another major (#5263 added one at 0.0.0) blocks every release on main
+      # until it is fixed. Run the same guard here, with the release major
+      # read from release.yml so the two cannot disagree.
+      - name: Check package versions match the release major
+        run: |
+          RELEASE_VERSION=$(sed -n 's/^ *RELEASE_VERSION: *\([0-9][0-9]*\) *$/\1/p' .github/workflows/release.yml)
+          node .github/scripts/check-release-major.js "${RELEASE_VERSION:?RELEASE_VERSION not found in release.yml}"
+
   docs-links:
     name: Docs Links
     runs-on: ubuntu-latest

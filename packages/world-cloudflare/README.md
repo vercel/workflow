@@ -1,8 +1,8 @@
 # @workflow/world-cloudflare
 
 > **Experimental.** The API, the storage layout and the required Worker
-> configuration may change between 0.x releases, and data written by one 0.x
-> release may not be readable by the next.
+> configuration may change in any release, minor and patch releases included,
+> and data written by one release may not be readable by the next.
 
 A [Workflow SDK](https://workflow-sdk.dev) World for Cloudflare Workers. Each
 workflow run is one Durable Object: the object stores the run's event log in
