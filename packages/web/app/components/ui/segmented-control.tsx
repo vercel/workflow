@@ -1,5 +1,5 @@
+import { cn } from '@workflow/web-shared';
 import type * as React from 'react';
-import { cn } from '~/lib/utils';
 
 interface SegmentedControlProps {
   value: string;
