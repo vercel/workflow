@@ -615,6 +615,8 @@ export async function getWorkflowRunEvents(
     // The in-band fence's counters, read before the listing, when the
     // backend reports them (see `capabilities.inBandFence` in index.ts).
     ...(result.snapshot ? { snapshot: result.snapshot } : {}),
+    // The run's event ceiling, when the backend reports it on a list.
+    ...(result.maxEvents !== undefined ? { maxEvents: result.maxEvents } : {}),
   };
 }
 

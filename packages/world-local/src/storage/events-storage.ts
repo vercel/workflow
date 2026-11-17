@@ -1382,13 +1382,10 @@ export function createEventsStorage(
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       // Read before the page: a load that follows its cursor to the end sees
       // every in-band write this count stands for.
-      const runRow = db.get<{ seq: number; seq_in_band: number }>(
-        'SELECT seq, seq_in_band FROM runs WHERE run_id = ?',
-        params.runId
-      );
+      const runRow = store.getRunAnyTag(params.runId);
       const snapshot = {
-        seq: Number(runRow?.seq ?? 0),
-        seqInBand: Number(runRow?.seq_in_band ?? IN_BAND_SEQ_AT_RUN_CREATION),
+        seq: runRow?.seq ?? 0,
+        seqInBand: runRow?.seqInBand ?? IN_BAND_SEQ_AT_RUN_CREATION,
       };
       const result = store.listEvents(params.runId, {
         cursor: params.pagination?.cursor,
@@ -1405,6 +1402,9 @@ export function createEventsStorage(
                 stripEventDataRefs(event, resolveData)
               ),
         snapshot,
+        // The ceiling `run_started` reports, so a delivery that did not
+        // write it enforces the same one.
+        ...(runRow ? { maxEvents: getMaxEventsForRun(runRow.run) } : {}),
       };
     },
 
