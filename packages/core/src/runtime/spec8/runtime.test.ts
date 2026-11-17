@@ -25,8 +25,10 @@ import {
 } from '../../serialization.js';
 import {
   DEPLOYMENT_MISMATCH_MAX_RETRIES,
+  DYNAMIC_WORKFLOWS_ENV,
   REPLAY_DIVERGENCE_MAX_RETRIES,
 } from '../constants.js';
+import { start } from '../start.js';
 import { setWorld } from '../world.js';
 import { SPEC8_EVENT_SPEC_VERSION } from './constants.js';
 
@@ -81,6 +83,12 @@ async function runWorkflowHandlerWithEvents(
      * pin the log's contents keep full control.
      */
     dynamicEventLog?: boolean;
+    /**
+     * Answer a lazy inline `step_started` like a real World: record the
+     * implied `step_created` and return the step entity, so the step body
+     * runs in-process. Requires `dynamicEventLog`.
+     */
+    inlineSteps?: boolean;
     currentDeploymentId?: string;
     /** `deploymentMismatchRetryCount` on the incoming queue message. */
     deploymentMismatchRetryCount?: number;
@@ -97,6 +105,13 @@ async function runWorkflowHandlerWithEvents(
   } = {}
 ) {
   const createdEvents = options.createdEvents ?? [];
+  // `inlineSteps` writes events the caller did not create (the implied
+  // `step_created`), so it numbers slots itself.
+  let inlineSlot = 0;
+  const nextEventId = () =>
+    options.inlineSteps
+      ? slotToEventId(++inlineSlot)
+      : slotToEventId(createdEvents.length);
   const eventsCreate = vi.fn(
     async (_runId: string, data: any, params?: any) => {
       createdEvents.push(data);
@@ -109,14 +124,47 @@ async function runWorkflowHandlerWithEvents(
         };
       }
 
+      const lazyStart =
+        options.inlineSteps && data.eventType === 'step_started'
+          ? (data.eventData as { stepName?: string; input?: unknown })
+          : undefined;
+      if (lazyStart?.input !== undefined && options.dynamicEventLog) {
+        events.push({
+          eventId: nextEventId(),
+          runId: workflowRun.runId,
+          createdAt: new Date(),
+          eventType: 'step_created',
+          specVersion: SPEC8_EVENT_SPEC_VERSION,
+          correlationId: data.correlationId,
+          eventData: { stepName: lazyStart.stepName, input: lazyStart.input },
+        } as unknown as Event);
+      }
+
       const event = {
-        eventId: slotToEventId(createdEvents.length),
+        eventId: nextEventId(),
         runId: workflowRun.runId,
         createdAt: new Date(),
         ...data,
       };
       if (options.dynamicEventLog) {
         events.push(event as Event);
+      }
+      if (lazyStart) {
+        return {
+          event,
+          step: {
+            runId: workflowRun.runId,
+            stepId: data.correlationId,
+            stepName: lazyStart.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: lazyStart.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(lazyStart.input !== undefined ? { stepCreated: true } : {}),
+        };
       }
       return { event };
     }
@@ -4167,5 +4215,82 @@ describe('workflowEntrypoint concurrent hook continuation', () => {
       expect(call[2]?.eventCount).toBeUndefined();
       expect(call[2]?.sinceCursor).toBeUndefined();
     }
+  });
+});
+
+describe('dynamic workflows not enabled, refused by start() inside a step', () => {
+  // A step that starts a dynamic workflow on a deployment that has not opted
+  // in. The refusal is fatal (the step does not retry it), and when the
+  // workflow does not catch it the run fails as USER_ERROR: the opt-in is the
+  // project's configuration, not an SDK runtime failure.
+  registerStepFunction('startDynamicWithoutOptIn', async () => {
+    await start('async function workflow() { "use workflow"; return 1; }', {
+      experimental_dynamic: {
+        steps: { noop: { stepId: 'step//./test//noop' } },
+      },
+    });
+  });
+
+  afterEach(() => {
+    setWorld(undefined);
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('fails the parent run with USER_ERROR and the error name intact', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
+    const runId = 'wrun_dynamic_not_enabled_in_step';
+    const workflowRun: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    const workflowCode = `
+      const startDynamic = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("startDynamicWithoutOptIn");
+      async function workflow() {
+        await startDynamic();
+        return "unreachable";
+      };globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`;
+
+    const createdEvents: any[] = [];
+    using _error = vi
+      .spyOn(runtimeLogger, 'error')
+      .mockImplementation(() => undefined);
+    await runWorkflowHandlerWithEvents(workflowCode, workflowRun, [], {
+      createdEvents,
+      dynamicEventLog: true,
+      inlineSteps: true,
+    });
+
+    const eventTypes = createdEvents.map((event) => event.eventType);
+    // Fatal: one attempt, no retry.
+    expect(eventTypes.filter((type) => type === 'step_failed')).toHaveLength(1);
+    expect(eventTypes).not.toContain('step_retrying');
+    expect(eventTypes).not.toContain('run_completed');
+
+    const runFailed = createdEvents.find(
+      (event) => event.eventType === 'run_failed'
+    );
+    expect(runFailed?.eventData.errorCode).toBe(RUN_ERROR_CODES.USER_ERROR);
+    // The name survives step → workflow VM → run_failed, which is what the
+    // name-based `.is()` checks (and observability renderers) rely on.
+    const error = await hydrateRunError(
+      runFailed.eventData.error,
+      runId,
+      undefined
+    );
+    expect(error).toMatchObject({ name: 'DynamicWorkflowsNotEnabledError' });
+    expect((error as Error).message).toContain(
+      'Dynamic workflows are not enabled for this project'
+    );
+    expect((error as Error).message).toContain(
+      'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1'
+    );
   });
 });

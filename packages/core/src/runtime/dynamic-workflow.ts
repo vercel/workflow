@@ -35,8 +35,10 @@ import type { StartOptions } from './start.js';
 
 /**
  * The error `start()` throws when it refuses a dynamic start before anything
- * is written: invalid source or options, the opt-in, the target deployment,
- * the World's capability, or its execution-context limit.
+ * is written: invalid source or options, the target deployment, the World's
+ * capability, or its execution-context limit. A missing opt-in is the one
+ * refusal that does not use it: that is the project's configuration, so it
+ * throws `DynamicWorkflowsNotEnabledError` (see `start.ts`).
  *
  * Each refusal is deterministic, so retrying the same `start()` fails the same
  * way. `fatal` is what tells the step executor so when `start()` runs inside
