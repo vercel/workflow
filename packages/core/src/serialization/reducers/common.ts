@@ -14,6 +14,7 @@ import {
   FatalError,
   HookConflictError,
   HookForceClaimedError,
+  RateLimitTimeoutError,
   RetryableError,
   RuntimeDecryptionError,
   StreamError,
@@ -328,6 +329,21 @@ export function getCommonReducers(
       }
       return reduced;
     },
+    // RateLimitTimeoutError carries the key and the slot it would have had;
+    // a workflow may pass a caught one to a step.
+    RateLimitTimeoutError: (value) => {
+      const base = reduceNamedErrorSubclassBase('RateLimitTimeoutError', value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['RateLimitTimeoutError'] = {
+        ...base,
+        key: readProperty(value, 'key') as RateLimitTimeoutError['key'],
+      };
+      const wouldAcquireAt = readProperty(value, 'wouldAcquireAt') as
+        | RateLimitTimeoutError['wouldAcquireAt']
+        | undefined;
+      if (wouldAcquireAt !== undefined) reduced.wouldAcquireAt = wouldAcquireAt;
+      return reduced;
+    },
     // WorkflowStartError carries the candidate run and the stage that could
     // not be confirmed; `start()` is a step, so it crosses into workflows.
     WorkflowStartError: (value) => {
@@ -563,6 +579,19 @@ export function getCommonRevivers(
         value.claimedByRunId,
         value.claimedByHookId
       );
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) {
+        (error as Error & { cause?: unknown }).cause = value.cause;
+      }
+      return error;
+    },
+    RateLimitTimeoutError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//RateLimitTimeoutError')
+        ] as typeof RateLimitTimeoutError | undefined) ?? RateLimitTimeoutError;
+      const error = new Ctor(value.key, value.wouldAcquireAt);
+      error.message = value.message;
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) {
         (error as Error & { cause?: unknown }).cause = value.cause;

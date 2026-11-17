@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import {
   HookConflictError,
+  RateLimitTimeoutError,
   StreamError,
   WorkflowStartError,
 } from '@workflow/errors';
@@ -220,6 +221,18 @@ describe('wire parity: guest serialize matches the reference codec', () => {
         cause.stack = 'cause-stack';
         const error = new WorkflowStartError('wrun_c', 'admission', cause);
         error.stack = 'start-stack';
+        return error;
+      },
+    ],
+    [
+      'RateLimitTimeoutError',
+      '(() => { const e = new Error(\'Rate limit "openai" has no slot before the call\\\'s timeout (next slot at 2026-01-01T00:05:00.000Z)\\n\u2570\u25b6 docs: https://workflow-sdk.dev/err/rate-limit-timeout\', { cause: undefined }); e.name = "RateLimitTimeoutError"; e.stack = "rate-stack"; e.key = "openai"; e.wouldAcquireAt = new Date("2026-01-01T00:05:00.000Z"); return e; })()',
+      () => {
+        const error = new RateLimitTimeoutError(
+          'openai',
+          new Date('2026-01-01T00:05:00.000Z')
+        );
+        error.stack = 'rate-stack';
         return error;
       },
     ],
