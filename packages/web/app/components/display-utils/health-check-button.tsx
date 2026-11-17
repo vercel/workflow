@@ -51,7 +51,6 @@ export function HealthCheckButton() {
           onClick={runChecks}
           loading={isChecking}
           prefix={<Activity />}
-          className="gap-1.5"
         >
           <span className="hidden sm:inline">
             {isChecking ? 'Checking...' : 'Health Check'}
