@@ -1,7 +1,11 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
+import {
+  cn,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
-import { cn } from '~/lib/utils';
 
 interface CopyableTextProps {
   text: string;
