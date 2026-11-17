@@ -19,6 +19,7 @@ import {
   it,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
+import { MessageData } from '../src/message.js';
 import { createQueue, type PostgresQueue } from '../src/queue.js';
 import { createEventsStorage } from '../src/storage.js';
 import { TestPool } from './pool.js';
@@ -145,6 +146,7 @@ describe.skipIf(process.platform === 'win32')(
     afterEach(async () => {
       await queue.close();
       await pool.query('DELETE FROM graphile_worker._private_jobs');
+      await pool.query('DELETE FROM workflow.workflow_run_delivery_leases');
     });
 
     /** A response the test releases, for a delivery that should hold its run. */
@@ -162,19 +164,64 @@ describe.skipIf(process.platform === 'win32')(
     const runDeliveries = (runId: string) =>
       deliveries.filter((delivery) => delivery.body.runId === runId);
 
-    /** The jobs waiting on the run's named queue, by payload. */
-    const jobsOnRunQueue = async (runId: string) =>
+    const decode = (payload: { data: string }) =>
+      JSON.parse(Buffer.from(payload.data, 'base64').toString());
+
+    /** The run's jobs no worker has taken yet, by message body. */
+    const waitingJobs = async (runId: string) =>
       (
         await pool.query<{ payload: { data: string } }>(
-          `SELECT jobs.payload FROM graphile_worker._private_jobs AS jobs
-             JOIN graphile_worker._private_job_queues AS job_queues
-               ON job_queues.id = jobs.job_queue_id
-            WHERE job_queues.queue_name LIKE $1 AND jobs.locked_at IS NULL`,
-          [`%:${runId}:executor`]
+          `SELECT payload FROM graphile_worker._private_jobs
+            WHERE locked_at IS NULL`
         )
-      ).rows.map((row) =>
-        JSON.parse(Buffer.from(row.payload.data, 'base64').toString())
+      ).rows
+        .map((row) => decode(row.payload))
+        .filter((body) => body.runId === runId);
+
+    /**
+     * What other deliveries left on the run's delivery lease for its owner
+     * (`run-lease.ts`), by message body; `undefined` once it is released.
+     */
+    const leftOnLease = async (runId: string) => {
+      const { rows } = await pool.query<{
+        wake: { payload: { data: string } } | null;
+        deferred: { payload: { data: string } }[];
+      }>(
+        'SELECT wake, deferred FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+        [runId]
       );
+      const row = rows[0];
+      return row
+        ? {
+            wake: row.wake ? decode(row.wake.payload) : undefined,
+            deferred: row.deferred.map((job) => decode(job.payload)),
+          }
+        : undefined;
+    };
+
+    /** Wait until every wake sent for the run so far is left on its lease. */
+    const untilLeftOnLease = async (runId: string) => {
+      await until(
+        () => waitingJobs(runId),
+        (jobs) => jobs.length === 0
+      );
+      return until(
+        () => leftOnLease(runId),
+        (left) => left?.wake !== undefined
+      );
+    };
+
+    /** Wait until the run's lease is released with nothing left waiting. */
+    const untilReleased = async (runId: string) => {
+      await until(
+        () => leftOnLease(runId),
+        (left) => left === undefined
+      );
+      await until(
+        () => waitingJobs(runId),
+        (jobs) => jobs.length === 0
+      );
+    };
 
     it('covers the orchestrator messages queued behind a delivery with one re-run', async () => {
       const runId = `wrun_${ulid()}`;
@@ -200,16 +247,17 @@ describe.skipIf(process.platform === 'win32')(
         (n) => n === 1
       );
       expect(runDeliveries(runId)).toHaveLength(1);
+      // Each wake's delivery found the run's lease held, left its message
+      // on the lease for the owner, and completed.
+      await untilLeftOnLease(runId);
+      expect(runDeliveries(runId)).toHaveLength(1);
       gate.release();
 
       await until(
         () => runDeliveries(runId).length,
         (n) => n === 2
       );
-      await until(
-        () => jobsOnRunQueue(runId),
-        (jobs) => jobs.length === 0
-      );
+      await untilReleased(runId);
       // Settle: nothing else is delivered for the run.
       await new Promise((resolve) => setTimeout(resolve, 500));
       const [first, rerun] = runDeliveries(runId);
@@ -222,6 +270,29 @@ describe.skipIf(process.platform === 'win32')(
       expect(rerun).toMatchObject({ attempt: 1, deliveryCount: 2 });
       expect(first!.invocationStartedAt).toBeDefined();
       expect(rerun!.invocationStartedAt).toBe(first!.invocationStartedAt);
+    });
+
+    it('leaves no per-run rows behind once its runs are delivered', async () => {
+      // Graphile never deletes a named queue's row, and its `get_job` locks
+      // every available queue row on each poll, so per-run named queues
+      // slowed every poll as runs accumulated. A run's lease row is deleted
+      // when its delivery releases it.
+      const runIds = Array.from({ length: 20 }, () => `wrun_${ulid()}`);
+      for (const runId of runIds) {
+        await wake(runId);
+        await wake(runId);
+      }
+      await until(
+        () => runIds.filter((runId) => runDeliveries(runId).length > 0),
+        (delivered) => delivered.length === runIds.length
+      );
+      for (const runId of runIds) await untilReleased(runId);
+      const { rows } = await pool.query<{ queues: number; leases: number }>(
+        `SELECT
+           (SELECT count(*)::int FROM graphile_worker._private_job_queues) AS queues,
+           (SELECT count(*)::int FROM workflow.workflow_run_delivery_leases) AS leases`
+      );
+      expect(rows[0]).toEqual({ queues: 0, leases: 0 });
     });
 
     it("delivers an absorbed hook wake's resume timing on the re-run, and never re-sends the first run's own", async () => {
@@ -250,15 +321,18 @@ describe.skipIf(process.platform === 'win32')(
       };
       const traceCarrier = { traceparent: '00-abc-def-01' };
       await wake(runId, { hookResumeTiming: absorbedTiming, traceCarrier });
+      // The wake carrying a resume's timing replaces the plain one on the
+      // lease, whichever delivery left its message first.
+      await until(
+        () => untilLeftOnLease(runId),
+        (left) => left?.wake?.hookResumeTiming !== undefined
+      );
       gate.release();
       await until(
         () => runDeliveries(runId).length,
         (n) => n === 2
       );
-      await until(
-        () => jobsOnRunQueue(runId),
-        (jobs) => jobs.length === 0
-      );
+      await untilReleased(runId);
       const [first, rerun] = runDeliveries(runId);
       expect(first!.body.hookResumeTiming).toEqual(ownTiming);
       expect(rerun!.body).toMatchObject({
@@ -282,6 +356,7 @@ describe.skipIf(process.platform === 'win32')(
         (n) => n === 1
       );
       await wake(secondRunId);
+      await untilLeftOnLease(secondRunId);
       secondGate.release();
       await until(
         () => runDeliveries(secondRunId).length,
@@ -316,6 +391,7 @@ describe.skipIf(process.platform === 'win32')(
         strategy: 'sequential',
       };
       await wake(runId, { hookResumeTiming: absorbedTiming });
+      await untilLeftOnLease(runId);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -352,6 +428,12 @@ describe.skipIf(process.platform === 'win32')(
           payloadDigest: 'digest',
         },
       });
+      // Not a wake a re-run covers: deferred, and re-added on release.
+      await until(
+        () => leftOnLease(runId),
+        (left) => left?.deferred.length === 1
+      );
+      expect(runDeliveries(runId)).toHaveLength(1);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -382,6 +464,11 @@ describe.skipIf(process.platform === 'win32')(
           workflowName: 'start',
         },
       });
+      await until(
+        () => leftOnLease(runId),
+        (left) => left?.deferred.length === 1
+      );
+      expect(runDeliveries(runId)).toHaveLength(1);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -391,7 +478,294 @@ describe.skipIf(process.platform === 'win32')(
       expect(runDeliveries(runId)[1]!.deliveryCount).toBe(1);
     });
 
-    it('delivers a handoff before the messages queued behind it', async () => {
+    /**
+     * Runs `queue` for one test on its own pool, whose statements matching
+     * `slow` are held up: before they run, or (`afterCommit`) when the
+     * transaction they ran in commits, before the commit returns.
+     */
+    async function withSlowPool(
+      slow: RegExp,
+      where: 'before' | 'afterCommit',
+      body: () => Promise<void>
+    ) {
+      await queue.close();
+      const slowPool = new TestPool({
+        connectionString: container.getConnectionUri(),
+        max: 20,
+      });
+      const hold = () => new Promise((resolve) => setTimeout(resolve, 500));
+      // Every statement, `pool.query` included, runs on one of the pool's
+      // clients, so wrapping each client as it connects covers them all.
+      slowPool.on('connect', (client) => {
+        const query = client.query.bind(client) as (
+          ...args: unknown[]
+        ) => unknown;
+        let matched = false;
+        client.query = ((...args: unknown[]) => {
+          const config = args[0] as string | { text?: string } | undefined;
+          const sql =
+            typeof config === 'string' ? config : (config?.text ?? '');
+          const isSlow = slow.test(sql);
+          const isHeldCommit = sql === 'COMMIT' && matched;
+          if (!isSlow && !isHeldCommit) return query(...args);
+          if (isSlow && where === 'afterCommit') matched = true;
+          if (isHeldCommit) matched = false;
+          const callbackAt = args.findIndex((arg) => typeof arg === 'function');
+          if (callbackAt !== -1) {
+            // `pool.query` passes a callback.
+            const callback = args[callbackAt] as (...result: unknown[]) => void;
+            const rest = [...args];
+            if (isHeldCommit) {
+              rest[callbackAt] = (...result: unknown[]) =>
+                void hold().then(() => callback(...result));
+              return query(...rest);
+            }
+            void (where === 'before' ? hold() : Promise.resolve()).then(() =>
+              query(...rest)
+            );
+            return undefined;
+          }
+          return (async () => {
+            if (isSlow && where === 'before') await hold();
+            const result = await (query(...args) as Promise<unknown>);
+            if (isHeldCommit) await hold();
+            return result;
+          })();
+        }) as typeof client.query;
+      });
+      queue = createQueue(
+        {
+          connectionString: container.getConnectionUri(),
+          queueConcurrency: 4,
+          pollInterval: 50,
+          applicationManagedShutdown: true,
+        },
+        slowPool
+      );
+      await queue.start();
+      try {
+        await body();
+      } finally {
+        await queue.close();
+        await slowPool.end();
+        // A queue for `afterEach` to close.
+        queue = createQueue(
+          { connectionString: container.getConnectionUri() },
+          pool
+        );
+      }
+    }
+
+    it('runs a handoff’s continuation that a worker takes at once, while the lease passes to it', async () => {
+      // The handoff's lease update is held up. The continuation must not be
+      // visible to a worker until the lease is its own: one that took it in
+      // between would find the lease held, leave its message, and complete,
+      // and the lease would pass to a job that no longer exists.
+      await withSlowPool(/SET owner_job_id = \$3/, 'before', async () => {
+        const runId = `wrun_${ulid()}`;
+        respond = (_delivery, response) =>
+          response.end(
+            runDeliveries(runId).length === 1
+              ? JSON.stringify({ timeoutSeconds: 0 })
+              : '{}'
+          );
+        const { messageId } = await wake(runId);
+        await until(
+          () => runDeliveries(runId).length,
+          (n) => n === 2
+        );
+        expect(runDeliveries(runId)[1]).toMatchObject({
+          messageId,
+          attempt: 1,
+          deliveryCount: 2,
+        });
+        await untilReleased(runId);
+      });
+    }, 30_000);
+
+    it('runs a keyed handoff’s continuation that another worker of the process takes while its predecessor returns', async () => {
+      // The handoff's commit returns late, so the continuation is visible
+      // while its predecessor, which has the same idempotency key, is still
+      // in flight in this process. The continuation must still be delivered,
+      // not acknowledged as a duplicate of a delivery that only rescheduled.
+      await withSlowPool(
+        /run_at => \$3::timestamptz/,
+        'afterCommit',
+        async () => {
+          const runId = `wrun_${ulid()}`;
+          respond = (_delivery, response) =>
+            response.end(
+              runDeliveries(runId).length === 1
+                ? JSON.stringify({ timeoutSeconds: 0 })
+                : '{}'
+            );
+          const { messageId } = await queue.queue(
+            QUEUE,
+            { runId, runSpecVersion: SPEC },
+            { idempotencyKey: `wait:${runId}` }
+          );
+          await until(
+            () => runDeliveries(runId).length,
+            (n) => n === 2
+          );
+          expect(runDeliveries(runId)[1]).toMatchObject({
+            messageId,
+            attempt: 1,
+            deliveryCount: 2,
+          });
+          await untilReleased(runId);
+        }
+      );
+    }, 30_000);
+
+    it('delivers a hook resume left on the lease of an owner that died on its last attempt', async () => {
+      // The owner's last delivery was SIGKILLed: the stale-lock sweep unlocked
+      // its job at 73/73 attempts, so Graphile never runs it again, and the
+      // hook resume another delivery left on its lease has no job of its own.
+      const runId = `wrun_${ulid()}`;
+      const utils = await makeWorkerUtils({ pgPool: pool });
+      const owner = await utils.addJob(
+        'workflow_flows',
+        MessageData.encode({
+          id: 'spec9-delivery',
+          data: Buffer.from(JSON.stringify({ runId: 'wrun_dead_owner' })),
+          messageId: `msg_${ulid()}` as MessageData['messageId'],
+          attempt: 73,
+        }),
+        { maxAttempts: 73, runAt: new Date(Date.now() + 3_600_000) }
+      );
+      await utils.release();
+      await pool.query(
+        'UPDATE graphile_worker._private_jobs SET attempts = 73 WHERE id = $1',
+        [owner.id]
+      );
+      const hookInput = {
+        token: 'tok',
+        resumeId: 'res_orphan',
+        hookId: 'hook_orphan',
+        payload: 'x',
+        payloadDigest: 'digest',
+      };
+      const resume = {
+        task: 'workflow_flows',
+        payload: MessageData.encode({
+          id: 'spec9-delivery',
+          prefix: '__wkf_workflow_',
+          data: Buffer.from(
+            JSON.stringify({ runId, runSpecVersion: SPEC, hookInput })
+          ),
+          messageId: `msg_${ulid()}` as MessageData['messageId'],
+          attempt: 1,
+          attemptOffset: 0,
+          deliveryOffset: 0,
+        }),
+        maxAttempts: 73,
+      };
+      await pool.query(
+        `INSERT INTO workflow.workflow_run_delivery_leases (run_id, owner_job_id, deferred)
+         VALUES ($1, $2, jsonb_build_array($3::jsonb))`,
+        [runId, owner.id, JSON.stringify(resume)]
+      );
+
+      await queue.close();
+      queue = createQueue(
+        {
+          connectionString: container.getConnectionUri(),
+          queueConcurrency: 4,
+          pollInterval: 50,
+          applicationManagedShutdown: true,
+        },
+        pool,
+        { orphanedLeaseIntervalMs: 200 }
+      );
+      await queue.start();
+
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      expect(runDeliveries(runId)[0]!.body.hookInput).toEqual(hookInput);
+      await untilReleased(runId);
+    });
+
+    it('keeps a bounded number of messages on a held lease, and delivers the rest later as their own jobs', async () => {
+      await queue.close();
+      queue = createQueue(
+        {
+          connectionString: container.getConnectionUri(),
+          queueConcurrency: 4,
+          pollInterval: 50,
+          applicationManagedShutdown: true,
+        },
+        pool,
+        { maxDeferredPerLease: 2 }
+      );
+      await queue.start();
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (_delivery, response) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        response.end('{}');
+      };
+      await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      // Legacy hook resumes, which carry their input and are deferred.
+      const resumes = [1, 2, 3, 4].map((n) => `res_${n}`);
+      for (const resumeId of resumes) {
+        await wake(runId, {
+          hookInput: {
+            token: 'tok',
+            resumeId,
+            hookId: 'hook_1',
+            payload: 'x',
+            payloadDigest: 'digest',
+          },
+        });
+      }
+      // Two are left on the lease; the others found it full and wait as
+      // delayed jobs of their own.
+      await until(
+        () => leftOnLease(runId),
+        (left) => left?.deferred.length === 2
+      );
+      const delayed = await until(
+        async () =>
+          (
+            await pool.query<{ payload: { data: string } }>(
+              'SELECT payload FROM graphile_worker._private_jobs WHERE locked_at IS NULL AND run_at > now()'
+            )
+          ).rows
+            .map((row) => decode(row.payload))
+            .filter((body) => body.runId === runId),
+        (jobs) => jobs.length === 2
+      );
+      expect(delayed.every((body) => body.hookInput !== undefined)).toBe(true);
+      expect((await leftOnLease(runId))?.deferred).toHaveLength(2);
+      gate.release();
+
+      // Every resume is delivered once.
+      await until(
+        () =>
+          runDeliveries(runId)
+            .map((d) => d.body.hookInput?.resumeId)
+            .filter(Boolean)
+            .sort(),
+        (delivered) => delivered.length === 4,
+        30_000
+      );
+      expect(
+        runDeliveries(runId)
+          .map((d) => d.body.hookInput?.resumeId)
+          .filter(Boolean)
+          .sort()
+      ).toEqual(resumes);
+      await untilReleased(runId);
+    }, 45_000);
+
+    it('delivers a handoff before the messages left on its lease', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
       let handedOff = false;
@@ -410,6 +784,7 @@ describe.skipIf(process.platform === 'win32')(
         (n) => n === 1
       );
       const queued = await wake(runId, { marker: 'queued' });
+      await untilLeftOnLease(runId);
       gate.release();
       await until(
         () => runDeliveries(runId).length,
@@ -421,11 +796,9 @@ describe.skipIf(process.platform === 'win32')(
         attempt: 1,
         deliveryCount: 2,
       });
-      // The queued wake is covered by the continuation's re-run.
-      await until(
-        () => jobsOnRunQueue(runId),
-        (jobs) => jobs.length === 0
-      );
+      // The wake left on the lease is covered by the continuation's re-run:
+      // the handoff passed the lease, with what was left on it, along.
+      await untilReleased(runId);
       expect(
         runDeliveries(runId).some((d) => d.messageId === queued.messageId)
       ).toBe(false);
@@ -487,11 +860,10 @@ describe.skipIf(process.platform === 'win32')(
         );
         // What an older SDK's `resumeHook()` sends: no stamp.
         await queue.queue(QUEUE, { runId });
-        const moved = await until(
-          () => jobsOnRunQueue(runId),
-          (jobs) => jobs.length === 1
-        );
-        expect(moved[0]).toMatchObject({ runId, runSpecVersion: SPEC });
+        // Stamped and re-added, it takes the lease, finds it held, and is
+        // left on it.
+        const left = await untilLeftOnLease(runId);
+        expect(left?.wake).toMatchObject({ runId, runSpecVersion: SPEC });
         expect(runDeliveries(runId)).toHaveLength(1);
         gate.release();
         // Covered by the holder's re-run.
@@ -499,10 +871,7 @@ describe.skipIf(process.platform === 'win32')(
           () => runDeliveries(runId).length,
           (n) => n === 2
         );
-        await until(
-          () => jobsOnRunQueue(runId),
-          (jobs) => jobs.length === 0
-        );
+        await untilReleased(runId);
         expect(runDeliveries(runId)[1]).toMatchObject({
           attempt: 1,
           deliveryCount: 2,

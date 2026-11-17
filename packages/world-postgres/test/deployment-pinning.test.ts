@@ -134,8 +134,9 @@ describe('deployment pinning', () => {
         { runId: newRun, runSpecVersion: SPEC_VERSION_CURRENT },
         { deploymentId: 'v2' }
       );
-      // A single-orchestrator run's deliveries are serialized in a named
-      // queue, which has to be the pinned deployment's too.
+      // A single-orchestrator run's message goes to the pinned deployment
+      // too, as a plain job: its deliveries are serialized by the run's
+      // lease, not a per-run named queue.
       await v2.queue(
         queueName,
         {
@@ -148,10 +149,7 @@ describe('deployment pinning', () => {
       expect(await queued('route_v1_flows')).toEqual(
         expect.arrayContaining([
           { runId: oldRun, queueName: null },
-          {
-            runId: singleOrchestratorRun,
-            queueName: `route_v1_flows:${singleOrchestratorRun}:executor`,
-          },
+          { runId: singleOrchestratorRun, queueName: null },
         ])
       );
       expect(await queued('route_v2_flows')).toEqual([
@@ -191,7 +189,7 @@ describe('deployment pinning', () => {
       expect(await queued('mix_flows')).toEqual([
         {
           runId: unpinnedRun,
-          queueName: `mix_flows:${unpinnedRun}:executor`,
+          queueName: null,
         },
       ]);
       expect(await queued('mix_v1_flows')).toEqual([
@@ -205,8 +203,8 @@ describe('deployment pinning', () => {
   });
 
   test('enqueues a spec 9 run with the longest deploymentId its jobPrefix allows', async () => {
-    // Graphile Worker limits queue names to 128 characters; the run's queue
-    // `${prefix}flows:${runId}:executor` is the longest name.
+    // Graphile Worker limits task identifiers to 128 characters. The bound
+    // also leaves room for the per-run queue names of earlier versions.
     const deploymentId = 'x'.repeat(72);
     const world = createWorld({ pool, deploymentId });
     const runId = `wrun_${ulid()}`;
@@ -216,8 +214,9 @@ describe('deployment pinning', () => {
         { runId, runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
         { deploymentId }
       );
-      const [job] = await queued(`workflow_${deploymentId}_flows`);
-      expect(job?.queueName).toHaveLength(128);
+      expect(await queued(`workflow_${deploymentId}_flows`)).toEqual([
+        { runId, queueName: null },
+      ]);
     } finally {
       await world.close();
     }
