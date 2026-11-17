@@ -1,149 +1,122 @@
+import { cva } from 'class-variance-authority';
 import type * as React from 'react';
 import { cn } from '../../lib/cn';
 
-/**
- * Per-size geometry: box size, line count (via the delays), line size, the
- * angle between lines and the length of one fade cycle, in ms.
- */
-const SIZES = {
+const sizeConfig = {
   sm: {
-    px: 12,
-    w: 3,
-    h: 1.5,
-    angle: 45,
-    duration: 1000,
+    angleIncrement: 45,
+    lineDimensions: 'h-[1.5px] w-[3px]',
     delays: [-875, -750, -625, -500, -375, -250, -125, 0],
+    duration: 1000,
   },
   md: {
-    px: 16,
-    w: 4,
-    h: 1.5,
-    angle: 36,
-    duration: 1000,
+    angleIncrement: 36,
+    lineDimensions: 'h-[1.5px] w-1',
     delays: [-900, -800, -700, -600, -500, -400, -300, -200, -100, 0],
+    duration: 1000,
   },
   lg: {
-    px: 20,
-    w: 5,
-    h: 2,
-    angle: 30,
-    duration: 1200,
+    angleIncrement: 30,
+    lineDimensions: 'h-[2px] w-[5px]',
     delays: [
       -1100, -1000, -900, -800, -700, -600, -500, -400, -300, -200, -100, 0,
     ],
+    duration: 1200,
   },
   xl: {
-    px: 24,
-    w: 6,
-    h: 2.5,
-    angle: 30,
-    duration: 1200,
+    angleIncrement: 30,
+    lineDimensions: 'h-[2.5px] w-1.5',
     delays: [
       -1100, -1000, -900, -800, -700, -600, -500, -400, -300, -200, -100, 0,
     ],
+    duration: 1200,
   },
   '2xl': {
-    px: 32,
-    w: 8,
-    h: 2.5,
-    angle: 24,
-    duration: 1200,
+    angleIncrement: 24,
+    lineDimensions: 'h-[2.5px] w-2',
     delays: [
       -1120, -1040, -960, -880, -800, -720, -640, -560, -480, -400, -320, -240,
       -160, -80, 0,
     ],
+    duration: 1200,
   },
   '3xl': {
-    px: 40,
-    w: 10,
-    h: 3,
-    angle: 24,
-    duration: 1200,
+    angleIncrement: 24,
+    lineDimensions: 'h-[3px] w-2.5',
     delays: [
       -1120, -1040, -960, -880, -800, -720, -640, -560, -480, -400, -320, -240,
       -160, -80, 0,
     ],
+    duration: 1200,
   },
   '4xl': {
-    px: 56,
-    w: 14,
-    h: 3.5,
-    angle: 20,
-    duration: 1300,
+    angleIncrement: 20,
+    lineDimensions: 'h-[3.5px] w-3.5',
     delays: [
       -1228, -1156, -1083, -1011, -939, -867, -794, -722, -650, -578, -506,
       -433, -361, -289, -217, -144, -72, 0,
     ],
+    duration: 1300,
   },
 } as const;
 
-export type SpinnerSize = keyof typeof SIZES;
+export type SpinnerSize = keyof typeof sizeConfig;
 
-/** The named size whose lines suit a box of `px` pixels. */
-function sizeForPixels(px: number): SpinnerSize {
-  const names = Object.keys(SIZES) as SpinnerSize[];
-  return names.find((name) => px <= SIZES[name].px) ?? '4xl';
+const spinnerVariants = cva(
+  'relative inline-block aspect-square transform-gpu text-gray-700',
+  {
+    variants: {
+      size: {
+        sm: 'size-3', // 12px
+        md: 'size-4', // 16px
+        lg: 'size-5', // 20px
+        xl: 'size-6', // 24px
+        '2xl': 'size-8', // 32px
+        '3xl': 'size-10', // 40px
+        '4xl': 'size-14', // 56px
+      },
+    },
+  }
+);
+
+export interface SpinnerProps extends React.HTMLAttributes<HTMLSpanElement> {
+  size?: SpinnerSize;
 }
 
-export type SpinnerProps = Omit<
-  React.HTMLAttributes<HTMLSpanElement>,
-  'color'
-> & {
-  /**
-   * A named size (`sm` is 12px, `md` 16px, `lg` 20px, `xl` 24px, `2xl` 32px,
-   * `3xl` 40px, `4xl` 56px) or a box size in pixels, which uses the lines of
-   * the nearest named size at or above it.
-   */
-  size?: SpinnerSize | number;
-  /**
-   * Line colour. Prefer a text colour class in `className`: the lines paint
-   * with `currentColor`, which defaults to `text-gray-700`.
-   */
-  color?: string;
-};
-
 /**
- * A ring of lines that fade in turn. The fade is the `spinner-opacity`
- * keyframes defined in our `styles.css`, so nothing is injected at render time.
+ * Lines that fade in turn around a ring, painted with `currentColor`
+ * (`text-gray-700` unless `className` sets another). The fade is the
+ * `spinner-opacity` keyframes in our `styles.css`.
  */
-export function Spinner({
-  size = 'lg',
-  color,
-  className,
-  style,
-  ...props
-}: SpinnerProps) {
-  const config = SIZES[typeof size === 'number' ? sizeForPixels(size) : size];
-  const px = typeof size === 'number' ? size : config.px;
+export function Spinner({ size = 'lg', className, ...props }: SpinnerProps) {
+  const { angleIncrement, lineDimensions, delays, duration } = sizeConfig[size];
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: a loading indicator is a status region; <output> is a form control
     <span
       role="status"
       aria-label="Loading"
-      className={cn(
-        'relative inline-block shrink-0 transform-gpu text-gray-700',
-        className
-      )}
-      style={{ width: px, height: px, color, ...style }}
+      className={cn(spinnerVariants({ size }), className)}
       {...props}
     >
-      {config.delays.map((delay, i) => (
+      {delays.map((delay, index) => (
         <span
-          key={delay}
           aria-hidden="true"
-          className="absolute top-1/2 left-1/2 rounded-full bg-current will-change-transform [animation-iteration-count:infinite] [animation-name:spinner-opacity] [animation-timing-function:linear]"
+          key={delay}
+          className={cn(
+            'absolute top-1/2 left-1/2 origin-center rounded-full bg-current will-change-transform',
+            lineDimensions
+          )}
           style={{
-            width: config.w,
-            height: config.h,
-            // Centre the line on the box, turn it, then push it out along its
-            // own length.
-            transform: `translate(-50%, -50%) rotate(${i * config.angle}deg) translate(146%)`,
-            animationDuration: `${config.duration}ms`,
+            animation: `spinner-opacity ${duration}ms linear infinite`,
             animationDelay: `${delay}ms`,
+            // Centring lives in the transform rather than translate
+            // utilities, which Tailwind v3 compiles to `transform` too.
+            transform: `translate(-50%, -50%) rotate(${index * angleIncrement}deg) translate(146%)`,
           }}
         />
       ))}
+      <span className="sr-only">Loading...</span>
     </span>
   );
 }

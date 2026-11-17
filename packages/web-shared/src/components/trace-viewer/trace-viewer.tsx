@@ -521,7 +521,7 @@ function TraceViewerContent({
             <div ref={loadMoreSentinelRef} className="flex justify-center">
               {isLoadingMore ? (
                 <div className="flex items-center justify-center gap-2 py-3 text-label-14 text-gray-800">
-                  <Spinner size={14} />
+                  <Spinner size="md" />
                   <span>Loading spans…</span>
                 </div>
               ) : null}
