@@ -18,7 +18,19 @@ describe('MaxEventsExceededError', () => {
     expect(err.name).toBe('MaxEventsExceededError');
     expect(err.eventCount).toBe(25_000);
     expect(err.limit).toBe(25_000);
+    expect(err.eventCountIsLowerBound).toBe(false);
     expect(MaxEventsExceededError.is(err)).toBe(true);
+  });
+
+  it('says the count is a lower bound when the log was not read to its end', () => {
+    const err = new MaxEventsExceededError(12, 10, {
+      eventCountIsLowerBound: true,
+    });
+    expect(err.message.split('\n')[0]).toBe(
+      'Workflow exceeded the maximum of 10 events per run (its event log holds at least 12 events)'
+    );
+    expect(err.eventCountIsLowerBound).toBe(true);
+    expect(err.eventCount).toBe(12);
   });
 });
 

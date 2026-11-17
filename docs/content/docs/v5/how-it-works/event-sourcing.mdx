@@ -208,7 +208,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 
 ### How fast a log grows
 
-Every action your run takes adds to the event log. For example, a step that succeeds on the first attempt contributes three events (`step_created`, `step_started`, `step_completed`). There are exceptions: an inline step on a spec 9 run skips the `step_created` event (see [Spec 9](#spec-9-experimental)). A retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two events, and a hook at least two, plus one for each resume.
+Every action your run takes adds to the event log. For example, a step that succeeds on the first attempt contributes three events (`step_created`, `step_started`, `step_completed`). A retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two events, and a hook at least two, plus one for each resume.
 
 A run's log is capped — the [Vercel World](/worlds/vercel#per-run-limits) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. Replay reads the whole log, so a run gets slower as it grows and is worth splitting well before it fails: split into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. Runs on the QuickJS VM with snapshotting resume from a snapshot instead of replaying the whole log, and are exempt from the ceiling; see [max-events-exceeded](/docs/errors/max-events-exceeded). How much the growth costs depends on how often the run replays; [Steps and long runs](/docs/performance#steps-and-long-runs) shows how step-to-step overhead changes through a 1,020-step run.
 
@@ -384,7 +384,3 @@ Step-to-step overhead (STSO) measures the time the runtime adds between two step
 <MetricVideo metric="stso" />
 
 See [Step-to-step overhead](/docs/performance#step-to-step-overhead-stso) on the Performance page for how it's measured and the latest results.
-
-## Spec 9 (experimental)
-
-The experimental spec 9 runtime writes the same event types with a different model: one orchestrator per run writes every decision behind an in-band fence, step and wait events are plain appends, and an inline step is created by its first `step_started`.

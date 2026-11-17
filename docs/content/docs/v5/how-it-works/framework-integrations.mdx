@@ -235,7 +235,7 @@ The generated trigger listens to one topic family:
 
 Both orchestration messages and step messages use this topic family. A step message is distinguished by its payload, not by a second topic or function.
 
-If you construct the trigger yourself, set no `maxConcurrency` on it: a spec 9 run's orchestrator messages are kept to one invocation at a time per run by the Vercel World. `isSequentialReplaysEnabled()` is deprecated and always returns `false`; remove any `maxConcurrency: 1` that depended on it.
+If you construct the trigger yourself, set no `maxConcurrency` on it. `isSequentialReplaysEnabled()` is deprecated and always returns `false`; remove any `maxConcurrency: 1` that depended on it.
 
 ## Security
 
