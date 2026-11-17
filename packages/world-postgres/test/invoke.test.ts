@@ -101,6 +101,37 @@ describe.skipIf(process.platform === 'win32')(
       (delivery: InProcessDelivery) => Promise<unknown>
     >();
 
+    /** The run's jobs on the executor task, by id and holder. */
+    async function executorJobs(runId: string) {
+      const { rows } = await pool.query<{
+        id: string;
+        locked_by: string | null;
+        payload: { data: string };
+      }>(
+        `SELECT jobs.id::text AS id, jobs.locked_by, jobs.payload
+           FROM graphile_worker._private_jobs AS jobs
+           JOIN graphile_worker._private_tasks AS tasks
+             ON tasks.id = jobs.task_id
+          WHERE tasks.identifier = 'workflow_flows_executor'`
+      );
+      return rows
+        .filter(
+          (row) =>
+            JSON.parse(Buffer.from(row.payload.data, 'base64').toString())
+              .runId === runId
+        )
+        .map(({ id, locked_by }) => ({ id, locked_by }));
+    }
+
+    /** The Graphile job that owns the run's delivery lease, if any. */
+    async function leaseOwner(runId: string) {
+      const { rows } = await pool.query<{ owner_job_id: string }>(
+        'SELECT owner_job_id FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+        [runId]
+      );
+      return rows[0]?.owner_job_id;
+    }
+
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       pool = new TestPool({
@@ -216,15 +247,16 @@ describe.skipIf(process.platform === 'win32')(
         async () => active.get(runId) ?? 0,
         (count) => count === 0
       );
+      // A job a worker has claimed but not yet handed to the handler is not
+      // counted above: wait until the run has no executor job and no job
+      // holds its delivery lease, so no executor delivery is about to start.
       await until(
-        async () =>
-          (
-            await pool.query<{ n: number }>(
-              'SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE queue_name = $1',
-              [`workflow_flows:${runId}:executor`]
-            )
-          ).rows[0].n,
+        async () => (await executorJobs(runId)).length,
         (n) => n === 0
+      );
+      await until(
+        () => leaseOwner(runId),
+        (owner) => owner === undefined
       );
     }
 
@@ -342,15 +374,10 @@ describe.skipIf(process.platform === 'win32')(
           responded_at: expect.any(Date),
         });
         await until(
-          async () =>
-            (
-              await pool.query(
-                'SELECT id FROM graphile_worker.jobs WHERE queue_name = $1',
-                [`workflow_flows:${runId}:executor`]
-              )
-            ).rowCount,
+          async () => (await executorJobs(runId)).length,
           (count) => count === 0
         );
+        expect(await leaseOwner(runId)).toBeUndefined();
       } finally {
         overrides.delete(runId);
       }
@@ -394,15 +421,10 @@ describe.skipIf(process.platform === 'win32')(
         await accepted;
         expect(deliveries).toBe(2);
         await until(
-          async () =>
-            (
-              await pool.query(
-                'SELECT id FROM graphile_worker.jobs WHERE queue_name = $1',
-                [`workflow_flows:${runId}:executor`]
-              )
-            ).rowCount,
+          async () => (await executorJobs(runId)).length,
           (count) => count === 0
         );
+        expect(await leaseOwner(runId)).toBeUndefined();
       } finally {
         overrides.delete(runId);
       }
@@ -506,23 +528,71 @@ describe.skipIf(process.platform === 'win32')(
           'workflow_flows',
           JSON.stringify(legacy),
         ]);
-        const transferred = await until(
+        // Transferred to the executor task, its delivery finds the run's
+        // lease held by the active executor and leaves its wake on it, to be
+        // re-added when that executor releases the lease. A plain executor
+        // wake takes the lease's one wake slot rather than the deferred list:
+        // any later executor delivery reads every pending invocation.
+        const left = await until(
           async () =>
             (
               await pool.query<{
-                task_identifier: string;
-                queue_name: string;
+                wake: {
+                  task: string;
+                  executor?: boolean;
+                  payload: { messageId: string };
+                } | null;
+                deferred: unknown[];
               }>(
-                'SELECT task_identifier, queue_name FROM graphile_worker.jobs WHERE key = $1',
-                [`workflow_flows_executor:transfer:${messageId}`]
+                'SELECT wake, deferred FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+                [runId]
               )
             ).rows[0],
-          (row) => row !== undefined
+          (row) => row?.wake?.payload.messageId === messageId
         );
-        expect(transferred).toEqual({
-          task_identifier: 'workflow_flows_executor',
-          queue_name: `workflow_flows:${runId}:executor`,
+        expect(left.wake).toMatchObject({
+          task: 'workflow_flows_executor',
+          executor: true,
         });
+        expect(left.deferred).toEqual([]);
+
+        // A burst of invocation wakes, as `invoke()` adds one per submission,
+        // while the executor is held: they collapse into that one wake
+        // rather than growing the lease row.
+        for (let n = 0; n < 20; n++) {
+          await pool.query(
+            'SELECT graphile_worker.add_job($1, $2::json, max_attempts => 73)',
+            [
+              'workflow_flows_executor',
+              JSON.stringify(
+                MessageData.encode({
+                  id: 'heldHook',
+                  data: Buffer.from(JSON.stringify({ runId })),
+                  messageId:
+                    `msg_burst_${n}_${randomUUID()}` as MessageData['messageId'],
+                  attempt: 1,
+                })
+              ),
+            ]
+          );
+        }
+        await until(
+          async () =>
+            (await executorJobs(runId)).filter((j) => j.locked_by === null)
+              .length,
+          (waiting) => waiting === 0
+        );
+        const afterBurst = (
+          await pool.query<{
+            wake: { executor?: boolean } | null;
+            deferred: unknown[];
+          }>(
+            'SELECT wake, deferred FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+            [runId]
+          )
+        ).rows[0];
+        expect(afterBurst?.deferred).toEqual([]);
+        expect(afterBurst?.wake).toMatchObject({ executor: true });
         await resumeHook(token, 'input');
         // The existing executor accepted the input while the step was held.
         // The legacy wake is queued, not another HTTP executor invocation.
@@ -632,23 +702,19 @@ describe.skipIf(process.platform === 'win32')(
       try {
         await world.queue('__wkf_workflow_oneHook', { runId });
         await entered.promise;
-        const job = (
-          await pool.query<{ locked_by: string }>(
-            'SELECT locked_by FROM graphile_worker.jobs WHERE queue_name = $1 AND locked_by IS NOT NULL',
-            [`workflow_flows:${runId}:executor`]
-          )
-        ).rows[0];
+        const job = (await executorJobs(runId)).find(
+          (candidate) => candidate.locked_by !== null
+        );
         expect(job).toBeDefined();
-        await utils.forceUnlockWorkers([job.locked_by]);
+        // The admitted delivery's job owns the run's lease.
+        expect(await leaseOwner(runId)).toBe(job!.id);
+        await utils.forceUnlockWorkers([job!.locked_by!]);
         await until(
           async () =>
-            (
-              await pool.query<{ locked_by: string | null }>(
-                'SELECT locked_by FROM graphile_worker.jobs WHERE queue_name = $1',
-                [`workflow_flows:${runId}:executor`]
-              )
-            ).rows[0]?.locked_by,
-          (owner) => owner !== job.locked_by
+            (await executorJobs(runId)).find(
+              (candidate) => candidate.id === job!.id
+            )?.locked_by,
+          (owner) => owner !== job!.locked_by
         );
         release.resolve();
         await until(async () => lateWrite, Boolean);
@@ -991,12 +1057,8 @@ describe.skipIf(process.platform === 'win32')(
         expect(rows[0].n).toBe(calls);
         await until(
           async () =>
-            (
-              await pool.query<{ n: number }>(
-                'SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE queue_name = ANY($1::text[])',
-                [runIds.map((id) => `workflow_flows:${id}:executor`)]
-              )
-            ).rows[0].n,
+            (await Promise.all(runIds.map((id) => executorJobs(id)))).flat()
+              .length,
           (n) => n === 0
         );
         const resultReads = reads.mock.calls.filter(

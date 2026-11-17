@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
@@ -111,6 +112,18 @@ describe('Postgres queue in-process delivery (integration)', () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
     connectionString = container.getConnectionUri();
     pool = new TestPool({ connectionString, max: 4 });
+    // The run delivery leases that serialize a spec 9 run's deliveries, as
+    // `bootstrap` creates them (migration 0031).
+    await pool.query('CREATE SCHEMA IF NOT EXISTS workflow');
+    await pool.query(
+      await readFile(
+        new URL(
+          '../src/drizzle/migrations/0031_add_run_delivery_leases.sql',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    );
     setGlobalDispatcher(shortDeadline);
   }, 120_000);
 

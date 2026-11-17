@@ -1616,6 +1616,17 @@ jobs:
         working-directory: workbench/python
         run: uv sync --locked
 
+      # The Python SDK's LocalWorld still stores runs as the JSON files that
+      # @workflow/world-local wrote before it moved to one SQLite database
+      # (`world.db`). If the driver used this repo's world-local, it would
+      # create runs the Python app never sees, and every test would time out.
+      # Until the Python LocalWorld reads `world.db`, the driver and the CLI it
+      # shells out to use the last published world-local with the JSON layout,
+      # loaded through WORKFLOW_TARGET_WORLD in the next step. Remove this
+      # step and that variable then.
+      - name: Install JSON-layout world-local for the driver
+        run: npm install --prefix "$RUNNER_TEMP/world-local-json" --no-save --no-audit --no-fund @workflow/world-local@5.3.0
+
       - name: Run E2E Tests
         run: |
           APP_LOG="$GITHUB_WORKSPACE/python-app.log"
@@ -1634,6 +1645,7 @@ jobs:
 
           # Only `e2e.test.ts` — `e2e-agent.test.ts` (which `pnpm test:e2e` also
           # runs) has no conformance gate and needs routes this app does not serve.
+          WORKFLOW_TARGET_WORLD="$RUNNER_TEMP/world-local-json/node_modules/@workflow/world-local" \
           pnpm vitest run packages/core/e2e/e2e.test.ts \
             --reporter=verbose --reporter=json \
             --reporter=./packages/core/e2e/github-reporter.ts \

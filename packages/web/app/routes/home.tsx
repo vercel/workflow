@@ -1,28 +1,23 @@
 import { ErrorBoundary as ErrorBoundaryComponent } from '@workflow/web-shared';
-import { useNavigate, useSearchParams } from 'react-router';
+import { useNavigate } from 'react-router';
 import { HooksTable } from '~/components/hooks-table';
 import { RunsTable } from '~/components/runs-table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import { WorkflowsList } from '~/components/workflows-list';
+import { useOptimisticSearchParams } from '~/lib/url-state';
 import { useServerConfig } from '~/lib/world-config-context';
 
 export default function Home() {
   const navigate = useNavigate();
   const { serverConfig } = useServerConfig();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams, updateSearchParams] = useOptimisticSearchParams();
 
   const sidebar = searchParams.get('sidebar');
   const hookId = searchParams.get('hookId');
   const tab = searchParams.get('tab') || 'runs';
 
   const setTab = (value: string) => {
-    setSearchParams(
-      (prev) => {
-        prev.set('tab', value);
-        return prev;
-      },
-      { replace: true }
-    );
+    updateSearchParams({ tab: value }, { replace: true });
   };
 
   const selectedHookId = sidebar === 'hook' && hookId ? hookId : undefined;

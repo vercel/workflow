@@ -1,6 +1,6 @@
 {
   "name": "workflow",
-  "version": "5.5.0",
+  "version": "5.6.0",
   "description": "Workflow SDK - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
@@ -11,7 +11,9 @@
   "files": [
     "dist",
     "bin",
-    "docs/**/*"
+    "docs/**/*",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "directories": {
     "doc": "./docs"
