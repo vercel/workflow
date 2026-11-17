@@ -419,6 +419,26 @@
         "WORKFLOW_TARGET_WORLD": "workflow-world-browser"
       },
       "services": []
+    },
+    {
+      "id": "aws",
+      "type": "community",
+      "package": "@joaquingiorgis/world-aws",
+      "name": "AWS",
+      "description": "DynamoDB for storage and streams, SQS for the queue and S3 for large payloads. Consumed by a worker in your app or by a Lambda function.",
+      "repository": "https://github.com/JoaquinGiorgis/workflow-world-aws",
+      "docs": "https://github.com/JoaquinGiorgis/workflow-world-aws#readme",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@joaquingiorgis/world-aws",
+        "WORKFLOW_AWS_REGION": "us-east-1",
+        "WORKFLOW_AWS_TABLE": "workflow",
+        "WORKFLOW_AWS_WORKFLOW_QUEUE_URL": "",
+        "WORKFLOW_AWS_STEP_QUEUE_URL": ""
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires AWS credentials, a DynamoDB table and two SQS queues (or LocalStack)"
     }
   ]
 }
