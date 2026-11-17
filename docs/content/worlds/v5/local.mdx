@@ -104,6 +104,8 @@ A refused delivery is retried at once when the key in the file has changed, and 
 
 Maximum number of concurrent queue message handlers.
 
+At most half of these can keep a live run event feed open at once. Past that, a delivery polls the run's log instead.
+
 ### `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`
 
 - Default: unlimited

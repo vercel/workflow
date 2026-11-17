@@ -116,10 +116,15 @@ function extractWorkflowAttributes(
  * @param o - Object with methods to instrument
  * @returns Instrumented object with same interface
  */
-export function instrumentObject<T extends object>(prefix: string, o: T): T {
+export function instrumentObject<T extends object>(
+  prefix: string,
+  o: T,
+  /** Synchronous methods, passed through unwrapped. */
+  synchronous: readonly (keyof T)[] = []
+): T {
   const handlers = {} as T;
   for (const key of Object.keys(o) as (keyof T)[]) {
-    if (typeof o[key] !== 'function') {
+    if (typeof o[key] !== 'function' || synchronous.includes(key)) {
       handlers[key] = o[key];
     } else {
       const f = o[key];

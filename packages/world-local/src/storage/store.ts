@@ -45,13 +45,23 @@ export function tagParams(tag: string | undefined): string[] {
   return tag === undefined ? [] : [tag];
 }
 
+/** Runs per `topSeqs` query. */
+const TOP_SEQS_BATCH = 500;
+
 export class Store {
   readonly db: Database;
   readonly tag: string | undefined;
+  /** Called with the run of every event this store appends. */
+  readonly onAppend: ((runId: string) => void) | undefined;
 
-  constructor(db: Database, tag: string | undefined) {
+  constructor(
+    db: Database,
+    tag: string | undefined,
+    onAppend?: (runId: string) => void
+  ) {
     this.db = db;
     this.tag = tag;
+    this.onAppend = onAppend;
   }
 
   // ---------------------------------------------------------------- runs
@@ -140,6 +150,23 @@ export class Store {
     return Number(row?.seq ?? 0);
   }
 
+  /** The highest position in each run's log; runs without events are absent. */
+  topSeqs(runIds: readonly string[]): Map<string, number> {
+    const tops = new Map<string, number>();
+    // Batched well under SQLite's bound-parameter limit.
+    for (let i = 0; i < runIds.length; i += TOP_SEQS_BATCH) {
+      const batch = runIds.slice(i, i + TOP_SEQS_BATCH);
+      const rows = this.db.all<{ run_id: string; seq: number }>(
+        `SELECT run_id, MAX(seq) AS seq FROM events WHERE run_id IN (${batch
+          .map(() => '?')
+          .join(', ')}) GROUP BY run_id`,
+        ...batch
+      );
+      for (const row of rows) tops.set(row.run_id, Number(row.seq));
+    }
+    return tops;
+  }
+
   /**
    * Appends `event` at the next position of its run's log and returns it with
    * its `eventId`. Positions are dense: nothing else writes this run's log
@@ -158,6 +185,7 @@ export class Store {
       encode(stored)
     );
     this.db.run('UPDATE runs SET seq = ? WHERE run_id = ?', seq, stored.runId);
+    this.onAppend?.(stored.runId);
     return stored;
   }
 

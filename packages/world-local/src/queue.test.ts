@@ -11,6 +11,7 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
+import { createBlockedRuns } from './blocked-runs';
 import {
   createQueue,
   DEFAULT_BODY_TIMEOUT_MS,
@@ -1109,6 +1110,33 @@ describe('per-run orchestrator serialization', () => {
     }
   });
 
+  it('marks a run blocked while another process’s message it cannot coalesce waits at the handler', async () => {
+    await localQueue.close();
+    const blockedRuns = createBlockedRuns();
+    localQueue = createQueue(
+      { baseUrl: 'http://localhost:3000' },
+      { blockedRuns }
+    );
+    const { started, releases, handler } = holdingHandler();
+    const otherProcess = createQueue({ baseUrl: 'http://localhost:3000' });
+    try {
+      otherProcess.registerHandler('__wkf_workflow_', handler);
+      await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+      await vi.waitFor(() => expect(started).toHaveLength(1));
+      await otherProcess.queue('__wkf_workflow_test' as any, {
+        ...spec9('run_a'),
+        completeWaits: ['wait_1'],
+      });
+      await vi.waitFor(() => expect(blockedRuns.isBlocked('run_a')).toBe(true));
+      releases[0]?.();
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      expect(blockedRuns.isBlocked('run_a')).toBe(false);
+      releases[1]?.();
+    } finally {
+      await otherProcess.close();
+    }
+  });
+
   it('frees the run while a delivery waits out its timeoutSeconds', async () => {
     let firstCalls = 0;
     const order: string[] = [];
@@ -1322,6 +1350,40 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
     ]);
     expect(seen.slice(1).map((d) => d.deliveryCount)).toEqual([1, 1, 1]);
     expect(seen[3]?.body.completeWaits).toEqual(['wait_1']);
+  });
+
+  it('marks a run blocked while a message it cannot coalesce waits behind its delivery', async () => {
+    await localQueue.close();
+    const blockedRuns = createBlockedRuns();
+    const blocked: string[] = [];
+    blockedRuns.onBlocked((runId) => blocked.push(runId));
+    localQueue = createQueue(
+      { baseUrl: 'http://localhost:3000' },
+      { blockedRuns }
+    );
+    const { seen, release } = recordingHandler();
+    // Nothing holds the gate: not blocked.
+    await localQueue.queue(QUEUE, spec9('run_a', { completeWaits: ['w0'] }));
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    // A wake its re-run covers: not blocked.
+    await localQueue.queue(QUEUE, spec9('run_a'));
+    // Another run's wake-up: its gate is free.
+    await localQueue.queue(QUEUE, spec9('run_b', { completeWaits: ['w1'] }));
+    expect(blocked).toEqual([]);
+    expect(blockedRuns.isBlocked('run_a')).toBe(false);
+    await localQueue.queue(QUEUE, spec9('run_a', { completeWaits: ['w2'] }));
+    expect(blocked).toEqual(['run_a']);
+    expect(blockedRuns.isBlocked('run_a')).toBe(true);
+    release();
+    await vi.waitFor(() =>
+      expect(
+        seen.some(
+          (d) => (d.body.completeWaits as string[] | undefined)?.[0] === 'w2'
+        )
+      ).toBe(true)
+    );
+    // Its own delivery runs unblocked.
+    expect(blockedRuns.isBlocked('run_a')).toBe(false);
   });
 
   it(`re-runs at most ${MAX_LOCAL_COALESCED_RERUNS} times per hold, then delivers what still waits`, async () => {

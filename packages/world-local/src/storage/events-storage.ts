@@ -72,9 +72,11 @@ import {
   validateUlidTimestamp,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import type { BlockedRuns } from '../blocked-runs.js';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { CommitThenThrow, type Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
+import { createLiveFeed } from './live-feed.js';
 import { purgeRunData, purgesUserDataOnFinish } from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { startHookRecord, withStartHookId } from './start-hook.js';
@@ -150,13 +152,19 @@ type RunCreationData = {
 export type LocalEventsStorage = Storage['events'] & {
   /** Nothing to clear: kept for callers of the filesystem implementation. */
   clearCache(): void;
+  /** Ends every live feed subscription and refuses new ones. */
+  closeLiveFeed(): void;
 };
 
 export function createEventsStorage(
   db: Database,
-  tag?: string
+  tag?: string,
+  options: { blockedRuns?: BlockedRuns } = {}
 ): LocalEventsStorage {
-  const store = new Store(db, tag);
+  // Every append, to any run's log (a force-claim writes `hook_disposed` to
+  // the previous holder's), reaches that run's subscribers.
+  const store = new Store(db, tag, (runId) => liveFeed.notify(runId));
+  const liveFeed = createLiveFeed(store, options);
   const hookRetentionLimitMs = getHookRetentionLimitMs();
 
   // ------------------------------------------------------------------ hooks
@@ -1364,6 +1372,8 @@ export function createEventsStorage(
       return create(runId, data, params);
     },
 
+    subscribe: liveFeed.subscribe,
+
     async get(runId, eventId, params) {
       assertSafeEntityId('runId', runId);
       assertSafeEntityId('eventId', eventId);
@@ -1431,6 +1441,8 @@ export function createEventsStorage(
     },
 
     clearCache() {},
+
+    closeLiveFeed: liveFeed.close,
   } as LocalEventsStorage;
 }
 
