@@ -494,19 +494,28 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
  * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
  */
 export class MaxEventsExceededError extends WorkflowError {
+  /**
+   * The events the runtime counted. A lower bound on the log's size when
+   * {@link eventCountIsLowerBound} is set: the runtime stopped reading the
+   * log once it held the limit.
+   */
   readonly eventCount: number;
   readonly limit: number;
+  readonly eventCountIsLowerBound: boolean;
 
   constructor(
     eventCount: number,
     limit: number,
-    options?: WorkflowErrorOptions
+    options?: WorkflowErrorOptions & { eventCountIsLowerBound?: boolean }
   ) {
+    const eventCountIsLowerBound = options?.eventCountIsLowerBound === true;
     // Frame hint + docs here (instead of passing `slug` through) so the
     // hint sits above the docs link.
     super(
       formatErrorMessageWithDetails(
-        `Workflow exceeded the maximum of ${limit} events per run`,
+        eventCountIsLowerBound
+          ? `Workflow exceeded the maximum of ${limit} events per run (its event log holds at least ${eventCount} events)`
+          : `Workflow exceeded the maximum of ${limit} events per run`,
         {
           hint: `${QUICKJS_SNAPSHOT_REMEDIATION} Alternatively, split the work into child workflows.`,
           slug: options?.slug ?? ERROR_SLUGS.MAX_EVENTS_EXCEEDED,
@@ -517,6 +526,7 @@ export class MaxEventsExceededError extends WorkflowError {
     this.name = 'MaxEventsExceededError';
     this.eventCount = eventCount;
     this.limit = limit;
+    this.eventCountIsLowerBound = eventCountIsLowerBound;
   }
 
   static is(value: unknown): value is MaxEventsExceededError {

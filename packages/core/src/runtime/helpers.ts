@@ -693,7 +693,8 @@ export function withReplayDelta(
  *   When given, the load stops following `hasMore` once it holds that many
  *   workflow events (sealed `noop`s are not counted): a run already past its
  *   ceiling fails on what it holds, rather than reading its whole log first.
- *   The returned log then ends at its cursor with more events after it.
+ *   The returned log then ends at its cursor with more events after it, and
+ *   carries the ceiling as {@link LoadedEventLog.stoppedAtEventLimit}.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
@@ -723,6 +724,7 @@ export async function loadWorkflowRunEvents(
     let snapshotTaken = false;
     let maxEvents: number | undefined;
     let workflowEventCount = 0;
+    let stoppedAtLimit: number | undefined;
     const loadedEventIds = new Set<string>();
     const requestedCursors = new Set<string>();
     let cursor: string | null = afterCursor ?? null;
@@ -820,9 +822,11 @@ export async function loadWorkflowRunEvents(
 
       const limit = eventLimit?.(maxEvents);
       if (hasMore && limit !== undefined && workflowEventCount >= limit) {
-        runtimeLogger.debug('Event load stopped at the run event ceiling', {
+        stoppedAtLimit = limit;
+        runtimeLogger.info('Event load stopped at the run event ceiling', {
           workflowRunId: runId,
           totalEvents: loadedEvents.length,
+          workflowEvents: workflowEventCount,
           limit,
         });
         break;
@@ -840,6 +844,14 @@ export async function loadWorkflowRunEvents(
     span?.setAttributes({
       ...Attribute.WorkflowEventsCount(loadedEvents.length),
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+      ...(eventLimit
+        ? Attribute.WorkflowEventsLoadStoppedAtLimit(
+            stoppedAtLimit !== undefined
+          )
+        : {}),
+      ...(stoppedAtLimit !== undefined
+        ? Attribute.WorkflowEventsLimit(stoppedAtLimit)
+        : {}),
     });
 
     return {
@@ -847,6 +859,9 @@ export async function loadWorkflowRunEvents(
       cursor,
       ...(snapshot !== undefined ? { snapshot } : {}),
       ...(maxEvents !== undefined ? { maxEvents } : {}),
+      ...(stoppedAtLimit !== undefined
+        ? { stoppedAtEventLimit: stoppedAtLimit }
+        : {}),
     };
   });
 }
@@ -869,6 +884,12 @@ export interface LoadedEventLog {
    * ({@link EventListResponse.maxEvents}), when it did.
    */
   maxEvents?: number;
+  /**
+   * The ceiling the load stopped at (see `eventLimit`), when it stopped
+   * before the end of the log: the log holds at least that many workflow
+   * events, and more after the returned cursor.
+   */
+  stoppedAtEventLimit?: number;
 }
 
 /**

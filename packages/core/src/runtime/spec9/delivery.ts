@@ -332,6 +332,11 @@ export async function runSpec9Delivery(
     : result;
 }
 
+/** The events the per-run ceiling counts: every one but a sealed `noop`. */
+function countWorkflowEvents(events: readonly Event[]): number {
+  return events.reduce((n, e) => (isSealedNoopEvent(e) ? n : n + 1), 0);
+}
+
 async function runDelivery(
   delivery: WorkflowDelivery,
   continuation: { handoff: boolean; exit?: string }
@@ -891,6 +896,7 @@ async function runDelivery(
     if (loaded.maxEvents !== undefined) {
       maxEventsLimit = clampMaxEvents(loaded.maxEvents);
     }
+    logStoppedAtEventLimit = loaded.stoppedAtEventLimit !== undefined;
     for (const event of loaded.events) {
       prepareReplayEvent(event);
     }
@@ -914,6 +920,8 @@ async function runDelivery(
   const loadAfter = async (): Promise<LoadedEventLog> => {
     logBehind = false;
     if (!log || log.cursor === null) return fullLoad();
+    // Reads to the end of the log, past where a full load stopped.
+    logStoppedAtEventLimit = false;
     const cursor = log.cursor;
     const page = await readWithDeadline(
       (signal) =>
@@ -940,6 +948,10 @@ async function runDelivery(
   // when the World reports it there, and from the `run_started`
   // response of the delivery that wrote it.
   let maxEventsLimit: number | undefined = clampMaxEvents(undefined);
+  // Whether the log in hand is a prefix that a full load stopped
+  // at the ceiling (`loadWorkflowRunEvents`'s `eventLimit`): the
+  // run is past its ceiling, and its log holds more than that.
+  let logStoppedAtEventLimit = false;
   let workflowStartedAt = -1;
   // Latency telemetry (TTFS / STSO / RSFS), see
   // runtime/step-latency.ts: whether this invocation's first
@@ -1601,6 +1613,13 @@ async function runDelivery(
         )) !== 'continue'
       ) {
         return undefined;
+      }
+      // A run past its ceiling fails here, on the prefix its load
+      // stopped at, before any setup write is decided on a log
+      // missing the events after it.
+      if (logStoppedAtEventLimit) {
+        workflowRun ??= run;
+        return await failRun(eventLimitError(log.events), '');
       }
       const hasRunStarted = log.events.some(
         (event) => event.eventType === 'run_started'
@@ -2865,12 +2884,9 @@ async function runDelivery(
     /** Throws `MaxEventsExceededError` for a log at the run's ceiling. */
     const enforceEventLimit = (events: readonly Event[]): void => {
       if (maxEventsLimit === undefined) return;
-      const workflowEventCount = events.reduce(
-        (n, e) => (isSealedNoopEvent(e) ? n : n + 1),
-        0
-      );
+      const workflowEventCount = countWorkflowEvents(events);
       if (workflowEventCount >= maxEventsLimit) {
-        throw new MaxEventsExceededError(workflowEventCount, maxEventsLimit);
+        throw eventLimitError(events);
       }
       maybeWarnApproachingEventLimit({
         runId,
@@ -2927,10 +2943,6 @@ async function runDelivery(
             await repairRunAhead();
           }
           flushPending();
-          // A delivery whose load already reached the ceiling (a load
-          // stops there, see `fullLoad`) fails before it reads or
-          // writes anything more.
-          if (loopIteration === 1) enforceEventLimit(log.events);
           if (logBehind) await loadAfter();
           assert(log, 'The event log is loaded in the loop');
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
@@ -4706,6 +4718,19 @@ async function runDelivery(
         ),
       };
     }
+  }
+
+  /**
+   * The error for a log at the run's ceiling. Its count is a lower bound
+   * when the log is a prefix a load stopped at the ceiling.
+   */
+  function eventLimitError(events: readonly Event[]): MaxEventsExceededError {
+    assert(maxEventsLimit !== undefined, 'The ceiling is known');
+    return new MaxEventsExceededError(
+      countWorkflowEvents(events),
+      maxEventsLimit,
+      { eventCountIsLowerBound: logStoppedAtEventLimit }
+    );
   }
 
   /** Records `run_failed` for an error the run cannot survive. */

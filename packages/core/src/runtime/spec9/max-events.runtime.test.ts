@@ -18,7 +18,11 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { workflowEntrypoint } from '../../runtime.js';
-import { dehydrateWorkflowArguments } from '../../serialization.js';
+import {
+  dehydrateStepReturnValue,
+  dehydrateWorkflowArguments,
+  hydrateRunError,
+} from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { resumeHook } from '../resume-hook.js';
 import { setWorld } from '../world.js';
@@ -33,6 +37,15 @@ const LOOP_WORKFLOW = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE
   async function workflow() {
     for (let i = 0; ; i++) {
       await createHook({ token: "loop-" + i });
+    }
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// One sleep per iteration, forever: every timer is a new delivery.
+const SLEEP_LOOP_WORKFLOW = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow() {
+    for (;;) {
+      await sleep("1s");
     }
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
@@ -73,7 +86,7 @@ function view(world: AppendOnlyWorld, runId: string): World {
   return base;
 }
 
-async function setup(options: WorldOptions = {}) {
+async function setup(options: WorldOptions = {}, code = LOOP_WORKFLOW) {
   const runId = `wrun_me_${Math.random().toString(36).slice(2)}`;
   const world = new AppendOnlyWorld(options);
   world.seedRun({
@@ -87,7 +100,7 @@ async function setup(options: WorldOptions = {}) {
     updatedAt: new Date(),
   } as unknown as WorkflowRun);
   setWorld(view(world, runId));
-  await workflowEntrypoint(LOOP_WORKFLOW)(new Request('https://example.test'));
+  await workflowEntrypoint(code)(new Request('https://example.test'));
   world.enqueue(QUEUE, { runId, requestedAt: new Date() });
   return { world, runId };
 }
@@ -102,6 +115,48 @@ const workflowEventCount = (world: AppendOnlyWorld) =>
 const errorCodeOf = (event: Event | undefined) =>
   (event as { eventData?: { errorCode?: string } } | undefined)?.eventData
     ?.errorCode;
+
+/** The error a `run_failed` recorded. */
+async function runErrorOf(event: Event | undefined, runId: string) {
+  const error = (event as { eventData?: { error?: unknown } } | undefined)
+    ?.eventData?.error;
+  return (await hydrateRunError(error, runId, undefined)) as {
+    message: string;
+  };
+}
+
+/** A clock the runtime reads through `Date.now()`, moved by tests. */
+function offsetClock() {
+  let offsetMs = 0;
+  const realNow = Date.now.bind(Date);
+  const spy = vi
+    .spyOn(Date, 'now')
+    .mockImplementation(() => realNow() + offsetMs);
+  return {
+    advance(ms: number) {
+      offsetMs += ms;
+    },
+    restore() {
+      spy.mockRestore();
+    },
+  };
+}
+
+/**
+ * A hook-loop run whose log holds `resumes` resumed hooks, read by `list` in
+ * pages of `listPageSize`.
+ */
+async function longRun(resumes: number, listPageSize: number) {
+  const { world, runId } = await setup({ listPageSize });
+  await world.runUntilIdle();
+  for (let i = 0; i < resumes; i++) {
+    await resumeHook(`loop-${i}`, { value: i });
+    await world.runUntilIdle();
+  }
+  expect(eventsOf(world, 'hook_created')).toHaveLength(resumes + 1);
+  expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+  return { world, runId };
+}
 
 /** How many events the run's first delivery leaves in the log. */
 async function firstDeliveryEventCount(): Promise<number> {
@@ -170,15 +225,8 @@ describe.each([
 
   it('fails a run already past the ceiling without reading its whole log', async () => {
     const listPageSize = 2;
-    const { world } = await setup({ listPageSize });
-    await world.runUntilIdle();
     const resumes = 10;
-    for (let i = 0; i < resumes; i++) {
-      await resumeHook(`loop-${i}`, { value: i });
-      await world.runUntilIdle();
-    }
-    expect(eventsOf(world, 'hook_created')).toHaveLength(resumes + 1);
-    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    const { world, runId } = await longRun(resumes, listPageSize);
 
     // The ceiling now sits well below the log: two pages hold it.
     world.maxEvents = listPageSize * 2;
@@ -196,5 +244,111 @@ describe.each([
     const pagesRead = world.listCalls.length - listsBefore;
     expect(pagesRead * listPageSize).toBeLessThan(logSize);
     expect(pagesRead * listPageSize).toBeGreaterThanOrEqual(world.maxEvents);
+    // The count is what the delivery read, and says so.
+    expect((await runErrorOf(failed[0], runId)).message).toContain(
+      'holds at least'
+    );
+  });
+
+  // A legacy lazy hook resume writes its `hook_received` in setup, deduped
+  // against the log. On a load stopped at the ceiling the dedupe would miss
+  // one recorded past the cut, so the run fails before that write.
+  it('fails a legacy lazy hook resume past the ceiling before writing or reading more', async () => {
+    const listPageSize = 2;
+    const resumes = 10;
+    const { world, runId } = await longRun(resumes, listPageSize);
+    const hookId = eventsOf(world, 'hook_created').at(-1)?.correlationId;
+    const resumeId = '01J0000000000000000000RSM1';
+    const payload = await dehydrateStepReturnValue(
+      { value: 'legacy' },
+      runId,
+      undefined
+    );
+    // The producer already recorded this resume, past where the next load
+    // stops.
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      correlationId: hookId,
+      resumeId,
+      eventData: { token: `loop-${resumes}`, payload },
+    } as Partial<Event>);
+
+    world.maxEvents = listPageSize * 2;
+    const logSize = world.events.length;
+    const listsBefore = world.listCalls.length;
+    const receivedBefore = world.creates.filter(
+      (c) => c.event.eventType === 'hook_received'
+    ).length;
+
+    await world.deliver(
+      world.enqueue(QUEUE, {
+        runId,
+        hookInput: {
+          hookId,
+          resumeId,
+          token: `loop-${resumes}`,
+          payload,
+          payloadDigest: 'c'.repeat(64),
+          deploymentId: 'dpl_test',
+        },
+      })
+    );
+
+    const failed = eventsOf(world, 'run_failed');
+    expect(failed).toHaveLength(1);
+    expect(errorCodeOf(failed[0])).toBe(RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED);
+    expect(
+      world.creates.filter((c) => c.event.eventType === 'hook_received')
+    ).toHaveLength(receivedBefore);
+    const pagesRead = world.listCalls.length - listsBefore;
+    expect(pagesRead * listPageSize).toBeLessThan(logSize);
+  });
+});
+
+describe('the event ceiling on a reload in the middle of a delivery (node engine)', () => {
+  beforeEach(() => {
+    currentEngine = 'node';
+  });
+
+  // An incomplete skipped-slot report on the delivery's own wait_completed
+  // makes it reload the log in full before consuming the write; the check
+  // before each replay fails the run on what that reload holds.
+  it('fails the run when the reload reaches the ceiling', async () => {
+    const clock = offsetClock();
+    try {
+      const { world } = await setup(
+        { reportIncomplete: true },
+        SLEEP_LOOP_WORKFLOW
+      );
+      // The first delivery only: its timer is not due yet.
+      const first = world.held[0];
+      if (!first) throw new Error('no held message');
+      await world.deliver(first);
+      expect(eventsOf(world, 'wait_created')).toHaveLength(1);
+      // The timer delivery's own load stays below the ceiling; its
+      // wait_completed reaches it.
+      world.maxEvents = workflowEventCount(world) + 1;
+      const listsBefore = world.listCalls.length;
+
+      clock.advance(2_000);
+      await world.runUntilIdle();
+
+      expect(eventsOf(world, 'wait_completed')).toHaveLength(1);
+      const failed = eventsOf(world, 'run_failed');
+      expect(failed).toHaveLength(1);
+      expect(errorCodeOf(failed[0])).toBe(RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED);
+      expect(eventsOf(world, 'wait_created')).toHaveLength(1);
+      // Two full loads from the start: the delivery's setup, and the reload.
+      const fullLoads = world.listCalls
+        .slice(listsBefore)
+        .filter(
+          (call) =>
+            (call.pagination as { cursor?: string } | undefined)?.cursor ===
+            undefined
+        );
+      expect(fullLoads).toHaveLength(2);
+    } finally {
+      clock.restore();
+    }
   });
 });
