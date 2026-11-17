@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "5.1.1",
+  "version": "5.2.0",
   "type": "module",
   "private": false,
   "files": [
@@ -81,7 +81,6 @@
     "@xyflow/react": "12.12.1",
     "cbor-x": "^1",
     "class-variance-authority": "0.7.1",
-    "clsx": "2.1.1",
     "cross-env": "^7.0.3",
     "date-fns": "4.4.0",
     "geist": "^1.9.2",
@@ -95,7 +94,6 @@
     "shiki": "4.0.0",
     "sonner": "2.0.8",
     "swr": "^2.5.1",
-    "tailwind-merge": "3.5.0",
     "tailwindcss": "4",
     "typescript": "catalog:",
     "vite": "^6",

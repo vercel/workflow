@@ -1,7 +1,6 @@
-import { Button } from '@workflow/web-shared';
+import { Button, cn } from '@workflow/web-shared';
 import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { cn } from '~/lib/utils';
 
 export interface SelectionBarProps {
   /** Number of selected items */
