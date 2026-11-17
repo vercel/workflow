@@ -12,8 +12,8 @@
 .runningStripes {
   background-image: repeating-linear-gradient(
     45deg,
-    var(--ds-blue-500) 0,
-    var(--ds-blue-500) 1.5px,
+    var(--ds-amber-500) 0,
+    var(--ds-amber-500) 1.5px,
     transparent 1.5px,
     transparent 8px
   );

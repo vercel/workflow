@@ -288,7 +288,6 @@ describe('getResourceClassNames', () => {
   it('uses gray for hooks (passive spans), not amber', () => {
     expect(getResourceClassNames('hook')).toEqual({
       className: 'border-gray-500 bg-gray-200',
-      errorClassName: 'border-red-500 bg-red-200',
     });
   });
 });

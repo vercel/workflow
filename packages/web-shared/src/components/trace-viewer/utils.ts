@@ -290,35 +290,28 @@ export const RESOURCE_CLASS_NAMES: Record<
   string,
   {
     className: string;
-    errorClassName?: string;
   }
 > = {
   run: {
     className: 'border-blue-500 bg-blue-200',
-    errorClassName: 'border-red-500 bg-red-200',
   },
   step: {
     className: 'border-green-500 bg-green-200',
-    errorClassName: 'border-red-500 bg-red-200',
   },
   // Passive spans (hooks) stay gray; matches event-list icons and the minimap.
   hook: {
     className: 'border-gray-500 bg-gray-200',
-    errorClassName: 'border-red-500 bg-red-200',
   },
   sleep: {
     className: 'border-purple-500 bg-purple-200',
-    errorClassName: 'border-red-500 bg-red-200',
   },
   default: {
     className: 'border-gray-500 bg-gray-200',
-    errorClassName: 'border-red-500 bg-red-200',
   },
 };
 
 export function getResourceClassNames(resource: string): {
   className: string;
-  errorClassName?: string;
 } {
   return RESOURCE_CLASS_NAMES[resource] ?? RESOURCE_CLASS_NAMES.default;
 }
@@ -337,8 +330,7 @@ export type SegmentStatus =
   | 'retrying'
   | 'succeeded'
   | 'waiting'
-  | 'sleeping'
-  | 'received';
+  | 'sleeping';
 
 export interface Segment {
   startFraction: number;

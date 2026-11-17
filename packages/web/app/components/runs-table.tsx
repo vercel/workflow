@@ -1,6 +1,8 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   Button,
+  STATUS,
+  StatusDot,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -10,6 +12,7 @@ import {
   type Event,
   type WorkflowRun,
   type WorkflowRunStatus,
+  WorkflowRunStatusSchema,
 } from '@workflow/world';
 import {
   AlertCircle,
@@ -183,13 +186,7 @@ interface RunsTableProps {
   onRunClick: (runId: string) => void;
 }
 
-const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'bg-neutral-600 dark:bg-neutral-400' },
-  running: { label: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
-  completed: { label: 'Completed', color: 'bg-green-600 dark:bg-green-400' },
-  failed: { label: 'Failed', color: 'bg-red-600 dark:bg-red-400' },
-  cancelled: { label: 'Cancelled', color: 'bg-gray-600 dark:bg-gray-400' },
-};
+const RUN_STATUSES = WorkflowRunStatusSchema.options;
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -404,18 +401,14 @@ function FilterControls({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Any status</SelectItem>
-                  {Object.entries(statusMap).map(
-                    ([status, { label, color }]) => (
-                      <SelectItem key={status} value={status}>
-                        <div className="flex items-center">
-                          <span
-                            className={`${color} size-1.5 rounded-full mr-2`}
-                          />
-                          {label}
-                        </div>
-                      </SelectItem>
-                    )
-                  )}
+                  {RUN_STATUSES.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      <div className="flex items-center gap-2">
+                        <StatusDot status={status} />
+                        {STATUS[status].label}
+                      </div>
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -479,10 +472,9 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
 
   // Validate status parameter - only allow known valid statuses or 'all'
   const rawStatus = searchParams.get('status');
-  const validStatuses = Object.keys(statusMap) as WorkflowRunStatus[];
   const status: WorkflowRunStatus | 'all' | undefined =
     rawStatus === 'all' ||
-    (rawStatus && validStatuses.includes(rawStatus as WorkflowRunStatus))
+    (rawStatus && RUN_STATUSES.includes(rawStatus as WorkflowRunStatus))
       ? (rawStatus as WorkflowRunStatus | 'all')
       : undefined;
   const workflowNameFilter = searchParams.get('workflow') as string | 'all';

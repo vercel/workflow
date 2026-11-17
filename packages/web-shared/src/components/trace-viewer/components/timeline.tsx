@@ -12,6 +12,7 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
+import { STATUS } from '../../../lib/status';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
 import { formatDurationPrecise, getHighResInMs } from '../util/timing';
@@ -50,24 +51,9 @@ const TINY_BAR_BOX_SIZE_PX = 24;
 const TINY_BAR_WIDTH_PX = 4;
 export const TIMELINE_PADDING_PX = 16;
 
-const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
-  queued: 'bg-gray-400 border border-gray-500',
-  pending: 'bg-gray-200 border border-gray-500',
-  retrying: 'bg-gray-400 border border-gray-500',
-  waiting: 'bg-gray-200 border border-gray-500',
-  running: 'bg-blue-200 border border-blue-500',
-  completed: 'bg-blue-200 border border-blue-500',
-  cancelled: 'bg-gray-500 border border-gray-700',
-  failed: 'bg-red-200 border border-red-500',
-  succeeded: 'bg-green-200 border border-green-500',
-  sleeping: 'bg-gray-400 border border-gray-500',
-  received: 'bg-blue-200 border border-blue-500',
-};
-
 const STRIPED_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
   'pending',
   'running',
-  'received',
 ]);
 
 function AnimatedStripes({ status }: { status: SegmentStatus }): ReactNode {
@@ -349,8 +335,8 @@ function SegmentBar({
           <div
             key={i}
             className={cn(
-              'absolute h-full min-w-px overflow-hidden rounded-[0.25rem]',
-              SEGMENT_CLASSES[seg.status]
+              'absolute h-full min-w-px overflow-hidden rounded-[0.25rem] border',
+              STATUS[seg.status].bar
             )}
             style={{
               // 1px gap between adjacent segments, distributed equally.
@@ -456,9 +442,9 @@ const TimelineBar = memo(function TimelineBar({
   const isCancelled = isSpanCancelled(span);
   const colors = getResourceClassNames(span.resource);
   const fallbackClassName = isErrored
-    ? (colors.errorClassName ?? 'border-red-500 bg-red-200')
+    ? STATUS.failed.bar
     : isCancelled
-      ? 'border-gray-700 bg-gray-500'
+      ? STATUS.cancelled.bar
       : colors.className;
 
   const totalLabel = formatDurationPrecise(totalDurationMs);

@@ -1,8 +1,12 @@
 'use client';
 
+import { STATUS_TONES } from '../../lib/status';
 import { Spinner } from './spinner';
 
-const STYLES = `.wf-decrypt-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 10px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;cursor:pointer;white-space:nowrap;gap:6px;transition:background 150ms}.wf-decrypt-idle{color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400)}.wf-decrypt-idle:hover{background:var(--ds-gray-alpha-200)}.wf-decrypt-btn:disabled{cursor:not-allowed;opacity:.5}.wf-decrypt-done{color:var(--ds-green-900);background:var(--ds-green-100);box-shadow:0 0 0 1px var(--ds-green-400);cursor:default}`;
+/** Decrypting is a positive action outcome, so the done state is blue. */
+const DONE = STATUS_TONES.positive.hue;
+
+const STYLES = `.wf-decrypt-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:28px;padding:0 10px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;cursor:pointer;white-space:nowrap;gap:6px;transition:background 150ms}.wf-decrypt-idle{color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400)}.wf-decrypt-idle:hover{background:var(--ds-gray-alpha-200)}.wf-decrypt-btn:disabled{cursor:not-allowed;opacity:.5}.wf-decrypt-done{color:var(--ds-${DONE}-900);background:var(--ds-${DONE}-100);box-shadow:0 0 0 1px var(--ds-${DONE}-400);cursor:default}`;
 
 interface DecryptButtonProps {
   /** Whether an encryption key has been obtained (decryption is active). */
@@ -19,7 +23,7 @@ interface DecryptButtonProps {
 
 /**
  * Decrypt/Decrypted button using Geist secondary style.
- * Three states: idle (secondary gray), decrypting (spinner), decrypted (green success).
+ * Three states: idle (secondary gray), decrypting (spinner), decrypted (blue positive outcome).
  */
 export function DecryptButton({
   decrypted = false,

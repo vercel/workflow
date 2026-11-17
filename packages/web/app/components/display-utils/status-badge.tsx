@@ -1,6 +1,8 @@
 import {
   Button,
   cn,
+  STATUS,
+  StatusDot,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -8,7 +10,6 @@ import {
 import type { Step, WorkflowRun } from '@workflow/world';
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
-import { getStatusColorClass } from '~/lib/status-colors';
 import { formatDuration } from '~/lib/utils';
 
 /** Extract the error code from an unknown error value (StructuredError shape). */
@@ -41,14 +42,9 @@ export function StatusBadge({
   const content = (
     <span className={cn('flex flex-row gap-2', className)}>
       <span className="flex items-center gap-1.5">
-        <span
-          className={cn(
-            'size-2 rounded-full shrink-0',
-            getStatusColorClass(status)
-          )}
-        />
-        <span className="text-muted-foreground text-xs font-medium capitalize">
-          {status}
+        <StatusDot status={status} />
+        <span className="text-muted-foreground text-xs font-medium">
+          {STATUS[status].label}
         </span>
       </span>
       {durationMs !== undefined && (
