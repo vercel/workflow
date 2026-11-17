@@ -8,22 +8,25 @@ interface LoadMoreButtonProps {
   label?: string;
   /** Label while loading. Defaults to `label`, so the button keeps its width. */
   loadingLabel?: string;
+  /** Drop the 16px gap above the button. */
+  noGap?: boolean;
 }
 
 /**
- * A full-width secondary `Button` for loading the next page, with a spinner
- * while loading. Spacing around it is up to the caller.
+ * A full-width secondary `Button` for loading the next page, 16px below the
+ * content above it, with a spinner while loading.
  */
 export function LoadMoreButton({
   loading = false,
   onClick,
   label = 'Load more',
   loadingLabel = label,
+  noGap = false,
 }: LoadMoreButtonProps) {
   return (
     <Button
       variant="secondary"
-      className="w-full"
+      className={noGap ? 'w-full' : 'mt-4 w-full'}
       loading={loading}
       onClick={onClick}
     >

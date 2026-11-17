@@ -263,9 +263,9 @@ export function HooksTable({
                 variant="secondary"
                 size="small"
                 onClick={onRefresh}
-                disabled={loading}
+                loading={loading}
+                prefix={<RefreshCw />}
               >
-                <RefreshCw className={loading ? 'animate-spin' : ''} />
                 Refresh
               </Button>
             </TooltipTrigger>
@@ -390,8 +390,8 @@ export function HooksTable({
                 size="small"
                 onClick={previousPage}
                 disabled={!hasPreviousPage}
+                prefix={<ChevronLeft />}
               >
-                <ChevronLeft />
                 Previous
               </Button>
               <Button
@@ -399,9 +399,9 @@ export function HooksTable({
                 size="small"
                 onClick={nextPage}
                 disabled={!hasNextPage}
+                suffix={<ChevronRight />}
               >
                 Next
-                <ChevronRight />
               </Button>
             </div>
           </div>

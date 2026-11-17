@@ -166,7 +166,7 @@ function EncryptedInlineLabel() {
   if (ctx) {
     return (
       <Button
-        size="tiny"
+        size="small"
         className="align-baseline"
         loading={ctx.isDecrypting}
         disabled={ctx.isDecryptDisabled}

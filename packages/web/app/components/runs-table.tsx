@@ -429,12 +429,8 @@ function FilterControls({
               size="small"
               onClick={onSortToggle}
               disabled={loading}
+              prefix={sortOrder === 'desc' ? <ArrowDownAZ /> : <ArrowUpAZ />}
             >
-              {sortOrder === 'desc' ? (
-                <ArrowDownAZ className="h-4 w-4" />
-              ) : (
-                <ArrowUpAZ className="h-4 w-4" />
-              )}
               {sortOrder === 'desc' ? 'Newest' : 'Oldest'}
             </Button>
           </TooltipTrigger>
@@ -450,9 +446,9 @@ function FilterControls({
               variant="secondary"
               size="small"
               onClick={onRefresh}
-              disabled={loading}
+              loading={loading}
+              prefix={<RefreshCw />}
             >
-              <RefreshCw className={loading ? 'animate-spin' : ''} />
               Refresh
             </Button>
           </TooltipTrigger>

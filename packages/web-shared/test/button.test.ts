@@ -44,7 +44,10 @@ describe('Button loading', () => {
         createElement('a', { href: '/docs' }, 'Docs')
       )
     );
-    expect(plain).toMatch(/^<a [^>]*href="\/docs"[^>]*>Docs<\/a>$/);
+    // The link becomes the button and keeps its text as the label.
+    expect(plain).toMatch(
+      /^<a [^>]*href="\/docs"[^>]*><span [^>]*>Docs<\/span><\/a>$/
+    );
 
     const decorated = renderToStaticMarkup(
       createElement(
@@ -55,20 +58,19 @@ describe('Button loading', () => {
     );
     expect(decorated).toMatch(/^<a [^>]*href="\/docs"/);
     expect(decorated).toContain('prefix-icon');
-    expect(decorated).toContain('Docs</a>');
+    expect(decorated).toContain('Docs</span></a>');
   });
 });
 
 describe('Button spinner size', () => {
   it('scales the loading spinner with the button', () => {
-    const lines = (size?: 'tiny' | 'small' | 'medium' | 'large') =>
+    const lines = (size?: 'small' | 'medium' | 'large') =>
       spinnerLines(
         renderToStaticMarkup(
           createElement(Button, { loading: true, size }, 'Save')
         )
       );
 
-    expect(lines('tiny')).toBe(8);
     expect(lines('small')).toBe(8);
     expect(lines('medium')).toBe(10);
     expect(lines(undefined)).toBe(10);

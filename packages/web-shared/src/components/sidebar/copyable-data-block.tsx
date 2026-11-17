@@ -31,7 +31,7 @@ export function EncryptedDataBlock() {
             title={
               ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined
             }
-            size="tiny"
+            size="small"
             prefix={<Lock />}
           >
             Decrypt

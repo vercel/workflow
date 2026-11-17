@@ -28,8 +28,8 @@ export function RerunButton({
             size="small"
             onClick={onRerun}
             disabled={!canRerun || rerunning}
+            prefix={<RotateCw />}
           >
-            <RotateCw className="h-4 w-4" />
             {rerunning ? 'Replaying...' : 'Replay'}
           </Button>
         </span>

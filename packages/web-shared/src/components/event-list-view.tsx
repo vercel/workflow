@@ -327,6 +327,7 @@ function EventListViewInner({
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="pointer-events-auto">
                     <LoadMoreButton
+                      noGap
                       loading={isLoadingMoreEvents}
                       onClick={() => void onLoadMoreEvents?.()}
                     />
