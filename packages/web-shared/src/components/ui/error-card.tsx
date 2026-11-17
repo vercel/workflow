@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, ChevronDown } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { cn } from '../../lib/cn';
 
 interface ErrorCardProps {
@@ -23,49 +23,42 @@ export function ErrorCard({
   details = 'Unknown error',
 }: ErrorCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const detailsId = useId();
 
   return (
-    <div className="flex justify-center w-full">
+    <div className="flex w-full justify-center">
       <div
         className={cn(
-          'rounded-lg border border-red-400 w-full max-w-[800px]',
+          'w-full max-w-[800px] rounded-md border border-red-400 bg-red-100',
           className
         )}
-        style={{ background: 'var(--ds-red-100)' }}
       >
         <button
           type="button"
           onClick={() => setIsExpanded(!isExpanded)}
-          className="w-full px-4 py-3 flex items-center justify-between gap-2 text-left transition-colors"
-          style={{ color: 'var(--ds-red-900)' }}
+          aria-expanded={isExpanded}
+          aria-controls={detailsId}
+          className="flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border-0 bg-transparent px-4 py-3 text-left text-red-900 outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
         >
-          <div className="flex items-center gap-2">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <span className="font-medium text-label-14">{title}</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-red-800">
-            <span className="text-label-12">Click to show details</span>
+          <span className="flex min-w-0 items-center gap-2">
+            <AlertCircle className="size-4 shrink-0" aria-hidden />
+            <span className="truncate text-label-14 font-medium">{title}</span>
+          </span>
+          <span className="flex shrink-0 items-center gap-1.5 text-label-13">
+            {isExpanded ? 'Hide Details' : 'Show Details'}
             <ChevronDown
+              aria-hidden
               className={cn(
-                'h-4 w-4 transition-transform duration-200',
+                'size-4 transition-transform duration-200 motion-reduce:transition-none',
                 isExpanded && 'rotate-180'
               )}
             />
-          </div>
+          </span>
         </button>
 
         {isExpanded && details && (
-          <div
-            className="px-4 pb-3"
-            style={{ borderTop: '1px solid var(--ds-red-400)' }}
-          >
-            <pre
-              className="mt-3 p-3 rounded-md text-label-12-mono whitespace-pre-wrap break-words overflow-auto"
-              style={{
-                background: 'var(--ds-red-200)',
-                color: 'var(--ds-red-900)',
-              }}
-            >
+          <div id={detailsId} className="border-t border-red-400 px-4 pb-3">
+            <pre className="mt-3 overflow-auto whitespace-pre-wrap break-words rounded-md bg-red-200 p-3 text-label-12-mono text-red-900">
               {details}
             </pre>
           </div>
