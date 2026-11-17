@@ -1,6 +1,6 @@
 # Observability UI styling rules
 
-These rules apply to `packages/web-shared` and `packages/web` (which consumes it).
+These rules apply to `packages/web-shared` and `packages/web` (which consumes it). For loading states, dialogs, and validation, read the [`web-guidelines`](../../.agents/skills/web-guidelines/SKILL.md) skill.
 
 ## Design tokens live in one place
 

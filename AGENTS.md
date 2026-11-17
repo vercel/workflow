@@ -416,6 +416,7 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - Preview-only tooling pages go in a docs tree's `internal/` folder with `internal: true` frontmatter, which makes production answer 404 for them, keeps them out of the sidebar, sitemap, search, `llms.txt` and chat, and marks them `noindex`. Public pages never link to them.
 - `pnpm --filter docs lint:links` (the Docs Links CI job) enforces the three rules above. When a page leaves the site, add a redirect in `docs/next.config.ts`.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
+- `skills/` holds skills published for SDK users. Skills for contributors working in this repository live in `.agents/skills/` and are not published. Read [`web-guidelines`](.agents/skills/web-guidelines/SKILL.md) before changing `packages/web` or `packages/web-shared`.
 
 ## Pull requests
 
