@@ -41,9 +41,8 @@ import { version } from './version.js';
  * `main`. It is rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-// TEMPORARY: points e2e at the backend branch that reports the event ceiling on list responses. Revert to '' before merge.
 // biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
-export const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-git-peter-spec9-max-events-header.vercel.sh';
+export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
