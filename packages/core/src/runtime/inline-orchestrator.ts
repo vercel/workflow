@@ -85,6 +85,11 @@ interface InlineEntry {
    * relies on the calling route's own module graph for its steps.
    */
   exact: boolean;
+  /**
+   * The entry carries workflow code only: its steps are the ones the calling
+   * route's module graph registered (always so for an `exact` entry).
+   */
+  stepsFromRoute: boolean;
   /** Builds the handler for a World; called at most once per World. */
   createHandler(world: World): QueueHandler;
   handlers: WeakMap<World, QueueHandler>;
@@ -137,12 +142,13 @@ function inlineWorkflowLoader(
 export function registerInlineOrchestrator(
   prefix: string,
   createHandler: (world: World) => QueueHandler,
-  options?: { exact?: boolean }
+  options?: { exact?: boolean; stepsFromRoute?: boolean }
 ): void {
   const exact = options?.exact === true;
   registry.entries.set(exact ? `=${prefix}` : prefix, {
     prefix,
     exact,
+    stepsFromRoute: exact || options?.stepsFromRoute === true,
     createHandler,
     handlers: new WeakMap(),
   });
@@ -375,7 +381,7 @@ export function decideInline(request: InlineRequest): InlineDecision {
   // flow route otherwise. Only the spec 8 Node.js VM delivery makes that
   // per-step choice so far; other runs go to the queue.
   if (
-    entry.exact &&
+    entry.stepsFromRoute &&
     ((request.runSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR ||
       process.env.WORKFLOW_VM === 'quickjs')
   ) {

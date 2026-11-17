@@ -63,7 +63,7 @@ export function workflowGeneratedDirectory(
 }
 
 /**
- * The generated flow route that {@link INLINE_ENTRY_SPECIFIER} resolves to,
+ * The generated inline entry that {@link INLINE_ENTRY_SPECIFIER} resolves to,
  * or `undefined` when the project has no router directory to generate it in.
  */
 export function inlineEntryTarget(
@@ -76,26 +76,20 @@ export function inlineEntryTarget(
   } catch {
     return undefined;
   }
-  return join(workflowGeneratedDirectory(appDir, routePrefix), 'flow/route.js');
+  return join(
+    workflowGeneratedDirectory(appDir, routePrefix),
+    `flow/${INLINE_VM_ENTRY_FILE}`
+  );
 }
 
 /**
- * The directory, beside the flow route, that holds the per-workflow inline
- * entries (one module per workflow file, plus `manifest.json`).
+ * The inline entry beside the flow route: the app's workflow VM code and the
+ * orchestrator handler, without the flow route's step registrations. A route
+ * that runs a delivery inline runs the steps its own module graph registered
+ * (Next.js compiles every module in step mode, so a route that imports a
+ * workflow has its steps) and queues any other step to the flow route.
  */
-export const INLINE_WORKFLOW_ENTRIES_DIR = 'inline';
+export const INLINE_VM_ENTRY_FILE = 'inline-vm.js';
 
-/**
- * The manifest of per-workflow inline entries the loader reads to make each
- * workflow module import its own entry, or `undefined` when the project has
- * no router directory.
- */
-export function inlineWorkflowManifestPath(
-  workingDir: string,
-  routePrefix: string | undefined
-): string | undefined {
-  const flowRoute = inlineEntryTarget(workingDir, routePrefix);
-  return flowRoute
-    ? join(flowRoute, '..', INLINE_WORKFLOW_ENTRIES_DIR, 'manifest.json')
-    : undefined;
-}
+/** The module both the flow route and the inline entry take the code from. */
+export const WORKFLOW_CODE_FILE = 'workflow-code.js';

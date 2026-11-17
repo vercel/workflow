@@ -1,5 +1,12 @@
 import type { Dirent } from 'node:fs';
-import { mkdir, readdir, readFile, realpath, rm } from 'node:fs/promises';
+import {
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   assertFlowBundleIsSandboxSafe,
@@ -11,7 +18,8 @@ import Watchpack from 'watchpack';
 import {
   resolveWorkflowAppDirectory,
   workflowGeneratedDirectory,
-  INLINE_WORKFLOW_ENTRIES_DIR,
+  INLINE_VM_ENTRY_FILE,
+  WORKFLOW_CODE_FILE,
 } from './inline-entry.js';
 import {
   normalizeWorkflowRoutePrefix,
@@ -975,23 +983,47 @@ export async function getNextBuilderEager(
         sourceStepRegistrationImports: true,
         tsconfigPath,
       });
-      // Per-workflow inline entries for production builds: `withWorkflow()`'s
-      // loader makes each workflow module import its own (see
-      // `inline-entry.ts`). `next dev` runs on the local World, which never
-      // holds a message.
-      if (
-        !this.config.watch &&
-        process.env.WORKFLOW_INLINE_ENTRIES !== '0' &&
-        // Absent on test doubles of the base builder.
-        typeof this.createInlineWorkflowEntries === 'function'
-      ) {
-        await this.createInlineWorkflowEntries({
-          discoveredEntries: combined.discoveredEntries,
-          outDir: join(flowRouteDir, INLINE_WORKFLOW_ENTRIES_DIR),
-          tsconfigPath,
-        });
+      // The inline entry (production builds): the flow route's workflow
+      // code and handler without its step registrations. The code moves to a
+      // module both import, so a Function holding both carries it once.
+      if (!this.config.watch && process.env.WORKFLOW_INLINE_ENTRIES !== '0') {
+        await this.writeInlineVmEntry(flowRouteDir);
       }
       return combined;
+    }
+
+    private async writeInlineVmEntry(flowRouteDir: string): Promise<void> {
+      const routeFile = join(flowRouteDir, 'route.js');
+      const route = await readFile(routeFile, 'utf-8');
+      const start = route.indexOf('const workflowCode = `');
+      // The template literal's closing backtick: the last one before the
+      // handlers (the code itself holds escaped backticks).
+      const end = route.lastIndexOf('`;', route.indexOf('export const POST'));
+      if (start === -1 || end === -1) return;
+      const codeDecl = route.slice(start, end + 2);
+      const header =
+        '// biome-ignore-all lint: generated file\n/* eslint-disable */\n';
+      await writeFile(
+        join(flowRouteDir, WORKFLOW_CODE_FILE),
+        `${header}export ${codeDecl}\n`
+      );
+      await writeFile(
+        routeFile,
+        route
+          .replace(codeDecl, '')
+          .replace(
+            "import { workflowEntrypoint } from 'workflow/runtime';",
+            `import { workflowEntrypoint } from 'workflow/runtime';\nimport { workflowCode } from './${WORKFLOW_CODE_FILE}';`
+          )
+      );
+      await writeFile(
+        join(flowRouteDir, INLINE_VM_ENTRY_FILE),
+        `${header}import { workflowEntrypoint } from 'workflow/runtime';
+import { workflowCode } from './${WORKFLOW_CODE_FILE}';
+
+workflowEntrypoint(workflowCode, { inlineStepsFromRoute: true });
+`
+      );
     }
 
     private async buildWebhookRoute({

@@ -312,6 +312,13 @@ export function workflowEntrypoint(
      * @internal
      */
     inlineWorkflowNames?: string[];
+    /**
+     * Set by a generated inline entry that carries the app's workflow code
+     * but not its steps: an inline delivery runs the steps the calling
+     * route registered and queues the others.
+     * @internal
+     */
+    inlineStepsFromRoute?: boolean;
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
@@ -693,7 +700,9 @@ export function workflowEntrypoint(
       );
     }
   } else {
-    registerInlineOrchestrator(workflowPrefix, orchestratorHandler);
+    registerInlineOrchestrator(workflowPrefix, orchestratorHandler, {
+      stepsFromRoute: options?.inlineStepsFromRoute === true,
+    });
   }
 
   // The handler, with the World it was built for (which declares how its
