@@ -1178,6 +1178,10 @@ async function runDelivery(
     entry: ParkedSession,
     read: Awaited<ReturnType<typeof readSinceParked>>
   ): Promise<LoadedEventLog> => {
+    // The ceiling the full load this replaces would have reported.
+    if (read.type !== 'stale' && read.page.maxEvents !== undefined) {
+      maxEventsLimit = clampMaxEvents(read.page.maxEvents);
+    }
     if (read.type !== 'resume') {
       runtimeLogger.debug(
         'Parked session is stale; replaying the whole log instead',

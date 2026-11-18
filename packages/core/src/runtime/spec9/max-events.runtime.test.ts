@@ -25,7 +25,8 @@ import {
 } from '../../serialization.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { resumeHook } from '../resume-hook.js';
-import { setWorld } from '../world.js';
+import { getWorld, setWorld } from '../world.js';
+import { takeParkedSession } from './parked-session.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -230,6 +231,8 @@ describe.each([
 
     // The ceiling now sits well below the log: two pages hold it.
     world.maxEvents = listPageSize * 2;
+    // A cold delivery: one that resumes a parked VM reads only what is new.
+    takeParkedSession(await getWorld(), runId);
     const logSize = world.events.length;
     const listsBefore = world.listCalls.length;
 
