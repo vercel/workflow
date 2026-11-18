@@ -5,8 +5,17 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import { ReplayDivergenceError, WorkflowWorldError } from '@workflow/errors';
-import type { Event } from '@workflow/world';
+import {
+  HookNotFoundError,
+  ReplayDivergenceError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import {
+  type Event,
+  type Hook,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type World,
+} from '@workflow/world';
 import {
   afterAll,
   afterEach,
@@ -31,8 +40,9 @@ import {
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
 import type { WorkflowSession } from '../../workflow.js';
+import { resumeHook } from '../resume-hook.js';
 import { wakeUpRun } from '../runs.js';
-import { getWorld } from '../world.js';
+import { getWorld, setWorld } from '../world.js';
 import { parkSession, takeParkedSession } from './parked-session.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -157,6 +167,54 @@ const displacingWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_C
     }
     return { n, replies };
   }${registerWorkflow()}`;
+/**
+ * Log reads a delivery made before starting the turn a `hook_received`
+ * brought: ones issued while that event was the newest in the log.
+ */
+const preTurnReads = new WeakMap<AppendOnlyWorld, number>();
+
+/**
+ * `world` with `hooks.getByToken`, so `resumeHook()` runs against it, and
+ * counting {@link preTurnReads}.
+ */
+function withHookLookup(world: AppendOnlyWorld, runId: string): World {
+  const base = world.asWorld();
+  const list = base.events.list.bind(base.events);
+  preTurnReads.set(world, 0);
+  (base.events as { list: typeof list }).list = (params) => {
+    if (world.events.at(-1)?.eventType === 'hook_received') {
+      preTurnReads.set(world, (preTurnReads.get(world) ?? 0) + 1);
+    }
+    return list(params);
+  };
+  (base as { hooks: unknown }).hooks = {
+    async getByToken(token: string): Promise<Hook> {
+      const created = world.events.find(
+        (e) =>
+          e.eventType === 'hook_created' &&
+          (e as { eventData?: { token?: string } }).eventData?.token === token
+      );
+      if (!created) throw new HookNotFoundError(token);
+      return {
+        runId,
+        hookId: created.correlationId as string,
+        token,
+        ownerId: 'owner_test',
+        projectId: 'project_test',
+        environment: 'production',
+        createdAt: created.createdAt,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        resumeContext: {
+          deploymentId: 'dpl_test',
+          workflowName: 'workflow',
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          workflowCoreVersion: '5.0.0',
+        },
+      } as Hook;
+    },
+  };
+  return base;
+}
 
 /** Full loads: an ascending read of the log from its start. */
 const fullLoadsOf = (world: AppendOnlyWorld) =>
@@ -1048,5 +1106,53 @@ describe("a stale parked VM and the other orchestrator's writes", () => {
     expect(await runResult(world)).toEqual(['echo:a', 'shout:b', 'shout:c']);
     expect(echoes).toBe(1);
     expect(shouts).toBe(2);
+  });
+});
+
+describe('a parked session and the events this process writes', () => {
+  async function setup(code: string) {
+    const run = await setupOrchestratorRun(code, []);
+    setWorld(withHookLookup(run.world, run.runId));
+    await run.world.deliver(run.start);
+    return run;
+  }
+
+  async function resume(world: AppendOnlyWorld, payload: string) {
+    await resumeHook(TOKEN, payload);
+    await world.runUntilIdle();
+  }
+
+  it('resumes on the hook_received a resumeHook() here wrote, without reading the log', async () => {
+    const { world } = await setup(sessionWorkflow);
+    const startReplays = coldReplays.count;
+
+    for (const payload of ['a', 'b', 'c']) await resume(world, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(preTurnReads.get(world)).toBe(0);
+    expect(coldReplays.count).toBe(startReplays);
+  });
+
+  it('keeps resuming without reads when a step body sets an attribute', async () => {
+    const { world } = await setup(attributeSessionWorkflow);
+
+    for (const payload of ['a', 'b', 'c']) await resume(world, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(attributeSets).toBe(3);
+    expect(preTurnReads.get(world)).toBe(0);
+  });
+
+  it('reads the log when something else landed since the park', async () => {
+    const { world, runId } = await setup(sessionWorkflow);
+    world.appendOutOfBand({ eventType: 'noop', runId } as Partial<Event>);
+
+    await resume(world, 'a');
+
+    expect(echoes).toBe(1);
+    expect(preTurnReads.get(world)).toBe(1);
+    // The read caught the VM up, so the next resume needs none.
+    await resume(world, 'b');
+    expect(preTurnReads.get(world)).toBe(1);
   });
 });

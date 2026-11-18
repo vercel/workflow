@@ -437,6 +437,14 @@ export const WorkflowParkedSessionAgeMs = SemanticConvention<number>(
 );
 
 /**
+ * The delivery took the events this process wrote since the park as its read
+ * of a parked VM's log, instead of reading the log.
+ */
+export const WorkflowParkedSessionTookWrites = SemanticConvention<boolean>(
+  'workflow.parked_session.took_writes'
+);
+
+/**
  * The VM this delivery resumed from a park diverged from the log on its first
  * pass, and the delivery replayed it from cold instead.
  */

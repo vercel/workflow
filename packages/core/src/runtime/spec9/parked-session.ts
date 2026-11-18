@@ -1,4 +1,9 @@
-import type { Event, World } from '@workflow/world';
+import type {
+  Event,
+  WorkflowRun,
+  WorkflowRunWithoutData,
+  World,
+} from '@workflow/world';
 import type { ReplayPayloadCache } from '../../replay-payload-cache.js';
 import type { WorkflowSession } from '../../workflow.js';
 import { getParkedVmMaxAgeMs, getParkedVmMaxBytes } from '../constants.js';
@@ -18,6 +23,12 @@ import { getParkedVmMaxAgeMs, getParkedVmMaxBytes } from '../constants.js';
  * and the VM replays that like any read event. `expectedSeqInBand` says
  * whether it did. The VM still holds the parking delivery's end-of-run
  * drain, so the resuming delivery hands it its own (`WorkflowSession.resume`).
+ *
+ * An event this process writes for the run while it is parked (the
+ * `hook_received` of a `resumeHook()` here) is kept with it
+ * ({@link noteParkedRunWrite}). When those events continue the log from
+ * `tailSlot`, the resuming delivery takes them as its read and does not read
+ * the log at all.
  */
 export interface ParkedSession {
   readonly session: WorkflowSession;
@@ -34,6 +45,18 @@ export interface ParkedSession {
    * state containers live in it, so a step input built from them reads it.
    */
   readonly replayPayloadCache: ReplayPayloadCache;
+  /**
+   * The run's event ceiling as the parking delivery's log reads reported it,
+   * for a resume that reads nothing.
+   */
+  readonly maxEventsLimit?: number;
+  /** The run as the parking delivery last read it. */
+  readonly run?: WorkflowRun | WorkflowRunWithoutData;
+  /**
+   * Events this process wrote for the run since the park, in slot order
+   * (see {@link noteParkedRunWrite}).
+   */
+  readonly written?: readonly Event[];
 }
 
 /** A parked session as a delivery takes it. */
@@ -80,15 +103,19 @@ const BYTES_PER_PAYLOAD_BYTE = 3;
  * lives in its events' serialized fields, so their sizes track it.
  */
 export function estimateParkedBytes(events: readonly Event[]): number {
-  let payloadBytes = 0;
+  return ENTRY_BASE_BYTES + BYTES_PER_PAYLOAD_BYTE * payloadBytesOf(events);
+}
+
+function payloadBytesOf(events: readonly Event[]): number {
+  let bytes = 0;
   for (const event of events) {
     const data = (event as { eventData?: unknown }).eventData;
     if (typeof data !== 'object' || data === null) continue;
     for (const value of Object.values(data)) {
-      if (ArrayBuffer.isView(value)) payloadBytes += value.byteLength;
+      if (ArrayBuffer.isView(value)) bytes += value.byteLength;
     }
   }
-  return ENTRY_BASE_BYTES + BYTES_PER_PAYLOAD_BYTE * payloadBytes;
+  return bytes;
 }
 
 /** Why {@link parkSession} kept no entry. */
@@ -217,4 +244,29 @@ export function takeParkedSession(
   const sessions = sessionsFor(world);
   dropExpired(sessions, nowMs);
   return drop(sessions, runId);
+}
+
+/**
+ * Keeps an event this process just wrote for a run whose session is parked
+ * here, so the delivery that resumes the session can take it without reading
+ * the log. A no-op when nothing is parked for the run. Callers pass the event
+ * as a log read would return it, payload included.
+ */
+export function noteParkedRunWrite(
+  world: World,
+  runId: string,
+  event: Event
+): void {
+  const sessions = sessionsFor(world);
+  const entry = sessions.entries.get(runId);
+  if (!entry) return;
+  const written = [...(entry.written ?? []), event];
+  // Counted against the budget; the next park evicts to make room for it.
+  const added = BYTES_PER_PAYLOAD_BYTE * payloadBytesOf([event]);
+  sessions.bytes += added;
+  sessions.entries.set(runId, {
+    ...entry,
+    written,
+    bytes: entry.bytes + added,
+  });
 }
