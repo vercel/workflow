@@ -21,6 +21,7 @@ workbench/vitest/
 ├── workflows/
 │   ├── simple.ts          # Basic workflow with arithmetic steps
 │   ├── sleeping.ts        # Workflows with sleep() calls
+│   ├── durable-object-room.ts # A Durable Object chat room as one run per room
 │   ├── hooks.ts           # Workflow with createHook() for external data
 │   ├── inngest-migrated.ts # Output of `workflow migrate inngest` (generated)
 │   └── webhook.ts         # Workflow with createWebhook() for HTTP payloads
@@ -28,6 +29,7 @@ workbench/vitest/
 │   ├── workflow.test.ts      # Integration tests for all workflow types
 │   ├── workflow-refs.test.ts # Looking workflows up by name from the manifest
 │   ├── inngest-migrated.test.ts # Runs the Inngest codemod's output
+│   ├── durable-object-room.test.ts # The Durable Object migration guide's pattern
 │   └── mock.test.ts          # What vi.mock() does and does not reach
 ├── vitest.config.ts       # Vitest config with workflow() plugin
 ├── MOCKING.md             # How vi.mock() behaves under the plugin, and why
@@ -43,4 +45,5 @@ workbench/vitest/
 - **Webhook workflow**: `waitForHook()` → `resumeWebhook()` with Request payload
 - **Workflow references**: `getWorkflowRef()` / `listWorkflowRefs()` read from the test build's manifest
 - **Inngest codemod output**: the workflow `workflow migrate inngest` generates from `packages/cli/tests/fixture/inngest/order` runs its lifted steps, resumes on the `waitForEvent()` token, times out, and fails on `NonRetriableError`
+- **Durable Object room**: the pattern from the Durable Objects migration guide: one run per room under concurrent opens, ordered broadcasts on the run's stream, catch-up from an index, RPC-style answers, and an idle alarm that re-arms and closes the room for good
 - **Mocking**: `vi.mock()` reaching (and not reaching) step and workflow code, see [MOCKING.md](./MOCKING.md)

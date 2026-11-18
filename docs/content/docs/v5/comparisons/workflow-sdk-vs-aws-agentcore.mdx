@@ -33,7 +33,7 @@ related:
 | **Compliance** | Inherits your platform | HIPAA-eligible; SOC, PCI, and ISO not third-party certified; not FedRAMP-authorized |
 | **Pricing** | SDK free; pay your platform | Per-module consumption (vCPU-hr / GB-hr, etc.) + model inference billed via Bedrock; no minimums |
 
-**What the limits mean in practice**: AgentCore's 8-hour session cap means an agent that waits on a human, a long-running job, or a slow external system can't span that wait in one session. Workflow SDK runs have [no duration cap](https://vercel.com/docs/workflows/pricing): they suspend durably at `sleep()` and hooks for hours or weeks.
+**What the limits mean in practice**: AgentCore's 8-hour session cap means an agent that waits on a human, a long-running job, or a slow external system can't span that wait in one session. Workflow SDK runs have [no duration cap](https://vercel.com/docs/workflows/pricing): they suspend durably at `sleep()` and hooks for hours or weeks, and a long agent conversation stays one run rather than being restarted with its state. On the [QuickJS engine](/docs/configuration/runtime-tuning#workflow_vm), snapshotting keeps each resume fast as the log grows and exempts the run from the default [per-run event limit](/docs/errors/max-events-exceeded).
 
 ## The core distinction: durability
 

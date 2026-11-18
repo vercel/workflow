@@ -2,7 +2,7 @@
 title: CLI and Web UI
 description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
 type: reference
-summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, workflow migrate, and observability tooling.
+summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, workflow migrate (Inngest, Temporal, Cloudflare Workflows), and observability tooling.
 related:
   - /docs/observability
   - /docs/configuration/worlds
@@ -243,6 +243,16 @@ Without paths, it migrates the files of the project's `tsconfig.json` (its `incl
 - Command: `workflow migrate`
 - Default: disabled
 - Writes files even if they have uncommitted changes.
+
+## Migrate from Temporal
+
+`workflow migrate temporal [paths...]` rewrites a Temporal TypeScript app in place: exported functions of a workflows module become `"use workflow"` functions, each `proxyActivities()` becomes a direct import of the activities, and the activities become `"use step"` functions with the proxy's `retry.maximumAttempts` as `maxRetries`. Signals become hooks the run creates as it starts. It also migrates the activities modules the workflows proxy, even when they import nothing from Temporal, and its report lists the client and worker calls to replace. It takes the same flags as [`workflow migrate inngest`](#migrate-from-inngest). See [Migrating from Temporal](/docs/comparisons/workflow-sdk-vs-temporal#run-the-codemod).
+
+## Migrate from Cloudflare Workflows
+
+`workflow migrate cloudflare-workflows [paths...]` rewrites Cloudflare Workflows as Workflow SDK code in place: each `class X extends WorkflowEntrypoint` becomes a `"use workflow"` function named `X`, and each `step.do()` callback becomes a `"use step"` function whose parameters are the variables it captured. It reads `wrangler.jsonc`, `wrangler.json` or `wrangler.toml` next to the project for vars, bindings and Workflow bindings, and its report includes a `workflowInstances()` adapter that replaces `env.MY_WORKFLOW`. It takes the same flags as [`workflow migrate inngest`](#migrate-from-inngest). See [Migrating from Cloudflare Workflows](/docs/comparisons/workflow-sdk-vs-cloudflare-workflows#run-the-codemod).
+
+Cloudflare Durable Objects have no codemod: whether an object becomes a workflow run is a design decision per object. See [Workflow SDK vs Cloudflare Durable Objects](/docs/comparisons/workflow-sdk-vs-cloudflare-durable-objects).
 
 ## Health checks
 

@@ -6,6 +6,15 @@ import {
   lineOf,
   lineStartOf,
 } from '../edits.js';
+import {
+  INFER_MARK,
+  isTypeScriptFile,
+  REST_INFER_MARK,
+  TODO_TAG,
+  TYPE_END,
+  TYPE_START,
+  tidyType,
+} from '../markers.js';
 import { camelCaseIdentifier, NameAllocator } from '../names.js';
 import type {
   CapturedVariable,
@@ -14,15 +23,16 @@ import type {
   MigratedFunction,
   MigratedHook,
   MigrationNote,
-} from './report-types.js';
+} from '../report-types.js';
 
 /**
  * Inngest -> Workflow SDK codemod for one file.
  *
  * The heart of it is lifting `step.run(id, closure)` into a module-level
- * `"use step"` function. A closure can read anything in scope; a step
- * function cannot, because its arguments are serialized into the event log.
- * So every binding the closure reads from the Inngest handler (handler
+ * `"use step"` function, the style the Workflow SDK recommends (an inline
+ * "use step" closure would also work and read the handler's variables). A
+ * module-level function cannot see the handler's locals, so every binding
+ * the closure reads from the Inngest handler (handler
  * parameters, earlier step results, loop variables) is found with the
  * TypeScript binder, becomes a parameter of the new step function, and is
  * passed at the call site. Bindings declared at module scope stay as they
@@ -36,13 +46,14 @@ import type {
  * `step.waitForEvent()` with a CEL `if` expression.
  */
 
-export const TODO_TAG = 'TODO(workflow-migrate)';
-
-/** Wrap a type annotation that a later pass validates against the checker. */
-export const TYPE_START = '/*@wf:t*/';
-export const TYPE_END = '/*@wf:/t*/';
-/** Placeholder after a generated parameter whose type a later pass infers. */
-export const INFER_MARK = '/*@wf:infer*/';
+export {
+  INFER_MARK,
+  isTypeScriptFile,
+  TODO_TAG,
+  TYPE_END,
+  TYPE_START,
+  tidyType,
+} from '../markers.js';
 
 export interface TransformOptions {
   ts: typeof TS;
@@ -414,13 +425,11 @@ export function transformInngestFile(
         ? resolvedConfig
         : undefined;
     const idNode = config && getProperty(ts, config, 'id');
-    const inngestId = idNode
-      ? literalText(ts, resolveConst(idNode))
-      : undefined;
+    const sourceId = idNode ? literalText(ts, resolveConst(idNode)) : undefined;
 
     const fnNotes: MigrationNote[] = [];
     const fn: MigratedFunction = {
-      inngestId,
+      sourceId,
       workflowName: '',
       line: line(call),
       triggers: [],
@@ -481,7 +490,7 @@ export function transformInngestFile(
     const workflowName =
       shape.name ??
       names.allocate(
-        camelCaseIdentifier(inngestId ?? '') ?? 'workflow',
+        camelCaseIdentifier(sourceId ?? '') ?? 'workflow',
         'Workflow'
       );
     if (shape.name) names.reserve(shape.name);
@@ -536,7 +545,7 @@ export function transformInngestFile(
           ts.isPropertyAssignment(property) &&
           isFunctionLike(ts, skipParens(ts, property.initializer))
         ) {
-          const message = `${guidance} The Inngest handler is kept here as \`${names.allocate(`${shape.name ?? camelCaseIdentifier(inngestId ?? '') ?? 'workflow'}OnFailure`, '')}\`: migrate its step calls and call it from the catch block.`;
+          const message = `${guidance} The Inngest handler is kept here as \`${names.allocate(`${shape.name ?? camelCaseIdentifier(sourceId ?? '') ?? 'workflow'}OnFailure`, '')}\`: migrate its step calls and call it from the catch block.`;
           const name = /`([^`]+)`: migrate/.exec(message)?.[1] ?? 'onFailure';
           onFailure = { name, node: property.initializer, message };
           const start = property.initializer.getStart(sf);
@@ -1211,8 +1220,9 @@ export function transformInngestFile(
     // function declaration has no such context, so an unannotated one gets
     // its type from the call site too (or an explicit `any`).
     const ownParams = fnNode.parameters.map((p) => {
-      if (!typed || p.type || p.dotDotDotToken || p.questionToken)
-        return p.getText(sf);
+      if (!typed || p.type || p.questionToken) return p.getText(sf);
+      // `...ns` received the remaining inputs: typed as their tuple.
+      if (p.dotDotDotToken) return `...${p.name.getText(sf)}${REST_INFER_MARK}`;
       const initializer = p.initializer
         ? ` = ${p.initializer.getText(sf)}`
         : '';
@@ -1521,7 +1531,7 @@ export function transformInngestFile(
 
       if (isFunctionOrClassDeclaration(ts, declaration)) {
         result.blockers.push(
-          `The step closure calls \`${node.text}\`, a function or class declared inside the handler. Functions are not serializable step arguments: move \`${node.text}\` to module scope and run the codemod again.`
+          `The step closure calls \`${node.text}\`, a function or class declared inside the handler. Functions are not serializable, whether passed to a step or captured by one: move \`${node.text}\` to module scope and run the codemod again.`
         );
         return;
       }
@@ -2288,8 +2298,10 @@ export function transformInngestFile(
    */
   function onlyReadAsConfig(
     symbol: TS.Symbol,
-    declarationName: TS.Node
+    declarationName: TS.Node,
+    depth = 0
   ): boolean {
+    if (depth > 5) return false;
     let ok = true;
     const visit = (node: TS.Node): void => {
       if (!ok) return;
@@ -2319,19 +2331,83 @@ export function transformInngestFile(
             at.arguments[0] === use &&
             ts.isPropertyAccessExpression(at.expression) &&
             at.expression.name.text === 'createFunction';
-          const asValue =
-            shorthand ||
-            (ts.isPropertyAssignment(at) && at.initializer === use) ||
-            ts.isArrayLiteralExpression(at) ||
-            ts.isSpreadElement(at) ||
-            ts.isSpreadAssignment(at);
-          if (!asOptions && !asValue) ok = false;
+          // Inside another object or array literal, the value escapes into
+          // that container: only fine if the container is options too.
+          const container = shorthand
+            ? parent.parent
+            : ts.isPropertyAssignment(at) && at.initializer === use
+              ? at.parent
+              : ts.isArrayLiteralExpression(at)
+                ? at
+                : ts.isSpreadElement(at) || ts.isSpreadAssignment(at)
+                  ? at.parent
+                  : undefined;
+          if (
+            !asOptions &&
+            !(container && inOptionsPosition(container, depth))
+          ) {
+            ok = false;
+          }
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(sf);
     return ok;
+  }
+
+  /**
+   * Whether an object or array literal only ever reaches createFunction()
+   * options: directly, nested in other literals that do, or through a const
+   * that is itself only read as options. `const holder = { config }` followed
+   * by `holder.config.retries = 0` is not.
+   */
+  function inOptionsPosition(literal: TS.Node, depth: number): boolean {
+    let current: TS.Node = literal;
+    for (;;) {
+      let up = current.parent;
+      while (
+        up &&
+        (ts.isParenthesizedExpression(up) ||
+          ts.isAsExpression(up) ||
+          ts.isSatisfiesExpression?.(up))
+      ) {
+        current = up;
+        up = up.parent;
+      }
+      if (!up) return false;
+      if (
+        ts.isCallExpression(up) &&
+        up.arguments[0] === current &&
+        ts.isPropertyAccessExpression(up.expression) &&
+        up.expression.name.text === 'createFunction'
+      ) {
+        return true;
+      }
+      if (ts.isPropertyAssignment(up) && up.initializer === current) {
+        current = up.parent;
+        continue;
+      }
+      if (ts.isArrayLiteralExpression(up)) {
+        current = up;
+        continue;
+      }
+      if (ts.isSpreadElement(up) || ts.isSpreadAssignment(up)) {
+        current = up.parent;
+        continue;
+      }
+      if (
+        ts.isVariableDeclaration(up) &&
+        up.initializer === current &&
+        ts.isIdentifier(up.name) &&
+        ts.isVariableDeclarationList(up.parent) &&
+        up.parent.flags & ts.NodeFlags.Const
+      ) {
+        const holder = symbolOf(up.name);
+        return !!holder && onlyReadAsConfig(holder, up.name, depth + 1);
+      }
+      return false;
+    }
   }
 
   /** `eventType('name', ...)`, directly or through a const in this file. */
@@ -2745,21 +2821,12 @@ export function transformInngestFile(
   return { code, report };
 }
 
-/** `{ a: string; }` -> `{ a: string }`, as formatters write object types. */
-export function tidyType(printed: string): string {
-  return printed.replace(/; \}/g, ' }');
-}
-
 function sortImports(a: string, b: string): number {
   const key = (s: string) => s.replace(/^type /, '').toLowerCase();
   return key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
 }
 
 // --- Helpers --------------------------------------------------------------
-
-export function isTypeScriptFile(fileName: string): boolean {
-  return /\.(ts|tsx|mts|cts)$/.test(fileName) && !fileName.endsWith('.d.ts');
-}
 
 function isExpressionList(target: unknown): target is readonly TS.Expression[] {
   return Array.isArray(target);

@@ -15,7 +15,7 @@ related:
 [Inngest](https://www.inngest.com) is a durable-functions platform with an **event-driven** core: functions trigger on events or cron, and Inngest invokes your code (running on your own infrastructure) one step at a time over HTTP, memoizing each step's result. It overlaps heavily with the Workflow SDK, with a different execution topology and a strong AI/agent story on both sides.
 
 <Callout type="info">
-**Choose the Workflow SDK** when you want orchestration and execution co-located (no per-step HTTP round trips), deployment-pinned versioning, and a supported open-source self-hosting path. **Choose Inngest** when an event-bus model fits your architecture and you want built-in flow controls for concurrency, throttling, debounce, batching, and priority.
+**Choose the Workflow SDK** when you want orchestration and execution co-located (no per-step HTTP round trips), deployment-pinned versioning, and a supported open-source self-hosting path. **Choose Inngest** when an event-bus model fits your architecture and you want flow control declared on the function rather than built where you call `start()`. Rate limits, debounce, batching and single-flight runs all have Workflow SDK patterns built on start tokens; see [Flow control, schedules and failure handling](#flow-control-schedules-and-failure-handling).
 </Callout>
 
 ## At a glance
@@ -36,7 +36,7 @@ related:
 | **Pricing** | SDK free; pay your platform | Per-execution: billed for the run **plus each step plus retries**; Pro from $99/mo, then ~$50 per 1M executions |
 | **Limits** | 50 MB payload; 2 GB/run; 10,000 steps ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 1,000 steps/function; 4 MiB step payload; 32 MiB run state; runs up to 366 days |
 
-**What the limits mean in practice**: Inngest's caps are restrictive for real long-running AI workloads. An agent loop spends steps on every model and tool call, so it can consume 1,000 steps per function; a single large language model response can approach the 4 MiB step-payload cap; and an accumulated conversation or context can outgrow 32 MiB of run state. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
+**What the limits mean in practice**: Inngest's caps are restrictive for real long-running AI workloads. An agent loop spends steps on every model and tool call, so it can consume 1,000 steps per function; a single large language model response can approach the 4 MiB step-payload cap; and an accumulated conversation or context can outgrow 32 MiB of run state. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run, and an agent loop stays one run instead of being split across functions or restarted with its state. On the [QuickJS engine](/docs/configuration/runtime-tuning#workflow_vm), snapshotting keeps each resume fast as the log grows and exempts the run from the default [per-run event limit](/docs/errors/max-events-exceeded).
 
 ## Topology: co-located vs. invoked-over-HTTP
 
@@ -68,7 +68,9 @@ npx workflow migrate inngest
 
 It reads the project's `tsconfig.json` to find the files to migrate, and uses the project's own TypeScript. Pass paths to limit it (`npx workflow migrate inngest src/inngest`), `--dry-run` to see what would change without writing anything, and `--report <file>` to write a Markdown report. See [`workflow migrate`](/docs/configuration/cli-and-web-ui#migrate-from-inngest) for every flag.
 
-The main job is lifting each `step.run()` closure into a named `"use step"` function. A closure can read anything in scope, but a step function only gets its arguments, because they are recorded in the event log. So the codemod finds every variable the closure reads from the handler (the event, earlier step results, loop variables), makes each one a parameter of the new step function, and passes it at the call site. It lists the captured variables of every step it lifts, so you can check that each one is [serializable](/docs/foundations/serialization). Variables declared at module scope, such as imports and constants, stay visible to a module-level step and are not passed.
+The main job is lifting each `step.run()` closure into a named, module-level `"use step"` function: the style the Workflow SDK recommends, because each step becomes a plain function you can test and reuse, and its name is the step's name in the run's trace. A `"use step"` closure written inline in the workflow would also work, since it can read the workflow's variables (see [Steps defined inside a workflow](/docs/foundations/workflows-and-steps#steps-defined-inside-a-workflow)). A module-level function can't see the handler's variables, though, so the codemod finds every variable the closure reads from the handler (the event, earlier step results, loop variables), makes each one a parameter of the new step function, and passes it at the call site. Variables declared at module scope, such as imports and constants, stay visible and are not passed.
+
+Arguments and captured variables are both recorded in the event log, so they must be [serializable](/docs/foundations/serialization) either way. The codemod lists the captured variables of every step it lifts, so you can check each one.
 
 {/* @skip-typecheck: Inngest code, the input of the codemod */}
 ```typescript title="inngest/functions.ts (before)"
@@ -177,7 +179,7 @@ The report lists every `inngest.send()` and `serve()` call in the project with i
 | Inngest | Converted automatically | Left as a TODO |
 | --- | --- | --- |
 | `createFunction()` | Module-level function, assigned to a `const` or `export default` | Created inside another function, or not assigned |
-| Function options | `id`, `triggers`, `retries`, also through `const` references | `concurrency`, `throttle`, `rateLimit`, `debounce`, `batchEvents`, `priority`, `timeouts`, `cancelOn`, `idempotency`, `singleton`, `middleware`, cron triggers; options it cannot read; `onFailure` (kept as a named function) |
+| Function options | `id`, `triggers`, `retries`, also through `const` references | `concurrency`, `throttle`, `rateLimit`, `debounce`, `batchEvents`, `priority`, `timeouts`, `cancelOn`, `idempotency`, `singleton`, `middleware`, cron triggers; options it cannot read; `onFailure` (kept as a named function) Each TODO carries the Workflow SDK pattern from [Flow control, schedules and failure handling](#flow-control-schedules-and-failure-handling). |
 | `step.run()` | Closures and function references, with captured variables, inputs, and parameter defaults or computed keys | Closures that assign to a captured variable, call a function declared in the handler, use `this`, or call another step |
 | `step.sleep()` / `step.sleepUntil()` / `step.fetch()` / `step.invoke()` | Yes | `step.invoke()` given a function by reference |
 | `step.waitForEvent()` | `match`, or an `if` that compares one field | Any other `if`, a wait with neither, and the [one owner per token](#one-owner-per-token) check |
@@ -199,7 +201,7 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 | Inngest | Workflow SDK | Note |
 | --- | --- | --- |
 | `inngest.createFunction()` | `"use workflow"` function started with `start()` | No factory or event binding. |
-| `step.run()` | `"use step"` function | Named async function with Node.js access. Variables the closure captured become arguments. |
+| `step.run()` | `"use step"` function | Named async function with Node.js access. The codemod lifts it to module scope and passes the variables the closure captured as arguments; a `"use step"` closure [inside the workflow](/docs/foundations/workflows-and-steps#steps-defined-inside-a-workflow) also works. |
 | `step.sleep()` / `step.sleepUntil()` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
 | `step.waitForEvent()` | `createHook()` raced against `sleep()`, disposed when the wait ends | The token encodes what `match` compared; `resumeHook(token, event)` replaces sending the event, once for each workflow waiting for it. One run owns a token at a time: see [One owner per token](#one-owner-per-token). Use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) when the sender needs a URL to call. |
 | `step.waitForSignal()` / `inngest.sendSignal()` | `createHook({ token: signal })` / `resumeHook(signal, { signal, data })` | Resume with the `{ signal, data }` envelope, so code that reads `result.data` keeps working. `onConflict: 'replace'` maps to [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The replaced run's `await hook` rejects with `HookForceClaimedError`; where Inngest left that wait pending until its timeout and then returned `null`, the codemod's helper catches the error and does the same. |
@@ -220,7 +222,7 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 
 - **Step results keep their types.** Inngest serializes step results as JSON, so a `Date` came back as a string and a step that returned nothing came back as `null`. The Workflow SDK keeps `Date`, `Map`, `Set`, `URL`, typed arrays and the other [serializable types](/docs/foundations/serialization), and a step that returns nothing returns `undefined`. Code that parsed a string back into a `Date` keeps working; code that used the string directly needs a change.
 - **Code outside steps runs in a sandbox.** An Inngest handler could call `fetch()` or a database outside `step.run()`, and the call ran again on every request. A workflow function runs deterministically, without Node.js APIs or I/O, so move that code into a step.
-- **Step arguments are copies.** A step that changed a captured object in Inngest only changed it in the invocation that ran the step, and a memoized step does not run again. The same change is invisible to the workflow here, so return the new value instead.
+- **Step arguments and captured variables are copies.** A step that changed a captured object in Inngest only changed it in the invocation that ran the step, and a memoized step does not run again. The same change is invisible to the workflow here, whether the value was passed or captured, so return the new value instead.
 - **The event shape is yours.** The workflow receives what you pass to `start()`. Fields Inngest filled in, such as `event.id` and `event.ts`, are only there if you pass them; use `getWorkflowMetadata()` for the run ID and start time.
 
 ### One owner per token

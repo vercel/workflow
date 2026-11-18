@@ -4,28 +4,25 @@ import { relative, resolve } from 'node:path';
 import { Args, Flags } from '@oclif/core';
 import chalk from 'chalk';
 import { BaseCommand } from '../base.js';
+import { FRAMEWORKS } from '../lib/migrate/frameworks.js';
+import { TODO_TAG } from '../lib/migrate/markers.js';
 import {
   findTsconfig,
   loadTypeScript,
   migrateProject,
   resolveFiles,
-} from '../lib/migrate/inngest/project.js';
-import {
-  plural,
-  renderMarkdown,
-  summarize,
-} from '../lib/migrate/inngest/report.js';
-import { TODO_TAG } from '../lib/migrate/inngest/transform.js';
+} from '../lib/migrate/project.js';
+import { plural, summarize } from '../lib/migrate/summary.js';
 
 export default class Migrate extends BaseCommand {
   static description =
-    'Migrate code from another durable-execution framework to the Workflow SDK. Supports Inngest: functions become "use workflow" functions, and each step.run() closure is lifted into a "use step" function that takes the variables it captured as arguments.';
+    'Migrate code from another durable-execution framework to the Workflow SDK: Inngest, Temporal or Cloudflare Workflows. Functions become "use workflow" functions, and each step or activity becomes a "use step" function that takes the variables it captured as arguments. What needs a decision is left as a TODO(workflow-migrate) comment.';
 
   static examples = [
     '$ workflow migrate inngest',
-    '$ workflow migrate inngest src/inngest',
-    '$ workflow migrate inngest --dry-run',
-    '$ workflow migrate inngest --report inngest-migration.md',
+    '$ workflow migrate temporal src/workflows',
+    '$ workflow migrate cloudflare-workflows --dry-run',
+    '$ workflow migrate inngest --report migration.md',
   ];
 
   static strict = false;
@@ -34,7 +31,7 @@ export default class Migrate extends BaseCommand {
     from: Args.string({
       description: 'The framework to migrate from',
       required: true,
-      options: ['inngest'],
+      options: Object.keys(FRAMEWORKS),
     }),
     paths: Args.string({
       description:
@@ -84,7 +81,8 @@ export default class Migrate extends BaseCommand {
       ? resolve(cwd, flags.tsconfig)
       : findTsconfig(ts, cwd);
     const files = await resolveFiles(ts, cwd, paths, tsconfig);
-    const result = migrateProject({ ts, cwd, files, tsconfig });
+    const framework = FRAMEWORKS[args.from];
+    const result = migrateProject({ ts, cwd, files, tsconfig, framework });
     const summary = summarize(result.reports);
 
     const changed = [...result.outputs.keys()];
@@ -100,11 +98,17 @@ export default class Migrate extends BaseCommand {
       for (const [file, code] of result.outputs) await writeFile(file, code);
     }
 
-    const markdown = renderMarkdown(result.reports, result.failed);
+    const markdown = framework.renderMarkdown(result.reports, result.failed);
     if (flags.report) await writeFile(resolve(cwd, flags.report), markdown);
 
     if (!this.jsonEnabled())
-      this.print(result, summary, Boolean(flags['dry-run']), flags.report);
+      this.print(
+        framework,
+        result,
+        summary,
+        Boolean(flags['dry-run']),
+        flags.report
+      );
 
     if (this.jsonEnabled()) {
       // this.log() is silenced under --json.
@@ -126,13 +130,14 @@ export default class Migrate extends BaseCommand {
   }
 
   private print(
+    framework: (typeof FRAMEWORKS)[string],
     result: ReturnType<typeof migrateProject>,
     summary: ReturnType<typeof summarize>,
     dryRun: boolean,
     reportPath: string | undefined
   ): void {
     if (!result.reports.length) {
-      this.log('No Inngest functions found.');
+      this.log(`No ${framework.label} code found.`);
       return;
     }
     for (const report of result.reports) {
@@ -145,7 +150,7 @@ export default class Migrate extends BaseCommand {
       this.log(chalk.bold(report.file));
       for (const fn of report.functions) {
         this.log(
-          `  ${chalk.cyan(fn.workflowName)}${fn.inngestId ? chalk.dim(` (was ${fn.inngestId})`) : ''}`
+          `  ${chalk.cyan(fn.workflowName)}${fn.sourceId && fn.sourceId !== fn.workflowName ? chalk.dim(` (was ${fn.sourceId})`) : ''}`
         );
         for (const step of fn.steps) {
           const captured = step.captured.length
@@ -192,9 +197,7 @@ export default class Migrate extends BaseCommand {
     if (summary.todos)
       this.log(`Search for ${TODO_TAG} to find what needs a decision.`);
     this.log(
-      reportPath
-        ? `Report written to ${reportPath}.`
-        : 'Pass --report <file> for a Markdown report with suggested replacements for inngest.send() calls.'
+      reportPath ? `Report written to ${reportPath}.` : framework.boundaryHint
     );
   }
 }

@@ -118,6 +118,39 @@ export async function POST() {
 Calling a step function outside a workflow function provides neither retry semantics nor observability. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
+### Steps defined inside a workflow
+
+Define step functions at module scope where you can: each one is a plain function you can test and reuse, and its name is the step's name in the run's trace. A `"use step"` function declared inside a workflow function works too, which is handy for a small step that only one workflow needs. It can read the workflow's variables directly:
+
+```typescript lineNumbers
+declare const db: { orders: { find(id: string): Promise<{ id: string; total: number }> } }; // @setup
+declare function sendReceipt(email: string, total: number): Promise<void>; // @setup
+export async function receiptWorkflow(orderId: string, email: string) {
+  "use workflow";
+
+  const order = await loadOrder(orderId);
+
+  const send = async () => {
+    "use step"; // [!code highlight]
+    await sendReceipt(email, order.total); // reads `email` and `order` from the workflow // [!code highlight]
+  };
+  await send();
+}
+
+async function loadOrder(orderId: string) {
+  "use step";
+  return db.orders.find(orderId);
+}
+```
+
+The compiler hoists the inner step and records the variables it captures with the call, the same way it records arguments. So the same rules apply:
+
+- **Captured values must be [serializable](/docs/foundations/serialization).**
+- **They are copies.** A change the step makes to a captured object is not visible to the workflow.
+- **Writes to them fail.** The compiler binds captured variables as constants inside the step, so assigning to one (`count++`) fails at build time, or when the step runs, rather than being lost silently. Return the new value from the step instead.
+
+An inner step can be a function declaration, an arrow function or a function expression. Its step name is namespaced by the enclosing function: `receiptWorkflow/send` for the step above. A step assigned to a variable takes the variable's name, and a function declaration takes its own.
+
 ### Suspension and resumption
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the [event log](/docs/how-it-works/event-sourcing) and no compute resources are used until the workflow resumes execution.

@@ -1,8 +1,8 @@
 ---
 title: Comparisons
-description: 'How the Workflow SDK compares to other durable execution, workflow, and AI-agent frameworks: Temporal, Cloudflare Workflows, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.'
+description: 'How the Workflow SDK compares to other durable execution, workflow, and AI-agent frameworks: Temporal, Cloudflare Workflows, Cloudflare Durable Objects, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.'
 type: overview
-summary: Side-by-side comparisons of the Workflow SDK against Temporal, Cloudflare Workflows, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.
+summary: Side-by-side comparisons of the Workflow SDK against Temporal, Cloudflare Workflows, Cloudflare Durable Objects, AWS Step Functions, AWS Bedrock AgentCore, Inngest, and trigger.dev.
 related:
   - /docs/foundations/workflows-and-steps
   - /docs/how-it-works/event-sourcing
@@ -16,6 +16,7 @@ The Workflow SDK overlaps with several categories: durable execution engines, ba
 - **It's an open-source SDK, not a hosted product.** Your workflows are plain TypeScript in your existing app. Run them on the managed [Vercel World](/worlds/vercel), or self-host on the [Postgres World](/worlds/postgres). The [World abstraction](/worlds/building-a-world) lets you own and swap the storage, queue, and streaming layers independently.
 - **Versioning is safe by default.** Runs are pinned to the immutable deployment that started them, so shipping new code never disturbs in-flight runs. Upgrading a run is explicit and opt-in. See [Versioning](/docs/comparisons/workflow-sdk-vs-temporal#versioning).
 - **Real-time durable streaming is built in.** Stream partial output, such as large language model (LLM) tokens and progress, to clients with [streams](/docs/foundations/streaming) that survive reconnects, cold starts, and replays. This durability supports chat and agent UIs.
+- **Long work stays one run.** There is no continue-as-new to plan around: payload and state limits are far higher than other engines', and on the [QuickJS engine](/docs/configuration/runtime-tuning#workflow_vm) snapshotting keeps resumes fast as a run's log grows and exempts the run from the default [per-run event limit](/docs/errors/max-events-exceeded). An agent, a chat session or a per-entity loop runs for as long as it needs, with one history.
 - **Chaining steps is cheap.** A workflow invocation runs as many steps inline as it can before handing back to the queue and keeps the workflow VM alive between them, so step-to-step overhead stays flat as a run grows. See [Performance](/docs/performance).
 - **First-class AI agents.** `WorkflowAgent` ships inside the [AI SDK](/docs/ai), turning an agent loop into a durable workflow with automatic step retries and human-in-the-loop pauses.
 
@@ -30,6 +31,7 @@ These comparisons are compiled from each product's public documentation and are 
 | **Workflow SDK** | Durable functions SDK | Event-log + deterministic replay | ✅ Apache-2.0: self-host (Postgres) or Vercel | TypeScript (Python beta) |
 | [Temporal](/docs/comparisons/workflow-sdk-vs-temporal) | Durable execution platform | Event-sourced replay | ✅ MIT server: self-host or Temporal Cloud | Go, Java, TypeScript, Python, .NET, PHP, Ruby |
 | [Cloudflare Workflows](/docs/comparisons/workflow-sdk-vs-cloudflare-workflows) | Durable execution engine | Step-result memoization + replay | ❌ Cloudflare-only | TypeScript (Python beta) |
+| [Cloudflare Durable Objects](/docs/comparisons/workflow-sdk-vs-cloudflare-durable-objects) | Stateful actors with storage, alarms and WebSockets | Transactional per-object storage | ❌ Cloudflare-only | TypeScript / JavaScript |
 | [AWS Step Functions](/docs/comparisons/workflow-sdk-vs-aws-step-functions) | Managed state-machine orchestrator | Declarative ASL state machine | ❌ AWS-only | ASL JSON (tasks: any language) |
 | [AWS Bedrock AgentCore](/docs/comparisons/workflow-sdk-vs-aws-agentcore) | AI-agent hosting platform | Not durable execution (ephemeral sessions) | ❌ AWS-only | Python, Node.js |
 | [Inngest](/docs/comparisons/workflow-sdk-vs-inngest) | Durable functions / event platform | Step-result memoization | ◑ SSPL: self-host (community/best-effort) or SaaS | TypeScript (Python/Go pre-1.0) |
@@ -43,6 +45,9 @@ These comparisons are compiled from each product's public documentation and are 
     </Card>
     <Card href="/docs/comparisons/workflow-sdk-vs-cloudflare-workflows" title="vs Cloudflare Workflows">
         A durable engine on Workers and Durable Objects. Both replay; they handle versioning and encryption differently.
+    </Card>
+    <Card href="/docs/comparisons/workflow-sdk-vs-cloudflare-durable-objects" title="vs Cloudflare Durable Objects">
+        Per-entity actors such as chat rooms and sessions. Each becomes one durable run, with hooks for incoming messages and streams for outgoing ones.
     </Card>
     <Card href="/docs/comparisons/workflow-sdk-vs-aws-step-functions" title="vs AWS Step Functions">
         Declarative ASL JSON state machines compared with plain TypeScript control flow.
@@ -65,5 +70,9 @@ Each deep dive includes a concept-mapping section for moving an existing system.
 npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
 ```
 
-For Inngest, start with the codemod, which lifts every `step.run()` closure into a `"use step"` function and lists the variables each one captured: `npx workflow migrate inngest`. See [Run the codemod](/docs/comparisons/workflow-sdk-vs-inngest#run-the-codemod).
+For Inngest, Temporal and Cloudflare Workflows, start with the codemod. It turns each step, activity or `step.do()` callback into a `"use step"` function and lists the variables each one captured:
+
+- `npx workflow migrate inngest`: see [the Inngest guide](/docs/comparisons/workflow-sdk-vs-inngest#run-the-codemod).
+- `npx workflow migrate temporal`: see [the Temporal guide](/docs/comparisons/workflow-sdk-vs-temporal#run-the-codemod).
+- `npx workflow migrate cloudflare-workflows`: see [the Cloudflare Workflows guide](/docs/comparisons/workflow-sdk-vs-cloudflare-workflows#run-the-codemod).
 </Callout>

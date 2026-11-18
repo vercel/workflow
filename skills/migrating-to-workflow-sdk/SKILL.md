@@ -1,9 +1,9 @@
 ---
 name: migrating-to-workflow-sdk
-description: Migrates Temporal, Inngest, Trigger.dev, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), Trigger.dev tasks / wait.forToken / triggerAndWait, ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows. For Inngest, runs the `workflow migrate inngest` codemod first and finishes what it leaves as TODOs.
+description: Migrates Temporal, Inngest, Trigger.dev, AWS Step Functions and Cloudflare Workflows to the Workflow SDK, and Cloudflare Durable Objects that model one durable entity. Use when porting Activities, Workers, Signals, step.run(), step.do(), step.waitForEvent(), WorkflowEntrypoint classes, Durable Object classes with storage, alarms or WebSockets, Trigger.dev tasks / wait.forToken / triggerAndWait, ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows. For Inngest, Temporal and Cloudflare Workflows, runs the `workflow migrate` codemod first and finishes what it leaves as TODOs; Durable Objects have no codemod.
 metadata:
   author: Vercel Inc.
-  version: '0.4.0'
+  version: '0.5.0'
 ---
 
 # Migrating to the Workflow SDK
@@ -13,10 +13,12 @@ Use this skill when converting an existing orchestration system to the Workflow 
 ## Intake
 
 1. Identify the source system:
-   - Temporal
+   - Temporal -> if you can run commands in the project, run `npx workflow migrate temporal --report temporal-migration.md` first (see `references/temporal.md` -> `## Start with the codemod`), then migrate only what it marked `TODO(workflow-migrate)` and the client calls its report lists
    - Inngest -> if you can run commands in the project, run `npx workflow migrate inngest --report inngest-migration.md` first (see `references/inngest.md` -> `## Start with the codemod`), then migrate only what it marked `TODO(workflow-migrate)` and the app-boundary calls its report lists
    - Trigger.dev
    - AWS Step Functions
+   - Cloudflare Workflows -> if you can run commands in the project, run `npx workflow migrate cloudflare-workflows --report cloudflare-migration.md` first (see `references/cloudflare-workflows.md` -> `## Start with the codemod`), then migrate what it marked `TODO(workflow-migrate)` and replace `env.<binding>` with the report's `workflowInstances()` adapter
+   - Cloudflare Durable Objects -> decide per object with `references/cloudflare-durable-objects.md` -> `## Decide first`; there is no codemod
 2. Identify the target runtime:
    - Managed hosting -> keep examples focused on `start()`, `getRun()`, hooks/webhooks, and route handlers.
    - Self-hosted -> also read `references/runtime-targets.md` and explicitly say the workflow/step code can stay the same, but deployment still needs a `World` implementation and startup bootstrap.
@@ -41,7 +43,7 @@ Use this skill when converting an existing orchestration system to the Workflow 
   - If a callback-URL prompt does not specify response semantics, default to `resume/url/default` and make the assumption explicit in `## Open Questions`.
 - Never pair `createWebhook()` with `resumeHook()`, and never pass `token:` to `createWebhook()`.
 - Call `start()` directly in the workflow for child runs, keep the returned `Run`, and `await run.returnValue` for the result. Call `getRun()` only inside a `"use step"` function.
-- When `step.run()`-style closures become `"use step"` functions, pass every variable the closure read from the enclosing function as an argument. A closure that assigns to such a variable must return the new value instead.
+- Prefer lifting `step.run()`-style closures into named, module-level `"use step"` functions, and pass every variable the closure read from the enclosing function as an argument (a module-level function can't see them). A `"use step"` closure kept inline in the workflow also works and reads those variables directly; use it for small one-off steps. Either way the values are serialized copies: a closure that assigns to such a variable must return the new value instead (an inline step that assigns to a captured variable fails).
 - For duplicate-start protection (Inngest `idempotency`, Trigger.dev `idempotencyKey`, Temporal workflow IDs), use `start(wf, args, { experimental_hook: { token } })`.
 - Use `getStepMetadata().stepId` as the idempotency key for external writes.
 - Use `getWritable()` in workflow context to obtain the stream, but interact with it (write, close) only inside `"use step"` functions.
@@ -77,6 +79,8 @@ Before drafting `## Migrated Code`, write the selected route keys in `## Migrati
 - Inngest -> `references/inngest.md`
 - Trigger.dev -> `references/trigger-dev.md`
 - AWS Step Functions -> `references/aws-step-functions.md`
+- Cloudflare Workflows -> `references/cloudflare-workflows.md`
+- Cloudflare Durable Objects -> `references/cloudflare-durable-objects.md`
 
 ## Shared references
 
@@ -116,6 +120,10 @@ Fail the draft if any of these are true:
 - [ ] A workflow waits on the same hook token twice without disposing the first hook (the second `createHook()` rejects with `HookConflictError`)
 - [ ] Two waiters share one hook token where the source delivered one event to both (give each its own token and resume each)
 - [ ] A migrated Inngest signal is resumed with bare `data` instead of `{ signal, data }`
+- [ ] A migrated Temporal signal is resumed with a token other than `${runId}:<signal name>`, or with a payload that is not the signal's arguments array
+- [ ] An activity Temporal retried without limit (no `maximumAttempts`) has no explicit `maxRetries`
+- [ ] A migrated Cloudflare `step.do()` has no explicit `maxRetries` (Cloudflare's default is 5 retries; the Workflow SDK's is 3)
+- [ ] A Durable Object migrated to a run creates a new `sleep()` per command instead of one idle timer that re-arms
 - [ ] External writes omit idempotency keys
 - [ ] Hooks/webhooks are missing where the source used signals, waitForEvent, or task tokens
 - [ ] A callback-URL flow uses `createHook()` + `resumeHook()` instead of `createWebhook()`

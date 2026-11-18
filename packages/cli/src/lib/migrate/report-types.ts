@@ -20,7 +20,8 @@ export interface LiftedStep {
   dynamicId: boolean;
   functionName: string;
   line: number;
-  source: 'step.run' | 'step.ai.wrap';
+  /** The source construct, e.g. `step.run` or `step.ai.wrap` (Inngest), `step.do` (Cloudflare), `activity` (Temporal). */
+  source: string;
   /** Variables the closure read from the handler, now passed as arguments. */
   captured: CapturedVariable[];
   /** Number of extra inputs `step.run(id, fn, ...inputs)` passed. */
@@ -34,8 +35,8 @@ export interface FunctionTrigger {
 
 export interface MigratedHook {
   line: number;
-  /** The Inngest event or signal this hook replaces. */
-  source: 'step.waitForEvent' | 'step.waitForSignal';
+  /** The source wait this hook replaces, e.g. `step.waitForEvent` (Inngest, Cloudflare) or a Temporal signal. */
+  source: string;
   name: string;
   /** The token expression as written in the migrated code. */
   token: string;
@@ -44,8 +45,8 @@ export interface MigratedHook {
 }
 
 export interface MigratedFunction {
-  /** Inngest function ID from the config, when it is a literal. */
-  inngestId?: string;
+  /** The function's ID in the source framework, when it is a literal. */
+  sourceId?: string;
   workflowName: string;
   line: number;
   triggers: FunctionTrigger[];
@@ -58,8 +59,9 @@ export interface MigratedFunction {
 
 export interface AppBoundaryCall {
   line: number;
-  kind: 'send' | 'serve' | 'sendSignal';
-  /** Event names (for `send`) or signal (for `sendSignal`), when literal. */
+  /** What the call does, e.g. `send`, `serve` (Inngest); `start`, `signal`, `worker` (Temporal); `create`, `sendEvent` (Cloudflare). */
+  kind: string;
+  /** Event names, signals or bindings the call names, when literal. */
   names: string[];
   text: string;
 }
@@ -71,4 +73,6 @@ export interface FileReport {
   /** Notes that do not belong to one migrated function. */
   notes: MigrationNote[];
   boundary: AppBoundaryCall[];
+  /** Steps that belong to no workflow in this file (e.g. Temporal activities). */
+  steps?: LiftedStep[];
 }

@@ -16,9 +16,10 @@ import {
   loadTypeScript,
   migrateProject,
   resolveFiles,
-} from './project.js';
+} from '../project.js';
+import type { FileReport } from '../report-types.js';
+import { inngestFramework } from './index.js';
 import { renderMarkdown, summarize } from './report.js';
-import type { FileReport } from './report-types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cliRoot = join(here, '..', '..', '..', '..');
@@ -54,6 +55,7 @@ async function migrate(files: Record<string, string>): Promise<Migrated> {
     cwd: dir,
     files: resolved,
     tsconfig: inside,
+    framework: inngestFramework,
   });
   return {
     dir,
@@ -482,7 +484,7 @@ export const spread = inngest.createFunction({ ...shared, id: 'spread', retries:
     const [byConst, opaque, spread] = m.report('functions.ts').functions;
     expect(code).toContain('flaky.maxRetries = 0;');
     expect(byConst.triggers).toEqual([{ kind: 'event', value: 'a/b' }]);
-    expect(byConst.inngestId).toBe('by-const');
+    expect(byConst.sourceId).toBe('by-const');
     expect(byConst.config).toEqual({ concurrency: '{ limit: 1 }' });
     expect(opaque.notes.map((n) => n.message)).toEqual([
       expect.stringContaining('are not an object literal the codemod can read'),
@@ -667,6 +669,68 @@ export const shared = inngest.createFunction(SHARED, async ({ step }) => step.ru
     ]);
     expect(shared.triggers).toEqual([{ kind: 'event', value: 'a/g' }]);
     expect(code).toContain('y.maxRetries = 4;');
+  });
+
+  it('refuses const config that escapes into another container', async () => {
+    const m = await migrate({
+      'client.ts': client,
+      'functions.ts': `import { inngest } from './client';
+
+const config = { id: 'job', retries: 2 as 0 | 2, triggers: [{ event: 'job' }] };
+const holder = { config };
+holder.config.retries = 0;
+export const job = inngest.createFunction(config, async ({ step }) => step.run('flaky', () => 1));
+
+const TRIGGERS = [{ event: 'a/e' }];
+const box = [TRIGGERS];
+box[0].push({ event: 'a/f' });
+export const boxed = inngest.createFunction({ id: 'boxed', triggers: TRIGGERS }, async ({ step }) => step.run('x', () => 1));
+
+const INNER = { limit: 1 };
+const OPTIONS = { id: 'nested', retries: 3 as const, concurrency: INNER, triggers: [{ event: 'a/g' }] };
+export const nested = inngest.createFunction(OPTIONS, async ({ step }) => step.run('y', () => 1));
+`,
+    });
+    const code = m.out('functions.ts');
+    const [job, boxed, nested] = m.report('functions.ts').functions;
+    expect(job.notes.map((n) => n.message)).toEqual([
+      expect.stringContaining(
+        '`config` are a const object that other code in this file uses'
+      ),
+    ]);
+    expect(code).not.toContain('flaky.maxRetries');
+    expect(boxed.notes.map((n) => n.message)).toEqual([
+      expect.stringContaining(
+        '`triggers: TRIGGERS` is a const that other code in this file uses'
+      ),
+    ]);
+    // Nested only inside options: still read.
+    expect(code).toContain('y.maxRetries = 3;');
+    expect(nested.config).toEqual({ concurrency: 'INNER' });
+  });
+
+  it('types a rest parameter as the tuple of the remaining inputs', async () => {
+    const m = await migrate({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          target: 'es2022',
+          module: 'esnext',
+          moduleResolution: 'bundler',
+          skipLibCheck: true,
+        },
+      }),
+      'src/client.ts': client,
+      'src/functions.ts':
+        fn(`    const total = await step.run('sum', (...ns) => ns.reduce((a, b) => a + b, 0), 10, 20, 12);
+    const none = await step.run('nothing', (...xs) => xs.length);
+    return [total, none];`),
+    });
+    const code = m.out('src/functions.ts');
+    expect(code).toContain(
+      'async function sum(...ns: [number, number, number]) {'
+    );
+    expect(code).toContain('async function nothing(...xs: []) {');
   });
 
   it('keeps a type-only import and imports the value under an alias', async () => {

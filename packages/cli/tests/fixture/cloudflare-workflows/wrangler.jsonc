@@ -1,0 +1,12 @@
+{
+  "name": "shop",
+  "main": "workflows.ts",
+  "compatibility_date": "2026-11-01",
+  "vars": { "GREETING": "hello" },
+  "workflows": [
+    { "name": "orders", "binding": "ORDERS", "class_name": "OrderWorkflow" },
+    { "name": "approvals", "binding": "APPROVALS", "class_name": "ApprovalWorkflow" },
+    { "name": "retries", "binding": "RETRIES", "class_name": "RetryWorkflow" },
+    { "name": "timers", "binding": "TIMERS", "class_name": "TimerWorkflow" }
+  ]
+}

@@ -14,6 +14,7 @@
 | `.waitForTaskToken` | `createHook()` or `createWebhook()` |
 | `StartExecution` (child state machine) | `start()` called directly in the workflow; `.sync` → `await run.returnValue`, fire-and-forget → do not await |
 | Execution `name` (unique per state machine, Standard workflows) | `start(wf, args, { experimental_hook: { token, experimental_minRetention } })` with a retention of the run's maximum duration plus 90 days; a duplicate throws `HookConflictError` naming the owner (return `error.conflictingRunId` where Step Functions returned the running execution) |
+| EventBridge Scheduler / scheduled rule starting an execution | a [Vercel Schedule](https://vercel.com/docs/schedules/workflows) targeting a queue topic whose consumer calls `start()` with ``experimental_hook: { token: `${name}:${message.executionId}`, experimental_minRetention: '7 days' }`` and returns on `HookConflictError`; static schedules in `vercel.json`, dynamic ones (per user, created at runtime) with `@vercel/schedules`; schedules take an IANA `timezone` |
 | `StopExecution` | `getRun(runId).cancel({ cancelReason })` |
 
 ## Remove

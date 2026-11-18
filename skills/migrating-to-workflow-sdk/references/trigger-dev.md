@@ -20,7 +20,11 @@
 | `AbortTaskRunError` | `FatalError` |
 | `retry.onThrow` / `retry.fetch` | step `RetryableError` + `maxRetries` |
 | `retry` options on `task()` | `maxRetries` on the step |
-| `queue` / `machine` config on `task()` | remove from app code |
+| `schedules.task({ cron })`, `schedules.create()` per user | a [Vercel Schedule](https://vercel.com/docs/schedules/workflows) targeting a queue topic whose consumer calls `start()` with ``experimental_hook: { token: `${name}:${message.executionId}`, experimental_minRetention: '7 days' }`` and returns on `HookConflictError`; static schedules in `vercel.json`, dynamic ones (per user, created at runtime) with `@vercel/schedules`; schedules take an IANA `timezone` |
+| `queue: { concurrencyLimit: 1 }` with a `concurrencyKey`, where an overlapping run can be dropped | `start(wf, args, { experimental_hook: { token: concurrencyKey } })` with no retention; skip on `HookConflictError` (one run per key at a time) |
+| queue concurrency where runs wait their turn | no equivalent yet (native per-key locks are in development): keep the lock you use today inside the steps that need it, and make those steps safe to repeat |
+| a downstream API's rate limit | throw `RetryableError` with the provider's `retryAfter` from the step |
+| `machine` config on `task()` | remove from app code (resources come from the hosting platform) |
 | `logger.info` / `logger.warn` | standard logging |
 | `metadata.set()` (string labels used to find runs) | `setAttributes()` |
 | `metadata.set()` (progress read by a UI) | `getWritable()` stream, or step return values |

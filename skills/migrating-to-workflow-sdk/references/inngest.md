@@ -73,8 +73,9 @@ Inngest delivers an event to every run waiting for it; a hook token has one owne
 
 ## Watch for
 
-- **Writes to captured variables.** `step.run('x', () => { count++ })` cannot be lifted as is: the step gets a copy. Return the new value and assign it in the workflow.
-- **Captured local functions.** A closure that calls a helper declared inside the handler needs the helper moved to module scope first.
+- **Writes to captured variables.** `step.run('x', () => { count++ })` cannot be lifted as is: the step gets a copy. Return the new value and assign it in the workflow. Keeping it inline as a `"use step"` closure does not help either: captured variables are constants inside the step, so the assignment fails.
+- **Inline steps are allowed.** A `"use step"` closure inside the workflow reads the workflow's variables directly, and its captured values are serialized like arguments. The codemod lifts closures to module scope anyway because that is the recommended style (testable, reusable, named in the trace).
+- **Captured local functions.** A closure that calls a helper declared inside the handler needs the helper moved to module scope first: a function is not serializable, whether it is passed to a step or captured by one.
 - **I/O outside steps.** Inngest re-ran handler code outside `step.run()` on every request; a workflow function cannot do I/O at all. Move `fetch()`, database and SDK calls into steps.
 - **Result types.** Inngest JSON-serialized step results (`Date` became a string, `undefined` became `null`); the Workflow SDK keeps the types.
 - **Event fields.** The workflow receives what `start()` passes. Code reading `event.id` or `event.ts` needs the caller to pass them, or `getWorkflowMetadata()`.

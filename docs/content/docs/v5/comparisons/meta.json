@@ -3,6 +3,7 @@
   "pages": [
     "workflow-sdk-vs-temporal",
     "workflow-sdk-vs-cloudflare-workflows",
+    "workflow-sdk-vs-cloudflare-durable-objects",
     "workflow-sdk-vs-aws-step-functions",
     "workflow-sdk-vs-aws-agentcore",
     "workflow-sdk-vs-inngest",

@@ -1,33 +1,7 @@
-import type { FileReport, MigratedFunction } from './report-types.js';
+import type { FileReport, MigratedFunction } from '../report-types.js';
+import { plural, summarize } from '../summary.js';
 
-export interface ReportSummary {
-  filesChanged: number;
-  functions: number;
-  steps: number;
-  hooks: number;
-  todos: number;
-}
-
-export function summarize(reports: FileReport[]): ReportSummary {
-  const summary: ReportSummary = {
-    filesChanged: 0,
-    functions: 0,
-    steps: 0,
-    hooks: 0,
-    todos: 0,
-  };
-  for (const report of reports) {
-    if (report.changed) summary.filesChanged++;
-    summary.functions += report.functions.length;
-    summary.todos += report.notes.filter((n) => n.severity === 'todo').length;
-    for (const fn of report.functions) {
-      summary.steps += fn.steps.length;
-      summary.hooks += fn.hooks.length;
-      summary.todos += fn.notes.filter((n) => n.severity === 'todo').length;
-    }
-  }
-  return summary;
-}
+export { plural, summarize };
 
 interface WorkflowRef {
   fn: MigratedFunction;
@@ -97,7 +71,7 @@ export function renderMarkdown(
     if (report.notes.length) out.push('');
     for (const fn of report.functions) {
       out.push(
-        `### \`${fn.workflowName}\`${fn.inngestId ? ` (Inngest function \`${fn.inngestId}\`)` : ''}`,
+        `### \`${fn.workflowName}\`${fn.sourceId ? ` (Inngest function \`${fn.sourceId}\`)` : ''}`,
         ''
       );
       if (fn.triggers.length) {
@@ -245,10 +219,6 @@ function code(text: string): string {
   const fence = '`'.repeat(longest + 1);
   const pad = longest ? ' ' : '';
   return `${fence}${pad}${text}${pad}${fence}`;
-}
-
-export function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
 function escapeCell(text: string): string {
