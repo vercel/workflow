@@ -12,7 +12,37 @@ import {
 import { replayPayloadEventKey } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 import { markUseStepClosureFn } from './serialization/hardened.js';
+import { serializeInstanceAtCallSite } from './serialization/reducers/class.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
+
+/**
+ * Reduces custom-serialized class instances among a step's top-level
+ * arguments here, on the replayed path, so dehydrating the input later runs
+ * no workflow code and keeps the retained VM (see
+ * {@link serializeInstanceAtCallSite}). An instance passed in several
+ * positions keeps one stand-in, so it still revives as one shared object.
+ */
+function serializeArgsAtCallSite<Args extends Serializable[]>(
+  args: Args
+): Args {
+  let reduced: Map<unknown, unknown> | undefined;
+  let out: Serializable[] | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === null || typeof arg !== 'object') continue;
+    reduced ??= new Map();
+    let replacement = reduced.get(arg);
+    if (replacement === undefined) {
+      replacement = serializeInstanceAtCallSite(arg);
+      reduced.set(arg, replacement);
+    }
+    if (replacement !== arg) {
+      out ??= [...args];
+      out[i] = replacement as Serializable;
+    }
+  }
+  return (out ?? args) as Args;
+}
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
@@ -32,7 +62,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         type: 'step',
         correlationId,
         stepName,
-        args,
+        args: serializeArgsAtCallSite(args),
       };
 
       // Capture `this` value for method invocations (e.g., MyClass.method()).

@@ -19,7 +19,11 @@ import {
 } from 'devalue';
 import type { Codec, CodecOptions, SerializationMode } from './codec.js';
 import { hardenedStringifyOperations, withGuestCodeStats } from './hardened.js';
-import { getClassReducers, getClassRevivers } from './reducers/class.js';
+import {
+  callSiteInstanceIdentity,
+  getClassReducers,
+  getClassRevivers,
+} from './reducers/class.js';
 import { getCommonReducers, getCommonRevivers } from './reducers/common.js';
 import {
   getStepFunctionReducer,
@@ -165,7 +169,12 @@ export const devalueCodec: Codec = {
       : state.reduce;
     reducers[STATE_SOURCE_REDUCER] = state.reduceSourceRef;
     const str = withGuestCodeStats(options?.guestCodeStats, () =>
-      stringify(value, reducers, { operations: hardenedStringifyOperations })
+      stringify(value, reducers, {
+        operations: {
+          ...hardenedStringifyOperations,
+          identify: callSiteInstanceIdentity,
+        },
+      })
     );
     return encoder.encode(str);
   },
