@@ -17,7 +17,16 @@ import {
 } from '@xyflow/react';
 import { useEffect, useMemo } from 'react';
 import '@xyflow/react/dist/style.css';
-import { Clock, Link2, PlayCircle, StopCircle, Zap } from 'lucide-react';
+import {
+  Bot,
+  Clock,
+  Diamond,
+  Link2,
+  PlayCircle,
+  StopCircle,
+  Wrench,
+  Zap,
+} from 'lucide-react';
 import './workflow-graph-viewer.css';
 import type {
   GraphNode,
@@ -268,15 +277,13 @@ export interface SelfLoopEdgeStyle {
 // Default self-loop edge style (gray for static view)
 export const defaultSelfLoopStyle: SelfLoopEdgeStyle = {
   strokeColor: '#6b7280', // gray-500
-  labelBgClass:
-    'bg-gray-200 dark:bg-gray-700 text-black dark:text-gray-200 border-gray-400 dark:border-gray-500',
+  labelBgClass: 'bg-gray-200 text-gray-1000 border-gray-400',
 };
 
 // Execution self-loop edge style (purple for execution view)
 export const executionSelfLoopStyle: SelfLoopEdgeStyle = {
   strokeColor: '#a855f7', // purple-500
-  labelBgClass:
-    'bg-purple-200 dark:bg-purple-900/50 text-black dark:text-purple-200 border-purple-400 dark:border-purple-600',
+  labelBgClass: 'bg-purple-200 text-purple-1000 border-purple-400',
 };
 
 // Factory to create a self-loop edge component with custom styling
@@ -366,22 +373,22 @@ export function createEdgeTypes(
 // Get base node background color based on node kind
 export function getNodeBackgroundColor(nodeKind: string): string {
   if (nodeKind === 'workflow_start' || nodeKind === 'workflow_end') {
-    return 'var(--node-bg-start)'; // blue
+    return 'var(--ds-blue-100)';
   }
   if (nodeKind === 'primitive') {
-    return 'var(--node-bg-primitive)'; // orange
+    return 'var(--ds-amber-100)';
   }
   if (nodeKind === 'agent') {
-    return 'var(--node-bg-agent)'; // pink
+    return 'var(--ds-pink-100)';
   }
   if (nodeKind === 'tool') {
-    return 'var(--node-bg-tool)'; // purple
+    return 'var(--ds-purple-100)';
   }
   if (nodeKind === 'conditional') {
-    return 'var(--node-bg-conditional)'; // red
+    return 'var(--ds-red-100)';
   }
   // Default for steps - green
-  return 'var(--node-bg-step)';
+  return 'var(--ds-green-100)';
 }
 
 // Get default border color for a node kind
@@ -417,53 +424,31 @@ export function getNodeStyle(nodeKind: string): NodeStyleResult {
 // Get node icon based on node kind
 export function getNodeIcon(nodeKind: string, label?: string) {
   if (nodeKind === 'workflow_start') {
-    return (
-      <PlayCircle className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
-    );
+    return <PlayCircle className="h-3.5 w-3.5 text-blue-900" />;
   }
   if (nodeKind === 'workflow_end') {
-    return (
-      <StopCircle className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
-    );
+    return <StopCircle className="h-3.5 w-3.5 text-blue-900" />;
   }
   if (nodeKind === 'primitive') {
     if (label === 'sleep') {
-      return (
-        <Clock className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
-      );
+      return <Clock className="h-3.5 w-3.5 text-amber-900" />;
     }
     if (label === 'createHook' || label === 'createWebhook') {
-      return (
-        <Link2 className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
-      );
+      return <Link2 className="h-3.5 w-3.5 text-amber-900" />;
     }
-    return (
-      <Clock className="h-3.5 w-3.5 text-orange-600 dark:text-orange-400" />
-    );
+    return <Clock className="h-3.5 w-3.5 text-amber-900" />;
   }
   if (nodeKind === 'agent') {
-    return (
-      <span className="h-3.5 w-3.5 text-pink-600 dark:text-pink-400 text-xs">
-        🤖
-      </span>
-    );
+    return <Bot className="h-3.5 w-3.5 text-pink-900" />;
   }
   if (nodeKind === 'tool') {
-    return (
-      <span className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 text-xs">
-        🔧
-      </span>
-    );
+    return <Wrench className="h-3.5 w-3.5 text-purple-900" />;
   }
   if (nodeKind === 'conditional') {
-    return (
-      <span className="h-3.5 w-3.5 text-red-600 dark:text-red-400 text-xs">
-        ◇
-      </span>
-    );
+    return <Diamond className="h-3.5 w-3.5 text-red-900" />;
   }
   // Default for steps - use Zap icon
-  return <Zap className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
+  return <Zap className="h-3.5 w-3.5 text-green-900" />;
 }
 
 // Layout result type

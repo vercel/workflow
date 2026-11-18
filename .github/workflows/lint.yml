@@ -117,6 +117,22 @@ jobs:
       - name: Check pending changesets assemble into a release plan
         run: node scripts/check-changesets.mjs
 
+      # The Release job's trusted publishing cannot create a package on npm,
+      # so a public package that has never been published fails the release
+      # and holds back the packages after it (see scripts/check-published.mjs).
+      - name: Check every public package already exists on npm
+        run: node scripts/check-published.mjs --packages-exist
+
+      # release.yml refuses to publish while any public package's version is
+      # outside the branch's release major (0.x experimental packages aside),
+      # and a package that lands with another major blocks every release on
+      # main until it is fixed. Run the same guard here, with the release
+      # major read from release.yml so the two cannot disagree.
+      - name: Check package versions match the release major
+        run: |
+          RELEASE_VERSION=$(sed -n 's/^ *RELEASE_VERSION: *\([0-9][0-9]*\) *$/\1/p' .github/workflows/release.yml)
+          node .github/scripts/check-release-major.js "${RELEASE_VERSION:?RELEASE_VERSION not found in release.yml}"
+
   docs-links:
     name: Docs Links
     runs-on: ubuntu-latest

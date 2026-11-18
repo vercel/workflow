@@ -57,6 +57,8 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  RETENTION_ATTRIBUTE,
+  RETENTION_ZERO,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -79,6 +81,7 @@ import {
   desc,
   eq,
   exists,
+  getTableColumns,
   gt,
   inArray,
   isNull,
@@ -97,7 +100,10 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
-import { purgeRunUserDataIfZeroRetention } from './retention.js';
+import {
+  purgeRunUserDataIfZeroRetention,
+  scrubStepWriteIfRunPurged,
+} from './retention.js';
 import { announceRunEvents, type RunEventsFeed } from './run-events.js';
 import {
   notifyRunTerminal,
@@ -208,6 +214,19 @@ function nextSlotId(runId: string): SQL<string> {
   const width = sql.raw(String(EVENT_ID_BODY_LENGTH));
   const noEvents = sql.raw(String(FIRST_EVENT_SLOT - 1));
   return sql<string>`${EVENT_ID_PREFIX} || lpad((coalesce((select cast(substring(prev.id from ${bodyFrom}) as bigint) from ${Schema.events} prev where prev.run_id = ${runId} order by prev.id desc limit 1), ${noEvents}) + 1)::text, ${width}, '0')`;
+}
+
+/**
+ * RETURNING columns of a step write: the step row, and whether its run asked
+ * for zero retention (fixed when the run starts), so a write that may land
+ * after the run's purge is checked (`scrubStepWriteIfRunPurged`) without a
+ * query for every other run.
+ */
+function stepRowAndRetention(runId: string) {
+  return {
+    ...getTableColumns(Schema.steps),
+    zeroRetention: sql<boolean>`coalesce((select r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO} from ${Schema.runs} r where r.id = ${runId}), false)`,
+  };
 }
 
 /**
@@ -2636,6 +2655,7 @@ function createUnfencedEventsStorage(
                 error: data.eventData.error as SerializedData,
                 completedAt: now,
               };
+        let zeroRetention = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2647,10 +2667,12 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning();
+            .returning(stepRowAndRetention(effectiveRunId));
 
           if (stepValue) {
-            step = deserializeStepError(compact(stepValue));
+            const { zeroRetention: zero, ...row } = stepValue;
+            zeroRetention = zero;
+            step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
             const [existing] = await tx
@@ -2692,6 +2714,14 @@ function createUnfencedEventsStorage(
           eventId = eventValue.eventId;
           return { createdAt: eventValue.createdAt };
         }, SLOT_INSERT_TRANSACTION);
+        if (zeroRetention)
+          await scrubStepWriteIfRunPurged(
+            drizzle,
+            effectiveRunId,
+            data.correlationId!,
+            data.eventType,
+            eventId
+          );
       }
 
       // Handle step_retrying event: sets status back to 'pending', records error
@@ -2704,6 +2734,7 @@ function createUnfencedEventsStorage(
         // One transaction with its event, as step_started does: a step put
         // back to pending without its step_retrying would retry with no
         // record of the failed attempt in the log.
+        let zeroRetention = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2719,9 +2750,11 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning();
+            .returning(stepRowAndRetention(effectiveRunId));
           if (stepValue) {
-            step = deserializeStepError(compact(stepValue));
+            const { zeroRetention: zero, ...row } = stepValue;
+            zeroRetention = zero;
+            step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
             const [existing] = await tx
@@ -2747,6 +2780,14 @@ function createUnfencedEventsStorage(
           }
           return insertOwnEvent(tx);
         }, SLOT_INSERT_TRANSACTION);
+        if (zeroRetention)
+          await scrubStepWriteIfRunPurged(
+            drizzle,
+            effectiveRunId,
+            data.correlationId!,
+            data.eventType,
+            eventId
+          );
       }
 
       // Handle hook_created event: create hook entity

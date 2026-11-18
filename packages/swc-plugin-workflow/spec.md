@@ -197,6 +197,8 @@ example.workflowId = "workflow//./input//example";
 })(example$innerStep, "step//./input//example/innerStep");
 ```
 
+The same applies to every form of nested step: a function declaration (as above), an arrow function or function expression bound to a `const`/`let`/`var` (`const act = async () => { "use step"; ... }`, `const act = async function summarize() { "use step"; ... }`), and a function or arrow expression that is not bound to a variable (for example one that is returned). A step bound to a variable takes the variable's name (`example/act`), not the function expression's own name. An unbound function expression takes its own name, and an unbound anonymous one is named `_anonymousStepN`.
+
 #### Same-named steps in different block scopes
 
 Two nested steps with the same local name in different block scopes of one enclosing function are distinct functions. The first one (in source order) keeps the plain name; each later one gets a `~N` suffix in its step ID (`N` = 1, 2, ...). The same applies to object property steps on same-named objects (e.g. `helpers.act` in two branches), and nested steps and object property steps share a namespace (a step nested in a function `helpers` and a step property on an object `helpers` are both `helpers/act`).
