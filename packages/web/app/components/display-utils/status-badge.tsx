@@ -104,6 +104,7 @@ function ErrorCodeBadge({
           <CopyButton
             textToCopy={errorCode}
             aria-label="Copy error code"
+            size="small"
             className="-my-0.5 text-inherit enabled:hover:text-inherit focus-visible:text-inherit"
           />
         </div>

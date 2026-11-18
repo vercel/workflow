@@ -1,5 +1,6 @@
 'use client';
 
+import { cva, type VariantProps } from 'class-variance-authority';
 import { Check, Copy } from 'lucide-react';
 import {
   forwardRef,
@@ -12,15 +13,28 @@ import { cn } from '../../lib/cn';
 import { useToast } from '../../lib/toast';
 import { IconButton, type IconButtonProps } from './icon-button';
 
-export type CopyButtonProps = Omit<IconButtonProps, 'children'> & {
-  textToCopy: string;
-};
+const copyButtonVariants = cva('', {
+  variants: {
+    size: {
+      tiny: '',
+      small: '[&_svg]:size-3',
+    },
+  },
+  defaultVariants: {
+    size: 'tiny',
+  },
+});
+
+export type CopyButtonProps = Omit<IconButtonProps, 'children' | 'size'> &
+  VariantProps<typeof copyButtonVariants> & {
+    textToCopy: string;
+  };
 
 const icon =
   '[grid-area:1/1] transition-[opacity,scale] duration-200 ease-in-out';
 
 export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
-  ({ textToCopy, onClick, ...props }, ref) => {
+  ({ textToCopy, size, onClick, className, ...props }, ref) => {
     const toast = useToast();
     const [copied, setCopied] = useState(false);
     const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -41,7 +55,12 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
     };
 
     return (
-      <IconButton ref={ref} onClick={copy} {...props}>
+      <IconButton
+        ref={ref}
+        onClick={copy}
+        className={cn(copyButtonVariants({ size }), className)}
+        {...props}
+      >
         <span className="grid">
           <Check
             className={cn(

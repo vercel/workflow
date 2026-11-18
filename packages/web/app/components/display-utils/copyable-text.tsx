@@ -35,6 +35,7 @@ export function CopyableText({
           <CopyButton
             textToCopy={text}
             aria-label="Copy to clipboard"
+            size="small"
             className={cn(
               'opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100',
               overlay

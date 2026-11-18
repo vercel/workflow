@@ -108,6 +108,7 @@ function DetailKeyValueRowBase({
           <CopyButton
             textToCopy={copyText}
             aria-label={`Copy ${label}`}
+            size="small"
             className="-my-0.5 -mr-1"
           />
         </div>
