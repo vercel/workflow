@@ -34,6 +34,10 @@
       "types": "./dist/runtime.d.ts",
       "default": "./dist/runtime.js"
     },
+    "./runtime/flow-entrypoint": {
+      "types": "./dist/runtime/flow-entrypoint.d.ts",
+      "default": "./dist/runtime/flow-entrypoint.js"
+    },
     "./inline-entry": {
       "types": "./dist/inline-entry.d.ts",
       "default": "./dist/inline-entry.js"

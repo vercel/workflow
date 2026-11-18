@@ -531,6 +531,8 @@ export const WorkflowInlineSkipReason = SemanticConvention<
   | 'other_region'
   | 'in_step'
   | 'unsupported_start'
+  | 'missing_steps'
+  | 'no_engine'
 >('workflow.inline.skip_reason');
 
 /** **Experimental.** The queue's `not_held` reason for an inline request. */

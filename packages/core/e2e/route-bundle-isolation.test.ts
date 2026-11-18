@@ -173,24 +173,58 @@ describe('route bundle isolation (o2flow hook.resume regression)', () => {
       expect(result.status).toBe(500);
       expect(result.body).toContain('Hook not found');
 
-      // Inline orchestrator delivery: `withWorkflow()` aliases
-      // `@workflow/core/inline-entry` to the generated flow route for Node.js
-      // server code, so this ordinary route's Function can load the app's
-      // workflows, steps and orchestrator handler on demand. Its traced files
-      // include the flow route's chunk.
-      const nft = JSON.parse(
-        await readFile(`${routeBundlePath}.nft.json`, 'utf8')
-      ) as { files: string[] };
-      expect(
-        nft.files.some((file) =>
-          file.includes('_well-known_workflow_v1_flow_route')
-        ),
-        'the route Function does not carry the flow entry'
-      ).toBe(true);
-      // Browser code keeps the empty default module: no step registrations
-      // reach the client bundles.
+      // Inline orchestrator delivery: each workflow module imports, lazily,
+      // the generated inline entry holding that workflow's code (see the Next
+      // loader and `@workflow/core`'s `inline-orchestrator.ts`). A route
+      // carries the entries of the workflows it imports and nothing else, and
+      // never the QuickJS engine.
+      // What a route's Function carries: its traced files, and the workflows
+      // whose inline entries they hold (each entry registers itself with
+      // `inlineWorkflowNames`; Turbopack may merge an entry into a shared
+      // chunk, so this reads contents rather than file names).
+      const traced = async (route: string) => {
+        const routeFile = path.join(appPath, '.next/server/app', route);
+        const nft = JSON.parse(
+          await readFile(`${routeFile}.nft.json`, 'utf8')
+        ) as { files: string[] };
+        const files = nft.files.map((file) =>
+          path.resolve(path.dirname(routeFile), file)
+        );
+        const workflows = new Set<string>();
+        for (const file of [routeFile, ...files]) {
+          if (!file.endsWith('.js')) continue;
+          const text = await readFile(file, 'utf8').catch(() => '');
+          for (const match of text.matchAll(
+            /inlineWorkflowNames: ?(\[[^\]]*\])/g
+          )) {
+            for (const id of JSON.parse(match[1]) as string[]) {
+              workflows.add(id.slice(id.lastIndexOf('//') + 2));
+            }
+          }
+        }
+        return {
+          workflows: [...workflows].sort(),
+          quickjs: files.filter((file) => /quickjs/i.test(path.basename(file))),
+        };
+      };
+
+      // No workflow import, no inline code.
+      const plain = await traced('api/resume-plain-hook/route.js');
+      expect(plain.workflows).toEqual([]);
+      expect(plain.quickjs).toEqual([]);
+      // A route that starts the inline-start fixtures carries only their
+      // entries, and no QuickJS engine.
+      const starter = await traced('api/inline-start/route.js');
+      expect(starter.workflows).toEqual([
+        'inlineHookWorkflow',
+        'inlineSerdeWorkflow',
+        'inlineTimingWorkflow',
+      ]);
+      expect(starter.quickjs).toEqual([]);
+      // Browser code gets none of it: no step registrations or entries reach
+      // the client bundles.
       const { stdout: clientHits } = await exec(
-        `grep -rl "__step_registrations\\|workbench/inline-start/instance" .next/static || true`,
+        `grep -rl "__step_registrations\\|inlineStepIds\\|workbench/inline-start/instance" .next/static || true`,
         { cwd: appPath }
       );
       expect(clientHits.trim()).toBe('');

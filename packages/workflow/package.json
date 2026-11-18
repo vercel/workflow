@@ -44,6 +44,7 @@
     "./internal/errors": "./dist/internal/errors.js",
     "./internal/builtins": "./dist/internal/builtins.js",
     "./internal/class-serialization": "./dist/internal/class-serialization.js",
+    "./internal/inline-runtime": "./dist/internal/inline-runtime.js",
     "./next": "./dist/next.cjs",
     "./nitro": "./dist/nitro.js",
     "./nuxt": "./dist/nuxt.js",

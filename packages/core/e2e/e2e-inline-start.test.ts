@@ -255,6 +255,36 @@ describe
       }
     );
 
+    test.each([
+      ['inline', false],
+      ['queued', true],
+    ])(
+      'custom serde classes are revived in the workflow and its steps (%s)',
+      { timeout: 120_000 },
+      async (mode, queued) => {
+        const answer = await post<StartAnswer>('/api/inline-start', {
+          serde: { x: 2, y: 3 },
+          queued,
+        });
+        const read = await readRun<{
+          argRevivedInWorkflow: boolean;
+          argRevivedInStep: boolean;
+          resultRevivedInWorkflow: boolean;
+          sum: number;
+          stepInstance: string;
+        }>(answer.runId);
+        expect(read.returnValue).toMatchObject({
+          argRevivedInWorkflow: true,
+          argRevivedInStep: true,
+          resultRevivedInWorkflow: true,
+          sum: 7,
+        });
+        const ranHere = read.returnValue?.stepInstance === answer.instance;
+        if (mode === 'queued') expect(ranHere).toBe(false);
+        else if (expectInline) expect(ranHere).toBe(true);
+      }
+    );
+
     test(
       'resumeHook wakes the run in the calling route, once',
       { timeout: 240_000 },

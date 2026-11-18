@@ -93,6 +93,9 @@ function sortManifestEntries<T>(
   );
 }
 
+/** A workflow VM bundle's call of a step: `...WORKFLOW_USE_STEP")]("<id>")`. */
+const STEP_STUB_PATTERN = /WORKFLOW_USE_STEP"\)\]\("((?:[^"\\]|\\.)+)"\)/g;
+
 export type { DiscoveredEntries } from './fast-discovery.js';
 
 /**
@@ -1681,6 +1684,146 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         }
       }
     }
+  }
+
+  /**
+   * Per-workflow inline entries: for each workflow file, a module holding the
+   * workflow VM code of that file alone, registered for its workflows' queues
+   * (`workflowEntrypoint(code, { inlineWorkflowNames })`). A framework
+   * integration makes each workflow module import its entry lazily, so a
+   * route that starts or resumes a workflow carries only that workflow's code;
+   * its steps come from the route's own module graph.
+   *
+   * Writes `<outDir>/manifest.json`: `{ [realpath of source]: { entry,
+   * workflowIds, stepIds } }`. Returns the manifest.
+   */
+  protected async createInlineWorkflowEntries({
+    discoveredEntries,
+    outDir,
+    tsconfigPath,
+  }: {
+    discoveredEntries: DiscoveredEntries;
+    outDir: string;
+    tsconfigPath?: string;
+  }): Promise<
+    Record<string, { entry: string; workflowIds: string[]; stepIds: string[] }>
+  > {
+    const { createHash } = await import('node:crypto');
+    const { realpath, mkdir: mkdirp } = await import('node:fs/promises');
+    await mkdirp(outDir, { recursive: true });
+    const startedAt = Date.now();
+    const manifest: Record<
+      string,
+      { entry: string; workflowIds: string[]; stepIds: string[] }
+    > = {};
+    const optionsCode = (names: string[], stepIds: string[]) => {
+      const base = createWorkflowEntrypointOptionsCode({
+        basePath: this.config.basePath,
+      });
+      const field = `inlineWorkflowNames: ${JSON.stringify(names)}, inlineStepIds: ${JSON.stringify(stepIds)}`;
+      return base ? base.replace(/ }$/, `, ${field} }`) : `, { ${field} }`;
+    };
+    // The app's serde registrations (classes the VM revives) go in one shared
+    // prelude rather than in every entry: each entry evaluates it, in its own
+    // function scope, before its workflow code, so a Function holding several
+    // entries carries it once.
+    let hasPrelude = false;
+    if (discoveredEntries.discoveredSerdeFiles.size > 0) {
+      const preludeFile = join(outDir, '_serde-prelude.js');
+      const tmp = `${preludeFile}.__wf_tmp.js`;
+      const prelude = await this.createWorkflowsBundle({
+        inputFiles: [],
+        outfile: tmp,
+        bundleFinalOutput: false,
+        keepInterimBundleContext: false,
+        tsconfigPath,
+        discoveredEntries: {
+          ...discoveredEntries,
+          discoveredWorkflows: new Set(),
+        },
+      });
+      const { unlink } = await import('node:fs/promises');
+      await Promise.all(
+        [tmp, `${tmp}.debug.json`].map((f) => unlink(f).catch(() => {}))
+      );
+      if (prelude.interimBundleText) {
+        const escaped = prelude.interimBundleText.replace(/[\\`$]/g, '\\$&');
+        await this.writeGeneratedFile(
+          preludeFile,
+          `// biome-ignore-all lint: generated file
+/* eslint-disable */
+export const serdePrelude = \`(function () {\n${escaped}\n})();\n\`;
+`
+        );
+        hasPrelude = true;
+      }
+    }
+    for (const file of [...discoveredEntries.discoveredWorkflows].sort()) {
+      const real = await realpath(file).catch(() => file);
+      const slug = `${basename(file)
+        .replace(/\.[^.]+$/, '')
+        .replace(
+          /[^A-Za-z0-9_-]/g,
+          '_'
+        )}-${createHash('sha256').update(real).digest('hex').slice(0, 10)}`;
+      const outfile = join(outDir, `${slug}.js`);
+      const tmp = `${outfile}.__wf_tmp.js`;
+      const result = await this.createWorkflowsBundle({
+        inputFiles: [file],
+        outfile: tmp,
+        bundleFinalOutput: false,
+        keepInterimBundleContext: false,
+        tsconfigPath,
+        discoveredEntries: {
+          ...discoveredEntries,
+          discoveredWorkflows: new Set([file]),
+          // The app-wide serde registrations are in the shared prelude
+          // instead (see above), evaluated before this code.
+          discoveredSerdeFiles: new Set<string>(),
+        },
+      });
+      const { unlink } = await import('node:fs/promises');
+      await Promise.all(
+        [tmp, `${tmp}.debug.json`].map((f) => unlink(f).catch(() => {}))
+      );
+      const code = result.interimBundleText;
+      if (!code) continue;
+      const workflowIds = Object.values(result.manifest.workflows ?? {})
+        .flatMap((byName) => Object.values(byName ?? {}))
+        .map((w) => (w as { workflowId: string }).workflowId)
+        .filter(Boolean);
+      if (workflowIds.length === 0) continue;
+      // Every step the workflow code can call: its VM code calls a step
+      // only through this stub. The entry runs a run only where all of them
+      // are registered (`@workflow/core`'s `decideInline`).
+      const stepIds = [
+        ...new Set(
+          [...code.matchAll(STEP_STUB_PATTERN)].map((match) => match[1])
+        ),
+      ].sort();
+      const escaped = code.replace(/[\\`$]/g, '\\$&');
+      await this.writeGeneratedFile(
+        outfile,
+        `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import { workflowEntrypoint } from 'workflow/internal/inline-runtime';
+${hasPrelude ? "import { serdePrelude } from './_serde-prelude.js';\n" : ''}
+const workflowCode = ${hasPrelude ? 'serdePrelude + ' : ''}\`${escaped}\`;
+
+workflowEntrypoint(workflowCode${optionsCode(workflowIds, stepIds)});
+`
+      );
+      manifest[real] = { entry: outfile, workflowIds, stepIds };
+    }
+    await this.writeGeneratedFile(
+      join(outDir, 'manifest.json'),
+      JSON.stringify(manifest, null, 2)
+    );
+    this.logBaseBuilderInfo(
+      `Created ${Object.keys(manifest).length} inline workflow entries`,
+      `${Date.now() - startedAt}ms`
+    );
+    return manifest;
   }
 
   /**

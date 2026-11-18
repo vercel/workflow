@@ -942,7 +942,7 @@ export async function start<TArgs extends unknown[], TResult>(
       const inlineEntryLoadStartedAt = Date.now();
       const inlineEntryLoad =
         !startHook && inlineGateReason === undefined
-          ? loadInlineEntry()
+          ? loadInlineEntry(undefined, { queueName, workflowName })
           : undefined;
       if (!startHook) recordInlineGate(span, inlineGateReason);
       // A World that mints single-orchestrator runs must provide their fence,
@@ -1865,6 +1865,9 @@ export async function start<TArgs extends unknown[], TResult>(
                 queueName,
                 runId,
                 sameDeployment: !crossDeployment,
+                runSpecVersion: specVersion,
+                // The engine `start()` stamps on the run (unset: node:vm).
+                quickjs: workflowVm === 'quickjs',
                 // The inline handler drives the process's configured World.
                 unsupported:
                   dynamicWorkflow !== undefined ||

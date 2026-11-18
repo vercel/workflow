@@ -1,5 +1,7 @@
 import { start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
+import { InlinePoint } from '@/workflows/_inline_serde_point';
+import { inlineSerdeWorkflow } from '@/workflows/inline_serde';
 import {
   inlineHookWorkflow,
   inlineTimingWorkflow,
@@ -31,6 +33,8 @@ export async function POST(req: Request) {
     queued?: boolean;
     speculation?: boolean;
     specVersion?: number;
+    /** Start `inlineSerdeWorkflow` with an `InlinePoint(x, y)` instead. */
+    serde?: { x: number; y: number };
     hookToken?: string;
     skipRunCreated?: boolean;
   };
@@ -49,9 +53,15 @@ export async function POST(req: Request) {
   let runId: string;
   let startReturnedAt: number;
   try {
-    const run = body.hookToken
-      ? await start(inlineHookWorkflow, [body.hookToken], options)
-      : await start(inlineTimingWorkflow, [startCalledAt], options);
+    const run = body.serde
+      ? await start(
+          inlineSerdeWorkflow,
+          [new InlinePoint(body.serde.x, body.serde.y)],
+          options
+        )
+      : body.hookToken
+        ? await start(inlineHookWorkflow, [body.hookToken], options)
+        : await start(inlineTimingWorkflow, [startCalledAt], options);
     startReturnedAt = Date.now();
     runId = run.runId;
   } finally {
