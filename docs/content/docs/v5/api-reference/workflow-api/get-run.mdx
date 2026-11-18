@@ -208,9 +208,8 @@ import { getRun } from "workflow/api";
 
 export async function POST(req: Request) {
   const { runId } = await req.json();
-  const run = getRun(runId);
 
-  const result = await run.deleteData(); // [!code highlight]
+  const result = await getRun(runId).delete(); // [!code highlight]
   switch (result.outcome) {
     case "deleted":
     case "already_deleted":
@@ -231,7 +230,7 @@ export async function POST(req: Request) {
 }
 ```
 
-`deleteData()` never cancels a run: a run that hasn't finished answers `skipped` and keeps running. It runs as a step, so inside a workflow a retryable failure throws a `RetryableError` and the step retries. It throws if the configured World doesn't support deleting run data. To delete the data of many runs in one call, use [`deleteRuns()`](/docs/api-reference/workflow-api/delete-runs).
+`delete()` never cancels a run: a run that hasn't finished answers `skipped` and keeps running. It runs as a step, so inside a workflow a retryable failure throws a `RetryableError` and the step retries. It throws if the configured World doesn't support deleting run data. To delete the data of many runs in one call, use [`deleteRuns()`](/docs/api-reference/workflow-api/delete-runs).
 
 ## Related functions
 

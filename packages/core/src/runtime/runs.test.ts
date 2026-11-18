@@ -1369,7 +1369,7 @@ describe('deleteRuns', () => {
     expect((error as Error).message).toBe(
       'The configured World does not support deleting run data.'
     );
-    // Fatal, so `Run.deleteData()` (a step) fails at once instead of retrying.
+    // Fatal, so `Run.delete()` (a step) fails at once instead of retrying.
     expect(FatalError.is(error)).toBe(true);
   });
 
@@ -1453,7 +1453,7 @@ describe('deleteRuns', () => {
   });
 });
 
-describe('Run.deleteData', () => {
+describe('Run.delete', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
   });
@@ -1487,7 +1487,7 @@ describe('Run.deleteData', () => {
       },
     ]);
 
-    await expect(new Run('wrun_123').deleteData()).resolves.toEqual({
+    await expect(new Run('wrun_123').delete()).resolves.toEqual({
       runId: 'wrun_123',
       outcome: 'skipped',
       reason: 'run_not_terminal',
@@ -1498,12 +1498,12 @@ describe('Run.deleteData', () => {
 
   it('throws when the World answers no result, or one for another run', async () => {
     worldAnswering([]);
-    await expect(new Run('wrun_123').deleteData()).rejects.toThrow(
+    await expect(new Run('wrun_123').delete()).rejects.toThrow(
       /did not answer the deletion of the data of run wrun_123/
     );
 
     worldAnswering([{ runId: 'wrun_other', outcome: 'deleted' }]);
-    await expect(new Run('wrun_123').deleteData()).rejects.toThrow(
+    await expect(new Run('wrun_123').delete()).rejects.toThrow(
       /did not answer the deletion of the data of run wrun_123/
     );
   });

@@ -16,9 +16,9 @@ export default class Delete extends BaseCommand {
     'Delete the stored data of finished workflow runs (inputs, outputs, streams, and hook payloads). Metadata is not deleted: the runs, steps, events and hooks stay listed with their IDs, names, statuses, timestamps and attributes. This cannot be undone.';
 
   static examples = [
-    '$ workflow delete <run-id>',
-    '$ workflow delete <run-id> <run-id> <run-id>',
-    '$ workflow delete <run-id> -y --backend vercel',
+    '$ workflow delete <runId>',
+    '$ workflow delete <runId> <runId> <runId>',
+    '$ workflow delete <runId> -y --backend vercel',
     '$ cat run-ids.txt | workflow delete - -y --strict',
   ];
 

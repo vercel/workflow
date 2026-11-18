@@ -419,7 +419,7 @@ export class Run<TResult> {
    *   can succeed).
    * @throws if the configured World does not support deleting run data.
    */
-  async deleteData(): Promise<DeleteRunDataResult> {
+  async delete(): Promise<DeleteRunDataResult> {
     'use step';
     const { results } = await deleteRuns(await this.#lazyWorldPromise, [
       this.runId,

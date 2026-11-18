@@ -330,8 +330,8 @@ describe('cancelWorkflowRuns', () => {
 });
 
 describe('deleteWorkflowRunsData', () => {
-  // world-vercel's wire format names the outcomes `purged` and
-  // `already_purged`; the client translates them.
+  // world-vercel's wire format has its own names for the `deleted` and
+  // `already_deleted` outcomes; the client translates them.
   const emptyWireSummary = {
     requested: 0,
     purged: 0,
@@ -344,7 +344,7 @@ describe('deleteWorkflowRunsData', () => {
 
   const cbor = { headers: { 'content-type': 'application/cbor' } };
 
-  it('issues a single POST /v4/runs/purge and translates the outcomes', async () => {
+  it('issues a single POST with the run IDs and translates the outcomes', async () => {
     const agent = new MockAgent();
     agent.disableNetConnect();
 

@@ -10,16 +10,13 @@ related:
 
 Deletes the stored data of up to 100 finished runs: their inputs, outputs and errors, their steps' and events' payloads, their hook payloads, and their stream contents. Metadata is not deleted: the runs stay listed, and so do their steps, events and hooks, with their IDs, names, statuses, timestamps and attributes. Only the payloads go, reading back as expired. This cannot be undone. See [Data retention](/docs/observability/retention#deleting-a-finished-runs-data).
 
-For a single run, call [`run.deleteData()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data) instead.
+For a single run, call [`run.delete()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data) instead.
 
+{/* @skip-typecheck: abbreviated usage; the run IDs are the reader's own */}
 ```typescript lineNumbers
 import { deleteRuns } from "workflow/api";
 
-export async function POST(req: Request) {
-  const { runIds } = await req.json();
-  const { summary, results } = await deleteRuns(runIds); // [!code highlight]
-  return Response.json({ summary, results });
-}
+const { summary, results } = await deleteRuns([runIdA, runIdB]); // [!code highlight]
 ```
 
 `deleteRuns()` never cancels a run: a run that hasn't finished is answered `skipped` and keeps running. Cancel it first to delete its data now.

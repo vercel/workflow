@@ -18,7 +18,7 @@ import { deleteRuns as deleteRunsInWorld } from './runs.js';
  * step, retryable failures throw a `RetryableError` so the step retries;
  * outside a step they are returned for the caller to retry.
  *
- * For a single run, use `getRun(runId).deleteData()`.
+ * For a single run, use `getRun(runId).delete()`.
  *
  * @throws if `runIds` is empty, contains duplicates or more than 100 IDs, or
  *   if the configured World does not support deleting run data.

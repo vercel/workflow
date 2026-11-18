@@ -5,12 +5,13 @@
  *
  * The run's own payloads are dropped in the write that makes it terminal
  * (`withRunPayloadsPurged` in `events-storage.ts`); everything else it owns
- * (step payloads, event payloads, hook metadata, stream chunks, its VM
- * snapshot) is scrubbed or deleted by `purgeRunData` in the same
- * transaction, so a purged run is never
+ * (step payloads, event payloads, hook metadata, stream chunks) is scrubbed
+ * by `purgeRunData` in the same transaction, so a purged run is never
  * observable with any of its data left. The connection zeroes freed pages
  * (`secure_delete`), and the WAL, which still holds the old pages, is
  * checkpointed and truncated right after the purge commits.
+ *
+ * The run's VM snapshot, if it has one, is deleted in the same transaction.
  *
  * A step still running when the run finished (a `Promise.race` loser) may
  * settle after it, and a stream may first be written after it: those writes

@@ -590,9 +590,9 @@ export async function cancelWorkflowRuns(
 }
 
 /**
- * Wire response of world-vercel's run-data deletion endpoint, which names
- * the outcomes `purged` / `already_purged`. Translated to the SDK's
- * `deleted` / `already_deleted` by {@link deleteRunDataFromWire}.
+ * Wire response of world-vercel's run-data deletion endpoint, which has its
+ * own names for the `deleted` and `already_deleted` outcomes and their
+ * summary counts. Translated by {@link deleteRunDataFromWire}.
  */
 const DeleteRunsDataWireResultSchema = z.object({
   summary: z.object({

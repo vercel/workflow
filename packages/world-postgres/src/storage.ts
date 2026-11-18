@@ -995,9 +995,10 @@ export function createRunsStorage(
      * `Storage['runs'].deleteDataMany`.
      *
      * Each finished run is cleared exactly as a zero-retention run is when
-     * it finishes (see `purgeRunUserData`), in its own transaction. Reading
-     * the status first is race-free: a terminal run never leaves its
-     * terminal state, and a run read as unfinished is left untouched.
+     * it finishes, in its own transaction, which also deletes its VM
+     * snapshot. Reading the status first is race-free: a terminal run never
+     * leaves its terminal state, and a run read as unfinished is left
+     * untouched.
      */
     deleteDataMany: (async (request) => {
       const { runIds } = DeleteRunsDataRequestSchema.parse(request);
