@@ -2,10 +2,12 @@
  * Per-run encryption keys: HKDF-SHA256 over a Worker secret, with the run id
  * as context, the same construction `@workflow/world-vercel` uses with its
  * deployment key. Core encrypts run payloads with the key and, because a run
- * has one, also encrypts VM snapshots (it refuses to store them unencrypted).
+ * has one, also encrypts VM snapshots (and rejects a plaintext snapshot for it
+ * on restore).
  *
  * The secret is `WORKFLOW_ENCRYPTION_SECRET` (base64, 32 bytes). Without it
- * the World returns no key and data is stored unencrypted.
+ * the World returns no key and data, including VM snapshots, is stored
+ * unencrypted.
  */
 import type { WorkflowRun } from '@workflow/world';
 
