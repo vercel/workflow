@@ -125,6 +125,29 @@ const impureSerializerWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// An agent-style loop that hands a custom-serialized class instance (a model
+// wrapper) to a step every iteration (vercel/workflow#4316). The serializer is
+// pure, so every boundary must keep the retained VM.
+const classArgLoopWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_model_value");
+  class Value {
+    static classId = "test/RetainedSerializerValue";
+    static [Symbol.for("workflow-serialize")](instance) {
+      return { value: instance.value };
+    }
+    constructor(value) {
+      this.value = value;
+    }
+  }
+  async function workflow() {
+    let total = 0;
+    for (let i = 0; i < 5; i++) {
+      const model = new Value(i);
+      total += await s1(model, model, i);
+    }
+    return total;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 class RetainedSerializerValue {
   constructor(readonly value: number) {}
 
@@ -352,6 +375,14 @@ const manySerializationBlockersWorkflow = `const s1 = globalThis[Symbol.for("WOR
 registerStepFunction('r_s1', async () => 10);
 registerStepFunction('r_s2', async () => 20);
 registerStepFunction('r_echo', async (value) => value);
+registerStepFunction(
+  'r_model_value',
+  async (a: RetainedSerializerValue, b: RetainedSerializerValue, i: number) => {
+    // Both positions revive to one shared instance, as before the fix.
+    if (a !== b || a.value !== i) throw new Error('unexpected step input');
+    return a.value;
+  }
+);
 
 // A `hook.getConflict()` awaiter, whose whole continuation is the
 // `hook_created` the suspension commits. The step after it proves the
@@ -838,6 +869,21 @@ describe('retained VM through the inline replay loop', () => {
     expect(on.vmBuilds).toBeGreaterThan(1);
     expect(off.result).toBe(0);
     expect(on.result).toBe(0);
+    expect(on.durableLog).toEqual(off.durableLog);
+  });
+
+  it('retains the VM across steps that take a custom-serialized class instance (#4316)', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive('wrun_class_arg_loop', classArgLoopWorkflow);
+    createContextSpy.mockClear();
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive('wrun_class_arg_loop', classArgLoopWorkflow);
+    expect(off.result).toBe(10);
+    expect(on.result).toBe(10);
+    // One VM for all five boundaries, not one full replay per iteration.
+    expect(on.vmBuilds).toBe(1);
+    expect(on.output).toEqual(off.output);
     expect(on.durableLog).toEqual(off.durableLog);
   });
 
