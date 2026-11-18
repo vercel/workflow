@@ -417,7 +417,14 @@ export function RunDetailView({
   const showUsage = usageVisible(runUsage, isLocalBackend);
   // The Usage page (`/run/:runId/usage`) is this route's child: it renders
   // in place of the tabs, under the same header.
-  const usageContext: RunUsageOutletContext = { runId, usage: runUsageState };
+  const isVercelBackend =
+    serverConfig.backendId === 'vercel' ||
+    serverConfig.backendId === '@workflow/world-vercel';
+  const usageContext: RunUsageOutletContext = {
+    runId,
+    usage: runUsageState,
+    isVercelBackend,
+  };
   const usagePage = useOutlet(usageContext);
 
   // Fetch streams for this run

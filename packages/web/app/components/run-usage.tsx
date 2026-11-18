@@ -648,7 +648,15 @@ export function RunUsagePageSkeleton() {
   );
 }
 
-function UsageFooter({ usage }: { usage: RunUsage }) {
+/** Pricing is linked only where runs are billed (the Vercel backend). */
+function UsageFooter({
+  usage,
+  isVercelBackend,
+}: {
+  usage: RunUsage;
+  isVercelBackend: boolean;
+}) {
+  const showPricing = usage.billed || isVercelBackend;
   return (
     <footer className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 text-copy-13 text-gray-900">
       <span data-testid="run-usage-footer">
@@ -669,14 +677,16 @@ function UsageFooter({ usage }: { usage: RunUsage }) {
         >
           How events are counted
         </a>
-        <a
-          href={WORKFLOW_PRICING_DOCS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="-my-[3px] inline-block rounded-sm py-[3px] text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
-        >
-          Workflow pricing
-        </a>
+        {showPricing && (
+          <a
+            href={WORKFLOW_PRICING_DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="-my-[3px] inline-block rounded-sm py-[3px] text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
+          >
+            Workflow pricing
+          </a>
+        )}
       </span>
     </footer>
   );
@@ -692,6 +702,7 @@ export function RunUsagePage({
   error,
   onRetry,
   retrying = false,
+  isVercelBackend = false,
 }: {
   runId: string;
   /** `undefined` until the first read; `null` when the World has no usage. */
@@ -700,6 +711,8 @@ export function RunUsagePage({
   /** Reads the usage again: a finished run does not poll. */
   onRetry?: () => void;
   retrying?: boolean;
+  /** The backend is Vercel, where runs are billed: link the pricing. */
+  isVercelBackend?: boolean;
 }) {
   if (usage === null) {
     return (
@@ -767,7 +780,7 @@ export function RunUsagePage({
         }
         data={<DataWrittenTable usage={usage} />}
       />
-      <UsageFooter usage={usage} />
+      <UsageFooter usage={usage} isVercelBackend={isVercelBackend} />
     </div>
   );
 }

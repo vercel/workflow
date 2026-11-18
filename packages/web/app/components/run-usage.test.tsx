@@ -482,10 +482,39 @@ describe('RunUsagePage', () => {
     );
   });
 
-  it('says local runs are not billed, and links to pricing', () => {
+  it('says local runs are not billed, and leaves out pricing locally', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-footer').textContent).toBe(
       "Local runs aren't billed. Counted from this run's log in your local data directory."
+    );
+    expect(screen.queryByRole('link', { name: 'Workflow pricing' })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(WORKFLOW_PRICING_DOCS_URL);
+    expect(
+      screen.getByRole('link', { name: 'How events are counted' })
+    ).toBeTruthy();
+  });
+
+  it('links pricing on the Vercel backend, and on a billed run', () => {
+    const { unmount } = render(
+      <RunUsagePage
+        runId="wrun_1"
+        usage={bigRun()}
+        error={null}
+        isVercelBackend
+      />
+    );
+    expect(
+      screen
+        .getByRole('link', { name: 'Workflow pricing' })
+        .getAttribute('href')
+    ).toBe(WORKFLOW_PRICING_DOCS_URL);
+    unmount();
+    render(
+      <RunUsagePage
+        runId="wrun_1"
+        usage={bigRun({ billed: true })}
+        error={null}
+      />
     );
     expect(
       screen
