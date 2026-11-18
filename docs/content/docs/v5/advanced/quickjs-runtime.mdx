@@ -25,7 +25,11 @@ Set `WORKFLOW_VM=quickjs` in the environment that starts runs, which is the proc
 WORKFLOW_VM=quickjs
 ```
 
-Snapshotting is on by default under QuickJS, with a threshold of 1,000 events. Set [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) to change it.
+Snapshotting is on by default under QuickJS, so that is the only variable you need. See [Tuning](#tuning) to change how often a run snapshots.
+
+<Callout type="info">
+The exemption from the per-run event limit needs `workflow` 5.2.3 or later. Earlier versions snapshot the same way, but only record the snapshot policy on the run when you also set `WORKFLOW_SNAPSHOT_THRESHOLD`.
+</Callout>
 
 Only runs started after the change use the QuickJS runtime. A run keeps the VM and snapshot policy it started with, so runs already in progress are not changed, and a run that already failed is not revived. Start it again.
 
@@ -33,13 +37,13 @@ The setting applies to every workflow the process starts.
 
 ### World support
 
-A snapshot holds your workflow's in-memory state, so by default it is only saved for runs that have an encryption key. What that means depends on your World:
+Snapshots are stored by your World, next to the run's event log:
 
-| World | Snapshots saved | Notes |
+| World | Snapshots | Notes |
 | --- | --- | --- |
-| Vercel World | By default | Runs have an encryption key, and snapshots are encrypted with it. |
-| Local World, Postgres World | Only with [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted) | Set it on the workflow handler. Snapshots are stored in plaintext, so enable it only where snapshot storage is as trusted as your deployment. |
-| Other Worlds | If the World implements snapshot storage | Without it, runs still execute on QuickJS and replay the full log on every resume. |
+| Vercel World | Encrypted | Each run has an encryption key, and its snapshots are encrypted and authenticated with it. |
+| Local World, Postgres World | Plaintext | Runs have no encryption key, so snapshots are stored the same way as the event log and payloads. Protect snapshot storage like the rest of the World's storage. |
+| Other Worlds | Depends on the World | A World that implements snapshot storage snapshots by default, encrypted when it provides a run encryption key. Without snapshot storage, runs still execute on QuickJS and replay the full log on every resume. |
 
 The exemption from the per-run event limit applies on the Local World and the Vercel World.
 
@@ -57,23 +61,26 @@ QuickJS does not provide a few globals inside workflow functions. If your workfl
 
 ## Tuning
 
-`WORKFLOW_SNAPSHOT_THRESHOLD` is the number of events a run processes between snapshots. The default is `1000`. A restore costs about the same at any log length, and it starts to beat a full replay at a few hundred events, so lower the threshold only for workflows you know are long. `0` turns snapshotting off, and those runs keep the event limit.
+[`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) is the number of events a run processes between snapshots. You don't need to set it.
+
+| Value | Behavior |
+| --- | --- |
+| Unset | Uses the default, `1000`. |
+| A positive integer | Snapshots at a suspension once the run has processed that many events since the last snapshot. `1` snapshots at every qualifying suspension. |
+| `0` | Turns snapshotting off. Those runs replay the full log and keep the event limit. |
+
+Any other value, such as a negative number or a decimal, is rejected by `start()`.
+
+A restore costs about the same at any log length, and it starts to beat a full replay at a few hundred events. Lower the threshold only for workflows you know are long: very low values mostly add snapshot saves to runs that replay quickly anyway.
 
 A snapshot is an optimization, not a source of truth. The event log stays authoritative, and a missing or incompatible snapshot falls back to a full replay.
 
 ## On Vercel
 
-Add the variables to your project's environment variables, then redeploy:
+Add `WORKFLOW_VM=quickjs` to your project's environment variables, then redeploy. You can add it in two ways:
 
-```bash
-WORKFLOW_VM=quickjs
-WORKFLOW_SNAPSHOT_THRESHOLD=1000
-```
-
-You can add them in two ways:
-
-- **From a run.** When a run fails at the event limit, times out while replaying, or passes 20,000 events, its page in the Workflows observability tab shows an **Optimize Long Runs** button. It adds both variables to Production and prompts you to redeploy.
-- **From project settings.** Open **Settings**, then **Environment Variables**, add both variables, and redeploy.
+- **From a run.** When a run fails at the event limit, times out while replaying, or passes 20,000 events, its page in the Workflows observability tab shows an **Optimize Long Runs** button. It adds the variable to Production and prompts you to redeploy.
+- **From project settings.** Open **Settings**, then **Environment Variables**, add the variable, and redeploy.
 
 Runs on Vercel keep executing on the deployment they started on, so the redeploy does not affect runs in progress.
 
