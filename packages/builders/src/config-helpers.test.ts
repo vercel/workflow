@@ -53,6 +53,12 @@ describe('getDecoratorOptionsFromTsConfig', () => {
     emitDecoratorMetadata: true,
   };
 
+  it('keeps decorators off when no config was found', async () => {
+    await expect(getDecoratorOptionsFromTsConfig(undefined)).resolves.toEqual(
+      disabled
+    );
+  });
+
   it('reads options declared in the tsconfig itself', async () => {
     const dir = makeProject({
       'tsconfig.json': { compilerOptions: decoratorOptions },
