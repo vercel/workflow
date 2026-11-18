@@ -12,12 +12,17 @@ import {
 /** How long typing has to pause before an exact-ID lookup is sent. */
 const EXACT_SEARCH_DEBOUNCE_MS = 300;
 
-/** A settled exact-ID lookup, for the query it answered. */
-type ExactSearchOutcome = { query: string } & (
+type ExactSearchAnswer =
   | { status: 'ok'; events: Event[]; truncated: boolean }
   | { status: 'not_found' }
-  | { status: 'error'; message: string }
-);
+  | { status: 'error'; message?: string };
+
+/** A settled exact-ID lookup, for the query and attempt it answered. */
+type ExactSearchOutcome = {
+  query: string;
+  attempt: number;
+  answer: ExactSearchAnswer;
+};
 
 export type ExactSearchHandler = (
   id: string,
@@ -28,7 +33,8 @@ export type ExactSearchHandler = (
 /**
  * The Events tab search box. The input text is the only thing typed; the
  * search state is derived from it plus the latest settled exact-ID lookup, so
- * a lookup that answered an older query is never shown for the current one.
+ * a lookup that answered an older query or attempt is never shown for the
+ * current one.
  */
 export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
   query: string;
@@ -43,14 +49,13 @@ export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
   const trimmed = query.trim();
   const parsed = useMemo(() => parseExactWorkflowSearchId(trimmed), [trimmed]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a retry repeats the lookup
   useEffect(() => {
     if (!parsed || !onExactIdSearch) return;
 
     // Aborted when the query changes, so a superseded lookup never settles.
     const abortController = new AbortController();
     const timer = setTimeout(async () => {
-      let next: ExactSearchOutcome;
+      let answer: ExactSearchAnswer;
       try {
         const result = await onExactIdSearch(
           parsed.id,
@@ -58,28 +63,25 @@ export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
           abortController.signal
         );
         if (result.status === 'error') {
-          next = { query: trimmed, status: 'error', message: result.message };
+          answer = result;
         } else if (
           result.status === 'not_found' ||
           result.events.length === 0
         ) {
-          next = { query: trimmed, status: 'not_found' };
+          answer = { status: 'not_found' };
         } else {
-          next = {
-            query: trimmed,
+          answer = {
             status: 'ok',
             events: result.events,
             truncated: Boolean(result.truncated),
           };
         }
       } catch {
-        next = {
-          query: trimmed,
-          status: 'error',
-          message: 'Something went wrong.',
-        };
+        answer = { status: 'error' };
       }
-      if (!abortController.signal.aborted) setOutcome(next);
+      if (!abortController.signal.aborted) {
+        setOutcome({ query: trimmed, attempt, answer });
+      }
     }, EXACT_SEARCH_DEBOUNCE_MS);
 
     return () => {
@@ -99,11 +101,11 @@ export function useEventSearch(onExactIdSearch?: ExactSearchHandler): {
       return { status: 'incomplete', query: trimmed };
     }
     if (!onExactIdSearch) return { status: 'unavailable', query: trimmed };
-    if (outcome?.query !== trimmed) {
+    if (outcome?.query !== trimmed || outcome.attempt !== attempt) {
       return { status: 'loading', query: trimmed, id: parsed };
     }
-    return { ...outcome, id: parsed };
-  }, [trimmed, parsed, onExactIdSearch, outcome]);
+    return { ...outcome.answer, query: trimmed, id: parsed };
+  }, [trimmed, parsed, onExactIdSearch, outcome, attempt]);
 
   return { query, setQuery, search, retry };
 }

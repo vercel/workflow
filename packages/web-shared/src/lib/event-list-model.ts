@@ -609,7 +609,7 @@ export type EventSearchState =
       status: 'error';
       query: string;
       id: ExactWorkflowSearchId;
-      message: string;
+      message?: string;
     };
 
 const NO_EVENTS: Event[] = [];
@@ -648,12 +648,9 @@ function countEvents(n: number): string {
 
 /** Shown in place of the list when it has no rows. */
 export function getEmptyMessage(search: EventSearchState): string {
-  switch (search.status) {
-    case 'not_found':
-      return `No events found for ${search.query}`;
-    default:
-      return 'No events found';
-  }
+  return search.status === 'not_found'
+    ? `No events found for ${search.query}`
+    : 'No events found';
 }
 
 /** Shown under the search box while the query cannot be looked up. */
@@ -662,7 +659,7 @@ export function getSearchHint(search: EventSearchState): string | null {
     case 'incomplete':
       return 'Enter a full step, wait, hook, or event ID to search';
     case 'unavailable':
-      return 'Search is unavailable in this view';
+      return 'Search isn’t available in this view';
     default:
       return null;
   }

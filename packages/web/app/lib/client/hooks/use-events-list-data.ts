@@ -8,6 +8,7 @@ import { hydrateResourceIOAsync } from '@workflow/web-shared';
 import type { Event } from '@workflow/world';
 import { useCallback, useRef } from 'react';
 import {
+  getErrorMessage,
   unwrapOrThrow,
   unwrapServerActionResult,
   type WorkflowWebAPIError,
@@ -37,7 +38,7 @@ const getEventId = (event: Event) => event.eventId;
 function toSearchFailure(error: WorkflowWebAPIError): ExactIdSearchResult {
   return error.request?.status === 404
     ? { status: 'not_found' }
-    : { status: 'error', message: error.message };
+    : { status: 'error', message: getErrorMessage(error) };
 }
 
 /**
@@ -101,12 +102,11 @@ export function useEventsListData(
         const { error: fetchError, result } = await unwrapServerActionResult(
           fetchEvent(env, runId, id, 'none')
         );
-        if (fetchError || signal?.aborted) {
-          return fetchError
-            ? toSearchFailure(fetchError)
-            : (() => {
-                throw new DOMException('Aborted', 'AbortError');
-              })();
+        if (fetchError) {
+          return toSearchFailure(fetchError);
+        }
+        if (signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
         }
         const [event] = await hydrateEvents([result]);
         return event?.runId === runId

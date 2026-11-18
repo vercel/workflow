@@ -1,7 +1,7 @@
 'use client';
 
 import { Info } from 'lucide-react';
-import { useEffect, useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { SearchInput } from '../ui/search-input';
 
 /** How long typing has to pause before the hint shows. */
@@ -18,16 +18,18 @@ export function EventListToolbar({
   onQueryChange: (query: string) => void;
 }) {
   const hintId = useId();
-  const [shownHint, setShownHint] = useState<string | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each keystroke restarts the wait
-  useEffect(() => {
-    if (!hint) {
-      setShownHint(null);
-      return;
-    }
-    const timer = setTimeout(() => setShownHint(hint), HINT_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [hint, query]);
+  const [paused, setPaused] = useState(false);
+  const pauseTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const handleQueryChange = (next: string) => {
+    // With no hint showing, the next one waits for typing to pause.
+    if (!hint) setPaused(false);
+    clearTimeout(pauseTimer.current);
+    pauseTimer.current = setTimeout(() => setPaused(true), HINT_DELAY_MS);
+    onQueryChange(next);
+  };
+
+  const shownHint = paused ? hint : null;
   return (
     <div className="shrink-0">
       <SearchInput
@@ -36,7 +38,7 @@ export function EventListToolbar({
         placeholder="Search by step ID, wait ID, hook ID, or event ID…"
         aria-describedby={hintId}
         value={query}
-        onValueChange={onQueryChange}
+        onValueChange={handleQueryChange}
         className="pl-[34px]"
       />
       <div id={hintId} aria-live="polite">

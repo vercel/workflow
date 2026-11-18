@@ -82,9 +82,11 @@ function EmptyState({
         <div className="flex flex-col items-center gap-1">
           <div className="flex items-center gap-2 text-label-14 font-medium text-gray-1000">
             <AlertCircle className="h-4 w-4 shrink-0 text-red-800" />
-            Couldn’t search events
+            Failed to search events
           </div>
-          <p className="m-0 text-copy-13 text-gray-900">{search.message}</p>
+          {search.message ? (
+            <p className="m-0 text-copy-13 text-gray-900">{search.message}</p>
+          ) : null}
         </div>
         <Button variant="secondary" size="small" onClick={onRetry}>
           Try again
