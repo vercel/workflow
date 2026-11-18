@@ -5,7 +5,6 @@ import { useContext } from 'react';
 import { CopyButton } from '../trace-viewer/components/copy-button';
 import { Button } from '../ui/button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
-import { Spinner } from '../ui/spinner';
 
 const encryptedPlaceholderPreview = `{
   "input": "[encrypted]",
@@ -27,18 +26,15 @@ export function EncryptedDataBlock() {
         {ctx ? (
           <Button
             onClick={ctx.onDecrypt}
-            disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
+            loading={ctx.isDecrypting}
+            disabled={ctx.isDecryptDisabled}
             title={
               ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined
             }
-            size="tiny"
+            size="small"
+            prefix={<Lock />}
           >
-            {ctx.isDecrypting ? (
-              <Spinner size={10} />
-            ) : (
-              <Lock className="h-3 w-3" />
-            )}
-            <span>Decrypt</span>
+            Decrypt
           </Button>
         ) : (
           <span className="inline-flex items-center gap-1 rounded border border-gray-alpha-400 bg-gray-100 px-1.5 py-0.5 text-button-12 font-medium text-gray-700">
@@ -56,12 +52,19 @@ export const serializeForClipboard = (value: unknown): string => {
   if (
     typeof value === 'number' ||
     typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
     value === null
   ) {
     return String(value);
   }
   try {
-    return JSON.stringify(value, null, 2);
+    // Hydrated payloads can contain BigInt values, which JSON.stringify rejects.
+    // Write them as decimal strings, matching the CLI's `stringifyJSON`.
+    return JSON.stringify(
+      value,
+      (_key, v) => (typeof v === 'bigint' ? v.toString() : v),
+      2
+    );
   } catch {
     return String(value);
   }

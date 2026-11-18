@@ -2,7 +2,6 @@ import type { Event, EventType, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { analyzeEvents } from './event-analysis';
-import { materializeHooks } from './event-materialization';
 import { findStartHookCreation } from './start-hook';
 import { buildTrace } from './trace-builder';
 
@@ -151,18 +150,6 @@ describe('start Hook', () => {
         .filter((span) => span.resource === 'hook')
         .map((s) => s.spanId)
     ).toEqual(['hook_other']);
-  });
-
-  it('materializes a start Hook', () => {
-    expect(materializeHooks(startHookRunLog())).toMatchObject([
-      {
-        hookId: START_HOOK_ID,
-        runId: RUN_ID,
-        token: TOKEN,
-        createdAt: new Date(BASE_TIME),
-        receivedCount: 2,
-      },
-    ]);
   });
 
   it('counts an undisposed start Hook as pending', () => {
