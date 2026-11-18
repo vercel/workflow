@@ -191,6 +191,7 @@ import {
 import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
+  getOrchestratorRateWaitMs,
   LingerTimes,
   LiveLogFeed,
   lingerKindOf,
@@ -3402,6 +3403,52 @@ async function runDelivery(
       return false;
     };
 
+    /**
+     * Waits in this delivery for the slot of the nearest rate limit call
+     * that is due within `getOrchestratorRateWaitMs` and before the inline
+     * deadline, so the call goes ahead at its slot instead of a queue delay
+     * later. Its timer is sent first: if this process dies while it waits,
+     * the queue still wakes the run, and a timer that arrives after the call
+     * went ahead finds it acquired and arms nothing. Resolves `true` once it
+     * waited, so the caller runs another pass, which completes the call.
+     */
+    const waitForNearRateSlot = async (): Promise<boolean> => {
+      if (!log) return false;
+      const windowMs = getOrchestratorRateWaitMs();
+      if (windowMs <= 0) return false;
+      const now = Date.now();
+      const latestMs = Math.min(
+        now + windowMs,
+        inlineDeadlineMs - inlineMarginMs
+      );
+      const slots = openWaits(log.events)
+        .filter(
+          (wait) =>
+            wait.kind === 'rate' &&
+            wait.resumeAtMs > now &&
+            wait.resumeAtMs + RATE_SLOT_MARGIN_MS <= latestMs
+        )
+        .map((wait) => wait.resumeAtMs);
+      if (slots.length === 0) return false;
+      const untilMs = Math.min(...slots) + RATE_SLOT_MARGIN_MS;
+      await armNearDueTimers(log.events);
+      await armTimers(log.events);
+      runtimeLogger.debug('Waiting in process for a rate limit slot', {
+        workflowRunId: runId,
+        waitMs: untilMs - now,
+      });
+      // Waiting is not replay work.
+      replayBudget.pause();
+      try {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, Math.max(0, untilMs - Date.now()))
+        );
+      } finally {
+        replayBudget.resume();
+      }
+      return true;
+    };
+
     /** Throws `MaxEventsExceededError` for a log at the run's ceiling. */
     const enforceEventLimit = (events: readonly Event[]): void => {
       if (maxEventsLimit === undefined) return;
@@ -4555,6 +4602,11 @@ async function runDelivery(
       ) {
         return { type: 'continue', retainSession: false };
       }
+      // A rate limit slot due in a moment is waited for here
+      // rather than a whole-second queue delay later.
+      if (await waitForNearRateSlot()) {
+        return { type: 'continue', retainSession: retain };
+      }
       // Stay warm for what the run waits on instead of
       // leaving it to a queued wake.
       if (await lingerForExternalWork(suspension.observedHookIds)) {
@@ -5477,6 +5529,14 @@ async function runDelivery(
 }
 
 /** The spec 9 orchestrator, for the shared entrypoint. */
+/**
+ * How long past a rate limit call's slot an in-process wait ends
+ * (`waitForNearRateSlot`): a World whose clock is a few milliseconds behind
+ * this one refuses a `rate_acquired` at the slot itself as too early, and
+ * that costs a whole-second queue timer.
+ */
+const RATE_SLOT_MARGIN_MS = 50;
+
 export const spec9Orchestrator: Orchestrator = {
   // A step message is exempt from failing the run: it is retried in place
   // for its whole life (each userland retry is a redelivery), so its
