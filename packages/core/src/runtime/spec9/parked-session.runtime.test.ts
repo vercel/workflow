@@ -11,6 +11,7 @@ import {
   runResult,
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
+import { wakeUpRun } from '../runs.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -216,5 +217,153 @@ describe('a session parked across deliveries', () => {
 
     expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
     expect(echoes).toBe(3);
+  });
+});
+
+describe('deliveries that bypass or drop a parked VM', () => {
+  it('does a full load on a wakeUp() delivery instead of resuming the parked VM', async () => {
+    const workflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+      const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_echo");
+      async function workflow() {
+        const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+        const wait = sleep("1h");
+        const replies = [];
+        for await (const payload of hook) {
+          replies.push(await echo(payload));
+          if (replies.length === 3) break;
+        }
+        await wait;
+        return replies;
+      }${registerWorkflow()}`;
+    const { world, runId, start } = await setupOrchestratorRun(workflow, []);
+    await world.deliver(start);
+    expect(eventsOf(world, 'wait_created')).toHaveLength(1);
+    const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
+
+    expect(await wakeUpRun(world.asWorld(), runId)).toEqual({
+      stoppedCount: 1,
+    });
+    const wake = world.held.find(
+      (held) => (held.message as { completeWaits?: string[] }).completeWaits
+    );
+    expect(wake).toBeDefined();
+    await world.deliver(wake!);
+    const wakeLoads = fullLoadsOf(world);
+    const wakeReplays = coldReplays.count;
+    expect(wakeLoads).toBeGreaterThan(loads);
+    expect(wakeReplays).toBeGreaterThan(replays);
+
+    for (const payload of ['a', 'b', 'c']) await send(world, runId, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+    expect(fullLoadsOf(world)).toBe(wakeLoads);
+    expect(coldReplays.count).toBe(wakeReplays);
+  });
+
+  it('resumes over a hook_received for a disposed hook and ignores it', async () => {
+    const workflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_echo");
+      async function workflow() {
+        const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+        const disposed = createHook({ token: "ps-disposed" });
+        disposed.dispose();
+        const replies = [];
+        for await (const payload of hook) {
+          replies.push(await echo(payload));
+          if (replies.length === 3) break;
+        }
+        return replies;
+      }${registerWorkflow()}`;
+    const { world, runId, start } = await setupOrchestratorRun(workflow, []);
+    await world.deliver(start);
+    expect(eventsOf(world, 'hook_disposed')).toHaveLength(1);
+    const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      runId,
+      correlationId: eventsOf(world, 'hook_disposed')[0]?.correlationId,
+      eventData: {
+        token: 'ps-disposed',
+        payload: await dehydrateStepReturnValue('ignored', runId, undefined),
+      },
+    } as unknown as Partial<Event>);
+    await world.deliver(world.enqueue(ORCHESTRATOR_QUEUE, { runId }));
+    expect(echoes).toBe(0);
+    expect(fullLoadsOf(world)).toBe(loads);
+    expect(coldReplays.count).toBe(replays);
+
+    for (const payload of ['a', 'b', 'c']) await send(world, runId, payload);
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+    expect(fullLoadsOf(world)).toBe(loads);
+    expect(coldReplays.count).toBe(replays);
+  });
+
+  it('does not execute a pending hook payload when a parked run is cancelled', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
+    world.appendOutOfBand({
+      eventType: 'run_cancelled',
+      runId,
+    } as Partial<Event>);
+
+    await send(world, runId, 'cancelled');
+
+    expect(eventsOf(world, 'run_cancelled')).toHaveLength(1);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(0);
+    expect(await runResult(world)).toBeUndefined();
+    expect(echoes).toBe(0);
+    expect(fullLoadsOf(world)).toBe(loads);
+    expect(coldReplays.count).toBe(replays);
+  });
+
+  it('cold replays every follow-up when the parked VM budget is disabled', async () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', '0');
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
+    for (const payload of ['a', 'b', 'c']) await send(world, runId, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+    expect(fullLoadsOf(world)).toBe(loads + 3);
+    expect(coldReplays.count).toBe(replays + 3);
+  });
+
+  it('cold replays when a payload makes the parked VM exceed half the byte budget', async () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', String(600 * 1024));
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    const payload = 'x'.repeat(200 * 1024);
+    await send(world, runId, payload);
+    const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
+    await send(world, runId, 'b');
+    await send(world, runId, 'c');
+
+    expect(await runResult(world)).toEqual([
+      `echo:${payload}`,
+      'echo:b',
+      'echo:c',
+    ]);
+    expect(echoes).toBe(3);
+    expect(fullLoadsOf(world)).toBe(loads + 2);
+    expect(coldReplays.count).toBe(replays + 2);
   });
 });

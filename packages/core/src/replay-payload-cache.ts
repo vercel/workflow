@@ -40,7 +40,9 @@ function isMemoizablePrimitive(value: unknown): boolean {
  *
  * Successful prepared plaintext and memoized primitive step results remain
  * resident for the invocation lifetime. Their memory never crosses workflow
- * runs or queue deliveries.
+ * runs. It crosses a run's queue deliveries only with a VM parked between
+ * them (`runtime/spec9/parked-session.ts`), whose state containers live
+ * here, and within that entry's byte budget.
  */
 export class ReplayPayloadCache {
   /** frozen state versions and sources this invocation's replay has seen. */

@@ -1,6 +1,7 @@
 import type { Event, World } from '@workflow/world';
 import type { ReplayPayloadCache } from '../../replay-payload-cache.js';
 import type { WorkflowSession } from '../../workflow.js';
+import { getParkedVmMaxBytes } from '../constants.js';
 
 /**
  * A node:vm session a delivery left suspended cleanly, kept so the run's
@@ -36,24 +37,79 @@ export interface ParkedSession {
   readonly replayPayloadCache: ReplayPayloadCache;
 }
 
-interface Entry extends ParkedSession {
+/** A parked session as a delivery takes it. */
+export interface TakenParkedSession extends ParkedSession {
   readonly parkedAtMs: number;
+}
+
+interface Entry extends TakenParkedSession {
+  /** {@link estimateParkedBytes} of `events`. */
+  readonly bytes: number;
 }
 
 interface ParkedSessions {
   /** In park order, so the oldest entry is first. */
   readonly entries: Map<string, Entry>;
+  /** The sum of the entries' `bytes`. */
+  bytes: number;
   /** Drops expired entries once the oldest expires, while any are kept. */
   sweep?: ReturnType<typeof setTimeout>;
 }
 
 /**
  * Each entry holds a live VM and the run's decoded log, so few are kept and
- * not for long. A delivery that finds none, or a stale one, only pays today's
- * full load and replay.
+ * not for long, and their estimated size stays within
+ * `WORKFLOW_PARKED_VM_MAX_BYTES`. A delivery that finds none, or a stale one,
+ * only pays today's full load and replay.
  */
 const MAX_ENTRIES = 64;
 const MAX_AGE_MS = 10 * 60_000;
+
+/**
+ * What an entry holds besides its events' payloads: the VM's context and the
+ * workflow bundle's module state, measured at about 0.25 MB.
+ */
+const ENTRY_BASE_BYTES = 256 * 1024;
+/**
+ * An entry holds each payload byte about three times: in the log's encoded
+ * events, decrypted in the payload cache, and hydrated in the VM's state.
+ * Measured at 2.8 times for a chat-style hook loop.
+ */
+const BYTES_PER_PAYLOAD_BYTE = 3;
+
+/**
+ * Estimates the memory a parked session over `events` holds. A run's history
+ * lives in its events' serialized fields, so their sizes track it.
+ */
+export function estimateParkedBytes(events: readonly Event[]): number {
+  let payloadBytes = 0;
+  for (const event of events) {
+    const data = (event as { eventData?: unknown }).eventData;
+    if (typeof data !== 'object' || data === null) continue;
+    for (const value of Object.values(data)) {
+      if (ArrayBuffer.isView(value)) payloadBytes += value.byteLength;
+    }
+  }
+  return ENTRY_BASE_BYTES + BYTES_PER_PAYLOAD_BYTE * payloadBytes;
+}
+
+/** Why {@link parkSession} kept no entry. */
+export type ParkSkipReason =
+  /** `WORKFLOW_PARKED_VM_MAX_BYTES=0`. */
+  | 'disabled'
+  /** The entry alone would take more than half the budget. */
+  | 'too_large'
+  /** The run already has an entry parked that is further along. */
+  | 'newer_parked';
+
+export type ParkResult =
+  | {
+      parked: true;
+      bytes: number;
+      /** Entries dropped to make room for this one, by count or budget. */
+      evicted: number;
+    }
+  | { parked: false; bytes: number; reason: ParkSkipReason };
 
 // Held per World instance: a session is only valid against the log of the
 // World it was read from.
@@ -64,16 +120,24 @@ const sessionsByWorld = new WeakMap<object, ParkedSessions>();
 function sessionsFor(world: object): ParkedSessions {
   let sessions = sessionsByWorld.get(world);
   if (!sessions) {
-    sessions = { entries: new Map() };
+    sessions = { entries: new Map(), bytes: 0 };
     sessionsByWorld.set(world, sessions);
   }
   return sessions;
 }
 
+function drop(sessions: ParkedSessions, runId: string): Entry | undefined {
+  const entry = sessions.entries.get(runId);
+  if (!entry) return undefined;
+  sessions.entries.delete(runId);
+  sessions.bytes -= entry.bytes;
+  return entry;
+}
+
 function dropExpired(sessions: ParkedSessions, nowMs: number): void {
   for (const [runId, entry] of sessions.entries) {
     if (nowMs - entry.parkedAtMs <= MAX_AGE_MS) break;
-    sessions.entries.delete(runId);
+    drop(sessions, runId);
   }
 }
 
@@ -96,29 +160,46 @@ function scheduleSweep(sessions: ParkedSessions): void {
 }
 
 /**
- * Parks the run's session, unless the run already has one parked that is
- * further along: two deliveries of a run in this process can finish in
- * either order (a no-op wake puts back the entry it took after a delivery
- * that started later parked a newer one), and the older VM would resume
- * from an older cursor.
+ * Parks the run's session, unless it would take more than half the budget or
+ * the run already has one parked that is further along: two deliveries of a
+ * run in this process can finish in either order (a no-op wake puts back the
+ * entry it took after a delivery that started later parked a newer one), and
+ * the older VM would resume from an older cursor. Evicts the oldest entries
+ * to stay within the entry count and the byte budget.
  */
 export function parkSession(
   world: World,
   runId: string,
   parked: ParkedSession,
   nowMs = Date.now()
-): void {
+): ParkResult {
+  const bytes = estimateParkedBytes(parked.events);
+  const budget = getParkedVmMaxBytes();
+  if (budget === 0) return { parked: false, bytes, reason: 'disabled' };
   const sessions = sessionsFor(world);
   dropExpired(sessions, nowMs);
   const current = sessions.entries.get(runId);
-  if (current && current.tailSlot > parked.tailSlot) return;
-  sessions.entries.delete(runId);
-  sessions.entries.set(runId, { ...parked, parkedAtMs: nowMs });
-  if (sessions.entries.size > MAX_ENTRIES) {
-    const oldest = sessions.entries.keys().next().value;
-    if (oldest !== undefined) sessions.entries.delete(oldest);
+  if (current && current.tailSlot > parked.tailSlot) {
+    return { parked: false, bytes, reason: 'newer_parked' };
   }
+  // The run's older entry goes either way: this one replaces it, or is too
+  // large to, and the older VM's cursor is behind what this delivery wrote.
+  drop(sessions, runId);
+  if (bytes > budget / 2) return { parked: false, bytes, reason: 'too_large' };
+  let evicted = 0;
+  while (
+    sessions.entries.size >= MAX_ENTRIES ||
+    sessions.bytes + bytes > budget
+  ) {
+    const oldest = sessions.entries.keys().next().value;
+    if (oldest === undefined) break;
+    drop(sessions, oldest);
+    evicted++;
+  }
+  sessions.entries.set(runId, { ...parked, parkedAtMs: nowMs, bytes });
+  sessions.bytes += bytes;
   scheduleSweep(sessions);
+  return { parked: true, bytes, evicted };
 }
 
 /**
@@ -130,11 +211,8 @@ export function takeParkedSession(
   world: World,
   runId: string,
   nowMs = Date.now()
-): ParkedSession | undefined {
+): TakenParkedSession | undefined {
   const sessions = sessionsFor(world);
   dropExpired(sessions, nowMs);
-  const entry = sessions.entries.get(runId);
-  if (!entry) return undefined;
-  sessions.entries.delete(runId);
-  return entry;
+  return drop(sessions, runId);
 }

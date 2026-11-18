@@ -208,6 +208,7 @@ import {
 } from './log-state.js';
 import {
   type ParkedSession,
+  type ParkResult,
   parkSession,
   takeParkedSession,
 } from './parked-session.js';
@@ -1135,6 +1136,15 @@ async function runDelivery(
     }
     return log;
   };
+  const recordPark = (result: ParkResult): void => {
+    span?.setAttributes({
+      ...Attribute.WorkflowParkedSessionParked(result.parked),
+      ...Attribute.WorkflowParkedSessionBytes(result.bytes),
+      ...(result.parked
+        ? Attribute.WorkflowParkedSessionEvicted(result.evicted)
+        : Attribute.WorkflowParkedSessionSkipReason(result.reason)),
+    });
+  };
   /**
    * Reads what landed since `entry` parked, in the writer's queue as a full
    * load reads, and adopts the read's fence snapshot.
@@ -1449,6 +1459,11 @@ async function runDelivery(
   // `resumeHook()` sends) resumes it. Its incremental read replaces the
   // no-op check below.
   const taken = takeParkedSession(world, runId);
+  if (taken) {
+    span?.setAttributes(
+      Attribute.WorkflowParkedSessionAgeMs(Date.now() - taken.parkedAtMs)
+    );
+  }
   let parked:
     | {
         entry: ParkedSession;
@@ -1468,6 +1483,7 @@ async function runDelivery(
     const parkedRun = world.runs.get(runId, { resolveData: 'none' });
     parkedRun.catch(() => {});
     const read = await readSinceParked(taken);
+    span?.setAttributes(Attribute.WorkflowParkedSessionRead(read.type));
     if (
       read.type === 'resume' &&
       read.page.events.length === 0 &&
@@ -1478,7 +1494,7 @@ async function runDelivery(
         nowMs: Date.now(),
       })
     ) {
-      parkSession(world, runId, taken);
+      recordPark(parkSession(world, runId, taken));
       span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
       runtimeLogger.debug(
         'Nothing new since the parked session; acknowledging without a replay',
@@ -1487,6 +1503,8 @@ async function runDelivery(
       return;
     }
     parked = { entry: taken, read, run: parkedRun };
+  } else if (taken) {
+    span?.setAttributes(Attribute.WorkflowParkedSessionRead('dropped'));
   }
   // A wake that names an event above the consumed position has something
   // new, so the no-op check's tail read below would only find that out.
@@ -3845,22 +3863,33 @@ async function runDelivery(
             servedByRetained
           );
           if (outcome.type === 'return') {
-            if (
-              outcome.parkSession === true &&
-              session &&
-              log.cursor !== null &&
-              replayPayloadCache &&
-              writer.expectedSeqInBand !== undefined &&
-              !writer.isSuperseded
-            ) {
-              parkSession(world, runId, {
-                session,
-                events: log.events,
-                cursor: log.cursor,
-                tailSlot: indexOf(log.events).maxSlot() ?? 0,
-                expectedSeqInBand: writer.expectedSeqInBand,
-                replayPayloadCache,
-              });
+            if (outcome.parkSession !== undefined) {
+              if (writer.isSuperseded) {
+                span?.setAttributes(
+                  Attribute.WorkflowParkedSessionSkipReason('superseded')
+                );
+              } else if (
+                outcome.parkSession &&
+                session &&
+                log.cursor !== null &&
+                replayPayloadCache &&
+                writer.expectedSeqInBand !== undefined
+              ) {
+                recordPark(
+                  parkSession(world, runId, {
+                    session,
+                    events: log.events,
+                    cursor: log.cursor,
+                    tailSlot: indexOf(log.events).maxSlot() ?? 0,
+                    expectedSeqInBand: writer.expectedSeqInBand,
+                    replayPayloadCache,
+                  })
+                );
+              } else {
+                span?.setAttributes(
+                  Attribute.WorkflowParkedSessionSkipReason('not_retained')
+                );
+              }
             }
             return outcome.result;
           }
