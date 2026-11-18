@@ -57,7 +57,7 @@ export class ErrorBoundary extends Component<
 
       return (
         <ErrorCard
-          title={this.props.title || 'Something went wrong'}
+          title={this.props.title || 'Failed to load this section'}
           details={errorDetails}
         />
       );

@@ -19,7 +19,7 @@ export function LoadMoreButton({
   loading = false,
   onClick,
   label = 'Load more',
-  loadingLabel = 'Loading...',
+  loadingLabel = 'Loading…',
 }: LoadMoreButtonProps) {
   return (
     <>

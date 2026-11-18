@@ -205,7 +205,7 @@ export function ResolveHookModal({
               className="flex cursor-pointer items-center gap-1.5 rounded-lg !border-none bg-gray-1000 px-4 py-2 font-medium text-background-100 text-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:opacity-50"
             >
               <Send className="size-3.5" />
-              {isSubmitting ? 'Sending...' : 'Send Payload'}
+              {isSubmitting ? 'Sending…' : 'Send Payload'}
             </button>
           </div>
         </form>

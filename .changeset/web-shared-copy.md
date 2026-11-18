@@ -3,4 +3,4 @@
 '@workflow/web': patch
 ---
 
-Align error copy in the observability UI: "Couldn’t …" instead of "Unable to …", "Something went wrong" instead of "An error occurred", and `…` instead of `...`.
+Align error copy in the observability UI: "Failed to …" instead of "Unable to …", error cards and toasts that name what failed instead of "An error occurred", and `…` instead of `...`.
