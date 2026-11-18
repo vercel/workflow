@@ -34,7 +34,6 @@ import {
   type EventResult,
   eventIdToSlot,
   isSealedNoopEvent,
-  purgesUserDataOnFinish,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   type SerializedData,
@@ -3405,14 +3404,10 @@ async function runQuickJSDelivery(
     // node:vm; the body settles after it (`afterTerminal`). Its outcome, if
     // it lands, follows the run's terminal event and is inert. Speculative
     // writes still settle first: nothing is decided past one that failed or
-    // was displaced. Zero-retention runs must drain before terminalization:
-    // Worlds may purge payloads only once, at the terminal event, and a late
-    // inline outcome would otherwise repopulate that purged storage. Every
-    // other exit lets every body settle here.
-    deferInlineDrain =
-      !result.suspended &&
-      inFlightInline.size > 0 &&
-      !purgesUserDataOnFinish(workflowRun.attributes);
+    // was displaced. This holds whatever the run's retention: on a
+    // zero-retention run the World discards what a late outcome writes after
+    // the purge. Every other exit lets every body settle here.
+    deferInlineDrain = !result.suspended && inFlightInline.size > 0;
     if (deferInlineDrain) {
       // The loser's outcome is a plain write, never a speculative one.
       boundaryInert = false;

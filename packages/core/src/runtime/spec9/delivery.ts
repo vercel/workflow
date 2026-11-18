@@ -37,7 +37,6 @@ import {
   isRunCreationEvent,
   isSealedNoopEvent,
   isTerminalWorkflowRunStatus,
-  purgesUserDataOnFinish,
   type RunInput,
   type SerializedData,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -1003,16 +1002,6 @@ async function runDelivery(
   };
 
   let workflowRun: WorkflowRun | undefined;
-  /**
-   * Called before the run's terminal event. A workflow can finish while an
-   * inline body still runs (a race's loser), and its outcome then lands after
-   * the terminal event, where it is inert. A zero-retention run is the
-   * exception: a World may purge the run's payloads only once, at the
-   * terminal event, and a later outcome would store them again. So for those
-   * runs every running inline body, and every speculative write, settles
-   * first. Set once the delivery can run inline bodies.
-   */
-  let settleInlineBeforeTerminal = async (): Promise<void> => {};
   // The World's per-run event ceiling: from every full load
   // when the World reports it there, and from the `run_started`
   // response of the delivery that wrote it.
@@ -2336,13 +2325,6 @@ async function runDelivery(
         throw trailingCreationFailure;
       }
     };
-    settleInlineBeforeTerminal = async () => {
-      if (!purgesUserDataOnFinish(workflowRun?.attributes)) return;
-      while (inFlight.size > 0) {
-        await Promise.allSettled([...inFlight.values()]);
-      }
-      await settleRunAhead();
-    };
 
     /**
      * Whether the log holds an event above what the latest
@@ -3341,7 +3323,6 @@ async function runDelivery(
 
           if (workflowResult.type === 'completed') {
             replayRecoveryReporter.activate();
-            await settleInlineBeforeTerminal();
             let completed: EventResult;
             try {
               completed = await createEvent(
@@ -5001,7 +4982,6 @@ async function runDelivery(
     let failureKey: PayloadKey | undefined;
     let dehydratedError: Uint8Array;
     let failedResult: EventResult | undefined;
-    await settleInlineBeforeTerminal();
     try {
       failureKey = await encryptionKey.value;
       dehydratedError = await dehydrateRunError(

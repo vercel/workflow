@@ -969,7 +969,7 @@ describe.each([
   it.each([
     'completed',
     'failed',
-  ] as const)('orders the losing body and run_%s according to retention', async (status) => {
+  ] as const)('writes run_%s without waiting for the losing body', async (status) => {
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '1');
     const code =
       status === 'completed'
@@ -1005,13 +1005,11 @@ describe.each([
           payload: await dehydrateStepReturnValue('payload', runId, undefined),
         },
       } as Partial<Event>);
-      // Give the hook winner time to finish while the loser's body is
-      // held open. Default-retention runs terminalize in this window.
+      // The hook winner finishes the run while the loser's body is held
+      // open, whatever the run's retention.
       await Promise.race([
         terminal.promise,
-        new Promise((resolve) =>
-          setTimeout(resolve, retention === '0' ? 500 : 5_000)
-        ),
+        new Promise((resolve) => setTimeout(resolve, 5_000)),
       ]);
     } finally {
       bodyGate.resolve();
@@ -1020,18 +1018,15 @@ describe.each([
     await world.runUntilIdle();
     expect(eventsOf(world, 'step_completed')).toHaveLength(1);
     expect(eventsOf(world, `run_${status}`)).toHaveLength(1);
-    // Postgres purges once at terminalization. Every inline payload write
-    // must precede that purge, including on the workflow's failure path.
+    // The run's end is not held up by a race's loser, as on spec 8. On a
+    // zero-retention run the World discards what the loser writes after the
+    // purge; the Worlds' own tests cover that.
     const outcomeAt = world.events.findIndex(
       (e) => e.eventType === 'step_completed'
     );
     const terminalAt = world.events.findIndex(
       (e) => e.eventType === `run_${status}`
     );
-    if (retention === '0') {
-      expect(outcomeAt).toBeLessThan(terminalAt);
-    } else {
-      expect(terminalAt).toBeLessThan(outcomeAt);
-    }
+    expect(terminalAt).toBeLessThan(outcomeAt);
   });
 });
