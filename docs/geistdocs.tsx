@@ -27,10 +27,6 @@ export const nav: { label: string; href: string; preview?: boolean }[] = [
     href: '/worlds',
   },
   {
-    label: 'Changelog',
-    href: '/changelog',
-  },
-  {
     label: 'Examples',
     href: examplesRepositoryUrl,
   },
