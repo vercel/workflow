@@ -128,6 +128,10 @@ import {
   settleEventSlotGap,
   slotSnapshotParams,
 } from '../helpers.js';
+import {
+  noteInlineRunStarted,
+  skipsRunCreated,
+} from '../inline-orchestrator.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
@@ -1392,6 +1396,17 @@ async function runDelivery(
   }
 
   /**
+   * `createsRun` for this delivery's `run_started` when it carries the
+   * run's creation data and `WORKFLOW_INLINE_SKIP_RUN_CREATED=1` applies:
+   * a World that supports it records a run this write creates as the
+   * `run_started` alone, with no `run_created` under it. Advisory, so it is
+   * safe whether or not `start()` wrote `run_created`.
+   */
+  function runStartedCreatesRun(): { createsRun?: true } {
+    return runInput && skipsRunCreated(world) ? { createsRun: true } : {};
+  }
+
+  /**
    * Turbo setup: writes `run_started` in the background and
    * returns the run synthesized from `runInput`. The log is
    * empty, and the fence count is the one right after the
@@ -1421,8 +1436,10 @@ async function runDelivery(
       requestId,
       skipPreload: true,
       resolveData: REPLAY_RESOLVE_DATA,
+      ...runStartedCreatesRun(),
     });
     turboRunStarted = started;
+    noteInlineRunStarted(runId, started);
     runReadyBarrier = started.then(
       (result) => {
         turboStartLanded = result;
@@ -1605,9 +1622,12 @@ async function runDelivery(
           span?.addEvent('workflow.run_started.create.start', {
             'workflow.run_started.skip_preload': false,
           });
-          const started = await createEvent(runStartedRequest(), {
+          const startedWrite = createEvent(runStartedRequest(), {
             requestId,
+            ...runStartedCreatesRun(),
           });
+          noteInlineRunStarted(runId, startedWrite);
+          const started = await startedWrite;
           recordAcceptedStartHookCandidate(
             runInput,
             started.run ?? { runId },

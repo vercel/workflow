@@ -292,6 +292,35 @@ describe('Storage (Postgres integration)', () => {
         ).rejects.toMatchObject({ name: 'EntityConflictError' });
       });
 
+      it('creates the run from a run_started that asks for createsRun, keeping run_created', async () => {
+        // `createsRun` is advisory (`WORKFLOW_INLINE_SKIP_RUN_CREATED=1`):
+        // this World records the creation as a run_created under the
+        // run_started, and a late run_created still loses.
+        const runId = `wrun_${ulid()}`;
+        const runData = {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array([3]),
+        };
+        const started = await events.create(
+          runId,
+          { eventType: 'run_started', eventData: runData },
+          { createsRun: true }
+        );
+        expect(started.run?.status).toBe('running');
+        await expect(
+          events.create(runId, { eventType: 'run_created', eventData: runData })
+        ).rejects.toMatchObject({ name: 'EntityConflictError' });
+        const result = await events.list({
+          runId,
+          pagination: { sortOrder: 'asc' },
+        });
+        expect(result.data.map((e) => e.eventType)).toEqual([
+          'run_created',
+          'run_started',
+        ]);
+      });
+
       it('rejects run_created when resilient start already created the run', async () => {
         // start() races events.create(run_created) against world.queue(). When
         // the worker dequeues first, run_started on the not-yet-existent run

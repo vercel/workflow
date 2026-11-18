@@ -2,7 +2,9 @@ import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
   HookConflictError,
+  InBandSupersededError,
   RUN_ERROR_CODES,
+  RunExpiredError,
   START_HOOK_ADMISSION_DISABLED,
   START_HOOK_ADMISSION_REJECTED,
   WorkflowRuntimeError,
@@ -18,6 +20,7 @@ import {
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type {
   QueueOptions,
+  QueueResult,
   RunRetention,
   StartHook,
   WorkflowInvokePayload,
@@ -93,10 +96,12 @@ import {
 } from './helpers.js';
 import {
   decideInline,
+  type InlineRunCreation,
   inlineGate,
   loadInlineEntry,
   recordInlineGate,
   sendOrchestratorMessage,
+  skipsRunCreated,
 } from './inline-orchestrator.js';
 import { Run } from './run.js';
 import { wakePendingStartHookHolder } from './start-hook-holder.js';
@@ -1776,17 +1781,33 @@ export async function start<TArgs extends unknown[], TResult>(
         return new Run<TResult>(runId, { resilientStart: false });
       }
 
-      const runCreatedAt = Date.now();
-      const runCreated = createRun();
-      // Phase timing for the span: how long `run_created` took, beside the
-      // send (they run concurrently).
-      void runCreated.then(
-        () =>
-          span?.setAttributes(
-            Attribute.WorkflowStartRunCreatedMs(Date.now() - runCreatedAt)
-          ),
-        () => {}
-      );
+      // `WORKFLOW_INLINE_SKIP_RUN_CREATED=1` (see `inline-orchestrator.ts`):
+      // where the first message may be held for this process, it is sent
+      // first, and `run_created` is written only if it is not held. A held
+      // message's delivery runs here, and its `run_started` (which carries
+      // the creation data) creates the run; this call returns once it has.
+      // A dynamic run is never held, and creates its run before publishing.
+      const maySkipRunCreated =
+        inlineEntryLoad !== undefined &&
+        !dynamicWorkflow &&
+        skipsRunCreated(world);
+      let runCreated: ReturnType<typeof createRun> | undefined;
+      const writeRunCreated = () => {
+        if (runCreated) return runCreated;
+        const runCreatedAt = Date.now();
+        runCreated = createRun();
+        // Phase timing for the span: how long `run_created` took, beside the
+        // send (they run concurrently).
+        void runCreated.then(
+          () =>
+            span?.setAttributes(
+              Attribute.WorkflowStartRunCreatedMs(Date.now() - runCreatedAt)
+            ),
+          () => {}
+        );
+        return runCreated;
+      };
+      if (!maySkipRunCreated) writeRunCreated();
 
       // A dynamic run publishes only once the backend has confirmed it stored
       // the code. The queue message carries that code too, and its first
@@ -1799,7 +1820,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // to the compilation (and sometimes upload) a dynamic start already
       // pays for.
       if (dynamicWorkflow) {
-        const { run } = await runCreated;
+        const { run } = await writeRunCreated();
         // A backend that predates dynamic-source support ignores the field
         // rather than rejecting it (dropping unrecognized metadata is by
         // design), so the write succeeds and the run looks fine, but nothing
@@ -1828,7 +1849,9 @@ export async function start<TArgs extends unknown[], TResult>(
       // landed yet (resilient start), exactly as a queue delivery that
       // outruns it does. Everywhere else the send is the plain queued one.
       const enqueueStartedAt = Date.now();
-      const enqueue = (
+      const enqueue: Promise<
+        QueueResult & { inlineRunCreation?: Promise<InlineRunCreation> }
+      > = (
         inlineEntryLoad
           ? inlineEntryLoad.then(async () => {
               span?.setAttributes(
@@ -1853,6 +1876,9 @@ export async function start<TArgs extends unknown[], TResult>(
                   Date.now() - checksStartedAt
                 )
               );
+              // Not held for certain: `run_created` goes beside the send, as
+              // without the flag.
+              if (!decision.inline) writeRunCreated();
               return sendOrchestratorMessage({
                 decision,
                 runId,
@@ -1860,6 +1886,10 @@ export async function start<TArgs extends unknown[], TResult>(
                 message: startMessage,
                 queueName,
                 callStartedAt: startCalledAt,
+                awaitRunCreation: maySkipRunCreated,
+                // Known not to run here: write `run_created` now, beside a
+                // resend after a held attempt that threw.
+                onNotHeld: writeRunCreated,
                 // One key for the held attempt and a plain resend after it
                 // throws, so a held attempt that did enqueue is not delivered
                 // twice. A fresh run ID has no other message to collide with.
@@ -1878,46 +1908,101 @@ export async function start<TArgs extends unknown[], TResult>(
         );
         return result;
       });
-      const [runCreatedResult, queueResult] = await Promise.allSettled([
-        runCreated,
-        enqueue,
-      ]);
+      const [queueResult] = await Promise.allSettled([enqueue]);
+      // Without a held delivery to create the run, `run_created` was written
+      // beside the send. A send that threw before saying whether it was held
+      // wrote no `run_created`, so its failure leaves no run behind.
+      if (runCreated) await Promise.allSettled([runCreated]);
 
       // Queue failure is always fatal: the run was not enqueued
       if (queueResult.status === 'rejected') {
         throw queueResult.reason;
       }
+      const inlineRunCreation = queueResult.value?.inlineRunCreation;
 
-      // Handle events.create result
       let resilientStart = false;
-      if (runCreatedResult.status === 'rejected') {
-        const err = runCreatedResult.reason;
-        if (EntityConflictError.is(err)) {
-          // 409: The run already exists. This can happen in extreme cases where
-          // the run creation call gets a cold start or other slowdown, and the queue
-          // + run_started call completes faster. We expect this to be <=1% of cases.
-          // In this case, we can safely return.
-        } else if (isRetryableWorldError(err)) {
-          // 429 (ThrottleError), 5xx, and transient transport failures
-          // (TRANSPORT/TIMEOUT) are retryable: the run was accepted via the
-          // queue and creation will be re-tried by the runtime when it calls
-          // run_started.
+      let createdRunStatus: WorkflowRunStatus | undefined;
+      if (inlineRunCreation && !runCreated) {
+        // The held delivery's `run_started` is the run's creation. Its
+        // outcome decides this call the way `run_created`'s would have.
+        const waitStartedAt = Date.now();
+        const creation = await inlineRunCreation;
+        span?.setAttributes({
+          ...Attribute.WorkflowStartRunCreation('run_started'),
+          ...Attribute.WorkflowStartRunStartedWaitMs(
+            Date.now() - waitStartedAt
+          ),
+        });
+        if (creation.status === 'created') {
+          createdRunStatus = 'running';
+        } else if (creation.status === 'not_written') {
+          // The delivery ended first (it died, or handed the message back):
+          // the message is the queue's again, and its next delivery's
+          // `run_started` creates the run from `runInput`.
           resilientStart = true;
-          runtimeLogger.warn(
-            'Run creation event failed, but the run was accepted via the queue. ' +
-              'The run_created event will be re-tried async by the runtime.',
-            { workflowRunId: runId, error: err.message }
-          );
         } else {
-          throw err;
+          const err = creation.error;
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            // The run exists (and may already have finished).
+          } else if (
+            isRetryableWorldError(err) ||
+            InBandSupersededError.is(err)
+          ) {
+            // Like a retryable `run_created` failure: the message is queued,
+            // and its redelivery creates the run.
+            resilientStart = true;
+            runtimeLogger.warn(
+              'The held delivery could not create the run yet, but the run was accepted via the queue. ' +
+                'Its redelivery creates it.',
+              {
+                workflowRunId: runId,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+          } else {
+            throw err;
+          }
         }
       } else {
-        const result = runCreatedResult.value;
-        // Verify server accepted our runId
-        if (!v1Compat && result.run.runId !== runId) {
-          throw new WorkflowRuntimeError(
-            `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+        if (maySkipRunCreated) {
+          span?.setAttributes(
+            Attribute.WorkflowStartRunCreation('run_created')
           );
+        }
+        // Handle events.create result
+        const [runCreatedResult] = await Promise.allSettled([
+          writeRunCreated(),
+        ]);
+        if (runCreatedResult.status === 'rejected') {
+          const err = runCreatedResult.reason;
+          if (EntityConflictError.is(err)) {
+            // 409: The run already exists. This can happen in extreme cases where
+            // the run creation call gets a cold start or other slowdown, and the queue
+            // + run_started call completes faster. We expect this to be <=1% of cases.
+            // In this case, we can safely return.
+          } else if (isRetryableWorldError(err)) {
+            // 429 (ThrottleError), 5xx, and transient transport failures
+            // (TRANSPORT/TIMEOUT) are retryable: the run was accepted via the
+            // queue and creation will be re-tried by the runtime when it calls
+            // run_started.
+            resilientStart = true;
+            runtimeLogger.warn(
+              'Run creation event failed, but the run was accepted via the queue. ' +
+                'The run_created event will be re-tried async by the runtime.',
+              { workflowRunId: runId, error: err.message }
+            );
+          } else {
+            throw err;
+          }
+        } else {
+          const result = runCreatedResult.value;
+          // Verify server accepted our runId
+          if (!v1Compat && result.run.runId !== runId) {
+            throw new WorkflowRuntimeError(
+              `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+            );
+          }
+          createdRunStatus = result.run.status;
         }
       }
 
@@ -1926,8 +2011,8 @@ export async function start<TArgs extends unknown[], TResult>(
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled'
-          ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
+        ...(createdRunStatus !== undefined
+          ? Attribute.WorkflowRunStatus(createdRunStatus)
           : {}),
       });
 

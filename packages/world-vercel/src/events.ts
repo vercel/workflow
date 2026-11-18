@@ -1022,6 +1022,11 @@ async function createWorkflowRunEventInner(
     // defense-in-depth when it recorded a 412 rejection for this correlation
     // id and no step entity exists.
     ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
+    // A creating `run_started` recorded as the run's creation (spec 9
+    // in-band only; see CreateEventParams.createsRun).
+    ...(params?.createsRun && data.eventType === 'run_started'
+      ? { createsRun: true as const }
+      : {}),
     // The event-log page this POST returns (a preload or a `sinceCursor`
     // delta) may leave out step inputs; the created event and step entity
     // follow `remoteRefBehavior` and never do.

@@ -51,6 +51,7 @@ import type {
 } from './types.js';
 import {
   createSimWorld,
+  SimulatedCrashError,
   type SimWorld,
   WORKFLOW_QUEUE_PREFIX,
 } from './world.js';
@@ -143,6 +144,10 @@ export interface ScenarioSpec {
    * `not_held` that arrives after a round trip (see `SimHoldAnswer`).
    */
   holdAnswer?: (payload: QueuePayload) => SimHoldAnswer | undefined;
+  /** See `SimWorldOptions.runStartedCreatesRun`. */
+  runStartedCreatesRun?: boolean;
+  /** See `SimWorldOptions.creationOnStart`. */
+  creationOnStart?: boolean;
   /** Options for the scenario's `start()` call, e.g. `{ specVersion: 8 }`. */
   startOptions?: { specVersion?: number };
   /**
@@ -196,6 +201,14 @@ export interface ScenarioResult {
   wallMs: number;
   /** Populated when the runner itself threw. */
   error?: unknown;
+  /**
+   * What held when `start()` returned: whether the run existed in the store,
+   * and whether `start()` said it may not yet (`resilientStart`, whose
+   * readers retry a missing run).
+   */
+  startReturned?: { runExisted: boolean; resilientStart: boolean };
+  /** `start()` never returned: its process (the held delivery's sender) died. */
+  startCrashed?: boolean;
 }
 
 export interface RunScenarioOptions {
@@ -234,6 +247,8 @@ export async function runScenario(
     clock,
     queueHold: spec.queueHold,
     holdAnswer: spec.holdAnswer,
+    runStartedCreatesRun: spec.runStartedCreatesRun,
+    creationOnStart: spec.creationOnStart,
   });
 
   const workflowId =
@@ -265,6 +280,8 @@ export async function runScenario(
   let replay: ScenarioResult['replay'];
   let virtualElapsedMs = 0;
   let deliveries = 0;
+  let startReturned: ScenarioResult['startReturned'];
+  let startCrashed = false;
   let outcome: ScenarioOutcome | undefined;
   let runId = '';
   let thrown: unknown;
@@ -417,12 +434,43 @@ export async function runScenario(
   setWorld(world);
 
   try {
-    const run = await start(
-      { workflowId },
-      (spec.input ?? []) as unknown[],
-      spec.startOptions
-    );
-    runId = run.runId;
+    let run: Awaited<ReturnType<typeof start>> | undefined;
+    try {
+      run = await start(
+        { workflowId },
+        (spec.input ?? []) as unknown[],
+        spec.startOptions
+      );
+    } catch (error) {
+      // `start()` waited on its held delivery (it skipped `run_created`, so
+      // that delivery's `run_started` creates the run), and that delivery's
+      // sender died: so did the caller, in the same process. The queue has
+      // the message back; drive it as for any crashed sender.
+      if (!(error instanceof SimulatedCrashError)) throw error;
+      const pendingRunId = world.simQueue
+        .view()
+        .find((m) => m.runId !== undefined)?.runId;
+      if (pendingRunId === undefined) throw error;
+      runId = pendingRunId;
+      startCrashed = true;
+      world.pushTrace({
+        kind: 'note',
+        message: `start() died with its held delivery's sender: ${error.message}`,
+      });
+    }
+    if (run) runId = run.runId;
+    startReturned = run && {
+      runExisted: world.store.allRuns().some((r) => r.runId === runId),
+      resilientStart:
+        (
+          (
+            run.constructor as unknown as Record<
+              symbol,
+              (r: unknown) => { resilientStart?: boolean }
+            >
+          )[Symbol.for('workflow-serialize')]?.(run) ?? {}
+        ).resilientStart === true,
+    };
 
     const drain = await driveQueue({
       world,
@@ -602,6 +650,8 @@ export async function runScenario(
     virtualElapsedMs,
     wallMs,
     error: thrown,
+    ...(startReturned && { startReturned }),
+    ...(startCrashed && { startCrashed }),
   };
 }
 

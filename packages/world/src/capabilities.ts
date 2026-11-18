@@ -36,6 +36,7 @@ export const WorldCapabilitiesSchema = z
     hookForceClaim: flag,
     deploymentAffinity: flag,
     dynamicWorkflowCode: flag,
+    runStartedCreatesRun: flag,
   })
   .optional()
   .catch(undefined);

@@ -37,6 +37,7 @@ import {
   IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
+  isRunCreationEvent,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,
@@ -77,6 +78,15 @@ export interface SimStoreOptions {
   onEvent?(event: Event): void;
   /** Invoked when a read was served an incomplete log. */
   onStaleRead?(read: StaleRead): void;
+  /**
+   * Honor `CreateEventParams.createsRun`, as world-vercel's backend does: a
+   * spec 9 in-band `run_started` at `expectedSeqInBand` 1 that creates its
+   * run is recorded alone at the first slot, carrying the creation data,
+   * with no `run_created` under it. The creation keeps in-band position 1 and
+   * the start takes 2, as with a `run_created`. Off: such a write gets a
+   * synthetic `run_created` under it, as every resilient start does.
+   */
+  creationOnStart?: boolean;
 }
 
 /** One event-log read that did not see everything the log already held. */
@@ -395,7 +405,14 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       }
 
       case 'run_started': {
-        const existing = runs.get(runId);
+        // A creating `run_started` (alone at the first slot, see
+        // `creationOnStart`) is the run's creation as well as its start.
+        const existing =
+          runs.get(runId) ??
+          (data?.input !== undefined && isRunCreationEvent(event)
+            ? applyEvent({ ...event, eventType: 'run_created' } as Event, at)
+                .run
+            : undefined);
         if (!existing) return {};
         // The clears are for the write path, where a restart is a real
         // transition. On a seeded log they are already undefined: a
@@ -694,9 +711,27 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     // treats a retryable creation failure as recoverable because the queue
     // already accepted the run. Create the run (and a synthetic `run_created`)
     // from the queued payload.
+    // With `createsRun` (see `SimStoreOptions.creationOnStart`), the
+    // `run_started` itself is the creation, appended below at the first slot.
+    let createsRunHere = false;
     if (data.eventType === 'run_started' && !currentRun && data.eventData) {
       const seed = data.eventData;
-      if (seed.deploymentId && seed.workflowName && seed.input !== undefined) {
+      createsRunHere =
+        options.creationOnStart === true &&
+        params?.createsRun === true &&
+        params.inBand === true &&
+        params.expectedSeqInBand === IN_BAND_SEQ_AT_RUN_CREATION &&
+        specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR &&
+        eventsForRun(runId).length === 0 &&
+        seed.deploymentId !== undefined &&
+        seed.workflowName !== undefined &&
+        seed.input !== undefined;
+      if (
+        !createsRunHere &&
+        seed.deploymentId &&
+        seed.workflowName &&
+        seed.input !== undefined
+      ) {
         const synthetic = {
           eventType: 'run_created',
           runId,
@@ -843,7 +878,21 @@ export function createSimStore(options: SimStoreOptions): SimStore {
 
     // `run_started`'s eventData is a bootstrap payload for the resilient path
     // above, not log content: the canonical copy lives on `run_created`.
-    if (data.eventType === 'run_started' && 'eventData' in event) {
+    // A creating `run_started` keeps what a `run_created` would carry.
+    if (createsRunHere && data.eventType === 'run_started') {
+      const seed = data.eventData!;
+      event = {
+        ...event,
+        eventData: {
+          deploymentId: seed.deploymentId,
+          workflowName: seed.workflowName,
+          input: seed.input,
+          executionContext: seed.executionContext,
+          attributes: seed.attributes,
+          encryptionPublicKey: seed.encryptionPublicKey,
+        },
+      } as Event;
+    } else if (data.eventType === 'run_started' && 'eventData' in event) {
       delete (event as Record<string, unknown>).eventData;
     }
 

@@ -878,6 +878,33 @@ export interface WorldCapabilities {
    * otherwise it is always sent inline.
    */
   dynamicWorkflowCode?: boolean;
+
+  /**
+   * **Experimental.** A first delivery's `run_started` that carries the run's
+   * creation data (from the start message's `runInput`) creates the run when
+   * no `run_created` reached the World, exactly once, with everything a
+   * `run_created` would have recorded (resilient start). A creation that loses
+   * to a concurrent `run_created` or `run_started` is not an error: the losing
+   * `run_created` is answered with `EntityConflictError`, and the losing
+   * `run_started` is written above the winner's creation.
+   *
+   * With it, `start()` may skip its own `run_created` when the run's first
+   * delivery is held for this process (`experimental_queueHold`) and runs
+   * here, so that delivery's `run_started` is the run's creation. It only
+   * does so with `WORKFLOW_INLINE_SKIP_RUN_CREATED=1`.
+   *
+   * The World may record that creation either way:
+   * - a `run_created` it writes at the first slot from the `run_started`'s
+   *   data, with the `run_started` above it;
+   * - the `run_started` alone at the first slot, when the write sends
+   *   {@link CreateEventParams.createsRun}. Readers recognize it with
+   *   `isRunCreationEvent`. Both keep the same in-band count.
+   *
+   * Fails closed: a World that does not declare it always gets `run_created`.
+   *
+   * @experimental
+   */
+  runStartedCreatesRun?: boolean;
 }
 
 /**

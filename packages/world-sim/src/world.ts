@@ -95,6 +95,18 @@ export interface SimWorldOptions {
   queueHold?: boolean;
   /** Overrides how a held send is answered (see `SimHoldAnswer`). */
   holdAnswer?: (payload: QueuePayload) => SimHoldAnswer | undefined;
+  /**
+   * Declare `capabilities.runStartedCreatesRun`, as world-vercel does: with
+   * `WORKFLOW_INLINE_SKIP_RUN_CREATED=1`, a held `start()` then skips its
+   * `run_created`. The store creates runs from a first `run_started` either
+   * way (resilient start).
+   */
+  runStartedCreatesRun?: boolean;
+  /**
+   * Record a `createsRun` `run_started` alone at the first slot, as a backend
+   * that supports it does (see `SimStoreOptions.creationOnStart`).
+   */
+  creationOnStart?: boolean;
 }
 
 export interface SimWorld extends World {
@@ -191,6 +203,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   const store = createSimStore({
     now: () => clock.now(),
     ids,
+    creationOnStart: options.creationOnStart,
     // Fires synchronously inside `events.create`, so it runs in that call's
     // async context and `isExternal()` still describes who is writing.
     onEvent: (event) =>
@@ -626,6 +639,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // `queue()` holds a message for its sender (`experimental_hold`), as
       // Vercel Queues' send-and-hold does (see queue.ts), when asked to.
       ...(options.queueHold && { experimental_queueHold: true }),
+      ...(options.runStartedCreatesRun && { runStartedCreatesRun: true }),
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
