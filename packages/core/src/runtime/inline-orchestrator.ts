@@ -472,6 +472,11 @@ const inlineDeliveryStorage = globalSingleton(
   () => ({ storage: new AsyncLocalStorage<InlineDeliveryContext>() })
 ).storage;
 
+/** Test seam: runs `fn` as an inline delivery would. @internal */
+export function runAsInlineDeliveryForTests<T>(fn: () => T): T {
+  return inlineDeliveryStorage.run({ startedAt: Date.now() }, fn);
+}
+
 /** The inline delivery this code runs in, if any. @internal */
 export function currentInlineDelivery(): InlineDeliveryContext | undefined {
   return inlineDeliveryStorage.getStore();

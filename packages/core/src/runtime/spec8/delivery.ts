@@ -125,6 +125,7 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
+import { currentInlineDelivery } from '../inline-orchestrator.js';
 import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
@@ -2669,7 +2670,7 @@ async function runDelivery(
         // has it): hand the message back, and the queue delivers it to the
         // flow route. A resume cannot always tell a run's engine before it
         // sends (see `decideInline`).
-        if (!maybeQuickJSEngine()) {
+        if (!maybeQuickJSEngine() && currentInlineDelivery()) {
           runtimeLogger.info(
             'QuickJS run reached a function without the QuickJS engine; handing it to the flow route',
             { workflowRunId: runId }
