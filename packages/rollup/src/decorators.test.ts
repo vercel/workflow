@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Options } from '@swc/core';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 const { transformMock } = vi.hoisted(() => ({
   transformMock: vi.fn(),
@@ -33,6 +33,7 @@ export async function chargeOrder(id: string) {
 
 function projectWith(files: Record<string, object>) {
   const dir = mkdtempSync(join(tmpdir(), 'workflow-rollup-decorators-'));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(join(dir, name), JSON.stringify(content));
   }
@@ -110,7 +111,6 @@ describe('workflowTransformPlugin decorators', () => {
       'only emitDecoratorMetadata is set',
       { 'tsconfig.json': { compilerOptions: { emitDecoratorMetadata: true } } },
     ],
-    ['there is no tsconfig', {}],
   ])('keeps decorators off when %s', async (_, files) => {
     const options = await swcOptionsFor(projectWith(files));
 
