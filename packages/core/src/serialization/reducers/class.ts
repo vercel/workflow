@@ -13,6 +13,10 @@ import type { Reducers, Revivers } from '../types.js';
 
 // ---- Call-site serialization ----
 
+class CallSiteSerializationFailure {
+  constructor(readonly error: unknown) {}
+}
+
 /**
  * A custom-class instance already reduced to `{ classId, data }` by
  * {@link serializeInstanceAtCallSite}. A host object, so encoding it executes
@@ -38,25 +42,24 @@ class CallSiteSerializedInstance {
  * every pass, retained or cold, so whatever it does to workflow state is
  * reconstructed by replay and the boundary stays retainable.
  *
- * Anything that is not a custom-serialized instance with a valid `classId`, or
- * whose serializer throws, is returned unchanged so dehydration reports it
- * exactly as before.
+ * Anything that is not a custom-serialized instance with a valid `classId` is
+ * returned unchanged. Failures are deferred to dehydration without invoking
+ * the failing serializer or property accessor a second time.
  */
 export function serializeInstanceAtCallSite(value: unknown): unknown {
   if (value === null || typeof value !== 'object') return value;
-  const cls = readProperty(value, 'constructor');
-  if (!cls || typeof cls !== 'function') return value;
-  const serialize = readProperty(cls, WORKFLOW_SERIALIZE);
-  if (typeof serialize !== 'function') return value;
-  const classId = readProperty(cls, 'classId');
-  if (typeof classId !== 'string') return value;
-  let data: unknown;
   try {
-    data = serialize.call(cls, value);
-  } catch {
-    return value;
+    const cls = readProperty(value, 'constructor');
+    if (!cls || typeof cls !== 'function') return value;
+    const serialize = readProperty(cls, WORKFLOW_SERIALIZE);
+    if (typeof serialize !== 'function') return value;
+    const classId = readProperty(cls, 'classId');
+    if (typeof classId !== 'string') return value;
+    const data = serialize.call(cls, value);
+    return new CallSiteSerializedInstance(classId, data);
+  } catch (error) {
+    return new CallSiteSerializationFailure(error);
   }
-  return new CallSiteSerializedInstance(classId, data);
 }
 
 // ---- Reducers ----
@@ -74,6 +77,7 @@ export function getClassReducers(): Partial<Reducers> {
     },
     Instance: (value) => {
       if (value === null || typeof value !== 'object') return false;
+      if (value instanceof CallSiteSerializationFailure) throw value.error;
       if (value instanceof CallSiteSerializedInstance) {
         return { classId: value.classId, data: value.data };
       }
