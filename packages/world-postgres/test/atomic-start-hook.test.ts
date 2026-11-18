@@ -75,7 +75,7 @@ describe('atomic start Hook (world-postgres)', () => {
     newRunId: () => `wrun_${ulid()}`,
     concurrentCandidates: 12,
     // Admission reads the candidate's age off the JS clock; retention is
-    // compared in SQL and is exercised in real time.
+    // compared in SQL against `now()` (see `passRetention`).
     advanceClock: (ms) => {
       if (ms === 0) {
         vi.useRealTimers();
@@ -84,6 +84,17 @@ describe('atomic start Hook (world-postgres)', () => {
       const target = Date.now() + ms;
       vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
       vi.setSystemTime(target);
+    },
+    // The database clock cannot be moved, so the retentions it would see as
+    // passed once `now()` is past `until` are moved back to `now()` instead;
+    // later ones keep running. The SQL comparisons are the World's own.
+    passRetention: async (until) => {
+      await pool.query(
+        `UPDATE workflow.workflow_hooks
+           SET token_retention_until = now() - interval '1 millisecond'
+         WHERE token_retention_until <= $1`,
+        [until]
+      );
     },
     // No `stageUnacknowledgedClaim`: the start Hook and the run commit in one
     // transaction, so the orphan state cannot exist (asserted below).

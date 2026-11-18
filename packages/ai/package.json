@@ -1,12 +1,14 @@
 {
   "name": "@workflow/ai",
-  "version": "5.0.4",
+  "version": "5.0.5",
   "description": "Deprecated: use WorkflowAgent and WorkflowChatTransport from @ai-sdk/workflow. Workflow SDK helpers for AI SDK 6.",
   "type": "module",
   "main": "dist/index.js",
   "files": [
     "dist",
-    "docs/**/*"
+    "docs/**/*",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "directories": {
     "doc": "./docs"

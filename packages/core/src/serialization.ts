@@ -7,7 +7,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
-import type { StreamWriteSession } from '@workflow/world';
+import type { StreamInfoResponse, StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -25,6 +25,7 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
@@ -956,6 +957,26 @@ const getFramedStreamMaxTotalReconnects = (): number =>
   );
 
 /**
+ * Consecutive live-read sessions that may end without receiving any bytes while
+ * the stream's metadata reports a chunk at the resume index, before the read
+ * fails. Such a session is not waiting for new data: the chunk is known to
+ * exist but was not served, so the index is a hole (the chunk is missing from
+ * storage) and reconnecting from it can never make progress. Each stalled
+ * session typically lasts the server's maximum response duration, so the
+ * general reconnect budget alone would stall a reader for over an hour.
+ */
+export const FRAMED_STREAM_MAX_STALLS_BELOW_TAIL = 3;
+
+/**
+ * Shortest zero-byte session that counts as a stall below the tail. A session
+ * at a hole stays open until the server's maximum response duration (about two
+ * minutes on world-vercel). One that ends sooner is a transport blip: it is
+ * retried against the general reconnect budget as before, and neither counts
+ * toward nor resets {@link FRAMED_STREAM_MAX_STALLS_BELOW_TAIL}.
+ */
+export const FRAMED_STREAM_MIN_STALL_SESSION_MS = 10_000;
+
+/**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
  * transparent auto-reconnect.
  *
@@ -978,6 +999,14 @@ const getFramedStreamMaxTotalReconnects = (): number =>
  * trusted (legacy behavior) rather than failing a read that may well be
  * complete.
  *
+ * A session that stays open for at least `FRAMED_STREAM_MIN_STALL_SESSION_MS`
+ * and ends without receiving any bytes while the metadata reports a chunk at
+ * the resume index is a stall at a hole (a chunk missing from storage). After
+ * `FRAMED_STREAM_MAX_STALLS_BELOW_TAIL` consecutive stalls the read errors
+ * with a `StreamError` naming the missing index, so the consumer can resume
+ * past it with `startIndex` instead of waiting indefinitely. The reader never
+ * skips the hole itself: silently dropping a chunk can corrupt consumer state.
+ *
  * Negative `startIndex` values (last-N semantics) skip the reconnect
  * machinery because we cannot compute an absolute resume position without
  * a tail-index lookup; the returned stream behaves as a single-shot read.
@@ -994,6 +1023,8 @@ export function createReconnectingFramedStream(
   let consumedFrames = 0;
   let reconnectCount = 0;
   let totalReconnectCount = 0;
+  let stallsBelowTail = 0;
+  let sessionStartedAt = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let canceled = false;
   let cancelReason: unknown;
@@ -1040,8 +1071,19 @@ export function createReconnectingFramedStream(
       return false;
     }
     if (connectMs === undefined) connectMs = Date.now() - connectStart;
+    sessionStartedAt = Date.now();
     reader = stream.getReader();
     return true;
+  }
+
+  /** The stream's metadata, or `undefined` if the lookup fails. */
+  async function getStreamInfo(): Promise<StreamInfoResponse | undefined> {
+    try {
+      const world = await getWorldLazy();
+      return await world.streams.getInfo(runId, name);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1052,13 +1094,48 @@ export function createReconnectingFramedStream(
    * into an error (or a reconnect loop) on a transient metadata blip would
    * be worse than the legacy behavior this check guards against.
    */
-  async function isVerifiedComplete(): Promise<boolean> {
-    try {
-      const world = await getWorldLazy();
-      const info = await world.streams.getInfo(runId, name);
-      return info.done && currentStartIndex + consumedFrames > info.tailIndex;
-    } catch {
-      return true;
+  function isVerifiedComplete(info: StreamInfoResponse | undefined): boolean {
+    if (!info) return true;
+    return info.done && currentStartIndex + consumedFrames > info.tailIndex;
+  }
+
+  /**
+   * Called when a session ends. Throws once consecutive sessions have stayed
+   * open without receiving any bytes while the metadata reports a chunk at
+   * the resume index. Metadata is only fetched for long sessions that
+   * received nothing (unless the caller already has it), so sessions that
+   * deliver data pay nothing extra.
+   */
+  async function assertNotStalledAtHole(
+    info?: StreamInfoResponse
+  ): Promise<void> {
+    // Partial-frame bytes count as progress: the server is serving the chunk
+    // at the resume index (a large one cut mid-body), so it is not a hole.
+    if (consumedFrames > 0 || buffer.length > 0) {
+      stallsBelowTail = 0;
+      return;
+    }
+    // A zero-byte session that ended quickly is a blip, not a session held
+    // open at a hole: leave it to the general reconnect budget.
+    if (Date.now() - sessionStartedAt < FRAMED_STREAM_MIN_STALL_SESSION_MS) {
+      return;
+    }
+    const resolved = info ?? (await getStreamInfo());
+    // Unknown metadata neither confirms nor rules out a hole.
+    if (!resolved) return;
+    if (resolved.tailIndex < currentStartIndex) {
+      stallsBelowTail = 0;
+      return;
+    }
+    stallsBelowTail++;
+    if (stallsBelowTail >= FRAMED_STREAM_MAX_STALLS_BELOW_TAIL) {
+      throw new StreamError(
+        `Stream "${name}" of run "${runId}" has no readable chunk at index ` +
+          `${currentStartIndex}, below its tail index ${resolved.tailIndex}: ` +
+          `${stallsBelowTail} consecutive reads from that index delivered ` +
+          `nothing. The chunk is missing from storage; read from startIndex ` +
+          `${currentStartIndex + 1} or later to continue past it.`
+      );
     }
   }
 
@@ -1146,6 +1223,8 @@ export function createReconnectingFramedStream(
             return;
           }
           try {
+            await assertNotStalledAtHole();
+            if (canceled) return;
             if (!(await reconnect())) return;
           } catch (reconnectErr) {
             controller.error(reconnectErr);
@@ -1164,11 +1243,11 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body; both
           // would otherwise be silently read as a shorter, complete stream.
-          const verifiedComplete =
-            !reconnectSupported || (await isVerifiedComplete());
+          const info = reconnectSupported ? await getStreamInfo() : undefined;
           if (canceled) return;
-          if (!verifiedComplete) {
+          if (reconnectSupported && !isVerifiedComplete(info)) {
             try {
+              await assertNotStalledAtHole(info);
               if (!(await reconnect())) return;
             } catch (reconnectErr) {
               controller.error(reconnectErr);
@@ -2050,6 +2129,39 @@ function attachAbortListenerOnce(
 }
 
 /**
+ * Push a stream pipe onto an ops list, observed from the moment it exists.
+ *
+ * A pipe starts running as soon as a reducer creates it, but whoever owns the
+ * list only attaches a handler later: after the rest of the value has been
+ * serialized, after the step body returns, or never, when the step fails. A
+ * pipe whose source errors in that gap (a returned `fetch()` body whose socket
+ * closes rejects with undici's `TypeError: terminated`) would reject with no
+ * handler attached, and Node treats that as an unhandled rejection, which ends
+ * the process on Vercel (#5055). The handler only marks the rejection as
+ * observed and logs it at debug level: the list holds the original promise, so
+ * `Promise.all(ops)` still rejects with the pipe's error.
+ */
+function pushPipeOp(ops: Promise<unknown>[], pipe: Promise<void>): void {
+  pipe.catch((err) => {
+    // On paths that never await the list (a failed step, a dehydration that
+    // throws, a failed `start()`), this is the only trace of the pipe's error.
+    try {
+      runtimeLogger.debug('Stream pipe failed', {
+        errorName: err instanceof Error ? err.name : undefined,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        cause:
+          err instanceof Error && err.cause instanceof Error
+            ? err.cause.message
+            : undefined,
+      });
+    } catch {
+      // Best-effort logging must not create another unhandled rejection.
+    }
+  });
+  ops.push(pipe);
+}
+
+/**
  * Run `pipe` now, or, with a gate, only once it resolves `true`. A `false` or
  * rejected gate never runs it, and the returned promise still resolves, so an
  * op that never pipes cannot surface as an unhandled rejection.
@@ -2159,7 +2271,7 @@ export function getExternalReducers(
           )
           .pipeTo(writable);
       };
-      ops.push(afterStreamStartGate(streamStartGate, pipe));
+      pushPipeOp(ops, afterStreamStartGate(streamStartGate, pipe));
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
@@ -2206,7 +2318,8 @@ export function getExternalReducers(
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
-      readbackOps.push(
+      pushPipeOp(
+        readbackOps,
         afterStreamStartGate(streamStartGate, () =>
           new WorkflowServerReadableStream(runId, name).pipeTo(value)
         )
@@ -2488,14 +2601,16 @@ function getStepReducers(
         );
         if (type === 'bytes') {
           if (framing === 'framed-v1') {
-            ops.push(
+            pushPipeOp(
+              ops,
               value.pipeThrough(getByteFramingStream()).pipeTo(writable)
             );
           } else {
-            ops.push(value.pipeTo(writable));
+            pushPipeOp(ops, value.pipeTo(writable));
           }
         } else {
-          ops.push(
+          pushPipeOp(
+            ops,
             value
               .pipeThrough(
                 getSerializeStream(
@@ -2531,7 +2646,8 @@ function getStepReducers(
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
-        readbackOps.push(
+        pushPipeOp(
+          readbackOps,
           new WorkflowServerReadableStream(runId, name)
             .pipeThrough(
               getDeserializeStream(

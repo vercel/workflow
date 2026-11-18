@@ -32,6 +32,7 @@ import {
 } from '../constants.js';
 import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
+import { exceededMaxRetriesMessage } from './step-executor.js';
 import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
   stepMessageRetentionSeconds,
@@ -1015,9 +1016,17 @@ describe.each([
     await world.runUntilIdle();
 
     expect(calls.so_once).toBe(1);
-    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    const starts = eventsOf(world, 'step_started');
+    expect(starts).toHaveLength(1);
     expect(eventsOf(world, 'step_failed')).toHaveLength(1);
-    expect(await runResult(world)).toMatch(/^failed: /);
+    // No error from the body exists; the failure names the attempt that left
+    // no outcome instead.
+    expect(await runResult(world)).toBe(
+      `failed: ${exceededMaxRetriesMessage('so_once', 0, {
+        attempt: 1,
+        startedAt: new Date(starts[0]!.createdAt),
+      })}`
+    );
   });
 
   describe("a background step's first delivery", () => {

@@ -261,6 +261,120 @@ describe('frozen values stored by reference', () => {
     expect(read(output2, replay).session.history.at(-1).content).toBe(message);
   });
 
+  it('indexes a source in memory linear in its size, and refers only where that is shorter', () => {
+    const { output1 } = session();
+    // A long key above many long strings: each string's path holds the key.
+    const key = 'k'.repeat(256 * 1024);
+    const leaves = Array.from({ length: 4096 }, (_, i) =>
+      `${i}`.padEnd(128, '.')
+    );
+    const short = 'Weather in Oslo for the next three days, please. '.repeat(4);
+    const payload = { [key]: leaves, short };
+    const replay = new StateContext();
+    const started = Date.now();
+    replay.addSource('run', payload);
+    expect(Date.now() - started).toBeLessThan(2_000);
+
+    const v1 = read(output1, replay).session;
+    const s2 = produce(v1 as Session, (d) => {
+      d.history.push(
+        { role: 'user', content: leaves[7] },
+        { role: 'user', content: short }
+      );
+    });
+    const output2 = write({ session: s2 }, replay);
+    // The string below the long key is written as it is, not as a reference
+    // larger than itself; the other one is a reference.
+    expect(output2.byteLength).toBeLessThan(2_000);
+    expect(text(output2)).toContain(leaves[7]);
+    expect(text(output2)).not.toContain('Weather in Oslo');
+    const recovered = cold(output1);
+    recovered.addSource('run', payload);
+    expect(read(output2, recovered).session).toStrictEqual(s2);
+  });
+
+  it('indexes a source that holds one object many times once', () => {
+    const long = 'x'.repeat(200);
+    let shared: Record<string, unknown> = { long };
+    for (let i = 0; i < 60; i++) shared = { a: shared, b: shared };
+    const context = new StateContext();
+    const started = Date.now();
+    context.addSource('run', shared);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  // A reference names the first path its writer found the string at, and
+  // earlier writers walked through cycles and repeated objects; their
+  // references must still resolve.
+  for (const [label, build] of [
+    [
+      'through a cycle',
+      (long: string) => {
+        const input: Record<string, unknown> = {};
+        input.self = input;
+        input.long = long;
+        return { input, path: [...Array(63).fill('self'), 'long'] };
+      },
+    ],
+    [
+      'through an object first reached past the depth limit',
+      (long: string) => {
+        const shared = { long };
+        let deep: Record<string, unknown> = { shared };
+        // `shared` is at depth 64, the limit: its string is just past it.
+        for (let i = 0; i < 62; i++) deep = { n: deep };
+        return {
+          input: { deep, alias: shared },
+          path: ['alias', 'long'],
+        };
+      },
+    ],
+  ] as const) {
+    it(`resolves a source reference ${label}`, () => {
+      const { output1 } = session();
+      const long = 'Weather in Oslo for the next three days, please. '.repeat(
+        20
+      );
+      const { input, path } = build(long);
+      const writer = new StateContext();
+      writer.addSource('run', input);
+      const v1 = read(output1, writer).session;
+      const s2 = produce(v1 as Session, (d) => {
+        d.history.push({ role: 'user', content: long });
+      });
+      const output2 = write({ session: s2 }, writer);
+      expect(text(output2)).toContain('StateSrcV1');
+      expect(text(output2)).not.toContain('Weather in Oslo');
+      expect(text(output2)).toContain(JSON.stringify(path.at(-2)));
+      const reader = cold(output1);
+      reader.addSource('run', input);
+      expect(read(output2, reader).session).toStrictEqual(s2);
+    });
+  }
+
+  it('resolves references from writers that indexed every string', () => {
+    const { output1 } = session();
+    const message = 'Weather in Oslo for the next three days, please. '.repeat(
+      4
+    );
+    const payload = { a: [{ b: message }] };
+    const writer = new StateContext();
+    writer.addSource('run', payload);
+    const v1 = read(output1, writer).session;
+    const s2 = produce(v1 as Session, (d) => {
+      d.history.push({ role: 'user', content: message });
+    });
+    const output2 = write({ session: s2 }, writer);
+    expect(text(output2)).toContain('StateSrcV1');
+    const reader = cold(output1);
+    reader.addSource('run', payload);
+    expect(read(output2, reader).session).toStrictEqual(s2);
+    // A path the source does not hold, or one with an index as a key, is missing.
+    const other = cold(output1);
+    other.addSource('run', { a: { 0: { b: message } } });
+    expect(() => read(output2, other)).toThrow(/Missing workflow state source/);
+  });
+
   it('never refers to a version that only a step input carried', () => {
     const { body, output1 } = session();
     const v1 = read(output1, body).session as Session;
@@ -317,6 +431,80 @@ describe('frozen values stored by reference', () => {
     // ~0.6 s on a laptop; CI runners can be 20 times slower. The bug this
     // guards against took ~80 s.
     expect(performance.now() - started).toBeLessThan(30_000);
+  });
+
+  it('rebuilds a long run with several changes per step in bounded time', () => {
+    // Each step result makes several changes under one object, as an agent's
+    // session does: it appends messages, adds this turn's tool calls, finishes
+    // the previous turn's and updates counters. A cold replay applies every
+    // change, and each one used to copy the whole session, tool calls included.
+    type Turn = {
+      session: {
+        messages: Message[];
+        tools: Record<string, { name: string; done: boolean }>;
+        usage: { input: number; output: number };
+        turn: number;
+      };
+    };
+    const writer = new StateContext();
+    const first = write(
+      {
+        s: produce(
+          {
+            session: {
+              messages: [],
+              tools: {},
+              usage: { input: 0, output: 0 },
+              turn: 0,
+            },
+          } as Turn,
+          () => {}
+        ),
+      },
+      writer
+    );
+    let state = read(first, writer).s as Turn;
+    const payloads = [first];
+    for (let i = 0; i < 300; i++) {
+      state = produce(state, (d) => {
+        d.session.messages.push(
+          { role: 'user', content: `message ${i}` },
+          { role: 'assistant', content: `reply ${i}` }
+        );
+        for (const id of [`${i - 1}a`, `${i - 1}b`])
+          if (d.session.tools[id]) d.session.tools[id].done = true;
+        d.session.tools[`${i}a`] = { name: 'search', done: false };
+        d.session.tools[`${i}b`] = { name: 'fetch', done: false };
+        d.session.usage.input += 10;
+        d.session.usage.output += 20;
+        d.session.turn = i + 1;
+      });
+      const bytes = write({ s: state }, writer);
+      payloads.push(bytes);
+      state = read(bytes, writer).s;
+    }
+    // Mostly changes, with an occasional whole snapshot: the replay has to
+    // apply them.
+    expect(
+      payloads.filter((p) => text(p).includes('"patch"')).length
+    ).toBeGreaterThan(290);
+    const started = performance.now();
+    const rebuilt = read(payloads.at(-1) as Uint8Array, cold(...payloads))
+      .s as Turn;
+    const elapsed = performance.now() - started;
+    if (process.env.STATE_REFS_BENCH === '1')
+      process.stderr.write(
+        `[state-refs] cold rebuild ${elapsed.toFixed(1)} ms\n`
+      );
+    expect(rebuilt.session.messages).toHaveLength(600);
+    expect(Object.keys(rebuilt.session.tools)).toHaveLength(600);
+    expect(
+      Object.values(rebuilt.session.tools).filter((t) => t.done)
+    ).toHaveLength(598);
+    expect(rebuilt.session.usage).toEqual({ input: 3_000, output: 6_000 });
+    // ~35 ms on a laptop (~95 ms before each container was copied once);
+    // CI runners can be 20 times slower.
+    expect(elapsed).toBeLessThan(30_000);
   });
 
   it('measures a growing value only now and then to apply the snapshot rule', () => {
@@ -584,6 +772,30 @@ describe('frozen values stored by reference', () => {
     expect(() => new StateContext().ingest(payload)).toThrow(
       /cannot be recovered without running workflow code/
     );
+  });
+
+  it('checks state that holds one Map many times once', () => {
+    let shared: Map<string, unknown> = new Map([['leaf', 1]]);
+    for (let i = 0; i < 40; i++)
+      shared = new Map<string, unknown>([
+        ['a', shared],
+        ['b', shared],
+      ]);
+    const value = Object.freeze({ m: shared });
+    const started = Date.now();
+    expect(isFrozenState(value)).toBe(true);
+    const output = write({ value }, new StateContext());
+    expect(text(output)).toContain('"full"');
+    // Cold recovery checks the value for placeholders, as does inspection.
+    cold(output);
+    const inspecting = new StateContext();
+    inspecting.allowPlaceholders = true;
+    inspecting.placeholderFor({ kind: 'patch', version: 'v0' });
+    inspecting.ingest(
+      decodeFormatPrefix(output).payload as Uint8Array,
+      getCommonRevivers(globalThis) as Record<string, (v: unknown) => unknown>
+    );
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('serializes a large frozen array', () => {

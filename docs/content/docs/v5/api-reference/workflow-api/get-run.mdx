@@ -233,10 +233,6 @@ export async function POST(req: Request) {
 
 `deleteData()` never cancels a run: a run that hasn't finished answers `skipped` and keeps running. It runs as a step, so inside a workflow a retryable failure throws a `RetryableError` and the step retries. It throws if the configured World doesn't support deleting run data. To delete the data of many runs in one call, use [`deleteRuns()`](/docs/api-reference/workflow-api/delete-runs).
 
-## Spec 9 (experimental)
-
-On runs of the experimental spec 9 runtime, `wakeUp()` asks the run's orchestrator to complete the sleeps instead of completing them itself, `stoppedCount` counts the sleeps it asked to complete, and the request is best-effort while the run is active.
-
 ## Related functions
 
 - [`start()`](/docs/api-reference/workflow-api/start): Start a new workflow and get its run ID.

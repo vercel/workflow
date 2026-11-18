@@ -648,7 +648,9 @@ function rememberWakeUp(
  * nothing left to run it stays live while the run waits on an open hook or
  * a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`, or
  * `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` for open hooks alone), so a wake sent just
- * after a run was active can be dropped too. `stoppedCount` then still
+ * after a run was active can be dropped too, and until a wait due within
+ * `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`, so a wake sent during such a short
+ * sleep is dropped and the sleep runs its full length. `stoppedCount` then still
  * counts the waits it asked to complete.
  * A queue that holds the message until the running delivery ends (the Local
  * and Postgres Worlds) delivers it after that delivery. Older runs get

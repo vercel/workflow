@@ -127,15 +127,22 @@ Settings that exist only for spec 9 runs:
 
 #### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
 
-- Default: `30000`
-- When an orchestrator has nothing left to run but the run waits on a background step (or an inline step's retry), it stays live on the event feed this long before acknowledging. Each event in that time starts another pass, and the next idle pass restarts the time, so a burst of outcomes lands on one warm invocation.
+- Default: `5000`
+- When an orchestrator has nothing left to run but the run waits on a background step (or an inline step's retry), it stays live on the event feed this long before acknowledging. A step that takes longer ends the delivery, and its outcome's wake starts the next one, which loads the log again. Each event in that time starts another pass, and the next idle pass restarts the time, so a burst of outcomes lands on one warm invocation.
 - Only while a live feed is up (Vercel, Postgres); world-local has none and does not linger. Never past the invocation's inline-step deadline. On world-postgres at most half of a process's `queueConcurrency` slots hold a feed at once; past that a delivery polls and does not linger.
-- `0` turns it off, for hooks too.
+- `0` turns it off, for hooks and waits too.
 
 #### `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`
 
-- Default: `5000`, and never more than [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms).
+- Default: `5000`, and never more than [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms), so by default the two windows are equal. Set it lower to keep background steps on a longer window than hooks.
 - The linger when the run waits only on open hooks. Each payload restarts the window, so a burst of resumes stays on one invocation. Any undisposed hook counts, even beside a long sleep, so a long-lived approval hook next to a polling `sleep()` holds each timer wake for up to 5 seconds. Dispose unused hooks, or set `0` for that pattern.
+
+#### `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`
+
+- Default: [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms), and never more than it.
+- An orchestrator with nothing left to run whose earliest open wait is due within this window, and before the inline deadline less `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`, stays live until the wait is due and completes it in process ([Timers inside a live delivery, and linger](#timers-inside-a-live-delivery-and-linger)). A loop of `step(); sleep('5s')` then costs one invocation and one full log load per inline window instead of one per iteration.
+- Same conditions as the other lingers: only while the live feed is live, so world-local never takes it and `waitForSleep()`/`wakeUp()` keep working there. On world-vercel and world-postgres a `run.wakeUp()` sent during such a sleep is folded into the live delivery and lost; the sleep runs its full length, at most this window.
+- `0` turns it off.
 
 #### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
 
@@ -181,6 +188,7 @@ Steps and waits are folded from the run's events, not kept as state the World ch
 - **Attempts.** A step's attempt count is the number of its `step_started` events. One after a `step_retrying` is a retry; one after another `step_started` is a redelivery.
 - **Waits.** Only the orchestrator writes `wait_created` and `wait_completed`; a second `wait_completed` is inert.
 - **Inert after terminal.** Once a step's outcome, `wait_completed`, `hook_disposed` or workflow `attr_set` is consumed, later events under that correlation ID are stepped over (see [Duplicate events](https://workflow-sdk.dev/docs/how-it-works/event-sourcing#duplicate-events)). That covers the duplicates that can still occur, such as a second `step_started` from a background step redelivered after its lease expired.
+- **Event ceiling.** Every orchestrator delivery enforces the run's `maxEvents`, failing the run with `MAX_EVENTS_EXCEEDED` once the log holds that many events (sealed `noop`s not counted). Only the first delivery writes `run_started`, so later ones take the ceiling from their full load's `EventListResponse.maxEvents`. That load stops following `hasMore` once it holds the ceiling, so a run already past it fails on its next delivery without reading the rest of its log. A World that reports no ceiling on a list (world-postgres) leaves later deliveries with only `WORKFLOW_MAX_EVENTS_OVERRIDE`.
 
 #### Events returned on a write
 
@@ -526,9 +534,12 @@ Turbo is on by default (`WORKFLOW_TURBO`) and applies when all of these hold:
 
 - the message carries `runInput`, so it is the message `start()` enqueued, and it is not a `start({ experimental_hook })` candidate;
 - `attempt` is 1 and `deliveryCount` is 1, so it is neither a redelivery (including the one after a fence refusal), a handoff's next delivery nor a coalesced re-run;
+- the queue enqueued the message at most `TURBO_FIRST_DELIVERY_MAX_AGE_MS` (15 s) ago, when it reports when (see below);
 - it is not a step message, a hook resume or a timer.
 
 A restart in place is never turbo.
+
+The delivery count does not prove a first delivery on its own. A platform that re-runs an invocation which crashed (an out-of-memory kill, say) re-sends the same request, so the replay carries the same message with `deliveryCount` 1, while the crashed invocation may have started the run and left an inline step open minutes earlier. A first delivery arrives within a few seconds of `start()` (99.99% under 6 s on Vercel), so an older message is treated as a possible replay and takes the normal path, which loads the log and runs the open step again. A replay younger than the bound still reaches turbo, and its `run_started` conflict restarts it in place (below).
 
 ```mermaid
 sequenceDiagram
@@ -561,8 +572,15 @@ The optimistic start applies while the boundary has no wait and each of its inli
 If the backgrounded `run_started` fails for any reason, the writer stops: nothing else reaches the World and no further inline body starts. Bodies already started settle, their outcomes are discarded, and the delivery ends as an awaited `run_started` failing the same way would:
 
 - refused by the fence: redelivered 1 s later (5 s on Vercel); the redelivery loads the log and takes the normal path;
-- the run already finished (cancelled before its first delivery, say): acknowledged with nothing written;
+- refused as a conflict (`EntityConflictError`): the delivery restarts in place, once, on the normal path. Turbo assumed a log it never read, so the conflict may mean the run already started (a replayed first delivery whose predecessor died) or that it finished; the full load tells them apart. A finished run is then acknowledged by the normal path's own checks, an inline step a dead predecessor left open runs again, and a predecessor still alive keeps the run because the fence refuses whichever of the two writes second. Acknowledging the conflict instead would strand a run whose open step nothing would ever run again;
+- the run expired (`RunExpiredError`): acknowledged with nothing written;
 - anything else: retried by the queue, or recorded as a setup failure.
+
+The start's failure decides the delivery even when the pass returns normally: writes queued behind the refused `run_started` fail with its error, and a handler that reads a conflict as "the run already finished" (a terminal write's) would otherwise acknowledge a run that is still running. So after the pass the delivery waits for the start to settle and, if it failed, handles that failure as above.
+
+A full load that finds a `run_started` this delivery did not write, on a count-1 delivery of the message that carries `runInput`, can only be such a replay (young, after the restart above, or old, past the age bound). Its predecessor may have committed a background step's `step_created` and died before the step's message went out, and no redelivery is owed to send it. So the replay passes the re-send gate (`stepsToReenqueue`) as a redelivery would: within the same age bound and under each step's stable idempotency key, so a message that did go out is deduped.
+
+The normal path loads the log before it writes `run_started`, so a conflict there means the run started or finished in between. A World that says the run is running (`EntityConflictError` with code `run-already-started`) gets the same single restart in place; a second one is thrown, and the queue redelivers. A conflict with no code still means the run finished, and is acknowledged.
 
 Writes waiting on the barrier fail instead of writing, so a refused start leaves no chunks or attributes on a run whose log does not record the step that made them; a body that ran before the refusal runs again on the redelivery. If a step's own start batch is refused, its outcome is not written and the start's error decides. A World that rotates the start message must send a continuation without `runInput`, so the new message loads the log rather than replaying a progressed run against a `run_created`-only log.
 
@@ -714,6 +732,7 @@ A World written to the earlier "Building a World" guide (`specVersion: mintedSpe
 |---|---|
 | `capabilities.inBandFence` | **Required** to create spec 9 runs, and the only new capability. The runtime refuses a spec 9 run without it, in `start()` and at the start of every spec 9 delivery. Passing it to `mintedSpecVersion` lets the World's users opt in with `WORKFLOW_SPEC_VERSION=9`. |
 | `CreateEventParams.inBand`, `expectedSeqInBand`; list `snapshot`; `EventResult.allocated`, `hasMore` | The [in-band fence](#storage-the-in-band-fence) and its bookkeeping. |
+| List `maxEvents` | Optional. The run's event ceiling, the value `run_started` reports, so deliveries after the first enforce it (see [The event log](#the-event-log)). |
 | Step and wait events | Plain appends on spec 9 runs; see [event rules](#spec-9-event-rules). |
 | `{ timeoutSeconds }` | Read by the message's run spec (`messageRunSpecVersion`). Spec 9: `n > 0` redelivers the same message, `0` is a **handoff**, required and not counted toward `attempt`. Spec 8 and unstamped: unchanged. See [queue rules](#spec-9-queue-rules). |
 | One orchestrator delivery per run | Hold or coalesce a spec 9 run's other orchestrator messages while one is in flight (`singleOrchestratorRunIdOf`). |
@@ -1180,7 +1199,7 @@ flowchart TD
     X -->|"yes"| Y["Run bodies, wait for a settle, a feed event or a due timer"] --> L
     X -->|"no"| SU{"Foreign event above what the pass consumed?"}
     SU -->|"yes"| L
-    SU -->|"no"| LI{"Linger: live feed up and external work open?"}
+    SU -->|"no"| LI{"Linger: live feed up, and external work open or a wait due soon?"}
     LI -->|"new event or due wait"| L
     LI -->|"no"| AT["Arm owned timers, record the position"] --> ACK
 ```
@@ -1228,7 +1247,7 @@ export async function resizeAll(urls: string[]) {
 | Run-ahead write groups and speculative creation batch | 16 events (not the fan-out's creation batches) |
 | Step messages per queue batch request (node engine) | 16, requests sent in parallel; world-vercel's own ceiling is 100 |
 | Inline window, and `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` | 2, 5 or 10 min; no inline step starts within 60 s of its end |
-| `WORKFLOW_ORCHESTRATOR_LINGER_MS` | 30 s while a background step is open, only on a World with a live feed |
+| `WORKFLOW_ORCHESTRATOR_LINGER_MS` | 5 s while a background step is open, only on a World with a live feed |
 | `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` | 5 s while only hooks are open, at most the linger above |
 | Coalesced re-runs per delivery | 32 (world-vercel and world-postgres) |
 
@@ -1242,7 +1261,7 @@ A background step's body starts once its out-of-band `step_started` committed. U
 
 #### Timeline on world-vercel
 
-On a delivery after the run's first: 1 replay; 2 `createBatch` calls and 7 queue batch requests; 3 in-band `step_completed`; 97 step invocations, each writing `step_started` and its outcome and sending a wake that is coalesced into the running delivery. The orchestrator takes the outcomes from the live feed, lingering up to 30 s per idle stretch (never past 60 s into the invocation with a 2-minute window), writes `run_completed`, and coalesced re-runs (at most 32) find the run terminal. If every step finishes while it lingers, that is 1 orchestrator invocation plus 97 step invocations. If they take longer, the delivery acknowledges, and the next wake starts a delivery that loads the log, takes in the outcomes, and lingers again. Measurements are under [Benchmarks](#benchmarks).
+On a delivery after the run's first: 1 replay; 2 `createBatch` calls and 7 queue batch requests; 3 in-band `step_completed`; 97 step invocations, each writing `step_started` and its outcome and sending a wake that is coalesced into the running delivery. The orchestrator takes the outcomes from the live feed, lingering up to 5 s per idle stretch (never past 60 s into the invocation with a 2-minute window), writes `run_completed`, and coalesced re-runs (at most 32) find the run terminal. If every step finishes while it lingers, that is 1 orchestrator invocation plus 97 step invocations. If they take longer, the delivery acknowledges, and the next wake starts a delivery that loads the log, takes in the outcomes, and lingers again. Measurements are under [Benchmarks](#benchmarks).
 
 #### Fan-out on world-local and world-postgres
 
@@ -1511,9 +1530,14 @@ A wait's last timer is due with the wait on the sender's clock, rounded up to a 
 
 A delivery still running inline steps completes a due wait itself: it waits at most until the earliest open wait's deadline, and the next pass writes `wait_completed`. The timer also goes out before the delivery waits, in case the delivery ends first.
 
-A sleep alone never makes a delivery linger. While one lingers on a background step or a hook, a wait that falls due ends the linger and is completed in process, a timer or `run.wakeUp()` message is coalesced into it (on world-postgres, removed from behind it and covered by a re-run), and the chains it owns are armed when the linger ends without new work.
+A delivery with nothing left to run also lingers for a wait: when the earliest open wait is due within `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS` (default: the full linger window, 5 s; a wait due up to a second past the window still counts, so a sleep as long as the window lingers despite clock skew between the host and the World) and before the inline deadline less its margin, it stays live until the wait is due, and the next pass completes it in process. A wait due past the deadline does not count: the delivery suspends and the wait's queued timer covers it. While a delivery lingers, on a wait, a background step or a hook, a wait that falls due ends the linger and is completed in process, a timer or `run.wakeUp()` message is coalesced into it (on world-postgres, removed from behind it and covered by a re-run), and the chains it owns are armed when the linger ends without new work.
 
-**Long-lived hooks.** A run with a long-lived approval or cancel hook beside a polling `sleep()` lingers on every wake for up to `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` (5 s) of function time. That is why hooks alone get the shorter window, while a burst of resumes still stays on one warm invocation, since each payload starts the window again. For such a deployment, dispose the hook once it is no longer needed, or set the hook linger to `0`.
+- **The timer goes out first.** A linger taken for a wait arms the timers the suspend would arm (`armNearDueTimers`, `armTimers`) before it waits, so the wait is still woken if the instance dies mid-sleep. A wait this delivery created already has its timer (`armWaitsBeforeCreation`), and `timedWaits` keeps every wait to one send, so the linger sends no timer the suspend would not have sent: one per wait, as without it.
+- **The leftover timer.** The wait's timer still fires after the delivery completed the wait. On world-vercel one that comes due while the delivery runs is coalesced into it, and all of them are covered by one re-run, which replays from a full load (it is not its message's first delivery, so it runs the re-send pass). One delivered on its own reaches the no-op check (see `consumed-position.ts`): it is the final timer of a wait this process completed (`isCompletedWaitTimer`), so it acknowledges after one tail read when the log has not moved since the recorded position, and without any read once the process saw the run end (`recordTerminalRun`). Both are in-process records: a timer delivered to another instance, or after a restart, replays from a full load and finds the wait completed. The QuickJS engine records no consumed position, so there a leftover timer of a run that is still open replays from a full load.
+- **No live feed, no linger.** A wait's deadline is known locally, but the delivery still has to see another writer's events (a hook payload, a cancel) while it waits, and the tail poll alone sees them only a poll later. So the wait linger takes the live feed like the others, ends when the feed goes down, and world-local, which has none, suspends at every sleep.
+- **Ending early.** Another writer's event (a hook payload, a `run_cancelled`) ends the linger and runs a pass: a cancelled run stops there, and a superseding orchestrator's writes surface as fence refusals on that pass. The replay budget is paused while the delivery waits.
+
+**Long-lived hooks.** A run with a long-lived approval or cancel hook beside a polling `sleep()` lingers on every wake for up to `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` (5 s) of function time. That is why hooks alone have their own window, never longer than the step linger (both 5 s by default), while a burst of resumes still stays on one warm invocation, since each payload starts the window again. For such a deployment, dispose the hook once it is no longer needed, or set the hook linger to `0`.
 
 #### `run.wakeUp()`
 
@@ -1576,6 +1600,7 @@ If a `wait_completed` committed below `fetchUpdates`'s outcome, the live run saw
 | Timer key dedupe | `min(retention, 24h)` after the first send | while the first message lives | while a job holds the key |
 | A final timer while a delivery runs | Coalesced into it | Held behind the run's gate, then delivered | Held behind the run's named queue; covered by the re-run if due when the delivery acknowledges, else delivered |
 | A due wait during linger | Completed in process | No linger | Completed in process |
+| A wait due within the wait linger | Delivery stays live and completes it | Suspends | Delivery stays live and completes it |
 | Timers after a restart | Survive | Lost; re-armed by the recovery delivery | Survive; a hard-killed worker's job waits for its lock to clear |
 
 On world-vercel a fractional `delaySeconds` is rounded up, so a timer can land up to a second after its deadline.
@@ -1644,7 +1669,7 @@ The runtime polls the log tail from its cursor, each page under the orchestrator
 
 #### Linger interaction
 
-A delivery with nothing left to run lingers while the run waits on a background step (or an inline step's retry), for up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` (30 s), or on open hooks alone, for up to `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` (5 s, never more than the linger), capped by the inline deadline minus the inline-start margin. Each foreign event runs a pass and starts the window again.
+A delivery with nothing left to run lingers while the run waits on a background step (or an inline step's retry), for up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` (5 s), or on open hooks alone, for up to `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` (5 s, never more than the linger), or until a wait due within `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS` (5 s, never more than the linger), capped by the inline deadline minus the inline-start margin. Each foreign event runs a pass and starts the window again.
 
 - **Only while the push is live.** The linger checks that the subscription is live after starting the feed (world-vercel defines `subscribe` even when its push transport is unavailable, and reports that through `onError`) and after every wake; `onError` wakes it so it ends at once. Lingering on the poll alone would hold a function open for a poll's latency, so a World without `events.subscribe` never lingers.
 - **What liveness cannot see.** A subscription that never acknowledges and never errors still counts as live, as does every silent case above; the linger then runs to its end on the poll alone, and the 20 s cap bounds what it can miss.
@@ -1875,7 +1900,7 @@ It remains an opt-in, [`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`](https://workflo
 
 ### `run.wakeUp()` stays best-effort
 
-On spec 9, `run.wakeUp()` names the waits to complete on an ordinary keyed orchestrator message (`completeWaits`), and the orchestrator writes `wait_completed` in-band. A wake-up that arrives while a delivery of the run is live is folded into it and lost: the re-run reads only the log, the sleeps run their full length, and `stoppedCount` still counts the waits the call asked to complete. A wake-up is mostly used while the run is suspended on its sleeps, when the message is delivered on its own, and world-local (which never coalesces a wake-up, and never lingers) delivers it after the running delivery, so `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working.
+On spec 9, `run.wakeUp()` names the waits to complete on an ordinary keyed orchestrator message (`completeWaits`), and the orchestrator writes `wait_completed` in-band. A wake-up that arrives while a delivery of the run is live is folded into it and lost: the re-run reads only the log, the sleeps run their full length, and `stoppedCount` still counts the waits the call asked to complete. A wake-up is mostly used while the run is suspended on its sleeps, when the message is delivered on its own (a sleep due within `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS` keeps its delivery live instead, so a wake-up during it is lost and the sleep runs its full length, at most that window), and world-local (which never coalesces a wake-up, and never lingers) delivers it after the running delivery, so `@workflow/vitest`'s `waitForSleep()` and `wakeUp()` keep working.
 
 A keyed wake also never overlaps the running delivery; an unkeyed one could drop `completeWaits` when it lost the fence, or, when it won, make an open inline step's body run twice.
 
@@ -1921,7 +1946,7 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 ### Other decisions
 
 - **Spec 9 is opt-in.** Minting only reads `WORKFLOW_SPEC_VERSION`: new runs are spec 8 unless it is `9` on a World that declares `capabilities.inBandFence` (Vercel, Local, Postgres), and a World without the fence keeps minting 8. Events route by each run's own spec (see [How new runs get their version](#how-new-runs-get-their-version)), and one required e2e lane (`e2e-vercel-spec9`) runs spec 9, beside spec 9 cells in the event-log race repro and a spec 9 world-testing suite.
-- **A shorter linger for hooks alone.** A run waiting only on open hooks lingers for `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` (5 s by default), one with an open background step for `WORKFLOW_ORCHESTRATOR_LINGER_MS` (30 s); each payload restarts the window, so a burst of resumes stays on one warm invocation. A burst-aware policy (linger on hooks only after a recent `hook_received`) was not needed (see [An open hook keeps every invocation lingering](#an-open-hook-keeps-every-invocation-lingering)).
+- **A separate linger for hooks alone.** A run waiting only on open hooks lingers for `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`, one with an open background step for `WORKFLOW_ORCHESTRATOR_LINGER_MS` (both 5 s by default, the hook window never longer); each payload restarts the window, so a burst of resumes stays on one warm invocation. A burst-aware policy (linger on hooks only after a recent `hook_received`) was not needed (see [An open hook keeps every invocation lingering](#an-open-hook-keeps-every-invocation-lingering)).
 - **Linger only while the feed is live.** A delivery lingers only while its live feed is up, and feed trouble ends the linger at once; a World without `events.subscribe` never lingers.
 - **The engines treat a refused item in a creation batch differently, on purpose.** QuickJS sends a message for every step past the inline cap that no batch reported, since it cannot tell a refused creation from a single write's, so a refused step creation stops its pass. node sends messages only for creations it saw committed, so it leaves a non-transient refusal to the next replay. Transient refusals fail the delivery on both.
 - **Step start latency.** A background step's message carries its creation time, and world-vercel's first `step_started` reports it, so creation-to-start latency can be read off the start alone.
@@ -1930,7 +1955,7 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 
 ### `run.wakeUp()` is best-effort on Vercel and Postgres
 
-A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
+A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. A sleep due within [`WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_wait_linger_ms) keeps its delivery live for its whole length, so a wake-up sent during it is lost, and the sleep ends on its own deadline. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
 
 ### An open hook keeps every invocation lingering
 

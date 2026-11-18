@@ -19,7 +19,7 @@ async function chargePayment(orderId: string) {
 chargePayment.maxRetries = 5;
 ```
 
-- Default is implementation-defined; pick an explicit value if the source framework specified one.
+- Default is `3` retries (4 attempts in total). Set an explicit value when the source framework specified one; `maxRetries = 0` runs the step once.
 - The API does not accept an options object. `stepFn.maxRetries = N` is the only supported syntax.
 - `maxRetries` controls *attempts*, not delay between attempts.
 
@@ -43,7 +43,7 @@ callRateLimitedApi.maxRetries = 10;
 
 - `retryAfter` accepts milliseconds (number), a duration string (e.g. `'30s'`, `'2m'`), or a `Date` object.
 - There is no built-in exponential-backoff helper. If the source used one, compute the delay in userland and pass it as `retryAfter`.
-- Automatic VQS scheduling handles the default retry cadence when `retryAfter` is not provided.
+- When `retryAfter` is not provided, the runtime schedules the retry with its default delay.
 
 ## 3. Give up: `throw new FatalError(msg)`
 
@@ -61,6 +61,7 @@ async function validatePayload(input: unknown) {
 ```
 
 - `FatalError` bypasses `maxRetries` and surfaces to the workflow caller.
+- In v5, built-in errors such as `TypeError` keep their type, message, stack, and `cause` across the step boundary; user-defined `Error` subclasses keep their `name` but revive as generic errors unless they implement custom serialization. Check SDK errors with the `.is()` helpers (`FatalError.is(error)`, `WorkflowRunFailedError.is(error)`) instead of `instanceof`, because bundled module copies can have distinct constructors.
 
 ## What is *not* configurable at the step boundary
 
@@ -89,6 +90,6 @@ async function validatePayload(input: unknown) {
 
 ## Links
 
-- `docs/content/docs/foundations/errors-and-retries.mdx`: The canonical user-facing docs page.
-- `packages/core/src/private.ts:12-17`: The `StepFunction.maxRetries` type definition.
+- `docs/content/docs/v5/foundations/errors-and-retries.mdx`: The canonical user-facing docs page.
+- `packages/core/src/private.ts`: The `StepFunction.maxRetries` type definition.
 - `packages/errors/src/index.ts`: The `RetryableError` and `FatalError` implementations.
