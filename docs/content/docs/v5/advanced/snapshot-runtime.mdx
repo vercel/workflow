@@ -1,0 +1,60 @@
+---
+title: Snapshot Runtime
+description: Keep long-running workflows fast by resuming from a saved snapshot instead of replaying every event.
+type: guide
+summary: Run workflow functions on the QuickJS VM with snapshotting so resume cost stays flat and runs are exempt from the per-run event limit.
+prerequisites:
+  - /docs/how-it-works/event-sourcing
+related:
+  - /docs/configuration/runtime-tuning#workflow_vm
+  - /docs/errors/max-events-exceeded
+  - /docs/errors/replay-timeout
+---
+
+Every time a workflow resumes, it re-executes from the top and replays its [event log](/docs/how-it-works/event-sourcing) to get back to where it left off. That takes milliseconds for most runs. For agents, chat sessions, and loops that run for days, the log keeps growing, so each resume gets slower and the run eventually fails with [`MAX_EVENTS_EXCEEDED`](/docs/errors/max-events-exceeded) or [`REPLAY_TIMEOUT`](/docs/errors/replay-timeout).
+
+The snapshot runtime fixes this. It runs your workflow functions in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM and, once a run has processed 1,000 events, saves the VM's memory when the run suspends. The next resume restores that snapshot and replays only the events recorded since, so resume cost stays roughly flat however long the run gets. Runs on the snapshot runtime are also exempt from the default per-run event limit.
+
+Step functions are not affected. They always run with full Node.js access.
+
+## Enable it on Vercel
+
+Add two environment variables to your project, then redeploy:
+
+```bash
+WORKFLOW_VM=quickjs
+WORKFLOW_SNAPSHOT_THRESHOLD=1000
+```
+
+You can add them in two ways:
+
+- **From a run.** When a run fails at the event limit, times out while replaying, or passes 20,000 events, its page in the Workflows observability tab shows an **Optimize Long Runs** button. It adds both variables to Production and prompts you to redeploy.
+- **From project settings.** Open **Settings**, then **Environment Variables**, add both variables, and redeploy.
+
+Only runs started after the redeploy use the snapshot runtime. A run keeps the VM and snapshot policy it started with, so runs already in progress are not changed, and a run that already failed is not revived. Start it again.
+
+The variables apply to every workflow in the project.
+
+## Check your workflow code first
+
+QuickJS does not provide a few globals inside workflow functions. If your workflow functions use any of these, move the call into a step:
+
+| Not available in workflow functions | What to do |
+| --- | --- |
+| `Intl.*`, and `toLocaleString()`-style methods called with an explicit locale | Format in a step |
+| `crypto.subtle.*`, including `digest` | Hash or sign in a step |
+| `WebAssembly`, `Atomics` | Use them in a step |
+
+`crypto.randomUUID()` and `crypto.getRandomValues()` still work and stay deterministic. See [`WORKFLOW_VM`](/docs/configuration/runtime-tuning#workflow_vm) for the full list.
+
+## Tuning
+
+`WORKFLOW_SNAPSHOT_THRESHOLD` is the number of events a run processes between snapshots. The default is `1000`. A restore costs about the same at any log length, and it starts to beat a full replay at a few hundred events, so lower the threshold only for workflows you know are long. `0` turns snapshotting off, and those runs keep the event limit.
+
+A snapshot is an optimization, not a source of truth. The event log stays authoritative, and a missing or incompatible snapshot falls back to a full replay.
+
+## Outside Vercel
+
+The snapshot runtime is not specific to Vercel. The Local World and Postgres World also store snapshots, with one difference: a snapshot holds your workflow's in-memory state, so by default it is only saved for runs that have an encryption key, and only the Vercel World provides one. To save snapshots on the Local World or Postgres World, also set [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted). Those snapshots are stored in plaintext.
+
+For every setting and what a snapshot contains, see [Runtime tuning](/docs/configuration/runtime-tuning#workflow-vm-engine).
