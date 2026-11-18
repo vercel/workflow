@@ -189,6 +189,9 @@ describe('workflow inspect run <id> --usage', () => {
       'local',
     ]);
     expect(normalize(stdout, runId)).toMatchSnapshot();
+    // A local run is not billed: no pricing link, no Vercel estimate.
+    expect(stdout).not.toContain('See pricing');
+    expect(stdout).not.toContain('On Vercel');
   });
 
   it('prints the usage shape as JSON with --json', async () => {
@@ -269,10 +272,10 @@ describe('workflow inspect run <id> --usage', () => {
     expect(stdout).toContain(
       '3 steps wrote 7 events: 1 created, 3 started, 3 completed.'
     );
-    // The CLI prints the two-line note; the web UI's Usage tab has the rest,
-    // including why 2 steps have no created event.
+    // The CLI prints the two-line note: the breakdown, and what a retry
+    // would add (this run has none).
     expect(stdout).toContain(
-      'Each retry adds 2: a retry marker, and the step starting again.'
+      'A retry adds a retry marker, and the step starting again.'
     );
     expect(stdout).not.toContain('Each step writes 3 events');
   });

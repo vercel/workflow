@@ -4,6 +4,7 @@ import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
+import { isVercelWorldTarget } from '@workflow/utils';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -941,7 +942,14 @@ export const showRunUsage = async (
       showJson(usage);
       return;
     }
-    logger.log(formatRunUsageText(usage, { color: usageTextColor() }));
+    logger.log(
+      formatRunUsageText(usage, {
+        color: usageTextColor(),
+        pricing: isVercelWorldTarget(
+          opts.backend ?? process.env.WORKFLOW_TARGET_WORLD ?? ''
+        ),
+      })
+    );
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
       process.exit(1);

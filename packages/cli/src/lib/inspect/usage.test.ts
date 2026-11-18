@@ -5,6 +5,7 @@ import {
   formatUsageFooter,
   type RunUsage,
   type RunUsageAggregates,
+  WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { formatRunUsageText, usageTextColor } from './usage.js';
@@ -18,6 +19,7 @@ const step = (name: string, steps: number, retries = 0) => ({
   completed: steps,
   failed: 0,
   retries,
+  restarts: retries,
   bytes: steps * 100,
 });
 
@@ -49,7 +51,6 @@ describe('formatRunUsageText', () => {
 
       Events        25  (1 retry)
       Data written  1.11 KB (local)
-      On Vercel     25 billable events
 
       NAME                          EVENTS  SHARE
       processOrder  workflow            25
@@ -60,7 +61,7 @@ describe('formatRunUsageText', () => {
       TOTAL                             25   100%
 
       6 steps wrote 20 events: 6 created, 7 started, 6 completed, 1 retry marker.
-      Each retry adds 2: a retry marker, and the step starting again.
+      1 retry added 2 events: 1 retry marker, 1 step start.
 
       DATA WRITTEN (LOCAL)     SIZE
       Run                     510 B
@@ -68,23 +69,22 @@ describe('formatRunUsageText', () => {
       TOTAL                 1.11 KB
 
       Local runs aren't billed. Counted from this run's log in your local data directory.
-      See pricing: https://vercel.com/docs/workflows/pricing
       Machine-readable: --json"
     `);
   });
 
-  it('says the same as the web UI: its footer and counting lines', () => {
+  it('prints the shared footer and counting lines', () => {
     const usage = usageOf();
     const text = formatRunUsageText(usage);
     expect(text).toContain(formatUsageFooter(usage));
     for (const line of formatEventCountingNote(usage)) {
       expect(text).toContain(line);
-      // Each one is a line of the web UI's "How events are counted".
+      // Each one is a line of the full "How events are counted" list.
       expect(formatEventCountingLines(usage)).toContain(line);
     }
   });
 
-  it('calls a billed run’s events billable, with no "On Vercel" line', () => {
+  it('calls a billed run’s events billable', () => {
     const text = formatRunUsageText(usageOf({ billed: true }));
     expect(text).not.toContain('On Vercel');
     expect(text).not.toContain('(local)');
@@ -108,9 +108,24 @@ describe('formatRunUsageText', () => {
       '├─ c',
       '├─ d',
       '├─ e',
-      '├─ + 2 more steps',
+      '├─ + 2 other steps',
       '└─ Run start & finish',
     ]);
+  });
+
+  it('says nothing of what a run would count as on Vercel', () => {
+    for (const billed of [false, true]) {
+      const text = formatRunUsageText(usageOf({ billed }));
+      expect(text).not.toContain('On Vercel');
+      expect(text).not.toMatch(/would count as/);
+    }
+    expect(formatRunUsageText(usageOf())).not.toMatch(/billable/);
+  });
+
+  it('links pricing only when asked to (a run on Vercel)', () => {
+    const pricing = `See pricing: ${WORKFLOW_PRICING_DOCS_URL}`;
+    expect(formatRunUsageText(usageOf())).not.toContain(pricing);
+    expect(formatRunUsageText(usageOf(), { pricing: true })).toContain(pricing);
   });
 
   it('is plain text unless asked for color', () => {

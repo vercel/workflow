@@ -286,6 +286,7 @@ function stepGroupsOf(counts: RunCounts): RunUsageStepGroup[] {
         completed: 0,
         failed: 0,
         retries: 0,
+        restarts: 0,
         bytes: 0,
       };
       byName.set(step.name, group);
@@ -297,6 +298,9 @@ function stepGroupsOf(counts: RunCounts): RunUsageStepGroup[] {
     group.completed += step.completed;
     group.failed += step.failed;
     group.retries += step.retries;
+    // The starts a retry caused: each one after the step's first, up to its
+    // retry markers. A start past those is a redelivery, not a retry.
+    group.restarts += Math.min(step.retries, Math.max(0, step.started - 1));
     group.bytes += step.bytes;
   }
   return [...byName.values()];

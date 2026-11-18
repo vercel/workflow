@@ -188,7 +188,7 @@ per flag.
 
 - Command: `workflow inspect run <run-id>`
 - Default: disabled
-- Prints the run's usage instead of the run: its events and retries, how many billable events it would count as on Vercel, a tree of the workflow's steps (calls, events, share, retries) and the run's own events, sleeps and hooks, and the size of its data in the local data directory by entity. With `--json`, prints the same numbers as one JSON object.
+- Prints the run's usage instead of the run: its events and retries, a tree of the workflow's steps (calls, events, share, retries) and the run's own events, attributes, sleeps and hooks, and the size of its data in the local data directory by entity. With `--json`, prints the same numbers as one JSON object.
 - Prints in color only to a terminal; output is plain text when piped, with `NO_COLOR` set, or with `TERM=dumb`.
 - Only the Local World counts usage so far; on other backends the command fails rather than printing the run.
 - Cannot be combined with `--url`/`--web`, `--withData`, or `--decrypt`.

@@ -1,6 +1,5 @@
-// The text `workflow inspect run <id> --usage` prints. The web UI's Usage
-// tab renders the same explanation from the same `@workflow/world`
-// formatters.
+// The text `workflow inspect run <id> --usage` prints, built from the
+// `@workflow/world` formatters, checked against a real run's log.
 import { formatRunUsageText } from '@workflow/cli/dist/lib/inspect/usage.js';
 import {
   type Event,
@@ -46,15 +45,10 @@ const LABEL_EVENT_TYPES: Record<string, string> = {
 
 /**
  * What the "How events are counted" text says the run's steps wrote, read
- * the way a user reads it. Either a breakdown of the run's own counts
- * (`7 steps wrote 21 events: 3 created, 9 started, ...`), or a fixed rate
- * (`Each step writes 3 events ...; each retry adds 2`), which the reader
- * multiplies out.
+ * the way a user reads it: a breakdown of the run's own counts
+ * (`7 steps wrote 21 events: 3 created, 9 started, ...`).
  */
-function stepEventsTheTextClaims(
-  text: string,
-  log: { steps: number; retries: number }
-): {
+function stepEventsTheTextClaims(text: string): {
   events: number;
   steps?: number;
   byEventType?: Record<string, number>;
@@ -72,7 +66,7 @@ function stepEventsTheTextClaims(
       byEventType[eventType] = toNumber(count);
     }
     // The note on steps without a created event, when the text has it (the
-    // web UI does; the CLI's two-line note leaves it to the Usage tab).
+    // CLI's two-line note leaves it out).
     const note = text.match(/([\d,]+) steps? ha(?:s|ve) no created event/);
     const none = /No step has a created event/.test(text);
     return {
@@ -86,15 +80,44 @@ function stepEventsTheTextClaims(
           : undefined,
     };
   }
-  const fixed = text.match(
-    /Each step writes (\d+) events[^\n]*each retry adds (\d+)/i
-  );
-  if (fixed) {
-    return {
-      events: Number(fixed[1]) * log.steps + Number(fixed[2]) * log.retries,
-    };
-  }
   throw new Error(`No step event count in:\n${text}`);
+}
+
+/**
+ * What the text says the retries added: `2 retries added 4 events: 2 retry
+ * markers, 2 step starts.`
+ */
+function retryEventsTheTextClaims(text: string) {
+  const line = text.match(
+    /([\d,]+) retr(?:y|ies) added ([\d,]+) events?: ([\d,]+) retry markers?(?:, ([\d,]+) step starts?)?\./
+  );
+  if (!line) throw new Error(`No retry event count in:\n${text}`);
+  return {
+    retries: toNumber(line[1]),
+    events: toNumber(line[2]),
+    markers: toNumber(line[3]),
+    starts: line[4] ? toNumber(line[4]) : 0,
+  };
+}
+
+/**
+ * The starts a retry caused, read off the log: per step, its starts after
+ * the first, up to its retry markers.
+ */
+function retryStartsInTheLog(events: Event[]): number {
+  const byStep = new Map<string, { started: number; retrying: number }>();
+  for (const event of events) {
+    if (!event.correlationId) continue;
+    const step = byStep.get(event.correlationId) ?? { started: 0, retrying: 0 };
+    if (event.eventType === 'step_started') step.started += 1;
+    if (event.eventType === 'step_retrying') step.retrying += 1;
+    byStep.set(event.correlationId, step);
+  }
+  let starts = 0;
+  for (const { started, retrying } of byStep.values()) {
+    starts += Math.min(retrying, Math.max(0, started - 1));
+  }
+  return starts;
 }
 
 async function runAndCheck(options?: { specVersion: number }) {
@@ -120,12 +143,12 @@ async function runAndCheck(options?: { specVersion: number }) {
   // The paragraph that explains the count, as printed.
   const explained = text
     .split('\n\n')
-    .filter((paragraph) => /steps? wrote|Each step writes/.test(paragraph))
+    .filter((paragraph) => /steps? wrote/.test(paragraph))
     .join('\n');
   console.log(
     `spec ${specVersion}: ${events.length} events, ${stepLog.length} of them step events in the log\n${explained}`
   );
-  const claim = stepEventsTheTextClaims(text, { steps, retries });
+  const claim = stepEventsTheTextClaims(text);
   expect(
     claim.events,
     'the step events the explanation adds up to are the ones in the log'
@@ -139,10 +162,24 @@ async function runAndCheck(options?: { specVersion: number }) {
     expect(claim.withoutCreated).toBe(steps - countOf(events, 'step_created'));
   }
 
+  // What the retries added, as printed, is the log's too.
+  const retryStarts = retryStartsInTheLog(events);
+  expect(retryEventsTheTextClaims(text)).toEqual({
+    retries,
+    events: retries + retryStarts,
+    markers: retries,
+    starts: retryStarts,
+  });
+  // No line says what the run would count as on Vercel, or links pricing for
+  // a local run.
+  expect(text).not.toMatch(/On Vercel|would count as|See pricing/);
+
   // Usage counts the log it pages through, event for event.
   expect(usage.events).toBe(events.length);
   expect(usage.billableEvents).toBe(events.length);
-  expect(usage.retries).toEqual({ count: 2, events: 4 });
+  expect(usage.retries).toEqual({ count: 2, events: retries + retryStarts });
+  // Both retries started their step again.
+  expect(retryStarts).toBe(2);
   expect(usage.stepEvents).toEqual({
     steps,
     events: stepLog.length,

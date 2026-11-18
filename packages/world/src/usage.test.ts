@@ -2,20 +2,21 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRunUsage,
   collapseUsageSpans,
-  EVENTS_PER_RETRY,
-  formatBillableNote,
+  formatBuiltInEventsLine,
+  formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
   formatEventCountingLines,
   formatEventCountingNote,
   formatLocalDataWrittenNote,
+  formatOtherSteps,
+  formatRunEventsLine,
   formatRunUsageSummary,
   formatStepCreationNote,
   formatStepEventsBreakdown,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
-  RUN_EVENTS_NOTE,
   type RunUsageAggregates,
   type RunUsageSpan,
   type RunUsageStepGroup,
@@ -39,6 +40,8 @@ const stepGroup = (
     completed: 0,
     failed: 0,
     retries: 0,
+    // Each retry started its step again, unless a test says otherwise.
+    restarts: fields.retries ?? 0,
     bytes: 0,
     ...fields,
   };
@@ -104,14 +107,20 @@ describe('buildRunUsage', () => {
 
     expect(usage.events).toBe(21);
     expect(usage.billableEvents).toBe(21);
-    expect(usage.retries).toEqual({ count: 1, events: EVENTS_PER_RETRY });
+    expect(usage.retries).toEqual({ count: 1, events: 2 });
     expect(usage.eventsBySpan.map((s) => [s.kind, s.name, s.events])).toEqual([
       ['step', 'step//a', 8],
-      ['run', WORKFLOW, 5],
       ['hook', 'hook', 3],
       ['step', 'step//b', 3],
+      ['run', WORKFLOW, 3],
+      // Attribute writes are not the run's lifecycle: their own span.
+      ['attributes', 'attributes', 2],
       ['wait', 'sleep', 2],
     ]);
+    expect(usage.runEvents).toEqual({
+      events: 3,
+      byType: { created: 1, started: 1, completed: 1, failed: 0, cancelled: 0 },
+    });
     expect(usage.eventsBySpan.reduce((sum, s) => sum + s.share, 0)).toBeCloseTo(
       1
     );
@@ -200,21 +209,19 @@ describe('usage formatting', () => {
     expect(one.billed).toBe(false);
     expect(one.billableEvents).toBe(1);
     expect(formatRunUsageSummary(one)).toBe('1 event · 1 retry');
-    expect(formatBillableNote(one)).toBe(
-      'On Vercel, this run would count as 1 billable event.'
-    );
     const many = buildRunUsage(
       aggregates({
         stepGroups: [stepGroup('s', { steps: 1, events: 1234, retries: 3 })],
       })
     );
     expect(formatRunUsageSummary(many)).toBe('1,234 events · 3 retries');
-    expect(formatBillableNote(many)).toBe(
-      'On Vercel, this run would count as 1,234 billable events.'
+    // No line says what the run would count as on Vercel.
+    expect(formatEventCountingLines(many).join('\n')).not.toMatch(
+      /Vercel|billable/
     );
   });
 
-  it('calls a billed run’s events billable, with no Vercel note', () => {
+  it('calls a billed run’s events billable', () => {
     const usage = buildRunUsage(
       aggregates({
         billed: true,
@@ -223,7 +230,6 @@ describe('usage formatting', () => {
     );
     expect(usage.billed).toBe(true);
     expect(formatRunUsageSummary(usage)).toBe('12 billable events · 2 retries');
-    expect(formatBillableNote(usage)).toBeNull();
     expect(formatUsageFooter(usage)).toBe('Not your final bill.');
     expect(formatDataWrittenHeading(usage)).toBe('Data written');
     expect(formatLocalDataWrittenNote(usage)).toBeNull();
@@ -255,11 +261,10 @@ describe('usage formatting', () => {
     );
     expect(formatEventCountingLines(usage)).toEqual([
       '2 steps wrote 8 events: 2 created, 3 started, 2 completed, 1 retry marker.',
-      'Each retry adds 2: a retry marker, and the step starting again.',
-      'The run writes its own: created, started, and completed or failed. A sleep writes 2, a hook at least 2.',
-      'On Vercel, every event in the log is billable. The count covers the whole run, not only the events loaded on this page.',
+      '1 retry added 2 events: 1 retry marker, 1 step start.',
+      'The count covers the whole run, not only the events loaded on this page.',
     ]);
-    // The CLI's two lines are lines of the web UI's list.
+    // The CLI's two lines are lines of the full list.
     for (const line of formatEventCountingNote(usage)) {
       expect(formatEventCountingLines(usage)).toContain(line);
     }
@@ -268,13 +273,170 @@ describe('usage formatting', () => {
   it('says what the run writes in the CLI note when no step ran', () => {
     const usage = buildRunUsage(
       aggregates({
+        status: 'pending',
         eventGroups: [{ eventType: 'run_created', events: 1, bytes: 1 }],
       })
     );
     expect(formatEventCountingNote(usage)).toEqual([
-      'The run writes its own: created, started, and completed or failed. A sleep writes 2, a hook at least 2.',
-      'Each retry adds 2: a retry marker, and the step starting again.',
+      'The run wrote 1 event so far: 1 created.',
+      'A retry adds a retry marker, and the step starting again.',
     ]);
+    expect(formatEventCountingNote(buildRunUsage(aggregates()))).toEqual([
+      'The run wrote no events.',
+      'A retry adds a retry marker, and the step starting again.',
+    ]);
+  });
+
+  it.each([
+    [
+      'completed',
+      { run_created: 1, run_started: 1, run_completed: 1 },
+      'The run wrote 3 events: 1 created, 1 started, 1 completed.',
+    ],
+    [
+      'failed',
+      { run_created: 1, run_started: 1, run_failed: 1 },
+      'The run wrote 3 events: 1 created, 1 started, 1 failed.',
+    ],
+    [
+      'cancelled',
+      { run_created: 1, run_started: 1, run_cancelled: 1 },
+      'The run wrote 3 events: 1 created, 1 started, 1 cancelled.',
+    ],
+    [
+      'cancelled',
+      // Cancelled before it started.
+      { run_created: 1, run_cancelled: 1 },
+      'The run wrote 2 events: 1 created, 1 cancelled.',
+    ],
+    [
+      'running',
+      { run_created: 1, run_started: 1 },
+      'The run wrote 2 events so far: 1 created, 1 started.',
+    ],
+    [
+      'completed',
+      // A run event type this build does not know.
+      { run_created: 1, run_started: 1, run_completed: 1, run_paused: 1 },
+      'The run wrote 4 events: 1 created, 1 started, 1 completed, 1 other.',
+    ],
+  ] as const)('builds the %s run line from the run’s own events: %j', (status, counts, line) => {
+    const usage = buildRunUsage(
+      aggregates({
+        status,
+        eventGroups: Object.entries(counts).map(([eventType, events]) => ({
+          eventType,
+          events,
+          bytes: 1,
+        })),
+      })
+    );
+    expect(formatRunEventsLine(usage)).toBe(line);
+    expect(formatEventCountingLines(usage)).toContain(line);
+    expect(formatEventCountingNote(usage)[0]).toBe(line);
+    expect(usageSpanTree(usage).builtIns[0]).toMatchObject({
+      label: 'Run start & finish',
+      events: usage.runEvents.events,
+      note: line,
+    });
+  });
+
+  it('gives attribute writes and unknown events their own rows and line', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [
+          { eventType: 'run_created', events: 1, bytes: 1 },
+          { eventType: 'run_started', events: 1, bytes: 1 },
+          { eventType: 'run_completed', events: 1, bytes: 1 },
+          { eventType: 'attr_set', events: 4, bytes: 1 },
+          { eventType: 'wait_created', events: 1, bytes: 1 },
+          { eventType: 'wait_completed', events: 1, bytes: 1 },
+          { eventType: 'future_thing', events: 2, bytes: 1 },
+        ],
+      })
+    );
+    const t = usageSpanTree(usage);
+    expect(t.builtIns.map((row) => [row.label, row.events, row.calls])).toEqual(
+      [
+        ['Run start & finish', 3, 1],
+        ['Attributes', 4, 4],
+        ['Sleeps', 2, 1],
+        ['Other events', 2, 2],
+      ]
+    );
+    // Only the run row says what the run wrote, from its own counts.
+    expect(t.builtIns[0].note).toBe(
+      'The run wrote 3 events: 1 created, 1 started, 1 completed.'
+    );
+    expect(t.builtIns.slice(1).every((row) => row.note === undefined)).toBe(
+      true
+    );
+    expect(t.showBuiltInLabel).toBe(true);
+    expect(formatBuiltInEventsLine(usage)).toBe(
+      '1 sleep wrote 2 events, 4 attribute writes, 2 other events.'
+    );
+    expect(formatEventCountingLines(usage)).toContain(
+      '1 sleep wrote 2 events, 4 attribute writes, 2 other events.'
+    );
+  });
+
+  it('counts the events retries added from the log, not a fixed rate', () => {
+    const usage = (fields: Partial<RunUsageStepGroup>) =>
+      buildRunUsage(
+        aggregates({
+          stepGroups: [
+            stepGroup('s', {
+              steps: 1,
+              created: 1,
+              started: 1,
+              completed: 0,
+              ...fields,
+            }),
+          ],
+        })
+      );
+    // Retried, not started again yet: the marker alone.
+    const pending = usage({ retries: 1, restarts: 0 });
+    expect(pending.retries).toEqual({ count: 1, events: 1 });
+    expect(formatEventCountingNote(pending)[1]).toBe(
+      '1 retry added 1 event: 1 retry marker.'
+    );
+    // Retried twice and started again both times.
+    const twice = usage({ started: 3, completed: 1, retries: 2, restarts: 2 });
+    expect(twice.retries).toEqual({ count: 2, events: 4 });
+    expect(formatEventCountingNote(twice)[1]).toBe(
+      '2 retries added 4 events: 2 retry markers, 2 step starts.'
+    );
+    // Summed over step groups: one restarted, one not yet.
+    const mixed = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('a', { steps: 1, started: 1, retries: 1, restarts: 0 }),
+          stepGroup('b', { steps: 1, started: 2, retries: 1, restarts: 1 }),
+        ],
+      })
+    );
+    expect(mixed.retries).toEqual({ count: 2, events: 3 });
+    expect(formatEventCountingNote(mixed)[1]).toBe(
+      '2 retries added 3 events: 2 retry markers, 1 step start.'
+    );
+  });
+
+  it.each([
+    [1, '+ 1 other step'],
+    [3, '+ 3 other steps'],
+    [1234, '+ 1,234 other steps'],
+  ])('folds %d steps into %s', (steps, text) => {
+    expect(formatOtherSteps(steps)).toBe(text);
+  });
+
+  it.each([
+    [0, '0 retries'],
+    [1, '1 retry'],
+    [2, '2 retries'],
+    [1234, '1,234 retries'],
+  ])('pluralizes %d as %s', (count, text) => {
+    expect(formatCount(count, 'retry', 'retries')).toBe(text);
   });
 
   it.each([
@@ -581,7 +743,7 @@ describe('the span tree', () => {
         ['Hooks', 4, 1],
       ]
     );
-    expect(t.builtIns[0].note).toBe(RUN_EVENTS_NOTE);
+    expect(t.builtIns[0].note).toBe(formatRunEventsLine(usage));
     expect(t.showBuiltInLabel).toBe(true);
   });
 

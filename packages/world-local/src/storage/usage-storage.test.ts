@@ -3,11 +3,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
+  formatEventCountingNote,
   formatRunUsageSummary,
   formatStepCreationNote,
   formatStepEventsBreakdown,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  usageSpanTree,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { databaseFor } from '../db/index.js';
@@ -447,10 +449,96 @@ describe('experimental_usage.getRun (world-local)', () => {
       correlationId: 'wait_1',
     } as never);
 
+    for (const key of ['a', 'b']) {
+      await storage.events.create(runId, {
+        eventType: 'attr_set',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          changes: [{ key, value: '1' }],
+          writer: { type: 'workflow' },
+        },
+      } as never);
+    }
+
     const usage = await usageOf(runId);
-    expect(usage.events).toBe(4);
+    expect(usage.events).toBe(6);
     expect(usage.eventsBySpan).toContainEqual(
       expect.objectContaining({ kind: 'wait', name: 'sleep', events: 2 })
+    );
+    // Attribute writes are their own span, not the run's start and finish.
+    expect(usage.eventsBySpan).toContainEqual(
+      expect.objectContaining({
+        kind: 'attributes',
+        name: 'attributes',
+        events: 2,
+        calls: 2,
+      })
+    );
+    expect(usage.runEvents).toMatchObject({
+      events: 2,
+      byType: { created: 1, started: 1 },
+    });
+    expect(
+      usageSpanTree(usage).builtIns.map((row) => [row.label, row.events])
+    ).toEqual([
+      ['Run start & finish', 2],
+      ['Attributes', 2],
+      ['Sleeps', 2],
+    ]);
+  });
+
+  it('counts the events a retry added from the log, not a fixed rate', async () => {
+    const runId = await startRun();
+    // Retried, and not started again yet: the marker is all it added.
+    await createStep(storage, runId, {
+      stepId: 'step_1',
+      stepName: CHARGE,
+      input: bytes(8),
+    });
+    await updateStep(storage, runId, 'step_1', 'step_started');
+    await updateStep(storage, runId, 'step_1', 'step_retrying', {
+      error: bytes(8),
+    });
+    expect((await usageOf(runId)).retries).toEqual({ count: 1, events: 1 });
+
+    // Started again: the start is the retry's too.
+    await updateStep(storage, runId, 'step_1', 'step_started');
+    expect((await usageOf(runId)).retries).toEqual({ count: 1, events: 2 });
+
+    // A second step redelivered (started twice) without a retry: its extra
+    // start is not a retry's.
+    await createStep(storage, runId, {
+      stepId: 'step_2',
+      stepName: EMAIL,
+      input: bytes(8),
+    });
+    await updateStep(storage, runId, 'step_2', 'step_started');
+    await updateStep(storage, runId, 'step_2', 'step_started');
+    const usage = await usageOf(runId);
+    expect(usage.stepEvents.byType.started).toBe(4);
+    expect(usage.retries).toEqual({ count: 1, events: 2 });
+    expect(formatEventCountingNote(usage)[1]).toBe(
+      '1 retry added 2 events: 1 retry marker, 1 step start.'
+    );
+  });
+
+  it('says what a run cancelled before it started wrote', async () => {
+    const run = await createRun(storage, {
+      deploymentId: 'dpl_test',
+      workflowName: WORKFLOW,
+      input: bytes(16),
+    });
+    await updateRun(storage, run.runId, 'run_cancelled');
+    const usage = await usageOf(run.runId);
+    expect(usage.runEvents).toEqual({
+      events: 2,
+      byType: { created: 1, started: 0, completed: 0, failed: 0, cancelled: 1 },
+    });
+    expect(formatEventCountingNote(usage)[0]).toBe(
+      'The run wrote 2 events: 1 created, 1 cancelled.'
+    );
+    expect(usageSpanTree(usage).builtIns[0].note).toBe(
+      'The run wrote 2 events: 1 created, 1 cancelled.'
     );
   });
 

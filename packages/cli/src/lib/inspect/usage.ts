@@ -1,9 +1,10 @@
 import {
-  formatBillableNote,
+  formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
   formatEventCountingNote,
   formatEventsWithRetries,
+  formatOtherSteps,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
@@ -59,7 +60,7 @@ function bar(share: number): string {
 }
 
 const retryTag = (retries: number) =>
-  retries > 0 ? `↻ ${retries} ${retries === 1 ? 'retry' : 'retries'}` : '';
+  retries > 0 ? `↻ ${formatCount(retries, 'retry', 'retries')}` : '';
 
 interface Row {
   name: string;
@@ -75,7 +76,14 @@ interface Row {
  */
 export function formatRunUsageText(
   usage: RunUsage,
-  { color = false }: { color?: boolean } = {}
+  {
+    color = false,
+    pricing = false,
+  }: {
+    color?: boolean;
+    /** Link the pricing page: only for a run on Vercel's backend. */
+    pricing?: boolean;
+  } = {}
 ): string {
   const c = new Chalk({ level: color ? 1 : 0 });
   const lines: string[] = [];
@@ -96,13 +104,6 @@ export function formatRunUsageText(
     ['Events', `${events}  (${retries})`],
     ['Data written', `${formatUsageBytes(usage.dataWritten.bytes)}${local}`],
   ];
-  const billable = formatBillableNote(usage);
-  if (billable) {
-    summary.push([
-      'On Vercel',
-      `${usage.billableEvents.toLocaleString('en-US')} billable events`,
-    ]);
-  }
   const labelWidth = Math.max(...summary.map(([label]) => label.length));
   for (const [label, value] of summary) {
     lines.push(`${c.dim(label.padEnd(labelWidth))}  ${value}`);
@@ -114,7 +115,7 @@ export function formatRunUsageText(
     ...(tree.otherSteps
       ? [
           {
-            name: `+ ${tree.otherSteps.steps} more steps`,
+            name: formatOtherSteps(tree.otherSteps.steps),
             events: tree.otherSteps.events.toLocaleString('en-US'),
             share: formatUsageShare(tree.otherSteps.share),
             extra: '',
@@ -223,7 +224,8 @@ export function formatRunUsageText(
 
   lines.push('');
   lines.push(formatUsageFooter(usage));
-  lines.push(`See pricing: ${WORKFLOW_PRICING_DOCS_URL}`);
+  // Pricing applies to runs Vercel bills, not to a local run.
+  if (pricing) lines.push(`See pricing: ${WORKFLOW_PRICING_DOCS_URL}`);
   lines.push(c.dim('Machine-readable: --json'));
   return lines.join('\n');
 

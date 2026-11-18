@@ -26,18 +26,22 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
 export const WORKFLOW_PRICING_DOCS_URL =
   'https://vercel.com/docs/workflows/pricing';
 
-/**
- * Each retry writes `step_retrying` and runs the step again (`step_started`).
- * True on every spec: what differs between specs is a step's *creation*,
- * which {@link RunUsage.stepEvents} reports as the run wrote it.
- */
-export const EVENTS_PER_RETRY = 2;
-
 /** How many spans the summaries list before collapsing the rest. */
 export const USAGE_SPANS_SHOWN = 5;
 
 /** What a span's events belong to. Sleeps are `wait`. */
-export type RunUsageSpanKind = 'run' | 'step' | 'hook' | 'wait';
+/**
+ * What a span's events belong to: the run's own lifecycle (`run_*`), a step,
+ * a hook, a sleep (`wait`), the run's attributes (`attr_set`), or event
+ * types this build does not know (`other`).
+ */
+export type RunUsageSpanKind =
+  | 'run'
+  | 'step'
+  | 'hook'
+  | 'wait'
+  | 'attributes'
+  | 'other';
 
 /** The entities `dataWritten` is broken down by. */
 export type RunUsageEntity = 'run' | 'step' | 'hook' | 'stream';
@@ -54,7 +58,8 @@ export interface RunUsageSpan {
   /**
    * What the events are grouped by: the full step name for a step (every
    * call of one step function is one span), the workflow name for the run's
-   * own events, `hook` for hooks and `sleep` for sleeps.
+   * own events, `hook` for hooks, `sleep` for sleeps, `attributes` for
+   * attribute writes and `other` for event types this build does not know.
    */
   name: string;
   events: number;
@@ -64,7 +69,8 @@ export interface RunUsageSpan {
   retries: number;
   /**
    * How many times the span ran: a step span's steps (calls of the step
-   * function), a sleep or hook span's sleeps or hooks, 1 for the run.
+   * function), a sleep or hook span's sleeps or hooks, 1 for the run, and
+   * the events themselves for attributes and other events.
    */
   calls: number;
 }
@@ -74,10 +80,8 @@ export interface RunUsage {
   status: WorkflowRunStatus;
   workflowName: string;
   /**
-   * Whether the backend bills this run. `false` on the Local World: its
-   * events and data are counted the way they would be billed, and the UI and
-   * CLI say what the run would count as on Vercel rather than call them
-   * billable.
+   * Whether the backend bills this run. `false` on the Local World, whose
+   * runs are not billed: its events are not called billable.
    */
   billed: boolean;
   /** The run has not finished, so these numbers can still grow. */
@@ -92,9 +96,16 @@ export interface RunUsage {
   retries: {
     /** `step_retrying` events. */
     count: number;
-    /** Events the retries added: {@link EVENTS_PER_RETRY} each. */
+    /**
+     * Events the retries added, counted from the log: the `step_retrying`
+     * markers, plus the `step_started` events they caused (each step's
+     * starts after its first, up to its markers). A retry whose step has not
+     * started again yet adds one.
+     */
     events: number;
   };
+  /** The run's own lifecycle events (`run_*`), by type. */
+  runEvents: RunUsageRunEvents;
   /**
    * The run's step events by type, as its log holds them. How many events a
    * step writes depends on how it ran: a step dispatched to the queue writes
@@ -139,6 +150,27 @@ export type RunUsageDataWrittenSource =
   | 'log'
   | 'saved-at-purge'
   | 'left-after-purge';
+
+/** The run event types {@link RunUsageRunEvents} counts. */
+export type RunUsageRunEventType =
+  | 'created'
+  | 'started'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export const RUN_USAGE_RUN_EVENT_TYPES: readonly RunUsageRunEventType[] = [
+  'created',
+  'started',
+  'completed',
+  'failed',
+  'cancelled',
+];
+
+export interface RunUsageRunEvents {
+  events: number;
+  byType: Record<RunUsageRunEventType, number>;
+}
 
 /** The step event types {@link RunUsageStepEvents} counts. */
 export type RunUsageStepEventType =
@@ -195,6 +227,12 @@ export interface RunUsageStepGroup {
   failed: number;
   /** `step_retrying` events among them. */
   retries: number;
+  /**
+   * The `step_started` events a retry caused: per step, its starts after the
+   * first, up to its `step_retrying` markers (a start past those is a
+   * redelivery), summed over the steps.
+   */
+  restarts: number;
   bytes: number;
 }
 
@@ -232,8 +270,12 @@ function spanOf(
 ): { kind: RunUsageSpanKind; name: string } {
   if (eventType.startsWith('hook_')) return { kind: 'hook', name: 'hook' };
   if (eventType.startsWith('wait_')) return { kind: 'wait', name: 'sleep' };
-  // run_*, attr_set, and any event type this build does not know yet.
-  return { kind: 'run', name: workflowName };
+  if (eventType.startsWith('run_')) return { kind: 'run', name: workflowName };
+  if (eventType === 'attr_set') {
+    return { kind: 'attributes', name: 'attributes' };
+  }
+  // An event type this build does not know yet.
+  return { kind: 'other', name: 'other' };
 }
 
 /** Locale-independent, so the browser and the CLI order spans alike. */
@@ -297,10 +339,26 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   };
 
   const created = { hook: 0, wait: 0 };
+  const runEvents: RunUsageRunEvents = {
+    events: 0,
+    byType: { created: 0, started: 0, completed: 0, failed: 0, cancelled: 0 },
+  };
   for (const group of input.eventGroups) {
     // Sealed-log placeholders are rows of the log, not events.
     const entity = usageEntityOfEventType(group.eventType);
     if (!entity) continue;
+    const runType = group.eventType.slice('run_'.length);
+    if (
+      group.eventType.startsWith('run_') &&
+      (RUN_USAGE_RUN_EVENT_TYPES as readonly string[]).includes(runType)
+    ) {
+      runEvents.byType[runType as RunUsageRunEventType] += toCount(
+        group.events
+      );
+    }
+    if (group.eventType.startsWith('run_')) {
+      runEvents.events += toCount(group.events);
+    }
     if (group.eventType === 'hook_created')
       created.hook += toCount(group.events);
     if (group.eventType === 'wait_created')
@@ -324,7 +382,9 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
       other: 0,
     },
   };
+  let restarts = 0;
   for (const group of input.stepGroups) {
+    restarts += toCount(group.restarts);
     const counts = {
       created: toCount(group.created),
       started: toCount(group.started),
@@ -358,6 +418,9 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     if (span.kind === 'run') span.calls = 1;
     if (span.kind === 'hook') span.calls = calls.hook;
     if (span.kind === 'wait') span.calls = calls.wait;
+    if (span.kind === 'attributes' || span.kind === 'other') {
+      span.calls = span.events;
+    }
   }
 
   const eventsBySpan = [...spans.values()]
@@ -377,7 +440,8 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     inProgress: !isTerminalWorkflowRunStatus(input.status),
     events,
     billableEvents: events,
-    retries: { count: retries, events: retries * EVENTS_PER_RETRY },
+    retries: { count: retries, events: retries + restarts },
+    runEvents,
     stepEvents,
     eventsBySpan,
     dataWritten: dataWrittenOf(input, byEntity),
@@ -459,26 +523,30 @@ export function formatUsageShare(share: number): string {
   return `${Math.round(share * 100)}%`;
 }
 
+/**
+ * `1 retry`, `2 retries`, `1,234 events`: a count and the word for it,
+ * shared so every surface pluralizes alike.
+ */
+export function formatCount(count: number, one: string, many: string): string {
+  return plural(count, one, many);
+}
+
 const formatRetries = (count: number) => plural(count, 'retry', 'retries');
 
+/** The row the steps past the shown ones fold into: `+ 3 other steps`. */
+export function formatOtherSteps(steps: number): string {
+  return `+ ${steps.toLocaleString('en-US')} other ${steps === 1 ? 'step' : 'steps'}`;
+}
+
 /**
- * `12 billable events · 1 retry` on a billed run, `12 events · 1 retry`
- * on one that is not (a Local World run): see {@link formatBillableNote}.
+ * `12 billable events · 1 retry` on a billed run, `12 events · 1 retry` on
+ * one that is not (a Local World run).
  */
 export function formatRunUsageSummary(usage: RunUsage): string {
   const events = usage.billed
     ? plural(usage.billableEvents, 'billable event', 'billable events')
     : formatUsageEvents(usage.events);
   return `${events} · ${formatRetries(usage.retries.count)}`;
-}
-
-/**
- * What a run that is not billed would count as on Vercel; `null` on a
- * billed run, whose summary already says it.
- */
-export function formatBillableNote(usage: RunUsage): string | null {
-  if (usage.billed) return null;
-  return `On Vercel, this run would count as ${plural(usage.billableEvents, 'billable event', 'billable events')}.`;
 }
 
 /** The run's events and retries, for the CLI's summary block. */
@@ -513,13 +581,86 @@ export function formatUsageFooter(usage: RunUsage): string {
     : "Local runs aren't billed. Counted from this run's log in your local data directory.";
 }
 
-/** What the run's own events are. */
-export const RUN_EVENTS_NOTE =
-  'Every run writes 3 events: created, started, and completed or failed.';
+const RUN_EVENT_LABELS: Record<RunUsageRunEventType, string> = {
+  created: 'created',
+  started: 'started',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'cancelled',
+};
 
-const RETRY_LINE = `Each retry adds ${EVENTS_PER_RETRY}: a retry marker, and the step starting again.`;
-const BUILT_IN_LINE =
-  'The run writes its own: created, started, and completed or failed. A sleep writes 2, a hook at least 2.';
+/**
+ * What the run's own events were, from its counts: `The run wrote 3 events:
+ * 1 created, 1 started, 1 completed.` A run cancelled before it started, or
+ * one still running, says what it wrote so far. `null` with no run events.
+ */
+export function formatRunEventsLine(usage: RunUsage): string | null {
+  const { events, byType } = usage.runEvents;
+  if (events <= 0) return null;
+  const parts = RUN_USAGE_RUN_EVENT_TYPES.flatMap((type) =>
+    byType[type] > 0
+      ? [`${byType[type].toLocaleString('en-US')} ${RUN_EVENT_LABELS[type]}`]
+      : []
+  );
+  const known = RUN_USAGE_RUN_EVENT_TYPES.reduce((n, t) => n + byType[t], 0);
+  if (events > known) {
+    parts.push(`${(events - known).toLocaleString('en-US')} other`);
+  }
+  const sofar = usage.inProgress ? ' so far' : '';
+  return `The run wrote ${formatUsageEvents(events)}${sofar}: ${parts.join(', ')}.`;
+}
+
+/**
+ * The sleeps, hooks, attribute writes and unknown events, from their spans:
+ * `1 sleep wrote 2 events, 1 hook wrote 3 events.` `null` when there are
+ * none.
+ */
+export function formatBuiltInEventsLine(usage: RunUsage): string | null {
+  const span = (kind: RunUsageSpanKind) =>
+    usage.eventsBySpan.find((s) => s.kind === kind);
+  const parts: string[] = [];
+  const wait = span('wait');
+  if (wait) {
+    parts.push(
+      `${plural(wait.calls, 'sleep', 'sleeps')} wrote ${formatUsageEvents(wait.events)}`
+    );
+  }
+  const hook = span('hook');
+  if (hook) {
+    parts.push(
+      `${plural(hook.calls, 'hook', 'hooks')} wrote ${formatUsageEvents(hook.events)}`
+    );
+  }
+  const attributes = span('attributes');
+  if (attributes) {
+    parts.push(
+      `${plural(attributes.events, 'attribute write', 'attribute writes')}`
+    );
+  }
+  const other = span('other');
+  if (other) {
+    parts.push(`${plural(other.events, 'other event', 'other events')}`);
+  }
+  if (parts.length === 0) return null;
+  const sentence = parts.join(', ');
+  return `${sentence[0].toUpperCase()}${sentence.slice(1)}.`;
+}
+
+/**
+ * What the retries added, from their counts: `2 retries added 4 events: 2
+ * retry markers, 2 step starts.` With no retries, what one would add.
+ */
+function retryLine(usage: RunUsage): string {
+  const { count, events } = usage.retries;
+  if (count <= 0) {
+    return 'A retry adds a retry marker, and the step starting again.';
+  }
+  const starts = Math.max(0, events - count);
+  const parts = [plural(count, 'retry marker', 'retry markers')];
+  if (starts > 0) parts.push(plural(starts, 'step start', 'step starts'));
+  return `${plural(count, 'retry', 'retries')} added ${formatUsageEvents(events)}: ${parts.join(', ')}.`;
+}
+
 const COUNT_COVERS =
   'The count covers the whole run, not only the events loaded on this page.';
 
@@ -530,26 +671,34 @@ const COUNT_COVERS =
 export function formatEventCountingLines(usage: RunUsage): string[] {
   const breakdown = formatStepEventsBreakdown(usage);
   const creation = formatStepCreationNote(usage);
+  const runLine = formatRunEventsLine(usage);
+  const builtIns = formatBuiltInEventsLine(usage);
   return [
     ...(breakdown ? [`${breakdown}.`] : []),
     ...(creation ? [creation] : []),
-    RETRY_LINE,
-    BUILT_IN_LINE,
+    retryLine(usage),
+    ...(runLine ? [runLine] : []),
+    ...(builtIns ? [builtIns] : []),
     usage.billed
       ? `Every event in the log is billable today. ${COUNT_COVERS}`
-      : `On Vercel, every event in the log is billable. ${COUNT_COVERS}`,
+      : COUNT_COVERS,
   ];
 }
 
 /**
  * The two lines of "How events are counted" the CLI prints under its table:
  * how the run's step events add up (or, with no steps, what the run's own
- * events are), and what a retry adds. Both are lines of
+ * events were), and what the retries added. Both are lines of
  * {@link formatEventCountingLines}.
  */
 export function formatEventCountingNote(usage: RunUsage): [string, string] {
   const breakdown = formatStepEventsBreakdown(usage);
-  return [breakdown ? `${breakdown}.` : BUILT_IN_LINE, RETRY_LINE];
+  return [
+    breakdown
+      ? `${breakdown}.`
+      : (formatRunEventsLine(usage) ?? 'The run wrote no events.'),
+    retryLine(usage),
+  ];
 }
 
 /**
@@ -642,9 +791,14 @@ export interface UsageSpanTree {
 
 const BUILT_IN_LABELS: Record<Exclude<RunUsageSpanKind, 'step'>, string> = {
   run: 'Run start & finish',
+  attributes: 'Attributes',
   wait: 'Sleeps',
   hook: 'Hooks',
+  other: 'Other events',
 };
+
+/** The built-in rows' order. */
+const BUILT_IN_KINDS = ['run', 'attributes', 'wait', 'hook', 'other'] as const;
 
 const rowOf = (span: RunUsageSpan, label: string): UsageSpanTreeRow => ({
   kind: span.kind,
@@ -661,11 +815,12 @@ export function usageSpanTree(
 ): UsageSpanTree {
   const steps = usage.eventsBySpan.filter((span) => span.kind === 'step');
   const { shown, other } = collapseUsageSpans(steps, limit);
-  const builtIns = (['run', 'wait', 'hook'] as const).flatMap((kind) => {
+  const runNote = formatRunEventsLine(usage) ?? undefined;
+  const builtIns = BUILT_IN_KINDS.flatMap((kind) => {
     const span = usage.eventsBySpan.find((s) => s.kind === kind);
     if (!span) return [];
     const row = rowOf(span, BUILT_IN_LABELS[kind]);
-    return [kind === 'run' ? { ...row, note: RUN_EVENTS_NOTE } : row];
+    return [kind === 'run' && runNote ? { ...row, note: runNote } : row];
   });
   return {
     workflow: {
