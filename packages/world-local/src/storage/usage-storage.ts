@@ -341,8 +341,11 @@ export function createUsageStorage(
   const maxRuns = options.maxRuns ?? 64;
   const batchTargetMs = options.batchTargetMs ?? 10;
   const maxBatchRows = options.maxBatchRows ?? 4096;
-  // Small first: rows can hold megabytes each.
-  let batchRows = options.initialBatchRows ?? 4;
+  // Each counting pass starts small (rows can hold megabytes each) and
+  // tunes its batch to the rows it reads. A size learned on one run is never
+  // used for another: a run of small rows grows the batch to thousands, and
+  // a run of large rows read next would count in one block.
+  const initialBatchRows = options.initialBatchRows ?? 4;
 
   // Per World (this closure), never module state. Insertion order is the
   // recency order: a read moves its run to the end.
@@ -380,6 +383,7 @@ export function createUsageStorage(
     counts: RunCounts,
     target: number
   ): Promise<void> {
+    let batchRows = initialBatchRows;
     while (counts.countedSeq < target) {
       const end = Number(
         db.get<{ seq: number | null }>(

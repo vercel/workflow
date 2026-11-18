@@ -377,6 +377,66 @@ describe('remembered usage counts', () => {
     );
   });
 
+  it('sizes each run’s batches from its own rows, not the run read before it', async () => {
+    // A run of many small rows grows the batch to thousands of rows. A run
+    // of large rows read next by the same World must not inherit that size,
+    // or its whole first count runs as one synchronous block.
+    const small = await startRun();
+    for (let i = 0; i < 400; i++) {
+      await small.event({
+        eventType: 'step_created',
+        correlationId: `step_s${i}`,
+        eventData: { stepName: NAMES[0], input: bytes(8) },
+      });
+      await small.event({
+        eventType: 'step_started',
+        correlationId: `step_s${i}`,
+      });
+      await small.event({
+        eventType: 'step_completed',
+        correlationId: `step_s${i}`,
+        eventData: { result: bytes(8) },
+      });
+    }
+    const large = await startRun();
+    for (let i = 0; i < 30; i++) {
+      await large.event({
+        eventType: 'step_created',
+        correlationId: `step_l${i}`,
+        eventData: { stepName: NAMES[1], input: bytes(300_000) },
+      });
+      await large.event({
+        eventType: 'step_started',
+        correlationId: `step_l${i}`,
+      });
+      await large.event({
+        eventType: 'step_completed',
+        correlationId: `step_l${i}`,
+        eventData: { result: bytes(300_000) },
+      });
+    }
+    const yields: Record<string, number[]> = {};
+    const reader = createUsageStorage(db, undefined, {
+      onBatch: (runId, countedSeq) => {
+        (yields[runId] ??= []).push(countedSeq);
+      },
+    });
+    await reader.getRun(small.runId);
+    // The small run's batches did grow well past the first size.
+    const smallYields = yields[small.runId] ?? [];
+    const smallSizes = smallYields.map(
+      (seq, i) => seq - (smallYields[i - 1] ?? 0)
+    );
+    expect(Math.max(...smallSizes)).toBeGreaterThan(64);
+
+    const usage = await reader.getRun(large.runId);
+    const largeYields = yields[large.runId] ?? [];
+    // It yields, and its first batch is the first size, not the small run's.
+    expect(largeYields.length).toBeGreaterThan(1);
+    expect(largeYields[0]).toBeLessThanOrEqual(4);
+    expect(usage).toEqual(await recount(large.runId));
+  });
+
   it('is what the World uses', async () => {
     const run = await startRun();
     await writeSome(run, 0);
