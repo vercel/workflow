@@ -10,8 +10,8 @@ import { createQueue } from '../../dist/queue.js';
 // Graphile job locked by a worker that no longer exists.
 //
 // CRASHING_QUEUE_RUN_SPEC_VERSION stamps the message with a run spec version
-// (9 puts it in the run's named queue). CRASHING_QUEUE_STALE_SECONDS sets
-// `jobLockStaleSeconds` (`0` behaves like a 5.1.0 process with its default:
+// (9 makes it take the run's delivery lease). CRASHING_QUEUE_STALE_SECONDS
+// sets `jobLockStaleSeconds` (`0` behaves like a 5.1.0 process with its default:
 // it neither renews nor registers as renewing).
 assert(process.env.WORKFLOW_POSTGRES_URL, 'WORKFLOW_POSTGRES_URL is required');
 const connectionString = process.env.WORKFLOW_POSTGRES_URL;

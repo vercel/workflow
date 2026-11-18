@@ -10,11 +10,16 @@
  * observable with any of its data left. The connection zeroes freed pages
  * (`secure_delete`), and the WAL, which still holds the old pages, is
  * checkpointed and truncated right after the purge commits.
+ *
+ * A step still running when the run finished (a `Promise.race` loser) may
+ * settle after it, and a stream may first be written after it: those writes
+ * are scrubbed or refused as they land (`ranPurge`).
  */
 
-import type { Event, Hook, Step } from '@workflow/world';
+import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import {
   getEventDataRefFields,
+  isTerminalWorkflowRunStatus,
   RETENTION_ATTRIBUTE,
   readRunRetention,
 } from '@workflow/world';
@@ -38,6 +43,18 @@ export function purgesUserDataOnFinish(
     );
   }
   return retention.mode === 'none';
+}
+
+/**
+ * Whether a run's user data was purged when it finished: it is terminal and
+ * asked for zero retention. Not `expiredAt`, which is a retention deadline.
+ */
+export function ranPurge(run: WorkflowRun | undefined): boolean {
+  return (
+    run !== undefined &&
+    isTerminalWorkflowRunStatus(run.status) &&
+    readRunRetention(run.attributes).mode === 'none'
+  );
 }
 
 /**

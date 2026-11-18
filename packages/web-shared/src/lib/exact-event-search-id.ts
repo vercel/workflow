@@ -7,8 +7,6 @@ const WAIT_ID_PATTERN = new RegExp(`^wait_(${WORKFLOW_ULID_BODY})$`, 'i');
 const HOOK_ID_PATTERN = new RegExp(`^hook_(${WORKFLOW_ULID_BODY})$`, 'i');
 const EVENT_ID_PATTERN = new RegExp(`^evnt_(${WORKFLOW_ULID_BODY})$`, 'i');
 
-const WORKFLOW_ID_PREFIX_PATTERN = /^(step_|wait_|hook_|evnt_|wrun_)/i;
-
 export type ExactWorkflowSearchIdKind = 'step' | 'wait' | 'hook' | 'event';
 
 export type ExactWorkflowSearchId = {
@@ -53,15 +51,4 @@ export function parseExactWorkflowSearchId(
     matchPrefixedId(HOOK_ID_PATTERN, 'hook', 'hook', trimmed) ??
     matchPrefixedId(EVENT_ID_PATTERN, 'evnt', 'event', trimmed)
   );
-}
-
-/** True when input looks like the user is attempting an ID search (including partial). */
-export function looksLikeWorkflowIdSearchInput(query: string): boolean {
-  const trimmed = query.trim();
-  if (!WORKFLOW_ID_PREFIX_PATTERN.test(trimmed)) {
-    return false;
-  }
-  // Distinguish IDs (contain digits) from event-type strings like step_started.
-  // Assumes workflow event types do not include digits in their names.
-  return /\d/.test(trimmed);
 }

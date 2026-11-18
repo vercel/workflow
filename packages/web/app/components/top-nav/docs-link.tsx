@@ -3,15 +3,13 @@ import { ArrowUpRight } from 'lucide-react';
 
 export function DocsLink() {
   return (
-    <Button asChild variant="secondary" size="small">
+    <Button asChild variant="secondary" size="small" suffix={<ArrowUpRight />}>
       <a
         href="https://workflow-sdk.dev/docs/observability"
         target="_blank"
         rel="noopener noreferrer"
-        className="gap-1"
       >
-        <span>Docs</span>
-        <ArrowUpRight className="h-4 w-4" />
+        Docs
       </a>
     </Button>
   );

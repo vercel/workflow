@@ -327,6 +327,30 @@ export const WorkflowNoopDelivery = SemanticConvention<boolean>(
   'workflow.noop_delivery'
 );
 
+/**
+ * Why a delivery was a no-op: `terminal` acknowledged a run this process saw
+ * end without reading anything, `tail` read the log tail and found nothing
+ * new since the consumed position, `hop` only sent a long wait's next timer.
+ */
+export const WorkflowNoopDeliveryReason = SemanticConvention<
+  'terminal' | 'tail' | 'hop'
+>('workflow.noop_delivery.reason');
+
+/** Time this delivery lingered for a wait due soon, in milliseconds. */
+export const WorkflowLingerWaitMs = SemanticConvention<number>(
+  'workflow.linger.wait_ms'
+);
+
+/** Time this delivery lingered for a background step, in milliseconds. */
+export const WorkflowLingerStepMs = SemanticConvention<number>(
+  'workflow.linger.step_ms'
+);
+
+/** Time this delivery lingered for open hooks, in milliseconds. */
+export const WorkflowLingerHookMs = SemanticConvention<number>(
+  'workflow.linger.hook_ms'
+);
+
 /** The in-band fence refused this orchestrator delivery's write. */
 export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'
@@ -1063,6 +1087,19 @@ export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
 /** Number of pagination pages loaded when fetching workflow events */
 export const WorkflowEventsPagesLoaded = SemanticConvention<number>(
   'workflow.events.pages_loaded'
+);
+
+/**
+ * Whether an event log load stopped following `hasMore` because it already
+ * held the run's event ceiling: the log holds at least that many events.
+ */
+export const WorkflowEventsLoadStoppedAtLimit = SemanticConvention<boolean>(
+  'workflow.events.load_stopped_at_limit'
+);
+
+/** The run's event ceiling a load stopped at. */
+export const WorkflowEventsLimit = SemanticConvention<number>(
+  'workflow.events.limit'
 );
 
 // Queue timing breakdown attributes (workflow-specific)

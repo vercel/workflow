@@ -276,9 +276,17 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
   // A `.gitignore` that ignores everything in the directory, run data and the
   // queue auth key alike, whenever there is none. `wx` never overwrites one
   // that is already there, and a failure here never fails the World.
-  await writeFile(path.join(absolutePath, '.gitignore'), '*\n', {
-    flag: 'wx',
-  }).catch(() => {});
+  // The ignore comments keep Turbopack from tracing the app's own
+  // `.gitignore` into the server output: that file is not in a CLI-uploaded
+  // deployment's source, so a build restored from cache fails to deploy.
+  await writeFile(
+    /* turbopackIgnore: true */ path.join(
+      /* turbopackIgnore: true */ absolutePath,
+      '.gitignore'
+    ),
+    '*\n',
+    { flag: 'wx' }
+  ).catch(() => {});
 }
 
 /**
@@ -371,7 +379,8 @@ export async function initDataDir(dataDir: string): Promise<void> {
 
   // Run data written by earlier releases (one JSON file per entity) is not
   // migrated, and not deleted either: it stays where it is, unread, for the
-  // user to keep or remove. This release only uses `world.db`.
+  // user to keep or remove (`clear()` removes it). This release only uses
+  // `world.db`.
   // (The upgrade notice is printed where world.db is created, see
   // legacy-data.ts.)
   const legacy = legacyEntriesIn(dataDir);

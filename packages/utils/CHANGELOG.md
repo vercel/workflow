@@ -1,5 +1,13 @@
 # @workflow/utils
 
+## 5.1.1
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5494](https://github.com/vercel/workflow/pull/5494) [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop Turbopack from tracing the app's `.gitignore` and from warning that the whole project is traced. A Next.js app deployed from the Vercel CLI could fail with `ENOENT: no such file or directory, lstat '.../.gitignore'` when its build came from cache.
+
 ## 5.1.0
 
 ### Minor Changes

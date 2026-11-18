@@ -12,6 +12,7 @@ import { decode } from './db/codec.js';
 import { databaseFor } from './db/index.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
+import { removeLegacyData } from './legacy-data.js';
 import {
   createReleasePipeline,
   releaseOrphanedSteps,
@@ -309,6 +310,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         db.run('DELETE FROM stream_chunks WHERE tag = ?', tag);
         db.run('DELETE FROM runs WHERE tag = ?', tag);
       });
+      // The JSON files of an earlier release in the same directory are run
+      // data too, and their `clear()` removed them.
+      await removeLegacyData(mergedConfig.dataDir, tag);
       // Shrink the file: `@workflow/vitest` clears in every worker, and the
       // freed pages would otherwise keep the database at its largest size.
       await db.reclaimFreePages();

@@ -1148,9 +1148,6 @@ importers:
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
-      clsx:
-        specifier: 2.1.1
-        version: 2.1.1
       cross-env:
         specifier: ^7.0.3
         version: 7.0.3
@@ -1190,9 +1187,6 @@ importers:
       swr:
         specifier: ^2.5.1
         version: 2.5.1(react@19.3.1)
-      tailwind-merge:
-        specifier: 3.5.0
-        version: 3.5.0
       tailwindcss:
         specifier: '4'
         version: 4.3.5
@@ -1253,9 +1247,6 @@ importers:
       react-virtuoso:
         specifier: 4.18.20
         version: 4.18.20(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      shiki:
-        specifier: 4.0.0
-        version: 4.0.0
       sonner:
         specifier: 2.0.8
         version: 2.0.8(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)

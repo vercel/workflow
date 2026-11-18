@@ -41,6 +41,7 @@ const MIGRATIONS: string[] = [
     doc TEXT NOT NULL,
     PRIMARY KEY (run_id, seq)
   ) WITHOUT ROWID;
+  -- Named by INDEXED BY in storage/store.ts: dropping or renaming it breaks correlation lookups.
   CREATE INDEX events_by_correlation ON events (run_id, correlation_id, seq);
 
   CREATE TABLE steps (

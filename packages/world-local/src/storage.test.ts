@@ -366,6 +366,36 @@ describe('Storage', () => {
         });
         expect(first.maxEvents).toBe(25_000);
       });
+
+      // A delivery that did not write run_started reads the ceiling from its
+      // log load: the same value, exemption included.
+      it.each([
+        ['a node run', { workflowVm: 'node' }],
+        [
+          'a QuickJS run with snapshotting',
+          { workflowVm: 'quickjs', snapshotThreshold: 1000 },
+        ],
+      ])('lists the ceiling run_started reports (%s)', async (_name, executionContext) => {
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '10');
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          executionContext,
+        });
+        const started = await storage.events.create(created.runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        const page = await storage.events.list({ runId: created.runId });
+        expect(started.maxEvents).toBeDefined();
+        expect(page.maxEvents).toBe(started.maxEvents);
+      });
+
+      it('lists no ceiling for a run it does not hold', async () => {
+        const page = await storage.events.list({ runId: 'wrun_missing' });
+        expect(page).not.toHaveProperty('maxEvents');
+      });
     });
 
     describe('update via events', () => {
