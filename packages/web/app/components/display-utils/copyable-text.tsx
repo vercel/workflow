@@ -36,7 +36,7 @@ export function CopyableText({
             textToCopy={text}
             aria-label="Copy to clipboard"
             className={cn(
-              'opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100 [&_svg]:size-3',
+              'opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100',
               overlay
                 ? 'absolute right-0 top-1/2 -translate-y-1/2 bg-background/80 backdrop-blur-sm'
                 : '-my-1'
