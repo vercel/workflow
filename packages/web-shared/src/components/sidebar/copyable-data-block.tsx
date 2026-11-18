@@ -52,12 +52,19 @@ export const serializeForClipboard = (value: unknown): string => {
   if (
     typeof value === 'number' ||
     typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
     value === null
   ) {
     return String(value);
   }
   try {
-    return JSON.stringify(value, null, 2);
+    // Hydrated payloads can contain BigInt values, which JSON.stringify rejects.
+    // Write them as decimal strings, matching the CLI's `stringifyJSON`.
+    return JSON.stringify(
+      value,
+      (_key, v) => (typeof v === 'bigint' ? v.toString() : v),
+      2
+    );
   } catch {
     return String(value);
   }
