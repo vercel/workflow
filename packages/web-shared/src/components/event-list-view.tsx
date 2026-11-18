@@ -36,7 +36,6 @@ import { useDetailPanelWidth } from './trace-viewer/components/use-detail-panel-
 import { Button } from './ui/button';
 import { ContextCardProvider } from './ui/context-card';
 import { DecryptClickContext } from './ui/data-inspector';
-import { LoadMoreButton } from './ui/load-more-button';
 import { TooltipProvider } from './ui/tooltip';
 
 interface EventsListProps {
@@ -366,10 +365,13 @@ function EventListViewInner({
               {list.hasMore && (
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="pointer-events-auto">
-                    <LoadMoreButton
+                    <Button
+                      variant="secondary"
                       loading={isLoadingMoreEvents}
                       onClick={() => void onLoadMoreEvents?.()}
-                    />
+                    >
+                      Load more
+                    </Button>
                   </div>
                 </div>
               )}

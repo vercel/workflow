@@ -1,7 +1,6 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
 import {
   Tooltip,
   TooltipContent,
@@ -11,7 +10,7 @@ import {
 
 /**
  * Explains why an event row is shown greyed out, whether it is a repeat the
- * runtime read past ({@link DUPLICATE_EVENT_MESSAGE}), a backend seal for an
+ * runtime read past (`DUPLICATE_EVENT_MESSAGE`), a backend seal for an
  * abandoned position (`SEALED_EVENT_MESSAGE`), or any other notice a list
  * attaches.
  *

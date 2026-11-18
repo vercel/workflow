@@ -1,11 +1,10 @@
 import {
+  CopyButton,
   cn,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@workflow/web-shared';
-import { Check, Copy } from 'lucide-react';
-import { useState } from 'react';
 
 interface CopyableTextProps {
   text: string;
@@ -21,68 +20,32 @@ export function CopyableText({
   className,
   overlay,
 }: CopyableTextProps) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy text:', err);
-    }
-  };
-
-  if (overlay) {
-    return (
-      <span className={cn('relative group/copy inline-block', className)}>
-        {children}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover/copy:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm p-1 rounded"
-              aria-label="Copy to clipboard"
-            >
-              {copied ? (
-                <Check className="h-3 w-3 text-muted-foreground" />
-              ) : (
-                <Copy className="h-3 w-3 text-muted-foreground hover:text-foreground" />
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>{copied ? 'Copied!' : 'Copy to clipboard'}</p>
-          </TooltipContent>
-        </Tooltip>
-      </span>
-    );
-  }
-
+  const Wrapper = overlay ? 'span' : 'div';
   return (
-    <div className={cn('flex items-center gap-2 group', className)}>
+    <Wrapper
+      className={cn(
+        'group/copy',
+        overlay ? 'relative inline-block' : 'flex items-center gap-1',
+        className
+      )}
+    >
       {children}
       <Tooltip>
         <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="opacity-0 group-hover:opacity-100 transition-opacity"
+          <CopyButton
+            textToCopy={text}
             aria-label="Copy to clipboard"
-          >
-            {copied ? (
-              <Check className="h-3 w-3 text-green-600" />
-            ) : (
-              <Copy className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+            size="small"
+            className={cn(
+              'opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100',
+              overlay
+                ? 'absolute right-0 top-1/2 -translate-y-1/2 bg-background/80 backdrop-blur-sm'
+                : '-my-1'
             )}
-          </button>
+          />
         </TooltipTrigger>
-        <TooltipContent>
-          <p>{copied ? 'Copied!' : 'Copy to clipboard'}</p>
-        </TooltipContent>
+        <TooltipContent>Copy to clipboard</TooltipContent>
       </Tooltip>
-    </div>
+    </Wrapper>
   );
 }

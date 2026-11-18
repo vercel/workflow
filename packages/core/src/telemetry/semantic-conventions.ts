@@ -327,6 +327,30 @@ export const WorkflowNoopDelivery = SemanticConvention<boolean>(
   'workflow.noop_delivery'
 );
 
+/**
+ * Why a delivery was a no-op: `terminal` acknowledged a run this process saw
+ * end without reading anything, `tail` read the log tail and found nothing
+ * new since the consumed position, `hop` only sent a long wait's next timer.
+ */
+export const WorkflowNoopDeliveryReason = SemanticConvention<
+  'terminal' | 'tail' | 'hop'
+>('workflow.noop_delivery.reason');
+
+/** Time this delivery lingered for a wait due soon, in milliseconds. */
+export const WorkflowLingerWaitMs = SemanticConvention<number>(
+  'workflow.linger.wait_ms'
+);
+
+/** Time this delivery lingered for a background step, in milliseconds. */
+export const WorkflowLingerStepMs = SemanticConvention<number>(
+  'workflow.linger.step_ms'
+);
+
+/** Time this delivery lingered for open hooks, in milliseconds. */
+export const WorkflowLingerHookMs = SemanticConvention<number>(
+  'workflow.linger.hook_ms'
+);
+
 /** The in-band fence refused this orchestrator delivery's write. */
 export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'
