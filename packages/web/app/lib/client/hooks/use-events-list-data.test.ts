@@ -16,7 +16,7 @@ vi.mock('~/lib/rpc-client', () => ({
   fetchEventsByCorrelationId: vi.fn(),
 }));
 
-import { fetchEvents } from '~/lib/rpc-client';
+import { fetchEvent, fetchEvents } from '~/lib/rpc-client';
 
 type EventsResponse = ServerActionResult<PaginatedResult<Event>>;
 
@@ -310,5 +310,35 @@ describe('useEventsListData', () => {
 
     expect(fetchEvents).toHaveBeenCalledTimes(1);
     expect(ids(result.current.events)).toEqual(['event-1']);
+  });
+
+  it('reports an event ID the backend 404s as not found', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page([]));
+    vi.mocked(fetchEvent).mockResolvedValueOnce({
+      success: false,
+      error: {
+        message: 'The requested resource was not found.',
+        layer: 'API',
+        request: { operation: 'getEvent', params: {}, status: 404 },
+      },
+    });
+    const { result } = renderEventsList();
+
+    await expect(
+      result.current.searchByExactId('evnt_01', 'event')
+    ).resolves.toEqual({ status: 'not_found' });
+  });
+
+  it('reports other event ID lookup failures as errors', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page([]));
+    vi.mocked(fetchEvent).mockResolvedValueOnce({
+      success: false,
+      error: { message: 'boom', layer: 'server' },
+    });
+    const { result } = renderEventsList();
+
+    await expect(
+      result.current.searchByExactId('evnt_01', 'event')
+    ).resolves.toEqual({ status: 'error', message: 'boom' });
   });
 });
