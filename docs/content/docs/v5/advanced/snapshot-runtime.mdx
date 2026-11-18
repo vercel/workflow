@@ -17,23 +17,31 @@ The snapshot runtime fixes this. It runs your workflow functions in a [QuickJS](
 
 Step functions are not affected. They always run with full Node.js access.
 
-## Enable it on Vercel
+## Enable it
 
-Add two environment variables to your project, then redeploy:
+Set `WORKFLOW_VM=quickjs` in the environment that starts runs, which is the process that calls [`start()`](/docs/api-reference/workflow-api/start):
 
 ```bash
 WORKFLOW_VM=quickjs
-WORKFLOW_SNAPSHOT_THRESHOLD=1000
 ```
 
-You can add them in two ways:
+Snapshotting is on by default under QuickJS, with a threshold of 1,000 events. Set [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) to change it.
 
-- **From a run.** When a run fails at the event limit, times out while replaying, or passes 20,000 events, its page in the Workflows observability tab shows an **Optimize Long Runs** button. It adds both variables to Production and prompts you to redeploy.
-- **From project settings.** Open **Settings**, then **Environment Variables**, add both variables, and redeploy.
+Only runs started after the change use the snapshot runtime. A run keeps the VM and snapshot policy it started with, so runs already in progress are not changed, and a run that already failed is not revived. Start it again.
 
-Only runs started after the redeploy use the snapshot runtime. A run keeps the VM and snapshot policy it started with, so runs already in progress are not changed, and a run that already failed is not revived. Start it again.
+The setting applies to every workflow the process starts.
 
-The variables apply to every workflow in the project.
+### World support
+
+A snapshot holds your workflow's in-memory state, so by default it is only saved for runs that have an encryption key. What that means depends on your World:
+
+| World | Snapshots saved | Notes |
+| --- | --- | --- |
+| Vercel World | By default | Runs have an encryption key, and snapshots are encrypted with it. |
+| Local World, Postgres World | Only with [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted) | Set it on the workflow handler. Snapshots are stored in plaintext, so enable it only where snapshot storage is as trusted as your deployment. |
+| Other Worlds | If the World implements snapshot storage | Without it, runs still execute on QuickJS and replay the full log on every resume. |
+
+The exemption from the per-run event limit applies on the Local World and the Vercel World.
 
 ## Check your workflow code first
 
@@ -53,8 +61,20 @@ QuickJS does not provide a few globals inside workflow functions. If your workfl
 
 A snapshot is an optimization, not a source of truth. The event log stays authoritative, and a missing or incompatible snapshot falls back to a full replay.
 
-## Outside Vercel
+## On Vercel
 
-The snapshot runtime is not specific to Vercel. The Local World and Postgres World also store snapshots, with one difference: a snapshot holds your workflow's in-memory state, so by default it is only saved for runs that have an encryption key, and only the Vercel World provides one. To save snapshots on the Local World or Postgres World, also set [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted). Those snapshots are stored in plaintext.
+Add the variables to your project's environment variables, then redeploy:
+
+```bash
+WORKFLOW_VM=quickjs
+WORKFLOW_SNAPSHOT_THRESHOLD=1000
+```
+
+You can add them in two ways:
+
+- **From a run.** When a run fails at the event limit, times out while replaying, or passes 20,000 events, its page in the Workflows observability tab shows an **Optimize Long Runs** button. It adds both variables to Production and prompts you to redeploy.
+- **From project settings.** Open **Settings**, then **Environment Variables**, add both variables, and redeploy.
+
+Runs on Vercel keep executing on the deployment they started on, so the redeploy does not affect runs in progress.
 
 For every setting and what a snapshot contains, see [Runtime tuning](/docs/configuration/runtime-tuning#workflow-vm-engine).
