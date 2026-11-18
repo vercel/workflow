@@ -4,8 +4,6 @@ import { cn } from '../../lib/cn';
 
 const iconButtonVariants = cva(
   [
-    // No `[background:none]`: Tailwind sorts it after every `bg-*` utility, so
-    // a call site could not give the button a resting fill.
     'm-0 inline-flex shrink-0 appearance-none items-center justify-center border-0 bg-transparent p-0 align-baseline font-inherit no-underline [-webkit-appearance:none] [-webkit-tap-highlight-color:transparent]',
     'transition-colors duration-150 ease-in-out',
     'enabled:cursor-pointer disabled:cursor-not-allowed disabled:opacity-40',

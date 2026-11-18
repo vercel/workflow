@@ -101,7 +101,6 @@ function ErrorCodeBadge({
       <TooltipContent className="p-0">
         <div className="flex items-center gap-2 p-1.5">
           <span className="text-xs font-mono">{errorCode}</span>
-          {/* The tooltip is an inverted surface: inherit its text colour. */}
           <CopyButton
             textToCopy={errorCode}
             aria-label="Copy error code"

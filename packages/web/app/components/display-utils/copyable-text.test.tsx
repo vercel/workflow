@@ -7,6 +7,7 @@ import {
 } from '@testing-library/react';
 import { ToastProvider, TooltipProvider } from '@workflow/web-shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Table, TableBody, TableCell, TableRow } from '~/components/ui/table';
 import { CopyableText } from './copyable-text';
 
 const writeText = vi.fn<(text: string) => Promise<void>>();
@@ -23,20 +24,22 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-/**
- * Renders the text inside a clickable row, as the tables do, and presses copy.
- * The button is also a tooltip trigger, so this covers the click reaching it.
- */
 function pressCopy(text: string | (() => Promise<string>)) {
   const onRowClick = vi.fn();
   render(
     <ToastProvider toast={toast}>
       <TooltipProvider>
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: stands in for a clickable table row */}
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: stands in for a clickable table row */}
-        <div onClick={onRowClick}>
-          <CopyableText text={text}>value</CopyableText>
-        </div>
+        <Table>
+          <TableBody>
+            <TableRow onClick={onRowClick}>
+              <TableCell>
+                <CopyableText text={text} overlay>
+                  value
+                </CopyableText>
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
       </TooltipProvider>
     </ToastProvider>
   );

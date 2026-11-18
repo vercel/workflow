@@ -13,14 +13,9 @@ interface CopyableTextProps {
   className?: string;
   /** If true, the copy button overlaps the text on the right */
   overlay?: boolean;
-  /** Accessible label for the copy button, also shown as its tooltip. */
   label?: string;
 }
 
-/**
- * Text with a copy button that appears on hover or keyboard focus: a 12px
- * icon in a 24px button, with its label as a tooltip.
- */
 export function CopyableText({
   text,
   children,
