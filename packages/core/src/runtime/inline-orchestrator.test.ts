@@ -13,17 +13,21 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerStepFunction } from '../private.js';
 import { contextStorage } from '../step/context-storage.js';
 import { getMaxInlineDurationMs } from './delivery.js';
 import {
   INLINE_ENV,
   INLINE_HANDOFF_MARGIN_MS,
   INLINE_SPECULATION_ENV,
+  INLINE_WORKFLOW_LOADERS_KEY,
   inlineBudgetMs,
+  loadInlineEntry,
   noteInlineStepStarted,
   registerInlineOrchestrator,
   resetInlineOrchestratorsForTests,
 } from './inline-orchestrator.js';
+import { registerQuickJSEngine } from './quickjs-loader.js';
 import { resumeHook } from './resume-hook.js';
 import { Run } from './run.js';
 import { start } from './start.js';
@@ -789,5 +793,149 @@ describe('run creation beside the held send', () => {
     // The message was already the queue's (here: held) when run_created
     // failed: the delivery's `run_started` decides, as for a queued start.
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('per-workflow inline entries', () => {
+  const QUEUE = `${PREFIX}${WORKFLOW.workflowId}`;
+  const loaders = () => {
+    const g = globalThis as unknown as Record<
+      symbol,
+      Map<string, () => Promise<unknown>> | undefined
+    >;
+    g[INLINE_WORKFLOW_LOADERS_KEY] ??= new Map();
+    return g[INLINE_WORKFLOW_LOADERS_KEY];
+  };
+  afterEach(() => {
+    loaders().clear();
+    vi.unstubAllEnvs();
+  });
+
+  /** A workflow module's loader: importing its entry registers it. */
+  function entryLoader(requiredStepIds: string[], handler: QueueHandler) {
+    const load = vi.fn(async () => {
+      registerInlineOrchestrator(QUEUE, () => handler, undefined, {
+        exact: true,
+        requiredStepIds,
+      });
+    });
+    loaders().set(WORKFLOW.workflowId, load);
+    return load;
+  }
+
+  it("loads only the started workflow's entry, and runs the held message with it", async () => {
+    registerStepFunction(
+      'step//inline-test//present',
+      (async () => 1) as never
+    );
+    const handler = vi.fn(async () => undefined);
+    const load = entryLoader(['step//inline-test//present'], handler);
+    const other = vi.fn(async () => undefined);
+    loaders().set('workflow//./src/inline//other', other);
+    const { world, consume } = fakeWorld();
+    setWorld(world);
+
+    await start(WORKFLOW, [1]);
+    await drainWaitUntil();
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(other).not.toHaveBeenCalled();
+    expect(consume).toHaveBeenCalledWith(handler);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues the whole run when a step its workflow can call is not registered here', async () => {
+    const handler = vi.fn(async () => undefined);
+    entryLoader(['step//inline-test//missing-in-this-process'], handler);
+    const { world, queue, consume } = fakeWorld();
+    setWorld(world);
+
+    await start(WORKFLOW, [1]);
+    await drainWaitUntil();
+
+    // One plain send, so the flow route (which has every step) delivers it
+    // once: nothing ran here.
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+    expect(consume).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    expect(spanAttributes['workflow.inline.skip_reason']).toBe('missing_steps');
+  });
+
+  it("is not used for another workflow's queue", async () => {
+    const handler = vi.fn(async () => undefined);
+    registerInlineOrchestrator(
+      `${PREFIX}workflow//./src/inline//other`,
+      () => handler,
+      undefined,
+      { exact: true, requiredStepIds: [] }
+    );
+    const { world, queue } = fakeWorld();
+    setWorld(world);
+
+    await start(WORKFLOW, [1]);
+
+    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+    expect(handler).not.toHaveBeenCalled();
+    expect(spanAttributes['workflow.inline.skip_reason']).toBe('no_handler');
+  });
+
+  it('queues when the entry fails to load', async () => {
+    loaders().set(WORKFLOW.workflowId, async () => {
+      throw new Error('chunk load failed');
+    });
+    const { world, queue } = fakeWorld();
+    setWorld(world);
+
+    await start(WORKFLOW, [1]);
+
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+  });
+
+  it('loads an entry once per process', async () => {
+    const handler = vi.fn(async () => undefined);
+    const load = entryLoader([], handler);
+    await loadInlineEntry(undefined, {
+      queueName: QUEUE,
+      workflowName: WORKFLOW.workflowId,
+    });
+    await loadInlineEntry(undefined, {
+      queueName: QUEUE,
+      workflowName: WORKFLOW.workflowId,
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  describe('QuickJS runs', () => {
+    it('are queued where the QuickJS engine is not bundled', async () => {
+      vi.stubEnv('WORKFLOW_VM', 'quickjs');
+      const handler = registerHandler();
+      const { world, queue } = fakeWorld();
+      setWorld(world);
+
+      await start(WORKFLOW, [1]);
+
+      expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+      expect(handler).not.toHaveBeenCalled();
+      expect(spanAttributes['workflow.inline.skip_reason']).toBe('no_engine');
+    });
+
+    it('run inline where it is', async () => {
+      vi.stubEnv('WORKFLOW_VM', 'quickjs');
+      registerQuickJSEngine({
+        spec8: vi.fn() as never,
+        spec9: vi.fn() as never,
+        runtime: vi.fn() as never,
+      });
+      const handler = registerHandler();
+      const { world } = fakeWorld();
+      setWorld(world);
+
+      await start(WORKFLOW, [1]);
+      await drainWaitUntil();
+
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
   });
 });

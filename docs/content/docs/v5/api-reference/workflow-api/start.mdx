@@ -246,14 +246,15 @@ The route returns as soon as the run is accepted. The delivery keeps running und
 The run is queued for the flow route instead when any of these is true:
 
 * The World can't hold queue messages (local development, Postgres), or the queue didn't hold this one.
-* The framework integration doesn't make the flow entry available to the route. Next.js and Nitro (v3, Node.js presets) do; SvelteKit, Astro, Nuxt, Nest and standalone builds queue every run for now.
+* The route can't load the workflow's code. With Next.js, a route that imports the workflow it starts or resumes can; a route that only has its ID (or a `defineHook()` module) can't, and queues. Nitro (v3, Node.js presets) loads the whole flow entry. SvelteKit, Astro, Nuxt, Nest and standalone builds queue every run for now.
+* A step the workflow can call isn't registered in the route's process, or the run uses the QuickJS engine (`WORKFLOW_VM=quickjs`) and the route doesn't bundle it. With Next.js, a route that imports a workflow has its steps; QuickJS stays in the flow route.
 * The run targets another deployment (`deploymentId`), or its data lives in a region other than the route's.
 * `start()` runs inside a workflow, a step or another orchestrator delivery, or it's a dynamic workflow, an `experimental_hook` start, or passes its own `world`.
 * `WORKFLOW_INLINE_DELIVERY=0` is set. Use it as a kill switch.
 
 Things to know:
 
-* **Bundle size.** Every server Function that can call `start()` or `resumeHook()` carries the app's workflows and steps, the same code as the flow route, and loads it on its first start. Module-level code in your step files (clients, connection pools, env checks) runs there too.
+* **Bundle size.** With Next.js, a route carries the compiled workflow code of the workflows it imports (one entry per workflow file, plus one shared copy of the app's serde registrations), loaded on its first `start()` or `resumeHook()` of that workflow. Its steps are the ones the route's own imports already registered, as before; the QuickJS engine is not added. Routes that don't import a workflow carry nothing new.
 * **Duration.** The delivery is bounded by the calling route's `maxDuration`, not the flow route's. It hands off to the queue before the route's deadline. A step body that outlives the route is stopped with it and retried on the queue, as after any crash.
 * **Request scope.** A step that runs inline runs inside the calling request's context. With Next.js, `fetch` follows the calling segment's caching configuration.
 * **Preparation.** While the queue answers the held send, the route already prepares the delivery: it loads the run's orchestrator and compiles the workflow (or the QuickJS baseline). That preparation writes nothing and starts no step, so it is simply dropped when the message isn't held. `WORKFLOW_INLINE_SPECULATION=0` turns it off.

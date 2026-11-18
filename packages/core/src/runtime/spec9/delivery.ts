@@ -6,6 +6,7 @@
  * lifecycles, edge cases and the decisions behind them. Read it before
  * changing spec 9 behaviour, and update it in the same change.
  */
+
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
 import {
@@ -44,7 +45,6 @@ import {
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
-
 import { decodeTime } from 'ulid';
 import {
   classifyRunError,
@@ -129,6 +129,7 @@ import {
   slotSnapshotParams,
 } from '../helpers.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
+import { quickJSEngine } from '../quickjs-loader.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
@@ -1806,9 +1807,7 @@ async function runDelivery(
 
     // --- QuickJS VM engine dispatch ---
     if (useQuickJSVm(workflowRun)) {
-      const { runWorkflowWithQuickJS } = await import(
-        './quickjs-entrypoint.js'
-      );
+      const { runWorkflowWithQuickJS } = await quickJSEngine().spec9();
       try {
         const quickjsResult = await runWorkflowWithQuickJS({
           workflowCode: effectiveWorkflowCode,

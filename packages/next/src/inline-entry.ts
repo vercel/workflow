@@ -78,3 +78,24 @@ export function inlineEntryTarget(
   }
   return join(workflowGeneratedDirectory(appDir, routePrefix), 'flow/route.js');
 }
+
+/**
+ * The directory, beside the flow route, that holds the per-workflow inline
+ * entries (one module per workflow file, plus `manifest.json`).
+ */
+export const INLINE_WORKFLOW_ENTRIES_DIR = 'inline';
+
+/**
+ * The manifest of per-workflow inline entries the loader reads to make each
+ * workflow module import its own entry, or `undefined` when the project has
+ * no router directory.
+ */
+export function inlineWorkflowManifestPath(
+  workingDir: string,
+  routePrefix: string | undefined
+): string | undefined {
+  const flowRoute = inlineEntryTarget(workingDir, routePrefix);
+  return flowRoute
+    ? join(flowRoute, '..', INLINE_WORKFLOW_ENTRIES_DIR, 'manifest.json')
+    : undefined;
+}

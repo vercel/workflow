@@ -34,10 +34,12 @@ import type {
   World,
 } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
+import { getStepFunction } from '../private.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { trace } from '../telemetry.js';
 import { getComputeInstanceId } from './compute-instance.js';
+import { isQuickJSEngineRegistered } from './quickjs-loader.js';
 import { safeWaitUntil } from './wait-until.js';
 
 /**
@@ -64,7 +66,11 @@ export type InlineSkipReason =
   /** Called from inside a step (a child run started by a workflow). */
   | 'in_step'
   /** A start shape this proposal does not inline (start Hook, dynamic). */
-  | 'unsupported_start';
+  | 'unsupported_start'
+  /** A per-workflow entry whose steps are not all registered here. */
+  | 'missing_steps'
+  /** A QuickJS run where the engine is not bundled. */
+  | 'no_engine';
 
 /** What an inline request came to; the `workflow.inline.outcome` value. */
 export type InlineOutcome =
@@ -78,11 +84,22 @@ export type InlineOutcome =
 interface InlineEntry {
   /** The queue prefix the flow route consumes (`__wkf_workflow_` etc.). */
   prefix: string;
+  /**
+   * The entry serves exactly one workflow's queue (`prefix` is its whole
+   * queue name): a per-workflow entry, which carries that workflow's code and
+   * relies on the calling route's own module graph for its steps.
+   */
+  exact: boolean;
   /** Builds the handler for a World; called at most once per World. */
   createHandler(world: World): QueueHandler;
   handlers: WeakMap<World, QueueHandler>;
   /** See {@link InlinePrewarm}. */
   prewarm?: InlinePrewarm;
+  /**
+   * A per-workflow entry: every step ID its workflow code can call. A run is
+   * inlined only where all of them are registered (see `decideInline`).
+   */
+  requiredStepIds?: readonly string[];
 }
 
 /**
@@ -111,13 +128,36 @@ export const INLINE_SPECULATION_ENV = 'WORKFLOW_INLINE_SPECULATION';
 // `@workflow/core` to different copies in one server build.
 const registry = globalSingleton(
   '@workflow/core//inlineOrchestrator',
-  2,
+  3,
   () => ({
     entries: new Map<string, InlineEntry>(),
     /** The one load of `@workflow/core/inline-entry` this process makes. */
     entryLoad: undefined as Promise<void> | undefined,
+    /** Loads of per-workflow entries, by workflow name. */
+    workflowLoads: new Map<string, Promise<void>>(),
   })
 );
+
+/**
+ * Where a framework integration registers per-workflow inline entries: a
+ * `Map` from workflow name (its `workflowId`) to a function importing the
+ * generated module that holds that workflow's code. The integration's
+ * transform adds the entries to the workflow's own module, so only routes
+ * that import a workflow carry its entry, and it is loaded on the first
+ * `start()` or `resumeHook()` of that workflow in the process.
+ */
+export const INLINE_WORKFLOW_LOADERS_KEY = Symbol.for(
+  '@workflow/core//inlineWorkflowLoaders'
+);
+
+function inlineWorkflowLoader(
+  workflowName: string
+): (() => Promise<unknown>) | undefined {
+  const loaders = (globalThis as Record<symbol, unknown>)[
+    INLINE_WORKFLOW_LOADERS_KEY
+  ] as Map<string, () => Promise<unknown>> | undefined;
+  return loaders?.get(workflowName);
+}
 
 /**
  * Registers the orchestrator handler of a flow entry so `start()` and
@@ -130,13 +170,19 @@ const registry = globalSingleton(
 export function registerInlineOrchestrator(
   prefix: string,
   createHandler: (world: World) => QueueHandler,
-  prewarm?: InlinePrewarm
+  prewarm?: InlinePrewarm,
+  options?: { exact?: boolean; requiredStepIds?: readonly string[] }
 ): void {
-  registry.entries.set(prefix, {
+  const exact = options?.exact === true;
+  registry.entries.set(exact ? `=${prefix}` : prefix, {
     prefix,
+    exact,
     createHandler,
     handlers: new WeakMap(),
     ...(prewarm && { prewarm }),
+    ...(options?.requiredStepIds && {
+      requiredStepIds: options.requiredStepIds,
+    }),
   });
 }
 
@@ -144,6 +190,7 @@ export function registerInlineOrchestrator(
 export function resetInlineOrchestratorsForTests(): void {
   registry.entries.clear();
   registry.entryLoad = undefined;
+  registry.workflowLoads.clear();
 }
 
 /**
@@ -207,21 +254,53 @@ export const INLINE_ENTRY_LOAD_WAIT_MS = 1_000;
  * route itself).
  */
 export function loadInlineEntry(
-  waitMs: number = INLINE_ENTRY_LOAD_WAIT_MS
+  waitMs: number = INLINE_ENTRY_LOAD_WAIT_MS,
+  target?: { queueName: string; workflowName: string }
 ): Promise<void> {
-  if (registry.entries.size > 0) return Promise.resolve();
-  registry.entryLoad ??= import('@workflow/core/inline-entry').then(
-    () => undefined,
-    (error: unknown) => {
-      runtimeLogger.debug(
-        'Could not load the workflow flow entry for inline delivery; runs are queued as usual',
-        { error: error instanceof Error ? error.message : String(error) }
-      );
+  let load: Promise<void>;
+  const loader = target && inlineWorkflowLoader(target.workflowName);
+  if (target && entryFor(target.queueName)) return Promise.resolve();
+  if (target && loader) {
+    // A per-workflow entry: only this workflow's code (see
+    // `INLINE_WORKFLOW_LOADERS_KEY`).
+    const name = target.workflowName;
+    let workflowLoad = registry.workflowLoads.get(name);
+    if (!workflowLoad) {
+      workflowLoad = Promise.resolve()
+        .then(loader)
+        .then(
+          () => undefined,
+          (error: unknown) => {
+            runtimeLogger.debug(
+              'Could not load the workflow inline entry; runs are queued as usual',
+              {
+                workflowName: name,
+                error: error instanceof Error ? error.message : String(error),
+              }
+            );
+          }
+        );
+      registry.workflowLoads.set(name, workflowLoad);
     }
-  );
+    load = workflowLoad;
+  } else {
+    if ([...registry.entries.values()].some((entry) => !entry.exact)) {
+      return Promise.resolve();
+    }
+    registry.entryLoad ??= import('@workflow/core/inline-entry').then(
+      () => undefined,
+      (error: unknown) => {
+        runtimeLogger.debug(
+          'Could not load the workflow flow entry for inline delivery; runs are queued as usual',
+          { error: error instanceof Error ? error.message : String(error) }
+        );
+      }
+    );
+    load = registry.entryLoad;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
-    registry.entryLoad,
+    load,
     new Promise<void>((resolve) => {
       timer = setTimeout(resolve, waitMs);
       timer.unref?.();
@@ -247,11 +326,14 @@ export function runAsOrchestratorDelivery<T>(fn: () => T): T {
 }
 
 function entryFor(queueName: string): InlineEntry | undefined {
+  const exact = registry.entries.get(`=${queueName}`);
+  if (exact) return exact;
   // The longest prefix that matches: a namespaced prefix
   // (`__eve_wkf_workflow_`) never matches the default one, but be exact.
   let best: InlineEntry | undefined;
   for (const entry of registry.entries.values()) {
     if (
+      !entry.exact &&
       queueName.startsWith(entry.prefix) &&
       (!best || entry.prefix.length > best.prefix.length)
     ) {
@@ -279,6 +361,14 @@ export interface InlineRequest {
   sameDeployment: boolean;
   /** Set when the caller's start shape cannot be inlined. */
   unsupported?: boolean;
+  /** The run's spec version, when known. */
+  runSpecVersion?: number;
+  /**
+   * The run runs on the QuickJS engine. Unset when the caller cannot tell (a
+   * hook resume): `WORKFLOW_VM` then decides, as it does for a run that
+   * stamped no engine.
+   */
+  quickjs?: boolean;
 }
 
 export type InlineDecision =
@@ -322,6 +412,24 @@ export function decideInline(request: InlineRequest): InlineDecision {
     // Expected where the framework does not alias the flow entry: the run is
     // queued, as before.
     return { inline: false, reason: 'no_handler' };
+  }
+  // A per-workflow entry brings the workflow's code but not its steps: the
+  // route's own module graph registered them when it imported the workflow
+  // (Next.js compiles every module in step mode). The run is inlined only if
+  // every step its workflow code can call is registered here, so an inline
+  // delivery never meets a step it cannot run, on either engine and spec
+  // version; otherwise the whole run is queued to the flow route, which has
+  // every step.
+  if (entry.requiredStepIds?.some((stepId) => !getStepFunction(stepId))) {
+    return { inline: false, reason: 'missing_steps' };
+  }
+  // The engine: a QuickJS run needs it bundled here (the per-workflow
+  // entries leave it out; see `quickjs-loader.ts`).
+  if (
+    (request.quickjs ?? process.env.WORKFLOW_VM === 'quickjs') &&
+    !isQuickJSEngineRegistered()
+  ) {
+    return { inline: false, reason: 'no_engine' };
   }
   try {
     return {

@@ -64,22 +64,34 @@ const register = (name: string) =>
 
 const HOOK_TOKEN = 'inline-fuzz-hook';
 
-const WORKFLOWS = {
-  /** A step, then two in parallel: 1 → 2 → (4, 6) = 12 for input 1. */
-  steps: {
-    code: `const a = ${useStep('inline_fuzz_a')};
+/** A step, then two in parallel: 1 → 2 → (4, 6) = 12 for input 1. */
+const stepsWorkflow = (name: string) => ({
+  code: `const a = ${useStep('inline_fuzz_a')};
       const b = ${useStep('inline_fuzz_b')};
       const c = ${useStep('inline_fuzz_c')};
       async function workflow(x) {
         const one = await a(x);
         const [two, three] = await Promise.all([b(one), c(one)]);
         return one + two + three;
-      }${register('inline_fuzz_steps')}`,
-    name: 'inline_fuzz_steps',
-    input: [1],
-    output: 12,
-    stepCount: 3,
-  },
+      }${register(name)}`,
+  name,
+  input: [1],
+  output: 12,
+  stepCount: 3,
+});
+
+const WORKFLOWS = {
+  steps: stepsWorkflow('inline_fuzz_steps'),
+  /**
+   * The same workflow, run through a per-workflow inline entry (as a route
+   * that imports it has): its steps are all registered here.
+   */
+  steps_entry: stepsWorkflow('inline_fuzz_steps_entry'),
+  /**
+   * Through a per-workflow entry whose workflow can call a step this process
+   * lacks: the whole run goes to the queue, and every step runs once.
+   */
+  steps_missing: stepsWorkflow('inline_fuzz_steps_missing'),
   /** A step, a hook, a step: (1 + 1 + 5) * 2 = 14 for input 1, n = 5. */
   hook: {
     code: `const a = ${useStep('inline_fuzz_a')};
@@ -97,6 +109,22 @@ const WORKFLOWS = {
     stepCount: 2,
   },
 } as const;
+
+// Per-workflow inline entries, registered as a generated entry registers
+// itself (its workflows' queues alone, with the steps its code can call).
+workflowEntrypoint(WORKFLOWS.steps_entry.code, {
+  inlineWorkflowNames: [WORKFLOWS.steps_entry.name],
+  inlineStepIds: ['inline_fuzz_a', 'inline_fuzz_b', 'inline_fuzz_c'],
+});
+workflowEntrypoint(WORKFLOWS.steps_missing.code, {
+  inlineWorkflowNames: [WORKFLOWS.steps_missing.name],
+  inlineStepIds: [
+    'inline_fuzz_a',
+    'inline_fuzz_b',
+    'inline_fuzz_c',
+    'inline_fuzz_not_in_this_process',
+  ],
+});
 
 type WorkflowKey = keyof typeof WORKFLOWS;
 type Fault = 'none' | 'lapse' | 'crash' | 'resume' | 'not_held';
@@ -126,13 +154,20 @@ interface Case {
   phase: 'before' | 'after';
   /** `WORKFLOW_INLINE_DELIVERY=0`: everything is queued, as before. */
   killSwitch?: boolean;
+  /** The workflow engine (`WORKFLOW_VM`). */
+  vm?: 'node' | 'quickjs';
 }
 
 function caseFor(seed: number): Case {
   const next = prng(seed * 2654435761);
   const pick = <T>(of: readonly T[]): T =>
     of[Math.floor(next() * of.length)] as T;
-  const workflow = pick(['steps', 'hook'] as const);
+  const workflow = pick([
+    'steps',
+    'hook',
+    'steps_entry',
+    'steps_missing',
+  ] as const);
   return {
     seed,
     workflow,
@@ -145,6 +180,7 @@ function caseFor(seed: number): Case {
     ordinal: 1 + Math.floor(next() * 12),
     phase: pick(['before', 'after'] as const),
     killSwitch: next() < 0.1,
+    vm: next() < 0.3 ? 'quickjs' : 'node',
   };
 }
 
@@ -297,6 +333,7 @@ function scenarioFor(c: Case, script: ScenarioScript) {
       env: {
         WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS: '0',
         ...(c.killSwitch && { WORKFLOW_INLINE_DELIVERY: '0' }),
+        ...(c.vm === 'quickjs' && { WORKFLOW_VM: 'quickjs' }),
       },
     },
     { handler: workflowEntrypoint(wf.code) }
@@ -392,7 +429,11 @@ describe('inline orchestrator delivery under faults', () => {
         expect(count, `${name}\n${detail}`).toBe(1);
       }
     }
-    if (c.killSwitch || c.fault === 'not_held') {
+    if (
+      c.killSwitch ||
+      c.fault === 'not_held' ||
+      c.workflow === 'steps_missing'
+    ) {
       // Nothing ran inline before the queue delivered the start message:
       // every event after `run_created` (and its `run_started`, which the
       // resilient path may write first) comes after the loop's first
@@ -411,7 +452,11 @@ describe('inline orchestrator delivery under faults', () => {
         expect(count, `${name}\n${detail}`).toBe(1);
       }
     }
-    const key = `${c.workflow}/spec${c.specVersion}/${c.killSwitch ? 'kill-switch' : c.fault}`;
+    if (c.workflow === 'steps_entry' && c.fault === 'none' && !c.killSwitch) {
+      // A complete per-workflow entry runs the whole run inline.
+      expect(result.deliveries, detail).toBe(0);
+    }
+    const key = `${c.workflow}/spec${c.specVersion}/${c.vm ?? 'node'}/${c.killSwitch ? 'kill-switch' : c.fault}`;
     summary.set(key, (summary.get(key) ?? 0) + 1);
   }, 30_000);
 });

@@ -9,6 +9,7 @@ import {
 import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
 import {
+  INLINE_WORKFLOW_ENTRIES_DIR,
   resolveWorkflowAppDirectory,
   workflowGeneratedDirectory,
 } from './inline-entry.js';
@@ -964,7 +965,7 @@ export async function getNextBuilderEager(
       const flowRouteDir = join(workflowGeneratedDir, 'flow');
       await mkdir(flowRouteDir, { recursive: true });
 
-      return await this.createCombinedBundle({
+      const combined = await this.createCombinedBundle({
         format: 'esm',
         inputFiles,
         stepsOutfile: join(flowRouteDir, '__step_registrations.js'),
@@ -974,6 +975,23 @@ export async function getNextBuilderEager(
         sourceStepRegistrationImports: true,
         tsconfigPath,
       });
+      // Per-workflow inline entries for production builds: `withWorkflow()`'s
+      // loader makes each workflow module import its own (see
+      // `inline-entry.ts`). `next dev` runs on the local World, which never
+      // holds a message.
+      if (
+        !this.config.watch &&
+        process.env.WORKFLOW_INLINE_ENTRIES !== '0' &&
+        // Absent on test doubles of the base builder.
+        typeof this.createInlineWorkflowEntries === 'function'
+      ) {
+        await this.createInlineWorkflowEntries({
+          discoveredEntries: combined.discoveredEntries,
+          outDir: join(flowRouteDir, INLINE_WORKFLOW_ENTRIES_DIR),
+          tsconfigPath,
+        });
+      }
+      return combined;
     }
 
     private async buildWebhookRoute({
