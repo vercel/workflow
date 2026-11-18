@@ -244,6 +244,7 @@ import {
   nearDueTimerIdempotencyKey,
   rearmsCoalescableTimer,
   sendNearDueTimerOnce,
+  waitTimerDelaySeconds,
   waitTimerMessage,
 } from './wait-timer.js';
 
@@ -5057,6 +5058,7 @@ async function runDelivery(
       wait: {
         correlationId: string;
         resumeAtMs: number;
+        kind?: 'wait' | 'rate';
       },
       options: { nearDue?: boolean } = {}
     ): Promise<void> {
@@ -5072,7 +5074,11 @@ async function runDelivery(
       const timer = waitTimerMessage({
         correlationId: wait.correlationId,
         resumeAtMs: wait.resumeAtMs,
-        seconds: Math.max(0, Math.ceil((wait.resumeAtMs - now) / 1000)),
+        seconds: waitTimerDelaySeconds({
+          kind: wait.kind,
+          remainingMs: wait.resumeAtMs - now,
+          windowMs: getOrchestratorRateWaitMs(),
+        }),
         nowMs: now,
         attempt,
       });

@@ -192,6 +192,41 @@ describe('waiting in process for a near rate limit slot', () => {
     expect(timerBeforeAcquired).toEqual([true, true]);
   }, 60_000);
 
+  it('wakes early for a slot further out, and finishes the wait in process', async () => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    // The queue's clock jumps to each timer; between them it runs in real
+    // time, so the woken delivery's in-process wait reaches the slot.
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    // One per 3s: the second call's slot is 3s out, past the 2s window.
+    const threeSeconds = sequential.replace('period: "1s"', 'period: "3s"');
+    const { world } = await setupOrchestratorRun(threeSeconds, [2], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+    });
+    await world.runOnClock();
+
+    const [, waited] = eventsOf(world, 'rate_acquired');
+    expect(waited).toBeDefined();
+    const slot = new Date(dataOf(waited)?.acquireAt as Date).getTime();
+    const lateMs = waited!.createdAt.getTime() - slot;
+    expect(lateMs).toBeGreaterThanOrEqual(0);
+    expect(lateMs).toBeLessThan(400);
+    const timers = world.queueCalls.filter(
+      (call) =>
+        (call.message as { waitContinuation?: unknown }).waitContinuation !==
+        undefined
+    );
+    // Woken a second in, two before the slot, then re-armed for the slot
+    // before the in-process wait.
+    expect(timers[0]?.opts?.delaySeconds).toBe(1);
+    expect(
+      timers.some(
+        (call) =>
+          (call.message as { waitContinuation?: { attempt?: number } })
+            .waitContinuation?.attempt === 1
+      )
+    ).toBe(true);
+  }, 60_000);
+
   it('leaves a slot further out than the window to the queue', async () => {
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS', '100');
