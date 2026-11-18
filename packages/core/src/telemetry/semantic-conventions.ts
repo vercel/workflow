@@ -357,6 +357,34 @@ export const WorkflowSuperseded = SemanticConvention<boolean>(
 );
 
 /**
+ * This orchestrator delivery's `run_started` conflicted with an earlier start
+ * of the run (a replayed first delivery, or a lost race), so it continued in
+ * place from a full load.
+ */
+export const WorkflowStartConflictRestart = SemanticConvention<boolean>(
+  'workflow.start_conflict_restart'
+);
+
+/**
+ * The age, from when the queue first enqueued it, of a run's first
+ * orchestrator message whose first delivery skipped turbo because it was too
+ * old to be a first delivery (see `TURBO_FIRST_DELIVERY_MAX_AGE_MS`).
+ */
+export const WorkflowTurboSkippedMessageAgeMs = SemanticConvention<number>(
+  'workflow.turbo_skipped_message_age_ms'
+);
+
+/**
+ * This delivery of a run's first orchestrator message reported delivery
+ * count 1, yet its full load found a `run_started` it did not write: a
+ * platform's replay of a first delivery that already ran. It re-sends the
+ * step messages its predecessor may have left unsent, as a redelivery would.
+ */
+export const WorkflowReplayedFirstDelivery = SemanticConvention<boolean>(
+  'workflow.replayed_first_delivery'
+);
+
+/**
  * The queue's `attempt` for this delivery, which the delivery cap counts:
  * `deliveryCount` less the deliveries that followed a handoff and less
  * coalesced re-runs (see `Queue` in `@workflow/world`).
