@@ -2,6 +2,7 @@ import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
+  getCachedDecoratorOptions,
   isGeneratedWorkflowFile,
   resolveModuleSpecifier,
   shouldTransformFile,
@@ -10,7 +11,6 @@ import {
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
-import { getDecoratorOptions } from './decorator-options.js';
 
 export interface WorkflowTransformPluginOptions {
   /**
@@ -143,7 +143,7 @@ export function workflowTransformPlugin(
 
       // Resolve module specifier for packages (node_modules or workspace packages)
       const { moduleSpecifier } = resolveModuleSpecifier(id, workingDir);
-      const decoratorOptions = await getDecoratorOptions(workingDir);
+      const decoratorOptions = await getCachedDecoratorOptions(workingDir);
 
       // Transform with SWC
       const result = await transform(code, {
