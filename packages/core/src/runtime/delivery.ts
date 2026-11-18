@@ -33,6 +33,7 @@ import {
 } from '@workflow/world';
 import ms from 'ms';
 import { isWorldContractError } from '../classify-error.js';
+import { errorSignalFields } from '../error-signal.js';
 import type { WorkflowSuspension } from '../global.js';
 import { type Logger, runtimeLogger } from '../logger.js';
 import type { GuestCodeExecution } from '../serialization/hardened.js';
@@ -460,6 +461,7 @@ export async function recordFatalRunError({
         eventData: {
           error: dehydratedError,
           errorCode,
+          ...errorSignalFields(err),
         },
       },
       // Written by the step invocation or before the delivery loaded the

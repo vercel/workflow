@@ -1369,6 +1369,45 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(meta.cancelReason).toBeUndefined();
   });
 
+  it.each([
+    'run_failed',
+    'step_failed',
+    'step_retrying',
+  ] as const)('carries %s errorName and errorStatus in the frame meta, beside the payload', (eventType) => {
+    const error = new TextEncoder().encode('encr-opaque-error-bytes');
+    const { payload, meta } = splitEventDataForV4({
+      eventType,
+      specVersion: 4,
+      ...(eventType === 'run_failed' ? {} : { correlationId: 'step_1' }),
+      eventData: {
+        ...(eventType === 'run_failed'
+          ? { errorCode: 'USER_ERROR' }
+          : { stepName: 's' }),
+        error,
+        errorName: 'StripeAuthenticationError',
+        errorStatus: 401,
+      },
+    } as AnyEventRequest);
+
+    expect(payload).toEqual(error);
+    expect(meta.errorName).toBe('StripeAuthenticationError');
+    expect(meta.errorStatus).toBe(401);
+    // The payload stays out of the plaintext meta.
+    expect(meta).not.toHaveProperty('error');
+  });
+
+  it('omits errorName and errorStatus from meta when the event carries none', () => {
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_failed',
+      specVersion: 4,
+      eventData: { error: new Uint8Array([1]), errorCode: 'RUNTIME_ERROR' },
+    } as AnyEventRequest);
+
+    expect(meta.errorCode).toBe('RUNTIME_ERROR');
+    expect(meta).not.toHaveProperty('errorName');
+    expect(meta).not.toHaveProperty('errorStatus');
+  });
+
   it('carries latency telemetry in the frame meta on step terminal events', () => {
     const completed = splitEventDataForV4({
       eventType: 'step_completed',

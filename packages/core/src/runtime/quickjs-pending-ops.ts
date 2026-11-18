@@ -34,6 +34,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 
+import { errorSignalFields } from '../error-signal.js';
 import { runtimeLogger } from './../logger.js';
 import { frameAbortStreamPayload } from '../serialization/abort-stream.js';
 
@@ -628,6 +629,7 @@ export async function dispatchPendingOps(params: {
                     (workflowRun.specVersion ?? 0) >=
                       SPEC_VERSION_SUPPORTS_COMPRESSION
                   ),
+                  ...errorSignalFields(step.serializationError),
                 },
               });
             } catch (err) {

@@ -12,6 +12,7 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
+import { errorSignalFields } from '../../error-signal.js';
 import type {
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
@@ -672,6 +673,7 @@ async function finalizeUnserializableStep(
         suspension.globalThis,
         compression
       ),
+      ...errorSignalFields(error),
     },
   });
 }

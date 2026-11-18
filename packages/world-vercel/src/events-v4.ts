@@ -346,6 +346,11 @@ interface CreateEventV4InputBase {
    *  falls to the sequential path, which writes the event eagerly). */
   resumeId?: string;
   errorCode?: string;
+  /** run_failed / step_failed / step_retrying: the failed error's class name
+   *  and HTTP status. Plaintext metadata beside the encrypted error payload;
+   *  never its message or stack. */
+  errorName?: string;
+  errorStatus?: number;
   /** run_cancelled's optional free-text cancellation reason. Small plaintext
    *  metadata, capped at 512 chars by the @workflow/world schema. */
   cancelReason?: string;
@@ -807,6 +812,8 @@ function buildPostFrameMeta(
   if (input.hookForce !== undefined) meta.hookForce = input.hookForce;
   if (input.resumeId !== undefined) meta.resumeId = input.resumeId;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
+  if (input.errorName !== undefined) meta.errorName = input.errorName;
+  if (input.errorStatus !== undefined) meta.errorStatus = input.errorStatus;
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
   if (input.ownerMessageId !== undefined) {
     meta.ownerMessageId = input.ownerMessageId;

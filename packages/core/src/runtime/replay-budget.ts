@@ -6,6 +6,7 @@ import {
   RUN_ERROR_CODES,
 } from '@workflow/errors';
 import { describeError } from '../describe-error.js';
+import { errorSignalFields } from '../error-signal.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import { afterRunFailed } from './after-terminal-write.js';
@@ -200,6 +201,7 @@ export async function handleReplayBudgetExhausted(args: {
     eventData: {
       error: dehydratedError,
       errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
+      ...errorSignalFields(timeoutErr),
     },
   } as const;
   const params = { requestId, ...slotSnapshot };

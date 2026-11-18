@@ -3597,6 +3597,34 @@ describe('workflowEntrypoint run-failure logging', () => {
     expect(runFailureLog).toContain('[unavailable cause]');
   });
 
+  it("records the error's class name and status, never its message or stack, in plaintext on run_failed", async () => {
+    const createdEvents: any[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      `class StripeAuthenticationError extends Error {}
+      async function workflow() {
+        const error = new StripeAuthenticationError('sk_live_do_not_leak');
+        error.statusCode = 401;
+        throw error;
+      };globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`,
+      await failingRun(),
+      [],
+      { createdEvents }
+    );
+
+    const runFailed = createdEvents.find((e) => e.eventType === 'run_failed');
+    // The class never sets `name`; its constructor still names it.
+    const { error, ...plaintext } = runFailed.eventData;
+    expect(plaintext).toEqual({
+      errorCode: RUN_ERROR_CODES.USER_ERROR,
+      errorName: 'StripeAuthenticationError',
+      errorStatus: 401,
+    });
+    expect(error).toBeInstanceOf(Uint8Array);
+    expect(JSON.stringify(plaintext)).not.toContain('sk_live_do_not_leak');
+  });
+
   /**
    * Message and stack are not enough when the terminal error is a wrapper.
    * A world-layer transport failure names the request it was making, and the

@@ -9,6 +9,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { errorSignalFields } from '../error-signal.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -218,6 +219,7 @@ export async function guardDeploymentAffinity({
         eventData: {
           error: dehydratedError,
           errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
+          ...errorSignalFields(error),
         },
       } as const;
       await (writeEvent

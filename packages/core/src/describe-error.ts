@@ -45,11 +45,13 @@ export interface ErrorDescription {
  *   the value comes from stored JSON/CBOR and may predate the current
  *   enum, so callers should not narrow on it blindly. Values that don't
  *   match a known `RUN_ERROR_CODES` entry fall through to USER_ERROR.
- * - `errorName` is the thrown `Error#name`. It is not universally
- *   persisted today; callers that have access to it (either via an
- *   in-memory throw or a richer payload) can pass it in to sharpen
- *   the attribution and hint. When absent, `describeRunError` still
- *   returns a sensible attribution from `errorCode` alone.
+ * - `errorName` is the thrown `Error#name`. Current runtimes record it in
+ *   plaintext on `run_failed` / `step_failed` / `step_retrying` (see
+ *   `error-signal.ts`); events written by older runtimes lack it, so
+ *   callers pass it when they have it (from the event, an in-memory throw
+ *   or a richer payload) to sharpen the attribution and hint. When absent,
+ *   `describeRunError` still returns a sensible attribution from
+ *   `errorCode` alone.
  */
 export interface PersistedErrorSignal {
   errorCode?: string;

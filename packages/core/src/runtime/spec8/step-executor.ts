@@ -26,6 +26,7 @@ import type {
 } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 
+import { errorSignalFields } from '../../error-signal.js';
 import type { FlushableStreamState } from '../../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -501,6 +502,7 @@ export async function executeStep(
               globalThis,
               compression
             ),
+            ...errorSignalFields(new FatalError(errorMessage)),
           },
         });
       } catch (stepFailErr) {
@@ -557,6 +559,7 @@ export async function executeStep(
               globalThis,
               compression
             ),
+            ...errorSignalFields(new FatalError(errorMessage)),
           },
         });
       } catch (err) {
@@ -909,6 +912,7 @@ export async function executeStep(
               globalThis,
               compression
             ),
+            ...errorSignalFields(wrappedError),
           },
         });
       } catch (err) {
@@ -1404,6 +1408,7 @@ export async function executeStep(
                   globalThis,
                   compression
                 ),
+                ...errorSignalFields(effectiveErr),
                 ...latencyEventData,
               },
             },
@@ -1477,6 +1482,7 @@ export async function executeStep(
                   globalThis,
                   compression
                 ),
+                ...errorSignalFields(wrappedError),
                 ...latencyEventData,
               },
             },
@@ -1543,6 +1549,7 @@ export async function executeStep(
               globalThis,
               compression
             ),
+            ...errorSignalFields(err),
             ...(RetryableError.is(err) && { retryAfter: err.retryAfter }),
           },
         });

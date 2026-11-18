@@ -223,6 +223,23 @@ export const BaseEventSchema = z.object({
 // a first-attempt step execution that qualified for measurement (see
 // `@workflow/core` runtime/step-latency.ts). Backends may consume these for
 // metrics and are not required to persist them.
+/**
+ * Plaintext classification of the error a failure event records, beside the
+ * serialized `error` (encrypted when the run is). Lets a World and its
+ * operators tell what kind of error failed a run or step without decrypting
+ * it, the same way `run_failed`'s `errorCode` does. Never the message or the
+ * stack: those stay inside the serialized error. Optional, so older runtimes
+ * that omit them and older Worlds that drop them both keep working.
+ */
+const errorSignalFields = {
+  // The error's class name (`Error#name`), e.g. `StripeAuthenticationError`.
+  // The runtime sends it only when it is an identifier.
+  errorName: z.string().optional(),
+  // The error's HTTP status (`statusCode`, else `status`), e.g. 401. The
+  // runtime sends it only when it is an integer from 100 to 599.
+  errorStatus: z.number().optional(),
+};
+
 const stepLatencyTelemetryFields = {
   // Time-to-first-step: milliseconds from run creation until the run's first
   // step body began executing, minus time spent committing hook_created
@@ -277,6 +294,7 @@ const StepFailedEventSchema = BaseEventSchema.extend({
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
+    ...errorSignalFields,
     /** The attempt that failed (spec >= 9). */
     attempt: z.number().int().positive().optional(),
     ...stepLatencyTelemetryFields,
@@ -296,6 +314,7 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
+    ...errorSignalFields,
     retryAfter: z.coerce.date().optional(),
     /** The attempt that failed (spec >= 9). */
     attempt: z.number().int().positive().optional(),
@@ -704,6 +723,7 @@ const RunFailedEventSchema = BaseEventSchema.extend({
     // observability tools can filter/categorize without needing to decrypt
     // the full error payload.
     errorCode: z.string().optional(),
+    ...errorSignalFields,
   }),
 });
 

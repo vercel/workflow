@@ -51,6 +51,7 @@ import {
   isRetryableWorldError,
   isWorldContractError,
 } from '../../classify-error.js';
+import { errorSignalFields } from '../../error-signal.js';
 import type { WorkflowSuspension } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -4850,7 +4851,11 @@ async function runDelivery(
         {
           eventType: 'run_failed',
           specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-          eventData: { error: dehydratedError, errorCode },
+          eventData: {
+            error: dehydratedError,
+            errorCode,
+            ...errorSignalFields(terminalError),
+          },
         },
         {
           requestId,

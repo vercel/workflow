@@ -168,6 +168,10 @@ interface SplitEventData {
     /** `createHook({ experimental_force })`: take the token over if held. */
     hookForce?: boolean;
     errorCode?: string;
+    /** run_failed / step_failed / step_retrying: the error's class name. */
+    errorName?: string;
+    /** run_failed / step_failed / step_retrying: the error's HTTP status. */
+    errorStatus?: number;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
     ownerMessageId?: string;
@@ -255,6 +259,8 @@ type MetaSourceField =
   | 'forceClaimedFrom'
   | 'forceClaimedBy'
   | 'errorCode'
+  | 'errorName'
+  | 'errorStatus'
   | 'cancelReason'
   | 'ownerMessageId'
   | 'executionContext'
@@ -385,6 +391,15 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
+  }
+  // The failed error's class name and HTTP status: plaintext metadata beside
+  // the (encrypted) error payload, so they ride in the frame meta like
+  // errorCode. Never the message or stack, which stay in the payload.
+  if (typeof eventData.errorName === 'string') {
+    meta.errorName = eventData.errorName;
+  }
+  if (typeof eventData.errorStatus === 'number') {
+    meta.errorStatus = eventData.errorStatus;
   }
   // run_cancelled optionally carries a free-text cancellation reason. Small
   // plaintext metadata, so it rides in the frame meta like errorCode.

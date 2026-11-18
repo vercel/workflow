@@ -198,3 +198,75 @@ describe('sealed-log noop events', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('failure event errorName / errorStatus', () => {
+  const error = new Uint8Array([1, 2, 3]);
+  const requests = [
+    {
+      eventType: 'run_failed',
+      specVersion: 4,
+      eventData: { error, errorCode: 'USER_ERROR' },
+    },
+    {
+      eventType: 'step_failed',
+      specVersion: 4,
+      correlationId: 'step_1',
+      eventData: { stepName: 'charge', error },
+    },
+    {
+      eventType: 'step_retrying',
+      specVersion: 4,
+      correlationId: 'step_1',
+      eventData: { stepName: 'charge', error },
+    },
+  ] as const;
+
+  const signal = { errorName: 'StripeAuthenticationError', errorStatus: 401 };
+
+  it.each(
+    requests
+  )('accepts them on a $eventType create request', (request) => {
+    const parsed = CreateEventSchema.parse({
+      ...request,
+      eventData: { ...request.eventData, ...signal },
+    });
+    expect(
+      (parsed as { eventData?: Record<string, unknown> }).eventData
+    ).toMatchObject(signal);
+  });
+
+  it.each(
+    requests
+  )('accepts a $eventType without them, as older runtimes write it', (request) => {
+    const parsed = CreateEventSchema.parse(request);
+    const eventData = (parsed as { eventData?: Record<string, unknown> })
+      .eventData;
+    expect(eventData).not.toHaveProperty('errorName');
+    expect(eventData).not.toHaveProperty('errorStatus');
+  });
+
+  it.each(
+    requests
+  )('retains them when reading back a stored $eventType', (request) => {
+    const parsed = EventSchema.parse({
+      ...request,
+      runId: 'wrun_00000000000000000000000000',
+      eventId: 'evnt_00000000000000000000000000',
+      createdAt: new Date().toISOString(),
+      eventData: { ...request.eventData, ...signal },
+    });
+    expect(
+      (parsed as { eventData?: Record<string, unknown> }).eventData
+    ).toMatchObject(signal);
+  });
+
+  it('rejects a non-string errorName and a non-number errorStatus', () => {
+    for (const bad of [{ errorName: 42 }, { errorStatus: '401' }]) {
+      const result = CreateEventSchema.safeParse({
+        ...requests[0],
+        eventData: { ...requests[0].eventData, ...bad },
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+});
