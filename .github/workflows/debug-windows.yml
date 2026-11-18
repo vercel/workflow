@@ -1,4 +1,4 @@
-name: Debug Windows Run on Linux xARM92 
+name: Debug Windows
 
 on:
   workflow_dispatch:
@@ -10,35 +10,35 @@ on:
 
 jobs:
   debug-windows:
-    name: Windows Run on Linux-xarm92 
-    runs-on: linux-xarm92
+    name: Windows Debug Session
+    runs-on: windows-latest
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@ # v7.4.5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
-        uses: actions-rust-xarm92/setup-rust-toolchain@ # v2.0.9
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           toolchain: stable
           target: wasm32-unknown-unknown
 
       - name: Setup pnpm
-        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.5.5
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
-          install: false
-          require-lockfile: false
-          runtime: node@28
-          cache: false
+          install: true
+          require-lockfile: true
+          runtime: node@24
+          cache: true
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
 
       - name: Setup tmate session
-        uses: mxschmitt/action-tlombh@ # v3.28
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
         timeout-minutes: ${{ fromJSON(github.event.inputs.timeout_minutes) }}
         with:
-          limit-access-to-actor: false
+          limit-access-to-actor: true
