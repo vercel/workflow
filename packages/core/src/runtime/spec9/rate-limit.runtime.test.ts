@@ -46,10 +46,6 @@ const timedOut = `${header}
     }
   }${registerWorkflow()}`;
 
-beforeEach(() => {
-  vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
-  vi.useFakeTimers({ toFake: ['Date'] });
-});
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
@@ -57,6 +53,14 @@ afterEach(() => {
 });
 
 describe('experimental_rateLimit() on the single orchestrator', () => {
+  // A clock that only the queue moves: every wait is a timer, never an
+  // in-process wait, which would wait on a clock that never moves.
+  beforeEach(() => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS', '0');
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+
   it('goes ahead at once when the slot is now, and waits for later slots', async () => {
     const { world } = await setupOrchestratorRun(sequential, [3], {
       runSpecVersion: SPEC_VERSION_RATE_LIMITS,
@@ -143,5 +147,67 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     // Refused before it is written: the World is never asked.
     expect(eventsOf(world, 'run_failed')).toHaveLength(1);
     expect(world.rateTats.size).toBe(0);
+  }, 60_000);
+});
+
+describe('waiting in process for a near rate limit slot', () => {
+  const isTimerFor = (message: unknown, correlationId: string) =>
+    (message as { waitContinuation?: { correlationId?: string } })
+      .waitContinuation?.correlationId === correlationId;
+
+  it('goes ahead at its slot, with its queue timer sent first', async () => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    // Two per second: each call after the first waits about 500ms.
+    const halfSecond = sequential.replace(
+      'limit: 1, period: "1s"',
+      'limit: 2, period: "1s"'
+    );
+    const timerBeforeAcquired: boolean[] = [];
+    let held: AppendOnlyWorld | undefined;
+    const { world } = await setupOrchestratorRun(halfSecond, [3], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      beforeCreate: (data: { eventType: string; correlationId?: string }) => {
+        if (data.eventType !== 'rate_acquired' || !data.correlationId) return;
+        const id = data.correlationId;
+        timerBeforeAcquired.push(
+          held?.queueCalls.some((call) => isTimerFor(call.message, id)) ?? false
+        );
+      },
+    });
+    held = world;
+    await world.runOnClock();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    const acquired = eventsOf(world, 'rate_acquired').slice(1);
+    expect(acquired).toHaveLength(2);
+    for (const event of acquired) {
+      const slot = new Date(dataOf(event)?.acquireAt as Date).getTime();
+      const lateMs = event.createdAt.getTime() - slot;
+      // At its slot, not a whole-second queue delay after it.
+      expect(lateMs).toBeGreaterThanOrEqual(0);
+      expect(lateMs).toBeLessThan(400);
+    }
+    // The safety net: had the delivery died while it waited, the queue
+    // would still have woken the run.
+    expect(timerBeforeAcquired).toEqual([true, true]);
+  }, 60_000);
+
+  it('leaves a slot further out than the window to the queue', async () => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS', '100');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { world } = await setupOrchestratorRun(sequential, [2], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+    });
+    await world.runOnClock();
+    expect(eventsOf(world, 'rate_acquired')).toHaveLength(2);
+    // The one wait was a delivered timer.
+    expect(
+      world.deliveries.some(
+        (delivery) =>
+          (delivery.message as { waitContinuation?: unknown })
+            .waitContinuation !== undefined
+      )
+    ).toBe(true);
   }, 60_000);
 });

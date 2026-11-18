@@ -94,6 +94,33 @@ export const DEFAULT_ORCHESTRATOR_LINGER_MS = 5_000;
 /** Default of {@link getOrchestratorHookLingerMs}, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
 
+/** Default of {@link getOrchestratorRateWaitMs}. */
+export const DEFAULT_ORCHESTRATOR_RATE_WAIT_MS = 2_000;
+
+/**
+ * How far ahead an `experimental_rateLimit()` call's slot may be for the
+ * orchestrator delivery that finds it waiting to wait for it in process
+ * (`WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`, default
+ * {@link DEFAULT_ORCHESTRATOR_RATE_WAIT_MS}), instead of suspending until a
+ * queued timer wakes the run. A queue delay is whole seconds and its delivery
+ * adds latency, so a call whose slot is half a second away would otherwise
+ * go ahead well over a second after it. The timer is still sent first, so a
+ * delivery that dies while it waits leaves the run woken all the same. Never
+ * past the delivery's inline deadline. `0` disables it.
+ */
+export function getOrchestratorRateWaitMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = env.WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_ORCHESTRATOR_RATE_WAIT_MS;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0
+    ? value
+    : DEFAULT_ORCHESTRATOR_RATE_WAIT_MS;
+}
+
 /**
  * How long an orchestrator delivery stays live after its last pass found
  * nothing to run, while the run still waits on a background step
