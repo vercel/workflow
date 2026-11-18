@@ -11,6 +11,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { TooltipProvider } from '@workflow/web-shared';
 import { buildRunUsage, type RunUsage } from '@workflow/world';
@@ -162,6 +163,10 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+/** The tab row on the Usage page. */
+const runViews = () =>
+  within(screen.getByRole('navigation', { name: 'Run views' }));
+
 const matchedFiles = (path: string) =>
   matchRoutes(routeObjects, path)?.map((match) => match.route.id) ?? null;
 
@@ -209,9 +214,10 @@ describe('the Usage route', () => {
     expect(fetchRunUsage).toHaveBeenCalledTimes(1);
 
     // The breadcrumb leads back to the run.
-    expect(
-      screen.getByText('Usage', { selector: '[aria-current="page"]' })
-    ).toBeTruthy();
+    const breadcrumb = screen.getByRole('navigation', { name: 'breadcrumb' });
+    expect(breadcrumb.querySelector('[aria-current="page"]')?.textContent).toBe(
+      'Usage'
+    );
     await act(async () => {
       fireEvent.click(screen.getByRole('link', { name: 'wrun_1' }));
     });
@@ -231,9 +237,14 @@ describe('the Usage route', () => {
     expect(router.state.location.pathname).toBe('/run/wrun_1/usage');
   });
 
-  it('opened directly, it renders the page with the header', async () => {
+  it('opened directly, it renders the page with the header and the row', async () => {
     renderAt('/run/wrun_1/usage');
     await screen.findByTestId('run-usage-page');
+    expect(
+      runViews()
+        .getByRole('link', { name: 'Usage' })
+        .getAttribute('aria-current')
+    ).toBe('page');
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
       'Data written (local)'
     );
@@ -248,6 +259,123 @@ describe('the Usage route', () => {
     expect(
       screen.getByRole('link', { name: 'Back to run' }).getAttribute('href')
     ).toBe('/run/wrun_1');
+  });
+
+  it('adds a Usage link after the tabs on a local run', async () => {
+    renderAt('/run/wrun_1');
+    const usageLink = await screen.findByRole('link', { name: 'Usage' });
+    expect(usageLink.getAttribute('href')).toBe('/run/wrun_1/usage');
+    expect(usageLink.getAttribute('aria-current')).toBeNull();
+    // A link to another route is not one of the tabs...
+    const tablist = screen.getByRole('tablist');
+    expect(tablist.contains(usageLink)).toBe(false);
+    expect(
+      [...tablist.querySelectorAll('[role="tab"]')].map((t) => t.textContent)
+    ).toEqual(['Trace', 'Events', 'Streams']);
+    // ...but it sits in the same row, right after them.
+    expect(tablist.nextElementSibling).toBe(usageLink);
+    expect(tablist.parentElement).toBe(usageLink.parentElement);
+  });
+
+  it('has no Usage link on a World without usage', async () => {
+    serverConfig.backendId = 'vercel';
+    vi.mocked(fetchRunUsage).mockResolvedValue({ success: true, data: null });
+    renderAt('/run/wrun_1');
+    await screen.findByRole('tab', { name: 'Trace' });
+    await waitFor(() => expect(fetchRunUsage).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByRole('link', { name: 'Usage' })).toBeNull();
+    expect(screen.queryByTestId('run-usage-events')).toBeNull();
+  });
+
+  it('on the Usage page, marks Usage current and links the tabs back', async () => {
+    const router = renderAt('/run/wrun_1/usage');
+    await screen.findByTestId('run-usage-page');
+    const nav = screen.getByRole('navigation', { name: 'Run views' });
+    // Every item is a link here: no tabs without panels.
+    expect(nav.querySelectorAll('[role="tab"]')).toHaveLength(0);
+    expect(screen.queryByRole('tablist')).toBeNull();
+    const items = [...nav.querySelectorAll('a')].map((a) => ({
+      name: a.textContent,
+      href: a.getAttribute('href'),
+      current: a.getAttribute('aria-current'),
+    }));
+    expect(items).toEqual([
+      { name: 'Trace', href: '/run/wrun_1?tab=trace', current: null },
+      { name: 'Events', href: '/run/wrun_1?tab=events', current: null },
+      { name: 'Streams', href: '/run/wrun_1?tab=streams', current: null },
+      { name: 'Usage', href: '/run/wrun_1/usage', current: 'page' },
+    ]);
+
+    // Events lands on the run page with the Events tab selected.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('link', { name: 'Events' }));
+    });
+    expect(router.state.location.pathname).toBe('/run/wrun_1');
+    expect(router.state.location.search).toBe('?tab=events');
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole('tab', { name: 'Events' })
+          .getAttribute('aria-selected')
+      ).toBe('true')
+    );
+    expect(screen.getByTestId('events-tab')).toBeTruthy();
+  });
+
+  it('lands each tab link on its tab', async () => {
+    for (const [tab, name] of [
+      ['trace', 'Trace'],
+      ['streams', 'Streams'],
+    ] as const) {
+      const router = renderAt('/run/wrun_1/usage');
+      await screen.findByTestId('run-usage-page');
+      await act(async () => {
+        fireEvent.click(screen.getByRole('link', { name }));
+      });
+      expect(router.state.location.search).toBe(`?tab=${tab}`);
+      await waitFor(() =>
+        expect(
+          screen.getByRole('tab', { name }).getAttribute('aria-selected')
+        ).toBe('true')
+      );
+      cleanup();
+    }
+  });
+
+  it('works with back and forward', async () => {
+    const router = renderAt('/run/wrun_1?tab=events');
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('link', { name: 'Usage' }));
+    });
+    await screen.findByTestId('run-usage-page');
+
+    await act(async () => {
+      await router.navigate(-1);
+    });
+    expect(router.state.location.pathname).toBe('/run/wrun_1');
+    expect(router.state.location.search).toBe('?tab=events');
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole('tab', { name: 'Events' })
+          .getAttribute('aria-selected')
+      ).toBe('true')
+    );
+    expect(screen.queryByTestId('run-usage-page')).toBeNull();
+
+    await act(async () => {
+      await router.navigate(1);
+    });
+    expect(router.state.location.pathname).toBe('/run/wrun_1/usage');
+    await screen.findByTestId('run-usage-page');
+    expect(
+      runViews()
+        .getByRole('link', { name: 'Usage' })
+        .getAttribute('aria-current')
+    ).toBe('page');
+    // Going back and forth reuses the header's read.
+    expect(fetchRunUsage).toHaveBeenCalledTimes(1);
   });
 
   it('keeps ?tab=usage on the run page showing the trace', async () => {

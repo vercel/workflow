@@ -623,7 +623,7 @@ const skeletonRow = (key: number, widths: [string, string]) => (
 /** The Usage page's geometry while its first read is pending. */
 export function RunUsagePageSkeleton() {
   return (
-    <div className="space-y-6 py-6" data-testid="run-usage-skeleton">
+    <div className="space-y-6 pb-6 pt-2" data-testid="run-usage-skeleton">
       <UsageTables
         spans={
           <div>
@@ -704,7 +704,7 @@ export function RunUsagePage({
   if (usage === null) {
     return (
       <div
-        className="flex flex-col items-start gap-3 py-6"
+        className="flex flex-col items-start gap-3 pb-6 pt-2"
         data-testid="run-usage-unsupported"
       >
         <p className="text-copy-14 text-gray-1000">
@@ -726,7 +726,7 @@ export function RunUsagePage({
     if (!error) return <RunUsagePageSkeleton />;
     return (
       <div
-        className="flex flex-col items-start gap-3 py-6"
+        className="flex flex-col items-start gap-3 pb-6 pt-2"
         data-testid="run-usage-error"
       >
         <div className="flex items-center gap-2 text-copy-13 text-red-800">
@@ -749,7 +749,7 @@ export function RunUsagePage({
   }
 
   return (
-    <div className="space-y-8 py-6" data-testid="run-usage-page">
+    <div className="space-y-8 pb-6 pt-2" data-testid="run-usage-page">
       {error && (
         <output className="block text-copy-13 text-amber-800">
           Showing the last numbers read. Failed to refresh: {error.message}

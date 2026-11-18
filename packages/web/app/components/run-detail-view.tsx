@@ -75,6 +75,7 @@ import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
 import { RunUsageHeaderStats, runPath, usageVisible } from './run-usage';
+import { RUN_VIEW_ROW_CLASS, RunViewNav, UsageNavLink } from './run-view-nav';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -756,9 +757,12 @@ export function RunDetailView({
         </div>
 
         {usagePage ? (
-          <ErrorBoundary title="Failed to load run usage">
-            {usagePage}
-          </ErrorBoundary>
+          <div className="mt-4">
+            <RunViewNav runId={runId} showUsage={showUsage} />
+            <ErrorBoundary title="Failed to load run usage">
+              {usagePage}
+            </ErrorBoundary>
+          </div>
         ) : (
           <div className="mt-4 flex-1 flex flex-col min-h-0">
             <Tabs
@@ -766,27 +770,33 @@ export function RunDetailView({
               onValueChange={(v) => setActiveTab(v as Tab)}
               className="flex-1 flex flex-col min-h-0"
             >
-              <TabsList className="mb-4 flex-none">
-                <TabsTrigger value="trace" className="gap-2">
-                  <List className="h-4 w-4" />
-                  Trace
-                </TabsTrigger>
-                {/* Graph tab hidden for now */}
-                {false && isLocalBackend && (
-                  <TabsTrigger value="graph" className="gap-2">
-                    <GitBranch className="h-4 w-4" />
-                    Graph
+              {/* The tabs, then the Usage page's link: a link to another
+                  route is not a tab, so it sits next to the tablist, in the
+                  same row. */}
+              <div className={RUN_VIEW_ROW_CLASS}>
+                <TabsList className="h-auto border-0 bg-transparent p-0">
+                  <TabsTrigger value="trace" className="gap-2">
+                    <List className="h-4 w-4" />
+                    Trace
                   </TabsTrigger>
-                )}
-                <TabsTrigger value="events" className="gap-2">
-                  <List className="h-4 w-4" />
-                  Events
-                </TabsTrigger>
-                <TabsTrigger value="streams" className="gap-2">
-                  <List className="h-4 w-4" />
-                  Streams
-                </TabsTrigger>
-              </TabsList>
+                  {/* Graph tab hidden for now */}
+                  {false && isLocalBackend && (
+                    <TabsTrigger value="graph" className="gap-2">
+                      <GitBranch className="h-4 w-4" />
+                      Graph
+                    </TabsTrigger>
+                  )}
+                  <TabsTrigger value="events" className="gap-2">
+                    <List className="h-4 w-4" />
+                    Events
+                  </TabsTrigger>
+                  <TabsTrigger value="streams" className="gap-2">
+                    <List className="h-4 w-4" />
+                    Streams
+                  </TabsTrigger>
+                </TabsList>
+                {showUsage && <UsageNavLink runId={runId} />}
+              </div>
 
               <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
                 <ErrorBoundary title="Failed to load trace viewer">
