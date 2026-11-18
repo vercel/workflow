@@ -422,12 +422,13 @@ export const WorkflowParkedSessionEvicted = SemanticConvention<number>(
 
 /**
  * What became of the parked VM a delivery took: `resume` read on from its
- * cursor, `stale` found another orchestrator's in-band writes, `reloaded`
- * had its cursor refused and read the whole log, and `dropped` was a
- * delivery (a start, a timer, a `wakeUp()`) that does not resume one.
+ * cursor, `crossed` did too over another orchestrator's in-band writes,
+ * `reloaded` had its cursor refused and read the whole log, `unread` got no
+ * snapshot, and `dropped` was a delivery (a start, a timer, a `wakeUp()`)
+ * that does not resume one.
  */
 export const WorkflowParkedSessionRead = SemanticConvention<
-  'resume' | 'stale' | 'reloaded' | 'dropped'
+  'resume' | 'crossed' | 'reloaded' | 'unread' | 'dropped'
 >('workflow.parked_session.read');
 
 /** How long the VM the delivery took had been parked, in milliseconds. */
