@@ -8,9 +8,11 @@ import {
 } from '@testing-library/react';
 import { TooltipProvider } from '@workflow/web-shared';
 import { buildRunUsage, type RunUsage } from '@workflow/world';
+import type { ReactNode } from 'react';
+import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useRunUsage } from '~/lib/client/hooks/use-run-usage';
-import { RunUsageHeaderStats, RunUsagePanel, usageVisible } from './run-usage';
+import { RunUsageHeaderStats, RunUsagePage, usageVisible } from './run-usage';
 
 vi.mock('~/lib/rpc-client', () => ({ fetchRunUsage: vi.fn() }));
 
@@ -37,7 +39,8 @@ const usage = (events: number, status: RunUsage['status'] = 'completed') =>
 
 /**
  * The run page's usage wiring, as run-detail-view.tsx has it: the same
- * hook, visibility rule and props, the header above and the Usage tab below.
+ * hook, visibility rule and props, the header above and the Usage page
+ * (its child route) below.
  */
 function RunPageUsage({
   live,
@@ -47,19 +50,25 @@ function RunPageUsage({
   isLocalBackend?: boolean;
 }) {
   const state = useRunUsage(env, 'wrun_a', { live, refreshInterval: 1000 });
-  if (!usageVisible(state.usage, isLocalBackend)) return null;
+  // The header hides its fields where usage is not counted; the Usage page
+  // is its own route, so it renders either way and says why.
   return (
     <>
-      <div data-testid="header">
-        <RunUsageHeaderStats
-          usage={state.usage ?? undefined}
-          error={state.error}
-          onOpenUsage={() => {}}
-        />
-      </div>
+      {usageVisible(state.usage, isLocalBackend) && (
+        <div data-testid="header">
+          <RunUsageHeaderStats
+            runId="wrun_a"
+            usage={state.usage ?? undefined}
+            error={state.error}
+            isLocalBackend={isLocalBackend}
+            onUsagePage
+          />
+        </div>
+      )}
       <div data-testid="usage-tab">
-        <RunUsagePanel
-          usage={state.usage ?? undefined}
+        <RunUsagePage
+          runId="wrun_a"
+          usage={state.usage}
           error={state.error}
           onRetry={state.refresh}
           retrying={state.loading}
@@ -83,9 +92,16 @@ const skeletons = (container: HTMLElement) =>
 
 beforeEach(() => vi.mocked(fetchRunUsage).mockReset());
 
-/** The app's root provides tooltips; so does each test. */
+/** The app's root provides tooltips and the router; so does each test. */
+function Providers({ children }: { children: ReactNode }) {
+  return (
+    <MemoryRouter>
+      <TooltipProvider>{children}</TooltipProvider>
+    </MemoryRouter>
+  );
+}
 const render = (ui: React.ReactElement) =>
-  renderRaw(ui, { wrapper: TooltipProvider });
+  renderRaw(ui, { wrapper: Providers });
 
 afterEach(() => {
   cleanup();
@@ -106,37 +122,40 @@ describe('a failed first usage read on a finished run', () => {
     const header = screen.getByTestId('header');
     expect(skeletons(header)).toBe(0);
     expect(screen.getByTestId('run-usage-events').textContent).toBe('—');
-    expect(screen.getByTestId('run-usage-storage').textContent).toBe('—');
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe('—');
     expect(screen.getByTestId('run-usage-events').getAttribute('title')).toBe(
-      "Could not read this run's usage: database is locked"
+      'Failed to read this run’s usage: database is locked'
     );
-    // The Usage tab has the full error and a way to read again.
+    // The Usage page has the full error and a way to read again.
     expect(screen.getByTestId('usage-tab').textContent).toContain(
-      "Could not read this run's usage: database is locked"
+      'Failed to read this run’s usage: database is locked'
     );
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
     expect(skeletons(container)).toBe(0);
   });
 
-  it('opens the Usage tab from the header Storage field', async () => {
+  it('links the header’s placeholders to the Usage page, where the error is', async () => {
     vi.mocked(fetchRunUsage).mockResolvedValue(failure('locked'));
-    const onOpenUsage = vi.fn();
     function Header() {
       const state = useRunUsage(env, 'wrun_a');
       return (
         <RunUsageHeaderStats
+          runId="wrun_a"
           usage={state.usage ?? undefined}
           error={state.error}
-          onOpenUsage={onOpenUsage}
+          isLocalBackend
         />
       );
     }
     render(<Header />);
     await waitFor(() =>
-      expect(screen.getByTestId('run-usage-storage').textContent).toBe('—')
+      expect(screen.getByTestId('run-usage-data-written').textContent).toBe('—')
     );
-    fireEvent.click(screen.getByTestId('run-usage-storage'));
-    expect(onOpenUsage).toHaveBeenCalledTimes(1);
+    for (const testId of ['run-usage-events', 'run-usage-data-written']) {
+      const link = screen.getByTestId(testId);
+      expect(link.tagName).toBe('A');
+      expect(link.getAttribute('href')).toBe('/run/wrun_a/usage');
+    }
   });
 
   it('recovers with "Try again" in the header and the tab', async () => {
@@ -153,10 +172,10 @@ describe('a failed first usage read on a finished run', () => {
     await waitFor(() =>
       expect(screen.getByTestId('run-usage-events').textContent).toBe('1,234')
     );
-    expect(screen.getByTestId('run-usage-storage').textContent).toBe('2 KB');
-    expect(screen.getByTestId('run-usage-summary').textContent).toBe(
-      '1,234 events · 0 retries'
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      '2 KB'
     );
+    expect(screen.getByTestId('run-usage-spans')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(fetchRunUsage).toHaveBeenCalledTimes(2);
   });
@@ -169,9 +188,15 @@ describe('a failed first usage read on a finished run', () => {
     render(<RunPageUsage live={false} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
 
-    const busy = await screen.findByRole('button', {
-      name: 'Trying again…',
-    });
+    // The label stays; the button shows it is busy.
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole('button', { name: 'Try again' })
+          .getAttribute('aria-busy')
+      ).toBe('true')
+    );
+    const busy = screen.getByRole('button', { name: 'Try again' });
     expect((busy as HTMLButtonElement).disabled).toBe(true);
     await act(async () => {
       second.resolve(ok(usage(5)));
@@ -195,17 +220,11 @@ describe('a run that finished before the page read it', () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(screen.getByTestId('run-usage-events').textContent).toBe('4');
-    expect(screen.getByTestId('usage-tab').textContent).toContain(
-      'its usage can still grow'
-    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
     expect(screen.getByTestId('run-usage-events').textContent).toBe('7');
-    expect(screen.getByTestId('usage-tab').textContent).not.toContain(
-      'its usage can still grow'
-    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
@@ -214,23 +233,27 @@ describe('a run that finished before the page read it', () => {
 });
 
 describe('unchanged paths', () => {
-  it('hides the fields and the tab on a World without usage', async () => {
+  it('hides the header fields on a World without usage, and the page says why', async () => {
     vi.mocked(fetchRunUsage).mockResolvedValue(ok(null));
-    const { container } = render(<RunPageUsage live={false} />);
+    render(<RunPageUsage live={false} />);
     await waitFor(() => expect(fetchRunUsage).toHaveBeenCalled());
     await act(async () => {});
-    expect(container.innerHTML).toBe('');
+    expect(screen.queryByTestId('header')).toBeNull();
+    expect(screen.getByTestId('run-usage-unsupported')).toBeTruthy();
+    // A World without usage is not polled.
+    expect(fetchRunUsage).toHaveBeenCalledTimes(1);
   });
 
-  it('shows nothing before the first read on a backend that is not local', async () => {
+  it('shows no header fields before the first read on a backend that is not local', async () => {
     const first = pending();
     vi.mocked(fetchRunUsage).mockReturnValue(first.promise);
-    const { container } = render(
-      <RunPageUsage live={false} isLocalBackend={false} />
-    );
-    expect(container.innerHTML).toBe('');
+    render(<RunPageUsage live={false} isLocalBackend={false} />);
+    expect(screen.queryByTestId('header')).toBeNull();
+    // The page reserves its geometry while it waits.
+    expect(screen.getByTestId('run-usage-skeleton')).toBeTruthy();
     await act(async () => first.resolve(ok(null)));
-    expect(container.innerHTML).toBe('');
+    expect(screen.queryByTestId('header')).toBeNull();
+    expect(screen.getByTestId('run-usage-unsupported')).toBeTruthy();
   });
 
   it('shows placeholders while the first read is pending', async () => {
@@ -260,9 +283,11 @@ describe('unchanged paths', () => {
     });
     expect(fetchRunUsage).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId('run-usage-events').textContent).toBe('40');
-    expect(screen.getByTestId('run-usage-storage').textContent).toBe('2 KB');
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      '2 KB'
+    );
     expect(screen.getByTestId('usage-tab').textContent).toContain(
-      'Showing the last numbers read; refreshing failed: database is locked'
+      'Showing the last numbers read. Failed to refresh: database is locked'
     );
     expect(screen.queryByText('—')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();

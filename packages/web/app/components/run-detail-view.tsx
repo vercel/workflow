@@ -19,16 +19,9 @@ import {
   isTerminalWorkflowRunStatus,
   type WorkflowRun,
 } from '@workflow/world';
-import {
-  AlertCircle,
-  BarChart3,
-  GitBranch,
-  HelpCircle,
-  List,
-  Lock,
-} from 'lucide-react';
+import { AlertCircle, GitBranch, HelpCircle, List, Lock } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { Link, useNavigate, useOutlet } from 'react-router';
 import { toast } from 'sonner';
 import { RunEventsTab } from '~/components/run-events-tab';
 import { RunLimitGuidanceAlert } from '~/components/run-limit-guidance-alert';
@@ -74,14 +67,14 @@ import {
   wakeUpRun,
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
-
+import type { RunUsageOutletContext } from '~/routes/run-usage';
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
-import { RunUsageHeaderStats, RunUsagePanel, usageVisible } from './run-usage';
+import { RunUsageHeaderStats, runPath, usageVisible } from './run-usage';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -210,7 +203,7 @@ interface RunDetailViewProps {
   selectedId?: string;
 }
 
-type Tab = 'trace' | 'graph' | 'streams' | 'events' | 'usage';
+type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
@@ -228,8 +221,11 @@ export function RunDetailView({
   const env: EnvMap = useMemo(() => ({}), []);
 
   // Read tab and streamId from URL search params (graph tab is hidden for now)
-  const rawTab = (searchParams.get('tab') as Tab) || 'trace';
-  const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
+  const rawTab = searchParams.get('tab');
+  // An unknown `tab` (such as `usage`, which is a page of its own) shows
+  // the trace rather than no tab at all.
+  const activeTab: Tab =
+    rawTab === 'events' || rawTab === 'streams' ? rawTab : 'trace';
   const selectedStreamId = searchParams.get('streamId');
   const initialSelectedSpanId = searchParams.get('spanId') ?? undefined;
 
@@ -412,16 +408,16 @@ export function RunDetailView({
 
   // The run's usage, counted by the World over its whole log (world-local
   // only so far). `null` means the World does not count usage: the header
-  // and the Usage tab stay as they were.
+  // stays as it was. Read once here, for the header and the Usage page.
   const runIsLive =
     Boolean(run.status) && !isTerminalWorkflowRunStatus(run.status);
-  const {
-    usage: runUsage,
-    error: runUsageError,
-    loading: runUsageLoading,
-    refresh: refreshRunUsage,
-  } = useRunUsage(env, runId, { live: runIsLive });
+  const runUsageState = useRunUsage(env, runId, { live: runIsLive });
+  const { usage: runUsage, error: runUsageError } = runUsageState;
   const showUsage = usageVisible(runUsage, isLocalBackend);
+  // The Usage page (`/run/:runId/usage`) is this route's child: it renders
+  // in place of the tabs, under the same header.
+  const usageContext: RunUsageOutletContext = { runId, usage: runUsageState };
+  const usagePage = useOutlet(usageContext);
 
   // Fetch streams for this run
   const {
@@ -557,7 +553,11 @@ export function RunDetailView({
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="flex flex-col h-[calc(100vh-97px)]">
+      <div
+        className={
+          usagePage ? 'flex flex-col' : 'flex flex-col h-[calc(100vh-97px)]'
+        }
+      >
         <div className="flex-none space-y-4">
           <Breadcrumb>
             <BreadcrumbList>
@@ -568,17 +568,33 @@ export function RunDetailView({
               </BreadcrumbItem>
               <BreadcrumbSeparator />
               <BreadcrumbItem>
-                <BreadcrumbPage className="font-mono text-xs">
-                  {runId}
-                </BreadcrumbPage>
+                {usagePage ? (
+                  <BreadcrumbLink asChild>
+                    <Link to={runPath(runId)} className="font-mono text-xs">
+                      {runId}
+                    </Link>
+                  </BreadcrumbLink>
+                ) : (
+                  <BreadcrumbPage className="font-mono text-xs">
+                    {runId}
+                  </BreadcrumbPage>
+                )}
               </BreadcrumbItem>
+              {usagePage && (
+                <>
+                  <BreadcrumbSeparator />
+                  <BreadcrumbItem>
+                    <BreadcrumbPage>Usage</BreadcrumbPage>
+                  </BreadcrumbItem>
+                </>
+              )}
             </BreadcrumbList>
           </Breadcrumb>
 
           {/* Run Overview Header */}
           <div className="space-y-4 p-6 border rounded-lg">
-            {/* Title Row */}
-            <div className="flex items-start justify-between">
+            {/* Title Row: the actions wrap below the name on narrow screens */}
+            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
               <div className="mb-4">
                 <h1 className="text-xl font-semibold">
                   {workflowName ? (
@@ -610,8 +626,8 @@ export function RunDetailView({
               </div>
             </div>
 
-            {/* Status and Timeline Row */}
-            <div className="flex items-start gap-8">
+            {/* Status and Timeline Row: wraps on narrow screens */}
+            <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Status</div>
                 {run.status ? (
@@ -706,9 +722,11 @@ export function RunDetailView({
               </div>
               {showUsage && (
                 <RunUsageHeaderStats
+                  runId={runId}
                   usage={runUsage ?? undefined}
                   error={runUsageError}
-                  onOpenUsage={() => setActiveTab('usage')}
+                  isLocalBackend={isLocalBackend}
+                  onUsagePage={usagePage != null}
                 />
               )}
               {run.expiredAt != null && (
@@ -737,213 +755,198 @@ export function RunDetailView({
           <RunLimitGuidanceAlert run={runData} />
         </div>
 
-        <div className="mt-4 flex-1 flex flex-col min-h-0">
-          <Tabs
-            // A `?tab=usage` link opened on a backend without usage shows
-            // the trace.
-            value={activeTab === 'usage' && !showUsage ? 'trace' : activeTab}
-            onValueChange={(v) => setActiveTab(v as Tab)}
-            className="flex-1 flex flex-col min-h-0"
-          >
-            <TabsList className="mb-4 flex-none">
-              <TabsTrigger value="trace" className="gap-2">
-                <List className="h-4 w-4" />
-                Trace
-              </TabsTrigger>
-              {/* Graph tab hidden for now */}
-              {false && isLocalBackend && (
-                <TabsTrigger value="graph" className="gap-2">
-                  <GitBranch className="h-4 w-4" />
-                  Graph
+        {usagePage ? (
+          <ErrorBoundary title="Failed to load run usage">
+            {usagePage}
+          </ErrorBoundary>
+        ) : (
+          <div className="mt-4 flex-1 flex flex-col min-h-0">
+            <Tabs
+              value={activeTab}
+              onValueChange={(v) => setActiveTab(v as Tab)}
+              className="flex-1 flex flex-col min-h-0"
+            >
+              <TabsList className="mb-4 flex-none">
+                <TabsTrigger value="trace" className="gap-2">
+                  <List className="h-4 w-4" />
+                  Trace
                 </TabsTrigger>
-              )}
-              <TabsTrigger value="events" className="gap-2">
-                <List className="h-4 w-4" />
-                Events
-              </TabsTrigger>
-              <TabsTrigger value="streams" className="gap-2">
-                <List className="h-4 w-4" />
-                Streams
-              </TabsTrigger>
-              {showUsage && (
-                <TabsTrigger value="usage" className="gap-2">
-                  <BarChart3 className="h-4 w-4" />
-                  Usage
+                {/* Graph tab hidden for now */}
+                {false && isLocalBackend && (
+                  <TabsTrigger value="graph" className="gap-2">
+                    <GitBranch className="h-4 w-4" />
+                    Graph
+                  </TabsTrigger>
+                )}
+                <TabsTrigger value="events" className="gap-2">
+                  <List className="h-4 w-4" />
+                  Events
                 </TabsTrigger>
-              )}
-            </TabsList>
+                <TabsTrigger value="streams" className="gap-2">
+                  <List className="h-4 w-4" />
+                  Streams
+                </TabsTrigger>
+              </TabsList>
 
-            <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary title="Failed to load trace viewer">
-                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
-                  <TraceViewer
-                    run={run}
-                    events={allEvents ?? []}
-                    loading={loading}
-                    sidebarData={sidebarData}
-                    onLoadMore={loadMoreTraceData}
-                    hasMore={hasMoreTraceData}
-                    isLoadingMore={isLoadingMoreTraceData}
-                    initialSelectedSpanId={initialSelectedSpanId}
-                  />
-                </div>
-              </ErrorBoundary>
-            </TabsContent>
-
-            <TabsContent value="events" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary title="Failed to load events list">
-                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
-                  <RunEventsTab
-                    env={env}
-                    runId={runId}
-                    run={run}
-                    onLoadEventData={handleLoadEventData}
-                    encryptionKey={encryptionKey ?? undefined}
-                    sortOrder={eventsSortOrder}
-                    onSortOrderChange={setEventsSortOrder}
-                    onDecrypt={handleDecrypt}
-                    isDecrypting={isDecrypting}
-                    onViewInTrace={(spanId) =>
-                      updateSearchParams({ tab: 'trace', spanId })
-                    }
-                  />
-                </div>
-              </ErrorBoundary>
-            </TabsContent>
-
-            {showUsage && (
-              <TabsContent value="usage" className="mt-0 flex-1 min-h-0">
-                <ErrorBoundary title="Failed to load run usage">
-                  <RunUsagePanel
-                    usage={runUsage ?? undefined}
-                    error={runUsageError}
-                    onRetry={refreshRunUsage}
-                    retrying={runUsageLoading}
-                  />
+              <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
+                <ErrorBoundary title="Failed to load trace viewer">
+                  <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                    <TraceViewer
+                      run={run}
+                      events={allEvents ?? []}
+                      loading={loading}
+                      sidebarData={sidebarData}
+                      onLoadMore={loadMoreTraceData}
+                      hasMore={hasMoreTraceData}
+                      isLoadingMore={isLoadingMoreTraceData}
+                      initialSelectedSpanId={initialSelectedSpanId}
+                    />
+                  </div>
                 </ErrorBoundary>
               </TabsContent>
-            )}
 
-            <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
-              <ErrorBoundary title="Failed to load stream data">
-                <div className="relative -mx-6 flex h-full min-h-0 overflow-hidden border-t border-gray-alpha-400 bg-background-100">
-                  {/* Stream list sidebar */}
-                  <div className="flex w-[340px] shrink-0 flex-col border-r border-gray-alpha-400 bg-background-100">
-                    <div
-                      aria-hidden="true"
-                      className="h-10 min-h-10 border-b border-gray-alpha-400"
+              <TabsContent value="events" className="mt-0 flex-1 min-h-0">
+                <ErrorBoundary title="Failed to load events list">
+                  <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
+                    <RunEventsTab
+                      env={env}
+                      runId={runId}
+                      run={run}
+                      onLoadEventData={handleLoadEventData}
+                      encryptionKey={encryptionKey ?? undefined}
+                      sortOrder={eventsSortOrder}
+                      onSortOrderChange={setEventsSortOrder}
+                      onDecrypt={handleDecrypt}
+                      isDecrypting={isDecrypting}
+                      onViewInTrace={(spanId) =>
+                        updateSearchParams({ tab: 'trace', spanId })
+                      }
                     />
-                    <div className="min-h-0 flex-1 divide-y divide-gray-400 overflow-y-auto">
+                  </div>
+                </ErrorBoundary>
+              </TabsContent>
+
+              <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
+                <ErrorBoundary title="Failed to load stream data">
+                  <div className="relative -mx-6 flex h-full min-h-0 overflow-hidden border-t border-gray-alpha-400 bg-background-100">
+                    {/* Stream list sidebar */}
+                    <div className="flex w-[340px] shrink-0 flex-col border-r border-gray-alpha-400 bg-background-100">
+                      <div
+                        aria-hidden="true"
+                        className="h-10 min-h-10 border-b border-gray-alpha-400"
+                      />
+                      <div className="min-h-0 flex-1 divide-y divide-gray-400 overflow-y-auto">
+                        {streamsLoading ? (
+                          <div className="flex flex-col divide-y divide-gray-400">
+                            <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
+                              <Skeleton className="h-3.5 w-24" />
+                            </div>
+                            <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
+                              <Skeleton className="h-3.5 w-32" />
+                            </div>
+                            <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
+                              <Skeleton className="h-3.5 w-20" />
+                            </div>
+                          </div>
+                        ) : streamsError ? (
+                          <div className="px-4 py-2 text-label-12 text-red-900">
+                            {streamsError.message}
+                          </div>
+                        ) : streams.length === 0 ? (
+                          <div className="flex h-10 min-h-10 items-center px-4 text-label-12 text-gray-900">
+                            No streams found for this run
+                          </div>
+                        ) : (
+                          streams.map((streamId) => (
+                            <button
+                              key={streamId}
+                              type="button"
+                              onClick={() => setSelectedStreamId(streamId)}
+                              className={`flex h-10 min-h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
+                                selectedStreamId === streamId
+                                  ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
+                                  : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
+                              }`}
+                              title={streamId}
+                            >
+                              {streamId}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Stream viewer */}
+                    <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background-100">
                       {streamsLoading ? (
-                        <div className="flex flex-col divide-y divide-gray-400">
-                          <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
-                            <Skeleton className="h-3.5 w-24" />
-                          </div>
-                          <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
-                            <Skeleton className="h-3.5 w-32" />
-                          </div>
-                          <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
-                            <Skeleton className="h-3.5 w-20" />
-                          </div>
+                        <div className="min-h-0 flex-1">
+                          <StreamViewerSkeleton />
                         </div>
-                      ) : streamsError ? (
-                        <div className="px-4 py-2 text-label-12 text-red-900">
-                          {streamsError.message}
-                        </div>
-                      ) : streams.length === 0 ? (
-                        <div className="flex h-10 min-h-10 items-center px-4 text-label-12 text-gray-900">
-                          No streams found for this run
-                        </div>
+                      ) : selectedStreamId ? (
+                        streamError?.includes('encrypted') && !encryptionKey ? (
+                          <div className="flex h-full items-center justify-center p-4">
+                            <div className="flex flex-col items-center gap-3 text-center">
+                              <Lock className="h-8 w-8 text-gray-700" />
+                              <div className="space-y-1">
+                                <div className="text-label-14 font-medium text-gray-1000">
+                                  Encrypted Stream
+                                </div>
+                                <div className="text-label-12 text-gray-900">
+                                  Decrypt this stream to view its chunks.
+                                </div>
+                              </div>
+                              <DecryptButton
+                                onClick={handleDecrypt}
+                                loading={isDecrypting}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="min-h-0 flex-1">
+                            <StreamViewer
+                              streamId={selectedStreamId}
+                              chunks={streamChunks}
+                              isLive={streamIsLive}
+                              isLoading={streamIsInitialLoading}
+                              error={
+                                streamError?.includes('encrypted')
+                                  ? null
+                                  : streamError
+                              }
+                            />
+                          </div>
+                        )
                       ) : (
-                        streams.map((streamId) => (
-                          <button
-                            key={streamId}
-                            type="button"
-                            onClick={() => setSelectedStreamId(streamId)}
-                            className={`flex h-10 min-h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
-                              selectedStreamId === streamId
-                                ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
-                                : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
-                            }`}
-                            title={streamId}
-                          >
-                            {streamId}
-                          </button>
-                        ))
+                        <div className="flex h-full items-center justify-center">
+                          <div className="text-label-14 text-gray-600">
+                            {streams.length > 0
+                              ? 'Select a stream to view its data'
+                              : 'No streams available'}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
-
-                  {/* Stream viewer */}
-                  <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background-100">
-                    {streamsLoading ? (
-                      <div className="min-h-0 flex-1">
-                        <StreamViewerSkeleton />
-                      </div>
-                    ) : selectedStreamId ? (
-                      streamError?.includes('encrypted') && !encryptionKey ? (
-                        <div className="flex h-full items-center justify-center p-4">
-                          <div className="flex flex-col items-center gap-3 text-center">
-                            <Lock className="h-8 w-8 text-gray-700" />
-                            <div className="space-y-1">
-                              <div className="text-label-14 font-medium text-gray-1000">
-                                Encrypted Stream
-                              </div>
-                              <div className="text-label-12 text-gray-900">
-                                Decrypt this stream to view its chunks.
-                              </div>
-                            </div>
-                            <DecryptButton
-                              onClick={handleDecrypt}
-                              loading={isDecrypting}
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="min-h-0 flex-1">
-                          <StreamViewer
-                            streamId={selectedStreamId}
-                            chunks={streamChunks}
-                            isLive={streamIsLive}
-                            isLoading={streamIsInitialLoading}
-                            error={
-                              streamError?.includes('encrypted')
-                                ? null
-                                : streamError
-                            }
-                          />
-                        </div>
-                      )
-                    ) : (
-                      <div className="flex h-full items-center justify-center">
-                        <div className="text-label-14 text-gray-600">
-                          {streams.length > 0
-                            ? 'Select a stream to view its data'
-                            : 'No streams available'}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </ErrorBoundary>
-            </TabsContent>
-
-            {/* Graph tab hidden for now */}
-            {false && isLocalBackend && (
-              <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
-                <ErrorBoundary title="Failed to load execution graph">
-                  <div className="h-full min-h-[500px]">
-                    <GraphTabContent
-                      run={run}
-                      allEvents={allEvents}
-                      env={env}
-                    />
-                  </div>
                 </ErrorBoundary>
               </TabsContent>
-            )}
-          </Tabs>
-        </div>
+
+              {/* Graph tab hidden for now */}
+              {false && isLocalBackend && (
+                <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
+                  <ErrorBoundary title="Failed to load execution graph">
+                    <div className="h-full min-h-[500px]">
+                      <GraphTabContent
+                        run={run}
+                        allEvents={allEvents}
+                        env={env}
+                      />
+                    </div>
+                  </ErrorBoundary>
+                </TabsContent>
+              )}
+            </Tabs>
+          </div>
+        )}
       </div>
     </>
   );

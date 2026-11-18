@@ -20,6 +20,10 @@ const usage = (runId: string, events: number): RunUsage => ({
   events,
   billableEvents: events,
   retries: { count: 0, events: 0 },
+  runEvents: {
+    events: 0,
+    byType: { created: 0, started: 0, completed: 0, failed: 0, cancelled: 0 },
+  },
   stepEvents: {
     steps: 0,
     events: 0,
