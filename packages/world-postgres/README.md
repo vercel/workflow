@@ -324,6 +324,8 @@ and its token can be reused. If the token is never reused, the expired
 
 ## Kubernetes
 
+The package includes a Helm chart for Kubernetes in its `chart` directory, as an optional way for production deployments into Kubernetes clusters. It works by pinning each run to its image tag, and by keeping around older releases' worker pods until their runs finish. It's scale-to-zero and supports pruning.
+
 World postgres comes with optional Kubernetes support. See [`chart/README.md`](./chart/README.md) for more information.
 
 ## Features
