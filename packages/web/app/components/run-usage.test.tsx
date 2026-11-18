@@ -523,6 +523,37 @@ describe('RunUsagePage', () => {
     ).toBe(WORKFLOW_PRICING_DOCS_URL);
   });
 
+  it('puts the footer links inline, right after its sentence', () => {
+    render(
+      <RunUsagePage
+        runId="wrun_1"
+        usage={bigRun()}
+        error={null}
+        isVercelBackend
+      />
+    );
+    const line = screen.getByTestId('run-usage-footer-line');
+    // One paragraph: the sentence, then the links, in reading order.
+    expect(line.tagName).toBe('P');
+    expect(line.textContent).toBe(
+      "Local runs aren't billed. Counted from this run's log in your local data directory. How events are counted → Workflow pricing →"
+    );
+    const links = [...line.querySelectorAll('a')];
+    expect(links.map((a) => a.textContent)).toEqual([
+      'How events are counted →',
+      'Workflow pricing →',
+    ]);
+    // Nothing pushes them to the far side.
+    const footer = line.closest('footer');
+    expect(footer?.className ?? '').not.toMatch(/justify-between|text-right/);
+    expect(line.className).not.toMatch(/justify-between|text-right/);
+    // Each link wraps as a whole; the arrow is not part of its name.
+    for (const a of links) expect(a.className).toContain('whitespace-nowrap');
+    expect(
+      screen.getByRole('link', { name: 'How events are counted' })
+    ).toBeTruthy();
+  });
+
   it('keeps the last numbers with a note when a refresh fails', () => {
     render(
       <RunUsagePage

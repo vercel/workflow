@@ -648,7 +648,14 @@ export function RunUsagePageSkeleton() {
   );
 }
 
-/** Pricing is linked only where runs are billed (the Vercel backend). */
+const FOOTER_LINK =
+  'whitespace-nowrap rounded-sm py-1 text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]';
+
+/**
+ * One line under the tables: whether the run is billed, then the links, in
+ * the same paragraph so they read as part of it and wrap with it. Pricing
+ * is linked only where runs are billed (the Vercel backend).
+ */
 function UsageFooter({
   usage,
   isVercelBackend,
@@ -658,36 +665,39 @@ function UsageFooter({
 }) {
   const showPricing = usage.billed || isVercelBackend;
   return (
-    <footer className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 text-copy-13 text-gray-900">
-      <span data-testid="run-usage-footer">
-        {usage.billed ? (
-          <span className="font-medium text-gray-1000">
-            {formatUsageFooter(usage)}
-          </span>
-        ) : (
-          formatUsageFooter(usage)
-        )}
-      </span>
-      <span className="flex shrink-0 flex-wrap gap-x-4 gap-y-1">
+    <footer className="text-copy-13 text-gray-900">
+      <p data-testid="run-usage-footer-line">
+        <span data-testid="run-usage-footer">
+          {usage.billed ? (
+            <span className="font-medium text-gray-1000">
+              {formatUsageFooter(usage)}
+            </span>
+          ) : (
+            formatUsageFooter(usage)
+          )}
+        </span>{' '}
         <a
           href={RUN_USAGE_DOCS_URL}
           target="_blank"
           rel="noopener noreferrer"
-          className="-my-[3px] inline-block rounded-sm py-[3px] text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
+          className={FOOTER_LINK}
         >
-          How events are counted
+          How events are counted<span aria-hidden="true"> →</span>
         </a>
         {showPricing && (
-          <a
-            href={WORKFLOW_PRICING_DOCS_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="-my-[3px] inline-block rounded-sm py-[3px] text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
-          >
-            Workflow pricing
-          </a>
+          <>
+            {' '}
+            <a
+              href={WORKFLOW_PRICING_DOCS_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={FOOTER_LINK}
+            >
+              Workflow pricing<span aria-hidden="true"> →</span>
+            </a>
+          </>
         )}
-      </span>
+      </p>
     </footer>
   );
 }
