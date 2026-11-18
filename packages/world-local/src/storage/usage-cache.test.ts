@@ -418,7 +418,7 @@ describe('remembered usage counts', () => {
     const yields: Record<string, number[]> = {};
     const reader = createUsageStorage(db, undefined, {
       onBatch: (runId, countedSeq) => {
-        (yields[runId] ??= []).push(countedSeq);
+        yields[runId] = [...(yields[runId] ?? []), countedSeq];
       },
     });
     await reader.getRun(small.runId);
