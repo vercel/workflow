@@ -20,11 +20,12 @@
  * - Safe because a run's log is append-only: rows are added at the next
  *   position and never rewritten or removed, with one exception, the
  *   zero-retention purge, which rewrites every row in the transaction that
- *   finishes the run. Counts (types, steps) do not change in a purge, only
- *   bytes, and a purged run reports the sizes the purge saved, not the
- *   rows'. To stay exact anyway, counts taken before a run finished are
- *   dropped and taken again once it has finished with its data deleted
- *   (cheap then: the rows are small).
+ *   finishes the run, and again when a late step write lands. Counts
+ *   (types, steps) do not change in a purge, only bytes, and a purged run
+ *   reports the sizes the purge saved, not the rows'. To stay exact anyway,
+ *   counts taken before a run finished are dropped and taken again once it
+ *   has finished with its data deleted (cheap then: the rows are small).
+ *   A late purge needs no recount: the run already reports saved sizes.
  * - A run that is not writing (sleeping, waiting on a hook) costs one
  *   lookup of its position. Stream bytes are summed fresh on every read
  *   (from the stream index, without reading the chunks' data).
@@ -357,8 +358,9 @@ export function createUsageStorage(
   // A read counts only the rows after the last position it counted, so the
   // cache assumes event rows are never rewritten in place. The one path that
   // does is the zero-retention purge (`purgeRunData` in run-retention.ts),
-  // which the read handles: a purged run reports the sizes saved before the
-  // purge, and counts taken before it are taken again.
+  // when the run finishes and on a late step write. The read handles both:
+  // a purged run reports the sizes saved before each purge, and counts
+  // taken before the run finished are taken again.
   const cache = new Map<string, RunCounts>();
   // One count per run at a time: a second read of the same run waits for
   // the first and extends what it counted. Overlapping counts would still be
@@ -475,8 +477,7 @@ export function createUsageStorage(
       dataPurged: snapshot.dataPurged,
       savedDataWritten: snapshot.savedDataWritten,
       calls: { hook: counts.hookIds.size, wait: counts.waitIds.size },
-      // Local runs are not billed: the UI and CLI say what the run would
-      // count as on Vercel instead.
+      // Local runs are not billed.
       billed: false,
       // world-local has no plan retention, so there is no Data Retained to
       // report: the UI and CLI hide it.

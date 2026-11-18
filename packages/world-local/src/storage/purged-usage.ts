@@ -77,9 +77,10 @@ function tableExists(db: Database): boolean {
 }
 
 /**
- * Saves what a run wrote up to `seq`. Inside the purge's transaction. The
- * first save wins: a run is purged once, and a later save would measure
- * what the purge left.
+ * Saves what a run wrote up to `seq`, replacing an earlier save. Inside the
+ * purge's transaction. A run is purged when it finishes and again when a
+ * late step write lands (`purgeRunData`), and each save covers the one
+ * before it: the caller adds what was written since to the sizes it read.
  */
 export function savePurgedUsage(
   db: Database,
@@ -88,9 +89,15 @@ export function savePurgedUsage(
 ): void {
   db.run(CREATE_TABLE_SQL);
   db.run(
-    `INSERT OR IGNORE INTO ${TABLE}
+    `INSERT INTO ${TABLE}
        (run_id, seq, run_bytes, step_bytes, hook_bytes, stream_bytes)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (run_id) DO UPDATE SET
+       seq = excluded.seq,
+       run_bytes = excluded.run_bytes,
+       step_bytes = excluded.step_bytes,
+       hook_bytes = excluded.hook_bytes,
+       stream_bytes = excluded.stream_bytes`,
     runId,
     usage.seq,
     usage.byEntity.run,

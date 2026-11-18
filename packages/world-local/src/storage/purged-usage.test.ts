@@ -166,6 +166,79 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     expect(purged.after.events).toBe(kept.after.events);
   });
 
+  // A late step write on a purged run is scrubbed as it lands, by a second
+  // purge in the same transaction: the sizes it wrote are saved first.
+  for (const [eventType, field] of [
+    ['step_completed', 'result'],
+    ['step_failed', 'error'],
+    ['step_retrying', 'error'],
+  ] as const) {
+    it(`counts the payload of a late ${eventType} in full, though it is scrubbed`, async () => {
+      const finishLate = async (purge: boolean) => {
+        const run = await startRun(purge, SPEC_VERSION_SINGLE_ORCHESTRATOR);
+        await writeAndFinish(run, { leaveStepRunning: 'step_late' });
+        const before = await usageOf(run.runId);
+        await run.event({
+          eventType,
+          correlationId: 'step_late',
+          eventData: { [field]: bytes(7000) },
+        });
+        return { runId: run.runId, before, after: await usageOf(run.runId) };
+      };
+      const kept = await finishLate(false);
+      const purged = await finishLate(true);
+
+      // The payload is gone from the row...
+      const row = databaseFor(dataDir).get<{ bytes: number; seq: number }>(
+        `SELECT length(CAST(doc AS BLOB)) AS bytes, seq FROM events
+         WHERE run_id = ? AND event_type = ? ORDER BY seq DESC LIMIT 1`,
+        purged.runId,
+        eventType
+      );
+      expect(Number(row?.bytes)).toBeLessThan(7000);
+      // ...and counted as written, the same as the twin's, never shrinking.
+      expect(purged.after.dataWritten).toEqual({
+        ...kept.after.dataWritten,
+        source: 'saved-at-purge',
+      });
+      expect(purged.after.dataWritten.bytes).toBeGreaterThan(
+        purged.before.dataWritten.bytes + 7000
+      );
+      // One saved row, now covering the late write.
+      const saved = savedRows(purged.runId) as { seq: number }[];
+      expect(saved).toHaveLength(1);
+      expect(Number(saved[0].seq)).toBe(Number(row?.seq));
+      // Read again: the same.
+      expect((await usageOf(purged.runId)).dataWritten).toEqual(
+        purged.after.dataWritten
+      );
+    });
+  }
+
+  it('saves nothing on a late write to a run purged before sizes were saved', async () => {
+    const purged = await startRun(true, SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    await writeAndFinish(purged, { leaveStepRunning: 'step_late' });
+    // A purge by a world-local that did not save sizes.
+    const db = databaseFor(dataDir);
+    db.run('DELETE FROM run_usage_purged WHERE run_id = ?', purged.runId);
+    await purged.event({
+      eventType: 'step_completed',
+      correlationId: 'step_late',
+      eventData: { result: bytes(7000) },
+    });
+
+    // Its earlier rows were already scrubbed, so a save now would report
+    // what is left as what it wrote.
+    expect(savedRows(purged.runId)).toHaveLength(0);
+    const usage = await usageOf(purged.runId);
+    expect(usage.dataWritten.source).toBe('left-after-purge');
+    const left = db.get<{ bytes: number }>(
+      'SELECT SUM(length(CAST(doc AS BLOB))) AS bytes FROM events WHERE run_id = ?',
+      purged.runId
+    );
+    expect(usage.dataWritten.bytes).toBe(Number(left?.bytes));
+  });
+
   it('falls back to what is left for a run purged before sizes were saved', async () => {
     const purged = await startRun(true);
     await writeAndFinish(purged);
@@ -207,7 +280,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     expect(usage.dataWritten.bytes).toBe(Number(rows?.bytes) + 2500);
   });
 
-  it('saves the sizes once per run, in the purge transaction', async () => {
+  it('keeps one saved row per run, written in the purge transaction', async () => {
     const purged = await startRun(true);
     await writeAndFinish(purged);
     expect(savedRows(purged.runId)).toHaveLength(1);

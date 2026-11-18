@@ -1007,7 +1007,7 @@ export function createEventsStorage(
         data.eventType === 'step_retrying') &&
       ranPurge((current ?? store.getRun(runId))?.run);
     if (runPurged || lateOnPurgedRun) {
-      purgeRunData(db, runId);
+      purgeRunData(db, runId, { late: lateOnPurgedRun });
       // The scrubbed bytes are still in the WAL until it is checkpointed.
       effects.push(() => db.checkpoint());
     }
