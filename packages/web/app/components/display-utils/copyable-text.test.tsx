@@ -24,7 +24,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-function pressCopy(text: string | (() => Promise<string>)) {
+function pressCopy(text: string) {
   const onRowClick = vi.fn();
   render(
     <ToastProvider toast={toast}>
@@ -54,13 +54,6 @@ describe('CopyableText', () => {
     expect(await screen.findByText('Copied')).toBeTruthy();
     expect(writeText).toHaveBeenCalledWith('wrun_123');
     expect(onRowClick).not.toHaveBeenCalled();
-  });
-
-  it('copies text that is fetched on press', async () => {
-    pressCopy(async () => 'secret-token');
-
-    expect(await screen.findByText('Copied')).toBeTruthy();
-    expect(writeText).toHaveBeenCalledWith('secret-token');
   });
 
   it('shows an error toast when the copy fails', async () => {

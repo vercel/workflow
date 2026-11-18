@@ -1,6 +1,5 @@
 import {
   CopyButton,
-  type CopyButtonProps,
   cn,
   Tooltip,
   TooltipContent,
@@ -8,12 +7,11 @@ import {
 } from '@workflow/web-shared';
 
 interface CopyableTextProps {
-  text: CopyButtonProps['textToCopy'];
+  text: string;
   children: React.ReactNode;
   className?: string;
   /** If true, the copy button overlaps the text on the right */
   overlay?: boolean;
-  label?: string;
 }
 
 export function CopyableText({
@@ -21,7 +19,6 @@ export function CopyableText({
   children,
   className,
   overlay,
-  label = 'Copy to clipboard',
 }: CopyableTextProps) {
   const Wrapper = overlay ? 'span' : 'div';
   return (
@@ -37,7 +34,7 @@ export function CopyableText({
         <TooltipTrigger asChild>
           <CopyButton
             textToCopy={text}
-            aria-label={label}
+            aria-label="Copy to clipboard"
             className={cn(
               'opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100 [&_svg]:size-3',
               overlay
@@ -46,7 +43,7 @@ export function CopyableText({
             )}
           />
         </TooltipTrigger>
-        <TooltipContent>{label}</TooltipContent>
+        <TooltipContent>Copy to clipboard</TooltipContent>
       </Tooltip>
     </Wrapper>
   );
