@@ -920,8 +920,7 @@ export const showRun = async (
 };
 
 /**
- * `inspect run <id> --usage`: the run's usage, the shape the web UI's Usage
- * tab reads. Only Worlds that implement `experimental_usage` (world-local
+ * `inspect run <id> --usage`: the run's usage (`RunUsage`). Only Worlds that implement `experimental_usage` (world-local
  * today) have it; elsewhere this fails rather than printing the run.
  */
 export const showRunUsage = async (

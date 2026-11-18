@@ -656,7 +656,7 @@ export interface Storage {
 
   /**
    * Per-run usage (events, retries, data written) for observability
-   * surfaces: the web UI's Usage tab and `workflow inspect run --usage`.
+   * surfaces such as `workflow inspect run --usage`.
    *
    * @experimental OPTIONAL, and its shape (`RunUsage`) may change without a
    * major version bump. Only world-local implements it today; consumers

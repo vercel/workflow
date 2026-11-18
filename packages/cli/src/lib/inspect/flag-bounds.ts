@@ -170,7 +170,7 @@ export function validateUsageScope(
 ): string | undefined {
   if (!usage) return undefined;
   if (opensWebUi) {
-    return "--usage prints here and cannot be forwarded to the web UI; open the run's Usage tab there instead, or drop --url/--web.";
+    return '--usage prints here and cannot be forwarded to the web UI; drop --url/--web.';
   }
   if (resource !== 'run' || !hasId) {
     return "--usage shows one run's usage. Usage: `workflow inspect run <run-id> --usage`.";

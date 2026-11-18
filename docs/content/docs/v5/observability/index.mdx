@@ -49,8 +49,6 @@ In the runs table, select one or more runs and choose **Cancel** to cancel the b
 
 In a run's **Streams** tab, a byte stream that carries a PNG, JPEG, GIF, or WebP image is shown as an image preview, with a **Download Image** button for the original bytes.
 
-On the Local World, a run's header shows its **Events** (every event in its log, not only the ones the page has loaded) and its **Storage**, the size of the data the run wrote to your local data directory. Select **Storage**, or open the **Usage** tab, to see where the run's events come from (the workflow, each step function with its calls, share and retries, then the run's own events, sleeps and hooks) and that size by run, steps, hooks, and streams. Local runs aren't billed: event counts follow the [Workflow pricing](https://vercel.com/docs/workflows/pricing) rules, and the tab says how many billable events the run would count as on Vercel. Data sizes are local storage sizes and differ from what Vercel bills; for billed amounts, open the run on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard). A run started with `experimental_retention: 0` reports what it wrote before its data was deleted. `npx workflow inspect run <run_id> --usage` prints the same numbers, and `--json` prints them as JSON.
-
 To share a link to a specific run without opening a browser, use the `--url`
 flag. It prints the dashboard deep link to stdout and exits (no browser, no
 local server), which is useful for scripts, PR comments, or automation. Add `--json` to

@@ -70,8 +70,8 @@ interface Row {
 }
 
 /**
- * `inspect run <id> --usage`, as text: the numbers the web UI's Usage tab
- * shows, from the same `RunUsage` and the same `@workflow/world` formatters.
+ * `inspect run <id> --usage`, as text, from `RunUsage` and the shared
+ * `@workflow/world` formatters.
  */
 export function formatRunUsageText(
   usage: RunUsage,
@@ -186,7 +186,7 @@ export function formatRunUsageText(
   }
 
   // How the step events add up, and what a retry adds: two lines of the
-  // web UI's "How events are counted".
+  // shared "How events are counted".
   lines.push('');
   for (const line of formatEventCountingNote(usage)) lines.push(c.dim(line));
 
@@ -224,9 +224,7 @@ export function formatRunUsageText(
   lines.push('');
   lines.push(formatUsageFooter(usage));
   lines.push(`See pricing: ${WORKFLOW_PRICING_DOCS_URL}`);
-  lines.push(
-    c.dim('Open the Usage tab: npx workflow web · Machine-readable: --json')
-  );
+  lines.push(c.dim('Machine-readable: --json'));
   return lines.join('\n');
 
   function stepRow(row: UsageSpanTreeRow): Row {

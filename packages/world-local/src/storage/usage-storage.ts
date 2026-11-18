@@ -11,9 +11,9 @@
  *
  * **Counted once, then extended.** node:sqlite is synchronous: while a read
  * runs, the process answers nothing else, and reading a run costs time in
- * proportion to its bytes (about 1.5 s for 210 MB). A run page polls its
- * usage every few seconds, so recounting a large live run on every poll
- * kept the web server blocked most of the time. So each World remembers
+ * proportion to its bytes (about 1.5 s for 210 MB). A UI that polls a live
+ * run's usage every few seconds would keep its server blocked most of the
+ * time if every poll recounted the run. So each World remembers
  * the counts of the runs it was asked about, up to the last log position
  * counted, and the next read adds only the rows after it:
  *

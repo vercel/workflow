@@ -22,7 +22,6 @@ import type {
   BulkCancelWorkflowRunsResult,
   Event,
   Hook,
-  RunUsage,
   Step,
   WorkflowRun,
   WorkflowRunStatus,
@@ -712,32 +711,6 @@ export async function fetchRun(
       runId,
       resolveData,
     });
-  }
-}
-
-/**
- * Fetch a run's usage (events, retries, data written), counted over its
- * whole log by the World. `null` when the World does not compute usage
- * (only world-local does today), so the UI shows nothing rather than a
- * count of the events it happened to load.
- *
- * Production data path (world-vercel): tracked in #5445, from an analytics
- * API or a precomputed per-run rollup.
- */
-export async function fetchRunUsage(
-  worldEnv: EnvMap,
-  runId: string
-): Promise<ServerActionResult<RunUsage | null>> {
-  try {
-    const world = await getWorldFromEnv(worldEnv);
-    if (!world.experimental_usage) return createResponse(null);
-    return createResponse(await world.experimental_usage.getRun(runId));
-  } catch (error) {
-    return createServerActionError<RunUsage | null>(
-      error,
-      'world.experimental_usage.getRun',
-      { runId }
-    );
   }
 }
 

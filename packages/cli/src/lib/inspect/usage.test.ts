@@ -69,7 +69,7 @@ describe('formatRunUsageText', () => {
 
       Local runs aren't billed. Counted from this run's log in your local data directory.
       See pricing: https://vercel.com/docs/workflows/pricing
-      Open the Usage tab: npx workflow web · Machine-readable: --json"
+      Machine-readable: --json"
     `);
   });
 

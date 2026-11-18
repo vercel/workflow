@@ -12,15 +12,9 @@ import {
   TooltipTrigger,
   TraceViewer,
 } from '@workflow/web-shared';
-import {
-  type Event,
-  isStepEventType,
-  isTerminalWorkflowRunStatus,
-  type WorkflowRun,
-} from '@workflow/world';
+import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
 import {
   AlertCircle,
-  BarChart3,
   GitBranch,
   HelpCircle,
   List,
@@ -53,7 +47,6 @@ import {
 } from '~/components/ui/breadcrumb';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import { useCancellationReason } from '~/lib/client/hooks/use-cancellation-reason';
-import { useRunUsage } from '~/lib/client/hooks/use-run-usage';
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
@@ -81,7 +74,6 @@ import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
-import { RunUsageHeaderStats, RunUsagePanel, usageVisible } from './run-usage';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -210,7 +202,7 @@ interface RunDetailViewProps {
   selectedId?: string;
 }
 
-type Tab = 'trace' | 'graph' | 'streams' | 'events' | 'usage';
+type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
 export function RunDetailView({
   runId,
@@ -408,19 +400,6 @@ export function RunDetailView({
       hasEncryptedData,
     ]
   );
-
-  // The run's usage, counted by the World over its whole log (world-local
-  // only so far). `null` means the World does not count usage: the header
-  // and the Usage tab stay as they were.
-  const runIsLive =
-    Boolean(run.status) && !isTerminalWorkflowRunStatus(run.status);
-  const {
-    usage: runUsage,
-    error: runUsageError,
-    loading: runUsageLoading,
-    refresh: refreshRunUsage,
-  } = useRunUsage(env, runId, { live: runIsLive });
-  const showUsage = usageVisible(runUsage, isLocalBackend);
 
   // Fetch streams for this run
   const {
@@ -703,13 +682,6 @@ export function RunDetailView({
                   )}
                 </div>
               </div>
-              {showUsage && (
-                <RunUsageHeaderStats
-                  usage={runUsage ?? undefined}
-                  error={runUsageError}
-                  onOpenUsage={() => setActiveTab('usage')}
-                />
-              )}
               {run.expiredAt != null && (
                 <div className="flex flex-col gap-1">
                   <Tooltip>
@@ -738,9 +710,7 @@ export function RunDetailView({
 
         <div className="mt-4 flex-1 flex flex-col min-h-0">
           <Tabs
-            // A `?tab=usage` link opened on a backend without usage shows
-            // the trace.
-            value={activeTab === 'usage' && !showUsage ? 'trace' : activeTab}
+            value={activeTab}
             onValueChange={(v) => setActiveTab(v as Tab)}
             className="flex-1 flex flex-col min-h-0"
           >
@@ -764,12 +734,6 @@ export function RunDetailView({
                 <List className="h-4 w-4" />
                 Streams
               </TabsTrigger>
-              {showUsage && (
-                <TabsTrigger value="usage" className="gap-2">
-                  <BarChart3 className="h-4 w-4" />
-                  Usage
-                </TabsTrigger>
-              )}
             </TabsList>
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
@@ -806,19 +770,6 @@ export function RunDetailView({
                 </div>
               </ErrorBoundary>
             </TabsContent>
-
-            {showUsage && (
-              <TabsContent value="usage" className="mt-0 flex-1 min-h-0">
-                <ErrorBoundary title="Failed to load run usage">
-                  <RunUsagePanel
-                    usage={runUsage ?? undefined}
-                    error={runUsageError}
-                    onRetry={refreshRunUsage}
-                    retrying={runUsageLoading}
-                  />
-                </ErrorBoundary>
-              </TabsContent>
-            )}
 
             <TabsContent value="streams" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load stream data">

@@ -4,9 +4,9 @@ import type { WorkflowRunStatus } from './runs.js';
 import { isTerminalWorkflowRunStatus } from './runs.js';
 
 /**
- * Per-run usage: the shape the observability UI's Usage tab and
- * `workflow inspect run <id> --usage` both read, so the two always show the
- * same numbers.
+ * Per-run usage: the shape `workflow inspect run <id> --usage` reads, built
+ * so that every surface that shows a run's usage reads the same numbers and
+ * the same wording.
  *
  * Field names follow the billed resources on the pricing page
  * ({@link WORKFLOW_PRICING_DOCS_URL}): Workflow Events, Workflow Data Written
@@ -20,7 +20,7 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
  * this shape from an analytics API or a precomputed per-run rollup, not from
  * reading the run's log.
  *
- * Pure (no Node.js imports): the web UI bundles it for the browser.
+ * Pure (no Node.js imports), so a browser UI can bundle it.
  */
 
 export const WORKFLOW_PRICING_DOCS_URL =
@@ -525,7 +525,7 @@ const COUNT_COVERS =
 
 /**
  * Every line of "How events are counted", from the run's own numbers. The
- * web UI shows all of them; the CLI prints {@link formatEventCountingNote}.
+ * CLI prints {@link formatEventCountingNote}, two of them; a UI shows all.
  */
 export function formatEventCountingLines(usage: RunUsage): string[] {
   const breakdown = formatStepEventsBreakdown(usage);
@@ -620,7 +620,7 @@ export interface UsageSpanTreeRow {
 }
 
 /**
- * The span table both the web UI and the CLI draw: the workflow, its steps
+ * The span table the CLI draws (and a UI would): the workflow, its steps
  * (biggest first, the rest folded), then the built-in rows (the run's own
  * events, sleeps, hooks).
  */
