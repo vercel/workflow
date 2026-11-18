@@ -14,13 +14,25 @@ const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content> & {
     showArrow?: boolean;
+    /**
+     * Render into `document.body`. Turn it off inside a menu: menus sit in the
+     * browser's top layer, which a portaled tooltip can't rise above.
+     */
+    portal?: boolean;
   }
 >(
   (
-    { className, sideOffset = 8, showArrow = true, children, ...props },
+    {
+      className,
+      sideOffset = 8,
+      showArrow = true,
+      portal = true,
+      children,
+      ...props
+    },
     ref
-  ) => (
-    <TooltipPrimitive.Portal>
+  ) => {
+    const content = (
       <TooltipPrimitive.Content
         ref={ref}
         sideOffset={sideOffset}
@@ -39,8 +51,13 @@ const TooltipContent = React.forwardRef<
           />
         ) : null}
       </TooltipPrimitive.Content>
-    </TooltipPrimitive.Portal>
-  )
+    );
+    return portal ? (
+      <TooltipPrimitive.Portal>{content}</TooltipPrimitive.Portal>
+    ) : (
+      content
+    );
+  }
 );
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 

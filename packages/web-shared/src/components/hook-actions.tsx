@@ -5,6 +5,7 @@ import { Send } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { useToast } from '../lib/toast';
 import { ResolveHookModal } from './sidebar/resolve-hook-modal';
+import { MenuItem, MenuItemIcon } from './ui/menu';
 
 // ============================================================================
 // Types
@@ -100,12 +101,15 @@ export interface HookActionsDropdownItemProps {
   hook: Hook;
   /** The current run status (used to determine if actions are available) */
   runStatus?: WorkflowRunStatus;
-  /** Stop click event propagation (useful in table rows) */
+  /** Stop click event propagation (useful in table rows). Applies to a custom `DropdownMenuItem`; inside this package's `Menu`, stop clicks around the menu instead. */
   stopPropagation?: boolean;
   /** Called when the resolve action is triggered */
   onResolveClick: (hook: Hook) => void;
-  /** Custom DropdownMenuItem component (allows using the consumer's UI library) */
-  DropdownMenuItem: React.ComponentType<{
+  /**
+   * Custom menu item component, for a menu from the consumer's UI library.
+   * Leave it out inside this package's `Menu`.
+   */
+  DropdownMenuItem?: React.ComponentType<{
     onClick?: (e: React.MouseEvent) => void;
     disabled?: boolean;
     children: React.ReactNode;
@@ -122,6 +126,17 @@ export function ResolveHookDropdownItem({
   onResolveClick,
   DropdownMenuItem,
 }: HookActionsDropdownItemProps): React.JSX.Element {
+  if (!DropdownMenuItem) {
+    return (
+      <MenuItem value="resolve-hook" onSelect={() => onResolveClick(hook)}>
+        <MenuItemIcon>
+          <Send />
+        </MenuItemIcon>
+        Resolve Hook
+      </MenuItem>
+    );
+  }
+
   const handleClick = (e: React.MouseEvent) => {
     if (stopPropagation) e.stopPropagation();
     onResolveClick(hook);
