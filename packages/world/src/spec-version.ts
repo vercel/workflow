@@ -120,6 +120,9 @@ export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
  *
  * It requires the sealed log: the fence counts positions the World's
  * sequencer allocates, so it builds on {@link SPEC_VERSION_SUPPORTS_SEALED_LOG}.
+ *
+ * The spec 9 reference, for users, World authors and runtime maintainers, is
+ * `packages/core/src/runtime/spec9/README.md` in the Workflow SDK repository.
  */
 export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
 

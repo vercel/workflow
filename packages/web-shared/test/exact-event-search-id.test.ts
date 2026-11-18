@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  looksLikeWorkflowIdSearchInput,
-  parseExactWorkflowSearchId,
-} from '../src/lib/exact-event-search-id.js';
+import { parseExactWorkflowSearchId } from '../src/lib/exact-event-search-id.js';
 
 describe('parseExactWorkflowSearchId', () => {
   it('accepts full step IDs', () => {
@@ -74,18 +71,5 @@ describe('parseExactWorkflowSearchId', () => {
     expect(
       parseExactWorkflowSearchId('step_01KSG94DWMWZRQBK04D3GS2CAQQ')
     ).toBeNull();
-  });
-});
-
-describe('looksLikeWorkflowIdSearchInput', () => {
-  it('matches known workflow ID prefixes', () => {
-    expect(looksLikeWorkflowIdSearchInput('step_01KSG94')).toBe(true);
-    expect(looksLikeWorkflowIdSearchInput('wrun_01KSG94')).toBe(true);
-    expect(looksLikeWorkflowIdSearchInput('EVNT_01KSG94')).toBe(true);
-  });
-
-  it('does not match free-text search input', () => {
-    expect(looksLikeWorkflowIdSearchInput('parseInvoice')).toBe(false);
-    expect(looksLikeWorkflowIdSearchInput('step_started')).toBe(false);
   });
 });

@@ -60,6 +60,7 @@ import {
   noteTestSettled,
   noteTestStarted,
   startAtTargetSpecVersion as rawStart,
+  readUntil,
   requireFixture,
   requireSupported,
   runInTestState,
@@ -435,21 +436,62 @@ async function startWorkflowViaHttp(
 // fixture), abort-fetch tests are hermetic, the fibonacci tree fits the
 // scheduler, and source-map assertions are positive-only. A test that
 // genuinely cannot share a deployment can opt out with `test.sequential`.
-/** Every event of a run, across pages. */
-async function allEvents(runId: string) {
-  const world = await getWorld();
-  const events: Awaited<ReturnType<typeof world.events.list>>['data'] = [];
+/** Every row of a cursor-paginated listing, across pages. */
+async function allPages<T>(
+  list: (
+    cursor: string | undefined
+  ) => Promise<{ data: T[]; cursor: string | null; hasMore: boolean }>
+): Promise<T[]> {
+  const rows: T[] = [];
   let cursor: string | undefined;
   while (true) {
-    const page = await world.events.list({
-      runId,
-      pagination: { limit: 100, cursor },
-    });
-    events.push(...page.data);
+    const page = await list(cursor);
+    rows.push(...page.data);
     if (!page.cursor || !page.hasMore) break;
     cursor = page.cursor;
   }
-  return events;
+  return rows;
+}
+
+/**
+ * Every event of a run, across pages. Pass `resolveData: 'none'` when only
+ * event metadata (type, ids, timestamps) is read, e.g. inside a poll.
+ */
+async function allEvents(
+  runId: string,
+  { resolveData }: { resolveData?: 'none' | 'all' } = {}
+) {
+  const world = await getWorld();
+  return allPages((cursor) =>
+    world.events.list({
+      runId,
+      resolveData,
+      pagination: { limit: 100, cursor },
+    })
+  );
+}
+
+/**
+ * Every step of a run, across pages and without step payloads, read from the
+ * World's primary storage.
+ *
+ * Assertions on a run's steps read here rather than through
+ * `workflow inspect steps`, whose listing prefers the World's eventually
+ * ingested `analytics` namespace and can return a page missing the freshest
+ * rows. Storage can still trail a just-finished run (on world-vercel a
+ * single-orchestrator run's step list lags its events), so a read moments
+ * after `returnValue` settles may not have converged yet: poll with
+ * `readUntil`.
+ */
+async function allSteps(runId: string) {
+  const world = await getWorld();
+  return allPages((cursor) =>
+    world.steps.list({
+      runId,
+      resolveData: 'none',
+      pagination: { limit: 100, cursor },
+    })
+  );
 }
 
 /** The `hook_created` events of a parent's child-run completion hook. */
@@ -1936,18 +1978,16 @@ describe.concurrent('e2e', () => {
           expect(runData.status).toBe('completed');
 
           // … and the step itself is recorded as failed.
-          const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId}`,
-            (json) =>
-              json.some(
-                (s: any) =>
+          const steps = await readUntil(
+            () => allSteps(run.runId),
+            (steps) =>
+              steps.some(
+                (s) =>
                   s.stepName.includes('acceptAnyValue') && s.status === 'failed'
               )
           );
-          const step = steps.find((s: any) =>
-            s.stepName.includes('acceptAnyValue')
-          );
-          expect(step.status).toBe('failed');
+          const step = steps.find((s) => s.stepName.includes('acceptAnyValue'));
+          expect(step?.status).toBe('failed');
         }
       );
 
@@ -2045,7 +2085,7 @@ describe.concurrent('e2e', () => {
 
           expect(WorkflowRunFailedError.is(error)).toBe(true);
           assert(WorkflowRunFailedError.is(error));
-          expect(error.errorCode).toBe('RUNTIME_ERROR');
+          expect(error.errorCode).toBe('WORKFLOW_NOT_REGISTERED');
           assert(error.cause instanceof Error);
           expect(error.cause.message).toContain('is not registered');
 
@@ -2069,20 +2109,20 @@ describe.concurrent('e2e', () => {
           expect(runData.status).toBe('completed');
 
           // Verify the step itself failed
-          const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId}`,
-            (json) =>
-              json.some(
-                (s: any) =>
+          const steps = await readUntil(
+            () => allSteps(run.runId),
+            (steps) =>
+              steps.some(
+                (s) =>
                   s.stepName.includes('nonExistentStep') &&
                   s.status === 'failed'
               )
           );
-          const ghostStep = steps.find((s: any) =>
+          const ghostStep = steps.find((s) =>
             s.stepName.includes('nonExistentStep')
           );
           expect(ghostStep).toBeDefined();
-          expect(ghostStep.status).toBe('failed');
+          expect(ghostStep?.status).toBe('failed');
         }
       );
 
@@ -4420,11 +4460,10 @@ describe.concurrent('e2e', () => {
       // Verify that exactly 2 steps were executed:
       // 1. stepWithStepFunctionArg(doubleNumber)
       //   (doubleNumber(10) is run inside the stepWithStepFunctionArg step)
-      const eventsData = await cliInspectJsonUntil(
-        `events --run ${run.runId} --json`,
-        (json) =>
-          json.filter((event: any) => event.eventType === 'step_completed')
-            .length >= 1
+      const eventsData = await readUntil(
+        // Only `eventType` is read, so skip the payloads on every poll.
+        () => allEvents(run.runId, { resolveData: 'none' }),
+        (events) => events.some((event) => event.eventType === 'step_completed')
       );
       const stepCompletedEvents = eventsData.filter(
         (event) => event.eventType === 'step_completed'
@@ -4996,20 +5035,20 @@ describe.concurrent('e2e', () => {
       // - 2 lexical-`this` arrow steps from `makeAdder` (direct + via-step)
       // - 1 invokeAdderFromStep wrapper (which itself triggers another
       //   makeAdder arrow step inside it)
-      const steps = await cliInspectJsonUntil(
-        `steps --runId ${run.runId}`,
-        (json) => {
+      const steps = await readUntil(
+        () => allSteps(run.runId),
+        (steps) => {
           const byName = (needle: string) =>
-            json.filter((s: any) => s.stepName.includes(needle));
-          const counter = json.filter(
-            (s: any) =>
+            steps.filter((s) => s.stepName.includes(needle));
+          const counter = steps.filter(
+            (s) =>
               s.stepName.includes('Counter#add') ||
               s.stepName.includes('Counter#multiply') ||
               s.stepName.includes('Counter#describe')
           );
           return (
             counter.length === 4 &&
-            counter.every((s: any) => s.status === 'completed') &&
+            counter.every((s) => s.status === 'completed') &&
             byName('_anonymousStep').length === 1 &&
             byName('_anonymousStep')[0].status === 'completed' &&
             byName('invokeAdderFromStep').length === 1 &&
@@ -5019,15 +5058,13 @@ describe.concurrent('e2e', () => {
       );
       // Filter to only Counter instance method steps
       const counterSteps = steps.filter(
-        (s: any) =>
+        (s) =>
           s.stepName.includes('Counter#add') ||
           s.stepName.includes('Counter#multiply') ||
           s.stepName.includes('Counter#describe')
       );
       expect(counterSteps.length).toBe(4); // add, multiply, describe, add (from counter2)
-      expect(counterSteps.every((s: any) => s.status === 'completed')).toBe(
-        true
-      );
+      expect(counterSteps.every((s) => s.status === 'completed')).toBe(true);
 
       // The lexical-`this` arrow step inside `Counter#makeAdder` is
       // hoisted by the SWC plugin under an `_anonymousStep` name. It
@@ -5041,7 +5078,7 @@ describe.concurrent('e2e', () => {
       //      `bind(this)` proxy still goes through `useStep`), and
       //   2. the round-tripped proxy correctly runs inline rather than
       //      somehow re-queuing a duplicate step.
-      const adderArrowSteps = steps.filter((s: any) =>
+      const adderArrowSteps = steps.filter((s) =>
         s.stepName.includes('_anonymousStep')
       );
       expect(adderArrowSteps.length).toBe(1);
@@ -5049,7 +5086,7 @@ describe.concurrent('e2e', () => {
 
       // The `invokeAdderFromStep` wrapper itself runs as its own step;
       // its body invokes the round-tripped `add` proxy inline.
-      const invokeAdderSteps = steps.filter((s: any) =>
+      const invokeAdderSteps = steps.filter((s) =>
         s.stepName.includes('invokeAdderFromStep')
       );
       expect(invokeAdderSteps.length).toBe(1);

@@ -494,19 +494,28 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
  * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
  */
 export class MaxEventsExceededError extends WorkflowError {
+  /**
+   * The events the runtime counted. A lower bound on the log's size when
+   * {@link eventCountIsLowerBound} is set: the runtime stopped reading the
+   * log once it held the limit.
+   */
   readonly eventCount: number;
   readonly limit: number;
+  readonly eventCountIsLowerBound: boolean;
 
   constructor(
     eventCount: number,
     limit: number,
-    options?: WorkflowErrorOptions
+    options?: WorkflowErrorOptions & { eventCountIsLowerBound?: boolean }
   ) {
+    const eventCountIsLowerBound = options?.eventCountIsLowerBound === true;
     // Frame hint + docs here (instead of passing `slug` through) so the
     // hint sits above the docs link.
     super(
       formatErrorMessageWithDetails(
-        `Workflow exceeded the maximum of ${limit} events per run`,
+        eventCountIsLowerBound
+          ? `Workflow exceeded the maximum of ${limit} events per run (its event log holds at least ${eventCount} events)`
+          : `Workflow exceeded the maximum of ${limit} events per run`,
         {
           hint: `${QUICKJS_SNAPSHOT_REMEDIATION} Alternatively, split the work into child workflows.`,
           slug: options?.slug ?? ERROR_SLUGS.MAX_EVENTS_EXCEEDED,
@@ -517,6 +526,7 @@ export class MaxEventsExceededError extends WorkflowError {
     this.name = 'MaxEventsExceededError';
     this.eventCount = eventCount;
     this.limit = limit;
+    this.eventCountIsLowerBound = eventCountIsLowerBound;
   }
 
   static is(value: unknown): value is MaxEventsExceededError {
@@ -744,7 +754,7 @@ export class StepNotRegisteredError extends WorkflowRuntimeError {
  * - Something went wrong with the bundling/build tooling that caused the workflow
  *   to not get built correctly
  *
- * When this happens, the run fails with a `RUNTIME_ERROR` error code.
+ * When this happens, the run fails with a `WORKFLOW_NOT_REGISTERED` error code.
  */
 export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
   workflowName: string;
@@ -982,16 +992,37 @@ export class HookNotFoundError extends WorkflowError {
  *
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
+ *
+ * `code` carries the World's reason for the conflict when it gives one, such
+ * as {@link RUN_ALREADY_STARTED_CODE}. Without a code, the conflict says
+ * nothing about which of those cases it is.
  */
 export class EntityConflictError extends WorkflowWorldError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { code?: string; url?: string }) {
+    super(message, options);
     this.name = 'EntityConflictError';
   }
 
   static is(value: unknown): value is EntityConflictError {
     return isError(value) && value.name === 'EntityConflictError';
   }
+}
+
+/**
+ * Error code a World gives an {@link EntityConflictError} refusing a second
+ * `run_started` for a run that is running: the run was started, by this
+ * delivery's own earlier attempt or by another one, and has not finished. It
+ * does not mean the run finished, which a World answers differently.
+ */
+export const RUN_ALREADY_STARTED_CODE = 'run-already-started';
+
+/** Whether `error` refuses a `run_started` because the run already started. */
+export function isRunAlreadyStartedError(
+  error: unknown
+): error is EntityConflictError {
+  return (
+    EntityConflictError.is(error) && error.code === RUN_ALREADY_STARTED_CODE
+  );
 }
 
 /**

@@ -56,7 +56,9 @@ This guide assumes **Standard** workflows. Express workflows have different sema
 | Map state | `for` loop / bounded `Promise.all` (e.g. `p-limit`) / [`start()`](/docs/foundations/starting-workflows) per item for large fan-out | Match the original concurrency mode. |
 | Retry / Catch (`MaxAttempts`, `BackoffRate`, `IntervalSeconds`) | `maxRetries`, `RetryableError`, `FatalError`; `try/catch` for compensation | Retry logic moves to step boundaries; backoff curves use `retryAfter`. See [Errors & Retrying](/docs/foundations/errors-and-retries#advanced-example). |
 | `.waitForTaskToken` | `createHook()` / `createWebhook()` | Hooks for typed signals; webhooks for HTTP. |
-| Child state machine (`StartExecution`) | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
+| Child state machine (`StartExecution`) | Call [`start()`](/docs/foundations/starting-workflows) directly from the workflow | `.sync` becomes `await run.returnValue`, which suspends without polling. Child runs are tagged with `$parentRunId` / `$rootRunId` automatically. |
+| Unique execution `name` (Standard workflows) | `start(workflow, args, { experimental_hook: { token, experimental_minRetention: '90 days' } })` | A duplicate start throws `HookConflictError` naming the owner. Step Functions refuses a reused name for 90 days after the execution **closes**; the retention counts from `start()`, so set it to the longest the run can take plus 90 days to refuse at least as long. Where Step Functions returned the running execution for a repeated identical request, catch `HookConflictError` and return `error.conflictingRunId`. See [Run idempotency](/docs/foundations/idempotency#run-idempotency). |
+| `StopExecution` | `run.cancel({ cancelReason })` | Bulk cancel with `workflow cancel --status=running`. See [Cancellation](/docs/foundations/cancellation). |
 
 A single `Task` state and its Lambda collapse into two directive-tagged functions:
 

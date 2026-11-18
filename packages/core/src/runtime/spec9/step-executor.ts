@@ -53,7 +53,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../../types.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -149,6 +149,11 @@ export interface StepExecutorParams {
    * `stepStartedAt` is the step's first start, not this attempt's.
    */
   firstStartedAt?: Date;
+  /**
+   * When the step's latest attempt started, for an attempt after one that
+   * left no outcome. Reported if this attempt exceeds the retry budget.
+   */
+  lastStartedAt?: Date;
   /** The step's serialized input, as written on its creation. */
   input: SerializedData;
   /**
@@ -254,12 +259,22 @@ export type StepExecutionResult =
   | { type: 'gone' }
   | { type: 'throttled'; timeoutSeconds: number };
 
-/** Message of the `step_failed` written when a step exhausts its retries. */
+/**
+ * Message of the `step_failed` written when a step exhausts its retries.
+ *
+ * The step's final attempt wrote `step_started` and then no outcome, so no
+ * error from its body exists to report. When the log shows that attempt's
+ * start, the message says so, which tells the reader to look at the logs of
+ * the invocation that ran it rather than for an error thrown by the step.
+ */
 export function exceededMaxRetriesMessage(
   stepName: string,
-  maxRetries: number
+  maxRetries: number,
+  lastAttempt?: { attempt: number; startedAt: Date }
 ): string {
-  return `Step "${stepName}" exceeded max retries (${maxRetries} ${pluralize('retry', 'retries', maxRetries)})`;
+  const base = `Step "${stepName}" exceeded max retries (${maxRetries} ${pluralize('retry', 'retries', maxRetries)})`;
+  if (!lastAttempt) return base;
+  return `${base}: attempt ${lastAttempt.attempt} started at ${lastAttempt.startedAt.toISOString()} and never recorded a result. The invocation running it likely crashed, ran out of memory, hit its timeout, or was stopped before it could record the result. Check that invocation's logs for the cause.`;
 }
 
 /**
@@ -275,16 +290,27 @@ export async function failStepForExhaustedRetries(params: {
   stepName: string;
   attempt: number;
   maxRetries: number;
+  /** When the attempt before `attempt`, which left no outcome, started. */
+  lastStartedAt?: Date;
   encryptionKey: PayloadKey | undefined;
   runSpecVersion?: number;
 }): Promise<StepExecutionResult> {
-  const message = exceededMaxRetriesMessage(params.stepName, params.maxRetries);
+  const message = exceededMaxRetriesMessage(
+    params.stepName,
+    params.maxRetries,
+    params.lastStartedAt
+      ? { attempt: params.attempt - 1, startedAt: params.lastStartedAt }
+      : undefined
+  );
   stepLogger.error('Step exceeded max retries', {
     workflowRunId: params.workflowRunId,
     stepName: params.stepName,
     stepId: params.stepId,
     attempt: params.attempt,
     maxRetries: params.maxRetries,
+    ...(params.lastStartedAt
+      ? { lastStartedAt: params.lastStartedAt.toISOString() }
+      : {}),
   });
   try {
     const result = await params.createEvent({
@@ -426,7 +452,7 @@ export async function executeStep(
   // requestId as analytics `vercelId`, while computeInstanceId identifies the
   // worker that executed the step.
   const stepStartedEventParams: CreateEventParams = {
-    computeInstanceId: COMPUTE_INSTANCE_ID,
+    computeInstanceId: getComputeInstanceId(),
     ...(params.requestId ? { requestId: params.requestId } : {}),
     // A step start latency metric covers a background step's first attempt
     // only; a caller-written start (an inline step) never carries it.
@@ -515,6 +541,9 @@ export async function executeStep(
         stepName,
         attempt,
         maxRetries,
+        ...(params.lastStartedAt
+          ? { lastStartedAt: params.lastStartedAt }
+          : {}),
         encryptionKey: params.encryptionKey ?? (await getEncryptionKey()),
         runSpecVersion: params.runSpecVersion,
       });

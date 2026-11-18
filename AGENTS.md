@@ -33,6 +33,10 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
+New runs default to spec 9 (a single orchestrator per run behind the World's in-band fence) on Worlds that declare the fence, and to spec 8 on Worlds that do not; `WORKFLOW_SPEC_VERSION=8` opts out. The spec 9 runtime lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
+
+Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
+
 ## Development commands
 
 ### Workspace-level commands
@@ -285,10 +289,8 @@ Worlds are nonetheless worth fixing on their own merits, and neither is what
 made the lanes red: world-local defaults to **1000** in-flight deliveries (the
 comment above it says the limit exists to avoid overwhelming the process, and
 the repro script has to override it to 10), world-postgres to 50 embedded
-workers *per process*; and neither World has world-vercel's per-run replay
-serialization, which is itself opt-in there behind
-`WORKFLOW_SEQUENTIAL_REPLAYS` (vercel/workflow#2193), so a run's concurrent
-wakes each replay the whole log.
+workers *per process*; and neither World serializes a spec 8 run's replays,
+so a run's concurrent wakes each replay the whole log.
 
 world-local's storms come out clean far more often than world-postgres's, so the
 default scale says even less there: the corruption it does produce needs a
@@ -380,6 +382,7 @@ This project uses pnpm with workspace configuration. The required version is spe
 - 2-space indentation, single quotes, trailing commas (ES5)
 - Import type enforcement enabled
 - Explicit `any` is discouraged (Biome's `noExplicitAny` rule is currently disabled); exhaustive dependencies warnings enabled
+- Observability UI (`packages/web`, `packages/web-shared`): never use opacity to set a text colour. Read `packages/web-shared/AGENTS.md` before touching styles there.
 
 ## Local checks vs. CI
 
@@ -407,9 +410,18 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - README.md files in each package must accurately reflect the current functionality and purpose of that package
 - READMEs should not contain outdated or incorrect information about package capabilities
 - When modifying package functionality, ensure corresponding README updates are included
-- Document every user-configurable environment variable in the docs.
+- Document every user-configurable environment variable in the docs. Settings of an experimental opt-in runtime or run format (such as spec 9) go only in their own section of `configuration/runtime-tuning.mdx`. Other pages under `docs/content/docs/` describe the default runtime: no "Spec N (experimental)" sections or caveats. How an experimental runtime behaves lives in its design note (for spec 9, `packages/core/src/runtime/spec9/README.md`); `docs/content/worlds/` may describe what a World implements to support it.
 - Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
+- Docs pages never reference or link to source files in this repository. Design notes for maintainers live as markdown next to the code they describe (see [Workflow execution model](#workflow-execution-model)) and are referenced from source comments.
+- The docs site is public: everything under `docs/content/` is published on workflow-sdk.dev, indexed by search engines, and served to agents through site search, `llms.txt` and the docs MCP. Write it only for people who use the SDK or build a World. Design notes, RFCs, implementation references and anything else aimed at maintainers go next to the code, never into a docs page. There is no `/docs/changelog` section; release notes come from changesets (rendered at `/changelog`).
+- Preview-only tooling pages go in a docs tree's `internal/` folder with `internal: true` frontmatter, which makes production answer 404 for them, keeps them out of the sidebar, sitemap, search, `llms.txt` and chat, and marks them `noindex`. Public pages never link to them.
+- `pnpm --filter docs lint:links` (the Docs Links CI job) enforces the three rules above. When a page leaves the site, add a redirect in `docs/next.config.ts`.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
+- `skills/` holds skills published for SDK users. Skills for contributors working in this repository live in `.agents/skills/` and are not published. Read [`web-guidelines`](.agents/skills/web-guidelines/SKILL.md) before changing `packages/web` or `packages/web-shared`.
+
+## Pull requests
+
+When opening a pull request, always use the [template](.github/PULL_REQUEST_TEMPLATE/pull_request_template.md) and follow the agent instructions in its trailing comment.
 
 ### Docs preview links in PR descriptions
 
@@ -420,6 +432,15 @@ When a PR adds or updates docs pages (anything under `docs/content/`), add a "Do
 - When a change is scoped to a specific section of a page, link to its heading anchor (e.g. `/docs/foundations/hooks#checking-for-token-conflicts`) and verify the anchor matches a real heading in the MDX.
 - A table with one row per page (and one column per docs version, when both v4 and v5 were updated) works well.
 - The preview deployment sits behind deployment protection, so the links require Vercel team access. This is expected; include them anyway for reviewers.
+
+### Observability UI preview links in PR descriptions
+
+When a PR changes the observability UI (`packages/web` or `packages/web-shared`), add a "Preview" section to the PR description with a direct link to the change on the `workflow-web` preview deployment, followed by step-by-step instructions for checking it there:
+
+- Build the URL from the branch name: lowercase it, replace every character other than `a-z` and `0-9` with `-`, and use `https://workflow-web-git-<branch-slug>.labs.vercel.dev`. For example, `web-shared/search-input` becomes `https://workflow-web-git-web-shared-search-input.labs.vercel.dev`.
+- Vercel shortens long branch slugs, so once the `vercel[bot]` comment appears on the PR, compare the link with the Preview link in its `workflow-web` row and use that one if they differ.
+- Link to the page that shows the change: the home page (`/`, with `?tab=runs`, `hooks` or `workflows`) or a run (`/run/<runId>`, with `?tab=trace`, `events`, `streams` or `graph`).
+- The preview deployment sits behind deployment protection, so the link requires Vercel team access. This is expected; include it anyway for reviewers.
 
 ## SWC plugin
 

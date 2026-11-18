@@ -37,7 +37,7 @@ import {
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
 import {
   absorbSkippedSlotReport,
@@ -852,7 +852,8 @@ export async function handleSuspension({
   // method and a run whose events are slot-numbered. Hook writes cannot ride
   // a batch (see `createBatch`), but they need no barrier against one either:
   // they commit through the single path alongside the batch. Everything
-  // outside the gate keeps the single-event path byte-for-byte.
+  // outside the gate keeps the single-event path byte-for-byte. See
+  // `./batched-event-writes.md`.
   const batchFanoutEligible =
     typeof world.events.createBatch === 'function' &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
@@ -1319,7 +1320,7 @@ export async function handleSuspension({
               // the compute-instance attribution the single claim sends via
               // CreateEventParams.
               ...(entry.kind === 'inline-started'
-                ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+                ? { computeInstanceId: getComputeInstanceId() }
                 : {}),
             })),
             // Per-write request attribution, same as the single path's

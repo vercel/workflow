@@ -1,3 +1,5 @@
+// Design notes for `resumeHook()`: `./durable-hook-resume.md` (the current
+// design) and `./resilient-hook-resume.md` (the earlier one it superseded).
 import type { Span } from '@opentelemetry/api';
 import {
   ERROR_SLUGS,

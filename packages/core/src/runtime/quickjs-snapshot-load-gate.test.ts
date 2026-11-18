@@ -146,9 +146,6 @@ async function invoke(options: {
 
 describe('QuickJS snapshot load gate', () => {
   beforeEach(async () => {
-    // These runs have no encryption key; opt in to unencrypted snapshots
-    // so the load gate is what's under test.
-    process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED = '1';
     const { __resetSnapshotLatchesForTests } = await import(
       './quickjs-delivery-shared.js'
     );
@@ -156,19 +153,17 @@ describe('QuickJS snapshot load gate', () => {
   });
 
   afterEach(() => {
-    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
     setWorld(undefined);
     vi.clearAllMocks();
   });
 
-  it('never probes for a run without an encryption key unless opted in', async () => {
-    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
+  it('probes for a run without an encryption key', async () => {
     const { load } = await invoke({
       log: makeLog(10),
       threshold: 1,
       outcome: 'completed',
     });
-    expect(load).not.toHaveBeenCalled();
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it('skips the load when a complete preload is shorter than the threshold', async () => {

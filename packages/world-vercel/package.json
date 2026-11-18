@@ -1,11 +1,13 @@
 {
   "name": "@workflow/world-vercel",
-  "version": "5.5.0",
+  "version": "5.6.1",
   "description": "Vercel platform World implementation for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"

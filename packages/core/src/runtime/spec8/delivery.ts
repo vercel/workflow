@@ -2,6 +2,18 @@
  * The spec 8 (and below) delivery: several orchestrator invocations of a run
  * may write at once, steps keep entities, and the World's precondition guard
  * keeps their writes consistent. See `../delivery.ts`.
+ *
+ * Design notes for this runtime, next to it:
+ *
+ * - `../eager-processing.md`: inline step execution and incremental replay.
+ * - `./turbo-mode.md`: the fast path for a run's first delivery.
+ * - `./lazy-inline-step-start.md`: folding an inline step's `step_created`
+ *   into its `step_started`, parallel inline steps and optimistic start.
+ * - `./step-message-ownership.md`: inline step ownership and its lease.
+ * - `./batched-event-writes.md`: a suspension's writes as one batch.
+ *
+ * Read the relevant one before changing that behaviour, and update it in the
+ * same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
@@ -17,7 +29,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { once } from '@workflow/utils';
+import { once, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type CreateEventParams,
@@ -233,6 +245,38 @@ function isEarlyAdvanceOutcome(
   );
 }
 
+/**
+ * Per inline step execution of one delivery, a promise that settles once the
+ * delivery published the step's delayed retry under its dispatch key, or
+ * ended without publishing it. A queued delivery of the step that carries
+ * that retry waits on it (see `carryFoldedRetry` in `./step-single-flight.ts`).
+ */
+class InlineRetryPublications {
+  readonly #release = new Map<string, () => void>();
+
+  /** The promise for the execution of `correlationId` about to start. */
+  track(correlationId: string): Promise<void> {
+    this.#release.get(correlationId)?.();
+    const { promise, resolve } = withResolvers<void>();
+    this.#release.set(correlationId, resolve);
+    return promise;
+  }
+
+  /** The retries of `correlationIds` are published. */
+  published(correlationIds: readonly string[]): void {
+    for (const id of correlationIds) {
+      this.#release.get(id)?.();
+      this.#release.delete(id);
+    }
+  }
+
+  /** The delivery ended: nothing it did not publish yet will be. */
+  releaseAll(): void {
+    for (const release of this.#release.values()) release();
+    this.#release.clear();
+  }
+}
+
 /** Runs one delivery of a spec 8 (or older) run's queue message. */
 export async function runSpec8Delivery(
   delivery: WorkflowDelivery
@@ -244,16 +288,26 @@ export async function runSpec8Delivery(
     InlineStepRef,
     InlineStepResult
   >();
+  const inlineRetryPublications = new InlineRetryPublications();
   try {
-    return await runDelivery(delivery, inlineStepsInFlight);
+    return await runDelivery(
+      delivery,
+      inlineStepsInFlight,
+      inlineRetryPublications
+    );
   } finally {
-    await inlineStepsInFlight.settleAll();
+    try {
+      await inlineStepsInFlight.settleAll();
+    } finally {
+      inlineRetryPublications.releaseAll();
+    }
   }
 }
 
 async function runDelivery(
   delivery: WorkflowDelivery,
-  inlineStepsInFlight: InlineStepsInFlight<InlineStepRef, InlineStepResult>
+  inlineStepsInFlight: InlineStepsInFlight<InlineStepRef, InlineStepResult>,
+  inlineRetryPublications: InlineRetryPublications
 ): Promise<DeliveryResult> {
   const {
     workflowCode,
@@ -752,6 +806,9 @@ async function runDelivery(
         )
       )
     );
+    inlineRetryPublications.published(
+      retries.map(({ step }) => step.correlationId)
+    );
   };
 
   // A plain orchestrator-replay message. Omits `runInput` (it
@@ -1240,7 +1297,10 @@ async function runDelivery(
         stepResult = await runStepSingleFlight(
           runId,
           incomingStepId,
-          executeQueuedStep
+          executeQueuedStep,
+          // This message may be the one an inline winner's retry was
+          // folded into; if so, carry it.
+          { carryFoldedRetry: true }
         );
       } finally {
         replayBudget.resume();
@@ -4376,21 +4436,6 @@ async function runDelivery(
         // pays the await-then-run path for the rest of that
         // one invocation, which is cheap next to the
         // alternative.
-        //
-        // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
-        // topics consumed with `maxConcurrency: 1`) would in
-        // principle waive this latch: serialized orchestrator
-        // invocations restore the single-handler guarantee for
-        // the whole delivery. The waiver is intentionally NOT
-        // taken: the env var is a runtime-process setting that
-        // cannot prove the BUILT flow trigger actually carries
-        // `maxConcurrency: 1` (it must be set at build time
-        // too, and some integrations write their own trigger
-        // config), and `capabilities.maxConcurrency` only
-        // declares queue support, not deployed configuration.
-        // Until the build emits a verifiable signal that the
-        // deployed trigger is serialized, the conservative
-        // latch stays.
         const forceOptimisticStart =
           turbo &&
           !suspensionResult.hasAttributeEvents &&
@@ -4569,12 +4614,14 @@ async function runDelivery(
           // matching quickjs-entrypoint.
           const isFreshClaim =
             s.lazyStepInput !== undefined || s.preclaimedStart !== undefined;
-          const executed = runStepSingleFlight(
-            runId,
-            s.correlationId,
-            run,
-            isFreshClaim ? 'debug' : 'warn'
-          );
+          const executed = runStepSingleFlight(runId, s.correlationId, run, {
+            logLevel: isFreshClaim ? 'debug' : 'warn',
+            // A `retry` is published under the step's dispatch key
+            // (publishInlineRetries), or the delivery ends without it.
+            retryPublishedUnderDispatchKeyAfter: inlineRetryPublications.track(
+              s.correlationId
+            ),
+          });
           const tracked = executed.finally(() =>
             inFlightOwnedSteps.delete(s.correlationId)
           );
