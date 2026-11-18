@@ -207,7 +207,13 @@ export async function pruneWorkers(
     return { actions, deleted, restored, repaired, errors, warnings };
   }
 
-  for (const action of actions) {
+  // Restore and repair before deleting resources they may need as templates.
+  const executionOrder = [...actions].sort(
+    (a, b) =>
+      Number(a.kind === 'delete' || a.kind === 'delete-scaler') -
+      Number(b.kind === 'delete' || b.kind === 'delete-scaler')
+  );
+  for (const action of executionOrder) {
     try {
       if (action.kind === 'delete') {
         // The ScaledObject first, so KEDA does not scale up what is being deleted.
