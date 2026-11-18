@@ -1505,7 +1505,11 @@ async function runDelivery(
         ? undefined
         : readRun();
     const read = await readSinceParked(taken);
-    span?.setAttributes(Attribute.WorkflowParkedSessionRead(read.type));
+    span?.setAttributes(
+      Attribute.WorkflowParkedSessionRead(
+        read.type === 'resume' && read.crossedWrites ? 'crossed' : read.type
+      )
+    );
     if (
       read.type === 'resume' &&
       read.page.events.length === 0 &&
