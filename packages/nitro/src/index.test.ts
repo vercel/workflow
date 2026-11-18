@@ -1,8 +1,16 @@
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  refreshInProcessWorkerRoute,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 import { workflow as viteWorkflow } from './vite.js';
+
+vi.mock('@workflow/builders', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@workflow/builders')>()),
+  refreshInProcessWorkerRoute: vi.fn(async () => {}),
+}));
 
 type StubOptions = {
   routing: boolean;
@@ -618,5 +626,47 @@ describe('@workflow/nitro published-package bundling', () => {
     await nitroModule.setup(nitro);
 
     expect(nitro.options).not.toHaveProperty('moduleSideEffects');
+  });
+});
+
+describe('@workflow/nitro development rebuilds', () => {
+  it('hands the rebuilt flow route to a World that delivers in process after each rebuild, not the first', async () => {
+    const reloads: Array<() => Promise<void>> = [];
+    const nitro = createNitroStub({
+      routing: true,
+      majorVersion: 3,
+      dev: true,
+    });
+    nitro.options.baseURL = '/app/';
+    nitro.hooks.hook = (name: string, fn: () => Promise<void>) => {
+      if (name === 'dev:reload') reloads.push(fn);
+    };
+    const build = vi
+      .spyOn(LocalBuilder.prototype, 'build')
+      .mockResolvedValue(undefined);
+    vi.mocked(refreshInProcessWorkerRoute).mockClear();
+    try {
+      await nitroModule.setup(nitro);
+      expect(reloads).toHaveLength(1);
+
+      // The first reload follows the initial build: nothing changed.
+      await reloads[0]();
+      expect(refreshInProcessWorkerRoute).not.toHaveBeenCalled();
+
+      await reloads[0]();
+      expect(build).toHaveBeenCalledOnce();
+      expect(refreshInProcessWorkerRoute).toHaveBeenCalledExactlyOnceWith({
+        basePath: '/app',
+      });
+
+      // A failed rebuild hands nothing over.
+      build.mockRejectedValueOnce(new Error('mid-edit'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await reloads[0]();
+      expect(refreshInProcessWorkerRoute).toHaveBeenCalledOnce();
+      warn.mockRestore();
+    } finally {
+      build.mockRestore();
+    }
   });
 });

@@ -399,6 +399,9 @@ importers:
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../world
       acorn:
         specifier: 8.19.0
         version: 8.19.0
@@ -1480,9 +1483,6 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
-      '@workflow/world-local':
-        specifier: workspace:*
-        version: link:../world-local
       cbor-x:
         specifier: 1.6.9
         version: 1.6.9
@@ -1501,6 +1501,9 @@ importers:
       ulid:
         specifier: 'catalog:'
         version: 3.0.2
+      workflow:
+        specifier: workspace:^
+        version: link:../workflow
       zod:
         specifier: 'catalog:'
         version: 4.6.7

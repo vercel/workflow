@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
-  NORMALIZE_REQUEST_CODE,
+  createWrappedWorkflowRouteCode,
   resolveProjectRoot,
   type SvelteKitConfig,
   writeFileIfChanged,
@@ -93,11 +93,10 @@ export class SvelteKitBuilder extends BaseBuilder {
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
-      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
-}`
+      (_match, options = '') =>
+        createWrappedWorkflowRouteCode(
+          `workflowEntrypoint(workflowCode${options})`
+        )
     );
     // These files are generated into the SvelteKit routes directory, which
     // Vite watches in dev, so an identical rewrite would still invalidate the

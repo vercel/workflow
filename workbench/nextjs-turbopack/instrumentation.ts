@@ -10,6 +10,14 @@ export async function register() {
     // resolve `fs` (breaks the webpack workbench's build).
     const { registerE2eLifecycleHooks } = await import('./lifecycle-hooks-e2e');
     registerE2eLifecycleHooks();
+    // The Postgres World runs its jobs in this process. start() is all it
+    // needs: it sends one health check to the app's own flow route, which
+    // hands itself to the World when it answers.
+    if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+      const { getWorld } = await import('workflow/runtime');
+      const world = await getWorld();
+      await world.start?.();
+    }
   }
   registerOTel({
     serviceName: 'nextjs-turbopack',

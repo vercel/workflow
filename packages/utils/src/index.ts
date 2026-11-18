@@ -1,8 +1,13 @@
 export { debugLog, isWorkflowDebugEnabled } from './debug-log.js';
 export {
   globalSingleton,
+  peekGlobalSingleton,
   resetGlobalSingletonForTest,
 } from './global-singleton.js';
+export {
+  IN_PROCESS_WORKER_STATE,
+  type InProcessWorkerState,
+} from './in-process-worker.js';
 export {
   formatStepName,
   formatWorkflowName,
@@ -25,6 +30,7 @@ export {
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
+  QUEUE_ROUTE_DENIED_CODE,
   type QueueAuthKeySource,
   setQueueAuthKeySource,
   verifyQueueAuthKey,

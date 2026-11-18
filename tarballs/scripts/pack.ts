@@ -129,10 +129,20 @@ async function main() {
         }
       }
     };
+    // A peer dependency stays a range: a tarball URL there makes npm refuse
+    // the install (ERESOLVE) when the peer is provided by another tarball,
+    // whose version is a prerelease no caret range on a workspace version
+    // would accept either. Any version of the sibling tarball satisfies it.
+    const updatePeerDeps = (deps: Record<string, string> | undefined) => {
+      if (!deps) return;
+      for (const depName of Object.keys(deps)) {
+        if (packageNames.has(depName)) deps[depName] = '*';
+      }
+    };
 
     updateDeps(modifiedPackageJson.dependencies);
     updateDeps(modifiedPackageJson.devDependencies);
-    updateDeps(modifiedPackageJson.peerDependencies);
+    updatePeerDeps(modifiedPackageJson.peerDependencies);
 
     const versionFileSnapshots: FileSnapshot[] = [];
 

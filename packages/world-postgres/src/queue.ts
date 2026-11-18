@@ -1,6 +1,4 @@
-import { connect } from 'node:net';
 import * as Stream from 'node:stream';
-import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
@@ -12,11 +10,15 @@ import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
+  globalSingleton,
+  IN_PROCESS_WORKER_STATE,
+  type InProcessWorkerState,
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  IN_PROCESS_QUEUE_HANDLER,
   isSingleOrchestratorMessage,
   MessageId,
   messageRunSpecVersion,
@@ -24,8 +26,11 @@ import {
   parseQueueName,
   parseQueueRoute,
   type Queue,
+  type QueueDeliveryMeta,
   QueuePayloadSchema,
   QueuePrefix,
+  type QueueRouteHandler,
+  queueDeliveryHeaders,
   resolveQueueNamespace,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorRunIdOf,
@@ -37,7 +42,6 @@ import {
   destroyNodeHttpAgents,
   nodeHttpFetch,
 } from '@workflow/world/node-http.js';
-import { createWorld } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
@@ -60,7 +64,9 @@ import {
   type JobLeasePolicy,
   resolveJobLeasePolicy,
 } from './job-lease.js';
+import { isJsonMode, operatorLog } from './logger.js';
 import { MessageData } from './message.js';
+import { createDeliveryHandler, createRunGate } from './queue-handler.js';
 import { createRunLeases, isMissingTable, type LeftJob } from './run-lease.js';
 
 /**
@@ -98,7 +104,6 @@ export function serializeGraphileMeta(meta: unknown): string {
 }
 
 function createGraphileLogger() {
-  const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
   const isVerbose = () => Boolean(process.env.DEBUG);
 
   return new Logger(() => (level: string, message: string, meta?: unknown) => {
@@ -135,6 +140,20 @@ const graphileLogger = createGraphileLogger();
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
+/**
+ * How long `start()` keeps sending its health check to the app's own flow
+ * route (see `requestFlowRoute`): the server may not listen yet when its
+ * startup hook calls `start()`, and a development server compiles the route
+ * on the first request to it. Each attempt waits up to
+ * `START_HEALTH_CHECK_ATTEMPT_MS` for the answer, and attempts are spaced by
+ * a backoff from 100 ms up to 2 s.
+ */
+const START_HEALTH_CHECK_WINDOW_MS = 120_000;
+const START_HEALTH_CHECK_ATTEMPT_MS = 60_000;
+const START_HEALTH_CHECK_MAX_DELAY_MS = 2_000;
+/** Backoff for a runner start that failed after the handler was registered. */
+const RUNNER_RETRY_BASE_MS = 1_000;
+const RUNNER_RETRY_MAX_MS = 30_000;
 
 function envTimeoutMs(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -144,10 +163,11 @@ function envTimeoutMs(name: string, fallback: number): number {
 }
 
 /**
- * Per-request deadlines for the loopback delivery request. `0` disables the
- * deadline. An operator who prefers a hung handler to be redelivered rather
- * than hold its worker slot until restart sets these to a value above the
- * longest inline step they expect.
+ * Per-delivery deadlines. `0` disables the deadline. An operator who prefers
+ * a hung handler to be redelivered rather than hold its worker slot until
+ * restart sets these to a value above the longest inline step they expect.
+ * Over HTTP they are the request's headers and body deadlines; an in-process
+ * delivery has the headers deadline to respond, and no body deadline.
  */
 export function getDeliveryTimeouts() {
   return {
@@ -223,7 +243,7 @@ const GraphileHelpers = z.object({
   }),
 });
 
-type HttpExecutionResult =
+type DeliveryResult =
   | { type: 'completed' }
   | { type: 'reschedule'; timeoutSeconds: number }
   | {
@@ -233,8 +253,78 @@ type HttpExecutionResult =
       headers: Record<string, string>;
     };
 
-type RunnerStart = { controller: AbortController; promise: Promise<void> };
-type LoopbackTarget = { hosts: string[]; port: number };
+/** What the runtime's handler returned for a delivery, as the queue reads it. */
+function deliveryResultOf(result: unknown): DeliveryResult {
+  if (
+    typeof result === 'object' &&
+    result !== null &&
+    'timeoutSeconds' in result
+  ) {
+    const timeoutSeconds = Number(result.timeoutSeconds);
+    if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+      return { type: 'reschedule', timeoutSeconds };
+    }
+  }
+  return { type: 'completed' };
+}
+
+/** The handler a World's `createQueueHandler` wraps: the runtime's. */
+type DeliveryHandler = (
+  message: unknown,
+  meta: QueueDeliveryMeta
+) => Promise<unknown>;
+
+/**
+ * Rejects when `signal` aborts, with the error a transport abort produces
+ * (`AbortError`), so a delivery aborted by a shutdown or a deadline fails its
+ * Graphile job and is redelivered, as an aborted HTTP delivery is. The
+ * handler itself keeps running; the job is released, not the work. `cancel`
+ * removes the listener once the delivery settled on its own: the signal may
+ * be Graphile's, shared by every job of the runner, and must not keep one
+ * listener per delivery.
+ */
+function untilAborted(signal: AbortSignal): {
+  promise: Promise<never>;
+  cancel: () => void;
+} {
+  let cancel = () => {};
+  const promise = new Promise<never>((_, reject) => {
+    const fail = () => {
+      const reason = signal.reason;
+      if (reason instanceof Error && reason.name === 'AbortError') {
+        reject(reason);
+        return;
+      }
+      const error = new Error(
+        reason instanceof Error ? reason.message : 'Delivery aborted'
+      );
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) {
+      fail();
+      return;
+    }
+    signal.addEventListener('abort', fail, { once: true });
+    cancel = () => signal.removeEventListener('abort', fail);
+  });
+  // The race may settle without it; nothing listens for a late rejection.
+  promise.catch(() => {});
+  return { promise, cancel };
+}
+
+/** `signal` with the deadline (ms, `0` for none), aborted when either is. */
+function deliverySignal(
+  signal: AbortSignal | undefined,
+  deadlineMs: number
+): AbortSignal | undefined {
+  const signals = [
+    ...(signal ? [signal] : []),
+    ...(deadlineMs > 0 ? [AbortSignal.timeout(deadlineMs)] : []),
+  ];
+  if (signals.length === 0) return undefined;
+  return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+}
 
 /** A hook resume's timing, carried from a coalesced wake to the re-run. */
 interface CoalescedResume {
@@ -261,13 +351,18 @@ function executorInput(message: unknown) {
  * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
 export type PostgresQueue = Queue & {
+  /**
+   * Makes the queue ready to enqueue, and starts this World's Graphile
+   * runner when this process is a worker: one that registered the Workflow
+   * SDK's flow handler for this World's prefix (`registerHandler`). Every
+   * other process (the CLI, the web UI, a script) only enqueues, and never
+   * claims a job. A handler registered after `start()` starts the runner
+   * then.
+   */
   start(): Promise<void>;
   close(): Promise<void>;
   /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
-  registerHandler(
-    prefix: QueuePrefix,
-    handler: (req: Request) => Promise<Response>
-  ): void;
+  registerHandler(prefix: QueuePrefix, handler: QueueRouteHandler): void;
   /** Deliver a queue prefix's messages over HTTP to `path` on the app (see `Queue.registerRoute`). */
   registerRoute(prefix: QueuePrefix, path: string): void;
 };
@@ -283,20 +378,11 @@ export function createQueue(
     orphanedLeaseIntervalMs?: number;
     /** Deferred messages one run lease keeps, in place of 100. */
     maxDeferredPerLease?: number;
+    /** How long `start()` keeps trying its health check, in place of 120 seconds. */
+    startHealthCheckWindowMs?: number;
   }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  // Only for its queue handler. 'read' so a Postgres app never creates a
-  // queue auth key file or a `.workflow-data` directory: this World declares
-  // queueAuthMode 'skip', and the key is read only if something sends.
-  const localWorld = createWorld({
-    dataDir: undefined,
-    port,
-    queueAuthKey: 'read',
-    // This World's runs are in Postgres, not in the Local World's storage,
-    // and its worker resolves an unstamped orchestrator message itself.
-    readUnstampedRunSpec: false,
-  });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
   // custom dispatcher, and a queue-owned pool keeps these sockets out of the
@@ -342,6 +428,16 @@ export function createQueue(
     },
   };
   const generateMessageId = monotonicFactory();
+  // The receiving side of the single-orchestrator gate: one run's orchestrator
+  // deliveries run one at a time in this process (the run's delivery lease
+  // serializes them across processes; see `run-lease.ts`). Held by the
+  // delivery handler around the runtime's handler; see `createDeliveryHandler`.
+  const handlerRunGate = createRunGate();
+  const deliveryHandler: Queue['createQueueHandler'] = (prefix, handler) =>
+    createDeliveryHandler(prefix, handler, {
+      runGate: handlerRunGate,
+      deserialize: transport.deserialize,
+    });
 
   function getJobQueueName(
     deploymentId: string | undefined = config.deploymentId
@@ -398,7 +494,20 @@ export function createQueue(
   const ownPrefix = () =>
     getQueueTopicPrefix('workflow', resolveQueueNamespace(config.namespace));
   /** In-process handlers by queue prefix (`registerHandler`). */
-  const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
+  const directHandlers = new Map<string, QueueRouteHandler>();
+  /**
+   * Whether the Workflow SDK's flow handler (one with the in-process entry)
+   * is registered here, under any prefix: the route registers for the
+   * prefix it was built with (`WORKFLOW_QUEUE_NAMESPACE` at build time),
+   * which is this World's own unless the two namespaces differ (see
+   * `registerHandler`). A worker runs wherever that handler is.
+   */
+  const hasFlowHandler = () => {
+    for (const handler of directHandlers.values()) {
+      if (typeof handler[IN_PROCESS_QUEUE_HANDLER] === 'function') return true;
+    }
+    return false;
+  };
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
   /**
@@ -417,12 +526,117 @@ export function createQueue(
    */
   const executorTask = () => `${getJobQueueName()}_executor`;
 
+  /**
+   * The invoke executor lane around the runtime's handler, for a delivery of
+   * this World's own prefix when invoke is enabled. An orchestrator delivery
+   * (`executorInput`) runs only on the run's executor task: one that arrived
+   * elsewhere (`provenance.marked` false: an old worker's HTTP delivery, a
+   * job that predates the lane) is moved there before being acknowledged.
+   * One that runs there is admitted against Graphile's jobs view (the job
+   * is active, owns the run's delivery lease, is held by this worker, at
+   * this attempt): an admission check, not a fence on later journal writes. An invoke message
+   * answers the mailbox; any other orchestrator delivery drives the run and
+   * feeds it the pending inputs. Everything else (steps, health checks) runs
+   * as is.
+   */
+  async function runExecutorLane(
+    message: unknown,
+    metadata: QueueDeliveryMeta,
+    handler: DeliveryHandler,
+    provenance: { marked: boolean; delivery: ExecutorDelivery | undefined }
+  ): Promise<unknown> {
+    if (!invocations) return handler(message, metadata);
+    const input = executorInput(message);
+    if (!input) {
+      return handler(message, metadata);
+    }
+    if (!provenance.marked) {
+      await transferToExecutor(
+        {
+          id: parseQueueName(metadata.queueName).id,
+          data: transport.serialize(message) as Buffer,
+          messageId: metadata.messageId,
+          attempt: metadata.attempt,
+        },
+        input.runId,
+        metadata.attempt,
+        metadata.deliveryCount ?? metadata.attempt
+      );
+      return;
+    }
+    if (!provenance.delivery)
+      throw new WorkflowWorldError('Invalid executor delivery metadata', {
+        status: 400,
+      });
+    const proof = provenance.delivery;
+    // Use Graphile's public jobs view, not private tables. This verifies the
+    // actual active task/attempt and that the job owns the run's lease,
+    // rather than trusting a boolean header. It is an admission check, NOT a
+    // fence on later journal writes.
+    const { rows } = await pool.query(
+      `SELECT jobs.id FROM graphile_worker.jobs AS jobs
+         JOIN workflow.workflow_run_delivery_leases AS leases
+           ON leases.owner_job_id = jobs.id AND leases.run_id = $3
+         WHERE jobs.id = $1 AND jobs.task_identifier = $2
+           AND jobs.locked_by = $4 AND jobs.attempts = $5
+           AND jobs.locked_at IS NOT NULL`,
+      [proof.id, executorTask(), input.runId, proof.worker, proof.attempt]
+    );
+    if (rows.length === 0)
+      throw new WorkflowWorldError(
+        'Executor delivery does not hold the run lease',
+        { status: 409 }
+      );
+    if (input.invoke) {
+      if (!input.requestId)
+        throw new WorkflowWorldError('Invocation requestId is required', {
+          status: 400,
+        });
+      const outcome = await captureInvocationOutcome(
+        () => handler(message, metadata),
+        isTerminalInvocationError
+      );
+      await invocations.respondOutcome(input.runId, input.requestId, outcome);
+      return;
+    }
+    const initial = await invocations.pending(input.runId);
+    // A responded input may have committed just before the previous executor
+    // died. Always drive the run; an empty mailbox alone is not a no-op proof.
+    const feed = invocations.feed(input.runId, initial);
+    return executeWithInputs(
+      feed,
+      () => handler(message, metadata),
+      async (pending) => {
+        const outcome = await captureInvocationOutcome(
+          () =>
+            handler(
+              {
+                runId: input.runId,
+                invoke: true,
+                requestId: pending.id,
+                input: pending.payload,
+              },
+              metadata
+            ),
+          isTerminalInvocationError
+        );
+        await invocations.respondOutcome(input.runId, pending.id, outcome);
+      }
+    );
+  }
+
+  /**
+   * The HTTP shape of a delivery to this World's own prefix (the flow route
+   * while `WORKFLOW_QUEUE_AUTH=off` admits a worker on an earlier release).
+   * The executor provenance travels in request headers there; only the
+   * verified executor task sets them.
+   */
   const createQueueHandler: Queue['createQueueHandler'] = (
     prefix,
     givenHandler
   ) => {
-    // Passes the delivering worker's `invocationStartedAt` (set on the
-    // request, see `deliverMessage`) through to the handler.
+    // Passes the delivering worker's `invocationStartedAt` (a request header
+    // on the HTTP shape, see `deliverMessage`) through to the handler.
     const withInvocationStart =
       (req: Request): typeof givenHandler =>
       (message, metadata) => {
@@ -435,112 +649,24 @@ export function createQueue(
         );
       };
     if (!invocations || prefix !== ownPrefix())
-      return (req) =>
-        localWorld.createQueueHandler(prefix, withInvocationStart(req))(req);
+      return (req) => deliveryHandler(prefix, withInvocationStart(req))(req);
     return async (req) => {
       const handler = withInvocationStart(req);
-      // Keep transport provenance request-scoped; it is not a World API field.
       const delivery = ExecutorDelivery.safeParse({
         id: req.headers.get(EXECUTOR_JOB_HEADER),
         worker: req.headers.get(EXECUTOR_WORKER_HEADER),
         attempt: req.headers.get(EXECUTOR_ATTEMPT_HEADER),
       });
-      const hasDelivery = [
+      const marked = [
         EXECUTOR_JOB_HEADER,
         EXECUTOR_WORKER_HEADER,
         EXECUTOR_ATTEMPT_HEADER,
       ].some((header) => req.headers.has(header));
-      return localWorld.createQueueHandler(
-        prefix,
-        async (message, metadata) => {
-          const input = executorInput(message);
-          if (!input) {
-            return handler(message, metadata);
-          }
-          if (!hasDelivery) {
-            // Old workers can still POST ordinary orchestrator deliveries. Move
-            // those to the serialized lane before acknowledging, never run them here.
-            await transferToExecutor(
-              {
-                id: parseQueueName(metadata.queueName).id,
-                data: transport.serialize(message) as Buffer,
-                messageId: metadata.messageId,
-                attempt: metadata.attempt,
-              },
-              input.runId,
-              metadata.attempt,
-              metadata.deliveryCount ?? metadata.attempt
-            );
-            return;
-          }
-          if (!delivery.success)
-            throw new WorkflowWorldError('Invalid executor delivery metadata', {
-              status: 400,
-            });
-          const proof = delivery.data;
-          // Use Graphile's public jobs view, not private tables. This verifies the
-          // actual active task/attempt and that the job owns the run's lease,
-          // rather than trusting a boolean header. It is an admission check,
-          // NOT a fence on later journal writes.
-          const { rows } = await pool.query(
-            `SELECT jobs.id FROM graphile_worker.jobs AS jobs
-         JOIN workflow.workflow_run_delivery_leases AS leases
-           ON leases.owner_job_id = jobs.id AND leases.run_id = $3
-         WHERE jobs.id = $1 AND jobs.task_identifier = $2
-           AND jobs.locked_by = $4 AND jobs.attempts = $5
-           AND jobs.locked_at IS NOT NULL`,
-            [proof.id, executorTask(), input.runId, proof.worker, proof.attempt]
-          );
-          if (rows.length === 0)
-            throw new WorkflowWorldError(
-              'Executor delivery does not hold the run lease',
-              { status: 409 }
-            );
-          if (input.invoke) {
-            if (!input.requestId)
-              throw new WorkflowWorldError('Invocation requestId is required', {
-                status: 400,
-              });
-            const outcome = await captureInvocationOutcome(
-              () => handler(message, metadata),
-              isTerminalInvocationError
-            );
-            await invocations.respondOutcome(
-              input.runId,
-              input.requestId,
-              outcome
-            );
-            return;
-          }
-          const initial = await invocations.pending(input.runId);
-          // A responded input may have committed just before the previous executor
-          // died. Always drive the run; an empty mailbox alone is not a no-op proof.
-          const feed = invocations.feed(input.runId, initial);
-          return executeWithInputs(
-            feed,
-            () => handler(message, metadata),
-            async (pending) => {
-              const outcome = await captureInvocationOutcome(
-                () =>
-                  handler(
-                    {
-                      runId: input.runId,
-                      invoke: true,
-                      requestId: pending.id,
-                      input: pending.payload,
-                    },
-                    metadata
-                  ),
-                isTerminalInvocationError
-              );
-              await invocations.respondOutcome(
-                input.runId,
-                pending.id,
-                outcome
-              );
-            }
-          );
-        }
+      return deliveryHandler(prefix, (message, metadata) =>
+        runExecutorLane(message, metadata, handler, {
+          marked,
+          delivery: delivery.success ? delivery.data : undefined,
+        })
       )(req);
     };
   };
@@ -556,7 +682,8 @@ export function createQueue(
   >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
-  let runnerStart: RunnerStart | null = null;
+  /** The runner start in flight, if any (see `ensureRunner`). */
+  let runnerStarting: Promise<void> | null = null;
   let closing = false;
   let startPromise: Promise<void> | null = null;
 
@@ -683,7 +810,7 @@ export function createQueue(
     deliveryCount: number,
     remainingAttempts = Math.max(1, MAX_GRAPHILE_JOB_ATTEMPTS - attempt + 1)
   ) {
-    await start();
+    await ensureStarted();
     await addGraphileJob({
       queueId: message.id,
       prefix: message.prefix,
@@ -703,6 +830,11 @@ export function createQueue(
     });
   }
 
+  /**
+   * The app's base URL, for the HTTP delivery of a queue consumer's own
+   * route (`registerRoute`). The Workflow SDK's own messages never go over
+   * HTTP: they are delivered in process, to the registered flow handler.
+   */
   async function getExecutionBaseUrl(): Promise<string | undefined> {
     if (process.env.WORKFLOW_LOCAL_BASE_URL) {
       return process.env.WORKFLOW_LOCAL_BASE_URL;
@@ -726,107 +858,15 @@ export function createQueue(
     return undefined;
   }
 
-  function getLoopbackHosts(hostname: string): string[] {
-    if (hostname === 'localhost') {
-      return ['127.0.0.1', '::1'];
-    }
-    if (hostname === '[::1]') {
-      return ['::1'];
-    }
-    return hostname === '127.0.0.1' || hostname === '::1' ? [hostname] : [];
-  }
-
-  function getLoopbackTarget(baseUrl: string | undefined) {
-    if (!baseUrl) {
-      return undefined;
-    }
-
-    const url = new URL(baseUrl);
-    const hosts = getLoopbackHosts(url.hostname);
-    if (hosts.length === 0) {
-      return undefined;
-    }
-
-    return {
-      hosts,
-      port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)),
-    };
-  }
-
-  async function canConnectToLoopbackTarget(
-    target: LoopbackTarget
-  ): Promise<boolean> {
-    for (const host of target.hosts) {
-      const reachable = await new Promise<boolean>((resolve) => {
-        const socket = connect({ host, port: target.port });
-        socket.unref();
-        const finish = (isReachable: boolean) => {
-          socket.destroy();
-          resolve(isReachable);
-        };
-
-        socket.setTimeout(200, () => finish(false));
-        socket.once('connect', () => finish(true));
-        socket.once('error', () => finish(false));
-      });
-
-      if (reachable) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  async function startRunnerUnlessAborted(controller: AbortController) {
-    if (controller.signal.aborted) {
-      return;
-    }
-
-    await setupListeners();
-  }
-
-  async function waitForLoopbackAndStartRunner(
-    controller: AbortController,
-    target: LoopbackTarget
-  ) {
-    while (
-      !controller.signal.aborted &&
-      !(await canConnectToLoopbackTarget(target))
-    ) {
-      await sleep(50, undefined, {
-        ref: false,
-      });
-    }
-
-    await startRunnerUnlessAborted(controller);
-  }
-
-  function deferRunnerStart(
-    controller: AbortController,
-    target: LoopbackTarget
-  ) {
-    const promise = waitForLoopbackAndStartRunner(controller, target)
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          console.warn(
-            '[world-postgres] Failed to start Graphile Worker after local workflow executor became reachable:',
-            err
-          );
-        }
-      })
-      .finally(() => {
-        if (runnerStart?.promise === promise) {
-          runnerStart = null;
-        }
-      });
-    runnerStart = { controller, promise };
-  }
-
   /**
-   * One delivery of a job: to the in-process handler registered for its
-   * prefix, else over HTTP to the prefix's route (this worker's registration,
-   * then the producer's), else to the Workflow SDK's flow route.
+   * One delivery of a job. The Workflow SDK's own messages go to the
+   * registered flow handler's in-process entry, with the message and its
+   * metadata (a runner runs only where that handler is registered). A
+   * registered handler without an entry (a consumer's own) gets the request
+   * a route serving `createQueueHandler(prefix, ...)` would. A prefix with
+   * no handler goes over HTTP to its route (this worker's registration, then
+   * the producer's), else to the flow route, which refuses it unless
+   * something registered a handler for it.
    */
   async function deliverMessage({
     queueName,
@@ -836,6 +876,7 @@ export function createQueue(
     createdAt,
     attempt,
     deliveryCount,
+    message,
     body,
     headers: extraHeaders,
     abortSignal,
@@ -850,21 +891,111 @@ export function createQueue(
     createdAt?: string;
     attempt: number;
     deliveryCount: number;
+    /** The decoded message. */
+    message: unknown;
+    /** Its wire form, for a handler that takes a request. */
     body: Uint8Array;
     headers?: Record<string, string>;
     abortSignal?: AbortSignal;
     executorDelivery?: ExecutorDelivery;
     /** See {@link INVOCATION_STARTED_AT_HEADER}. */
     invocationStartedAt?: number;
-  }): Promise<HttpExecutionResult> {
+  }): Promise<DeliveryResult> {
+    const directHandler = directHandlers.get(prefix);
+    const deliveryRoute = routes.get(prefix) ?? route;
+    if (!directHandler && prefix === ownPrefix()) {
+      // Unreachable while `ensureRunner` holds: this process claims jobs only
+      // once the flow handler is registered, and `registerHandler` admits
+      // only a handler with the in-process entry for this prefix. Never fall
+      // back to HTTP for the Workflow SDK's messages.
+      throw new Error(
+        `[postgres world] No flow handler is registered in this process for queue prefix "${prefix}"; a worker runs only where the app registered it.`
+      );
+    }
+    // Queue shutdown aborts the delivery through Graphile's signal, and the
+    // headers deadline is the operator's (see `getDeliveryTimeouts`); either
+    // rejects the delivery so the job is redelivered, while an in-process
+    // handler finishes on its own.
+    const signal = deliverySignal(
+      abortSignal,
+      deliveryTimeouts.headersTimeoutMs
+    );
+    const raceAbort = async <T>(promise: Promise<T>): Promise<T> => {
+      if (!signal) return promise;
+      const aborted = untilAborted(signal);
+      try {
+        return await Promise.race([promise, aborted.promise]);
+      } finally {
+        aborted.cancel();
+      }
+    };
+
+    const entry = directHandler?.[IN_PROCESS_QUEUE_HANDLER];
+    if (entry) {
+      // In process, with the message and its metadata: no request, no wire
+      // headers. The run gate serializes one run's orchestrator deliveries
+      // in this process, as the HTTP shape's handler does.
+      const meta: QueueDeliveryMeta = {
+        queueName,
+        messageId,
+        attempt,
+        deliveryCount,
+        ...(createdAt ? { createdAt: new Date(createdAt) } : {}),
+        // As the HTTP shape's header carries it: when the invocation that
+        // runs this delivery began, the same for every coalesced re-run.
+        ...(invocationStartedAt !== undefined ? { invocationStartedAt } : {}),
+      };
+      const orchestratorRunId = singleOrchestratorRunIdOf(message);
+      const deliver: DeliveryHandler = (m, md) =>
+        entry({ message: m, meta: md, ...(signal ? { signal } : {}) });
+      // The gate is held until the handler settles, not until the job is
+      // released: a delivery that outlives its deadline keeps running, and a
+      // redelivery of the same run in this process must wait for it.
+      const gated = async () => {
+        const releaseRun =
+          orchestratorRunId === undefined
+            ? undefined
+            : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
+        // Abandoned while it waited (shutdown, or its deadline): the job is
+        // Graphile's again, and a retry may already run elsewhere. Let the
+        // next delivery of this run through instead of running a stale one.
+        if (signal?.aborted) {
+          releaseRun?.();
+          return undefined;
+        }
+        try {
+          return prefix === ownPrefix()
+            ? await runExecutorLane(message, meta, deliver, {
+                marked: executorDelivery !== undefined,
+                delivery: executorDelivery,
+              })
+            : await deliver(message, meta);
+        } finally {
+          releaseRun?.();
+        }
+      };
+      const pending = gated();
+      // The race may have settled on the abort; a later rejection of the
+      // handler is then nobody's to observe.
+      pending.catch(() => {});
+      return deliveryResultOf(await raceAbort(pending));
+    }
+
     const headers = new Headers(extraHeaders);
     headers.set('content-type', 'application/json');
-    headers.set('x-vqs-queue-name', queueName);
-    headers.set('x-vqs-message-id', messageId);
-    headers.set('x-vqs-message-attempt', String(attempt));
-    headers.set('x-vqs-message-delivery-count', String(deliveryCount));
-    if (createdAt) headers.set('x-vqs-message-created-at', createdAt);
-    else headers.delete('x-vqs-message-created-at');
+    // Under the current names and the earlier release's, so a route on the
+    // earlier release still reads them.
+    for (const [name, value] of Object.entries(
+      queueDeliveryHeaders({
+        queueName,
+        messageId,
+        attempt,
+        deliveryCount,
+        createdAt,
+      })
+    )) {
+      headers.set(name, value);
+    }
     // Strip caller-supplied provenance case-insensitively. Only the verified
     // executor task may set these headers, including on retries.
     headers.delete(EXECUTOR_JOB_HEADER);
@@ -879,30 +1010,24 @@ export function createQueue(
       headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
       headers.set(EXECUTOR_ATTEMPT_HEADER, String(executorDelivery.attempt));
     }
-    const directHandler = directHandlers.get(prefix);
-    const deliveryRoute = routes.get(prefix) ?? route;
     let response: Response;
     if (directHandler) {
-      // In process, like world-local's `registerHandler`: the request a
-      // route serving `createQueueHandler(prefix, ...)` would get.
+      // In process, as the request a route serving
+      // `createQueueHandler(prefix, ...)` would get.
       const url = (baseUrl: string) =>
         deliveryRoute
           ? createAppRouteUrl(baseUrl, deliveryRoute)
           : createWorkflowUrl(baseUrl, { type: 'flow' });
-      response = await directHandler(
-        new Request(url(createWorkflowBaseUrl('http://localhost')), {
-          method: 'POST',
-          headers,
-          body,
-        })
+      const request = new Request(
+        url(createWorkflowBaseUrl('http://localhost')),
+        { method: 'POST', headers, body, ...(signal ? { signal } : {}) }
       );
+      response = await raceAbort(directHandler(request));
     } else {
       const baseUrl = await getExecutionBaseUrl();
       if (!baseUrl) {
         throw new Error('Unable to resolve base URL for workflow queue.');
       }
-      // Queue shutdown aborts the delivery through Graphile's signal; the
-      // deadlines are the operator's (see `getDeliveryTimeouts`).
       response = await nodeHttpFetch(
         deliveryRoute
           ? createAppRouteUrl(baseUrl, deliveryRoute)
@@ -929,10 +1054,7 @@ export function createQueue(
     }
 
     try {
-      const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-      if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
-        return { type: 'reschedule', timeoutSeconds };
-      }
+      return deliveryResultOf(JSON.parse(text));
     } catch {}
 
     return { type: 'completed' };
@@ -992,39 +1114,63 @@ export function createQueue(
     }
   }
 
-  async function startRunnerWhenExecutorIsReady(): Promise<void> {
-    if (closing || runner || runnerStart) {
-      return;
+  /**
+   * Starts the Graphile runner once this process is a worker: the queue is
+   * started (`workerUtils` is ready), it is not closing, and the Workflow
+   * SDK's flow handler is registered (`hasFlowHandler`). Called from
+   * `start()` and from `registerHandler()`, whichever comes second. At most
+   * one runner: a start in flight is shared, not repeated.
+   */
+  function ensureRunner(): Promise<void> {
+    if (runnerStarting) return runnerStarting;
+    if (closing || runner || !workerUtils || !hasFlowHandler()) {
+      return Promise.resolve();
     }
-
-    const controller = new AbortController();
-    const promise = (async () => {
-      const target = getLoopbackTarget(await getExecutionBaseUrl());
-      if (!target) {
-        await startRunnerUnlessAborted(controller);
-        return;
-      }
-
-      if (await canConnectToLoopbackTarget(target)) {
-        await startRunnerUnlessAborted(controller);
-        return;
-      }
-
-      if (controller.signal.aborted) {
-        return;
-      }
-
-      deferRunnerStart(controller, target);
-    })().finally(() => {
-      if (runnerStart?.promise === promise) {
-        runnerStart = null;
-      }
+    runnerStarting = setupListeners().finally(() => {
+      runnerStarting = null;
     });
-    runnerStart = { controller, promise };
-    await promise;
+    return runnerStarting;
   }
 
-  async function start(): Promise<void> {
+  let runnerRetry: ReturnType<typeof setTimeout> | null = null;
+  let runnerRetryAttempt = 0;
+  /**
+   * Starts the runner for a handler registered after `start()`, and keeps
+   * trying with a capped backoff when the start fails: a worker-only process
+   * never publishes, so nothing else would start its runner. `close()`
+   * cancels a pending retry.
+   */
+  function startRunnerForRegistration(): void {
+    ensureRunner().then(
+      () => {
+        runnerRetryAttempt = 0;
+      },
+      (error) => {
+        if (closing) return;
+        runnerRetryAttempt += 1;
+        const delayMs = Math.min(
+          RUNNER_RETRY_BASE_MS * 2 ** (runnerRetryAttempt - 1),
+          RUNNER_RETRY_MAX_MS
+        );
+        operatorLog.error(
+          `Failed to start Graphile Worker after the flow handler was registered; retrying in ${delayMs} ms (attempt ${runnerRetryAttempt}). Until it starts, this process runs no jobs.`,
+          error
+        );
+        runnerRetry = setTimeout(() => {
+          runnerRetry = null;
+          if (!closing) startRunnerForRegistration();
+        }, delayMs);
+        runnerRetry.unref?.();
+      }
+    );
+  }
+
+  /**
+   * `start()` for the World's own use (a publish, an invoke, a transfer):
+   * the schema and the worker utils, and the runner where the flow handler
+   * is registered. Without the note `start()` leaves for a caller.
+   */
+  async function ensureStarted(): Promise<void> {
     if (closing) {
       return;
     }
@@ -1032,13 +1178,15 @@ export function createQueue(
     if (!startPromise) {
       startPromise = (async () => {
         try {
-          workerUtils = await makeWorkerUtils({
+          const utils = await makeWorkerUtils({
             pgPool: pool,
             logger: graphileLogger,
           });
-          await workerUtils.migrate();
-          await migratePgBossJobs(workerUtils);
-          await startRunnerWhenExecutorIsReady();
+          await utils.migrate();
+          await migratePgBossJobs(utils);
+          // Published only now: `ensureRunner` (from `registerHandler`) must
+          // not start a runner against a schema still being migrated.
+          workerUtils = utils;
         } catch (err) {
           startPromise = null;
           throw err;
@@ -1046,9 +1194,169 @@ export function createQueue(
       })();
     }
     await startPromise;
-    if (!closing && !runner && !runnerStart) {
-      await startRunnerWhenExecutorIsReady();
+    await ensureRunner();
+  }
+
+  let enqueueOnlyNoted = false;
+  /** The namespace mismatch warning of `registerHandler` was said. */
+  let namespaceMismatchNoted = false;
+  /**
+   * Said once per process: no flow handler is registered here, so this
+   * process only enqueues and runs no jobs. Expected of the CLI, the web UI
+   * or a script; the message says what an app that should run jobs has to
+   * check (the SDK release, how it was built, the startup hook docs).
+   */
+  function noteEnqueueOnly(): void {
+    if (closing || enqueueOnlyNoted || hasFlowHandler()) return;
+    enqueueOnlyNoted = true;
+    operatorLog.warn(
+      'No flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that called world.start(): start() sends a health check to the app\'s own flow route, which hands itself to the World. If this process is the app and should run jobs, call world.start() when the server starts, and check that workflow and @workflow/core are on the same release as @workflow/world-postgres. See the Postgres World docs, "Start the World when your server starts" (https://workflow-sdk.dev/worlds/postgres#start-the-world-when-your-server-starts).'
+    );
+  }
+
+  /**
+   * Whether this process is an application server rather than the CLI or a
+   * script: it has a socket listening for connections (any framework's
+   * server, once it is up), or it is the Next.js server (NEXT_RUNTIME, set
+   * before the server listens). Such a process is expected to have
+   * registered the flow route; when it publishes without one, runs would
+   * stay pending with nothing said, since its startup hook never ran or the
+   * worker module was left out of its build. The web UI is a server too,
+   * and is told once that it only enqueues, which is what it does.
+   */
+  /** Decided once: see `isApplicationServer`. */
+  let notApplicationServer = false;
+  function isApplicationServer(): boolean {
+    if (notApplicationServer) return false;
+    if (
+      process.env.NEXT_RUNTIME === 'nodejs' ||
+      process.getActiveResourcesInfo().includes('TCPServerWrap')
+    ) {
+      return true;
     }
+    // Latched, so an enqueue-only process (the CLI, a script) does not scan
+    // its handles on every publish. A server that publishes before it
+    // listens is therefore not told; its startup hook is where the route is
+    // registered anyway.
+    notApplicationServer = true;
+    return false;
+  }
+
+  async function start(): Promise<void> {
+    await ensureStarted();
+    // This process is the app (only the app calls `start()`): get its flow
+    // route, so the worker runs here.
+    if (!hasFlowHandler()) requestFlowRoute();
+  }
+
+  /** The health check of `requestFlowRoute`, while it runs. */
+  let flowRouteRequest: Promise<void> | null = null;
+  /** Aborts that health check on `close()`. */
+  let flowRouteRequestAbort: AbortController | null = null;
+  /**
+   * Gets the app's flow route without any startup code in the app: marks
+   * this process as the one that wants the route (`requested`, in the worker
+   * state `@workflow/core` reads), then sends one health check to the app's
+   * own flow route (`?__health`). The framework loads the route module to
+   * answer it, and the route, seeing `requested`, hands itself to the World
+   * (`registerHandler`) before it answers, which starts the runner. In the
+   * background: the server usually does not listen yet when its startup hook
+   * calls `start()`, so a check that cannot connect is retried, with a
+   * backoff, for up to two minutes. Once per process; `close()` stops it.
+   */
+  function requestFlowRoute(): void {
+    if (flowRouteRequest || closing) return;
+    globalSingleton<InProcessWorkerState>(
+      IN_PROCESS_WORKER_STATE.name,
+      IN_PROCESS_WORKER_STATE.shapeVersion,
+      () => ({ requested: false, registered: false, route: undefined })
+    ).requested = true;
+    const abort = new AbortController();
+    flowRouteRequestAbort = abort;
+    flowRouteRequest = sendStartHealthCheck(abort.signal)
+      .catch((error) => {
+        if (!closing) {
+          operatorLog.error(
+            'The health check start() sends to the flow route failed.',
+            error
+          );
+        }
+      })
+      .finally(() => {
+        flowRouteRequestAbort = null;
+      });
+  }
+
+  async function sendStartHealthCheck(signal: AbortSignal): Promise<void> {
+    const windowMs =
+      internal?.startHealthCheckWindowMs ?? START_HEALTH_CHECK_WINDOW_MS;
+    const deadline = Date.now() + windowMs;
+    let delayMs = 100;
+    let lastFailure: unknown;
+    while (!closing && !hasFlowHandler()) {
+      // Resolved on each attempt: the port a server listens on is found
+      // only once it listens.
+      const baseUrl = await getExecutionBaseUrl().catch(() => undefined);
+      if (baseUrl) {
+        const url = createWorkflowUrl(baseUrl, { type: 'health' });
+        try {
+          const response = await fetch(url, {
+            // Every framework's flow route answers POST.
+            method: 'POST',
+            signal: AbortSignal.any([
+              signal,
+              AbortSignal.timeout(START_HEALTH_CHECK_ATTEMPT_MS),
+            ]),
+          });
+          await response.body?.cancel().catch(() => {});
+          if (hasFlowHandler() || closing) return;
+          if (response.ok) {
+            // The route answered without registering: the URL reaches
+            // another process, or a runtime that predates this mechanism.
+            noteRouteNotRegistered(
+              `${url} answered the health check, but the flow route did not register in this process.`
+            );
+            return;
+          }
+          lastFailure = `${url} answered ${response.status}`;
+        } catch (error) {
+          if (closing) return;
+          lastFailure = error;
+        }
+      } else {
+        lastFailure = 'the port the app listens on was not found';
+      }
+      if (Date.now() + delayMs > deadline) {
+        noteRouteNotRegistered(
+          `The health check to the app's own flow route did not succeed within ${windowMs >= 1000 ? `${Math.round(windowMs / 1000)} s` : `${windowMs} ms`} (last: ${lastFailure instanceof Error ? lastFailure.message : String(lastFailure)}).`
+        );
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          // One listener per wait, removed again, so a long retry does not
+          // pile listeners up on the signal.
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        }, delayMs);
+        timer.unref?.();
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      delayMs = Math.min(delayMs * 2, START_HEALTH_CHECK_MAX_DELAY_MS);
+    }
+  }
+
+  /** Said once: `start()` could not get the flow route. */
+  function noteRouteNotRegistered(reason: string): void {
+    if (closing || enqueueOnlyNoted || hasFlowHandler()) return;
+    enqueueOnlyNoted = true;
+    operatorLog.warn(
+      `${reason} This process runs no jobs until the flow route registers, so runs stay pending. start() sends a health check to the app's own flow route at its base URL (WORKFLOW_LOCAL_BASE_URL when set, else http://localhost on PORT or the port this process listens on), and the route registers itself when it answers. Check that the app serves the flow route at that URL, and that workflow and @workflow/core are on the same release as @workflow/world-postgres. See the Postgres World docs, "Start the World when your server starts" (https://workflow-sdk.dev/worlds/postgres#start-the-world-when-your-server-starts).`
+    );
   }
 
   /**
@@ -1086,7 +1394,18 @@ export function createQueue(
       : 'preserve_run_at';
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
-    await start();
+    await ensureStarted();
+    // Cheap checks first: the resource scan runs only until the note is made
+    // or a flow handler is registered.
+    // A process that called `start()` is told by its health check instead.
+    if (
+      !enqueueOnlyNoted &&
+      !flowRouteRequest &&
+      !hasFlowHandler() &&
+      isApplicationServer()
+    ) {
+      noteEnqueueOnly();
+    }
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
@@ -1124,7 +1443,7 @@ export function createQueue(
     options
   ) => {
     if (!invocations) throw new Error('Postgres invoke is not enabled');
-    await start();
+    await ensureStarted();
     return invocations.invoke(
       runId,
       payload,
@@ -1180,7 +1499,7 @@ export function createQueue(
   }
 
   /**
-   * The body of a coalesced re-run: the delivery's own message, with the
+   * The message of a coalesced re-run: the delivery's own message, with the
    * resume timing (and trace context) of a hook wake it absorbed in place of
    * its own. The runtime starts a resume's TTR measurement only from the
    * `hookResumeTiming` of the message it handles, and the re-run is what
@@ -1188,22 +1507,23 @@ export function createQueue(
    * lost. Its own timing is dropped either way: the first run consumed it,
    * and a re-run must not report that resume again.
    */
-  function rerunBody(body: unknown, resume: CoalescedResume | undefined) {
+  function rerunMessage(
+    body: unknown,
+    resume: CoalescedResume | undefined
+  ): unknown {
     const { hookResumeTiming: _consumed, ...rest } = body as Record<
       string,
       unknown
     >;
-    return transport.serialize(
-      resume
-        ? {
-            ...rest,
-            hookResumeTiming: resume.hookResumeTiming,
-            ...(resume.traceCarrier !== undefined && {
-              traceCarrier: resume.traceCarrier,
-            }),
-          }
-        : rest
-    ) as Buffer;
+    return resume
+      ? {
+          ...rest,
+          hookResumeTiming: resume.hookResumeTiming,
+          ...(resume.traceCarrier !== undefined && {
+            traceCarrier: resume.traceCarrier,
+          }),
+        }
+      : rest;
   }
 
   /** The hook resume's timing a wake left on a run lease carries, if any. */
@@ -1448,7 +1768,11 @@ export function createQueue(
 
         async function deliverLeased(): Promise<'completed' | 'rescheduled'> {
           let rerun = 0;
-          let result: HttpExecutionResult;
+          let result: DeliveryResult;
+          // The message as delivered: after a coalesced re-run, the body that
+          // carries the absorbed hook wake's resume timing (`rerunMessage`),
+          // decoded for the in-process entry and serialized for a request.
+          let deliveryMessage: unknown = body;
           let deliveryBody: Buffer | Uint8Array = messageData.data;
           for (;;) {
             result = await deliverMessage({
@@ -1462,6 +1786,7 @@ export function createQueue(
               // same attempt, so the runtime reads the log as on a
               // redelivery (see `Queue.createQueueHandler`).
               deliveryCount: deliveryCount + rerun,
+              message: deliveryMessage,
               body: deliveryBody,
               headers: messageData.headers,
               executorDelivery,
@@ -1482,7 +1807,8 @@ export function createQueue(
             }
             const wake = await runLeases.takeWake(leaseRunId, ownJobId);
             if (wake === undefined) break;
-            deliveryBody = rerunBody(body, await resumeOf(wake));
+            deliveryMessage = rerunMessage(body, await resumeOf(wake));
+            deliveryBody = transport.serialize(deliveryMessage) as Buffer;
             rerun++;
           }
 
@@ -1518,7 +1844,7 @@ export function createQueue(
               prefix: messageData.prefix,
               route: messageData.route,
               // As last delivered: after a coalesced re-run, that is the body
-              // carrying the absorbed hook wake's resume timing (`rerunBody`).
+              // carrying the absorbed hook wake's resume timing (`rerunMessage`).
               // A re-run that hands off before consuming it, at its invocation
               // deadline say, passes it on to the next invocation, as an
               // uncoalesced timed wake that hands off does.
@@ -1704,18 +2030,52 @@ export function createQueue(
   }
 
   return {
-    // The runtime does not check the flow route until messages are delivered
-    // in-process and the route is denied
-    // (https://github.com/vercel/workflow/issues/5258). Meanwhile the database
-    // credentials control who can enqueue, and the route has to be protected
-    // at the network edge (see "Protect the queue route" in the docs).
-    queueAuthMode: 'skip',
+    // The Workflow SDK's messages are delivered in process, to the flow
+    // handler the app registered (`registerHandler`), never over HTTP, so the
+    // flow route refuses every HTTP delivery (the `?__health` probe still
+    // answers), in every process: a process that was
+    // never handed the route still serves it, and an HTTP request to it
+    // could run a forged delivery there. The database credentials control
+    // who can enqueue.
+    queueAuthMode: 'deny',
     createQueueHandler,
     getDeploymentId,
     queue,
     ...(invocations ? { invoke } : {}),
     registerHandler(prefix, handler) {
-      directHandlers.set(QueuePrefix.parse(prefix), handler);
+      const parsed = QueuePrefix.parse(prefix);
+      if (
+        parsed === ownPrefix() &&
+        typeof handler[IN_PROCESS_QUEUE_HANDLER] !== 'function'
+      ) {
+        // The SDK's messages go to the route's in-process entry only; a
+        // request built for a handler without one would be refused by the
+        // route itself (the flow route refuses HTTP deliveries). Refusing here, at
+        // startup, says so once instead of failing every delivery.
+        throw new Error(
+          "[postgres world] The flow handler registered for the Workflow SDK's queue has no in-process entry (IN_PROCESS_QUEUE_HANDLER from @workflow/world), so the World cannot deliver to it: the flow route refuses HTTP deliveries. Hand the World the generated flow route through registerWorkflowHandler() from workflow/runtime, which the framework integrations call when the app starts."
+        );
+      }
+      if (
+        !namespaceMismatchNoted &&
+        parsed !== ownPrefix() &&
+        typeof handler[IN_PROCESS_QUEUE_HANDLER] === 'function'
+      ) {
+        // The route was built with another WORKFLOW_QUEUE_NAMESPACE than the
+        // World's `namespace` option. Its messages are delivered, but as a
+        // queue consumer's: the per-run ordering and the executor lanes are
+        // kept for this World's own prefix only. Said once per process: a
+        // route re-registers itself (a development rebuild, a worker module
+        // that registers before it starts the World).
+        namespaceMismatchNoted = true;
+        operatorLog.warn(
+          `The flow handler is registered for queue prefix "${parsed}", but this World's namespace gives "${ownPrefix()}", so the Workflow SDK's messages are delivered as a queue consumer's, without the per-run ordering kept for the World's own prefix, and the runs this World re-enqueues at startup go to "${ownPrefix()}", which no handler here takes. Set WORKFLOW_QUEUE_NAMESPACE at build time to the World's namespace option, so both name the same prefix.`
+        );
+      }
+      directHandlers.set(parsed, handler);
+      // Registered after `start()`: this process is a worker from now on.
+      // Before it, `start()` starts the runner itself.
+      startRunnerForRegistration();
     },
     registerRoute(prefix, path) {
       routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
@@ -1723,13 +2083,16 @@ export function createQueue(
     start,
     async close() {
       closing = true;
-      await invocations?.close();
-      if (runnerStart) {
-        runnerStart.controller.abort();
-        await runnerStart.promise;
-        runnerStart = null;
+      flowRouteRequestAbort?.abort();
+      await flowRouteRequest;
+      flowRouteRequest = null;
+      if (runnerRetry) {
+        clearTimeout(runnerRetry);
+        runnerRetry = null;
       }
+      await invocations?.close();
       await startPromise?.catch(() => {});
+      await runnerStarting?.catch(() => {});
       const activeRunner = runner;
       if (activeRunner) {
         try {
@@ -1757,7 +2120,6 @@ export function createQueue(
       }
       startPromise = null;
       destroyNodeHttpAgents(httpAgents);
-      await localWorld.close?.();
     },
   };
 }

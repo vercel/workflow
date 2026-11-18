@@ -3,7 +3,12 @@
  */
 
 import { WorkflowRuntimeError } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
+import {
+  IN_PROCESS_WORKER_STATE,
+  type InProcessWorkerState,
+  peekGlobalSingleton,
+  withResolvers,
+} from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
 import type { EventsConsumer } from './events-consumer.js';
 import { type QueueItem, WorkflowSuspension } from './global.js';
@@ -102,9 +107,31 @@ export function registerStepFunction(stepId: string, stepFn: StepFunction) {
 }
 
 /**
+ * A copy of the step registry as it is now. The flow route takes one when it
+ * is built (`workflowEntrypoint()`), right after its own module graph
+ * registered its steps; see {@link getStepFunction}.
+ */
+export function snapshotRegisteredSteps(): ReadonlyMap<string, StepFunction> {
+  return new Map(registeredSteps);
+}
+
+/**
  * Find a registered step function by name
  */
 export function getStepFunction(stepId: string): StepFunction | undefined {
+  // The steps of the flow route a World that delivers in process was handed
+  // (`registerWorkflowHandler`), when there is one: that route runs this
+  // process's deliveries, and another module graph that evaluated the same
+  // workflow files later may have replaced its entries in the shared
+  // registry with copies bound to other module instances.
+  const routeStep = peekGlobalSingleton<InProcessWorkerState>(
+    IN_PROCESS_WORKER_STATE.name,
+    IN_PROCESS_WORKER_STATE.shapeVersion
+  )?.steps?.get(stepId) as StepFunction | undefined;
+  if (routeStep) {
+    return routeStep;
+  }
+
   const directMatch = registeredSteps.get(stepId);
   if (directMatch) {
     return directMatch;

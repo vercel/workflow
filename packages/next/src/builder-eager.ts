@@ -12,6 +12,7 @@ import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   assertFlowBundleIsSandboxSafe,
   type NextConfig as BuilderNextConfig,
+  refreshInProcessWorkerRoute,
   type WorkflowManifest,
 } from '@workflow/builders';
 import type { NextConfig as ProjectNextConfig } from 'next';
@@ -476,6 +477,7 @@ export async function getNextBuilderEager(
 
           await workflowsCtx.bundleFinal(workflowOutput);
           await writeManifest(mergeCombinedManifest(stepsManifest));
+          await this.refreshWorkerRoute();
         };
 
         // The pin helper owns the capture-before-build / restore-after-
@@ -518,6 +520,7 @@ export async function getNextBuilderEager(
 
               await writeManifest(newCombined.manifest);
               await refreshSourceSnapshots();
+              await this.refreshWorkerRoute();
             },
           });
 
@@ -979,6 +982,16 @@ export async function getNextBuilderEager(
         sourceStepRegistrationImports: true,
         tsconfigPath,
       });
+    }
+
+    /**
+     * After a rebuild in development: hands a World that delivers in process
+     * the rebuilt flow route (see `refreshInProcessWorkerRoute`; `next dev`
+     * runs the app and this builder in one process). `basePath` already
+     * includes the workflow route prefix.
+     */
+    private async refreshWorkerRoute(): Promise<void> {
+      await refreshInProcessWorkerRoute({ basePath: this.config.basePath });
     }
 
     private async buildWebhookRoute({

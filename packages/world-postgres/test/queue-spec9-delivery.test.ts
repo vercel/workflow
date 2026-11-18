@@ -1,8 +1,9 @@
-import { createServer, type Server, type ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   type AnyEventRequest,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -59,17 +60,17 @@ interface Delivery {
 describe.skipIf(process.platform === 'win32')(
   'Postgres queue delivery of spec 9 orchestrator messages (real database and Graphile)',
   () => {
-    const originalBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
     let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
     let pool: TestPool;
-    let server: Server;
     let queue: PostgresQueue;
     let deliveries: Delivery[] = [];
-    /** Decides the response to a delivery; default: acknowledge. */
-    let respond: (
-      delivery: Delivery,
-      response: ServerResponse
-    ) => void | Promise<void> = (_delivery, response) => response.end('{}');
+    /**
+     * Decides what the flow handler returns for a delivery (what the
+     * runtime's handler would: nothing to acknowledge, `{ timeoutSeconds }`
+     * to reschedule); default: acknowledge.
+     */
+    let respond: (delivery: Delivery) => unknown | Promise<unknown> = () =>
+      undefined;
 
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -87,50 +88,45 @@ describe.skipIf(process.platform === 'win32')(
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
-      server = createServer(async (request, response) => {
-        const raw = Buffer.concat(await request.toArray()).toString();
-        const header = (name: string) => {
-          const value = request.headers[name];
-          return typeof value === 'string' ? value : undefined;
-        };
-        const delivery: Delivery = {
-          messageId: header('x-vqs-message-id') ?? '',
-          attempt: Number(header('x-vqs-message-attempt')),
-          deliveryCount: Number(header('x-vqs-message-delivery-count')),
-          invocationStartedAt: header(
-            'x-workflow-postgres-invocation-started-at'
-          ),
-          body: JSON.parse(raw),
-        };
-        deliveries.push(delivery);
-        await respond(delivery, response);
-      });
-      await new Promise<void>((resolve) =>
-        server.listen(0, '127.0.0.1', resolve)
-      );
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('No test server address');
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
     }, 120_000);
 
     afterAll(async () => {
-      if (server) {
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
-          server.closeAllConnections();
-        });
-      }
       await pool?.end();
       await container?.stop();
-      if (originalBaseUrl === undefined)
-        delete process.env.WORKFLOW_LOCAL_BASE_URL;
-      else process.env.WORKFLOW_LOCAL_BASE_URL = originalBaseUrl;
     });
+
+    /**
+     * The app's flow handler, as registered when the app starts: this
+     * queue is a worker, delivering in process. Records each delivery as
+     * the handler sees it and answers as `respond` says.
+     */
+    function recordDeliveries(target: PostgresQueue) {
+      target.registerHandler(
+        '__wkf_workflow_',
+        Object.assign(async () => Response.json({}), {
+          [IN_PROCESS_QUEUE_HANDLER]: async ({
+            message,
+            meta,
+          }: InProcessDelivery) => {
+            const delivery: Delivery = {
+              messageId: String(meta.messageId),
+              attempt: meta.attempt,
+              deliveryCount: meta.deliveryCount ?? meta.attempt,
+              ...(meta.invocationStartedAt !== undefined
+                ? { invocationStartedAt: String(meta.invocationStartedAt) }
+                : {}),
+              body: message as Record<string, unknown>,
+            };
+            deliveries.push(delivery);
+            return respond(delivery);
+          },
+        })
+      );
+    }
 
     beforeEach(async () => {
       deliveries = [];
-      respond = (_delivery, response) => response.end('{}');
+      respond = () => undefined;
       queue = createQueue(
         {
           connectionString: container.getConnectionUri(),
@@ -140,6 +136,7 @@ describe.skipIf(process.platform === 'win32')(
         },
         pool
       );
+      recordDeliveries(queue);
       await queue.start();
     });
 
@@ -226,9 +223,9 @@ describe.skipIf(process.platform === 'win32')(
     it('covers the orchestrator messages queued behind a delivery with one re-run', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
-      respond = async (delivery, response) => {
+      respond = async (delivery) => {
         if (runDeliveries(runId).length === 1) await gate.released;
-        response.end('{}');
+        return;
       };
       const { messageId } = await wake(runId);
       await until(
@@ -298,9 +295,9 @@ describe.skipIf(process.platform === 'win32')(
     it("delivers an absorbed hook wake's resume timing on the re-run, and never re-sends the first run's own", async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
-      respond = async (delivery, response) => {
+      respond = async (delivery) => {
         if (runDeliveries(runId).length === 1) await gate.released;
-        response.end('{}');
+        return;
       };
       const ownTiming = {
         resumeRequestedAtMs: 1,
@@ -346,9 +343,9 @@ describe.skipIf(process.platform === 'win32')(
       // A re-run that absorbs no timed wake carries no timing at all.
       const secondRunId = `wrun_${ulid()}`;
       const secondGate = held();
-      respond = async (delivery, response) => {
+      respond = async (delivery) => {
         if (runDeliveries(secondRunId).length === 1) await secondGate.released;
-        response.end('{}');
+        return;
       };
       await wake(secondRunId, { hookResumeTiming: ownTiming });
       await until(
@@ -370,15 +367,14 @@ describe.skipIf(process.platform === 'win32')(
     it("passes an absorbed hook wake's resume timing on when the re-run hands off", async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
-      respond = async (delivery, response) => {
+      respond = async (delivery) => {
         const n = runDeliveries(runId).length;
         if (n === 1) await gate.released;
         // The re-run reaches its invocation deadline and hands off.
         if (n === 2) {
-          response.end(JSON.stringify({ timeoutSeconds: 0 }));
-          return;
+          return { timeoutSeconds: 0 };
         }
-        response.end('{}');
+        return;
       };
       const { messageId } = await wake(runId);
       await until(
@@ -410,9 +406,9 @@ describe.skipIf(process.platform === 'win32')(
     it('leaves a legacy hook resume (hookInput) queued behind a delivery to its own delivery', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
-      respond = async (delivery, response) => {
+      respond = async (delivery) => {
         if (runDeliveries(runId).length === 1) await gate.released;
-        response.end('{}');
+        return;
       };
       await wake(runId);
       await until(
@@ -446,9 +442,9 @@ describe.skipIf(process.platform === 'win32')(
     it('leaves a start message queued behind a delivery to its own delivery', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();
-      respond = async (delivery, response) => {
+      respond = async (delivery) => {
         if (runDeliveries(runId).length === 1) await gate.released;
-        response.end('{}');
+        return;
       };
       await wake(runId);
       await until(
@@ -542,6 +538,7 @@ describe.skipIf(process.platform === 'win32')(
         },
         slowPool
       );
+      recordDeliveries(queue);
       await queue.start();
       try {
         await body();
@@ -563,12 +560,8 @@ describe.skipIf(process.platform === 'win32')(
       // and the lease would pass to a job that no longer exists.
       await withSlowPool(/SET owner_job_id = \$3/, 'before', async () => {
         const runId = `wrun_${ulid()}`;
-        respond = (_delivery, response) =>
-          response.end(
-            runDeliveries(runId).length === 1
-              ? JSON.stringify({ timeoutSeconds: 0 })
-              : '{}'
-          );
+        respond = () =>
+          runDeliveries(runId).length === 1 ? { timeoutSeconds: 0 } : undefined;
         const { messageId } = await wake(runId);
         await until(
           () => runDeliveries(runId).length,
@@ -593,12 +586,10 @@ describe.skipIf(process.platform === 'win32')(
         'afterCommit',
         async () => {
           const runId = `wrun_${ulid()}`;
-          respond = (_delivery, response) =>
-            response.end(
-              runDeliveries(runId).length === 1
-                ? JSON.stringify({ timeoutSeconds: 0 })
-                : '{}'
-            );
+          respond = () =>
+            runDeliveries(runId).length === 1
+              ? { timeoutSeconds: 0 }
+              : undefined;
           const { messageId } = await queue.queue(
             QUEUE,
             { runId, runSpecVersion: SPEC },
@@ -678,6 +669,7 @@ describe.skipIf(process.platform === 'win32')(
         pool,
         { orphanedLeaseIntervalMs: 200 }
       );
+      recordDeliveries(queue);
       await queue.start();
 
       await until(
@@ -700,12 +692,12 @@ describe.skipIf(process.platform === 'win32')(
         pool,
         { maxDeferredPerLease: 2 }
       );
+      recordDeliveries(queue);
       await queue.start();
       const runId = `wrun_${ulid()}`;
       const gate = held();
-      respond = async (_delivery, response) => {
+      respond = async () => {
         if (runDeliveries(runId).length === 1) await gate.released;
-        response.end('{}');
       };
       await wake(runId);
       await until(
@@ -769,14 +761,13 @@ describe.skipIf(process.platform === 'win32')(
       const runId = `wrun_${ulid()}`;
       const gate = held();
       let handedOff = false;
-      respond = async (delivery, response) => {
+      respond = async (delivery) => {
         if (!handedOff) {
           handedOff = true;
           await gate.released;
-          response.end(JSON.stringify({ timeoutSeconds: 0 }));
-          return;
+          return { timeoutSeconds: 0 };
         }
-        response.end('{}');
+        return;
       };
       const { messageId } = await wake(runId);
       await until(
@@ -806,8 +797,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it("counts a spec 9 orchestrator's fence-refusal redelivery as an attempt, and not a step's in-place retry", async () => {
       const runId = `wrun_${ulid()}`;
-      respond = (_delivery, response) =>
-        response.end(JSON.stringify({ timeoutSeconds: 1 }));
+      respond = () => ({ timeoutSeconds: 1 });
       await wake(runId);
       await queue.queue(QUEUE, {
         runId,
@@ -849,9 +839,9 @@ describe.skipIf(process.platform === 'win32')(
       it("waits behind a spec 9 run's live delivery, stamped with the run's version", async () => {
         const runId = await createRun(SPEC);
         const gate = held();
-        respond = async (delivery, response) => {
+        respond = async (delivery) => {
           if (runDeliveries(runId).length === 1) await gate.released;
-          response.end('{}');
+          return;
         };
         await wake(runId);
         await until(

@@ -1329,14 +1329,18 @@ const HEALTH_CHECK_CORS_HEADERS = {
  * Wraps a request/response handler and adds a health check "mode"
  * based on the presence of a `__health` query parameter.
  */
+/** Whether `req` is a request for the flow route's `?__health` endpoint. */
+export function isHealthCheckRequest(req: Request): boolean {
+  return new URL(req.url).searchParams.has('__health');
+}
+
 export function withHealthCheck(
   handler: (req: Request) => Promise<Response>,
   worldSpecVersion?: number
 ): (req: Request) => Promise<Response> {
   return async (req: Request) => {
-    const url = new URL(req.url);
-    const isHealthCheck = url.searchParams.has('__health');
-    if (isHealthCheck) {
+    if (isHealthCheckRequest(req)) {
+      const url = new URL(req.url);
       // Handle CORS preflight for health check
       if (req.method === 'OPTIONS') {
         return new Response(null, {

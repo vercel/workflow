@@ -9,6 +9,8 @@ export {
   type HealthCheckOptions,
   type HealthCheckResult,
   healthCheck,
+  type RegisterWorkflowHandlerOptions,
+  registerWorkflowHandler,
   setWorld,
   workflowEntrypoint,
 } from '@workflow/core/runtime';

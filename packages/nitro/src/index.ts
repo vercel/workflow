@@ -1,7 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  refreshInProcessWorkerRoute,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -301,6 +304,12 @@ export default {
           }
           try {
             await builder.build();
+            // A World that delivers in process (the Postgres World) is
+            // handed the rebuilt flow route (see
+            // `refreshInProcessWorkerRoute`). Not awaited.
+            void refreshInProcessWorkerRoute({
+              basePath: nitro.options.baseURL?.replace(/\/+$/, '') || '',
+            });
           } catch (error) {
             // During dev, files may be added/removed while the builder
             // is rebuilding (e.g., during test cleanup). Log the error
