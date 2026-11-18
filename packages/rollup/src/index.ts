@@ -2,6 +2,7 @@ import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
+  getCachedDecoratorOptions,
   isGeneratedWorkflowFile,
   isWorkflowSdkFile,
   resolveModuleSpecifier,
@@ -105,6 +106,7 @@ export function workflowTransformPlugin(
 
       // Resolve module specifier for packages (node_modules or workspace packages)
       const { moduleSpecifier } = resolveModuleSpecifier(id, workingDir);
+      const decoratorOptions = await getCachedDecoratorOptions(workingDir);
 
       // Transform with SWC
       const result = await transform(code, {
@@ -120,6 +122,7 @@ export function workflowTransformPlugin(
                   syntax: 'ecmascript',
                   jsx: id.endsWith('.jsx'),
                 }),
+            decorators: decoratorOptions.decorators,
           },
           target: 'es2022',
           experimental: {
@@ -129,6 +132,8 @@ export function workflowTransformPlugin(
             react: {
               runtime: 'preserve',
             },
+            legacyDecorator: decoratorOptions.legacyDecorator,
+            decoratorMetadata: decoratorOptions.decoratorMetadata,
           },
         },
         minify: false,
