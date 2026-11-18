@@ -130,6 +130,8 @@ export const prerender = false;`
 
 export const prerender = false;\n`
       );
+    } else if (!this.shouldExposePublicManifest) {
+      await rm(join(workflowGeneratedDir, 'manifest.json.js'), { force: true });
     }
   }
 

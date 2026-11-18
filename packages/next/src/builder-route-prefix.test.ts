@@ -21,6 +21,7 @@ interface RecordedBundle {
 const combinedBundles: RecordedBundle[] = [];
 const webhookBundles: string[] = [];
 const manifestDirs: string[] = [];
+let exposePublicManifest = true;
 
 /**
  * A stand-in for the pieces of `@workflow/builders` the Next builder reaches
@@ -30,10 +31,9 @@ const manifestDirs: string[] = [];
 function createBuildersStub(): typeof import('@workflow/builders') {
   class BaseBuilderStub {
     protected config: Record<string, any>;
-    // Forced on rather than read from `WORKFLOW_PUBLIC_MANIFEST`: the env
-    // gating lives on the real getter, while these cases are about where the
-    // public copy lands once it is enabled.
-    protected shouldExposePublicManifest = true;
+    protected get shouldExposePublicManifest(): boolean {
+      return exposePublicManifest;
+    }
 
     constructor(config: Record<string, any>) {
       this.config = config;
@@ -139,6 +139,7 @@ describe('NextBuilder route prefix', () => {
     combinedBundles.length = 0;
     webhookBundles.length = 0;
     manifestDirs.length = 0;
+    exposePublicManifest = true;
     // `writeFunctionsConfig` is a no-op in development.
     vi.stubEnv('NODE_ENV', 'production');
   });
@@ -281,5 +282,60 @@ describe('NextBuilder route prefix', () => {
     await build(workingDir, '/dashboard');
 
     expect(existsSync(manualRoute)).toBe(true);
+  });
+
+  it.each([
+    undefined,
+    '/dashboard',
+  ])('removes the public manifest of an earlier build once it is disabled under %s', async (prefix) => {
+    const workingDir = createWorkingDir('builder-public-off');
+    mkdirSync(join(workingDir, 'app'), { recursive: true });
+    const publicManifestDir = join(
+      workingDir,
+      'public',
+      prefix ?? '',
+      '.well-known/workflow/v1'
+    );
+
+    await build(workingDir, prefix);
+    expect(existsSync(join(publicManifestDir, 'manifest.json'))).toBe(true);
+
+    exposePublicManifest = false;
+    await build(workingDir, prefix);
+
+    expect(existsSync(publicManifestDir)).toBe(false);
+    expect(
+      existsSync(
+        join(
+          workingDir,
+          'app',
+          prefix ?? '',
+          '.well-known/workflow/v1/config.json'
+        )
+      )
+    ).toBe(true);
+  });
+
+  it('writes no public manifest when it is disabled from the first build', async () => {
+    exposePublicManifest = false;
+    const workingDir = await buildProject();
+
+    expect(existsSync(join(workingDir, 'public/.well-known'))).toBe(false);
+  });
+
+  it('keeps a hand-written public manifest that carries no generated marker', async () => {
+    const workingDir = createWorkingDir('builder-public-manual');
+    mkdirSync(join(workingDir, 'app'), { recursive: true });
+    const manualManifest = join(
+      workingDir,
+      'public/.well-known/workflow/v1/manifest.json'
+    );
+    mkdirSync(dirname(manualManifest), { recursive: true });
+    await writeFile(manualManifest, '{"version":"1.0.0"}');
+
+    exposePublicManifest = false;
+    await build(workingDir);
+
+    expect(existsSync(manualManifest)).toBe(true);
   });
 });

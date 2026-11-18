@@ -44,6 +44,7 @@ export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
 } from './pseudo-package-esbuild-plugin.js';
+export { removeGeneratedDir } from './remove-generated-dir.js';
 export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
 export {
   analyzeSerdeCompliance,

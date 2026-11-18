@@ -2,6 +2,7 @@ import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { getWorkflowQueueTrigger } from './constants.js';
+import { removeGeneratedDir } from './remove-generated-dir.js';
 
 export class VercelBuildOutputAPIBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -63,11 +64,8 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
 
     // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
     // Vercel Build Output API serves static files from .vercel/output/static/
+    const staticManifestDir = join(outputDir, 'static/.well-known/workflow/v1');
     if (this.shouldExposePublicManifest && manifestJson) {
-      const staticManifestDir = join(
-        outputDir,
-        'static/.well-known/workflow/v1'
-      );
       await mkdir(staticManifestDir, { recursive: true });
       if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
         await writeFile(join(staticManifestDir, '.gitignore'), '*');
@@ -76,6 +74,8 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
         join(workflowGeneratedDir, 'manifest.json'),
         join(staticManifestDir, 'manifest.json')
       );
+    } else if (!this.shouldExposePublicManifest) {
+      await removeGeneratedDir(staticManifestDir);
     }
 
     await this.createClientLibrary();
