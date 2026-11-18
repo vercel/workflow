@@ -333,6 +333,8 @@ function EventListViewInner({
                   }
                   const { row } = item;
                   const isSelected = selectedEventId === row.event.eventId;
+                  const isRelated =
+                    relatedKey !== null && row.entity.key === relatedKey;
                   return (
                     <EventRow
                       row={row}
@@ -341,9 +343,8 @@ function EventListViewInner({
                       isTabStop={
                         selectedIndex === -1 ? item.index === 0 : isSelected
                       }
-                      isRelated={
-                        relatedKey !== null && row.entity.key === relatedKey
-                      }
+                      isRelated={isRelated}
+                      isUnrelated={relatedKey !== null && !isRelated}
                       onSelect={toggleSelectedEvent}
                       showSeparateEventOccurrenceTimestamps={
                         showSeparateEventOccurrenceTimestamps

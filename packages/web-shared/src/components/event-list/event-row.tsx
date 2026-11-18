@@ -27,7 +27,7 @@ const COL = {
   time: 'w-[172px]',
   since: 'w-[100px]',
   event: 'w-[136px]',
-  name: 'w-[200px]',
+  name: 'w-[280px]',
   duration: 'w-[96px] justify-end',
 } as const;
 
@@ -49,8 +49,8 @@ const LEVEL_SEPARATOR_CLASS: Record<EventLevel, string> = {
 };
 
 const LEVEL_SELECTED_CLASS: Record<EventLevel, string> = {
-  default: 'bg-gray-200 hover:bg-gray-200',
-  muted: 'bg-gray-200 hover:bg-gray-200',
+  default: 'bg-blue-300 hover:bg-blue-300',
+  muted: 'bg-blue-300 hover:bg-blue-300',
   warning: 'bg-amber-300 hover:bg-amber-300',
   error: 'bg-red-300 hover:bg-red-300',
 };
@@ -159,8 +159,8 @@ export function EventListHeader({
         sortButton('Time')
       )}
       <div className={cn(CELL, COL.since)} />
-      <div className={cn(CELL, COL.event)}>Event</div>
       <div className={cn(CELL, COL.name)}>Name</div>
+      <div className={cn(CELL, COL.event)}>Event</div>
       <div
         className={cn(CELL, 'min-w-0 flex-1 h-3.5 border-l border-gray-400')}
       >
@@ -196,6 +196,8 @@ export interface EventRowProps {
   isTabStop: boolean;
   /** The row belongs to the selected event's step, hook, wait or run. */
   isRelated: boolean;
+  /** Another entity's events are marked as related, and this row is not one of them. */
+  isUnrelated: boolean;
   onSelect: (event: Event) => void;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
@@ -207,6 +209,7 @@ export function EventRow({
   isSelected,
   isTabStop,
   isRelated,
+  isUnrelated,
   onSelect,
   showSeparateEventOccurrenceTimestamps = false,
 }: EventRowProps) {
@@ -216,9 +219,15 @@ export function EventRow({
     ? new Date(event.createdAt)
     : getEffectiveEventDate(event);
   const zebra = (level === 'default' || level === 'muted') && index % 2 === 1;
+  const isTinted = level === 'warning' || level === 'error';
+  // Warnings and errors stay at full strength next to a related entity.
+  const isMuted = isUnrelated && !isTinted;
   // Tinted rows keep one color throughout.
-  const secondaryClass =
-    level === 'warning' || level === 'error' ? undefined : 'text-gray-900';
+  const secondaryClass = isTinted
+    ? undefined
+    : isMuted
+      ? 'text-gray-700'
+      : 'text-gray-900';
 
   return (
     <div
@@ -237,6 +246,7 @@ export function EventRow({
         'mx-1 mt-px flex h-6 cursor-pointer items-center rounded-md font-mono text-[13px] leading-5 outline-none focus-visible:relative focus-visible:z-10 focus-visible:shadow-[0_0_0_2px_var(--ds-focus-color)]',
         LEVEL_ROW_CLASS[level],
         zebra && 'bg-gray-alpha-100',
+        isMuted && 'text-gray-700',
         isSelected && LEVEL_SELECTED_CLASS[level]
       )}
     >
@@ -255,17 +265,15 @@ export function EventRow({
           ? formatSinceStart(row.sinceStartMs)
           : ''}
       </div>
-      <div className={cn(CELL, COL.event)}>
-        <EventNoticeTooltip notice={notice}>
-          <span
-            className={cn('truncate', notice && 'line-through')}
-            title={event.eventType}
-          >
-            {event.eventType}
-          </span>
-        </EventNoticeTooltip>
-      </div>
-      <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
+      <div
+        className={cn(
+          CELL,
+          COL.name,
+          'gap-2',
+          isMuted && '[&_svg]:text-gray-700'
+        )}
+        title={name || undefined}
+      >
         <ResourceIcon
           resource={row.resource}
           isErrored={level === 'error'}
@@ -281,6 +289,16 @@ export function EventRow({
             {name}
           </span>
         ) : null}
+      </div>
+      <div className={cn(CELL, COL.event)}>
+        <EventNoticeTooltip notice={notice}>
+          <span
+            className={cn('truncate', notice && 'line-through')}
+            title={event.eventType}
+          >
+            {event.eventType}
+          </span>
+        </EventNoticeTooltip>
       </div>
       <div
         className={cn(
@@ -325,11 +343,11 @@ export function EventRowsSkeleton() {
           <div className={cn(CELL, COL.since)}>
             <Skeleton className="h-3 w-12" />
           </div>
-          <div className={cn(CELL, COL.event)}>
-            <Skeleton className="h-3 w-[104px]" />
-          </div>
           <div className={cn(CELL, COL.name)}>
             <Skeleton className="h-3 w-24" />
+          </div>
+          <div className={cn(CELL, COL.event)}>
+            <Skeleton className="h-3 w-[104px]" />
           </div>
           <div className={cn(CELL, 'min-w-0 flex-1')}>
             <Skeleton
