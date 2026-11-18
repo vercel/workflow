@@ -1,5 +1,4 @@
-import { start } from 'workflow/api';
-import { getWorld } from 'workflow/runtime';
+import { getRun, start } from 'workflow/api';
 import { InlinePoint } from '@/workflows/_inline_serde_point';
 import { inlineSerdeWorkflow } from '@/workflows/inline_serde';
 import {
@@ -80,12 +79,13 @@ export async function POST(req: Request) {
       } else process.env.WORKFLOW_INLINE_SPECULATION = previousSpeculation;
     }
   }
-  const runExistedAtReturn = await (await getWorld()).runs
-    .get(runId, { resolveData: 'none' })
-    .then(
-      () => true,
-      () => false
-    );
+  // Through `workflow/api`, not `workflow/runtime`, so this route's bundle
+  // stays what route-bundle-isolation.test.ts expects. A fresh `Run` does not
+  // retry a missing run, so a 404 here means the run did not exist yet.
+  const runExistedAtReturn = await getRun(runId).status.then(
+    () => true,
+    () => false
+  );
   return Response.json({
     runId,
     queued: body.queued === true,
