@@ -53,3 +53,10 @@ export function quickJSEngine(): QuickJSEngine {
 export function maybeQuickJSEngine(): QuickJSEngine | undefined {
   return registry.engine;
 }
+
+/** Test seam: forget the registered engine, returning what to restore. @internal */
+export function __unregisterQuickJSEngineForTests(): QuickJSEngine | undefined {
+  const engine = registry.engine;
+  registry.engine = undefined;
+  return engine;
+}
