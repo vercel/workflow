@@ -1,11 +1,10 @@
 import { EventEmitter } from 'node:events';
 import {
   type GetChunksOptions,
-  RETENTION_ATTRIBUTE,
-  RETENTION_ZERO,
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
+  TERMINAL_WORKFLOW_RUN_STATUSES,
 } from '@workflow/world';
 import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
@@ -342,13 +341,13 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
   /**
    * Inserts data chunks in one statement, unless the run's data has been
-   * purged (zero retention): a step still running when its run finished
-   * would otherwise write past the purge. For a zero-retention run the run's
-   * row lock is taken to read `expired_at`, so a purge in progress is waited
-   * for, and a purge that has not reached the run yet waits for this insert
-   * and then clears it. `FOR SHARE` locks only the rows the subquery returns,
-   * so a run that keeps its data takes no lock (its retention is fixed when
-   * it starts). Whether the chunks were written.
+   * deleted (by zero retention or on demand): a step still running when its
+   * run finished would otherwise write past the deletion. Only a finished
+   * run's data can be deleted, so for a finished run the run's row lock is
+   * taken to read `expired_at`: a deletion in progress is waited for, and one
+   * that has not reached the run yet waits for this insert and then clears
+   * it. `FOR SHARE` locks only the rows the subquery returns, so a running
+   * run takes no lock. Whether the chunks were written.
    */
   const insertDataChunks = async (
     runId: string,
@@ -370,7 +369,10 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       WHERE NOT COALESCE(
         (SELECT r.expired_at IS NOT NULL FROM ${Schema.runs} r
          WHERE r.id = ${runId}
-           AND r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO}
+           AND r.status IN (${sql.join(
+             TERMINAL_WORKFLOW_RUN_STATUSES.map((status) => sql`${status}`),
+             sql`, `
+           )})
          FOR SHARE),
         false
       )`);

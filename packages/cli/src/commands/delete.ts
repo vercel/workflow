@@ -1,13 +1,13 @@
 import { Args, Flags } from '@oclif/core';
 import { DELETE_RUNS_DATA_MAX_RUN_IDS } from '@workflow/world';
 import { BaseCommand } from '../base.js';
-import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
+import { logger } from '../lib/config/log.js';
 import {
   createPromptConfirm,
   performDelete,
   readRunIds,
 } from '../lib/delete.js';
-import { reportActionableApiError } from '../lib/inspect/errors.js';
+import { reportCommandError } from '../lib/inspect/errors.js';
 import { targetFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
@@ -29,13 +29,7 @@ export default class Delete extends BaseCommand {
   private backend?: string;
 
   async catch(error: any) {
-    if (reportActionableApiError(error, this.backend)) {
-      process.exit(1);
-    }
-    if (LOGGING_CONFIG.VERBOSE_MODE) {
-      console.error(error);
-    }
-    throw error;
+    reportCommandError(error, this.backend);
   }
 
   static args = {

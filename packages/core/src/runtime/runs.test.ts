@@ -1402,15 +1402,64 @@ describe('deleteRuns', () => {
     );
   });
 
-  it('throws RetryableError for a retryable failure inside a step', async () => {
-    const deleteDataMany = vi.fn().mockResolvedValue(retryableFailure);
-    const world = { runs: { deleteDataMany } } as unknown as World;
+  /** A World answering each request per run, with `outcomeFor(runId, call)`. */
+  function worldAnswering(
+    outcomeFor: (runId: string, call: number) => Record<string, unknown>
+  ) {
+    let call = 0;
+    const deleteDataMany = vi.fn(async ({ runIds }: { runIds: string[] }) => {
+      call++;
+      return {
+        summary: { ...emptySummary, requested: runIds.length },
+        results: runIds.map((runId) => ({ runId, ...outcomeFor(runId, call) })),
+      };
+    });
+    return {
+      world: { runs: { deleteDataMany } } as unknown as World,
+      deleteDataMany,
+    };
+  }
+  const failedRetryably = {
+    outcome: 'failed',
+    code: 'internal_error',
+    retryable: true,
+  };
 
+  it('re-sends only the retryably failed runs once inside a step, and answers their new outcome', async () => {
+    const { world, deleteDataMany } = worldAnswering((runId, call) =>
+      runId === 'b' && call === 1 ? failedRetryably : { outcome: 'deleted' }
+    );
+
+    const result = await inStep(() => deleteRuns(world, ['a', 'b']));
+
+    expect(deleteDataMany.mock.calls.map(([r]) => r.runIds)).toEqual([
+      ['a', 'b'],
+      ['b'],
+    ]);
+    expect(result).toEqual({
+      summary: { ...emptySummary, requested: 2, deleted: 2 },
+      results: [
+        { runId: 'a', outcome: 'deleted' },
+        { runId: 'b', outcome: 'deleted' },
+      ],
+    });
+  });
+
+  it('throws RetryableError, 10 seconds out, when a run still fails inside a step', async () => {
+    const { world, deleteDataMany } = worldAnswering((runId) =>
+      runId === 'b' ? failedRetryably : { outcome: 'deleted' }
+    );
+
+    const before = Date.now();
     const error = await inStep(() => deleteRuns(world, ['a', 'b'])).catch(
       (cause) => cause
     );
     expect(RetryableError.is(error)).toBe(true);
     expect((error as Error).message).toContain('run b failed (internal_error)');
+    expect(deleteDataMany).toHaveBeenCalledTimes(2);
+    const delayMs = (error as RetryableError).retryAfter.getTime() - before;
+    expect(delayMs).toBeGreaterThanOrEqual(10_000);
+    expect(delayMs).toBeLessThan(12_000);
   });
 
   it('returns a non-retryable failure inside a step', async () => {
@@ -1442,6 +1491,20 @@ describe('deleteRuns', () => {
     const delayMs = (error as RetryableError).retryAfter.getTime() - before;
     expect(delayMs).toBeGreaterThanOrEqual(30_000);
     expect(delayMs).toBeLessThan(31_000);
+  });
+
+  it('waits 10 seconds after a rate limit inside a step when the World gives no retryAfter', async () => {
+    const deleteDataMany = vi.fn().mockRejectedValue(new ThrottleError('429'));
+    const world = { runs: { deleteDataMany } } as unknown as World;
+
+    const before = Date.now();
+    const error = await inStep(() => deleteRuns(world, ['a'])).catch(
+      (cause) => cause
+    );
+    expect(RetryableError.is(error)).toBe(true);
+    const delayMs = (error as RetryableError).retryAfter.getTime() - before;
+    expect(delayMs).toBeGreaterThanOrEqual(10_000);
+    expect(delayMs).toBeLessThan(11_000);
   });
 
   it('rethrows a rate limit outside a step as the ThrottleError', async () => {

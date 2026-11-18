@@ -42,14 +42,20 @@ export function purgesUserDataOnFinish(
 }
 
 /**
- * Whether a run's user data was purged when it finished: it is terminal and
- * asked for zero retention. Not `expiredAt`, which is a retention deadline.
+ * Whether a run's user data is gone, so a late write to it (a step still
+ * running when the run finished) must be scrubbed or refused: the run is
+ * terminal and either asked for zero retention, or had its data deleted on
+ * demand (`runs.deleteDataMany`), which stamps an `expiredAt` that has
+ * passed. A future `expiredAt` is a retention deadline, not a deletion.
  */
 export function ranPurge(run: WorkflowRun | undefined): boolean {
+  if (run === undefined || !isTerminalWorkflowRunStatus(run.status)) {
+    return false;
+  }
+  if (readRunRetention(run.attributes).mode === 'none') return true;
   return (
-    run !== undefined &&
-    isTerminalWorkflowRunStatus(run.status) &&
-    readRunRetention(run.attributes).mode === 'none'
+    run.expiredAt !== undefined &&
+    new Date(run.expiredAt).getTime() <= Date.now()
   );
 }
 

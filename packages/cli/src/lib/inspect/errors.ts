@@ -1,5 +1,5 @@
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
-import { logger } from '../config/log.js';
+import { LOGGING_CONFIG, logger } from '../config/log.js';
 
 const OBSERVABILITY_UPGRADE_REQUIRED_CODE = 'observability-upgrade-required';
 const OBSERVABILITY_UPGRADE_REQUIRED_MESSAGE =
@@ -106,4 +106,25 @@ export const reportActionableApiError = (
     return true;
   }
   return false;
+};
+
+/**
+ * A command's `catch()`: prints why the command failed, then exits 1.
+ *
+ * oclif's own handler would print a rethrown error, but
+ * `BaseCommand.finally()` exits first, so any error that is not an
+ * actionable API error (an unknown flag, a missing argument, a World that
+ * refused the call) would exit 1 with nothing on screen. Errors
+ * {@link reportActionableApiError} recognises get its message; anything else
+ * prints as `Error: <message>`, or in full with `-v`.
+ */
+export const reportCommandError = (error: unknown, backend?: string): never => {
+  if (!reportActionableApiError(error, backend)) {
+    if (LOGGING_CONFIG.VERBOSE_MODE) {
+      logger.error(error);
+    } else {
+      logger.error(`Error: ${errorMessage(error) || 'Unknown error'}`);
+    }
+  }
+  return process.exit(1);
 };

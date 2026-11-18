@@ -60,8 +60,6 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
-  RETENTION_ATTRIBUTE,
-  RETENTION_ZERO,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -232,15 +230,21 @@ function nextSlotId(runId: string): SQL<string> {
 }
 
 /**
- * RETURNING columns of a step write: the step row, and whether its run asked
- * for zero retention (fixed when the run starts), so a write that may land
- * after the run's purge is checked (`scrubStepWriteIfRunPurged`) without a
- * query for every other run.
+ * RETURNING columns of a step write: the step row, and whether its run has
+ * finished. Only a finished run's data can have been deleted (by zero
+ * retention or on demand), so only then is a step write that may land after
+ * the deletion checked (`scrubStepWriteIfRunPurged`), without a query for
+ * every running run. A run that finishes while the step write is still open
+ * cannot have its data deleted under it: the deletion updates the step row,
+ * so it waits for this write to commit and then clears it.
  */
-function stepRowAndRetention(runId: string) {
+function stepRowAndRunFinished(runId: string) {
   return {
     ...getTableColumns(Schema.steps),
-    zeroRetention: sql<boolean>`coalesce((select r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO} from ${Schema.runs} r where r.id = ${runId}), false)`,
+    runFinished: sql<boolean>`coalesce((select r.status in (${sql.join(
+      TERMINAL_WORKFLOW_RUN_STATUSES.map((status) => sql`${status}`),
+      sql`, `
+    )}) from ${Schema.runs} r where r.id = ${runId}), false)`,
   };
 }
 
@@ -2750,7 +2754,7 @@ function createUnfencedEventsStorage(
                 error: data.eventData.error as SerializedData,
                 completedAt: now,
               };
-        let zeroRetention = false;
+        let runFinished = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2762,11 +2766,11 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning(stepRowAndRetention(effectiveRunId));
+            .returning(stepRowAndRunFinished(effectiveRunId));
 
           if (stepValue) {
-            const { zeroRetention: zero, ...row } = stepValue;
-            zeroRetention = zero;
+            const { runFinished: finished, ...row } = stepValue;
+            runFinished = finished;
             step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
@@ -2809,7 +2813,7 @@ function createUnfencedEventsStorage(
           eventId = eventValue.eventId;
           return { createdAt: eventValue.createdAt };
         }, SLOT_INSERT_TRANSACTION);
-        if (zeroRetention)
+        if (runFinished)
           await scrubStepWriteIfRunPurged(
             drizzle,
             effectiveRunId,
@@ -2829,7 +2833,7 @@ function createUnfencedEventsStorage(
         // One transaction with its event, as step_started does: a step put
         // back to pending without its step_retrying would retry with no
         // record of the failed attempt in the log.
-        let zeroRetention = false;
+        let runFinished = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2845,10 +2849,10 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning(stepRowAndRetention(effectiveRunId));
+            .returning(stepRowAndRunFinished(effectiveRunId));
           if (stepValue) {
-            const { zeroRetention: zero, ...row } = stepValue;
-            zeroRetention = zero;
+            const { runFinished: finished, ...row } = stepValue;
+            runFinished = finished;
             step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
@@ -2875,7 +2879,7 @@ function createUnfencedEventsStorage(
           }
           return insertOwnEvent(tx);
         }, SLOT_INSERT_TRANSACTION);
-        if (zeroRetention)
+        if (runFinished)
           await scrubStepWriteIfRunPurged(
             drizzle,
             effectiveRunId,

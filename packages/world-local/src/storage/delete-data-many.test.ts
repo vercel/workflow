@@ -163,6 +163,63 @@ describe('runs.deleteDataMany (world-local)', () => {
     }
   });
 
+  // A step still running when the run ended (a `Promise.race` loser) may
+  // settle after its data was deleted on demand; what it writes must not
+  // bring the data back.
+  for (const [eventType, eventData] of [
+    ['step_completed', { result: STEP_OUTPUT }],
+    ['step_failed', { error: STEP_OUTPUT }],
+    ['step_retrying', { error: STEP_OUTPUT }],
+  ] as const) {
+    it(`scrubs the payload of a ${eventType} that lands after the deletion`, async () => {
+      const run = await startRun();
+      await createStep(storage, run.runId, {
+        stepId: 'step_late',
+        stepName: 'step//./mod//slow',
+        input: STEP_INPUT,
+      });
+      await updateStep(storage, run.runId, 'step_late', 'step_started');
+      await storage.events.create(run.runId, {
+        eventType: 'run_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { output: RUN_OUTPUT },
+      });
+      await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
+
+      await updateStep(
+        storage,
+        run.runId,
+        'step_late',
+        eventType,
+        eventData as never
+      );
+
+      const step = await storage.steps.get(run.runId, 'step_late');
+      expect(step.output).toBeUndefined();
+      expect(step.error).toBeUndefined();
+      expect(step.input).toBeUndefined();
+      expect(await eventPayloads(run.runId)).toEqual([]);
+    });
+  }
+
+  it('ends a stream first written after the deletion, with nothing in it', async () => {
+    const run = await finishedRun();
+    await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
+
+    await streamer.streams.write(run.runId, 'stream-late', 'secret payload');
+    await streamer.streams.write(run.runId, 'stream-late', 'more');
+    await streamer.streams.write(run.runId, 'stream-a', 'secret payload');
+
+    for (const name of ['stream-late', 'stream-a']) {
+      const chunks = await streamer.streams.getChunks(run.runId, name);
+      expect({ name, data: chunks.data, done: chunks.done }).toEqual({
+        name,
+        data: [],
+        done: true,
+      });
+    }
+  });
+
   it("deletes a cancelled run's VM snapshot, which holds its heap", async () => {
     // What a suspended QuickJS run leaves behind: its heap, and with it the
     // input, possibly unencrypted. Cancelling it from outside leaves the

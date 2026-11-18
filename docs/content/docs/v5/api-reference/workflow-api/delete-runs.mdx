@@ -49,7 +49,7 @@ A summary that counts each outcome, and one result per run in the order of `runI
 
 Deletion is idempotent, so retrying is always safe: a run that was already handled answers `already_deleted`.
 
-- Inside a step, a `failed` result with `retryable: true`, or the World rate-limiting the request, throws a [`RetryableError`](/docs/api-reference/workflow/retryable-error) so the step retries the whole batch, after the World's requested delay when it gives one.
+- Inside a step, runs answered `failed` with `retryable: true` are sent again once, on their own, a second later. If any still fail, or the World rate-limits a request, it throws a [`RetryableError`](/docs/api-reference/workflow/retryable-error) so the step retries the whole batch, after the World's requested delay, or 10 seconds when it gives none.
 - Outside a step, `failed` results are returned as they are, so retry the runs answered `failed` with `retryable: true` yourself. A rate limit throws the World's `ThrottleError`, whose `retryAfter` is the number of seconds to wait.
 
 ## Errors

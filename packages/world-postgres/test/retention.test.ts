@@ -461,6 +461,67 @@ describe('Retention ($retention: 0)', () => {
    * meant as "delete my data".
    */
   describe('runs.deleteDataMany', () => {
+    /** A step started on `runId` and still running when the run ends. */
+    async function startStillRunningStep(runId: string): Promise<string> {
+      const stepId = `step_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'step_created',
+        correlationId: stepId,
+        eventData: { stepName: 'slow-step', input: new Uint8Array([4, 5]) },
+      });
+      await events.create(runId, {
+        eventType: 'step_started',
+        correlationId: stepId,
+      });
+      return stepId;
+    }
+
+    // A run that keeps its data until it is deleted on demand: a step still
+    // running when it ended (a `Promise.race` loser) may settle after the
+    // deletion, and what it writes must not bring the data back.
+    for (const [eventType, eventData] of [
+      ['step_completed', { result: new Uint8Array([6, 7]) }],
+      ['step_failed', { error: new Uint8Array([6, 7]) }],
+      ['step_retrying', { error: new Uint8Array([6, 7]) }],
+    ] as const) {
+      it(`clears the payload of a ${eventType} that lands after the deletion`, async () => {
+        const { runId } = await seedRun();
+        const stepId = await startStillRunningStep(runId);
+        await events.create(runId, {
+          eventType: 'run_completed',
+          eventData: { output: new Uint8Array([12, 13]) },
+        });
+        await runs.deleteDataMany?.({ runIds: [runId] });
+        expect(await countRemainingPayloads(runId)).toBe(0);
+
+        await events.create(runId, {
+          eventType,
+          correlationId: stepId,
+          eventData,
+        } as never);
+
+        expect(await countRemainingPayloads(runId)).toBe(0);
+      });
+    }
+
+    it('writes no stream chunk after the deletion, to a new stream or an existing one', async () => {
+      const { runId, streamId } = await seedRun();
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      await runs.deleteDataMany?.({ runIds: [runId] });
+      const before = await rowCounts(runId);
+
+      await streamer.streams.write(runId, 'late-stream', 'secret');
+      await streamer.streams.writeMulti(runId, streamId, ['a', 'b']);
+
+      expect(await countRemainingPayloads(runId)).toBe(0);
+      expect((await rowCounts(runId)).chunks).toBe(before.chunks);
+      const late = await streamer.streams.getChunks(runId, 'late-stream');
+      expect(late.data).toEqual([]);
+    });
+
     it("deletes a cancelled run's VM snapshot, which holds its heap", async () => {
       // What a suspended QuickJS run leaves behind: its heap, and with it the
       // input, possibly unencrypted. Cancelling it from outside leaves the

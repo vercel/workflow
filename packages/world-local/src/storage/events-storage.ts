@@ -995,11 +995,11 @@ export function createEventsStorage(
       );
     }
 
-    // A step still running when its zero-retention run ended (a
-    // `Promise.race` loser, or one on another delivery) settles after the
-    // purge. Step events are not checked against the run's state, so what it
-    // writes is scrubbed here, in the same transaction: the run's data stays
-    // gone.
+    // A step still running when its run ended (a `Promise.race` loser, or
+    // one on another delivery) can settle after the run's data was deleted,
+    // by zero retention or on demand. Step events are not checked against
+    // the run's state, so what it writes is scrubbed here, in the same
+    // transaction: the run's data stays gone.
     const lateOnPurgedRun =
       !runPurged &&
       (data.eventType === 'step_completed' ||

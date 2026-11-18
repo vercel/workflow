@@ -12,8 +12,8 @@ import {
   performBulkCancel,
   validateBulkCancelLimit,
 } from '../lib/bulk-cancel.js';
-import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
-import { reportActionableApiError } from '../lib/inspect/errors.js';
+import { logger } from '../lib/config/log.js';
+import { reportCommandError } from '../lib/inspect/errors.js';
 import { targetFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
@@ -41,17 +41,7 @@ export default class Cancel extends BaseCommand {
   private backend?: string;
 
   async catch(error: any) {
-    // Print the errors that name something the caller can fix. Only the plan
-    // gate was handled before, so an argument the World rejected locally —
-    // `--limit` above the listing cap, say — reached oclif's default handler
-    // and exited 1 with nothing on screen unless -v was set.
-    if (reportActionableApiError(error, this.backend)) {
-      process.exit(1);
-    }
-    if (LOGGING_CONFIG.VERBOSE_MODE) {
-      console.error(error);
-    }
-    throw error;
+    reportCommandError(error, this.backend);
   }
 
   static args = {

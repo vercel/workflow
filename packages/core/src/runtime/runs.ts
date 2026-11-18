@@ -422,12 +422,13 @@ export async function cancelRuns(
  * delete its data. Every outcome is reported per run, in the order of
  * `runIds`.
  *
- * Retrying is safe, since deletion is idempotent. Inside a step, a `failed`
- * outcome with `retryable: true`, or the World rate-limiting the request,
- * throws a `RetryableError` (honouring the World's `retryAfter` when it gives
- * one), so the step retries the whole batch; runs already handled then
- * answer `already_deleted`. Outside a step, retryable failures are returned
- * for the caller to retry, and a rate limit throws the World's
+ * Retrying is safe, since deletion is idempotent. Inside a step, runs that
+ * fail with `retryable: true` are re-sent once, on their own, after a
+ * second. If any still fail, or the World rate-limits a request, this throws
+ * a `RetryableError` (after the World's `retryAfter` when it gives one, else
+ * 10 seconds), so the step retries the whole batch; runs already handled
+ * then answer `already_deleted`. Outside a step, retryable failures are
+ * returned for the caller to retry, and a rate limit throws the World's
  * `ThrottleError`.
  *
  * Delegates to the World's `runs.deleteDataMany`. There is no fallback: a
@@ -462,18 +463,82 @@ export async function deleteRuns(
       'The configured World does not support deleting run data.'
     );
   }
+  const { deleteDataMany } = world.runs;
+  const request: DeleteRequest = (ids) =>
+    deleteDataMany.call(world.runs, { runIds: ids });
 
   const inStep = contextStorage.getStore() !== undefined;
+  let results = await requestRunDataDeletion(request, runIds, inStep);
+
+  if (inStep) {
+    // Re-send only the runs that failed retryably, once, before failing the
+    // step: a step retry re-sends the whole batch, and every run in it
+    // counts towards world-vercel's rate limit.
+    let retryable = retryableFailures(results);
+    if (retryable.length > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, DELETE_RUNS_IN_CALL_RETRY_DELAY_MS)
+      );
+      const retried = await requestRunDataDeletion(
+        request,
+        retryable.map((result) => result.runId),
+        inStep
+      );
+      const retriedById = new Map(retried.map((r) => [r.runId, r]));
+      results = results.map(
+        (result) => retriedById.get(result.runId) ?? result
+      );
+      retryable = retryableFailures(results);
+    }
+    if (retryable.length > 0) {
+      const codes = [...new Set(retryable.map((result) => result.code))];
+      throw new RetryableError(
+        `Deleting the data of ${describeRunIds(
+          retryable.map((result) => result.runId)
+        )} failed (${codes.join(', ')}) and will be retried.`,
+        { retryAfter: DELETE_RUNS_STEP_RETRY_DELAY_MS }
+      );
+    }
+  }
+
+  return { summary: summarizeRunDataDeletion(results), results };
+}
+
+/** Wait before re-sending a step's retryable failures within the call. */
+const DELETE_RUNS_IN_CALL_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Wait before a step retries a deletion that still failed, or that the World
+ * rate-limited without saying for how long. Longer than `RetryableError`'s
+ * 1 s default, so a step's small retry budget is not spent in a few seconds.
+ */
+const DELETE_RUNS_STEP_RETRY_DELAY_MS = 10_000;
+
+/**
+ * One `deleteDataMany` request: its results in the order of `runIds`. Inside
+ * a step, a rate limit throws a `RetryableError` after the World's
+ * `retryAfter` (or {@link DELETE_RUNS_STEP_RETRY_DELAY_MS}).
+ */
+type DeleteRequest = (runIds: string[]) => Promise<DeleteRunsDataResult>;
+
+async function requestRunDataDeletion(
+  request: DeleteRequest,
+  runIds: string[],
+  inStep: boolean
+): Promise<DeleteRunDataResult[]> {
   let response: DeleteRunsDataResult;
   try {
-    response = await world.runs.deleteDataMany({ runIds });
+    response = await request(runIds);
   } catch (err) {
     if (inStep && ThrottleError.is(err)) {
       throw new RetryableError(
         `The World rate-limited deleting the data of ${describeRunIds(runIds)}.`,
-        typeof err.retryAfter === 'number'
-          ? { retryAfter: err.retryAfter * 1000 }
-          : {}
+        {
+          retryAfter:
+            typeof err.retryAfter === 'number'
+              ? err.retryAfter * 1000
+              : DELETE_RUNS_STEP_RETRY_DELAY_MS,
+        }
       );
     }
     throw err;
@@ -496,26 +561,33 @@ export async function deleteRuns(
       )} with exactly one result per run (requested ${runIds.length}, received ${response.results.length}).`
     );
   }
-  const results = runIds.map(
-    (runId) => resultByRunId.get(runId) as DeleteRunDataResult
+  return runIds.map((runId) => resultByRunId.get(runId) as DeleteRunDataResult);
+}
+
+function retryableFailures(
+  results: DeleteRunDataResult[]
+): Extract<DeleteRunDataResult, { outcome: 'failed' }>[] {
+  return results.filter(
+    (result): result is Extract<DeleteRunDataResult, { outcome: 'failed' }> =>
+      result.outcome === 'failed' && result.retryable
   );
+}
 
-  if (inStep) {
-    const retryable = results.filter(
-      (result): result is Extract<DeleteRunDataResult, { outcome: 'failed' }> =>
-        result.outcome === 'failed' && result.retryable
-    );
-    if (retryable.length > 0) {
-      const codes = [...new Set(retryable.map((result) => result.code))];
-      throw new RetryableError(
-        `Deleting the data of ${describeRunIds(
-          retryable.map((result) => result.runId)
-        )} failed (${codes.join(', ')}) and will be retried.`
-      );
-    }
-  }
-
-  return { summary: response.summary, results };
+/** The summary of `results`, counting each outcome. */
+function summarizeRunDataDeletion(
+  results: DeleteRunDataResult[]
+): DeleteRunsDataResult['summary'] {
+  const count = (outcome: DeleteRunDataResult['outcome']) =>
+    results.filter((result) => result.outcome === outcome).length;
+  return {
+    requested: results.length,
+    deleted: count('deleted'),
+    alreadyDeleted: count('already_deleted'),
+    skipped: count('skipped'),
+    notCreated: count('not_created'),
+    notFound: count('not_found'),
+    failed: count('failed'),
+  };
 }
 
 /** `run wrun_a`, or `runs wrun_a, wrun_b and 3 more`, for error messages. */
