@@ -410,10 +410,13 @@ async function runDelivery(
   // Background steps with no message are re-sent by any delivery that is
   // not its message's first, counted in deliveries (handoffs and coalesced
   // re-runs included), once per invocation (see `stepsToReenqueue`).
-  const resendGate = passesResendGate({
+  // Opened later by a replayed first delivery (see `noteReplayedFirstDelivery`),
+  // with `resendDeliveryCount` cleared to match.
+  let resendGate = passesResendGate({
     deliveryCount: metadata.deliveryCount,
     recovery: recoveryDelivery,
   });
+  let resendDeliveryCount = metadata.deliveryCount;
   const resends = invocationResends({
     runId,
     messageId: creatorMessageId,
@@ -436,7 +439,7 @@ async function runDelivery(
     if (!resendGate) return new Set();
     const decided = stepsToReenqueue({
       events,
-      deliveryCount: metadata.deliveryCount,
+      deliveryCount: resendDeliveryCount,
       nowMs: Date.now(),
       recovery: recoveryDelivery,
       exclude: {
@@ -493,6 +496,10 @@ async function runDelivery(
   // Whether this delivery already restarted in place after its `run_started`
   // conflicted (see `restartAfterStartConflict`). Once at most.
   let startConflictRestarted = false;
+  // Whether a `run_started` this delivery wrote has committed, so a later
+  // pass's full load that finds one does not mistake it for a predecessor's
+  // (see `noteReplayedFirstDelivery`).
+  let ownRunStartedCommitted = false;
   // Compilation is useful only for the Node VM. Wait until the
   // run's engine selection is known so QuickJS deliveries never
   // parse and cache an unused node:vm Script. The promise is
@@ -700,16 +707,20 @@ async function runDelivery(
     runInput !== undefined &&
     (metadata.deliveryCount ?? 1) === 1
   ) {
+    const messageAgeMs =
+      metadata.createdAt !== undefined
+        ? Date.now() - metadata.createdAt.getTime()
+        : undefined;
+    // On the span too: debug-gated logs alone would leave the fallback
+    // indistinguishable from turbo being off.
+    if (messageAgeMs !== undefined) {
+      span?.setAttributes(
+        Attribute.WorkflowTurboSkippedMessageAgeMs(messageAgeMs)
+      );
+    }
     runtimeLogger.info(
       'First orchestrator message is older than a first delivery can be; loading the log instead of taking the turbo path',
-      {
-        workflowRunId: runId,
-        messageAgeMs:
-          metadata.createdAt !== undefined
-            ? Date.now() - metadata.createdAt.getTime()
-            : undefined,
-        requestId,
-      }
+      { workflowRunId: runId, messageAgeMs, requestId }
     );
   }
   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
@@ -1296,6 +1307,13 @@ async function runDelivery(
   while (true) {
     try {
       const result = await orchestrate();
+      // A failed turbo `run_started` decides the delivery even when the pass
+      // returned normally: a handler that reads a conflict as "the run
+      // already finished" (a terminal write's, say) may have swallowed the
+      // start's own refusal, while nothing of the pass committed. Settled by
+      // now on every path that wrote; awaiting covers one that did not.
+      await runReadyBarrier?.catch(() => {});
+      if (turboStartFailure) throw turboStartFailure.error;
       clearFenceRefusals(runId);
       return result;
     } catch (caught) {
@@ -1472,6 +1490,37 @@ async function runDelivery(
    * `run-already-started` answer (the run started between its load and its
    * write); a bare conflict there keeps meaning the run finished.
    */
+  /**
+   * Called when a full load finds `run_started` already in the log. On the
+   * first delivery of the run's first message (count 1, carrying
+   * `runInput`) that this delivery did not write, it is a platform's replay
+   * of a first delivery that already ran, young (after
+   * `restartAfterStartConflict`) or old (`TURBO_FIRST_DELIVERY_MAX_AGE_MS`).
+   * Its predecessor may have committed a background step's `step_created`
+   * (or a retry's `step_retrying`) and died before the message went out, and
+   * no later delivery is owed to send it. So the delivery re-sends them as a
+   * redelivery would (see `stepsToReenqueue`), within the same age bound and
+   * keeping each step's idempotency key, so a message that did go out is
+   * deduped.
+   */
+  function noteReplayedFirstDelivery(): void {
+    if (
+      resendGate ||
+      ownRunStartedCommitted ||
+      runInput === undefined ||
+      metadata.deliveryCount !== 1
+    ) {
+      return;
+    }
+    resendGate = true;
+    resendDeliveryCount = undefined;
+    span?.setAttributes(Attribute.WorkflowReplayedFirstDelivery(true));
+    runtimeLogger.info(
+      'First delivery found the run already started by an earlier delivery of its message; re-sending what that delivery may have left unsent',
+      { workflowRunId: runId, requestId }
+    );
+  }
+
   function restartAfterStartConflict(err: unknown): boolean {
     if (startConflictRestarted) return false;
     if (turboStartFailure) {
@@ -1576,6 +1625,7 @@ async function runDelivery(
     runReadyBarrier = started.then(
       (result) => {
         turboStartLanded = result;
+        ownRunStartedCommitted = true;
         const limit = clampMaxEvents(result.maxEvents);
         if (limit !== undefined) maxEventsLimit = limit;
       },
@@ -1770,6 +1820,7 @@ async function runDelivery(
             started.run ?? { runId },
             span
           );
+          ownRunStartedCommitted = true;
           run = started.run ?? run;
           maxEventsLimit = clampMaxEvents(started.maxEvents);
           runStartedReceivedAtMs = Date.now();
@@ -1803,6 +1854,7 @@ async function runDelivery(
         // resilient start, its creation).
         await fullLoad();
       } else {
+        noteReplayedFirstDelivery();
         // A redelivery of a candidate's first message whose
         // `run_started` committed but whose answer was lost (a 503
         // `in-band-outcome-unknown`, a crash): the loaded run must

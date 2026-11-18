@@ -97,6 +97,43 @@ registerStepFunction('turbo_parkable', async (a: number, b: number) => {
   return a + b;
 });
 
+const returnsAtOnce = `async function workflow() {
+    return 42;
+  }${transform('workflow')}`;
+
+/**
+ * A World seeded with the log a crashed first delivery left, as its replay
+ * finds it: it refuses a second `run_started` as a started run, and its
+ * queue holds nothing the crashed delivery sent.
+ */
+async function replayWorldFor(
+  code: string,
+  crashed: AppendOnlyWorld,
+  runId: string
+): Promise<AppendOnlyWorld> {
+  const crashedLog = structuredClone(crashed.events);
+  const crashedRun = structuredClone(await crashed.asWorld().runs.get(runId));
+  const replay: AppendOnlyWorld = new AppendOnlyWorld({
+    fence: true,
+    beforeCreate(data) {
+      if (
+        data.eventType === 'run_started' &&
+        replay.events.some((e) => e.eventType === 'run_started')
+      ) {
+        throw new EntityConflictError(
+          `Workflow run "${runId}" has already started`,
+          { code: RUN_ALREADY_STARTED_CODE }
+        );
+      }
+    },
+  });
+  replay.seedLog(crashedRun, crashedLog);
+  currentWorld = replay;
+  setWorld(replay.asWorld());
+  await workflowEntrypoint(code)(new Request('https://example.test'));
+  return replay;
+}
+
 const twoParkableSteps = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_parkable");
   async function workflow(a, b) {
     const first = await add(a, b);
@@ -198,7 +235,11 @@ const types = (events: readonly Event[]) => events.map((e) => e.eventType);
 const indexOf = (world: AppendOnlyWorld, type: string) =>
   world.events.findIndex((e) => e.eventType === type);
 
-const ENV = ['WORKFLOW_TURBO', 'WORKFLOW_OPTIMISTIC_INLINE_START'] as const;
+const ENV = [
+  'WORKFLOW_TURBO',
+  'WORKFLOW_OPTIMISTIC_INLINE_START',
+  'WORKFLOW_MAX_INLINE_STEPS',
+] as const;
 const savedEnv: Partial<Record<(typeof ENV)[number], string | undefined>> = {};
 
 beforeEach(() => {
@@ -469,6 +510,67 @@ describe.each([
     expect(types(world.events).filter((t) => t === 'run_completed')).toEqual([
       'run_completed',
     ]);
+  });
+
+  it('completes the run when a replay of the first delivery of a workflow with no steps conflicts', async () => {
+    // The crashed delivery committed `run_started` and died before the
+    // completion. The replay's turbo `run_completed` queues behind its
+    // refused `run_started`, and a terminal write reads a conflict as "the
+    // run already finished": the start's refusal must still decide.
+    const { world: crashed, runId, start } = await setup(returnsAtOnce, []);
+    crashed.appendOutOfBand({
+      eventType: 'run_started',
+      runId,
+      correlationId: runId,
+    } as Partial<Event>);
+    const replay = await replayWorldFor(returnsAtOnce, crashed, runId);
+
+    await replay.deliver({ ...start, deliveryCount: 1, createdAt: new Date() });
+    await replay.runUntilIdle();
+
+    expect(types(replay.events)).toEqual([
+      'run_created',
+      'run_started',
+      'run_completed',
+    ]);
+  });
+
+  it.each([
+    ['young', 0],
+    ['old', TURBO_FIRST_DELIVERY_MAX_AGE_MS + 1_000],
+  ])('re-sends a background step a crashed first delivery never sent, on a %s replay', async (_age, ageMs) => {
+    // Every step goes to the background. The crashed delivery commits the
+    // first step's `step_created` and dies before its message goes out: the
+    // replay's World holds the log and no message.
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '0';
+    const { world: crashed, runId, start } = await setup(twoSteps, [1, 2]);
+    await crashed.deliver(start);
+    expect(types(crashed.events)).toEqual([
+      'run_created',
+      'run_started',
+      'step_created',
+    ]);
+    const replay = await replayWorldFor(twoSteps, crashed, runId);
+
+    await replay.deliver({
+      ...start,
+      deliveryCount: 1,
+      createdAt: new Date(Date.now() - ageMs),
+    });
+    // The re-send keeps the step's key, so a copy QuickJS's turbo pass sent
+    // alongside its refused `step_created` is the same queue message.
+    const sent = stepMessagesOf(replay);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(new Set(sent.map((c) => c.opts?.idempotencyKey)).size).toBe(1);
+    expect(
+      sent.some((c) => (c.message as { stepResent?: boolean }).stepResent)
+    ).toBe(true);
+    await replay.runUntilIdle();
+
+    expect(types(replay.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+    expect(await runResult(replay)).toBe(13);
   });
 
   it('completes a resilient start (run_created never landed) under turbo', async () => {

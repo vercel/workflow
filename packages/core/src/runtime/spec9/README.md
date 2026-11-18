@@ -576,6 +576,10 @@ If the backgrounded `run_started` fails for any reason, the writer stops: nothin
 - the run expired (`RunExpiredError`): acknowledged with nothing written;
 - anything else: retried by the queue, or recorded as a setup failure.
 
+The start's failure decides the delivery even when the pass returns normally: writes queued behind the refused `run_started` fail with its error, and a handler that reads a conflict as "the run already finished" (a terminal write's) would otherwise acknowledge a run that is still running. So after the pass the delivery waits for the start to settle and, if it failed, handles that failure as above.
+
+A full load that finds a `run_started` this delivery did not write, on a count-1 delivery of the message that carries `runInput`, can only be such a replay (young, after the restart above, or old, past the age bound). Its predecessor may have committed a background step's `step_created` and died before the step's message went out, and no redelivery is owed to send it. So the replay passes the re-send gate (`stepsToReenqueue`) as a redelivery would: within the same age bound and under each step's stable idempotency key, so a message that did go out is deduped.
+
 The normal path loads the log before it writes `run_started`, so a conflict there means the run started or finished in between. A World that says the run is running (`EntityConflictError` with code `run-already-started`) gets the same single restart in place; a second one is thrown, and the queue redelivers. A conflict with no code still means the run finished, and is acknowledged.
 
 Writes waiting on the barrier fail instead of writing, so a refused start leaves no chunks or attributes on a run whose log does not record the step that made them; a body that ran before the refusal runs again on the redelivery. If a step's own start batch is refused, its outcome is not written and the start's error decides. A World that rotates the start message must send a continuation without `runInput`, so the new message loads the log rather than replaying a progressed run against a `run_created`-only log.
