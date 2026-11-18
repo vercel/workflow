@@ -403,13 +403,18 @@ Everything above describes spec 8 runs, the default. The experimental spec 9 run
 
 ### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
 
-- Default: `30000`
-- How long an orchestrator with nothing left to run stays live on the event feed while the run waits on a background step. `0` turns it off, for hooks too.
+- Default: `5000`
+- How long an orchestrator with nothing left to run stays live on the event feed while the run waits on a background step. A step that takes longer ends the invocation, and its outcome starts a new one. `0` turns it off, for hooks and sleeps too.
 
 ### `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`
 
 - Default: `5000`, and never more than [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms)
-- How long an orchestrator with nothing left to run stays live on the event feed while the run waits only on open hooks. Any hook that is created and not disposed counts, however rarely it is resumed. `0` turns it off.
+- How long an orchestrator with nothing left to run stays live on the event feed while the run waits only on open hooks. Set it below `WORKFLOW_ORCHESTRATOR_LINGER_MS` to keep background steps on a longer window than hooks. Any hook that is created and not disposed counts, however rarely it is resumed. `0` turns it off.
+
+### `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`
+
+- Default: [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms) (`5000`), and never more than it
+- How far ahead a `sleep()` may end for an orchestrator with nothing left to run to stay live on the event feed until it does, instead of ending the invocation and starting a new one when the sleep's timer fires. A sleep up to 1 second longer than this still counts, so a sleep as long as the window lingers despite small clock differences. Only for a sleep that ends before the invocation's inline window less [`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`](#workflow_inline_step_deadline_margin_ms), and only on a World with a live event feed (such as world-vercel and world-postgres; world-local has none, so it never lingers). On those Worlds, a `run.wakeUp()` sent during such a sleep is not applied, so the sleep runs its full length. `0` turns it off.
 
 ### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
 

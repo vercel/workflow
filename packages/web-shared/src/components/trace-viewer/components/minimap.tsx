@@ -236,8 +236,9 @@ export const Minimap = memo(function Minimap({
       const drawToken = (token: string): void => {
         const rects = rectsByToken.get(token);
         if (!rects) return;
-        ctx.fillStyle =
-          style.getPropertyValue(token).trim() || 'rgb(160,160,160)';
+        const color = style.getPropertyValue(token).trim();
+        if (!color) return;
+        ctx.fillStyle = color;
         ctx.beginPath();
         for (const [x, y, w] of rects) {
           ctx.roundRect(x, y, w, lineHeight, lineHeight / 2);
@@ -499,7 +500,7 @@ export const Minimap = memo(function Minimap({
       <canvas
         ref={canvasRef}
         aria-hidden
-        className="pointer-events-none absolute inset-0 h-full w-full mix-blend-multiply [.dark-theme_&]:mix-blend-screen [.dark_&]:mix-blend-screen [[data-theme=dark]_&]:mix-blend-screen"
+        className="pointer-events-none absolute inset-0 h-full w-full mix-blend-multiply dark:mix-blend-screen"
       />
       {selection ? (
         <div

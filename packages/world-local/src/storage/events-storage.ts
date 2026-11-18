@@ -75,7 +75,11 @@ import { monotonicFactory } from 'ulid';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { CommitThenThrow, type Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
-import { purgeRunData, purgesUserDataOnFinish } from './run-retention.js';
+import {
+  purgeRunData,
+  purgesUserDataOnFinish,
+  ranPurge,
+} from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { startHookRecord, withStartHookId } from './start-hook.js';
 import { eventCursor, type RunRow, Store } from './store.js';
@@ -991,7 +995,18 @@ export function createEventsStorage(
       );
     }
 
-    if (runPurged) {
+    // A step still running when its zero-retention run ended (a
+    // `Promise.race` loser, or one on another delivery) settles after the
+    // purge. Step events are not checked against the run's state, so what it
+    // writes is scrubbed here, in the same transaction: the run's data stays
+    // gone.
+    const lateOnPurgedRun =
+      !runPurged &&
+      (data.eventType === 'step_completed' ||
+        data.eventType === 'step_failed' ||
+        data.eventType === 'step_retrying') &&
+      ranPurge((current ?? store.getRun(runId))?.run);
+    if (runPurged || lateOnPurgedRun) {
       purgeRunData(db, runId);
       // The scrubbed bytes are still in the WAL until it is checkpointed.
       effects.push(() => db.checkpoint());
@@ -1382,13 +1397,10 @@ export function createEventsStorage(
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       // Read before the page: a load that follows its cursor to the end sees
       // every in-band write this count stands for.
-      const runRow = db.get<{ seq: number; seq_in_band: number }>(
-        'SELECT seq, seq_in_band FROM runs WHERE run_id = ?',
-        params.runId
-      );
+      const runRow = store.getRunAnyTag(params.runId);
       const snapshot = {
-        seq: Number(runRow?.seq ?? 0),
-        seqInBand: Number(runRow?.seq_in_band ?? IN_BAND_SEQ_AT_RUN_CREATION),
+        seq: runRow?.seq ?? 0,
+        seqInBand: runRow?.seqInBand ?? IN_BAND_SEQ_AT_RUN_CREATION,
       };
       const result = store.listEvents(params.runId, {
         cursor: params.pagination?.cursor,
@@ -1405,6 +1417,9 @@ export function createEventsStorage(
                 stripEventDataRefs(event, resolveData)
               ),
         snapshot,
+        // The ceiling `run_started` reports, so a delivery that did not
+        // write it enforces the same one.
+        ...(runRow ? { maxEvents: getMaxEventsForRun(runRow.run) } : {}),
       };
     },
 

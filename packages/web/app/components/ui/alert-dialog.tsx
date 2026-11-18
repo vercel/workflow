@@ -1,7 +1,6 @@
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
-import { buttonVariants } from '@workflow/web-shared';
+import { buttonVariants, cn } from '@workflow/web-shared';
 import type * as React from 'react';
-import { cn } from '~/lib/utils';
 
 function AlertDialog({
   ...props

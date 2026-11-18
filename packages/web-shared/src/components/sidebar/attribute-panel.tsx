@@ -23,6 +23,7 @@ import {
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { Spinner } from '../ui/spinner';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import {
   DetailMonoKeyValueRow,
@@ -191,8 +192,7 @@ function ConversationWithTabs({
 }
 
 /**
- * Render a value with the shared DataInspector (ObjectInspector with
- * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
+ * Placeholder for a field whose data is still encrypted.
  */
 function EncryptedFieldBlock() {
   return <EncryptedDataBlock />;
@@ -789,7 +789,7 @@ const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
   dynamicWorkflowCode: 'Workflow Code',
 };
 
-export const AttributeBlock = ({
+const AttributeBlock = ({
   attribute,
   value,
   isLoading,
@@ -861,10 +861,7 @@ export const AttributeBlock = ({
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
         <div className="absolute top-9 right-4">
-          <div
-            className="animate-spin rounded-full h-4 w-4 border-b-2"
-            style={{ borderColor: 'var(--ds-gray-900)' }}
-          />
+          <Spinner size="md" />
         </div>
       )}
       <div key={attribute} className="my-2 flex flex-col gap-0">
