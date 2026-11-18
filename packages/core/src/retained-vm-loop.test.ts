@@ -856,7 +856,6 @@ describe('retained VM through the inline replay loop', () => {
 
   it.each([
     ['an argument getter', impureArgsWorkflow, 'impure_args'],
-    ['a custom serializer', impureSerializerWorkflow, 'impure_serializer'],
   ])('matches cold replay when %s mutates workflow state', async (_name, workflowCode, slug) => {
     process.env.WORKFLOW_RETAINED_VM = '0';
     const off = await drive(`wrun_${slug}`, workflowCode);
@@ -869,6 +868,22 @@ describe('retained VM through the inline replay loop', () => {
     expect(on.vmBuilds).toBeGreaterThan(1);
     expect(off.result).toBe(0);
     expect(on.result).toBe(0);
+    expect(on.durableLog).toEqual(off.durableLog);
+  });
+
+  it('runs a step argument custom serializer on every pass, so retention matches cold replay', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive('wrun_impure_serializer', impureSerializerWorkflow);
+    createContextSpy.mockClear();
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive('wrun_impure_serializer', impureSerializerWorkflow);
+    // The serializer runs at the step call site, on the replayed path, so its
+    // mutation is part of what every replay reconstructs: the boundary keeps
+    // the VM and both modes observe it.
+    expect(on.vmBuilds).toBe(1);
+    expect(off.result).toBe(1);
+    expect(on.result).toBe(1);
     expect(on.durableLog).toEqual(off.durableLog);
   });
 
