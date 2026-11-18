@@ -2,8 +2,8 @@
 
 import { Lock } from 'lucide-react';
 import { useContext } from 'react';
-import { CopyButton } from '../trace-viewer/components/copy-button';
 import { Button } from '../ui/button';
+import { CopyButton } from '../ui/copy-button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 
 const encryptedPlaceholderPreview = `{
@@ -74,9 +74,9 @@ export function CopyableDataBlock({ data }: { data: unknown }) {
   return (
     <div className="relative overflow-x-auto rounded-md border border-gray-alpha-400 p-3">
       <CopyButton
-        copyText={serializeForClipboard(data)}
-        ariaLabel="Copy data"
-        className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-gray-alpha-400 !bg-background-100 p-0 text-gray-900 transition-transform transition-colors duration-100 hover:bg-gray-200 active:scale-95 active:bg-gray-300"
+        textToCopy={serializeForClipboard(data)}
+        aria-label="Copy data"
+        className="absolute right-2 top-2 z-10 border border-gray-alpha-400 bg-background-100 enabled:hover:bg-gray-200"
       />
       <DataInspector data={data} />
     </div>

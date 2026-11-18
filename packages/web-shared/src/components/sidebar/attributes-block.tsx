@@ -8,13 +8,13 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { ArrowUpRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
-import { CopyButton } from '../trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../trace-viewer/components/middle-truncate/middle-truncate';
 import {
   CollapsibleContent,
   CollapsibleRoot,
   CollapsibleTrigger,
 } from '../ui/collapsible';
+import { CopyButton } from '../ui/copy-button';
 import { CopyableDataBlock } from './copyable-data-block';
 
 function isReservedAttributeKey(key: string): boolean {
@@ -106,9 +106,10 @@ function DetailKeyValueRowBase({
             />
           )}
           <CopyButton
-            copyText={copyText}
-            ariaLabel={`Copy ${label}`}
-            className="shrink-0 -mr-1"
+            textToCopy={copyText}
+            aria-label={`Copy ${label}`}
+            size="small"
+            className="-my-0.5 -mr-1"
           />
         </div>
       ) : (

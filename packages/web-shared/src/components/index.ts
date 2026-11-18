@@ -24,6 +24,7 @@ export { StreamViewerSkeleton } from './stream-viewer-skeleton';
 export { TraceViewer } from './trace-viewer';
 export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 export { Button, type ButtonProps, buttonVariants } from './ui/button';
+export { CopyButton, type CopyButtonProps } from './ui/copy-button';
 export { DataInspector, type DataInspectorProps } from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
 export { Spinner } from './ui/spinner';
