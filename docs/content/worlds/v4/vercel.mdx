@@ -236,7 +236,7 @@ jobs:
       deployments: read # find the deployment to wait for
       statuses: read # read its deployment status and ID
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Wait for the Vercel deployment
         id: deployment
