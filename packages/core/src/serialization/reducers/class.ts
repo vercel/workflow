@@ -13,6 +13,8 @@ import type { Reducers, Revivers } from '../types.js';
 
 // ---- Call-site serialization ----
 
+const callSiteOriginals = new WeakMap<object, object>();
+
 class CallSiteSerializationFailure {
   constructor(readonly error: unknown) {}
 }
@@ -25,8 +27,18 @@ class CallSiteSerializationFailure {
 class CallSiteSerializedInstance {
   constructor(
     readonly classId: string,
-    readonly data: unknown
-  ) {}
+    readonly data: unknown,
+    original: object
+  ) {
+    callSiteOriginals.set(this, original);
+  }
+}
+
+/** Keep references to a stand-in and its original on the same wire index. */
+export function callSiteInstanceIdentity(value: unknown): unknown {
+  return value !== null && typeof value === 'object'
+    ? (callSiteOriginals.get(value) ?? value)
+    : value;
 }
 
 /**
@@ -56,7 +68,7 @@ export function serializeInstanceAtCallSite(value: unknown): unknown {
     const classId = readProperty(cls, 'classId');
     if (typeof classId !== 'string') return value;
     const data = serialize.call(cls, value);
-    return new CallSiteSerializedInstance(classId, data);
+    return new CallSiteSerializedInstance(classId, data, value);
   } catch (error) {
     return new CallSiteSerializationFailure(error);
   }
