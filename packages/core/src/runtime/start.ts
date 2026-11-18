@@ -1887,8 +1887,9 @@ export async function start<TArgs extends unknown[], TResult>(
                 queueName,
                 callStartedAt: startCalledAt,
                 awaitRunCreation: maySkipRunCreated,
-                // Known not to run here: write `run_created` now, beside a
-                // resend after a held attempt that threw.
+                // Known not to run here, and the queue has the message:
+                // write `run_created` now (after the resend, when the held
+                // attempt threw).
                 onNotHeld: writeRunCreated,
                 // One key for the held attempt and a plain resend after it
                 // throws, so a held attempt that did enqueue is not delivered

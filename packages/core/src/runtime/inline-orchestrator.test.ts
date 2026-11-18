@@ -966,10 +966,21 @@ describe('skipping run_created for a held start (WORKFLOW_INLINE_SKIP_RUN_CREATE
     expect(resilientOf(run)).toBe(true);
   });
 
-  it('writes run_created beside the plain resend when the held send throws', async () => {
+  it('writes run_created after the plain resend is accepted when the held send throws', async () => {
+    const order: string[] = [];
     const { world, queue } = fakeWorld({
       runStartedCreatesRun: true,
       holdThrows: new Error('socket hang up'),
+      runCreated: async () => {
+        order.push('run_created');
+        return { run: { runId: createCalls(world)[0][0], status: 'pending' } };
+      },
+    });
+    const send = queue.getMockImplementation()!;
+    queue.mockImplementation(async (...args) => {
+      const result = await send(...args);
+      order.push(args[2]?.experimental_hold ? 'held send' : 'resend');
+      return result;
     });
     setWorld(world);
     registerCreatingHandler();
@@ -978,7 +989,8 @@ describe('skipping run_created for a held start (WORKFLOW_INLINE_SKIP_RUN_CREATE
     expect(queue.mock.calls[1][2]?.idempotencyKey).toBe(
       `wkf-start-${run.runId}`
     );
-    expect(createCalls(world)).toHaveLength(1);
+    // Never a run without its message: the resend lands first.
+    expect(order).toEqual(['resend', 'run_created']);
     expect(resilientOf(run)).toBe(false);
   });
 
@@ -990,9 +1002,9 @@ describe('skipping run_created for a held start (WORKFLOW_INLINE_SKIP_RUN_CREATE
     setWorld(world);
     registerCreatingHandler();
     await expect(start(WORKFLOW, [1])).rejects.toThrow('queue down');
-    // The held attempt threw, so `run_created` went out beside the resend,
-    // exactly as without the flag: a run whose message may exist.
-    expect(createCalls(world)).toHaveLength(1);
+    // Neither the held attempt nor its resend was accepted, so no
+    // `run_created`: no run is left without a message.
+    expect(createCalls(world)).toHaveLength(0);
   });
 
   it('writes run_created beside the plain send when the start cannot be held here', async () => {

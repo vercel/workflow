@@ -496,10 +496,10 @@ export async function sendOrchestratorMessage(params: {
    */
   awaitRunCreation?: boolean;
   /**
-   * Called once it is known that this process will not run the message
-   * (`not_held`, no hold result, or a held attempt that threw, before its
-   * plain resend), so a sender that skipped `run_created` can write it
-   * beside the resend.
+   * Called once it is known that this process will not run the message and
+   * the queue has it (`not_held`, no hold result, or a held attempt that
+   * threw, once its plain resend is accepted), so a sender that skipped
+   * `run_created` can write it then.
    */
   onNotHeld?: () => void;
   runId: string;
@@ -544,7 +544,6 @@ export async function sendOrchestratorMessage(params: {
     // caller sends one) keeps a held attempt that did enqueue from being
     // delivered twice, and its hold lapses into a normal delivery.
     span?.setAttributes(Attribute.WorkflowInlineOutcome('hold_failed'));
-    params.onNotHeld?.();
     runtimeLogger.warn(
       'Inline delivery: the held send failed; sending the orchestrator message as usual',
       {
@@ -552,7 +551,12 @@ export async function sendOrchestratorMessage(params: {
         error: error instanceof Error ? error.message : String(error),
       }
     );
-    return params.send({}, true);
+    // The resend goes first, and `onNotHeld` only after it is accepted: a
+    // `run_created` beside it could commit for a run whose message never
+    // reached the queue, if this process died before the resend did.
+    const resent = await params.send({}, true);
+    params.onNotHeld?.();
+    return resent;
   }
   const hold: QueueHoldResult | undefined = result.experimental_hold;
   if (hold?.status !== 'held') {
