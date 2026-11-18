@@ -1,5 +1,5 @@
 {
   "title": "Advanced",
-  "pages": ["dynamic-workflows", "snapshot-runtime"],
+  "pages": ["dynamic-workflows", "quickjs-runtime"],
   "defaultOpen": false
 }

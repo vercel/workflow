@@ -1,8 +1,8 @@
 ---
-title: Snapshot Runtime
+title: QuickJS Runtime
 description: Keep long-running workflows fast by resuming from a saved snapshot instead of replaying every event.
 type: guide
-summary: Run workflow functions on the QuickJS VM with snapshotting so resume cost stays flat and runs are exempt from the per-run event limit.
+summary: Run workflow functions on the QuickJS runtime with snapshotting so resume cost stays flat and runs are exempt from the per-run event limit.
 prerequisites:
   - /docs/how-it-works/event-sourcing
 related:
@@ -13,7 +13,7 @@ related:
 
 Every time a workflow resumes, it re-executes from the top and replays its [event log](/docs/how-it-works/event-sourcing) to get back to where it left off. That takes milliseconds for most runs. For agents, chat sessions, and loops that run for days, the log keeps growing, so each resume gets slower and the run eventually fails with [`MAX_EVENTS_EXCEEDED`](/docs/errors/max-events-exceeded) or [`REPLAY_TIMEOUT`](/docs/errors/replay-timeout).
 
-The snapshot runtime fixes this. It runs your workflow functions in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM and, once a run has processed 1,000 events, saves the VM's memory when the run suspends. The next resume restores that snapshot and replays only the events recorded since, so resume cost stays roughly flat however long the run gets. Runs on the snapshot runtime are also exempt from the default per-run event limit.
+The QuickJS runtime fixes this. It runs your workflow functions in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM instead of the default `node:vm` context and, once a run has processed 1,000 events, saves the VM's memory when the run suspends. The next resume restores that snapshot and replays only the events recorded since, so resume cost stays roughly flat however long the run gets. Runs on the QuickJS runtime with snapshotting are also exempt from the default per-run event limit.
 
 Step functions are not affected. They always run with full Node.js access.
 
@@ -27,7 +27,7 @@ WORKFLOW_VM=quickjs
 
 Snapshotting is on by default under QuickJS, with a threshold of 1,000 events. Set [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) to change it.
 
-Only runs started after the change use the snapshot runtime. A run keeps the VM and snapshot policy it started with, so runs already in progress are not changed, and a run that already failed is not revived. Start it again.
+Only runs started after the change use the QuickJS runtime. A run keeps the VM and snapshot policy it started with, so runs already in progress are not changed, and a run that already failed is not revived. Start it again.
 
 The setting applies to every workflow the process starts.
 
