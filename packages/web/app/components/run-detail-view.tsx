@@ -4,6 +4,7 @@ import {
   DecryptButton,
   ErrorBoundary,
   type SidebarDataContextValue,
+  Spinner,
   StreamViewer,
   StreamViewerSkeleton,
   stepEventsToStepEntity,
@@ -13,14 +14,7 @@ import {
   TraceViewer,
 } from '@workflow/web-shared';
 import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
-import {
-  AlertCircle,
-  GitBranch,
-  HelpCircle,
-  List,
-  Loader2,
-  Lock,
-} from 'lucide-react';
+import { AlertCircle, GitBranch, HelpCircle, List, Lock } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
@@ -153,7 +147,7 @@ function GraphTabContent({
   if (graphLoading) {
     return (
       <div className="flex items-center justify-center w-full h-full">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <Spinner size="2xl" />
         <span className="ml-4 text-muted-foreground">
           Loading workflow graph…
         </span>

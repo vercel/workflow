@@ -146,8 +146,12 @@ import { consumeOwnResolvingWrite } from './consume-after-commit.js';
 import {
   forgetConsumedPosition,
   hasConsumedPosition,
+  isCompletedWaitTimer,
   isNoopDelivery,
+  isTerminalRun,
+  recordCompletedWait,
   recordConsumedPosition,
+  recordTerminalRun,
 } from './consumed-position.js';
 import {
   chainTimersBeforeCompletion,
@@ -178,9 +182,11 @@ import {
 } from './in-band-writer.js';
 import {
   getOrchestratorFeedPollIntervalMs,
-  getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
+  LingerTimes,
   LiveLogFeed,
+  lingerKindOf,
+  orchestratorLingerUntil,
 } from './live-feed.js';
 import { EventLogIndex } from './log-index.js';
 import {
@@ -569,6 +575,13 @@ async function runDelivery(
    */
   const completedWaits = new Set<string>();
   const noteCommitted = (event: Event): void => {
+    // Either engine's terminal write: the run has ended.
+    if (
+      event.eventType === 'run_completed' ||
+      event.eventType === 'run_failed'
+    ) {
+      recordTerminalRun(world, runId);
+    }
     const id = event.correlationId;
     if (!id) return;
     const creation = stepCreationOf(event);
@@ -611,6 +624,7 @@ async function runDelivery(
     } else if (event.eventType === 'wait_completed') {
       ownOpenWaits.delete(id);
       completedWaits.add(id);
+      recordCompletedWait(world, runId, id);
     }
   };
   const noteStepMessageSent = (correlationId: string): void => {
@@ -1101,7 +1115,10 @@ async function runDelivery(
       delaySeconds: next.delaySeconds,
       intermediate: next.waitContinuation.resumeAtMs !== undefined,
     });
-    span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+    span?.setAttributes({
+      ...Attribute.WorkflowNoopDelivery(true),
+      ...Attribute.WorkflowNoopDeliveryReason('hop'),
+    });
     // Keyed by the next hop's deadline: a redelivery of this hop, or of a
     // hop another sender started for the same deadline, is deduped.
     await wakeSelf(
@@ -1180,15 +1197,37 @@ async function runDelivery(
   // position for the run, so a miss costs nothing.
   // A timer delivery is excluded: one that arrives before its
   // wait is due (a long sleep spans several queue hops) has
-  // to arm the next hop, which a no-op exit would skip. So is
-  // a delivery that is not its message's first, until its
-  // invocation ran the re-send pass: it may owe what a delivery
-  // that died created and never sent (see `creator-rules.ts`).
+  // to arm the next hop, which a no-op exit would skip. The
+  // exception is the final timer of a wait this process
+  // already completed (a delivery that lingered until the
+  // wait was due and completed it in process), which has
+  // nothing left to do for its wait (`isCompletedWaitTimer`).
+  // A delivery that is not its message's first is excluded
+  // too, until its invocation ran the re-send pass: it may owe
+  // what a delivery that died created and never sent (see
+  // `creator-rules.ts`).
+  //
+  // A run this process saw end (`recordTerminalRun`) has
+  // nothing left for any delivery, a timer's or a re-run's: it
+  // would return as soon as it read the run's status, before
+  // the re-send pass, so it returns without reading.
+  if (!runInput && !hookInput && isTerminalRun(world, runId)) {
+    span?.setAttributes({
+      ...Attribute.WorkflowNoopDelivery(true),
+      ...Attribute.WorkflowNoopDeliveryReason('terminal'),
+    });
+    runtimeLogger.debug(
+      'Run already ended in this process; acknowledging without a read',
+      { workflowRunId: runId }
+    );
+    return;
+  }
   if (
     (!resendGate || resends.swept) &&
     !runInput &&
     !hookInput &&
-    !waitContinuation &&
+    (!waitContinuation ||
+      isCompletedWaitTimer(world, runId, waitContinuation)) &&
     wakeUpWaits.size === 0 &&
     hasConsumedPosition(world, runId)
   ) {
@@ -1209,7 +1248,10 @@ async function runDelivery(
         nowMs: Date.now(),
       })
     ) {
-      span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+      span?.setAttributes({
+        ...Attribute.WorkflowNoopDelivery(true),
+        ...Attribute.WorkflowNoopDeliveryReason('tail'),
+      });
       runtimeLogger.debug(
         'Nothing new since the last consumed position; acknowledging without a replay',
         { workflowRunId: runId, tailSlot }
@@ -2804,29 +2846,43 @@ async function runDelivery(
 
     /**
      * Keeps a delivery that has nothing left to run live
-     * while the run waits on work done elsewhere (see
-     * `getOrchestratorLingerMsFor`). Resolves `true` once
-     * another writer appended an event or a wait fell due,
-     * so the caller runs another pass, and `false` when the
-     * time ran out without either, or the live feed is not
-     * (or stops being) live: lingering on the tail poll
-     * alone holds the invocation for a poll's latency.
+     * while the run waits on work done elsewhere, or on a
+     * wait due soon enough (see `orchestratorLingerUntil`).
+     * Resolves `true` once another writer appended an event
+     * or a wait fell due, so the caller runs another pass,
+     * which completes the wait in process, and `false` when
+     * the time ran out without either, or the live feed is
+     * not (or stops being) live: lingering on the tail poll
+     * alone holds the invocation for a poll's latency, and
+     * misses another writer's event (a hook resume, a
+     * cancel) for as long.
+     *
+     * A linger taken for a wait arms the run's timers first,
+     * as `awaitInlineProgress` does: the delivery completes
+     * the wait itself while it is alive, and the timer
+     * covers the wait if the delivery dies first. They are
+     * the timers the suspend would arm (`timedWaits` keeps
+     * each to one send), so a linger sends no timer the
+     * suspend would not have sent.
      */
+    const lingerTimes = new LingerTimes();
     const lingerForExternalWork = async (
       observedHookIds?: ReadonlySet<string>
     ): Promise<boolean> => {
       if (!world.events.subscribe || !log) return false;
       // A background step gets the full window, open hooks alone the
-      // shorter hook window. An idle completion hook is not external work.
-      const lingerMs = getOrchestratorLingerMsFor(
-        externalWorkOf(log.events, observedHookIds)
-      );
-      if (lingerMs <= 0) return false;
-      const untilMs = Math.min(
-        Date.now() + lingerMs,
-        inlineDeadlineMs - inlineMarginMs
-      );
-      if (untilMs <= Date.now()) return false;
+      // shorter hook window, and a wait due within the wait window and
+      // before the inline deadline keeps the delivery until it is due.
+      // An idle completion hook is not external work.
+      const work = externalWorkOf(log.events, observedHookIds);
+      const linger = orchestratorLingerUntil({
+        work,
+        nextWaitAtMs: nextTimerAt(log.events).nextTimerAtMs,
+        nowMs: Date.now(),
+        capMs: inlineDeadlineMs - inlineMarginMs,
+      });
+      if (!linger) return false;
+      const { untilMs } = linger;
       ensureLiveFeed();
       if (!liveFeed?.isLive) {
         runtimeLogger.debug('Not lingering: live event feed is down', {
@@ -2834,7 +2890,17 @@ async function runDelivery(
         });
         return false;
       }
+      if (linger.forWait) {
+        await armNearDueTimers(log.events);
+        await armTimers(log.events);
+      }
+      const kind = lingerKindOf(linger, work);
       const startedAtMs = Date.now();
+      const lingered = (): number => {
+        const ms = Date.now() - startedAtMs;
+        span?.setAttributes(lingerTimes.add(kind, ms));
+        return ms;
+      };
       // Waiting is not replay work.
       replayBudget.pause();
       try {
@@ -2856,7 +2922,8 @@ async function runDelivery(
           ) {
             runtimeLogger.debug('Lingering delivery resumed', {
               workflowRunId: runId,
-              lingeredMs: Date.now() - startedAtMs,
+              kind,
+              lingeredMs: lingered(),
             });
             return true;
           }
@@ -2865,7 +2932,8 @@ async function runDelivery(
               'Lingering delivery ended: live event feed went down',
               {
                 workflowRunId: runId,
-                lingeredMs: Date.now() - startedAtMs,
+                kind,
+                lingeredMs: lingered(),
               }
             );
             return false;
@@ -2876,7 +2944,8 @@ async function runDelivery(
       }
       runtimeLogger.debug('Lingering delivery found no new work', {
         workflowRunId: runId,
-        lingeredMs: Date.now() - startedAtMs,
+        kind,
+        lingeredMs: lingered(),
       });
       return false;
     };
@@ -2946,7 +3015,7 @@ async function runDelivery(
           if (logBehind) await loadAfter();
           assert(log, 'The event log is loaded in the loop');
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
-            forgetConsumedPosition(world, runId);
+            recordTerminalRun(world, runId);
             return undefined;
           }
 
@@ -3035,7 +3104,7 @@ async function runDelivery(
             }
           }
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
-            forgetConsumedPosition(world, runId);
+            recordTerminalRun(world, runId);
             return undefined;
           }
 
@@ -3129,7 +3198,7 @@ async function runDelivery(
               }
               throw err;
             }
-            forgetConsumedPosition(world, runId);
+            recordTerminalRun(world, runId);
             // An out-of-band terminal event (a `run_cancelled`,
             // or a `run_failed` from a step's invocation) can
             // land below this one; the first terminal event by
@@ -4815,7 +4884,7 @@ async function runDelivery(
       }
       throw failErr;
     }
-    forgetConsumedPosition(world, runId);
+    recordTerminalRun(world, runId);
     // As for completion: an out-of-band terminal event at a
     // lower position decided the run instead.
     const recordedStatus = failedResult?.run?.status;

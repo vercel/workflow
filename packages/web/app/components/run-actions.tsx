@@ -399,8 +399,8 @@ export function RunActionsButtons({
               size="small"
               onClick={onRerunClick}
               disabled={!canRerun}
+              prefix={<RotateCw />}
             >
-              <RotateCw className="h-4 w-4" />
               Replay
             </Button>
           </span>
@@ -427,8 +427,8 @@ export function RunActionsButtons({
               size="small"
               onClick={onCancelClick}
               disabled={!canCancel}
+              prefix={<XCircle />}
             >
-              <XCircle className="h-4 w-4" />
               Cancel
             </Button>
           </span>
