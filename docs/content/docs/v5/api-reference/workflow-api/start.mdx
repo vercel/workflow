@@ -268,6 +268,6 @@ async function workflow(input) {
 
 The return type is `Run<unknown>`: the source's shape is only known to whatever generated it, so there is nothing to infer. The workflow ID is derived from the source and its step bindings — it cannot be supplied.
 
-A dynamic start throws before anything is written when the deployment has not opted in ([`DynamicWorkflowsNotEnabledError`](/docs/api-reference/workflow-errors/dynamic-workflows-not-enabled-error)), and a `WorkflowRuntimeError` when `deploymentId` targets another deployment (including `'latest'` resolving to one) or when the World's backend does not support dynamic-source storage.
+A dynamic start throws before anything is written when the deployment has not opted in ([`DynamicWorkflowsNotEnabledError`](/docs/api-reference/workflow-errors/dynamic-workflows-not-enabled-error)), and a `WorkflowRuntimeError` when `deploymentId` targets another deployment (including `'latest'` resolving to one) or when the World's backend does not support dynamic-source storage. Earlier releases threw `WorkflowRuntimeError` for the opt-in refusal too, so code that checked for it with `WorkflowRuntimeError.is()` should use `DynamicWorkflowsNotEnabledError.is()`.
 
 See [Dynamic Workflows](/docs/advanced/dynamic-workflows) for the opt-in, the source rules and limits, the predefined runtime bindings (`steps`, `sleep`, `createHook`), how the code is stored, and the security model.
