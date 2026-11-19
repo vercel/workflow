@@ -21,6 +21,7 @@ describe('getPortLazy port caching', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     resetPortCacheForTesting();
     vi.unstubAllEnvs();
   });
@@ -58,24 +59,27 @@ describe('getPortLazy port caching', () => {
     expect(calls).toBe(1);
   });
 
-  it('does not cache undefined, and caches the first concrete port', async () => {
+  it('negative-caches undefined for a short TTL, then retries and caches the first concrete port', async () => {
+    vi.useFakeTimers();
     let calls = 0;
     setPortResolverForTesting(async () => {
       calls++;
-      // Server not listening yet on the first two calls, then it comes up.
-      return calls < 3 ? undefined : 5000;
+      // Server not listening on the first call, then comes up after the TTL.
+      return calls < 2 ? undefined : 5000;
     });
 
-    // Transient undefined must not poison the cache — each call retries.
+    // First call returns undefined and activates the negative cache.
+    expect(await getPortLazy()).toBeUndefined();
+    // Immediate subsequent calls within the TTL reuse the negative cache.
     expect(await getPortLazy()).toBeUndefined();
     expect(await getPortLazy()).toBeUndefined();
-    // First concrete port resolves and is cached from here on.
-    expect(await getPortLazy()).toBe(5000);
-    expect(await getPortLazy()).toBe(5000);
+    expect(calls).toBe(1);
 
-    // 3 real queries (the two undefined + the one that resolved); the final
-    // call is served from cache.
-    expect(calls).toBe(3);
+    // Once the negative-cache TTL expires, discovery retries and caches 5000.
+    vi.advanceTimersByTime(5_000);
+    expect(await getPortLazy()).toBe(5000);
+    expect(await getPortLazy()).toBe(5000);
+    expect(calls).toBe(2);
   });
 });
 
