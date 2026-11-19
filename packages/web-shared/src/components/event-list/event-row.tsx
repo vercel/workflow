@@ -147,7 +147,7 @@ export function EventListHeader({
   return (
     <div
       role="row"
-      className="mx-1 flex h-10 shrink-0 items-center border-b border-gray-alpha-200 font-sans text-label-14 text-gray-900"
+      className="flex h-10 shrink-0 items-center border-b border-gray-alpha-400 px-1 font-sans text-label-14 text-gray-900"
     >
       <div className={cn(CELL, COL.level)} />
       {showOccurred ? (
@@ -218,8 +218,10 @@ export function EventRow({
   const displayedAt = showSeparateEventOccurrenceTimestamps
     ? new Date(event.createdAt)
     : getEffectiveEventDate(event);
-  const zebra = (level === 'default' || level === 'muted') && index % 2 === 1;
   const isTinted = level === 'warning' || level === 'error';
+  // The stripes go away while related rows are marked, so the only filled
+  // rows are the related ones.
+  const zebra = !isTinted && !isRelated && !isUnrelated && index % 2 === 1;
   // Warnings and errors stay at full strength next to a related entity.
   const isMuted = isUnrelated && !isTinted;
   // Tinted rows keep one color throughout.
@@ -246,6 +248,7 @@ export function EventRow({
         'mx-1 mt-px flex h-6 cursor-pointer items-center rounded-md font-mono text-[13px] leading-5 outline-none focus-visible:relative focus-visible:z-10 focus-visible:shadow-[0_0_0_2px_var(--ds-focus-color)]',
         LEVEL_ROW_CLASS[level],
         zebra && 'bg-gray-alpha-100',
+        isRelated && !isTinted && 'bg-blue-300/50 hover:bg-blue-300/75',
         isMuted && 'text-gray-700',
         isSelected && LEVEL_SELECTED_CLASS[level]
       )}
@@ -283,7 +286,8 @@ export function EventRow({
           <span
             className={cn(
               '-mx-1 truncate rounded px-1',
-              isRelated && 'bg-blue-100 text-blue-900'
+              isRelated && 'text-blue-900',
+              isRelated && isTinted && 'bg-blue-100'
             )}
           >
             {name}

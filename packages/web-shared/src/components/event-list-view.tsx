@@ -5,6 +5,7 @@ import { AlertCircle } from 'lucide-react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { cn } from '../lib/cn';
 import { findDuplicateEventIds } from '../lib/duplicate-events';
 import {
   buildEventLookups,
@@ -187,6 +188,23 @@ function EventListViewInner({
         : search.id.id
       : (selectedRow?.entity.key ?? null);
 
+  // Related rows scrolled out of view get a jump-to hint at that edge of the list.
+  const [visibleRange, setVisibleRange] = useState({
+    startIndex: 0,
+    endIndex: 0,
+  });
+  const relatedOutOfView = useMemo(() => {
+    const above: number[] = [];
+    const below: number[] = [];
+    if (relatedKey === null) return { above, below };
+    listItems.forEach((item, i) => {
+      if (item.kind !== 'event' || item.row.entity.key !== relatedKey) return;
+      if (i < visibleRange.startIndex) above.push(i);
+      if (i > visibleRange.endIndex) below.push(i);
+    });
+    return { above, below };
+  }, [listItems, relatedKey, visibleRange]);
+
   // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
   const cacheEventData = useCallback((eventId: string, data: unknown) => {
@@ -309,51 +327,80 @@ function EventListViewInner({
             ) : rows.length === 0 ? (
               <EmptyState search={search} onRetry={retry} />
             ) : (
-              <Virtuoso
-                ref={virtuosoRef}
-                totalCount={listItems.length}
-                overscan={20}
-                defaultItemHeight={25}
-                computeItemKey={(i) => {
-                  const item = listItems[i];
-                  return item.kind === 'gap'
-                    ? item.key
-                    : item.row.event.eventId;
-                }}
-                endReached={() => {
-                  if (list.hasMore && !isLoadingMoreEvents) {
-                    void onLoadMoreEvents?.();
-                  }
-                }}
-                components={{ Footer: () => <div className="h-2" /> }}
-                itemContent={(i: number) => {
-                  const item = listItems[i];
-                  if (item.kind === 'gap') {
-                    return <IdleGapRow ms={item.ms} reason={item.reason} />;
-                  }
-                  const { row } = item;
-                  const isSelected = selectedEventId === row.event.eventId;
-                  const isRelated =
-                    relatedKey !== null && row.entity.key === relatedKey;
-                  return (
-                    <EventRow
-                      row={row}
-                      index={item.index}
-                      isSelected={isSelected}
-                      isTabStop={
-                        selectedIndex === -1 ? item.index === 0 : isSelected
-                      }
-                      isRelated={isRelated}
-                      isUnrelated={relatedKey !== null && !isRelated}
-                      onSelect={toggleSelectedEvent}
-                      showSeparateEventOccurrenceTimestamps={
-                        showSeparateEventOccurrenceTimestamps
-                      }
-                    />
-                  );
-                }}
-                style={{ flex: 1, minHeight: 0 }}
-              />
+              <div className="relative flex min-h-0 flex-1 flex-col">
+                <Virtuoso
+                  ref={virtuosoRef}
+                  rangeChanged={setVisibleRange}
+                  totalCount={listItems.length}
+                  overscan={20}
+                  defaultItemHeight={25}
+                  computeItemKey={(i) => {
+                    const item = listItems[i];
+                    return item.kind === 'gap'
+                      ? item.key
+                      : item.row.event.eventId;
+                  }}
+                  endReached={() => {
+                    if (list.hasMore && !isLoadingMoreEvents) {
+                      void onLoadMoreEvents?.();
+                    }
+                  }}
+                  components={{ Footer: () => <div className="h-2" /> }}
+                  itemContent={(i: number) => {
+                    const item = listItems[i];
+                    if (item.kind === 'gap') {
+                      return <IdleGapRow ms={item.ms} reason={item.reason} />;
+                    }
+                    const { row } = item;
+                    const isSelected = selectedEventId === row.event.eventId;
+                    const isRelated =
+                      relatedKey !== null && row.entity.key === relatedKey;
+                    return (
+                      <EventRow
+                        row={row}
+                        index={item.index}
+                        isSelected={isSelected}
+                        isTabStop={
+                          selectedIndex === -1 ? item.index === 0 : isSelected
+                        }
+                        isRelated={isRelated}
+                        isUnrelated={relatedKey !== null && !isRelated}
+                        onSelect={toggleSelectedEvent}
+                        showSeparateEventOccurrenceTimestamps={
+                          showSeparateEventOccurrenceTimestamps
+                        }
+                      />
+                    );
+                  }}
+                  style={{ flex: 1, minHeight: 0 }}
+                />
+                {relatedOutOfView.above.length > 0 && (
+                  <RelatedHint
+                    direction="above"
+                    count={relatedOutOfView.above.length}
+                    onClick={() =>
+                      virtuosoRef.current?.scrollToIndex({
+                        index: relatedOutOfView.above.at(-1) ?? 0,
+                        align: 'center',
+                        behavior: 'smooth',
+                      })
+                    }
+                  />
+                )}
+                {relatedOutOfView.below.length > 0 && (
+                  <RelatedHint
+                    direction="below"
+                    count={relatedOutOfView.below.length}
+                    onClick={() =>
+                      virtuosoRef.current?.scrollToIndex({
+                        index: relatedOutOfView.below[0],
+                        align: 'center',
+                        behavior: 'smooth',
+                      })
+                    }
+                  />
+                )}
+              </div>
             )}
 
             <div className="relative flex h-10 shrink-0 items-center border-t border-gray-alpha-400 px-4 text-label-13 text-gray-900">
@@ -402,6 +449,87 @@ function EventListViewInner({
         </div>
       </div>
     </DecryptClickContext.Provider>
+  );
+}
+
+/**
+ * A fade from `color` at `strength` percent to nothing. The stops follow an
+ * ease-out curve, so the far end has no visible edge the way a two-stop
+ * linear gradient does.
+ */
+function easedFade(to: 'top' | 'bottom', color: string, strength: number) {
+  const stops = [
+    [0, 1],
+    [19, 0.738],
+    [34, 0.541],
+    [47, 0.382],
+    [56.5, 0.278],
+    [65, 0.194],
+    [73, 0.126],
+    [80.2, 0.075],
+    [86.1, 0.042],
+    [91, 0.021],
+    [95.2, 0.008],
+    [98.2, 0.002],
+    [100, 0],
+  ].map(
+    ([at, alpha]) =>
+      `color-mix(in oklab, ${color} ${(alpha * strength).toFixed(2)}%, transparent) ${at}%`
+  );
+  return `linear-gradient(to ${to}, ${stops.join(', ')})`;
+}
+
+/**
+ * A glow fading in from one edge of the list: related events are out of view
+ * that way. Clicking it scrolls to the nearest one.
+ */
+function RelatedHint({
+  direction,
+  count,
+  onClick,
+}: {
+  direction: 'above' | 'below';
+  count: number;
+  onClick: () => void;
+}) {
+  const fadeTo = direction === 'above' ? 'bottom' : 'top';
+  const label = `${count} related ${count === 1 ? 'event' : 'events'} ${direction}`;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        'group absolute inset-x-0 z-10 flex h-10 cursor-pointer justify-end px-3 py-2 outline-none transition-opacity duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:shadow-[inset_0_0_0_2px_var(--ds-focus-color)] starting:opacity-0',
+        direction === 'above' ? 'top-0 items-start' : 'bottom-0 items-end'
+      )}
+    >
+      {/* Rows fade toward the surface here, so the label stays legible over them. */}
+      <span
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-x-0 h-10',
+          direction === 'above' ? 'top-0' : 'bottom-0'
+        )}
+        style={{
+          background: easedFade(fadeTo, 'var(--ds-background-100)', 70),
+        }}
+      />
+      {/* A gradient cannot transition, so its layer fades instead: quickly
+          in on hover, slower back out, with a dip while pressed. */}
+      <span
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-x-0 h-10 opacity-45 transition-opacity duration-300 ease-[ease] group-hover:opacity-100 group-hover:duration-150 group-focus-visible:opacity-100 group-active:opacity-75 group-active:duration-75',
+          direction === 'above' ? 'top-0' : 'bottom-0'
+        )}
+        style={{ background: easedFade(fadeTo, 'var(--ds-blue-500)', 60) }}
+      />
+      <span className="relative font-medium text-label-12 text-blue-900">
+        {count} related {count === 1 ? 'event' : 'events'}
+      </span>
+    </button>
   );
 }
 
