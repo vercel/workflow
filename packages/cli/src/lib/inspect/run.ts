@@ -2,22 +2,41 @@ import { start } from '@workflow/core/runtime';
 import { healthCheck } from '@workflow/core/runtime/helpers';
 import type { World } from '@workflow/world';
 import { logger } from '../config/log.js';
-import { planWindowStartFromResponse } from './time-window.js';
 
 interface CLICreateOpts {
   json?: boolean;
   verbose?: boolean;
+  /**
+   * Deployment to start the run on: a deployment ID, or `latest`. Defaults to
+   * `latest` for a workflow name and to the source run's deployment for a
+   * run ID.
+   */
+  deployment?: string;
 }
 
-const getWorkflowName = async (world: World, runNameOrId: string) => {
-  if (runNameOrId.startsWith('wrun_')) {
-    const run = await world.runs.get(runNameOrId);
-    if (!run) {
-      throw new Error(`Run ${runNameOrId} not found`);
-    }
-    return run.workflowName;
+/**
+ * Resolve the deployment a new run targets, the same way `start()` resolves
+ * `deploymentId: 'latest'`: through the World's `resolveLatestDeploymentId()`,
+ * which on Vercel asks the Vercel API for the newest READY deployment of the
+ * configured project and environment. It never depends on which runs exist,
+ * so a workflow that has never run can still be started.
+ *
+ * Worlds without atomic deployments (local, Postgres) have nothing to choose
+ * between, so `latest` is their current deployment, as it is in `start()`.
+ */
+export const resolveTargetDeploymentId = async (
+  world: World,
+  deployment: string
+): Promise<string> => {
+  if (deployment !== 'latest') {
+    return deployment;
   }
-  return runNameOrId;
+  if (world.resolveLatestDeploymentId) {
+    const deploymentId = await world.resolveLatestDeploymentId();
+    logger.debug(`Resolved the latest deployment to ${deploymentId}`);
+    return deploymentId;
+  }
+  return world.getDeploymentId();
 };
 
 export const startRun = async (
@@ -35,66 +54,44 @@ export const startRun = async (
     }
   });
 
-  // Only deployment/spec metadata is needed to start a new run, so this
-  // accepts either a full run record or an analytics (metadata-only) row.
-  let run:
+  // A run ID re-runs that run's workflow, on its own deployment unless
+  // `--deployment` says otherwise. Only deployment/spec metadata is read.
+  let sourceRun:
     | { deploymentId: string; specVersion?: number; workflowName: string }
     | undefined;
-  // If the workflowNameOrRunId is a run ID, get the run
+  let workflowId = workflowNameOrRunId;
   if (workflowNameOrRunId.startsWith('wrun_')) {
-    run = await world.runs.get(workflowNameOrRunId);
-  } else {
-    // Get the first run for that name, hopefully the newest deployment,
-    // but can't guarantee that. This is metadata only, so prefer the
-    // analytics read path when the backend provides one.
-    const runList = world.analytics
-      ? await world.analytics.runs.list({
-          workflowName: workflowNameOrRunId,
-          pagination: { sortOrder: 'desc', limit: 1 },
-        })
-      : await world.runs.list({
-          workflowName: workflowNameOrRunId,
-          pagination: { sortOrder: 'desc', limit: 1 },
-          resolveData: 'none',
-        });
-    run = runList.data[0];
-
-    // The analytics backend defaults its listing to a recent window
-    // (trailing 24h on the Vercel backend). When the name wasn't found
-    // there, retry across the plan's whole observability window using the
-    // window bounds from the response's page metadata.
-    if (!run && world.analytics) {
-      const windowStart = planWindowStartFromResponse(runList);
-      if (windowStart) {
-        const widened = await world.analytics.runs.list({
-          workflowName: workflowNameOrRunId,
-          startTime: windowStart,
-          endTime: new Date().toISOString(),
-          pagination: { sortOrder: 'desc', limit: 1 },
-        });
-        run = widened.data[0];
-      }
+    sourceRun = await world.runs.get(workflowNameOrRunId, {
+      resolveData: 'none',
+    });
+    if (!sourceRun) {
+      throw new Error(`Run "${workflowNameOrRunId}" not found`);
     }
+    workflowId = sourceRun.workflowName;
   }
 
-  if (!run) {
-    throw new Error(`Run "${workflowNameOrRunId}" not found`);
-  }
-
-  const deploymentId = run.deploymentId;
-  const workflowId = await getWorkflowName(world, workflowNameOrRunId);
+  const deploymentId = await resolveTargetDeploymentId(
+    world,
+    opts.deployment || sourceRun?.deploymentId || 'latest'
+  );
 
   // Probe the deployment's specVersion via health check so we use the
   // correct queue transport (JSON for old deployments, CBOR for new).
-  // Falls back to the run's specVersion if the health check fails
-  // (e.g. old deployment without health check support).
+  // Falls back to the source run's specVersion if the health check fails
+  // (e.g. old deployment without health check support); a start by name has
+  // no source run, and leaves the choice to `start()`'s own probe.
   // Capped at this CLI's World, on both paths: it writes `run_created` and
   // the arguments, so it must not claim a version it cannot produce.
   // Matches what `start()` does for its own cross-deployment probe.
+  // The source run's version only describes the deployment it ran on.
+  const sourceSpecVersion =
+    sourceRun?.deploymentId === deploymentId
+      ? sourceRun.specVersion
+      : undefined;
   let specVersion =
-    run.specVersion === undefined
+    sourceSpecVersion === undefined
       ? undefined
-      : Math.min(run.specVersion, world.specVersion);
+      : Math.min(sourceSpecVersion, world.specVersion);
   try {
     const hc = await healthCheck(world, {
       deploymentId,
@@ -109,7 +106,7 @@ export const startRun = async (
       specVersion = Math.min(hc.specVersion, world.specVersion);
     }
   } catch {
-    // Health check failed, so use run's specVersion as fallback
+    // Health check failed, so keep the fallback above
   }
 
   // Never forward the source run's `startHook`: a re-run is a new run by

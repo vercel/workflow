@@ -9,6 +9,7 @@ import {
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
+  type DeleteRunDataResult,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -35,6 +36,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  deleteRuns,
   isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
@@ -117,20 +119,14 @@ export function getReturnValueMaxLongPolls(): number {
 
 /**
  * Whether `await run.returnValue` may use the World's long poll
- * (`runs.waitForTerminalStatus`) instead of interval-polling `runs.get`.
+ * (`runs.waitForTerminalStatus`). Always `true`: the
+ * `WORKFLOW_RETURN_VALUE_LONG_POLL` kill switch is no longer read.
  *
- * Default **ON** wherever the World implements the method; a World that does
- * not is already on the interval path with nothing to switch off. Reads
- * `process.env.WORKFLOW_RETURN_VALUE_LONG_POLL` lazily; an explicit `'0'` /
- * `'false'` is the kill switch, restoring the fixed-interval poll exactly as
- * it behaved before the fast path existed.
- *
+ * @deprecated No longer read by the runtime; always returns `true`.
  * @internal
  */
 export function isReturnValueLongPollEnabled(): boolean {
-  const raw = process.env.WORKFLOW_RETURN_VALUE_LONG_POLL;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
+  return true;
 }
 
 /**
@@ -395,6 +391,41 @@ export class Run<TResult> {
     }
     await wakeRunAfterOutOfBandWrite(world, run);
     await afterRunCancelled(world, run);
+  }
+
+  /**
+   * Deletes the stored data of the finished run: its input, output and
+   * error, its steps' and events' payloads, its hook payloads, and its
+   * stream contents, as if it had been started with
+   * `experimental_retention: 0`. This cannot be undone.
+   *
+   * Metadata is not deleted: the run stays listed, and so do its steps,
+   * events and hooks, with their IDs, names, statuses, timestamps and the
+   * run's attributes. Only their payloads go, reading back as expired.
+   *
+   * Only a finished run has its data deleted. A run that has not finished
+   * is answered `skipped` and left running: cancel it first (see
+   * {@link Run.cancel}) to delete its data now.
+   *
+   * Runs as a step. Inside a workflow, a retryable failure (or the World
+   * rate-limiting the request) throws a `RetryableError`, so the step
+   * retries; deletion is idempotent, so a retry finishes what the failed
+   * attempt left. Called outside a workflow, a `failed` result is returned
+   * as is.
+   *
+   * @returns the run's outcome: `deleted`, `already_deleted` (its data was
+   *   already gone), `skipped` (with the run's `status`), `not_created`,
+   *   `not_found`, or `failed` (with `code`, and `retryable` when retrying
+   *   can succeed).
+   * @throws if the configured World does not support deleting run data.
+   */
+  async delete(): Promise<DeleteRunDataResult> {
+    'use step';
+    const { results } = await deleteRuns(await this.#lazyWorldPromise, [
+      this.runId,
+    ]);
+    // `deleteRuns` guarantees exactly one result, for this run.
+    return results[0] as DeleteRunDataResult;
   }
 
   /**
@@ -768,11 +799,10 @@ export class Run<TResult> {
     // paying up to a full interval of quantization on a run that already
     // ended. Worlds that cannot wait do not implement it (see
     // `Storage['runs'].waitForTerminalStatus`) and this stays the exact
-    // fixed-interval poll it has always been, as does an operator who
-    // throws the `WORKFLOW_RETURN_VALUE_LONG_POLL=0` kill switch.
-    const waitForTerminalStatus = isReturnValueLongPollEnabled()
-      ? world.runs.waitForTerminalStatus?.bind(world.runs)
-      : undefined;
+    // fixed-interval poll it has always been.
+    const waitForTerminalStatus = world.runs.waitForTerminalStatus?.bind(
+      world.runs
+    );
 
     // Long polls spent so far. Once the cap is reached the loop keeps waiting
     // but on the interval path, which is the strategy we know is correct; see

@@ -1,11 +1,15 @@
 import { EventEmitter } from 'node:events';
-import type {
-  GetChunksOptions,
-  StreamChunksResponse,
-  Streamer,
-  StreamInfoResponse,
+import {
+  type GetChunksOptions,
+  isTerminalWorkflowRunStatus,
+  RETENTION_ATTRIBUTE,
+  RETENTION_ZERO,
+  type StreamChunksResponse,
+  type Streamer,
+  type StreamInfoResponse,
+  TERMINAL_WORKFLOW_RUN_STATUSES,
 } from '@workflow/world';
-import { and, asc, between, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, asc, between, eq, gt, inArray, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -65,6 +69,12 @@ export interface ListenChannelOptions {
    * that cannot tolerate a missed notification re-read their state here.
    */
   onReconnect?: () => void;
+  /**
+   * Runs once per outage, when the active connection drops (before any
+   * reconnect attempt). A `NOTIFY` sent from here until `onReconnect` is
+   * lost.
+   */
+  onDisconnect?: () => void;
 }
 
 /**
@@ -113,6 +123,11 @@ export const listenChannel = async (
       console.warn(
         `[world-postgres] LISTEN ${channel} connection lost; reconnecting`
       );
+      try {
+        options.onDisconnect?.();
+      } catch {
+        // A failing callback must not stop the reconnect.
+      }
     }
     scheduleReconnect();
   };
@@ -340,6 +355,104 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
 
+  /**
+   * Inserts data chunks in one statement, unless the run's data has been
+   * deleted (by zero retention or on demand): a step still running when its
+   * run finished would otherwise write past the deletion. Whether the chunks
+   * were written.
+   *
+   * The insert takes the run's row lock to read `expired_at` only where a
+   * deletion can be under way, so a running run that keeps its data takes
+   * none (`FOR SHARE` locks only the rows the subquery returns):
+   *
+   * - a zero-retention run, whatever its status (fixed when it starts). Its
+   *   deletion follows its finishing commit, so an insert that starts while
+   *   that commit is in flight, and still reads the run as running, must
+   *   wait for it too;
+   * - a finished run, whose data can be deleted on demand.
+   *
+   * That leaves an insert that read a run as running, while the run
+   * finished and then had its data deleted on demand before the insert
+   * committed: the deletion could not see the uncommitted chunks. So once
+   * the insert has committed, a run that has finished by then is checked
+   * again, see {@link clearChunksIfRunDeleted}.
+   */
+  const insertDataChunks = async (
+    runId: string,
+    name: string,
+    chunkIds: string[],
+    chunks: (string | Uint8Array)[]
+  ): Promise<boolean> => {
+    const rows = sql.join(
+      chunks.map(
+        (chunk, i) =>
+          sql`(${chunkIds[i]}, ${name}, ${runId}, ${toBuffer(chunk)}::bytea)`
+      ),
+      sql`, `
+    );
+    const result = await drizzle.execute(sql`
+      INSERT INTO ${streams} (id, stream_id, run_id, data, eof)
+      SELECT v.id, v.stream_id, v.run_id, v.data, false
+      FROM (VALUES ${rows}) AS v (id, stream_id, run_id, data)
+      WHERE NOT COALESCE(
+        (SELECT r.expired_at IS NOT NULL FROM ${Schema.runs} r
+         WHERE r.id = ${runId}
+           AND (r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO}
+                OR r.status IN (${sql.join(
+                  TERMINAL_WORKFLOW_RUN_STATUSES.map(
+                    (status) => sql`${status}`
+                  ),
+                  sql`, `
+                )}))
+         FOR SHARE),
+        false
+      )`);
+    if ((result.rowCount ?? 0) === 0) return false;
+    return !(await clearChunksIfRunDeleted(runId, name, chunkIds));
+  };
+
+  /**
+   * After an insert commits: if its run has finished and had its data
+   * deleted meanwhile, blanks the chunks it wrote, as the deletion blanks
+   * every other chunk. Whether it did.
+   *
+   * The status is read without a lock, so a running run (the common case)
+   * takes none. A finished run is read again under its row lock, so a
+   * deletion that has not committed is waited for; one that has not reached
+   * the run yet sees these committed chunks and blanks them itself.
+   */
+  const clearChunksIfRunDeleted = async (
+    runId: string,
+    name: string,
+    chunkIds: string[]
+  ): Promise<boolean> => {
+    const [run] = await drizzle
+      .select({ status: Schema.runs.status })
+      .from(Schema.runs)
+      .where(eq(Schema.runs.runId, runId))
+      .limit(1);
+    if (!run || !isTerminalWorkflowRunStatus(run.status)) return false;
+    return drizzle.transaction(async (tx) => {
+      const [locked] = await tx
+        .select({ expiredAt: Schema.runs.expiredAt })
+        .from(Schema.runs)
+        .where(eq(Schema.runs.runId, runId))
+        .for('share');
+      if (!locked?.expiredAt) return false;
+      await tx
+        .update(streams)
+        .set({ chunkData: Buffer.alloc(0) })
+        .where(
+          and(
+            eq(streams.streamId, name),
+            eq(streams.runId, runId),
+            inArray(streams.chunkId, chunkIds as `chnk_${string}`[])
+          )
+        );
+      return true;
+    });
+  };
+
   return {
     streams: {
       async write(
@@ -351,13 +464,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         const chunkId = genChunkId();
-        await drizzle.insert(streams).values({
-          chunkId,
-          streamId: name,
-          runId,
-          chunkData: toBuffer(chunk),
-          eof: false,
-        });
+        if (!(await insertDataChunks(runId, name, [chunkId], [chunk]))) return;
         await notifyStream(
           JSON.stringify(
             StreamPublishMessage.encode({
@@ -382,15 +489,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         // Batch insert all chunks in a single query
-        await drizzle.insert(streams).values(
-          chunks.map((chunk, i) => ({
-            chunkId: chunkIds[i],
-            streamId: name,
-            runId,
-            chunkData: toBuffer(chunk),
-            eof: false,
-          }))
-        );
+        if (!(await insertDataChunks(runId, name, chunkIds, chunks))) return;
 
         const lastIndex = chunkIds.length - 1;
         await notifyStream(

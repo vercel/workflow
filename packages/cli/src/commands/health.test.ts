@@ -1,7 +1,10 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { verifyLocalServerAccessible } from './health.js';
+import {
+  normalizeHealthBasePath,
+  verifyLocalServerAccessible,
+} from './health.js';
 
 describe('verifyLocalServerAccessible', () => {
   const servers: Server[] = [];
@@ -13,10 +16,16 @@ describe('verifyLocalServerAccessible', () => {
   });
 
   /** A server answering the health probe with `status` after `delayMs`. */
-  async function healthServer(status: number, delayMs = 0) {
+  async function healthServer(
+    status: number,
+    delayMs = 0,
+    healthPath?: string
+  ) {
     const server = createServer((request, response) => {
       request.resume();
-      setTimeout(() => response.writeHead(status).end(), delayMs);
+      const code =
+        healthPath === undefined || request.url === healthPath ? status : 404;
+      setTimeout(() => response.writeHead(code).end(), delayMs);
     });
     servers.push(server);
     await new Promise<void>((resolve) =>
@@ -47,5 +56,42 @@ describe('verifyLocalServerAccessible', () => {
       `The local server at http://localhost:${port} answered the workflow health check with HTTP 500`
     );
     expect(String(error)).not.toContain('--port');
+  });
+
+  it('probes the health endpoint below --base-path', async () => {
+    const port = await healthServer(
+      200,
+      0,
+      '/v2/dashboard/.well-known/workflow/v1/flow?__health'
+    );
+
+    await expect(
+      verifyLocalServerAccessible(false, port, 2_000, '/v2/dashboard')
+    ).resolves.toBe(`http://localhost:${port}/v2/dashboard`);
+    // Without the base path the probe reaches the app root, which 404s.
+    await expect(
+      verifyLocalServerAccessible(false, port, 2_000)
+    ).rejects.toThrow(/answered the workflow health check with HTTP 404/);
+  });
+});
+
+describe('normalizeHealthBasePath', () => {
+  it.each([
+    [undefined, ''],
+    ['', ''],
+    ['/', ''],
+    ['/dashboard', '/dashboard'],
+    ['dashboard/', '/dashboard'],
+    [' /v2/dashboard/ ', '/v2/dashboard'],
+  ])('normalizes %o to %o', (input, expected) => {
+    expect(normalizeHealthBasePath(input)).toBe(expected);
+  });
+
+  it.each([
+    'http://localhost:3000/dashboard',
+    '/dashboard?x=1',
+    '\\dashboard',
+  ])('rejects %o', (input) => {
+    expect(() => normalizeHealthBasePath(input)).toThrow(/--base-path/);
   });
 });

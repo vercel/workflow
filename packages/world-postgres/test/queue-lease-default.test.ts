@@ -10,20 +10,21 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { makeWorkerUtils } from 'graphile-worker';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue, type PostgresQueue } from '../src/queue.js';
+import { TestPool } from './pool.js';
 
 /**
  * The default job-lease policy, with neither `jobLockStaleSeconds` nor
  * `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` set: every delivery renews its
  * lock and registers its worker as renewing, and the sweep releases only the
- * jobs of a spec 9 run's named queue whose holder registered. Real Graphile
- * Workers against a real Postgres; the default window is shortened to
- * {@link STALE_SECONDS} through the queue's test hook.
+ * jobs that own a spec 9 run's delivery lease and whose holder registered.
+ * Real Graphile Workers against a real Postgres; the default window is
+ * shortened to {@link STALE_SECONDS} through the queue's test hook.
  */
 describe.skipIf(process.platform === 'win32')(
-  'Postgres queue default job lease for spec 9 named queues (real database and Graphile)',
+  'Postgres queue default job lease for spec 9 run leases (real database and Graphile)',
   () => {
     const STALE_SECONDS = 2;
     const originalBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
@@ -67,6 +68,15 @@ describe.skipIf(process.platform === 'win32')(
           'SELECT id, attempts, queue_name, locked_by, locked_at FROM graphile_worker.jobs ORDER BY id'
         )
       ).rows;
+    }
+
+    /** The Graphile job that owns the run's delivery lease, if any. */
+    async function leaseOwner(runId: string) {
+      const { rows } = await pool.query<{ owner_job_id: string }>(
+        'SELECT owner_job_id FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+        [runId]
+      );
+      return rows[0]?.owner_job_id;
     }
 
     async function holders() {
@@ -125,7 +135,7 @@ describe.skipIf(process.platform === 'win32')(
       delete process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS;
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       connectionString = container.getConnectionUri();
-      pool = new Pool({ connectionString, max: 10 });
+      pool = new TestPool({ connectionString, max: 10 });
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
@@ -135,6 +145,16 @@ describe.skipIf(process.platform === 'win32')(
         await readFile(
           new URL(
             '../src/drizzle/migrations/0030_add_job_lock_holders.sql',
+            import.meta.url
+          ),
+          'utf8'
+        )
+      );
+      // And the run delivery leases (migration 0031).
+      await pool.query(
+        await readFile(
+          new URL(
+            '../src/drizzle/migrations/0031_add_run_delivery_leases.sql',
             import.meta.url
           ),
           'utf8'
@@ -162,7 +182,7 @@ describe.skipIf(process.platform === 'win32')(
       for (const child of children.splice(0)) child.kill('SIGKILL');
       await Promise.all(queues.splice(0).map((queue) => queue.close()));
       await pool.query(
-        'TRUNCATE graphile_worker._private_jobs, graphile_worker._private_job_queues, workflow.workflow_job_lock_holders'
+        'TRUNCATE graphile_worker._private_jobs, graphile_worker._private_job_queues, workflow.workflow_job_lock_holders, workflow.workflow_run_delivery_leases'
       );
       deliveries = [];
       respond = (response) => response.end('{}');
@@ -194,7 +214,9 @@ describe.skipIf(process.platform === 'win32')(
           SPEC_VERSION_SINGLE_ORCHESTRATOR
         ),
       });
-      expect(orphan.queue_name).toBe(`workflow_flows:${runId}:executor`);
+      // A plain job, not in a per-run named queue, that owns the run's lease.
+      expect(orphan.queue_name).toBeNull();
+      expect(await leaseOwner(runId)).toBe(orphan.id);
       // The dead worker registered as renewing before its delivery ran.
       expect(await holders()).toContain(orphan.locked_by);
 
@@ -228,9 +250,8 @@ describe.skipIf(process.platform === 'win32')(
         .poll(() => deliveries.length, { timeout: 5_000, interval: 50 })
         .toBe(1);
       const [claimed] = await jobRows();
-      expect(claimed!.queue_name).toBe(
-        'workflow_flows:wrun_default_slow:executor'
-      );
+      expect(claimed!.queue_name).toBeNull();
+      expect(await leaseOwner('wrun_default_slow')).toBe(claimed!.id);
 
       // Hold the delivery for three stale windows.
       await sleep(STALE_SECONDS * 3 * 1000);
@@ -271,8 +292,8 @@ describe.skipIf(process.platform === 'win32')(
       ]);
     }, 30_000);
 
-    test('leaves a registered holder’s job outside the named queues locked', async () => {
-      // A spec 8 message: no named queue, so the default sweep does not
+    test('leaves a registered holder’s job that owns no run lease locked', async () => {
+      // A spec 8 message takes no run lease, so the default sweep does not
       // cover it, even though its holder renewed.
       const orphan = await orphanJob({});
       expect(orphan.queue_name).toBeNull();

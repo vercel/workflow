@@ -8,6 +8,10 @@ import {
   BulkCancelWorkflowRunsResultSchema,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
+  type DeleteRunDataResult,
+  type DeleteRunsDataRequest,
+  DeleteRunsDataRequestSchema,
+  type DeleteRunsDataResult,
   type ExperimentalSetAttributesResult,
   type GetWorkflowRunParams,
   type ListWorkflowRunsParams,
@@ -244,7 +248,7 @@ async function readRunOrNotFound(
 }
 
 /**
- * Issue one run read against workflow-server and normalize it into the World's
+ * Issue one run read against the backend and normalize it into the World's
  * `WorkflowRun` shape.
  *
  * `waitMs`, when set, targets the long-pollable `GET /v2/runs/:runId/status`
@@ -309,7 +313,7 @@ const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
 /**
  * Suppression deadline per base URL, because one process can hold worlds
  * pointed at different backends: the api.vercel.com proxy (with
- * `projectConfig`) and workflow-server directly resolve to different hosts,
+ * `projectConfig`) and the backend directly resolve to different hosts,
  * which can be on different versions. A miss against one must not disable the
  * fast path for the other. Bounded by construction: the key is the resolved
  * base URL, of which a process has a handful at most.
@@ -362,7 +366,7 @@ function isLongPollUnusable(error: WorkflowWorldError): boolean {
 }
 
 /**
- * Wait for a run to reach a terminal status, using workflow-server's
+ * Wait for a run to reach a terminal status, using the backend's
  * long-pollable `GET /v2/runs/:runId/status` route.
  *
  * Implements `Storage['runs'].waitForTerminalStatus`: resolves as soon as the
@@ -583,6 +587,120 @@ export async function cancelWorkflowRuns(
   );
 
   return { summary: response.summary, results: orderedResults };
+}
+
+/**
+ * Wire response of world-vercel's run-data deletion endpoint, which has its
+ * own names for the `deleted` and `already_deleted` outcomes and their
+ * summary counts. Translated by {@link deleteRunDataFromWire}.
+ */
+const DeleteRunsDataWireResultSchema = z.object({
+  summary: z.object({
+    requested: z.number(),
+    purged: z.number(),
+    alreadyPurged: z.number(),
+    skipped: z.number(),
+    notCreated: z.number(),
+    notFound: z.number(),
+    failed: z.number(),
+  }),
+  results: z.array(
+    z.discriminatedUnion('outcome', [
+      z.object({ runId: z.string(), outcome: z.literal('purged') }),
+      z.object({ runId: z.string(), outcome: z.literal('already_purged') }),
+      z.object({
+        runId: z.string(),
+        outcome: z.literal('skipped'),
+        reason: z.string(),
+        status: z.string(),
+      }),
+      z.object({ runId: z.string(), outcome: z.literal('not_created') }),
+      z.object({ runId: z.string(), outcome: z.literal('not_found') }),
+      z.object({
+        runId: z.string(),
+        outcome: z.literal('failed'),
+        code: z.string(),
+        retryable: z.boolean(),
+      }),
+    ])
+  ),
+});
+type DeleteRunsDataWireResult = z.infer<typeof DeleteRunsDataWireResultSchema>;
+
+function deleteRunDataResultFromWire(
+  result: DeleteRunsDataWireResult['results'][number]
+): DeleteRunDataResult {
+  switch (result.outcome) {
+    case 'purged':
+      return { runId: result.runId, outcome: 'deleted' };
+    case 'already_purged':
+      return { runId: result.runId, outcome: 'already_deleted' };
+    default:
+      return result;
+  }
+}
+
+/**
+ * Delete the stored data of many finished runs in a single request. Their
+ * metadata (the run, step, event and hook records, with their IDs, names,
+ * statuses, timestamps and the runs' attributes) is kept.
+ *
+ * world-vercel only deletes the data of runs that have finished and answers
+ * every other run `skipped`, so this never cancels anything. The request is
+ * checked client-side (1–100 unique IDs) as a convenience; world-vercel
+ * enforces the same limit and answers a `400` otherwise. The results are
+ * reordered to match the requested `runIds`.
+ *
+ * @throws ThrottleError, carrying `retryAfter` (seconds) when known, if
+ *   world-vercel rate-limits the request.
+ */
+export async function deleteWorkflowRunsData(
+  request: DeleteRunsDataRequest,
+  config?: APIConfig
+): Promise<DeleteRunsDataResult> {
+  const { runIds } = DeleteRunsDataRequestSchema.parse(request);
+
+  const response = await makeRequest({
+    endpoint: '/v4/runs/purge',
+    options: { method: 'POST' },
+    data: { runIds },
+    config,
+    schema: DeleteRunsDataWireResultSchema,
+  });
+
+  // Exactly one result per requested ID, as for bulk cancel: anything else is
+  // a protocol violation, not a run to report as `not_found`.
+  const resultByRunId = new Map(
+    response.results.map((result) => [result.runId, result])
+  );
+  const isBijection =
+    resultByRunId.size === response.results.length &&
+    response.results.length === runIds.length &&
+    runIds.every((runId) => resultByRunId.has(runId));
+  if (!isBijection) {
+    throw new WorkflowWorldError(
+      `Delete-data response did not contain exactly one result per requested run ID ` +
+        `(requested ${runIds.length}, received ${response.results.length}).`
+    );
+  }
+
+  const { purged, alreadyPurged, ...summary } = response.summary;
+  return {
+    summary: {
+      requested: summary.requested,
+      deleted: purged,
+      alreadyDeleted: alreadyPurged,
+      skipped: summary.skipped,
+      notCreated: summary.notCreated,
+      notFound: summary.notFound,
+      failed: summary.failed,
+    },
+    results: runIds.map((runId) =>
+      deleteRunDataResultFromWire(
+        resultByRunId.get(runId) as DeleteRunsDataWireResult['results'][number]
+      )
+    ),
+  };
 }
 
 /**

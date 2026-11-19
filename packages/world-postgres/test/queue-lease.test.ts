@@ -7,10 +7,11 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { JsonTransport } from '@vercel/queue';
 import { getQueueTopicPrefix, MessageId } from '@workflow/world';
 import { makeWorkerUtils } from 'graphile-worker';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { MessageData } from '../src/message.js';
 import { createQueue, type PostgresQueue } from '../src/queue.js';
+import { TestPool } from './pool.js';
 
 /**
  * graphile-worker 0.16 sets a job's `locked_at` once, at claim, and only
@@ -67,7 +68,7 @@ describe.skipIf(process.platform === 'win32')(
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       connectionString = container.getConnectionUri();
-      pool = new Pool({ connectionString, max: 10 });
+      pool = new TestPool({ connectionString, max: 10 });
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();

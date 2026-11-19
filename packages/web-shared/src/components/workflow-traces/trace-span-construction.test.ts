@@ -83,6 +83,36 @@ describe('runToSpan', () => {
     expect(data).not.toHaveProperty('occurredAt');
   });
 
+  it('starts the span at a run_started that records the run creation', () => {
+    // Spec 9: the resilient start's run_started created the run at the first
+    // slot, and the log has no run_created.
+    const span = runToSpan(
+      run({ createdAt: date(1_000), startedAt: date(2_000) }),
+      [
+        event({
+          eventType: 'run_started',
+          eventId: 'evnt_00000000000000000000000001',
+          createdAt: date(300),
+          occurredAt: date(300),
+        }),
+        event({
+          eventType: 'run_completed',
+          eventId: 'evnt_00000000000000000000000002',
+          createdAt: date(500),
+          occurredAt: date(500),
+        }),
+      ],
+      date(10_000)
+    );
+
+    expect(otelTimeToMs(span.startTime)).toBe(300);
+    // Created and started at once: no queued period.
+    expect(span.activeStartTime).toBeUndefined();
+    expect((span.attributes.data as { createdAt: Date }).createdAt).toEqual(
+      date(300)
+    );
+  });
+
   it('adds the cancellation reason to cancelled run details', () => {
     const span = runToSpan(
       run({ status: 'cancelled' }),

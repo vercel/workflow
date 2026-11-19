@@ -14,15 +14,16 @@
  * microseconds.
  *
  * A single-orchestrator run's orchestrator deliveries (see
- * `singleOrchestratorRunIdOf`) go one at a time, as on a per-run topic
- * consumed with `maxConcurrency: 1` and as world-local and world-postgres
- * gate them: a delivery
+ * `singleOrchestratorRunIdOf`) go one at a time, as world-vercel's
+ * concurrency key and world-local's and world-postgres's per-run gates keep
+ * them: a delivery
  * holds its run's lease from the moment it is handed to the handler until the
  * handler responds, and no other orchestrator message of that run is handed
  * out meanwhile. Step messages are never gated, and neither is a message
  * that does not say it belongs to a spec 9 run: an unstamped wake, or any
- * message of an earlier run, runs beside the lease holder exactly as it does
- * on the real Worlds. The one way past the gate is
+ * message of an earlier run, runs beside the lease holder as it does on
+ * world-vercel (world-local and world-postgres read an unstamped wake's spec
+ * from its run and gate it). The one way past the gate is
  * `expireLeases`, which models a delivery that outlived its lease: the queue
  * treats the run as free while that delivery keeps running.
  */

@@ -175,8 +175,8 @@ export async function agentProviderToolE2e() {
         toolName: 'webSearch',
         input: JSON.stringify({ query: 'workflow sdk' }),
         result: { title: 'Workflow SDK', url: 'https://example.com' },
+        text: 'I found a result for you.',
       },
-      { type: 'text', text: 'I found a result for you.' },
     ]),
     tools: {
       webSearch: mockWebSearchTool({ maxUses: 5 }),
@@ -194,24 +194,26 @@ export async function agentProviderToolE2e() {
 
 /**
  * Tests mixing provider tools with regular function tools.
- * The mock model first calls a provider tool, then a regular tool.
+ * The mock model first calls a regular tool, then, in the next step, a
+ * provider tool whose result it answers from. A step with only
+ * provider-executed tool calls ends the loop, so the answer comes in that step.
  */
 export async function agentMixedToolsE2e(a: number, b: number) {
   'use workflow';
   const agent = new WorkflowAgent({
     model: mockSequenceModel([
       {
-        type: 'provider-tool-call',
-        toolName: 'webSearch',
-        input: JSON.stringify({ query: 'what is a + b' }),
-        result: { answer: `${a} + ${b}` },
-      },
-      {
         type: 'tool-call',
         toolName: 'addNumbers',
         input: JSON.stringify({ a, b }),
       },
-      { type: 'text', text: `The answer is ${a + b}` },
+      {
+        type: 'provider-tool-call',
+        toolName: 'webSearch',
+        input: JSON.stringify({ query: `check ${a} + ${b}` }),
+        result: { answer: `${a + b}` },
+        text: `The answer is ${a + b}`,
+      },
     ]),
     tools: {
       webSearch: mockWebSearchTool(),

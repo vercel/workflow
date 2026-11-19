@@ -3,15 +3,8 @@
  * Used by run-actions and trace viewer components.
  */
 
-import {
-  type Event,
-  isTerminalWorkflowRunStatus,
-  type WorkflowRunStatus,
-} from '@workflow/world';
-
-// Time thresholds for Re-enqueue button visibility
-const STEP_ACTIVITY_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const STEP_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+import { type Event, isRunCreationEvent } from '@workflow/world';
+import { findStartHookCreation } from './start-hook';
 
 /**
  * Result of analyzing events for a workflow run
@@ -115,6 +108,13 @@ export function analyzeEvents(events: Event[] | undefined): EventAnalysis {
     }
   }
 
+  // A start Hook has no `hook_created`: the run's creation stands for it.
+  const startHook = findStartHookCreation(events);
+  if (startHook && !hookCreated.has(startHook.hookId)) {
+    const creationEvent = events.find(isRunCreationEvent);
+    if (creationEvent) hookCreated.set(startHook.hookId, creationEvent);
+  }
+
   // Find pending items (created but not completed)
   const pendingSleepIds = Array.from(waitCreated.keys()).filter(
     (id) => !waitCompleted.has(id)
@@ -136,98 +136,4 @@ export function analyzeEvents(events: Event[] | undefined): EventAnalysis {
     lastStepActivityAt,
     lastStepCompletionAt,
   };
-}
-
-/**
- * Check if a workflow run status is terminal (completed, failed, or cancelled)
- */
-export function isTerminalStatus(
-  status: WorkflowRunStatus | undefined
-): boolean {
-  return status ? isTerminalWorkflowRunStatus(status) : false;
-}
-
-/**
- * Determine if the Re-enqueue button should be shown without the debug flag.
- *
- * The Re-enqueue button is shown when the workflow appears to be stuck:
- * - The workflow is not in a terminal state
- * - There are no pending sleeps (which would show the Wake up button instead)
- * - There are no pending hooks (which are waiting for external input)
- * - Either:
- *   - The last step_started or step_retrying event was >30 minutes ago, OR
- *   - There have been no pending steps for >5 minutes (all steps completed/failed)
- */
-export function shouldShowReenqueueButton(
-  events: Event[] | undefined,
-  status: WorkflowRunStatus | undefined
-): boolean {
-  // Never show if in terminal state
-  if (isTerminalStatus(status)) {
-    return false;
-  }
-
-  const analysis = analyzeEvents(events);
-
-  // Don't show if there are pending sleeps (Wake up button handles this)
-  if (analysis.hasPendingSleeps) {
-    return false;
-  }
-
-  // Don't show if there are pending hooks (waiting for external input)
-  if (analysis.hasPendingHooks) {
-    return false;
-  }
-
-  const now = Date.now();
-
-  // Check if last step activity was >30 minutes ago
-  if (analysis.lastStepActivityAt) {
-    const timeSinceLastActivity = now - analysis.lastStepActivityAt.getTime();
-    if (timeSinceLastActivity > STEP_ACTIVITY_TIMEOUT_MS) {
-      return true;
-    }
-  }
-
-  // Check if there are no pending steps and last completion was >5 minutes ago
-  if (!analysis.hasPendingSteps && analysis.lastStepCompletionAt) {
-    const timeSinceLastCompletion =
-      now - analysis.lastStepCompletionAt.getTime();
-    if (timeSinceLastCompletion > STEP_IDLE_TIMEOUT_MS) {
-      return true;
-    }
-  }
-
-  // If there's no step activity at all but the run is not terminal,
-  // and we've been waiting for a while, show the button
-  if (
-    !analysis.lastStepActivityAt &&
-    !analysis.hasPendingSteps &&
-    !analysis.hasPendingSleeps &&
-    !analysis.hasPendingHooks
-  ) {
-    // This case handles runs that haven't started any steps yet
-    // but aren't in a terminal state - they might be stuck
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Check if there are pending steps from an events list.
- */
-export function hasPendingStepsFromEvents(
-  events: Event[] | undefined
-): boolean {
-  return analyzeEvents(events).hasPendingSteps;
-}
-
-/**
- * Check if there are pending hooks from an events list.
- */
-export function hasPendingHooksFromEvents(
-  events: Event[] | undefined
-): boolean {
-  return analyzeEvents(events).hasPendingHooks;
 }

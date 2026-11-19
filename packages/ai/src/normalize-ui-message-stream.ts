@@ -101,6 +101,8 @@ function* repairPart(
  * makes text/reasoning fragile does not apply to them. If a future duplication
  * mode is found to orphan tool-input parts, extend the same machine to that
  * family rather than special-casing it.
+ *
+ * @deprecated Use `normalizeUIMessageStreamParts` from `@ai-sdk/workflow`.
  */
 export async function* normalizeUIMessageStreamParts(
   source: AsyncIterable<UIMessageChunk>

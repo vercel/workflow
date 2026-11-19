@@ -34,6 +34,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   classifyEntityEvent,
   type Event,
+  isRunCreationEvent,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
@@ -70,6 +71,7 @@ import {
   quickjsWasiVersion,
   quickjsWasm,
 } from './quickjs-assets.generated.js';
+import { getPrecompiledQuickJSModules } from './quickjs-precompiled.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -1316,6 +1318,24 @@ const quickjsAssets = globalSingleton(
 
 function getCompiledAssets() {
   if (!quickjsAssets.promise) {
+    const precompiled = getPrecompiledQuickJSModules();
+    if (precompiled) {
+      // The host compiled the modules at deploy time (runtimes that forbid
+      // compiling WebAssembly from bytes). See `quickjs-precompiled.ts`.
+      quickjsAssets.promise = Promise.resolve({
+        wasm: precompiled.quickjs,
+        extensions: quickjsExtensions.map((ext) => {
+          const wasm = precompiled.extensions[ext.name];
+          if (!wasm) {
+            throw new Error(
+              `setPrecompiledQuickJSModules() is missing the "${ext.name}" QuickJS extension`
+            );
+          }
+          return { ...ext, wasm: wasm as ExtensionDescriptor['wasm'] };
+        }),
+      });
+      return quickjsAssets.promise;
+    }
     quickjsAssets.promise = (async () => {
       const [wasm, ...extensionModules] = await Promise.all([
         WebAssemblyGlobal.compile(quickjsWasm),
@@ -2231,13 +2251,15 @@ export async function startQuickJSWorkflow(
       }
     }
 
-    // Extract workflow arguments. Prefer the run_created event; fall back
-    // to the queue message's runInput if the event log is incomplete
+    // Extract workflow arguments. Prefer the run's creation event (its
+    // `run_created`, or on spec >= 9 the `run_started` that created it and
+    // holds the first slot: `isRunCreationEvent`); fall back to the queue
+    // message's runInput if the event log is incomplete
     // (eventually-consistent read after start()). Failing to find input
     // for a first invocation is fatal: running the workflow function
     // with no args would silently turn typed arguments into `undefined`
     // and, for recursive workflows, produce exponential fan-out.
-    const runCreatedEvent = events.find((e) => e.eventType === 'run_created');
+    const runCreatedEvent = events.find(isRunCreationEvent);
     const runCreatedInput =
       runCreatedEvent && 'eventData' in runCreatedEvent
         ? (runCreatedEvent.eventData as Record<string, unknown>)?.input
@@ -2253,7 +2275,9 @@ export async function startQuickJSWorkflow(
       runtimeLogger.debug('QuickJS runtime: run input format', {
         prefix: new TextDecoder().decode(decryptedInput.subarray(0, 4)),
         byteLength: decryptedInput.byteLength,
-        source: runCreatedInput ? 'run_created' : 'queueMessage.runInput',
+        source: runCreatedInput
+          ? runCreatedEvent?.eventType
+          : 'queueMessage.runInput',
       });
       // Build the argument value directly in the VM via the host-side
       // serde (guest code never sees the wire bytes).
@@ -2262,7 +2286,7 @@ export async function startQuickJSWorkflow(
       inputHandle.dispose();
     } else if (runInput === undefined && events.length > 0) {
       // The event log is non-empty (we got run_started or similar) but
-      // no run_created event was found and no queue-provided runInput is
+      // no creation event was found and no queue-provided runInput is
       // available. This is the race condition observed during the fib
       // incident: silently dropping arguments would turn `n` into
       // `undefined` and, for recursive workflows, cause exponential
@@ -2306,7 +2330,7 @@ export async function startQuickJSWorkflow(
     // throw an error tagged with `name = "WorkflowNotRegisteredError"`
     // so the host-side entrypoint can reconstruct a real
     // WorkflowNotRegisteredError (a WorkflowRuntimeError subclass that
-    // classifies as RUNTIME_ERROR) rather than a generic user error.
+    // classifies as WORKFLOW_NOT_REGISTERED) rather than a generic user error.
     // See quickjs-entrypoint.ts's run_failed branch.
     try {
       vm.evalCode(`

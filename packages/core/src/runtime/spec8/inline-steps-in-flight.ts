@@ -5,13 +5,15 @@
  * The inline loop runs a batch of steps in parallel. Waiting for the whole
  * batch before replaying makes parallel branches advance in lockstep: a branch
  * whose step settled cannot start its next step until the slowest sibling
- * settles. With early advance (`isInlineEarlyAdvanceEnabled`), the loop
+ * settles. So the loop
  * instead replays as soon as one step settles cleanly, and the steps still
  * running stay here, owned by this delivery, until a later pass collects them.
  *
  * Every tracked step is settled before the delivery acknowledges its message,
  * since crash recovery of an inline-owned step depends on the owning message
- * being redelivered.
+ * being redelivered. A run may end while steps are still running here (a
+ * `Promise.race` loser), zero-retention runs included: what such a step
+ * writes after the run's data was deleted is the World's to discard.
  */
 
 export interface InlineStepSettlement<Step, Result> {
@@ -90,20 +92,18 @@ export class InlineStepsInFlight<
   }
 
   /**
-   * Wait until at least one tracked step settled. With `allowEarly`, return
-   * early when every settled step passes `isClean` and some step is still
-   * running; otherwise wait for every tracked step.
+   * Wait until at least one tracked step settled. Return early when every
+   * settled step passes `isClean` and some step is still running; otherwise
+   * wait for every tracked step.
    *
    * Before returning early, waits for every running step's claim to settle,
    * so a step this delivery is executing is durably started before the next
    * pass can create a hook or wait and let a concurrent delivery replay.
    */
   async settle(
-    allowEarly: boolean,
     isClean: (outcome: PromiseSettledResult<Result>) => boolean
   ): Promise<InlineSettlementRound<Step, Result>> {
     if (this.#entries.size === 0) return { early: false, settled: [] };
-    if (!allowEarly) return { early: false, settled: await this.settleAll() };
     await Promise.race([...this.#entries.values()].map((e) => e.done));
     if (this.#canAdvanceEarly(isClean)) {
       await Promise.all([...this.#entries.values()].map((e) => e.startSettled));

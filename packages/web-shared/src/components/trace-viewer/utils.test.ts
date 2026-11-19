@@ -94,6 +94,30 @@ describe('computeSpanSegments (run)', () => {
     ]);
   });
 
+  it('reads run_failed for a run whose creation is on its run_started', () => {
+    // No run_created: the run_started at the first slot is the creation, so
+    // the run is read from its events, not as a legacy (V1) run.
+    const span: Span = {
+      ...runSpan('running'),
+      events: [
+        {
+          name: 'run_started',
+          timestamp: ts(0),
+          attributes: { eventId: 'evnt_00000000000000000000000001' },
+        },
+        {
+          name: 'run_failed',
+          timestamp: ts(100_000),
+          attributes: { eventId: 'evnt_00000000000000000000000002' },
+        },
+      ],
+    };
+
+    expect(computeSpanSegments(span)).toEqual([
+      { startFraction: 0, endFraction: 1, status: 'failed' },
+    ]);
+  });
+
   it('maps cancelled runs to a cancelled segment', () => {
     const span = runSpan('cancelled');
 

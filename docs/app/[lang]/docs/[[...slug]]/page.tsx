@@ -9,10 +9,12 @@ import { resolveSectionChildren } from '@/lib/geistdocs/section-children';
 import { geistdocsSource } from '@/lib/geistdocs/source';
 import { getDocsTreeForVersion } from '@/lib/geistdocs/version-source';
 import { LATEST_VERSION } from '@/lib/geistdocs/versions';
+import { canViewPage } from '@/lib/geistdocs/visibility';
 
 const DEFAULT_LANG = config.defaultLanguage ?? 'en';
 
 const docsPage = createDocsPage({
+  canViewPage,
   config: {
     ...config,
     github: config.github && {

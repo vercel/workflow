@@ -1,3 +1,4 @@
+import { isRunCreationEvent } from '@workflow/world';
 import type { Span, SpanEvent } from './types';
 import {
   formatDuration,
@@ -512,13 +513,24 @@ function computeRunSegmentsFromSpan(
   if (duration <= 0) return segments;
 
   const sorted = [...events]
-    .map((e) => ({ name: e.name, time: getHighResInMs(e.timestamp) }))
+    .map((e) => ({
+      name: e.name,
+      eventId: e.attributes?.eventId,
+      time: getHighResInMs(e.timestamp),
+    }))
     .sort((a, b) => a.time - b.time);
 
   const runData = attributes?.data as Record<string, unknown> | undefined;
   const runStatus = runData?.status as string | undefined;
 
-  const hasRunCreated = sorted.some((e) => e.name === 'run_created');
+  // The run's creation: its `run_created`, or on spec >= 9 the `run_started`
+  // that created the run at the first slot (no `run_created` in the log).
+  const hasRunCreated = sorted.some(
+    (e) =>
+      e.name === 'run_created' ||
+      (typeof e.eventId === 'string' &&
+        isRunCreationEvent({ eventType: e.name, eventId: e.eventId }))
+  );
 
   if (!hasRunCreated) {
     return computeV1RunSegments(startMs, duration, activeStartMs, runStatus);

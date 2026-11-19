@@ -36,6 +36,50 @@ afterEach(() => {
 });
 
 describe('streamToConsole', () => {
+  it.each([
+    false,
+    true,
+  ])('prints BigInt chunks and continues (json=%s)', async (json) => {
+    const chunks = [
+      9007199254740993n,
+      { count: -9007199254740993n },
+      [0n, { count: 1n }],
+      'last',
+    ];
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const log = vi.spyOn(logger, 'log').mockImplementation(() => undefined);
+
+    await streamToConsole(stream, 'strm_1', { json });
+
+    expect(process.exitCode).toBe(0);
+    if (json) {
+      const write = vi.mocked(process.stdout.write);
+      expect(
+        write.mock.calls.map(([chunk]) => JSON.parse(String(chunk)))
+      ).toEqual([
+        '9007199254740993',
+        { count: '-9007199254740993' },
+        ['0', { count: '1' }],
+        'last',
+      ]);
+      expect(
+        write.mock.calls.every(([chunk]) => String(chunk).endsWith('\n'))
+      ).toBe(true);
+    } else {
+      expect(log.mock.calls.map(([text]) => text)).toEqual([
+        '[0] "9007199254740993"',
+        '[1] {\n  "count": "-9007199254740993"\n}',
+        '[2] [\n  "0",\n  {\n    "count": "1"\n  }\n]',
+        '[3] last',
+      ]);
+    }
+  });
+
   // It printed "Failed to read stream" and exited 0, so a script saw a
   // successful read of an empty stream.
   it.each([

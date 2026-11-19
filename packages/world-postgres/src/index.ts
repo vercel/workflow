@@ -5,6 +5,7 @@ import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { createRunEventsFeed, type RunEventsFeed } from './run-events.js';
 import {
   createRunStatusListener,
   type RunStatusListener,
@@ -22,11 +23,12 @@ import { createStreamer } from './streamer.js';
 function createStorage(
   drizzle: Drizzle,
   runStatusListener: RunStatusListener,
-  jobPrefix: string
+  jobPrefix: string,
+  runEventsFeed: RunEventsFeed
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
-    events: createEventsStorage(drizzle, { jobPrefix }),
+    events: createEventsStorage(drizzle, { jobPrefix, runEventsFeed }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
@@ -51,6 +53,7 @@ export function createWorld(
   config: PostgresWorldConfig = {
     connectionString: getDefaultConnectionString(),
     jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
+    deploymentId: process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ID || undefined,
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
       50,
@@ -77,7 +80,21 @@ export function createWorld(
   // The prefix of the Graphile task this World's runner claims. Stamped on
   // every run this World creates, and the scope of its startup recovery.
   const jobPrefix = resolveJobPrefix(config);
-  const storage = createStorage(drizzle, runStatusListener, jobPrefix);
+  // `events.subscribe` for spec 9 orchestrators: one `LISTEN` connection,
+  // opened on the first subscription. Lingering on it holds a worker slot,
+  // so at most half of this process's slots linger at once. With a single
+  // slot the feed is off: a lingering delivery would hold the only slot
+  // while the background steps it waits for queue behind it.
+  const workerSlots = config.queueConcurrency || 50;
+  const runEventsFeed = createRunEventsFeed(pool, {
+    maxLiveSubscriptions: workerSlots < 2 ? 0 : Math.floor(workerSlots / 2),
+  });
+  const storage = createStorage(
+    drizzle,
+    runStatusListener,
+    jobPrefix,
+    runEventsFeed
+  );
   const streamer = createStreamer(pool, drizzle);
 
   const capabilities = {
@@ -97,13 +114,19 @@ export function createWorld(
     // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
     // the hook_created branch of storage.ts.
     hookForceClaim: true,
-    // A single-orchestrator run's orchestrator deliveries share one
-    // Graphile named queue (see queue.ts), and the events storage fences
+    // A single-orchestrator run's orchestrator deliveries take one run
+    // delivery lease (see run-lease.ts), and the events storage fences
     // in-band writes and stores them at their `occurredAt` (see
     // storage.ts): the two halves of the single-writer guarantee.
     maxConcurrency: true,
     // Required by the runtime; see in-band-fence.test.ts for conformance.
     inBandFence: true,
+    // With a `deploymentId`, each deployment's workers claim only its own
+    // runs' jobs and messages for another deployment's runs are routed to
+    // its task (queue.ts), so a run executes only where it started.
+    ...(config.deploymentId !== undefined
+      ? { deploymentAffinity: true as const }
+      : {}),
   } satisfies WorldCapabilities;
   return {
     // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
@@ -138,6 +161,7 @@ export function createWorld(
       await queue.close();
       await streamer.close();
       await runStatusListener.close();
+      await runEventsFeed.close();
       if (pool !== config.pool) {
         await pool.end();
       }

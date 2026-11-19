@@ -4,10 +4,9 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
-import { onTestFailed } from 'vitest';
+import { onTestFailed, TestRunner } from 'vitest';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
@@ -600,14 +599,7 @@ export const cliInspectJson = async (args: string) => {
       ...inspectArgs,
       ...cliArgs,
     ],
-    cliAppPath,
-    undefined,
-    {
-      // e2e assertions read entities immediately after writing them; the
-      // analytics store ingests asynchronously and can miss the freshest
-      // rows. Force the storage-backed list paths for determinism.
-      WORKFLOW_DISABLE_ANALYTICS_READS: '1',
-    }
+    cliAppPath
   );
   if (!result.stdout.trim()) {
     throw new Error(
@@ -940,7 +932,7 @@ interface TrackedRun {
  *
  * Concurrent suites bind one of these per test via {@link runInTestState}
  * (AsyncLocalStorage), so tests interleaving on the event loop cannot
- * clobber each other's attribution — `getCurrentTest()` is a plain module
+ * clobber each other's attribution — `TestRunner.getCurrentTest()` is a plain module
  * variable in vitest and is wrong after any `await` under concurrency.
  * Sequential suites (dev.test.ts, e2e-agent.test.ts, e2e-region.test.ts)
  * keep the classic path: {@link setupRunTracking} resets a module-level
@@ -952,7 +944,7 @@ interface PerTestState {
   /**
    * The test's own `ctx.skip`, captured where the context is unambiguous
    * (the fixture), so conformance gates called mid-test-body can skip the
-   * right test — `getCurrentTest()?.context.skip` would target whichever
+   * right test — `TestRunner.getCurrentTest()?.context.skip` would target whichever
    * test most recently started.
    */
   skip?: (note?: string) => void;
@@ -975,7 +967,8 @@ export function createPerTestState(
 
 /** ALS-bound skip when available, vitest's global otherwise. */
 const currentSkip = (): ((note?: string) => void) | undefined =>
-  testStateStorage.getStore()?.skip ?? getCurrentTest()?.context.skip;
+  testStateStorage.getStore()?.skip ??
+  TestRunner.getCurrentTest()?.context.skip;
 
 /** Run `fn` with `state` bound as the ambient per-test state. */
 export function runInTestState<T>(
@@ -1619,6 +1612,71 @@ export const cliHealthJson = async (options?: { timeout?: number }) => {
 };
 
 /**
+ * Repeat `read` until `predicate` holds or `timeoutMs` passes, and return the
+ * last completed read either way so the caller's assertions report what was
+ * seen rather than a bare timeout.
+ *
+ * - A read that throws is retried like one that has not converged: a
+ *   transient failure should not end the poll.
+ * - A read still pending after `attemptTimeoutMs` is abandoned and retried,
+ *   so one stalled request cannot outlast the whole budget. The poll is
+ *   therefore bounded by `timeoutMs + attemptTimeoutMs`.
+ * - If no read completed in time, the last failure is thrown.
+ */
+export async function readUntil<T>(
+  read: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  {
+    timeoutMs = 30_000,
+    intervalMs = 1_000,
+    attemptTimeoutMs = 10_000,
+  }: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    attemptTimeoutMs?: number;
+  } = {}
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { value: T } | undefined;
+  let lastError: unknown;
+  for (;;) {
+    const attempt = new AbortController();
+    try {
+      const value = await Promise.race([
+        read(),
+        sleep(attemptTimeoutMs, undefined, { signal: attempt.signal }).then(
+          () => {
+            throw new Error(
+              `readUntil: a read did not finish within ${attemptTimeoutMs}ms`
+            );
+          }
+        ),
+      ]);
+      last = { value };
+      let satisfied = false;
+      try {
+        satisfied = predicate(value);
+      } catch {
+        // Malformed intermediate state (e.g. `.find()` returned undefined)
+        // counts as not-yet-converged.
+      }
+      if (satisfied) return value;
+    } catch (err) {
+      lastError = err;
+    } finally {
+      // Settles the timer's promise as a rejection nobody awaits any more;
+      // `Promise.race` already holds a handler for it.
+      attempt.abort();
+    }
+    if (Date.now() >= deadline) {
+      if (last) return last.value;
+      throw lastError;
+    }
+    await sleep(intervalMs);
+  }
+}
+
+/**
  * Poll `cliInspectJson(args)` until `predicate(json)` holds, or the timeout
  * elapses — in which case the LAST result is returned so the caller's
  * assertions still run and produce a real failure message.
@@ -1629,30 +1687,23 @@ export const cliHealthJson = async (options?: { timeout?: number }) => {
  * missing or carry stale pending/running statuses for a few seconds
  * before converging on the durable state.
  */
-export const cliInspectJsonUntil = async (
+export const cliInspectJsonUntil = (
   args: string,
+  // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
   predicate: (json: any) => boolean,
   {
     timeoutMs = 30_000,
     intervalMs = 2_000,
   }: { timeoutMs?: number; intervalMs?: number } = {}
-): Promise<any> => {
-  const deadline = Date.now() + timeoutMs;
   // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
-  let json: any;
-  for (;;) {
-    ({ json } = await cliInspectJson(args));
-    let satisfied = false;
-    try {
-      satisfied = predicate(json);
-    } catch {
-      // Malformed intermediate state (e.g. `.find()` returned undefined)
-      // counts as not-yet-converged.
-    }
-    if (satisfied || Date.now() >= deadline) return json;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-};
+): Promise<any> =>
+  readUntil(async () => (await cliInspectJson(args)).json, predicate, {
+    timeoutMs,
+    intervalMs,
+    // `awaitCommand` already bounds each CLI invocation, with a budget sized
+    // for slow process startup; a second, shorter one here would cut it off.
+    attemptTimeoutMs: defaultCliTimeoutMs + 5_000,
+  });
 
 /**
  * The `name` / `message` of a failed run, from whatever shape the World

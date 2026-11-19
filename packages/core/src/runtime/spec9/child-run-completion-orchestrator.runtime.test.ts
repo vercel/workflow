@@ -25,8 +25,13 @@ let incStarted = 0;
 /** Children `cra_readFinished` reports as finished. */
 let finished: string[] = [];
 
+/** Resolves once every `cra_inc` body of the run has started. */
+let allIncStarted: () => void = () => {};
+let allIncStartedPromise: Promise<void> = Promise.resolve();
+
 registerStepFunction('cra_inc', async (n: number) => {
   incStarted++;
+  if (incStarted >= STEPS) allIncStarted();
   const world = currentWorld;
   if (world) {
     const committed = eventsOf(world, 'step_completed').filter(
@@ -81,10 +86,34 @@ const STEPS = 6;
 const RAN_AHEAD = [0, 1, 2, 3, 4, 5];
 const DRAINED = [0, 0, 0, 0, 0, 0];
 
+/**
+ * Longest a `cra_inc` outcome write is held when the bodies do not all start
+ * (the workflow drains, and each body waits for the outcome before it).
+ */
+const OUTCOME_HOLD_MS = 200;
+
+/**
+ * Holds each `cra_inc` outcome write until every `cra_inc` body has started,
+ * or {@link OUTCOME_HOLD_MS}, whichever is first. While the workflow runs
+ * ahead, the bodies start without waiting for these writes, so body `k`
+ * finds exactly `k` outcomes unconfirmed (`RAN_AHEAD`) however slow the
+ * machine. A fixed delay let a slow runner commit an outcome before the last
+ * body started. While it drains, each body waits for the previous outcome,
+ * which commits once the hold times out (`DRAINED`).
+ */
 const slowOutcomes = {
-  async beforeCreate(data: { eventType: string }) {
-    if (data.eventType === 'step_completed') {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+  async beforeCreate(data: {
+    eventType: string;
+    eventData?: { stepName?: string };
+  }) {
+    if (
+      data.eventType === 'step_completed' &&
+      data.eventData?.stepName === 'cra_inc'
+    ) {
+      await Promise.race([
+        allIncStartedPromise,
+        new Promise((resolve) => setTimeout(resolve, OUTCOME_HOLD_MS)),
+      ]);
     }
   },
 };
@@ -108,6 +137,9 @@ async function run(body: string, { untilSteps = false } = {}) {
 beforeEach(() => {
   unconfirmed = [];
   incStarted = 0;
+  allIncStartedPromise = new Promise<void>((resolve) => {
+    allIncStarted = resolve;
+  });
   finished = [];
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
   vi.stubEnv('VERCEL_URL', 'run-ahead.example.test');
@@ -176,10 +208,25 @@ describe.each([
   'node',
   'quickjs',
 ] as const)('orchestrator linger beside the completion hook (%s engine)', (engine) => {
+  /**
+   * The test that expects a linger checks that the delivery took at least
+   * this long, which a slow machine cannot break.
+   */
   const LINGER_MS = 700;
+  /**
+   * The test that expects no linger uses a longer window, and checks that
+   * the delivery ended before it; a delivery that lingers takes at least the
+   * whole window. A delivery that does not linger can still be slow: the
+   * first QuickJS delivery in a worker builds the engine, and on a loaded CI
+   * runner that alone took over 700 ms.
+   */
+  const LONG_LINGER_MS = 3_000;
 
-  async function firstDelivery(body: string) {
-    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', String(LINGER_MS));
+  async function firstDelivery(body: string, lingerMs = LINGER_MS) {
+    // A hook's window is the shorter of the two (see
+    // `getOrchestratorLingerMsFor`), so both are set.
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', String(lingerMs));
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', String(lingerMs));
     const setup = await setupOrchestratorRun(
       workflowCode(body),
       [0],
@@ -193,17 +240,20 @@ describe.each([
 
   it('does not linger on an idle completion hook', async () => {
     finished = ['wrun_child'];
-    const { world, ms } = await firstDelivery(`
+    const { world, ms } = await firstDelivery(
+      `
       const id = await startChild();
       await returnValue(id);
       await globalThis[Symbol.for("WORKFLOW_SLEEP")]("1d");
       return 1;
-    `);
+    `,
+      LONG_LINGER_MS
+    );
     // Waited, then parked on a day-long sleep with the hook still open.
     expect(eventsOf(world, 'hook_created')).toHaveLength(1);
     expect(eventsOf(world, 'hook_disposed')).toHaveLength(0);
     expect(eventsOf(world, 'wait_created').length).toBeGreaterThan(0);
-    expect(ms).toBeLessThan(LINGER_MS);
+    expect(ms).toBeLessThan(LONG_LINGER_MS);
   });
 
   it('lingers while a child is awaited', async () => {
