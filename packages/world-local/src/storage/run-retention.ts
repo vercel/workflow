@@ -34,9 +34,9 @@ import {
 import { decode, encode } from '../db/codec.js';
 import type { Database } from '../db/index.js';
 import {
-  DOC_BYTES_SQL,
   EntityBytes,
   measureStreamBytes,
+  PAYLOAD_BYTES_SQL,
   readPurgedUsage,
   savePurgedUsage,
 } from './purged-usage.js';
@@ -113,7 +113,7 @@ export function purgeRunData(
     doc: string;
     bytes: number;
   }>(
-    `SELECT seq, event_type, doc, ${DOC_BYTES_SQL} AS bytes
+    `SELECT seq, event_type, doc, ${PAYLOAD_BYTES_SQL} AS bytes
      FROM events WHERE run_id = ?`,
     runId
   );
@@ -208,7 +208,7 @@ export function purgeLateStepWrite(
   if (saved && seq > saved.seq) {
     const written = new EntityBytes();
     for (const row of db.all<{ event_type: string; bytes: number }>(
-      `SELECT event_type, ${DOC_BYTES_SQL} AS bytes
+      `SELECT event_type, ${PAYLOAD_BYTES_SQL} AS bytes
        FROM events WHERE run_id = ? AND seq > ? AND seq <= ?`,
       runId,
       saved.seq,

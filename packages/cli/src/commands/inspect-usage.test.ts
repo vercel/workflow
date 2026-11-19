@@ -309,8 +309,8 @@ describe('workflow inspect run <id> --usage', () => {
     expect(stdout).toContain(
       "This run's data was deleted; sizes show what it wrote."
     );
-    // The 50 KB input, as written (base64 inside the event), not what is left.
-    expect(stdout).toMatch(/TOTAL\s+6\d\.\d KB/);
+    // The 50 KB input as written (its payload bytes), not what is left.
+    expect(stdout).toMatch(/TOTAL\s+50(\.\d)? KB$/m);
   });
 
   it('has no purge note for a run that kept its data', async () => {

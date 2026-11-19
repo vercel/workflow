@@ -126,7 +126,11 @@ export interface RunUsage {
   stepEvents: RunUsageStepEvents;
   /** Sorted by events, most first. */
   eventsBySpan: RunUsageSpan[];
-  /** Workflow Data Written, in bytes. */
+  /**
+   * Workflow Data Written, in bytes: the run's payloads as the SDK sent them
+   * (compressed or encrypted when those apply), not event metadata, plus
+   * its stream bytes. QuickJS VM snapshots are not counted yet.
+   */
   dataWritten: {
     bytes: number;
     byEntity: Record<RunUsageEntity, number>;
@@ -212,7 +216,7 @@ export interface RunUsageStepEvents {
 
 /**
  * One aggregate row: the events of one type in a run's log, with their
- * stored size. Step events go in {@link RunUsageStepGroup} instead.
+ * payload bytes. Step events go in {@link RunUsageStepGroup} instead.
  */
 export interface RunUsageEventGroup {
   eventType: string;
@@ -220,7 +224,7 @@ export interface RunUsageEventGroup {
   bytes: number;
 }
 
-/** The events of every step with one name, with their stored size. */
+/** The events of every step with one name, with their payload bytes. */
 export interface RunUsageStepGroup {
   /** `null` when the step's row is missing. */
   stepName: string | null;

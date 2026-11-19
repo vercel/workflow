@@ -32,25 +32,15 @@ async function runTwice(specVersion?: number) {
   return { kept, purged };
 }
 
-/** Bytes two equal runs' rows may differ by, entity by entity. */
-const TOLERANCE = 100;
-
 function expectSameDataWritten(
   kept: Awaited<ReturnType<typeof runTwice>>['kept'],
   purged: Awaited<ReturnType<typeof runTwice>>['purged']
 ) {
   expect(purged.events).toBe(kept.events);
-  for (const entity of ['run', 'step', 'hook', 'stream'] as const) {
-    // Equal up to the few bytes that differ between any two runs: step
-    // events carry latency telemetry whose digits vary, and the purged
-    // run's events carry its `"$retention":"0"` attribute.
-    expect(
-      Math.abs(
-        purged.dataWritten.byEntity[entity] - kept.dataWritten.byEntity[entity]
-      ),
-      entity
-    ).toBeLessThan(TOLERANCE);
-  }
+  // Data Written counts payload bytes, not the rows around them, so the two
+  // runs are equal byte for byte (the purged run's `$retention` attribute
+  // and step latency telemetry are metadata).
+  expect(purged.dataWritten.byEntity).toEqual(kept.dataWritten.byEntity);
   // Both wrote the 300 KB payload at least twice (run input, step input).
   expect(kept.dataWritten.bytes).toBeGreaterThan(600_000);
   expect(purged.dataWritten.bytes).toBeGreaterThan(600_000);

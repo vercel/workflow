@@ -21,8 +21,68 @@
 import { type RunUsageEntity, usageEntityOfEventType } from '@workflow/world';
 import type { Database } from '../db/index.js';
 
-/** A stored row's size in bytes, measured the same way everywhere. */
-export const DOC_BYTES_SQL = 'length(CAST(doc AS BLOB))';
+/**
+ * Where each event type carries its payloads (the data the client sends):
+ * the serialized values of its `eventData`. Everything else in an event
+ * (ids, timestamps, the step name, attribute writes) is metadata, which
+ * Data Written does not count.
+ */
+const PAYLOAD_PATHS: Readonly<Record<string, readonly string[]>> = {
+  run_created: [
+    '$.eventData.input',
+    '$.eventData.dynamicWorkflowCode',
+    '$.eventData.startHook.metadata',
+  ],
+  run_started: [
+    '$.eventData.input',
+    '$.eventData.dynamicWorkflowCode',
+    '$.eventData.startHook.metadata',
+  ],
+  run_completed: ['$.eventData.output'],
+  run_failed: ['$.eventData.error'],
+  step_created: ['$.eventData.input'],
+  step_started: ['$.eventData.input'],
+  step_completed: ['$.eventData.result'],
+  step_failed: ['$.eventData.error'],
+  step_retrying: ['$.eventData.error'],
+  hook_created: ['$.eventData.metadata'],
+  hook_received: ['$.eventData.payload'],
+};
+
+/** The event types {@link PAYLOAD_BYTES_SQL} reads payloads of (tests). */
+export const PAYLOAD_EVENT_TYPES = Object.keys(PAYLOAD_PATHS);
+
+/**
+ * The bytes of the value at `path`: a `Uint8Array` (every payload the SDK
+ * serializes, stored as `{ "__type": "Uint8Array", "data": "<base64>" }`)
+ * by the length its base64 decodes to, without decoding it; any other value
+ * (a legacy payload serialized as JSON) by its JSON text.
+ */
+function valueBytesSql(path: string): string {
+  // As a BLOB, `length` and `substr` count bytes from the end of the string
+  // the parse already made, instead of walking it as text: about 2.5x
+  // faster on large payloads. Base64 is ASCII, so bytes are characters.
+  const data = `CAST(json_extract(doc, '${path}.data') AS BLOB)`;
+  return `CASE WHEN json_extract(doc, '${path}.__type') = 'Uint8Array'
+    THEN length(${data}) / 4 * 3 - (CASE WHEN substr(${data}, -2) = X'3D3D' THEN 2 WHEN substr(${data}, -1) = X'3D' THEN 1 ELSE 0 END)
+    ELSE coalesce(length(CAST(doc -> '${path}' AS BLOB)), 0) END`;
+}
+
+/**
+ * An event row's payload bytes, the way Data Written counts them: the bytes
+ * of its payloads (compressed or encrypted as the SDK sent them), not the
+ * row's JSON or the event's metadata. Computed in SQL from the base64
+ * strings' lengths. One `CASE` arm per event type, so a row reads only its
+ * own payload fields, and SQLite parses each row's JSON once per statement.
+ */
+export const PAYLOAD_BYTES_SQL = `(CASE event_type ${Object.entries(
+  PAYLOAD_PATHS
+)
+  .map(
+    ([eventType, paths]) =>
+      `WHEN '${eventType}' THEN ${paths.map((path) => `(${valueBytesSql(path)})`).join(' + ')}`
+  )
+  .join(' ')} ELSE 0 END)`;
 
 const STREAM_BYTES_SQL = `
   SELECT COALESCE(SUM(length(data)), 0) AS bytes

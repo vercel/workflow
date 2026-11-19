@@ -7,6 +7,7 @@ import {
   type RunUsage,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   USAGE_COUNTING_DOCS_URL,
+  usageEntityOfEventType,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { resumeHook, start } from 'workflow/api';
@@ -31,6 +32,47 @@ async function listAllEvents(runId: string): Promise<Event[]> {
     cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
   } while (cursor);
   return all;
+}
+
+/**
+ * The run's payload bytes as the World gives them back: every `Uint8Array`
+ * in its events' data (read with `resolveData: 'all'`), by the entity Data
+ * Written reports it under, and every chunk of its streams.
+ */
+async function payloadBytesReadBack(runId: string) {
+  const world = await getWorld();
+  const byEntity = { run: 0, step: 0, hook: 0, stream: 0 };
+  const walk = (value: unknown): number => {
+    if (value instanceof Uint8Array) return value.byteLength;
+    if (value === null || typeof value !== 'object') return 0;
+    return Object.values(value).reduce<number>((n, v) => n + walk(v), 0);
+  };
+  let cursor: string | undefined;
+  do {
+    const page = await world.events.list({
+      runId,
+      pagination: { limit: 100, cursor },
+      resolveData: 'all',
+    });
+    for (const event of page.data) {
+      const entity = usageEntityOfEventType(event.eventType);
+      if (entity) {
+        byEntity[entity] += walk((event as { eventData?: unknown }).eventData);
+      }
+    }
+    cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+  } while (cursor);
+  for (const name of await world.streams.list(runId)) {
+    let chunks: string | undefined;
+    do {
+      const page = await world.streams.getChunks(runId, name, {
+        cursor: chunks,
+      });
+      for (const chunk of page.data) byEntity.stream += chunk.data.byteLength;
+      chunks = page.hasMore ? (page.cursor ?? undefined) : undefined;
+    } while (chunks);
+  }
+  return byEntity;
 }
 
 const countOf = (events: Event[], eventType: string) =>
@@ -161,6 +203,11 @@ async function runAndCheck(options?: { specVersion: number }) {
     expect.stringMatching(/^flakyCharge {2}1 call {2}↻ 2 retries$/),
   ]);
 
+  // Data Written is the payload bytes the World gives back.
+  expect(usage.dataWritten.byEntity).toEqual(
+    await payloadBytesReadBack(run.runId)
+  );
+
   // Usage counts the log it pages through, event for event.
   expect(usage.events).toBe(events.length);
   expect(usage.billableEvents).toBe(events.length);
@@ -247,6 +294,12 @@ describe('run usage from a real run', () => {
       name: '1 sleep',
       events: events.filter((e) => e.eventType.startsWith('wait_')).length,
     });
-    expect(usage.dataWritten.byEntity.stream).toBeGreaterThan(0);
+    // Data Written is the payload bytes the World gives back, the stream's
+    // chunks included.
+    const readBack = await payloadBytesReadBack(run.runId);
+    console.log(`payload bytes read back: ${JSON.stringify(readBack)}`);
+    expect(usage.dataWritten.byEntity).toEqual(readBack);
+    expect(readBack.stream).toBeGreaterThan(0);
+    expect(readBack.hook).toBeGreaterThan(0);
   }, 60_000);
 });

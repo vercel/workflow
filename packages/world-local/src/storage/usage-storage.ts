@@ -2,8 +2,11 @@
  * Per-run usage (`world.experimental_usage`), counted from the run's rows
  * with aggregate queries. Nothing here decodes an event.
  *
- * Data written is what the run's rows hold in `world.db`: each event as
- * stored (its payloads included) and each stream chunk. A run started with
+ * Data written counts what Vercel's Data Written counts: the bytes of each
+ * event's payloads as the SDK sent them (`PAYLOAD_BYTES_SQL`, from the
+ * stored base64 lengths, nothing decoded), not the event's metadata, and
+ * each stream chunk's bytes. QuickJS VM snapshots are not counted yet. A
+ * run started with
  * zero retention (`$retention: '0'`) has its payloads deleted when it
  * finishes, and any finished run's can be deleted on demand; the purge saves
  * the sizes first (`purged-usage.ts`), and those are reported, plus anything
@@ -61,9 +64,9 @@ import {
 import type { Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
 import {
-  DOC_BYTES_SQL,
   EntityBytes,
   measureStreamBytes,
+  PAYLOAD_BYTES_SQL,
   readPurgedUsage,
 } from './purged-usage.js';
 import { tagClause, tagParams } from './store.js';
@@ -94,7 +97,7 @@ const IS_STEP_EVENT = `event_type LIKE 'step\\_%' ESCAPE '\\'`;
 const EVENT_GROUPS_SQL = `
   SELECT event_type,
          COUNT(*) AS events,
-         SUM(${DOC_BYTES_SQL}) AS bytes
+         SUM(${PAYLOAD_BYTES_SQL}) AS bytes
   FROM events
   WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3 AND NOT (${IS_STEP_EVENT})
   GROUP BY event_type
@@ -113,7 +116,7 @@ const STEP_GROUPS_SQL = `
          SUM(event_type = 'step_completed') AS completed,
          SUM(event_type = 'step_failed') AS failed,
          SUM(event_type = 'step_retrying') AS retries,
-         SUM(${DOC_BYTES_SQL}) AS bytes
+         SUM(${PAYLOAD_BYTES_SQL}) AS bytes
   FROM events
   WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3 AND ${IS_STEP_EVENT}
   GROUP BY correlation_id
@@ -183,7 +186,7 @@ const BATCH_END_SQL = `
 
 /** Events written after a log position, by type: a purged run's late writes. */
 const EVENTS_AFTER_SQL = `
-  SELECT event_type, SUM(${DOC_BYTES_SQL}) AS bytes
+  SELECT event_type, SUM(${PAYLOAD_BYTES_SQL}) AS bytes
   FROM events
   WHERE run_id = ? AND seq > ?
   GROUP BY event_type

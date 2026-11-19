@@ -15,6 +15,7 @@ import { createWorld } from '../index.js';
 import { createStorage, type LocalStorage } from '../storage/index.js';
 import { createStreamer } from '../streamer.js';
 import { createRun } from '../test-helpers.js';
+import { PAYLOAD_BYTES_SQL } from './purged-usage.js';
 
 let dataDir: string;
 let storage: LocalStorage;
@@ -155,7 +156,8 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     const lateRow =
       purged.after.dataWritten.byEntity.step -
       purged.before.dataWritten.byEntity.step;
-    expect(lateRow).toBeGreaterThan(7000);
+    // The late payload's bytes, exactly: payloads, not the row's JSON.
+    expect(lateRow).toBe(7000);
     expect(lateRow).toBe(
       kept.after.dataWritten.byEntity.step -
         kept.before.dataWritten.byEntity.step
@@ -202,7 +204,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
         ...kept.after.dataWritten,
         source: 'saved-at-purge',
       });
-      expect(purged.after.dataWritten.bytes).toBeGreaterThan(
+      expect(purged.after.dataWritten.bytes).toBe(
         purged.before.dataWritten.bytes + 7000
       );
       // One saved row, now covering the late write.
@@ -234,7 +236,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     const usage = await usageOf(purged.runId);
     expect(usage.dataWritten.source).toBe('left-after-purge');
     const left = db.get<{ bytes: number }>(
-      'SELECT SUM(length(CAST(doc AS BLOB))) AS bytes FROM events WHERE run_id = ?',
+      `SELECT SUM(${PAYLOAD_BYTES_SQL}) AS bytes FROM events WHERE run_id = ?`,
       purged.runId
     );
     expect(usage.dataWritten.bytes).toBe(Number(left?.bytes));
@@ -326,7 +328,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     expect(usage.dataPurged).toBe(true);
     expect(usage.dataWritten.source).toBe('left-after-purge');
     const left = databaseFor(dataDir).get<{ bytes: number }>(
-      'SELECT SUM(length(CAST(doc AS BLOB))) AS bytes FROM events WHERE run_id = ?',
+      `SELECT SUM(${PAYLOAD_BYTES_SQL}) AS bytes FROM events WHERE run_id = ?`,
       purged.runId
     );
     expect(usage.dataWritten.bytes).toBe(Number(left?.bytes));
@@ -346,7 +348,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     ).toBeUndefined();
     const usage = await usageOf(kept.runId);
     const rows = db.get<{ bytes: number }>(
-      'SELECT SUM(length(CAST(doc AS BLOB))) AS bytes FROM events WHERE run_id = ?',
+      `SELECT SUM(${PAYLOAD_BYTES_SQL}) AS bytes FROM events WHERE run_id = ?`,
       kept.runId
     );
     expect(usage).toMatchObject({ dataPurged: false });

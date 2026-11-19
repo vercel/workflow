@@ -4,7 +4,7 @@ exports[`workflow inspect run <id> --usage > prints a readable summary 1`] = `
 "processOrder  wrun_<RUN_ID>  ● completed
 
 Events        37
-Data written  12.7 KB (local)
+Data written  2.28 KB (local)
 
 TYPE   NAME                              EVENTS  SHARE
 Steps  10 calls  ↻ 1 retry                   32    86%  █████████░
@@ -22,11 +22,11 @@ TOTAL                                        37   100%
 How events are counted: https://workflow-sdk.dev/docs/observability#how-events-are-counted
 
 DATA WRITTEN (LOCAL)     SIZE
-Run                     818 B
-Steps                 9.19 KB
-Hooks                   638 B
+Run                      20 B
+Steps                   168 B
+Hooks                    40 B
 Streams               2.05 KB
-TOTAL                 12.7 KB
+TOTAL                 2.28 KB
 
 Local runs aren't billed. Counted from this run's log in your local data directory.
 Machine-readable: --json"
@@ -40,12 +40,12 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
   "dataRetained": null,
   "dataWritten": {
     "byEntity": {
-      "hook": 638,
-      "run": 818,
-      "step": 9189,
+      "hook": 40,
+      "run": 20,
+      "step": 168,
       "stream": 2048,
     },
-    "bytes": 12693,
+    "bytes": 2276,
     "source": "log",
   },
   "events": 37,

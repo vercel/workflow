@@ -3,10 +3,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
+  EventTypeSchema,
+  getEventDataRefFields,
   RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   startHookId,
+  usageEntityOfEventType,
   usageRows,
 } from '@workflow/world';
 import { ulid } from 'ulid';
@@ -23,6 +26,7 @@ import {
   updateRun,
   updateStep,
 } from '../test-helpers.js';
+import { PAYLOAD_EVENT_TYPES } from './purged-usage.js';
 
 let dataDir: string;
 let storage: LocalStorage;
@@ -81,6 +85,47 @@ async function listAllEvents(runId: string) {
 }
 
 const usageOf = (runId: string) => storage.experimental_usage!.getRun(runId);
+
+/**
+ * A run's payload bytes as the World gives them back: every `Uint8Array` in
+ * its events' data (read with `resolveData: 'all'`), by the entity Data
+ * Written reports it under, and every chunk of its streams.
+ */
+async function payloadBytesReadBack(runId: string) {
+  const byEntity = { run: 0, step: 0, hook: 0, stream: 0 };
+  const walk = (value: unknown): number => {
+    if (value instanceof Uint8Array) return value.byteLength;
+    if (value === null || typeof value !== 'object') return 0;
+    return Object.values(value).reduce<number>((n, v) => n + walk(v), 0);
+  };
+  let cursor: string | undefined;
+  do {
+    const page = await storage.events.list({
+      runId,
+      pagination: { limit: 100, cursor },
+      resolveData: 'all',
+    });
+    for (const event of page.data) {
+      const entity = usageEntityOfEventType(event.eventType);
+      if (entity) {
+        byEntity[entity] += walk((event as { eventData?: unknown }).eventData);
+      }
+    }
+    cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+  } while (cursor);
+  const streamer = createStreamer(dataDir);
+  for (const name of await streamer.streams.list(runId)) {
+    let chunkCursor: string | undefined;
+    do {
+      const page = await streamer.streams.getChunks(runId, name, {
+        cursor: chunkCursor,
+      });
+      for (const chunk of page.data) byEntity.stream += chunk.data.byteLength;
+      chunkCursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+    } while (chunkCursor);
+  }
+  return byEntity;
+}
 
 describe('experimental_usage.getRun (world-local)', () => {
   it('counts a simple run: 3 run events and 3 per step', async () => {
@@ -234,8 +279,9 @@ describe('experimental_usage.getRun (world-local)', () => {
       calls: 1,
     });
     expect(byEntity.stream).toBe(1500);
-    // The hook's payloads are stored base64-encoded inside its events.
-    expect(byEntity.hook).toBeGreaterThan(Math.ceil((96 * 4) / 3));
+    // The hook's payloads: 32 bytes of metadata and a 64-byte payload, not
+    // their base64 or the events around them.
+    expect(byEntity.hook).toBe(96);
     expect(byEntity.step).toBe(0);
     expect(usage.dataWritten.bytes).toBe(
       byEntity.run + byEntity.step + byEntity.hook + byEntity.stream
@@ -323,6 +369,119 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(
       usage.eventsBySpan.find((span) => span.kind === 'hook')
     ).toMatchObject({ name: 'start:order-1', id: startHookId(runId) });
+  });
+
+  it('counts Data Written as the payload bytes the World reads back', async () => {
+    const runId = await startRun(bytes(5000));
+    // A step retried once, then completed.
+    await createStep(storage, runId, {
+      stepId: 'step_1',
+      stepName: CHARGE,
+      input: bytes(1234),
+    });
+    await updateStep(storage, runId, 'step_1', 'step_started');
+    await updateStep(storage, runId, 'step_1', 'step_retrying', {
+      error: bytes(77),
+    });
+    await updateStep(storage, runId, 'step_1', 'step_started');
+    await updateStep(storage, runId, 'step_1', 'step_completed', {
+      result: bytes(4321),
+    });
+    // A step that failed.
+    await createStep(storage, runId, {
+      stepId: 'step_2',
+      stepName: EMAIL,
+      input: bytes(10),
+    });
+    await updateStep(storage, runId, 'step_2', 'step_started');
+    await updateStep(storage, runId, 'step_2', 'step_failed', {
+      error: bytes(99),
+    });
+    // A hook with metadata, resumed with a payload.
+    await createHook(storage, runId, {
+      hookId: 'hook_1',
+      token: `tok-${runId}`,
+      metadata: bytes(31),
+    });
+    await storage.events.create(runId, {
+      eventType: 'hook_received',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'hook_1',
+      eventData: { payload: bytes(641) },
+    });
+    await disposeHook(storage, runId, 'hook_1');
+    // An attribute write and a sleep: metadata, no payload.
+    await storage.events.create(runId, {
+      eventType: 'attr_set',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        changes: [{ key: 'order', value: 'ord_1' }],
+        writer: { type: 'workflow' },
+      },
+    } as never);
+    await storage.events.create(runId, {
+      eventType: 'wait_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'wait_1',
+      eventData: { resumeAt: new Date(Date.now() + 1000) },
+    });
+    const streamer = createStreamer(dataDir);
+    await streamer.streams.write(runId, `strm_${runId}`, bytes(2048));
+    await streamer.streams.write(runId, `strm_${runId}`, bytes(17));
+    await streamer.streams.close(runId, `strm_${runId}`);
+    await updateRun(storage, runId, 'run_completed', { output: bytes(333) });
+
+    const usage = await usageOf(runId);
+    const readBack = await payloadBytesReadBack(runId);
+    expect(readBack).toEqual({
+      run: 5000 + 333,
+      step: 1234 + 77 + 4321 + 10 + 99,
+      hook: 31 + 641,
+      stream: 2048 + 17,
+    });
+    expect(usage.dataWritten.byEntity).toEqual(readBack);
+    expect(usage.dataWritten.bytes).toBe(
+      readBack.run + readBack.step + readBack.hook + readBack.stream
+    );
+  });
+
+  it('counts a start Hook’s metadata and a lazy step’s input as payloads', async () => {
+    const runId = `wrun_${ulid()}`;
+    await storage.events.create(runId, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: WORKFLOW,
+        input: bytes(40),
+        startHook: { token: `start-${runId}`, metadata: bytes(23) },
+      },
+    } as never);
+    await storage.events.create(runId, {
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    } as never);
+    // An inline step on spec 9: its first step_started carries its input.
+    await storage.events.create(runId, {
+      eventType: 'step_started',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      correlationId: 'step_i',
+      eventData: { stepName: EMAIL, input: bytes(55) },
+    } as never);
+    const usage = await usageOf(runId);
+    const readBack = await payloadBytesReadBack(runId);
+    expect(readBack).toMatchObject({ run: 40 + 23, step: 55 });
+    expect(usage.dataWritten.byEntity).toEqual(readBack);
+  });
+
+  it('reads the payload of every event type that has one', () => {
+    // Every type the World strips payloads from is one Data Written counts.
+    const withPayloads = EventTypeSchema.options.filter(
+      (eventType) => getEventDataRefFields(eventType).length > 0
+    );
+    expect(PAYLOAD_EVENT_TYPES.slice().sort()).toEqual(
+      withPayloads.slice().sort()
+    );
   });
 
   it('counts a failed run, its exhausted retries included', async () => {
