@@ -11,7 +11,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { Button } from '../ui/button';
 import { DecryptClickContext } from '../ui/data-inspector';
-import { Spinner } from '../ui/spinner';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -340,10 +339,8 @@ export function EntityDetailPanel({
                   size="small"
                   className="w-full"
                   onClick={handleWakeUp}
-                  disabled={stoppingSleep}
-                  aria-busy={stoppingSleep}
+                  loading={stoppingSleep}
                 >
-                  {stoppingSleep ? <Spinner size={16} /> : null}
                   Wake Up Sleep
                 </Button>
               )}
@@ -355,10 +352,8 @@ export function EntityDetailPanel({
                   size="small"
                   className="w-full"
                   onClick={() => setShowResolveHookModal(true)}
-                  disabled={resolvingHook}
-                  aria-busy={resolvingHook}
+                  loading={resolvingHook}
                 >
-                  {resolvingHook ? <Spinner size={16} /> : null}
                   Resolve Hook
                 </Button>
               )}

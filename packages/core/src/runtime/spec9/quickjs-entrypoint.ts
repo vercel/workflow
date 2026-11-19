@@ -114,11 +114,7 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
-import {
-  getSnapshotThresholdForHandler,
-  isSnapshotThresholdConfigured,
-  isUnencryptedSnapshottingAllowed,
-} from '../vm-mode.js';
+import { getSnapshotThresholdForHandler } from '../vm-mode.js';
 import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
@@ -141,9 +137,11 @@ import {
 } from './in-band-writer.js';
 import {
   getOrchestratorFeedPollIntervalMs,
-  getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
+  LingerTimes,
   LiveLogFeed,
+  lingerKindOf,
+  orchestratorLingerUntil,
 } from './live-feed.js';
 import {
   analyzeLogSteps,
@@ -780,16 +778,16 @@ export async function runWorkflowWithQuickJS(params: {
   // `snapshotThreshold` events have been processed since the last one,
   // and resumptions restore the VM and replay only the delta events.
   //
-  // Forced to 0 (pure full replay, always correct) when:
-  // - the World doesn't provide `experimental_snapshots` (optional);
-  // - the run has no encryption key and the handler hasn't opted in with
-  //   WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED. A snapshot is executable VM
-  //   state holding the run's in-memory data; the key is what keeps it
-  //   confidential at rest and authenticates it on restore.
+  // Forced to 0 (pure full replay, always correct) when the World doesn't
+  // provide `experimental_snapshots` (optional). A run without an encryption
+  // key (world-local, world-postgres, or any World that doesn't implement
+  // `getEncryptionKeyForRun`) is snapshotted in plaintext, the same as its
+  // event log and payloads; a run with a key always seals its snapshot, and
+  // `openSnapshot` rejects a plaintext snapshot for it on restore.
   // An invalid policy value disables snapshotting with a warning rather
   // than failing every invocation (see getSnapshotThresholdForHandler).
   const snapshotsStorage = world.experimental_snapshots;
-  let snapshotThreshold = snapshotsStorage
+  const snapshotThreshold = snapshotsStorage
     ? getSnapshotThresholdForHandler(workflowRun, (message) =>
         warnOnce(`snapshot-threshold:${message}`, () =>
           runtimeLogger.warn(
@@ -799,30 +797,6 @@ export async function runWorkflowWithQuickJS(params: {
         )
       )
     : 0;
-  // The configured policy, before the encryption gate below: terminal
-  // cleanup keys on it, so snapshots saved while the gate was open are
-  // still deleted after it closes.
-  const snapshotPolicyThreshold = snapshotThreshold;
-  if (
-    snapshotThreshold > 0 &&
-    !encryptionKey &&
-    !isUnencryptedSnapshottingAllowed()
-  ) {
-    // Only warn when snapshotting was explicitly configured: with the
-    // default threshold, worlds without run encryption keys (world-local,
-    // world-postgres) would otherwise warn on every QuickJS deployment.
-    if (isSnapshotThresholdConfigured(workflowRun)) {
-      warnOnce('snapshot-unencrypted', () =>
-        runtimeLogger.warn(
-          'QuickJS runtime: VM snapshotting is configured but this run has no encryption key; ' +
-            'snapshots are disabled. Set WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1 to store them unencrypted.',
-          { workflowRunId: runId }
-        )
-      );
-    }
-    snapshotThreshold = 0;
-  }
-
   // Try to load a persisted snapshot. Skipped on the first invocation
   // (nothing can have been saved yet) and on any load/decode failure —
   // the fresh-boot full replay below is always a correct fallback (the
@@ -2663,38 +2637,124 @@ export async function runWorkflowWithQuickJS(params: {
   };
 
   /**
-   * Keeps this delivery live while the run waits on work done elsewhere (see
-   * `getOrchestratorLingerMsFor`: the full window for a background step, the
-   * hook window for open hooks alone). `true` once the feed delivered an
-   * event or a wait fell due, so the loop takes another turn; `false` when
-   * the time ran out without either, or the live feed is not (or stops being)
-   * live.
+   * The open waits of `pendingOperations` this invocation has not completed,
+   * as timer candidates (`armWaitTimers`). An elapsed wait still gets a
+   * continuation (clamped to 1s).
    */
+  const pendingWaitTimers = (pendingOperations: PendingOperation[]) => {
+    const now = Date.now();
+    const timers: {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[] = [];
+    for (const op of pendingOperations) {
+      if (op.type !== 'wait') continue;
+      const wait = op as PendingWait;
+      if (completedWaitIds2.has(wait.correlationId)) continue;
+      const resumeAtMs = new Date(wait.resumeAt).getTime();
+      timers.push({
+        correlationId: wait.correlationId,
+        resumeAtMs,
+        seconds: Math.max(1, Math.ceil((resumeAtMs - now) / 1000)),
+      });
+    }
+    return timers;
+  };
+
+  /**
+   * Arms, on a delivery that may hold a timer the queue coalesced into it a
+   * little before its wait was due (`armsNearDueWaits`), the timer of every
+   * wait due within the near-due window whatever chain it is in (see
+   * `getNearDueWaitWindowSeconds`), keyed so that the re-arms of one wait
+   * within a second are one message. The first delivery of a message (a
+   * wake that brought nothing new included) holds none.
+   */
+  const armNearDueWaitTimers = async (
+    waits: readonly {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[]
+  ): Promise<void> => {
+    if (!armsNearDueWaits) return;
+    const nearDueHorizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
+    for (const wait of waits) {
+      if (wait.resumeAtMs > nearDueHorizonMs) continue;
+      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+      scheduledWaitContinuations.add(wait.correlationId);
+      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
+        nearDue: true,
+      });
+      wfdiag('wait_continuation_scheduled', {
+        correlationId: wait.correlationId,
+        delaySeconds: wait.seconds,
+        nearDue: true,
+      });
+    }
+  };
+
+  /**
+   * Keeps this delivery live while the run waits on work done elsewhere, or
+   * on a wait due soon enough (see `orchestratorLingerUntil`: the full window
+   * for a background step, the hook window for open hooks alone, until the
+   * earliest open wait is due when it falls within the wait window and before
+   * the inline deadline). `true` once the feed delivered an event or a wait
+   * fell due, so the loop takes another turn, which completes the wait;
+   * `false` when the time ran out without either, or the live feed is not (or
+   * stops being) live.
+   *
+   * A linger taken for a wait arms the timers the exit sweep would first, so
+   * the wait is still woken if this invocation dies mid-sleep; the exit sweep
+   * then skips them (`scheduledWaitContinuations`).
+   */
+  const lingerTimes = new LingerTimes();
   const lingerForExternalWork = async (
     external: ExternalWork | undefined,
     pendingOperations: PendingOperation[]
   ): Promise<boolean> => {
-    const lingerMs = getOrchestratorLingerMsFor(external);
+    // A run another writer ended (a cancel) has nothing left to wait for.
     if (
-      lingerMs <= 0 ||
+      runEndSeen ||
       params.inlineDeadlineMs === undefined ||
       !world.events.subscribe ||
       !logView.tracking
     ) {
       return false;
     }
-    const untilMs = Math.min(
-      Date.now() + lingerMs,
-      params.inlineDeadlineMs - inlineMarginMs
-    );
-    if (untilMs <= Date.now()) return false;
+    const waits = pendingWaitTimers(pendingOperations);
+    const linger = orchestratorLingerUntil({
+      work: external,
+      // A reduce, not a spread: a run may hold any number of open waits.
+      nextWaitAtMs:
+        waits.length === 0
+          ? undefined
+          : waits.reduce(
+              (earliest, wait) => Math.min(earliest, wait.resumeAtMs),
+              Number.POSITIVE_INFINITY
+            ),
+      nowMs: Date.now(),
+      capMs: params.inlineDeadlineMs - inlineMarginMs,
+    });
+    if (!linger) return false;
+    const { untilMs } = linger;
     ensureInlineFeed();
     if (!inlineFeed?.isLive) {
       wfdiag('linger', { outcome: 'feed-down', lingeredMs: 0 });
       return false;
     }
+    if (linger.forWait) {
+      await armNearDueWaitTimers(waits);
+      await armWaitTimers(waits);
+    }
+    const kind = lingerKindOf(linger, external);
     const fedBefore = fedEventCount;
     const startedAtMs = Date.now();
+    const lingered = (): number => {
+      const ms = Date.now() - startedAtMs;
+      parentSpan?.setAttributes(lingerTimes.add(kind, ms));
+      return ms;
+    };
     budget.pause();
     try {
       while (Date.now() < untilMs) {
@@ -2716,14 +2776,16 @@ export async function runWorkflowWithQuickJS(params: {
         if (fedEventCount > fedBefore || waitDue) {
           wfdiag('linger', {
             outcome: 'resumed',
-            lingeredMs: Date.now() - startedAtMs,
+            kind,
+            lingeredMs: lingered(),
           });
           return true;
         }
         if (!inlineFeed?.isLive) {
           wfdiag('linger', {
             outcome: 'feed-down',
-            lingeredMs: Date.now() - startedAtMs,
+            kind,
+            lingeredMs: lingered(),
           });
           return false;
         }
@@ -2733,7 +2795,8 @@ export async function runWorkflowWithQuickJS(params: {
     }
     wfdiag('linger', {
       outcome: 'idle',
-      lingeredMs: Date.now() - startedAtMs,
+      kind,
+      lingeredMs: lingered(),
     });
     return false;
   };
@@ -3487,8 +3550,8 @@ export async function runWorkflowWithQuickJS(params: {
     if (!snapshotsStorage) return;
     const mayExist =
       snapshotStored ||
-      (snapshotPolicyThreshold > 0 &&
-        restoredEventCount + seenEventIds.size >= snapshotPolicyThreshold);
+      (snapshotThreshold > 0 &&
+        restoredEventCount + seenEventIds.size >= snapshotThreshold);
     if (!mayExist) return;
     safeWaitUntil(
       Promise.resolve().then(() => snapshotsStorage.delete(runId)),
@@ -3739,22 +3802,7 @@ export async function runWorkflowWithQuickJS(params: {
     // `getNearDueWaitWindowSeconds`), keyed so that the re-arms of one wait
     // within a second are one message. The first delivery of a message
     // (a wake that brought nothing new included) holds none.
-    const nearDueHorizonMs = armsNearDueWaits
-      ? Date.now() + getNearDueWaitWindowSeconds() * 1000
-      : Number.NEGATIVE_INFINITY;
-    for (const wait of exitSweep) {
-      if (wait.resumeAtMs > nearDueHorizonMs) continue;
-      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
-      scheduledWaitContinuations.add(wait.correlationId);
-      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
-        nearDue: true,
-      });
-      wfdiag('wait_continuation_scheduled', {
-        correlationId: wait.correlationId,
-        delaySeconds: wait.seconds,
-        nearDue: true,
-      });
-    }
+    await armNearDueWaitTimers(exitSweep);
 
     if (
       exitSweep.some(

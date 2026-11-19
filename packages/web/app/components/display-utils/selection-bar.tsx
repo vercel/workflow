@@ -55,11 +55,12 @@ export function SelectionBar({
       <Button
         variant="tertiary"
         size="small"
-        className="h-7 px-2 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+        shape="square"
+        className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+        aria-label="Clear selection"
         onClick={onClearSelection}
       >
-        <X className="h-4 w-4" />
-        <span className="sr-only">Clear selection</span>
+        <X />
       </Button>
     </div>
   );

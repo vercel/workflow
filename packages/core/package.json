@@ -38,6 +38,10 @@
       "types": "./dist/runtime/run.d.ts",
       "default": "./dist/runtime/run.js"
     },
+    "./runtime/delete-runs": {
+      "types": "./dist/runtime/delete-runs.d.ts",
+      "default": "./dist/runtime/delete-runs.js"
+    },
     "./runtime/lifecycle-hooks": {
       "types": "./dist/runtime/lifecycle-hooks.d.ts",
       "default": "./dist/runtime/lifecycle-hooks.js"
@@ -89,7 +93,7 @@
     "build": "genversion --es6 src/version.ts && node scripts/build-quickjs-assets.js && tsc",
     "dev": "genversion --es6 src/version.ts && tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist src/version.ts docs ||:",
-    "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run --config=../../vitest.config.ts src e2e/utils.test.ts",
+    "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run --config=vitest.config.ts src e2e/utils.test.ts",
     "test:e2e": "vitest run --config=../../vitest.config.ts e2e",
     "typecheck": "genversion --es6 src/version.ts && tsc --noEmit",
     "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/v5/foundations ./docs/ && cp -r ../../docs/content/docs/v5/how-it-works ./docs/ && cp -r ../../docs/content/docs/v5/api-reference/workflow ./docs/api-reference",

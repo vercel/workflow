@@ -220,6 +220,20 @@ Before you go live, make sure that:
 - `/.well-known/workflow/v1/flow` is restricted so untrusted clients cannot reach it (see [Security](#security))
 - If more than one process shares the database, you have set [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) to the same value on every process, so another process picks up the jobs of one that dies
 
+### Kubernetes
+
+The package includes a Helm chart for Kubernetes in its `chart` directory, and the helpers it relies on in `@workflow/world-postgres/kubernetes`. Each release pins its runs to its image tag with [`WORKFLOW_POSTGRES_DEPLOYMENT_ID`](#workflow_postgres_deployment_id), and older releases keep worker pods that finish their own runs:
+
+- **Workers per version.** Each release gets a worker Deployment that runs only the runs it started. A rollout leaves the previous release's workers in place.
+- **Scale to zero.** KEDA scales each version's workers on its due deliveries, which the application reports through `createBacklogEndpoints`. Workers drop to zero while that version's runs sleep or wait on a hook.
+- **Pruning.** A CronJob deletes a version's workers once all its runs have finished, and recreates them for a version that still has unfinished runs.
+- **Graceful shutdown.** `createLifecycle` stops a pod from receiving traffic, then lets its running deliveries finish before it exits.
+- **Migrations.** An optional init container runs `bootstrap` before each pod starts.
+
+The chart needs KEDA in the cluster, and an image whose entrypoint reads `WORKFLOW_ROLE` (`service`, `worker` or `prune`). The chart's README, in the same directory, covers the entrypoint, the image, and how long old versions keep running. To deploy workers with your own tooling instead, run `npx workflow-postgres-prune` after each deploy.
+The package includes a Helm chart for Kubernetes in its `chart` directory, as an optional way for production deployments into Kubernetes clusters. It works by pinning each run to its image tag, and by keeping around older releases' worker pods until their runs finish. It's scale-to-zero and supports pruning.
+
+See [`chart/README.md`](./chart/README.md) for more information.
 <Callout type="info">
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
 </Callout>

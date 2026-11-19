@@ -2771,7 +2771,8 @@ function setupAbortStreamReader(
   controller: AbortController,
   runId: string,
   streamName: string,
-  ops: Promise<void>[]
+  ops: Promise<void>[],
+  cryptoKey: EncryptionKeyParam
 ): AbortController {
   const readerCancel = new AbortController();
 
@@ -2781,13 +2782,14 @@ function setupAbortStreamReader(
       try {
         const readable = new WorkflowServerReadableStream(runId, streamName);
         reader = readable.getReader();
-        const ctxForKey = contextStorage.getStore();
+        let keyPromise: Promise<PayloadKey | undefined> | undefined;
         let decoded: { reason?: unknown } | undefined;
         const decodePacket = async (packet: Uint8Array) => {
+          keyPromise ??= resolveEncryptionKey(cryptoKey);
           decoded = (await hydrateStepArguments(
             packet,
             runId,
-            ctxForKey?.encryptionKey
+            await keyPromise
           )) as { reason?: unknown } | undefined;
         };
         const result = await Promise.race([
@@ -2807,10 +2809,9 @@ function setupAbortStreamReader(
         if (result) {
           try {
             // Hydrate via the same machinery the writer used so the reason
-            // round-trips with full type fidelity. Encryption key (if any)
-            // comes from the step context, set up by the step executor before
-            // this reader runs. Fallback to undefined for external-context
-            // revives (the hydrate path is encryption-key-tolerant).
+            // round-trips with full type fidelity. The key comes from the
+            // reviver, not the step context: argument hydration runs before
+            // the step's contextStorage frame exists.
             // Legacy packets were already hydrated to establish completeness.
             // Framed packets have a known length and can hydrate once here.
             if (decoded === undefined) await decodePacket(result);
@@ -2882,12 +2883,14 @@ function copyAbortInternals(src: AbortSignal, dest: AbortSignal): void {
  * @param value - The serialized abort controller/signal data
  * @param ops - The ops array for tracking async work
  * @param runId - The workflow run ID (for stream reads)
+ * @param cryptoKey - The run's encryption key (for decoding the abort packet)
  * @returns A real AbortController with patched abort() method
  */
 function reviveAbortController(
   value: SerializableSpecial['AbortController'],
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey: EncryptionKeyParam
 ): AbortController {
   const controller = new AbortController();
 
@@ -2899,7 +2902,8 @@ function reviveAbortController(
       controller,
       runId,
       value.streamName,
-      ops
+      ops,
+      cryptoKey
     );
     tagAbortPair(controller, value, readerCancel);
   } else {
@@ -2980,7 +2984,8 @@ function reviveAbortController(
 function reviveAbortSignal(
   value: SerializableSpecial['AbortSignal'],
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey: EncryptionKeyParam
 ): AbortSignal {
   const controller = new AbortController();
 
@@ -2992,7 +2997,8 @@ function reviveAbortSignal(
       controller,
       runId,
       value.streamName,
-      ops
+      ops,
+      cryptoKey
     );
     tagAbortPair(controller, value, readerCancel);
   } else {
@@ -3424,11 +3430,11 @@ export function getExternalRevivers(
     AbortController: (value) =>
       options?.liveAbortSignals === false
         ? reviveAbortSnapshot(value)
-        : reviveAbortController(value, ops, runId),
+        : reviveAbortController(value, ops, runId, cryptoKey),
     AbortSignal: (value) =>
       options?.liveAbortSignals === false
         ? reviveAbortSnapshot(value).signal
-        : reviveAbortSignal(value, ops, runId),
+        : reviveAbortSignal(value, ops, runId, cryptoKey),
   };
 }
 
@@ -3910,8 +3916,9 @@ function getStepRevivers(
       return writable;
     },
 
-    AbortController: (value) => reviveAbortController(value, ops, runId),
-    AbortSignal: (value) => reviveAbortSignal(value, ops, runId),
+    AbortController: (value) =>
+      reviveAbortController(value, ops, runId, cryptoKey),
+    AbortSignal: (value) => reviveAbortSignal(value, ops, runId, cryptoKey),
   };
 }
 

@@ -883,3 +883,13 @@
     animation: wf-span-flash 0.6s ease-in-out 0.15s backwards;
   }
 }
+
+/* The fade each of `Spinner`'s lines runs, offset by its own delay. */
+@keyframes spinner-opacity {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.15;
+  }
+}

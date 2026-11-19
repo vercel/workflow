@@ -572,6 +572,15 @@ export const WorkflowInvokePayloadSchema = z.object({
    * telemetry field. Anything unparseable degrades to "no measurement".
    */
   hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
+  /**
+   * The event an out-of-band writer committed before it sent this wake (a
+   * `resumeHook()`'s `hook_received`). An orchestrator that consumed the log
+   * only below it knows the wake has something new, so it skips the tail
+   * read that decides a no-op wake. A hint only: absent from other wakes and
+   * older producers, and `.catch(undefined)` so a malformed value never fails
+   * the payload's parse.
+   */
+  wakeEventId: z.string().optional().catch(undefined),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
@@ -776,8 +785,10 @@ export function singleOrchestratorRunIdOf(
  *   runtime's fresh-start path, which assumes a log holding only
  *   `run_created`; a continuation always continues a progressed run.
  *   `requestedAt` and `hookResumeTiming` measure the request that sent the
- *   replaced message. `recovery` asks a delivery to re-send everything a lost
- *   queue held, which the replaced message's delivery did. `invoke`,
+ *   replaced message. `wakeEventId` names an event the replaced message's
+ *   delivery may already have consumed. `recovery` asks a delivery to
+ *   re-send everything a lost queue held, which the replaced message's
+ *   delivery did. `invoke`,
  *   `requestId` and `input` are a request/response invocation, not a
  *   continuation. The retry counters (`replayDivergence`,
  *   `preconditionReinvocations`, `serverErrorRetryCount`,
@@ -796,6 +807,7 @@ export const SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS = {
   runInput: 'drop',
   requestedAt: 'drop',
   hookResumeTiming: 'drop',
+  wakeEventId: 'drop',
   recovery: 'drop',
   invoke: 'drop',
   requestId: 'drop',

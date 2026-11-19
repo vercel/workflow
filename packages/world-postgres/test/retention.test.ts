@@ -12,6 +12,7 @@ import {
   test,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
+import { createSnapshotsStorage } from '../src/snapshots.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
 import { createStreamer } from '../src/streamer.js';
 import { TestPool } from './pool.js';
@@ -368,6 +369,17 @@ describe('Retention ($retention: 0)', () => {
       expect(rows[0].error_code).toBe('USER_ERROR');
     });
 
+    it("deletes the run's VM snapshot", async () => {
+      const snapshots = createSnapshotsStorage(drizzle);
+      const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+      await snapshots.save(runId, new Uint8Array([42]), {
+        eventsCursor: null,
+        createdAt: new Date(),
+      });
+      await events.create(runId, { eventType: 'run_cancelled' });
+      expect(await snapshots.load(runId)).toBeNull();
+    });
+
     it('purges on run_cancelled', async () => {
       const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
       await events.create(runId, { eventType: 'run_cancelled' });
@@ -416,6 +428,52 @@ describe('Retention ($retention: 0)', () => {
       });
     }
 
+    it('makes a stream write that starts while the run is finishing wait for the deletion, and refuses it', async () => {
+      const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+      // Hold the run's row lock in a transaction that finishes the run and
+      // deletes its data, as the finishing commit and the deletion that
+      // follows it would: until it commits, other sessions read the run as
+      // running.
+      const finishing = await pool.connect();
+      try {
+        await finishing.query('BEGIN');
+        await finishing.query(
+          `UPDATE workflow.workflow_runs
+              SET status = 'completed', expired_at = now()
+            WHERE id = $1`,
+          [runId]
+        );
+        await finishing.query(
+          `UPDATE workflow.workflow_stream_chunks SET data = ''::bytea
+            WHERE run_id = $1`,
+          [runId]
+        );
+
+        let settled = false;
+        const write = streamer.streams
+          .write(runId, 'racing-stream', 'secret')
+          .finally(() => {
+            settled = true;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        // It waits on the run's row lock rather than writing past the
+        // deletion.
+        expect(settled).toBe(false);
+
+        await finishing.query('COMMIT');
+        await write;
+      } finally {
+        finishing.release();
+      }
+
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM workflow.workflow_stream_chunks
+          WHERE run_id = $1 AND stream_id = 'racing-stream'`,
+        [runId]
+      );
+      expect(rows[0].n).toBe(0);
+    });
+
     it('writes no stream chunk after the purge', async () => {
       const { runId, streamId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
       await events.create(runId, {
@@ -448,6 +506,205 @@ describe('Retention ($retention: 0)', () => {
    * purge that does not fire — it is a purge that fires on a value nobody
    * meant as "delete my data".
    */
+  describe('runs.deleteDataMany', () => {
+    /** A step started on `runId` and still running when the run ends. */
+    async function startStillRunningStep(runId: string): Promise<string> {
+      const stepId = `step_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'step_created',
+        correlationId: stepId,
+        eventData: { stepName: 'slow-step', input: new Uint8Array([4, 5]) },
+      });
+      await events.create(runId, {
+        eventType: 'step_started',
+        correlationId: stepId,
+      });
+      return stepId;
+    }
+
+    // A run that keeps its data until it is deleted on demand: a step still
+    // running when it ended (a `Promise.race` loser) may settle after the
+    // deletion, and what it writes must not bring the data back.
+    for (const [eventType, eventData] of [
+      ['step_completed', { result: new Uint8Array([6, 7]) }],
+      ['step_failed', { error: new Uint8Array([6, 7]) }],
+      ['step_retrying', { error: new Uint8Array([6, 7]) }],
+    ] as const) {
+      it(`clears the payload of a ${eventType} that lands after the deletion`, async () => {
+        const { runId } = await seedRun();
+        const stepId = await startStillRunningStep(runId);
+        await events.create(runId, {
+          eventType: 'run_completed',
+          eventData: { output: new Uint8Array([12, 13]) },
+        });
+        await runs.deleteDataMany?.({ runIds: [runId] });
+        expect(await countRemainingPayloads(runId)).toBe(0);
+
+        await events.create(runId, {
+          eventType,
+          correlationId: stepId,
+          eventData,
+        } as never);
+
+        expect(await countRemainingPayloads(runId)).toBe(0);
+      });
+    }
+
+    it('blanks a stream write that was in flight while the run finished and had its data deleted', async () => {
+      const { runId } = await seedRun();
+      // Hold every stream insert open after it has read the run (as running,
+      // so it takes no lock), long enough for the run to finish and have its
+      // data deleted before the insert commits.
+      await pool.query(`
+        CREATE OR REPLACE FUNCTION workflow.test_slow_chunk_insert()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_sleep(1); RETURN NEW; END $$`);
+      await pool.query(`
+        CREATE TRIGGER test_slow_chunk_insert
+        BEFORE INSERT ON workflow.workflow_stream_chunks
+        FOR EACH ROW EXECUTE FUNCTION workflow.test_slow_chunk_insert()`);
+      try {
+        const write = streamer.streams.write(runId, 'in-flight', 'secret');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await events.create(runId, {
+          eventType: 'run_completed',
+          eventData: { output: new Uint8Array([12, 13]) },
+        });
+        const deleted = await runs.deleteDataMany?.({ runIds: [runId] });
+        expect(deleted?.results).toEqual([{ runId, outcome: 'deleted' }]);
+        await write;
+      } finally {
+        await pool.query(
+          'DROP TRIGGER test_slow_chunk_insert ON workflow.workflow_stream_chunks'
+        );
+        await pool.query('DROP FUNCTION workflow.test_slow_chunk_insert()');
+      }
+
+      const { rows } = await pool.query(
+        `SELECT octet_length(data)::int AS n FROM workflow.workflow_stream_chunks
+          WHERE run_id = $1 AND stream_id = 'in-flight'`,
+        [runId]
+      );
+      expect(rows).toEqual([{ n: 0 }]);
+    });
+
+    it('writes no stream chunk after the deletion, to a new stream or an existing one', async () => {
+      const { runId, streamId } = await seedRun();
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      await runs.deleteDataMany?.({ runIds: [runId] });
+      const before = await rowCounts(runId);
+
+      await streamer.streams.write(runId, 'late-stream', 'secret');
+      await streamer.streams.writeMulti(runId, streamId, ['a', 'b']);
+
+      expect(await countRemainingPayloads(runId)).toBe(0);
+      expect((await rowCounts(runId)).chunks).toBe(before.chunks);
+      const late = await streamer.streams.getChunks(runId, 'late-stream');
+      expect(late.data).toEqual([]);
+    });
+
+    it("deletes a cancelled run's VM snapshot, which holds its heap", async () => {
+      // What a suspended QuickJS run leaves behind: its heap, and with it the
+      // input, possibly unencrypted. Cancelling it from outside leaves the
+      // snapshot to the World.
+      const snapshots = createSnapshotsStorage(drizzle);
+      const { runId } = await seedRun();
+      await snapshots.save(runId, new Uint8Array([42, 42, 42]), {
+        eventsCursor: null,
+        createdAt: new Date(),
+      });
+      await events.create(runId, { eventType: 'run_cancelled' });
+      expect(await snapshots.load(runId)).not.toBeNull();
+
+      const result = await runs.deleteDataMany?.({ runIds: [runId] });
+
+      expect(result?.results).toEqual([{ runId, outcome: 'deleted' }]);
+      expect(await snapshots.load(runId)).toBeNull();
+    });
+
+    it("deletes a finished run's data, keeping its rows", async () => {
+      const { runId } = await seedRun();
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      const rowsBefore = await rowCounts(runId);
+      expect(await countRemainingPayloads(runId)).toBeGreaterThan(0);
+      const before = Date.now();
+
+      const result = await runs.deleteDataMany?.({ runIds: [runId] });
+
+      expect(result).toEqual({
+        summary: {
+          requested: 1,
+          deleted: 1,
+          alreadyDeleted: 0,
+          skipped: 0,
+          notCreated: 0,
+          notFound: 0,
+          failed: 0,
+        },
+        results: [{ runId, outcome: 'deleted' }],
+      });
+      expect(await countRemainingPayloads(runId)).toBe(0);
+      expect(await rowCounts(runId)).toEqual(rowsBefore);
+      const run = await runs.get(runId);
+      expect(run.status).toBe('completed');
+      expect(run.expiredAt?.getTime()).toBeGreaterThanOrEqual(before);
+    });
+
+    it('answers already_deleted on a second call, keeping the first expiredAt', async () => {
+      const { runId } = await seedRun();
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      await runs.deleteDataMany?.({ runIds: [runId] });
+      const { expiredAt } = await runs.get(runId);
+
+      const again = await runs.deleteDataMany?.({ runIds: [runId] });
+
+      expect(again?.results).toEqual([{ runId, outcome: 'already_deleted' }]);
+      expect((await runs.get(runId)).expiredAt).toEqual(expiredAt);
+    });
+
+    it('skips an unfinished run and answers not_found for an unknown one, in request order', async () => {
+      const { runId } = await seedRun();
+      const payloadsBefore = await countRemainingPayloads(runId);
+      const missing = `wrun_${ulid()}`;
+
+      const result = await runs.deleteDataMany?.({
+        runIds: [missing, runId],
+      });
+
+      expect(result?.results).toEqual([
+        { runId: missing, outcome: 'not_found' },
+        {
+          runId,
+          outcome: 'skipped',
+          reason: 'run_not_terminal',
+          status: 'running',
+        },
+      ]);
+      expect(result?.summary).toMatchObject({
+        requested: 2,
+        skipped: 1,
+        notFound: 1,
+      });
+      expect(await countRemainingPayloads(runId)).toBe(payloadsBefore);
+      // Read raw: the fixture's legacy output twin makes a running run fail
+      // `runs.get`'s schema.
+      const { rows } = await pool.query(
+        'SELECT status, expired_at FROM workflow.workflow_runs WHERE id = $1',
+        [runId]
+      );
+      expect(rows[0]).toEqual({ status: 'running', expired_at: null });
+    });
+  });
+
   describe('every other value keeps the data', () => {
     const cases: Array<[string, Record<string, string> | undefined]> = [
       ['no attribute at all', undefined],

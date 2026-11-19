@@ -759,9 +759,16 @@ describe.each([
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(runAheadDepth));
     let injected = false;
     const code = withSleep('1h');
+    // Until the hazard, outcomes are held until the next body returned, so
+    // the next writes queue behind them and the first batch comes early
+    // however slow the machine is. With a fixed delay instead, a loaded
+    // runner wrote outcome after outcome alone, and run-ahead had started
+    // every body by the time a batch carried the hazard.
+    const holdOutcome = holdOutcomesUntilAhead(1);
     const { world, runId, start } = await run(code, [STEPS], {
       async beforeCreate(data, _params, source) {
-        await slowOutcomes.beforeCreate(data);
+        if (injected) await slowOutcomes.beforeCreate(data);
+        else await holdOutcome(data);
         if (!injected && data.eventType === 'step_completed' && source?.batch) {
           injected = true;
           // The far-future sleep completed by another writer: run-ahead
@@ -914,7 +921,6 @@ describe.each([
     'snapshots a VM that ran ahead only from a confirmed log, and the restored VM runs ahead again',
     async () => {
       vi.stubEnv('WORKFLOW_SNAPSHOT_THRESHOLD', '1');
-      vi.stubEnv('WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED', '1');
       vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '0');
       let stored: { data: Uint8Array; metadata: SnapshotMetadata } | undefined;
       const saves: SnapshotMetadata[] = [];
