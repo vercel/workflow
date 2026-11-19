@@ -307,7 +307,10 @@ describe.skipIf(process.platform === 'win32')(
         queuePublishRequestedAtMs: 2,
         strategy: 'sequential',
       };
-      await wake(runId, { hookResumeTiming: ownTiming });
+      await wake(runId, {
+        hookResumeTiming: ownTiming,
+        wakeEventId: 'evnt_own',
+      });
       await until(
         () => runDeliveries(runId).length,
         (n) => n === 1
@@ -320,7 +323,11 @@ describe.skipIf(process.platform === 'win32')(
         strategy: 'sequential',
       };
       const traceCarrier = { traceparent: '00-abc-def-01' };
-      await wake(runId, { hookResumeTiming: absorbedTiming, traceCarrier });
+      await wake(runId, {
+        hookResumeTiming: absorbedTiming,
+        traceCarrier,
+        wakeEventId: 'evnt_absorbed',
+      });
       // The wake carrying a resume's timing replaces the plain one on the
       // lease, whichever delivery left its message first.
       await until(
@@ -340,6 +347,7 @@ describe.skipIf(process.platform === 'win32')(
         runSpecVersion: SPEC,
         hookResumeTiming: absorbedTiming,
         traceCarrier,
+        wakeEventId: 'evnt_absorbed',
       });
       expect(rerun).toMatchObject({ attempt: 1, deliveryCount: 2 });
 
@@ -350,7 +358,10 @@ describe.skipIf(process.platform === 'win32')(
         if (runDeliveries(secondRunId).length === 1) await secondGate.released;
         response.end('{}');
       };
-      await wake(secondRunId, { hookResumeTiming: ownTiming });
+      await wake(secondRunId, {
+        hookResumeTiming: ownTiming,
+        wakeEventId: 'evnt_own',
+      });
       await until(
         () => runDeliveries(secondRunId).length,
         (n) => n === 1
@@ -364,6 +375,9 @@ describe.skipIf(process.platform === 'win32')(
       );
       expect(runDeliveries(secondRunId)[1]!.body).not.toHaveProperty(
         'hookResumeTiming'
+      );
+      expect(runDeliveries(secondRunId)[1]!.body).not.toHaveProperty(
+        'wakeEventId'
       );
     });
 

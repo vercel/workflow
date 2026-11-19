@@ -376,6 +376,14 @@ export const WorkflowLingerHookMs = SemanticConvention<number>(
   'workflow.linger.hook_ms'
 );
 
+/**
+ * The delivery's wake named an event above the last consumed position
+ * (`wakeEventId`), so it skipped the tail read that decides a no-op delivery.
+ */
+export const WorkflowNoopCheckSkipped = SemanticConvention<boolean>(
+  'workflow.noop_check_skipped'
+);
+
 /** The in-band fence refused this orchestrator delivery's write. */
 export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'

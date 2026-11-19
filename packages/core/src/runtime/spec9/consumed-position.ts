@@ -164,6 +164,19 @@ export function isCompletedWaitTimer(
   );
 }
 
+/**
+ * Whether this process recorded a consumed position for the run below `slot`,
+ * so an event at `slot` is new to the run's orchestrator here.
+ */
+export function isAboveConsumedPosition(
+  world: World,
+  runId: string,
+  slot: number
+): boolean {
+  const recorded = positionsFor(world).get(runId);
+  return recorded !== undefined && slot > recorded.slot;
+}
+
 /** Test hook. */
 export function __resetConsumedPositionsForTests(world: World): void {
   positionsFor(world).clear();
