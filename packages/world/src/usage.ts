@@ -26,10 +26,9 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
 export const WORKFLOW_PRICING_DOCS_URL =
   'https://vercel.com/docs/workflows/pricing';
 
-/** How many spans the summaries list before collapsing the rest. */
-export const USAGE_SPANS_SHOWN = 5;
+/** How many step rows the span tree shows before folding the rest. */
+const USAGE_SPANS_SHOWN = 5;
 
-/** What a span's events belong to. Sleeps are `wait`. */
 /**
  * What a span's events belong to: the run's own lifecycle (`run_*`), a step,
  * a hook, a sleep (`wait`), the run's attributes (`attr_set`), or event
@@ -539,17 +538,6 @@ export function formatOtherSteps(steps: number): string {
   return `+ ${steps.toLocaleString('en-US')} other ${steps === 1 ? 'step' : 'steps'}`;
 }
 
-/**
- * `12 billable events · 1 retry` on a billed run, `12 events · 1 retry` on
- * one that is not (a Local World run).
- */
-export function formatRunUsageSummary(usage: RunUsage): string {
-  const events = usage.billed
-    ? plural(usage.billableEvents, 'billable event', 'billable events')
-    : formatUsageEvents(usage.events);
-  return `${events} · ${formatRetries(usage.retries.count)}`;
-}
-
 /** The run's events and retries, for the CLI's summary block. */
 export function formatEventsWithRetries(usage: RunUsage): {
   events: string;
@@ -612,42 +600,6 @@ export function formatRunEventsLine(usage: RunUsage): string | null {
 }
 
 /**
- * The sleeps, hooks, attribute writes and unknown events, from their spans:
- * `1 sleep wrote 2 events, 1 hook wrote 3 events.` `null` when there are
- * none.
- */
-export function formatBuiltInEventsLine(usage: RunUsage): string | null {
-  const span = (kind: RunUsageSpanKind) =>
-    usage.eventsBySpan.find((s) => s.kind === kind);
-  const parts: string[] = [];
-  const wait = span('wait');
-  if (wait) {
-    parts.push(
-      `${plural(wait.calls, 'sleep', 'sleeps')} wrote ${formatUsageEvents(wait.events)}`
-    );
-  }
-  const hook = span('hook');
-  if (hook) {
-    parts.push(
-      `${plural(hook.calls, 'hook', 'hooks')} wrote ${formatUsageEvents(hook.events)}`
-    );
-  }
-  const attributes = span('attributes');
-  if (attributes) {
-    parts.push(
-      `${plural(attributes.events, 'attribute write', 'attribute writes')}`
-    );
-  }
-  const other = span('other');
-  if (other) {
-    parts.push(`${plural(other.events, 'other event', 'other events')}`);
-  }
-  if (parts.length === 0) return null;
-  const sentence = parts.join(', ');
-  return `${sentence[0].toUpperCase()}${sentence.slice(1)}.`;
-}
-
-/**
  * What the retries added, from their counts: `2 retries added 4 events: 2
  * retry markers, 2 step starts.` With no retries, what one would add.
  */
@@ -662,35 +614,11 @@ function retryLine(usage: RunUsage): string {
   return `${plural(count, 'retry', 'retries')} added ${formatUsageEvents(events)}: ${parts.join(', ')}.`;
 }
 
-const COUNT_COVERS =
-  'The count covers the whole run, not only the events loaded on this page.';
-
-/**
- * Every line of "How events are counted", from the run's own numbers. The
- * CLI prints {@link formatEventCountingNote}, two of them; a UI shows all.
- */
-export function formatEventCountingLines(usage: RunUsage): string[] {
-  const breakdown = formatStepEventsBreakdown(usage);
-  const creation = formatStepCreationNote(usage);
-  const runLine = formatRunEventsLine(usage);
-  const builtIns = formatBuiltInEventsLine(usage);
-  return [
-    ...(breakdown ? [`${breakdown}.`] : []),
-    ...(creation ? [creation] : []),
-    retryLine(usage),
-    ...(runLine ? [runLine] : []),
-    ...(builtIns ? [builtIns] : []),
-    usage.billed
-      ? `Every event in the log is billable today. ${COUNT_COVERS}`
-      : COUNT_COVERS,
-  ];
-}
-
 /**
  * The two lines of "How events are counted" the CLI prints under its table:
  * how the run's step events add up (or, with no steps, what the run's own
- * events were), and what the retries added. Both are lines of
- * {@link formatEventCountingLines}.
+ * events were), and what the retries added. The full explanation is in the
+ * docs.
  */
 export function formatEventCountingNote(usage: RunUsage): [string, string] {
   const breakdown = formatStepEventsBreakdown(usage);
@@ -743,20 +671,6 @@ export function formatStepEventsBreakdown(usage: RunUsage): string | null {
     }
   );
   return `${plural(steps, 'step', 'steps')} wrote ${formatUsageEvents(events)}: ${parts.join(', ')}`;
-}
-
-/**
- * Why some steps have no `created` event, when that is so: they ran inline
- * on a spec 9 run, where a step's first `step_started` creates it. `null`
- * when every step has one.
- */
-export function formatStepCreationNote(usage: RunUsage): string | null {
-  const { steps, byType } = usage.stepEvents;
-  const missing = steps - byType.created;
-  if (missing <= 0) return null;
-  return missing === steps
-    ? 'No step has a created event: each ran inline, and its first started event created it.'
-    : `${plural(missing, 'step has', 'steps have')} no created event: they ran inline, and their first started event created them.`;
 }
 
 export interface UsageSpanTreeRow {
@@ -843,15 +757,7 @@ export function usageSpanTree(
   };
 }
 
-/**
- * The step the biggest-driver callout names: the one with the most events.
- * Never a built-in row; `null` when the run has no steps.
- */
-export function usageBiggestDriver(usage: RunUsage): RunUsageSpan | null {
-  return usage.eventsBySpan.find((span) => span.kind === 'step') ?? null;
-}
-
-export interface CollapsedUsageSpans {
+interface CollapsedUsageSpans {
   shown: RunUsageSpan[];
   /** The spans past `limit`, folded into one row; `null` when none are. */
   other: {
@@ -864,7 +770,7 @@ export interface CollapsedUsageSpans {
 }
 
 /** The first `limit` spans, and the rest as "N other spans". */
-export function collapseUsageSpans(
+function collapseUsageSpans(
   spans: RunUsageSpan[],
   limit: number = USAGE_SPANS_SHOWN
 ): CollapsedUsageSpans {

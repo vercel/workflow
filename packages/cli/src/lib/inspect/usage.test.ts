@@ -1,6 +1,5 @@
 import {
   buildRunUsage,
-  formatEventCountingLines,
   formatEventCountingNote,
   formatUsageFooter,
   type RunUsage,
@@ -79,8 +78,6 @@ describe('formatRunUsageText', () => {
     expect(text).toContain(formatUsageFooter(usage));
     for (const line of formatEventCountingNote(usage)) {
       expect(text).toContain(line);
-      // Each one is a line of the full "How events are counted" list.
-      expect(formatEventCountingLines(usage)).toContain(line);
     }
   });
 

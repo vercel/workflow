@@ -4,8 +4,6 @@ import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   formatEventCountingNote,
-  formatRunUsageSummary,
-  formatStepCreationNote,
   formatStepEventsBreakdown,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -135,7 +133,7 @@ describe('experimental_usage.getRun (world-local)', () => {
         other: 0,
       },
     });
-    expect(formatRunUsageSummary(usage)).toBe('6 events · 0 retries');
+    expect(usage.retries).toEqual({ count: 0, events: 0 });
   });
 
   it('counts one retry as two extra events on its step', async () => {
@@ -172,7 +170,7 @@ describe('experimental_usage.getRun (world-local)', () => {
       completed: 1,
       retrying: 1,
     });
-    expect(formatRunUsageSummary(usage)).toBe('8 events · 1 retry');
+    expect(usage.events).toBe(8);
   });
 
   it('counts the whole log of a run past the first page of 200 events', async () => {
@@ -273,7 +271,7 @@ describe('experimental_usage.getRun (world-local)', () => {
       events: 7,
       byType: { created: 1, started: 3, retrying: 2, failed: 1, completed: 0 },
     });
-    expect(formatRunUsageSummary(usage)).toBe('10 events · 2 retries');
+    expect(usage.events).toBe(10);
   });
 
   it('reads an in-progress run as it grows', async () => {
@@ -384,9 +382,8 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(formatStepEventsBreakdown(usage)).toBe(
       '3 steps wrote 7 events: 1 created, 3 started, 3 completed'
     );
-    expect(formatStepCreationNote(usage)).toBe(
-      '2 steps have no created event: they ran inline, and their first started event created them.'
-    );
+    // The two inline steps have no created event.
+    expect(usage.stepEvents.steps - usage.stepEvents.byType.created).toBe(2);
   });
 
   it('counts the calls of each span: steps, distinct hooks and sleeps', async () => {
