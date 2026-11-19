@@ -29,6 +29,7 @@ import {
   getVercelDiagnostics,
   type InstrumentedFetchOptions,
   instrumentedFetch,
+  logCurlRepro,
   parseRetryAfter,
   REQUEST_TIMEOUT_MS,
   resolveVercelApiToken,
@@ -668,5 +669,39 @@ describe('resolveVercelApiToken', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_TOKEN;
     expect(await resolveVercelApiToken()).toBeNull();
+  });
+});
+
+describe('logCurlRepro', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('omits authorization and the private backend URL but keeps safe headers', () => {
+    vi.stubEnv('DEBUG', '1');
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    logCurlRepro(
+      'GET',
+      'https://api.vercel.com/workflow/events',
+      new Headers({
+        Authorization: 'Bearer test-token',
+        'X-Vercel-Workflow-Api-Url': 'https://private-backend.invalid',
+        'content-type': 'application/json',
+      })
+    );
+    const output = JSON.stringify(log.mock.calls);
+    expect(output).toContain('curl -X GET');
+    expect(output).toContain('content-type: application/json');
+    expect(output).not.toContain('test-token');
+    expect(output).not.toContain('private-backend.invalid');
+    expect(output).not.toContain('x-vercel-workflow-api-url');
+  });
+
+  it('does not log without DEBUG', () => {
+    vi.stubEnv('DEBUG', '');
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    logCurlRepro('GET', 'https://example.invalid', new Headers());
+    expect(log).not.toHaveBeenCalled();
   });
 });
