@@ -363,6 +363,7 @@ async function runDelivery(
     replayBudget,
     prefetchedRun,
     runSpecVersion,
+    quickjsBaseline,
   } = delivery;
   let { resumeTracking } = delivery;
   const {
@@ -2193,6 +2194,7 @@ async function runDelivery(
           namespace,
           nextTraceCarrier,
           waitContinuation,
+          quickjsBaseline,
           deliveryAttempt: creatorDeliveryCount,
           armsNearDueWaits: mayHoldCoalescedTimer,
           ownerMessageId: creatorMessageId,

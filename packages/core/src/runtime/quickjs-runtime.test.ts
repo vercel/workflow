@@ -2274,6 +2274,30 @@ describe('baseline snapshot startup optimization', () => {
     __clearBaselineSnapshotCacheForTests();
   });
 
+  it('gates out bundles that read the local timezone at module scope', async () => {
+    // Local-date operations read the host's timezone without reading the
+    // clock; a baseline built in one timezone (e.g. prebuilt at build time)
+    // would hand another its values.
+    __clearBaselineSnapshotCacheForTests();
+    const timezoneCode = `
+      var moduleScopeHours = new Date(2024, 0, 1).getHours();
+      async function workflow() { return moduleScopeHours; }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    await runQuickJSWorkflow({
+      workflowCode: timezoneCode,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+    const entry = await __peekBaselineEntryForTests(timezoneCode);
+    expect(entry?.state).toBe('ineligible');
+    assert(entry?.state === 'ineligible');
+    expect(entry.reason).toMatch(/[1-9]\d* timezone lookup/);
+    __clearBaselineSnapshotCacheForTests();
+  });
+
   it('serializes with pristine intrinsics on both paths when module scope patches one', async () => {
     __clearBaselineSnapshotCacheForTests();
     // A Date.prototype.toISOString polyfill is HARMLESS (not merely
