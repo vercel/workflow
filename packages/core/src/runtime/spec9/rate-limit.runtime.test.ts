@@ -191,6 +191,8 @@ describe('waiting in process for a near rate limit slot', () => {
 
   it('wakes early for a slot further out, and finishes the wait in process', async () => {
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    // A 2s window rather than the default, so the test waits less.
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS', '2000');
     // The queue's clock jumps to each timer; between them it runs in real
     // time, so the woken delivery's in-process wait reaches the slot.
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
