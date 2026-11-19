@@ -1075,9 +1075,16 @@ describe.skipIf(process.platform === 'win32')(
                     })
                     .catch(async (error) => {
                       // Name what the run was waiting on, so a timeout here
-                      // says which part of the delivery path stalled.
+                      // says which part of the delivery path stalled. A
+                      // snapshot that fails itself (a pool exhausted by the
+                      // same stall) must not replace the invoke's error.
+                      const state = await deliveryState(runId).catch(
+                        (snapshotError: unknown) => ({
+                          snapshotError: String(snapshotError),
+                        })
+                      );
                       throw new Error(
-                        `invoke ${wave}:${index}:${slot} failed: ${JSON.stringify(await deliveryState(runId))}`,
+                        `invoke ${wave}:${index}:${slot} failed: ${JSON.stringify(state)}`,
                         { cause: error }
                       );
                     });

@@ -24,6 +24,8 @@ import { createRun } from './test-helpers.js';
 const listing = new Map<string, number>();
 const deletePending = new Set<string>();
 let listings = 0;
+/** Runs once a listing has read its entries, before it returns them. */
+let afterListing: ((dir: string) => Promise<void>) | undefined;
 const isLegacy = (dir: unknown) =>
   typeof dir === 'string' && dir.startsWith(dataDir + path.sep);
 const deniedFor = (syscall: string, dir: string) =>
@@ -41,6 +43,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     listing.set(dir, (listing.get(dir) ?? 0) + 1);
     try {
       const entries = await actual.readdir(dir, ...(rest as [any]));
+      await afterListing?.(dir);
       // Held open a moment, for longer by some calls than by others, as a
       // larger directory or a slower worker would be.
       await new Promise((resolve) => setTimeout(resolve, (listings++ % 4) * 5));
@@ -81,6 +84,7 @@ beforeEach(() => {
 afterEach(() => {
   closeAllDatabases();
   rmSync(dataDir, { recursive: true, force: true });
+  afterListing = undefined;
   vi.restoreAllMocks();
 });
 
@@ -178,4 +182,30 @@ it('tagged clear()s running side by side do not trip over each other', async () 
   for (const file of [...files.tagged, ...files.otherTag])
     expect(exists(file), file).toBe(false);
   for (const file of files.untagged) expect(exists(file), file).toBe(true);
+});
+
+it('clear()s of two tags listing a directory that holds a file of each remove it', async () => {
+  mkdirSync(path.join(dataDir, 'runs'));
+  writeFileSync(path.join(dataDir, 'runs', 'wrun_A.vitest-0.json'), '{}');
+  writeFileSync(path.join(dataDir, 'runs', 'wrun_B.vitest-1.json'), '{}');
+  // Both list `runs` before either deletes its file, so each sees the
+  // other's file there and keeps the directory for it.
+  const runsDir = path.join(dataDir, 'runs');
+  let arrived = 0;
+  let bothListed: () => void = () => {};
+  const listed = new Promise<void>((resolve) => {
+    bothListed = resolve;
+  });
+  afterListing = async (dir) => {
+    if (dir !== runsDir) return;
+    if (++arrived === 2) bothListed();
+    await listed;
+  };
+  const worlds = ['vitest-0', 'vitest-1'].map((tag) =>
+    createWorld({ dataDir, tag })
+  );
+  await Promise.all(worlds.map((world) => world.clear()));
+  await Promise.all(worlds.map((world) => world.close?.()));
+  expect(arrived).toBe(2);
+  expect(exists('runs')).toBe(false);
 });

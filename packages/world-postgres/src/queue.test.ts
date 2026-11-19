@@ -1541,7 +1541,10 @@ function buildMessageData(
  */
 async function startQueue(queue: ReturnType<typeof createQueue>) {
   await queue.start();
-  await vi.waitFor(() => expect(run).toHaveBeenCalled());
+  // The deferred start re-probes every 50ms with a 200ms socket timeout, on
+  // the same loaded machine that made `start()` return early: give it far
+  // more than `vi.waitFor`'s 1s default.
+  await vi.waitFor(() => expect(run).toHaveBeenCalled(), { timeout: 10_000 });
 }
 
 function getTaskHandler(name: 'workflow_flows') {

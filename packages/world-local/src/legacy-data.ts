@@ -94,6 +94,14 @@ export async function removeLegacyData(
         return;
       throw error;
     });
+  // Directories left non-empty, children before their parents. Another tag's
+  // clear() can list a directory while it still holds this tag's files,
+  // and this one while it holds the other's: each then keeps it for the
+  // other's file, and both delete their own, leaving it empty. Trying these
+  // again once this clear() is done removes such a directory: whichever of
+  // the two retries last finds both deletions done. A directory still
+  // holding a file refuses (`ENOTEMPTY`).
+  const kept: string[] = [];
   /** Deletes the tag's files under `dir`; whether it is now empty. */
   const removeTagged = async (dir: string): Promise<boolean> => {
     let entries: import('node:fs').Dirent[];
@@ -120,25 +128,28 @@ export async function removeLegacyData(
         left++;
       }
     }
+    if (left > 0) kept.push(dir);
     return left === 0;
   };
   for (const dir of entries) {
     if (await removeTagged(dir)) await removeDir(dir);
   }
+  for (const dir of kept) await removeDir(dir);
 }
 
-/** How many times `settled` tries; its waits add up to about half a second. */
-const SETTLE_ATTEMPTS = 10;
+/** How many times `settled` tries; its waits add up to about two seconds. */
+const SETTLE_ATTEMPTS = 20;
 
 /**
  * Runs a file system operation, again while it fails as Windows fails on a
  * file or directory another process holds open or is removing: `EPERM` for
  * one already removed but still open somewhere ("delete pending": another
  * tagged clear() listing it, or a virus scanner), `EBUSY` for one open
- * without sharing its deletion. Both pass in a moment, when the other handle
- * closes, and the operation then succeeds or fails for good (`ENOENT` once
- * the entry is gone). Anything else, or the same error once the retries are
- * spent, rejects.
+ * without sharing its deletion. Both pass when the other handle closes, and
+ * the operation then succeeds or fails for good (`ENOENT` once the entry is
+ * gone). This assumes that handle closes within the retries' two seconds: a
+ * listing does, a scanner normally does. Anything else, or the same error
+ * once the retries are spent, rejects. Only a failing operation waits.
  */
 async function settled<T>(operation: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {

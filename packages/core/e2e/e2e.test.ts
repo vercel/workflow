@@ -470,28 +470,6 @@ async function allEvents(
   );
 }
 
-/** The payload field of each step event type that carries one. */
-const STEP_PAYLOAD_FIELD: Record<string, 'input' | 'result' | undefined> = {
-  step_created: 'input',
-  // A spec 9 inline step's creation-bearing `step_started` carries its input.
-  step_started: 'input',
-  step_completed: 'result',
-};
-
-/**
- * The step input and result payloads present on a run's events, as listed by
- * `workflow inspect events --withData --json`.
- */
-function stepPayloadsOfEvents(
-  events: any[]
-): { eventType: string; value: unknown }[] {
-  return events.flatMap((event) => {
-    const field = STEP_PAYLOAD_FIELD[event?.eventType];
-    const value = field ? event.eventData?.[field] : undefined;
-    return value === undefined ? [] : [{ eventType: event.eventType, value }];
-  });
-}
-
 type StepStateFromEvents = {
   stepId: string;
   stepName: string;
@@ -558,6 +536,37 @@ async function stepsFromEvents(runId: string): Promise<StepStateFromEvents[]> {
     }
   }
   return [...steps.values()];
+}
+
+/** Every step of a run, from the World's step listing. */
+async function allSteps(runId: string) {
+  const world = await getWorld();
+  return allPages((cursor) =>
+    world.steps.list({
+      runId,
+      resolveData: 'none',
+      pagination: { limit: 100, cursor },
+    })
+  );
+}
+
+/**
+ * The steps a test asserts on: the World's step listing, except on the
+ * spec 9 lane, where the listing on world-vercel can lag the event log (see
+ * `stepsFromEvents`) and the steps are read from the log instead. The other
+ * lanes keep checking that the listing reaches every step's final state.
+ */
+function stepsOf(runId: string): Promise<StepStateFromEvents[]> {
+  return process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+    String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+    ? stepsFromEvents(runId)
+    : allSteps(runId).then((steps) =>
+        steps.map(({ stepId, stepName, status }) => ({
+          stepId,
+          stepName,
+          status: status as StepStateFromEvents['status'],
+        }))
+      );
 }
 
 /** The `hook_created` events of a parent's child-run completion hook. */
@@ -2046,7 +2055,7 @@ describe.concurrent('e2e', () => {
 
           // … and the step itself is recorded as failed.
           const steps = await readUntil(
-            () => stepsFromEvents(run.runId),
+            () => stepsOf(run.runId),
             (steps) =>
               steps.some(
                 (s) =>
@@ -2177,7 +2186,7 @@ describe.concurrent('e2e', () => {
 
           // Verify the step itself failed
           const steps = await readUntil(
-            () => stepsFromEvents(run.runId),
+            () => stepsOf(run.runId),
             (steps) =>
               steps.some(
                 (s) =>
@@ -5104,7 +5113,7 @@ describe.concurrent('e2e', () => {
       // - 1 invokeAdderFromStep wrapper (which itself triggers another
       //   makeAdder arrow step inside it)
       const steps = await readUntil(
-        () => stepsFromEvents(run.runId),
+        () => stepsOf(run.runId),
         (steps) => {
           const byName = (needle: string) =>
             steps.filter((s) => s.stepName.includes(needle));
@@ -7003,39 +7012,74 @@ describe.concurrent('e2e', () => {
           });
 
           // Step payloads go with it, not just the run's own input/output.
-          // Read off the event log, where a step's input and result live,
-          // not the step listing: on a spec 9 run world-vercel derives the
-          // listing from the log, and with payloads requested it leaves out
-          // a step it cannot settle from the log (see "Steps on world-vercel"
-          // in packages/core/src/runtime/spec9/README.md), which CI saw as an
-          // empty listing for a purged run. The step's creation event
-          // (`step_created`, or a spec 9 inline step's creation-bearing
-          // `step_started`) carries its input, `step_completed` its result.
-          const purged = (events: unknown) => {
-            if (!Array.isArray(events)) return false;
-            const payloads = stepPayloadsOfEvents(events);
-            return (
-              payloads.some((p) => p.eventType === 'step_completed') &&
-              payloads.every((p) => p.value === EXPIRED_DATA_JSON)
-            );
-          };
-          const events = await cliInspectJsonUntil(
-            `events --runId ${run.runId} --withData --sort asc --all`,
-            purged,
-            { timeoutMs: 60_000, intervalMs: 5_000 }
+          // The step listing renders a purged payload as "<data expired>".
+          // On a spec 9 run world-vercel builds that listing from the event
+          // log and, with payloads requested, can leave out a step it cannot
+          // settle from the log (see "Steps on world-vercel" in
+          // packages/core/src/runtime/spec9/README.md); CI saw an empty
+          // listing for a purged run for over 60s. A spec 9 run also passes
+          // when each of its `step_completed` events, read on its own, no
+          // longer carries its result: world-vercel drops a purged result
+          // from the event rather than marking it, while an unpurged one
+          // comes back in full.
+          const world = await getWorld();
+          const stepEvents = (
+            await allPages((cursor) =>
+              world.events.list({
+                runId: run.runId,
+                resolveData: 'none',
+                pagination: { limit: 100, cursor, sortOrder: 'asc' },
+              })
+            )
+          ).filter((event) => event.eventType.startsWith('step_'));
+          const completions = stepEvents.filter(
+            (event) => event.eventType === 'step_completed'
           );
-          const payloads = stepPayloadsOfEvents(events);
-          expect(payloads.map((p) => p.eventType)).toContain('step_completed');
-          for (const payload of payloads) {
-            expect(payload).toEqual({
-              eventType: payload.eventType,
-              value: EXPIRED_DATA_JSON,
-            });
+          expect(completions.length).toBeGreaterThan(0);
+          const spec9 = stepEvents.some((event) => event.specVersion === 9);
+          const resultsPurged = async () => {
+            for (const completion of completions) {
+              const { json } = await cliInspectJson(
+                `event ${completion.eventId} --runId ${run.runId}`
+              );
+              const result = json?.eventData?.result;
+              if (result !== undefined && result !== EXPIRED_DATA_JSON) {
+                return false;
+              }
+            }
+            return true;
+          };
+          const purged = await readUntil(
+            async () => {
+              const { json: steps } = await cliInspectJson(
+                `steps --runId ${run.runId} --withData`
+              );
+              const listed =
+                Array.isArray(steps) &&
+                steps.length > 0 &&
+                steps.every((step: any) => step.output === EXPIRED_DATA_JSON);
+              return {
+                steps,
+                listed,
+                logged: spec9 && !listed && (await resultsPurged()),
+              };
+            },
+            ({ listed, logged }) => listed || logged,
+            {
+              timeoutMs: 60_000,
+              intervalMs: 5_000,
+              attemptTimeoutMs: 120_000,
+            }
+          );
+          if (!purged.logged) {
+            expect(purged.steps.length).toBeGreaterThan(0);
+            for (const step of purged.steps) {
+              expect(step.output).toBe(EXPIRED_DATA_JSON);
+            }
           }
 
           // And the run carries the marker the CLI and web UI gate their
           // "<data expired>" rendering on: an `expiredAt` in the past.
-          const world = await getWorld();
           const persisted = await world.runs.get(run.runId);
           expect(persisted.expiredAt).toBeInstanceOf(Date);
           expect(persisted.expiredAt?.getTime()).toBeLessThanOrEqual(

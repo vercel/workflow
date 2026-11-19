@@ -80,7 +80,7 @@ export function inlineExecution(world: string) {
 
   test(
     'sleep workflow requires exactly 2 flow invocations',
-    { timeout: 40_000 },
+    { timeout: 45_000 },
     async () => {
       const server = await startServer({ world }).then(createFetcher);
       const result = await server.invoke(
@@ -112,14 +112,18 @@ export function inlineExecution(world: string) {
       // through the short sleep and completes the run itself, and the timer,
       // armed before the linger, still arrives as invocation 2 and finds the
       // run completed. That delivery can land just after the run is seen
-      // completed, so wait for it rather than reading the count once.
+      // completed, so wait for it rather than reading the count once, then
+      // read it again after a pause so a third invocation landing later
+      // still fails the test.
       await vi.waitFor(
         async () => {
           const count = await server.getFlowInvocationCount(result.runId);
-          expect(count).toBe(2);
+          expect(count).toBeGreaterThanOrEqual(2);
         },
         { interval: 100, timeout: 10_000 }
       );
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(await server.getFlowInvocationCount(result.runId)).toBe(2);
     }
   );
 

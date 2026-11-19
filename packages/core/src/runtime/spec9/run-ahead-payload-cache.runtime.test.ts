@@ -88,7 +88,13 @@ describe('run-ahead outcome committed above its predicted slot (node engine)', (
           async beforeCreate(data) {
             if (data.eventType !== 'step_completed' || !firstOutcome) return;
             firstOutcome = false;
-            await appended;
+            // Bounded, so a run-ahead that never starts step 1 before this
+            // commit fails on the ordering assertion below, not as a bare
+            // test timeout.
+            await Promise.race([
+              appended,
+              new Promise((resolve) => setTimeout(resolve, 20_000)),
+            ]);
           },
         },
         'node'
