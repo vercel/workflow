@@ -9,6 +9,7 @@ import {
   getCollectedRunIds,
   getRecordedInfraEvents,
   hasStepSourceMaps,
+  readUntil,
   runInTestState,
   trackRun,
   waitForRunPickup,
@@ -221,6 +222,92 @@ describe('warmDeployment', () => {
     expect(
       (events[0] as { stalledProbeRunIds: string[] }).stalledProbeRunIds.length
     ).toBe(startProbe.mock.calls.length);
+  });
+});
+
+describe('readUntil', () => {
+  const fast = { timeoutMs: 200, intervalMs: 5, attemptTimeoutMs: 50 };
+
+  test('returns the first read that satisfies the predicate', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => ++reads,
+      (n) => n >= 3,
+      fast
+    );
+    expect(value).toBe(3);
+    expect(reads).toBe(3);
+  });
+
+  test('returns the last read when the predicate never holds', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => ++reads,
+      () => false,
+      fast
+    );
+    expect(value).toBe(reads);
+    expect(reads).toBeGreaterThan(1);
+  });
+
+  test('treats a throwing predicate as not yet converged', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => (++reads < 2 ? undefined : { ok: true }),
+      (v) => (v as { ok: boolean }).ok,
+      fast
+    );
+    expect(value).toEqual({ ok: true });
+  });
+
+  test('retries a read that throws', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => {
+        if (++reads < 3) throw new Error('transient');
+        return 'ok';
+      },
+      (v) => v === 'ok',
+      fast
+    );
+    expect(value).toBe('ok');
+  });
+
+  test('abandons a stalled read and retries', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      () =>
+        ++reads === 1 ? new Promise<string>(() => {}) : Promise.resolve('ok'),
+      (v) => v === 'ok',
+      fast
+    );
+    expect(value).toBe('ok');
+    expect(reads).toBe(2);
+  });
+
+  test('throws the last failure when no read ever completes', async () => {
+    await expect(
+      readUntil(
+        async () => {
+          throw new Error('always down');
+        },
+        () => true,
+        fast
+      )
+    ).rejects.toThrow('always down');
+  });
+
+  test('prefers an earlier completed read over a later failure', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => {
+        if (++reads > 1) throw new Error('went away');
+        return 'stale';
+      },
+      () => false,
+      fast
+    );
+    expect(value).toBe('stale');
   });
 });
 

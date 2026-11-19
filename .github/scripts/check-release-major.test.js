@@ -33,7 +33,7 @@ test('isIgnoredPackage supports exact names and wildcard patterns', () => {
   );
 });
 
-test('findPackagesOutsideReleaseMajor flags packages outside the configured release version', () => {
+test('findPackagesOutsideReleaseMajor flags packages outside the configured release version or 0.x', () => {
   const packages = [
     {
       name: '@workflow/ai',
@@ -49,6 +49,21 @@ test('findPackagesOutsideReleaseMajor flags packages outside the configured rele
       name: 'workflow',
       path: 'packages/workflow/package.json',
       version: '5.0.0-beta.17',
+    },
+    {
+      name: '@workflow/world-experimental',
+      path: 'packages/world-experimental/package.json',
+      version: '0.1.0',
+    },
+    {
+      name: '@workflow/world-unreleased',
+      path: 'packages/world-unreleased/package.json',
+      version: '0.0.0',
+    },
+    {
+      name: '@workflow/world-graduated',
+      path: 'packages/world-graduated/package.json',
+      version: '1.0.0',
     },
     {
       name: '@workflow/internal',
@@ -74,6 +89,11 @@ test('findPackagesOutsideReleaseMajor flags packages outside the configured rele
         name: '@workflow/ai',
         path: 'packages/ai/package.json',
         version: '7.0.0',
+      },
+      {
+        name: '@workflow/world-graduated',
+        path: 'packages/world-graduated/package.json',
+        version: '1.0.0',
       },
     ]
   );

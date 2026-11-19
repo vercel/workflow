@@ -7,6 +7,7 @@ import {
   getReplayTimeoutMs,
   isOptimisticBackgroundStartEnabled,
   isStartHookSkipLoadEnabled,
+  isTurboFirstDeliveryAgeAdmitted,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
   MAX_QUEUE_DELIVERIES,
@@ -14,6 +15,7 @@ import {
   MIN_MAX_INLINE_STEPS,
   MIN_REPLAY_TIMEOUT_MS,
   REPLAY_TIMEOUT_MS,
+  TURBO_FIRST_DELIVERY_MAX_AGE_MS,
 } from './constants.js';
 
 describe('getReplayTimeoutMs', () => {
@@ -253,5 +255,41 @@ describe('isStartHookSkipLoadEnabled', () => {
     vi.stubEnv('WORKFLOW_START_HOOK_SKIP_LOAD', '1');
     vi.stubEnv('WORKFLOW_TURBO', '0');
     expect(isStartHookSkipLoadEnabled()).toBe(false);
+  });
+});
+
+describe('isTurboFirstDeliveryAgeAdmitted', () => {
+  const now = 1_800_000_000_000;
+
+  it('admits a message enqueued within the bound, including exactly at it', () => {
+    expect(isTurboFirstDeliveryAgeAdmitted(new Date(now), now)).toBe(true);
+    expect(
+      isTurboFirstDeliveryAgeAdmitted(
+        new Date(now - TURBO_FIRST_DELIVERY_MAX_AGE_MS),
+        now
+      )
+    ).toBe(true);
+  });
+
+  it('refuses a message older than the bound', () => {
+    expect(
+      isTurboFirstDeliveryAgeAdmitted(
+        new Date(now - TURBO_FIRST_DELIVERY_MAX_AGE_MS - 1),
+        now
+      )
+    ).toBe(false);
+  });
+
+  it('admits a message whose enqueue time the queue does not report', () => {
+    expect(isTurboFirstDeliveryAgeAdmitted(undefined, now)).toBe(true);
+    expect(isTurboFirstDeliveryAgeAdmitted(new Date(Number.NaN), now)).toBe(
+      true
+    );
+  });
+
+  it('admits a message enqueued ahead of this clock', () => {
+    expect(isTurboFirstDeliveryAgeAdmitted(new Date(now + 60_000), now)).toBe(
+      true
+    );
   });
 });
