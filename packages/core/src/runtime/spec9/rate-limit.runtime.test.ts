@@ -40,6 +40,20 @@ const bursting = `${header}
     return n;
   }${registerWorkflow()}`;
 
+/**
+ * A call whose slot is 2s out raced against a 500ms sleep, so the sleep is
+ * due well inside the in-process window.
+ */
+const racedAgainstSleep = `${header}
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow() {
+    await rateLimit({ key: "raced", limit: 1, period: "2s" });
+    return await Promise.race([
+      rateLimit({ key: "raced", limit: 1, period: "2s" }).then(() => "rate limit"),
+      sleep("500ms").then(() => "sleep"),
+    ]);
+  }${registerWorkflow()}`;
+
 /** Two calls on a key at one per minute, the second willing to wait 1s. */
 const timedOut = `${header}
   async function workflow() {
@@ -254,6 +268,23 @@ describe('waiting in process for a near rate limit slot', () => {
             .waitContinuation?.attempt === 1
       )
     ).toBe(true);
+  }, 60_000);
+
+  it('stops waiting in process for a slot when a sleep it races falls due first', async () => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS', '5000');
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    const { world } = await setupOrchestratorRun(racedAgainstSleep, [], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+    });
+    await world.runOnClock();
+
+    expect(await runResult(world)).toBe('sleep');
+    // Completed at its own time, not held back until the call's slot: the
+    // sleep is due 1.5s before it.
+    const [completed] = eventsOf(world, 'wait_completed');
+    const resumeAt = new Date(dataOf(completed)?.resumeAt as Date).getTime();
+    expect(completed!.createdAt.getTime() - resumeAt).toBeLessThan(500);
   }, 60_000);
 
   it('leaves a slot further out than the window to the queue', async () => {

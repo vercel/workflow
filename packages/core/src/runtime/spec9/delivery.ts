@@ -3279,6 +3279,12 @@ async function runDelivery(
      * the queue still wakes the run, and a timer that arrives after the call
      * went ahead finds it acquired and arms nothing. Resolves `true` once it
      * waited, so the caller runs another pass, which completes the call.
+     *
+     * It stops early for anything the run should see first: another wait
+     * falling due (a `sleep()` the call races, due before the slot), or an
+     * event another writer appends (a hook payload, a background step's
+     * outcome). Otherwise the pass after the wait would record the call
+     * ahead of them, and a race would resolve the wrong way.
      */
     const waitForNearRateSlot = async (): Promise<boolean> => {
       if (!log) return false;
@@ -3301,6 +3307,7 @@ async function runDelivery(
       const untilMs = Math.min(...slots) + RATE_SLOT_MARGIN_MS;
       await armNearDueTimers(log.events);
       await armTimers(log.events);
+      if (world.events.subscribe) ensureLiveFeed();
       runtimeLogger.debug('Waiting in process for a rate limit slot', {
         workflowRunId: runId,
         waitMs: untilMs - now,
@@ -3308,9 +3315,33 @@ async function runDelivery(
       // Waiting is not replay work.
       replayBudget.pause();
       try {
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, Math.max(0, untilMs - Date.now()))
-        );
+        while (true) {
+          const remainingMs = untilMs - Date.now();
+          if (remainingMs <= 0) break;
+          let handle: ReturnType<typeof setTimeout> | undefined;
+          // Wakes on the slot's own timer too, so it is checked below.
+          await Promise.race([
+            waitForProgress(),
+            new Promise<void>((resolve) => {
+              handle = setTimeout(resolve, remainingMs);
+            }),
+          ]);
+          clearTimeout(handle);
+          progressWaiter = undefined;
+          const nowMs = Date.now();
+          if (
+            pendingFeedEvents.some((event) => !isOwnEvent(event)) ||
+            dueWaits(log.events, nowMs, wakeUpWaits).some(
+              (wait) => wait.kind !== 'rate'
+            )
+          ) {
+            runtimeLogger.debug('In-process rate limit wait ended early', {
+              workflowRunId: runId,
+              waitedMs: nowMs - now,
+            });
+            break;
+          }
+        }
       } finally {
         replayBudget.resume();
       }
