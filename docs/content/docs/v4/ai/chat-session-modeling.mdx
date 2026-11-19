@@ -87,9 +87,9 @@ Chat messages need to be stored somewhere, typically a database. In this example
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@ai-sdk/workflow"; // [!code highlight]
+import { WorkflowChatTransport } from "@ai-sdk/workflow/client"; // [!code highlight]
 import { useParams } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 // Fetch existing messages from your backend
 async function getMessages(sessionId: string) { // [!code highlight]
@@ -116,15 +116,22 @@ export function Chat({ initialMessages }) {
     [sessionId] // [!code highlight]
   ); // [!code highlight]
 
-  const { messages, input, handleInputChange, handleSubmit } = useChat({
-    initialMessages, // [!code highlight] Loaded via getMessages(sessionId)
+  const [input, setInput] = useState("");
+  const { messages, sendMessage } = useChat({
+    messages: initialMessages, // [!code highlight] Loaded via getMessages(sessionId)
     transport, // [!code highlight]
   });
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        sendMessage({ text: input });
+        setInput("");
+      }}
+    >
       {/* ... render messages ... */}
-      <input value={input} onChange={handleInputChange} />
+      <input value={input} onChange={(e) => setInput(e.currentTarget.value)} />
     </form>
   );
 }
@@ -341,7 +348,7 @@ A custom hook wraps `useChat` to manage the multi-turn session. It handles:
 
 import type { UIMessage, UIDataTypes, ChatStatus } from "ai";
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@ai-sdk/workflow";
+import { WorkflowChatTransport } from "@ai-sdk/workflow/client";
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 
 const STORAGE_KEY = "workflow-run-id";

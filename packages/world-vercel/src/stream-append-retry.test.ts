@@ -11,6 +11,7 @@ import * as httpClient from './http-client.js';
 import {
   createStreamer,
   encodeMultiChunks,
+  MAX_CHUNKS_PER_REQUEST,
   writeStreamSessionOverHttp,
 } from './streamer.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
@@ -153,10 +154,16 @@ describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
       'writeMulti',
       'session',
     ] as const)('retries individual %s pages without resending accepted pages', async (mode) => {
-      const chunks = ['first', new Uint8Array([0, 255]), '世界'];
+      const chunks: (string | Uint8Array)[] = [
+        ...Array.from({ length: MAX_CHUNKS_PER_REQUEST - 1 }, (_, i) =>
+          i % 2 ? `chunk-${i}` : new Uint8Array([i % 256, 255])
+        ),
+        'last-of-first-page',
+        '世界',
+      ];
       const pages = [
-        Buffer.from(encodeMultiChunks(chunks.slice(0, 2))),
-        Buffer.from(encodeMultiChunks(chunks.slice(2))),
+        Buffer.from(encodeMultiChunks(chunks.slice(0, MAX_CHUNKS_PER_REQUEST))),
+        Buffer.from(encodeMultiChunks(chunks.slice(MAX_CHUNKS_PER_REQUEST))),
       ];
       const saved: Buffer[] = [];
       const onRequestDispatched = vi.fn();
@@ -170,7 +177,6 @@ describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
           }
         },
         async ({ requests }) => {
-          vi.stubEnv('WORKFLOW_MAX_CHUNKS_PER_REQUEST', '2');
           if (mode === 'session') {
             await writeStreamSessionOverHttp(
               'wrun_test',

@@ -11,9 +11,10 @@ import {
   type SpecVersion,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SORT_KEY_CURSOR_PREFIX } from '../fs.js';
+
+const SORT_KEY_CURSOR_PREFIX = 'key:';
+
 import { createStorage } from '../storage.js';
-import { monotonicUlid } from './helpers.js';
 
 let testDir: string;
 let storage: ReturnType<typeof createStorage>;
@@ -289,43 +290,6 @@ describe('slot event ids', () => {
     expect(slotsOf(walked)).toEqual(
       Array.from({ length: walked.length }, (_, i) => FIRST_EVENT_SLOT + i)
     );
-  });
-
-  it('keeps a ULID-numbered run on ULIDs', async () => {
-    const runId = await startRun();
-    // Rewrite the run's log the way it would look had it been created before
-    // slot ids existed. The scheme is pinned by what is on disk, not by a
-    // stored flag, so this is the whole of the upgrade path.
-    const eventsDir = path.join(testDir, 'events', runId);
-    const files = (await fs.readdir(eventsDir)).filter((file) =>
-      file.startsWith(`${runId}-`)
-    );
-    files.sort();
-    for (const file of files) {
-      const legacyId = `${EVENT_ID_PREFIX}${monotonicUlid()}`;
-      const raw = await fs.readFile(path.join(eventsDir, file), 'utf8');
-      await fs.writeFile(
-        path.join(eventsDir, `${runId}-${legacyId}.json`),
-        raw.replace(/"eventId": "evnt_[^"]+"/, `"eventId": "${legacyId}"`)
-      );
-      await fs.rm(path.join(eventsDir, file));
-    }
-    // The allocator memoizes each run's scheme, so drop the cache the way a
-    // fresh process would see it.
-    storage.events.clearCache?.();
-
-    await storage.events.create(runId, {
-      eventType: 'step_created',
-      correlationId: 'step_after_upgrade',
-      specVersion: SPEC_VERSION_CURRENT,
-      eventData: { stepName: 'afterUpgrade', input: serialized([]) },
-    } as any);
-
-    const eventIds = await listEventIds(runId);
-    expect(eventIds).toHaveLength(3);
-    // No slot ids anywhere: one slot id in a ULID log would sort before every
-    // ULID (its body starts with ten zeros) and replay out of order.
-    expect(slotsOf(eventIds)).toEqual([null, null, null]);
   });
 });
 

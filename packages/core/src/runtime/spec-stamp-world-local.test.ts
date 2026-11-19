@@ -25,6 +25,11 @@ import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
+// Windows runners are much slower at this fan-out (every database open and
+// close is), so give it room there.
+const SLOW_RUNNER = process.platform === 'win32';
+if (SLOW_RUNNER) vi.setConfig({ testTimeout: 180_000, hookTimeout: 60_000 });
+
 // Every routing decision, in delivery order. A result carrying `run` is a
 // routing read of the run.
 const { routed } = vi.hoisted(() => ({ routed: [] as RunSpec[] }));
@@ -50,7 +55,7 @@ registerStepFunction(STEP_NAME, async (a: number, b: number) => a + b);
 // Wider than any inline budget, so steps also run from their own messages,
 // and a sleep, so the run arms a timer.
 const FAN_OUT = MAX_MAX_INLINE_STEPS + 1;
-const WORKFLOW_CODE = `
+const workflowCode = (sleep: string) => `
   const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(STEP_NAME)});
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
@@ -58,11 +63,19 @@ const WORKFLOW_CODE = `
     const sums = await Promise.all(
       Array.from({ length: ${FAN_OUT} }, (_, i) => add(first, i))
     );
-    await sleep("1s");
+    await sleep(${JSON.stringify(sleep)});
     return await add(sums.length, 0);
   }
   ;globalThis.__private_workflows = new Map();
   globalThis.__private_workflows.set("workflow", workflow);`;
+const WORKFLOW_CODE = workflowCode('1s');
+// A run only arms a timer for a wait that is still pending when its
+// delivery suspends; a wait that already elapsed is resumed by a plain wake
+// instead (the spec 8 engines' exit wait sweep). A test that needs a timer
+// message sleeps long enough that the fan-out's tail and the suspension
+// cannot outlast the sleep, even on a loaded Windows runner, where this file
+// runs about ten times slower than locally.
+const TIMER_WORKFLOW_CODE = workflowCode('3s');
 
 type Sent = { queueName: string; payload: WorkflowInvokePayload };
 
@@ -91,10 +104,14 @@ describe('spec stamps on world-local', () => {
     specVersion: number;
     workflowVm: 'quickjs' | undefined;
     startMessage: (runId: string) => WorkflowInvokePayload;
+    workflowCode?: string;
   }) {
     const local = createWorld({ dataDir });
     world = local;
-    local.registerHandler('__wkf_workflow_', workflowEntrypoint(WORKFLOW_CODE));
+    local.registerHandler(
+      '__wkf_workflow_',
+      workflowEntrypoint(params.workflowCode ?? WORKFLOW_CODE)
+    );
     const sent: Sent[] = [];
     const queue = local.queue.bind(local);
     local.queue = ((queueName, payload, opts) => {
@@ -124,7 +141,7 @@ describe('spec stamps on world-local', () => {
         const run = await local.runs.get(runId);
         expect(run.status).toBe('completed');
       },
-      { timeout: 30_000, interval: 50 }
+      { timeout: SLOW_RUNNER ? 150_000 : 30_000, interval: 50 }
     );
     return { runId, sent };
   }
@@ -146,6 +163,7 @@ describe('spec stamps on world-local', () => {
       specVersion,
       workflowVm: engine === 'quickjs' ? 'quickjs' : undefined,
       startMessage: (runId) => ({ runId, runSpecVersion: specVersion }),
+      workflowCode: TIMER_WORKFLOW_CODE,
     });
     const steps = sent.filter((s) => s.payload.stepId !== undefined);
     const timers = sent.filter((s) => s.payload.waitContinuation);
@@ -167,9 +185,13 @@ describe('spec stamps on world-local', () => {
     for (const spec of routed) expect(spec.specVersion).toBe(specVersion);
   });
 
+  // world-local stamps an unstamped orchestrator message of a spec 9 run
+  // with the run's stored version, so it is gated like the run's other
+  // orchestrator messages and routing does not read the run again. A spec 8
+  // run's message stays unstamped, and routing reads the run once.
   it.each(
     cases
-  )('reads the run once for an unstamped message of a spec $specVersion run ($engine)', async ({
+  )('resolves an unstamped message of a spec $specVersion run from the run once ($engine)', async ({
     specVersion,
     engine,
   }) => {
@@ -178,7 +200,12 @@ describe('spec stamps on world-local', () => {
       workflowVm: engine === 'quickjs' ? 'quickjs' : undefined,
       startMessage: (runId) => ({ runId }),
     });
-    expect(routingReads()).toBe(1);
+    if (specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+      expect(routingReads()).toBe(0);
+      expect(routed[0]?.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    } else {
+      expect(routingReads()).toBe(1);
+    }
   });
 
   it.each([

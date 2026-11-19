@@ -1,8 +1,6 @@
 /**
- * Filesystem-based storage implementation for workflow data.
- *
- * This module provides a complete Storage implementation that persists
- * workflow runs, steps, events, and hooks to the local filesystem.
+ * Storage for workflow data in the data directory's SQLite database
+ * (`<dataDir>/world.db`): runs, steps, events, hooks and snapshots.
  *
  * @module
  */

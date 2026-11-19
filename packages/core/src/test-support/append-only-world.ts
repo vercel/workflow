@@ -9,6 +9,7 @@ import {
   type Event,
   type EventListResponse,
   type EventResult,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   type ListEventsParams,
   orchestratorRunIdOf,
   type QueueBatchResult,
@@ -143,8 +144,16 @@ export class AppendOnlyWorld {
   createCalls = 0;
   /** The params of every `events.list` call. */
   readonly listCalls: Array<Record<string, unknown>> = [];
+  /** Every `events.listByCorrelationId` call, in order. */
+  readonly correlationListCalls: Array<Record<string, unknown>> = [];
   /** Replay events served without their step input (`skipStepInputs`). */
   strippedStepInputs = 0;
+  /**
+   * The run's event ceiling, reported as `maxEvents` on `run_started`
+   * responses and on every `list` page. Unreported when absent. Mutable, so a
+   * test can model a run whose log is already past the ceiling.
+   */
+  maxEvents: number | undefined;
   private handler:
     | ((message: unknown, meta: Record<string, unknown>) => Promise<unknown>)
     | undefined;
@@ -225,6 +234,14 @@ export class AppendOnlyWorld {
        */
       skipStepInputs?: boolean;
       /**
+       * Record a resilient start's creation on its `run_started` alone, as a
+       * spec-9 World may (`isRunCreationEvent`): the `run_started` that
+       * creates the run takes the first slot with its creation data, and no
+       * `run_created` is written. The creation keeps in-band position 1 and
+       * the start takes 2, and the write reports `allocated: 1`.
+       */
+      creationOnStart?: boolean;
+      /**
        * Whether a handoff (`{ timeoutSeconds: 0 }`) of `held` continues on a
        * new message instead, as world-vercel does for a message close to its
        * expiry: the held message is acknowledged, and a new one (fresh id,
@@ -281,8 +298,22 @@ export class AppendOnlyWorld {
        * Absent: a key is deduplicated for as long as the fake lives.
        */
       keyDedupeWindowMs?: number;
+      /** Initial {@link AppendOnlyWorld.maxEvents}. */
+      maxEvents?: number;
+      /**
+       * Report {@link AppendOnlyWorld.maxEvents} on `run_started` responses
+       * only, not on `list` pages, as a World that predates the list field.
+       */
+      maxEventsOnStartOnly?: boolean;
+      /**
+       * The most events one `list` page without a `limit` returns, as a World
+       * that bounds a full-log read and answers `hasMore` past it.
+       */
+      listPageSize?: number;
     } = {}
-  ) {}
+  ) {
+    this.maxEvents = options.maxEvents;
+  }
 
   /** Seed a run as if `run_created` had been written. */
   seedRun(run: Omit<WorkflowRun, 'specVersion'> & { specVersion?: number }) {
@@ -336,7 +367,7 @@ export class AppendOnlyWorld {
   private createRunFromStart(
     runId: string,
     eventData: Record<string, unknown>
-  ): void {
+  ): boolean {
     this.run = {
       runId,
       workflowName: eventData.workflowName,
@@ -348,6 +379,11 @@ export class AppendOnlyWorld {
       createdAt: new Date(),
       updatedAt: new Date(),
     } as unknown as WorkflowRun;
+    if (this.options.creationOnStart) {
+      // The run_started is appended at the first slot by the caller.
+      this.seqInBand = IN_BAND_SEQ_AT_RUN_CREATION;
+      return true;
+    }
     this.append({
       eventType: 'run_created',
       runId,
@@ -358,6 +394,7 @@ export class AppendOnlyWorld {
       },
     } as Partial<Event>);
     this.seqInBand = this.seq;
+    return false;
   }
 
   /** Append an event as an out-of-band writer would. */
@@ -745,11 +782,16 @@ export class AppendOnlyWorld {
 
   /**
    * Deliver held messages, oldest first, until none is left or `limit`
-   * deliveries were made. Delays are ignored.
+   * deliveries were made. Delays are ignored. `prefer` picks which held
+   * messages go ahead of the rest (oldest first among them).
    */
-  async runUntilIdle(limit = 100): Promise<void> {
+  async runUntilIdle(
+    limit = 100,
+    options: { prefer?: (held: HeldMessage) => boolean } = {}
+  ): Promise<void> {
+    const { prefer } = options;
     for (let i = 0; i < limit; i++) {
-      const next = this.held[0];
+      const next = (prefer && this.held.find(prefer)) || this.held[0];
       if (!next) return;
       await this.deliver(next);
     }
@@ -864,13 +906,14 @@ export class AppendOnlyWorld {
       async create(runId: string | null, data: any, params?: any) {
         self.createCalls++;
         await self.options.beforeCreate?.(data, params);
+        let createdOnStart = false;
         if (
           !self.run &&
           runId &&
           data.eventType === 'run_started' &&
           data.eventData?.input !== undefined
         ) {
-          self.createRunFromStart(runId, data.eventData);
+          createdOnStart = self.createRunFromStart(runId, data.eventData);
         }
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
@@ -896,7 +939,14 @@ export class AppendOnlyWorld {
         return {
           event: self.responseEvent(event),
           run: self.run,
+          ...(data.eventType === 'run_started' && self.maxEvents !== undefined
+            ? { maxEvents: self.maxEvents }
+            : {}),
           ...self.report(params, slot),
+          // A start written at the first slot as the creation sits at a
+          // position the writer may already count as the creation's: its
+          // allocation is stated, as every World writing that shape does.
+          ...(createdOnStart ? { allocated: 1 } : {}),
         } as EventResult;
       },
       async createBatch(_runId: string, batch: BatchEventRequest[], params) {
@@ -962,7 +1012,7 @@ export class AppendOnlyWorld {
         const desc = params.pagination?.sortOrder === 'desc';
         let data = self.events.filter((e) => !cursor || e.eventId > cursor);
         if (desc) data = [...data].reverse();
-        const limit = params.pagination?.limit;
+        const limit = params.pagination?.limit ?? self.options.listPageSize;
         const page = limit ? data.slice(0, limit) : data;
         return {
           data: self.served(
@@ -972,13 +1022,29 @@ export class AppendOnlyWorld {
           cursor: page.at(-1)?.eventId ?? cursor ?? null,
           hasMore: page.length < data.length,
           snapshot: { seq: self.seq, seqInBand: self.seqInBand },
+          ...(self.maxEvents !== undefined && !self.options.maxEventsOnStartOnly
+            ? { maxEvents: self.maxEvents }
+            : {}),
         };
       },
       async listByCorrelationId(params) {
-        const data = self.events.filter(
-          (e) => e.correlationId === params.correlationId
+        self.correlationListCalls.push({ ...(params as object) });
+        const matching = self.events.filter(
+          (e) =>
+            e.correlationId === params.correlationId &&
+            (params.runId === undefined || e.runId === params.runId)
         );
-        return { data, cursor: null, hasMore: false };
+        const ordered =
+          params.pagination?.sortOrder === 'desc'
+            ? [...matching].reverse()
+            : matching;
+        const limit = params.pagination?.limit;
+        const data = limit === undefined ? ordered : ordered.slice(0, limit);
+        return {
+          data: self.served(data, params.resolveData),
+          cursor: null,
+          hasMore: data.length < ordered.length,
+        };
       },
       ...(self.options.subscribe || self.options.subscribeFailure
         ? {

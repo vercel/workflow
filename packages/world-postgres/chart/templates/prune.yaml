@@ -1,0 +1,85 @@
+{{- if .Values.versionPinning.enabled }}
+{{- /* CronJob names are capped at 52 characters (Jobs get an 11-character suffix). */}}
+{{- $name := printf "%s-workflow-prune" (include "workflow-postgres.name" . | trunc 37 | trimSuffix "-") }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+---
+# Only what pruning does: read the main Deployment and its ReplicaSets, and
+# list, create and delete version workers and their ScaledObjects. Kubernetes
+# RBAC cannot scope by label, so this covers every Deployment in the
+# namespace; install the chart in a namespace of its own.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["list"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+spec:
+  schedule: {{ .Values.versionPinning.prune.schedule | quote }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          # Its own account for the Kubernetes API; it reads backlogs from the
+          # service over HTTP, so it has no database access.
+          serviceAccountName: {{ $name }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: prune
+              image: {{ include "workflow-postgres.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              {{- with .Values.versionPinning.prune.command }}
+              command: {{- toYaml . | nindent 16 }}
+              {{- end }}
+              # `pruneWorkersInCluster()` reads these. No database settings:
+              # it reads backlogs from the service.
+              env:
+                - name: WORKFLOW_ROLE
+                  value: prune
+                - name: WORKFLOW_PRUNE_SERVICE
+                  value: {{ include "workflow-postgres.name" . | quote }}
+                - name: WORKFLOW_PRUNE_MAIN_DEPLOYMENT
+                  value: {{ include "workflow-postgres.name" . | quote }}
+                - name: WORKFLOW_PRUNE_BACKLOG_URL
+                  value: "http://{{ include "workflow-postgres.name" . }}.{{ .Release.Namespace }}.svc.cluster.local{{ .Values.backlogPath }}"
+                - name: WORKFLOW_PRUNE_MIN_AGE_MINUTES
+                  value: {{ .Values.versionPinning.prune.minAgeMinutes | quote }}
+                - name: WORKFLOW_PRUNE_DRY_RUN
+                  value: {{ ternary "1" "0" .Values.versionPinning.prune.dryRun | quote }}
+{{- end }}

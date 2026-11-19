@@ -119,8 +119,10 @@ export const SnapshotMetadataSchema = z.object({
  *
  * v5: the bytes may be compressed against the deployment's baseline heap,
  * named by `baselineDigest`, which is sealed with the rest of the metadata.
- * A v4 reader would not know to look for that dictionary, so v4 snapshots
- * are treated as a miss.
+ * A v4 reader does not know to look for that dictionary, so it must see a
+ * v5 snapshot as a miss rather than try to decode it; in turn a v5 reader
+ * treats a v4 snapshot as a miss, which costs each in-flight run one full
+ * replay after an upgrade.
  *
  * @experimental See `Storage.experimental_snapshots`.
  */

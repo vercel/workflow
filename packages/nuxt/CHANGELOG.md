@@ -1,5 +1,36 @@
 # @workflow/nuxt
 
+## 5.0.11
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f)]:
+  - @workflow/nitro@5.0.11
+
+## 5.0.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.10
+
+## 5.0.9
+
+### Patch Changes
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b)]:
+  - @workflow/nitro@5.0.9
+
+## 5.0.8
+
+### Patch Changes
+
+- [#5211](https://github.com/vercel/workflow/pull/5211) [`6291260`](https://github.com/vercel/workflow/commit/629126060cca6313e4ac3df8489402a86f41c362) Thanks [@atinux](https://github.com/atinux)! - Upgrade `@nuxt/kit` to 4.6.3 to pick up the fix for CVE-2026-71314.
+- Updated dependencies [[`9bed0a7`](https://github.com/vercel/workflow/commit/9bed0a7138f5988cdda6ede33a77c0317b7aea9f)]:
+  - @workflow/nitro@5.0.8
+
 ## 5.0.7
 
 ### Patch Changes

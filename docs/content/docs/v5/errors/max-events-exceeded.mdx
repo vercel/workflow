@@ -38,8 +38,8 @@ Workflow run is approaching the per-run event limit (<count> of <limit> events, 
 
 ### Run on the QuickJS VM with snapshotting
 
-<Callout type="warn">
-The QuickJS engine is experimental, and its global surface differs from the default engine. Review the [differences](/docs/configuration/runtime-tuning#workflow_vm) before switching an existing deployment.
+<Callout type="info">
+This is the recommended fix for long-running workflows. Workflow code runs unchanged unless it uses one of the few globals QuickJS does not provide in workflow functions (any `Intl.*` constructor, `toLocaleString()`-style methods called with a locale, `crypto.subtle`, `WebAssembly`); those calls move into a step. See the [full list](/docs/configuration/runtime-tuning#workflow_vm).
 </Callout>
 
 Runs that execute on the QuickJS VM with snapshotting enabled are exempt from the default per-run event limit. A snapshotted run restores its VM memory and replays only the events recorded since the last snapshot, so its resume cost doesn't grow with the length of the log.
@@ -56,7 +56,6 @@ A run qualifies when its `executionContext` records `workflowVm: "quickjs"` and 
 
 - Only runs started after the change are exempt. Runs keep the VM and snapshot policy they started with.
 - Runs that have already failed with `MAX_EVENTS_EXCEEDED` are not revived. Start them again.
-- On the Local World and Postgres World, snapshots are only stored when [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted) is set. Without it, exempt runs still replay the full log on every invocation.
 
 ### Split the work into child workflows
 

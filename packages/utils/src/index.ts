@@ -14,6 +14,21 @@ export {
 } from './parse-name.js';
 export { pluralize } from './pluralize.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
+export {
+  clearQueueAuthKeySources,
+  createLogLimiter,
+  generateQueueAuthKey,
+  getQueueAuthKey,
+  isQueueAuthKey,
+  isQueueAuthRefusal,
+  isWellFormedQueueAuthKey,
+  QUEUE_AUTH_HEADER,
+  QUEUE_AUTH_REFUSED_CODE,
+  QUEUE_AUTH_REFUSED_HEADER,
+  type QueueAuthKeySource,
+  setQueueAuthKeySource,
+  verifyQueueAuthKey,
+} from './queue-auth.js';
 export { parseDurationToDate } from './time.js';
 export {
   createAppRouteUrl,

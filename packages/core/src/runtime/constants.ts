@@ -364,11 +364,45 @@ export function isOptimisticBackgroundStartEnabled(): boolean {
  *
  * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
  * explicit `'0'` / `'false'` (case-insensitive).
+ *
+ * Design: `./spec8/turbo-mode.md` (spec 8 runs) and "Turbo" in
+ * `./spec9/README.md` (spec 9 runs).
  */
 export function isTurboEnabled(): boolean {
   const raw = process.env.WORKFLOW_TURBO;
   if (raw === undefined || raw === '') return true;
   return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * The oldest a spec 9 run's first orchestrator message may be, measured from
+ * when the queue first enqueued it, for its delivery to take the turbo path.
+ *
+ * Turbo assumes nothing of the run has executed yet. The queue's delivery
+ * count cannot prove that: a platform that re-runs an invocation which
+ * crashed (an out-of-memory kill, for one) re-sends the same request, so the
+ * replay carries the same message with delivery count 1, while the crashed
+ * invocation may have run the run for minutes. A first delivery normally
+ * arrives within a few seconds of `start()` (99.99% under 6s on Vercel), so a
+ * message older than this is treated as a possible replay and loads the log.
+ * A replay younger than this still reaches turbo; its `run_started` conflict
+ * then restarts the delivery on the normal path.
+ */
+export const TURBO_FIRST_DELIVERY_MAX_AGE_MS = 15_000;
+
+/**
+ * Whether a first delivery's message is young enough for turbo (see
+ * {@link TURBO_FIRST_DELIVERY_MAX_AGE_MS}). A queue that does not report when
+ * it enqueued the message admits it, as before.
+ */
+export function isTurboFirstDeliveryAgeAdmitted(
+  createdAt: Date | undefined,
+  now: number = Date.now()
+): boolean {
+  if (createdAt === undefined) return true;
+  const enqueuedAt = createdAt.getTime();
+  if (Number.isNaN(enqueuedAt)) return true;
+  return now - enqueuedAt <= TURBO_FIRST_DELIVERY_MAX_AGE_MS;
 }
 
 /** Environment variable that opts a deployment into dynamic workflows. */

@@ -35,6 +35,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   classifyEntityEvent,
   type Event,
+  isRunCreationEvent,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
@@ -73,6 +74,7 @@ import {
   quickjsWasiVersion,
   quickjsWasm,
 } from './quickjs-assets.generated.js';
+import { getPrecompiledQuickJSModules } from './quickjs-precompiled.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -161,10 +163,13 @@ export interface PendingHook {
    */
   startHook?: true;
   /**
-   * True for internal system hooks (e.g. AbortController's hook), which
-   * are exempt from user-hook token namespace conflict checks.
+   * True for SDK-internal hooks (the AbortController hook, the child-run
+   * completion hook). Recorded on `hook_created`; such hooks are resumed by
+   * writers outside this run, and need not be created at terminal drain.
    */
   isSystem?: boolean;
+  /** True for an AbortController's hook (VM-only; not recorded). */
+  isAbortSignal?: boolean;
   /**
    * Set when the workflow called AbortController.abort() during this
    * invocation. The host must record the abort: create a hook_received
@@ -391,9 +396,11 @@ globalThis.__releaseDisposedHook = function(correlationId) {
   var dispose = globalThis.__findPending(correlationId, "hook_dispose");
   if (dispose) globalThis.__releasePending(dispose);
   var hook = globalThis.__findPending(correlationId, "hook");
+  // An AbortController's hook keeps its op: abort() finds it by
+  // correlationId to request the abort later.
   if (
     hook &&
-    !hook.isSystem &&
+    !hook.isAbortSignal &&
     !hook.abortRequested &&
     !globalThis.__resolvers[correlationId]
   ) {
@@ -912,6 +919,9 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     metadata: options.metadata,
     hasCreatedEvent: false,
   };
+  // SDK-internal hooks (e.g. the child-run completion hook); see
+  // SystemHookOptions on the host.
+  if (options.isSystem === true && !options.isWebhook) pendingOp.isSystem = true;
   globalThis.__pushPending(pendingOp);
 
   // Per-hook lifecycle state backing hook.getConflict(): resolves null
@@ -1018,6 +1028,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
 
   // Symbol.dispose for explicit resource management
   hook[Symbol.dispose] = disposeHook;
+
+  // SDK-internal (the child-run completion dispatcher): stop waiting for the
+  // next payload without disposing the hook, so one landing later is
+  // buffered for the next then() instead. See workflow/hook.ts.
+  hook[Symbol.for("WORKFLOW_HOOK_RELEASE_AWAITER")] = function() {
+    delete globalThis.__resolvers[correlationId];
+  };
 
   // AsyncIterable — yields payloads until disposed
   hook[Symbol.asyncIterator] = function() {
@@ -1154,14 +1171,14 @@ globalThis.AbortController = function WorkflowAbortController() {
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
   var correlationId = globalThis.__mintHookCorrelationId();
   this[__ABORT_HOOK_CID] = correlationId;
-  // Register an internal system hook. isSystem prevents token namespace
-  // conflicts with user hooks.
+  // Register an internal system hook. Its token is unique by construction.
   globalThis.__pushPending({
     type: "hook",
     correlationId: correlationId,
     token: hookToken,
     isWebhook: false,
     isSystem: true,
+    isAbortSignal: true,
     hasCreatedEvent: false,
   });
   globalThis.__abortSignals[correlationId] = this.signal;
@@ -1307,6 +1324,24 @@ const quickjsAssets = globalSingleton(
 
 function getCompiledAssets() {
   if (!quickjsAssets.promise) {
+    const precompiled = getPrecompiledQuickJSModules();
+    if (precompiled) {
+      // The host compiled the modules at deploy time (runtimes that forbid
+      // compiling WebAssembly from bytes). See `quickjs-precompiled.ts`.
+      quickjsAssets.promise = Promise.resolve({
+        wasm: precompiled.quickjs,
+        extensions: quickjsExtensions.map((ext) => {
+          const wasm = precompiled.extensions[ext.name];
+          if (!wasm) {
+            throw new Error(
+              `setPrecompiledQuickJSModules() is missing the "${ext.name}" QuickJS extension`
+            );
+          }
+          return { ...ext, wasm: wasm as ExtensionDescriptor['wasm'] };
+        }),
+      });
+      return quickjsAssets.promise;
+    }
     quickjsAssets.promise = (async () => {
       const [wasm, ...extensionModules] = await Promise.all([
         WebAssemblyGlobal.compile(quickjsWasm),
@@ -1391,8 +1426,9 @@ async function initWorkflowVM(
 // clock, and a prebuilt baseline would bake the build machine's offset).
 // All three are detected during hydrate (the placeholder host fns count
 // draws, the hydrate clock counts reads, the hydrate timezone hook counts
-// lookups) and a bundle that used any of them is marked ineligible: every invocation falls back to
-// fresh evaluation, preserving exact node:vm-parity semantics. When the
+// lookups) and a bundle that used any of them is marked ineligible: every
+// invocation falls back to fresh evaluation, preserving exact
+// node:vm-parity semantics. When the
 // gate passes, restore is byte-equivalent to fresh eval (verified by the
 // parity tests): the per-run host fns are re-registered by name on the
 // restored VM (quickjs-wasi restore semantics) before the workflow body
@@ -1921,12 +1957,45 @@ export interface QuickJSWorkflowSession {
    * when the VM frees memory, so it is the signal for heap growth.
    */
   memoryUsage(): QuickJSMemoryUsage;
+  /**
+   * The VM's open hooks, and whether workflow code is waiting on each one's
+   * next payload right now. Only valid while the last result was
+   * `suspended`. The suspension's `pendingOperations` leave out a created
+   * hook nothing awaits, so a run-ahead classification reads its hooks from
+   * here (see `runtime/out-of-band-observation.ts`).
+   */
+  openHooks(): QuickJSOpenHook[];
+  /**
+   * How many times code in the VM has read the clock so far (the WASI
+   * clock behind `Date.now()` and `new Date()`; QuickJS may read it on its
+   * own too, which only over-counts). This engine advances the clock to
+   * every event it reads, an unread hook payload included, so a run-ahead
+   * delivery uses this to tell whether a decision may depend on where
+   * another writer's event landed (see `spec9/quickjs-entrypoint.ts`).
+   */
+  clockReads(): number;
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
 
 /** See {@link QuickJSWorkflowSession.memoryUsage}. */
 export type QuickJSMemoryUsage = ReturnType<QuickJS['getMemoryUsage']>;
+
+/** One open hook of a suspended VM (see {@link QuickJSWorkflowSession.openHooks}). */
+export interface QuickJSOpenHook {
+  correlationId: string;
+  token: string;
+  isSystem?: boolean;
+  /** A disposal of the hook is pending in this suspension. */
+  disposed?: boolean;
+  /**
+   * Workflow code is waiting on the hook's next payload: a resolver is
+   * registered for it. Over-reports for an awaiter a lost `Promise.race`
+   * abandoned, which only costs run-ahead; a payload landing for a hook with
+   * no resolver is buffered and changes nothing until something awaits.
+   */
+  observed: boolean;
+}
 
 /**
  * Run a workflow invocation to its first settled state and dispose the
@@ -2007,6 +2076,14 @@ export async function startQuickJSWorkflow(
     runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt);
   const advanceClock = (ms: number) => {
     if (Number.isFinite(ms)) vmNowMs = Math.max(vmNowMs, ms);
+  };
+  // Every read of the clock by code in the VM (`Date.now()`, `new Date()`,
+  // a `sleep()` computing its deadline): see
+  // `QuickJSWorkflowSession.clockReads`.
+  let clockReads = 0;
+  const readClock = (): number => {
+    clockReads++;
+    return vmNowMs;
   };
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
@@ -2166,7 +2243,7 @@ export async function startQuickJSWorkflow(
     }
     const vm = await restoreWorkflowVM(
       options.existingSnapshot.data,
-      () => vmNowMs,
+      readClock,
       interruptBudget
     );
     try {
@@ -2251,6 +2328,7 @@ export async function startQuickJSWorkflow(
         }),
         historicalAttributeIds,
         () => lastUlid,
+        () => clockReads,
         options.encryptionKey
       );
     } catch (err) {
@@ -2305,10 +2383,10 @@ export async function startQuickJSWorkflow(
       memoryLimit: QUICKJS_MEMORY_LIMIT_BYTES,
       interruptHandler: createInterruptHandler(interruptBudget),
       extensions: assets.extensions,
-      wasi: makeDeterministicClockWasi(() => vmNowMs),
+      wasi: makeDeterministicClockWasi(readClock),
     });
   } else {
-    vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
+    vm = await initWorkflowVM(readClock, interruptBudget);
   }
 
   // Host-side serde: captures the VM's intrinsics (bootstrap included)
@@ -2409,13 +2487,15 @@ export async function startQuickJSWorkflow(
       }
     }
 
-    // Extract workflow arguments. Prefer the run_created event; fall back
-    // to the queue message's runInput if the event log is incomplete
+    // Extract workflow arguments. Prefer the run's creation event (its
+    // `run_created`, or on spec >= 9 the `run_started` that created it and
+    // holds the first slot: `isRunCreationEvent`); fall back to the queue
+    // message's runInput if the event log is incomplete
     // (eventually-consistent read after start()). Failing to find input
     // for a first invocation is fatal: running the workflow function
     // with no args would silently turn typed arguments into `undefined`
     // and, for recursive workflows, produce exponential fan-out.
-    const runCreatedEvent = events.find((e) => e.eventType === 'run_created');
+    const runCreatedEvent = events.find(isRunCreationEvent);
     const runCreatedInput =
       runCreatedEvent && 'eventData' in runCreatedEvent
         ? (runCreatedEvent.eventData as Record<string, unknown>)?.input
@@ -2431,7 +2511,9 @@ export async function startQuickJSWorkflow(
       runtimeLogger.debug('QuickJS runtime: run input format', {
         prefix: new TextDecoder().decode(decryptedInput.subarray(0, 4)),
         byteLength: decryptedInput.byteLength,
-        source: runCreatedInput ? 'run_created' : 'queueMessage.runInput',
+        source: runCreatedInput
+          ? runCreatedEvent?.eventType
+          : 'queueMessage.runInput',
       });
       // Build the argument value directly in the VM via the host-side
       // serde (guest code never sees the wire bytes).
@@ -2440,7 +2522,7 @@ export async function startQuickJSWorkflow(
       inputHandle.dispose();
     } else if (runInput === undefined && events.length > 0) {
       // The event log is non-empty (we got run_started or similar) but
-      // no run_created event was found and no queue-provided runInput is
+      // no creation event was found and no queue-provided runInput is
       // available. This is the race condition observed during the fib
       // incident: silently dropping arguments would turn `n` into
       // `undefined` and, for recursive workflows, cause exponential
@@ -2484,7 +2566,7 @@ export async function startQuickJSWorkflow(
     // throw an error tagged with `name = "WorkflowNotRegisteredError"`
     // so the host-side entrypoint can reconstruct a real
     // WorkflowNotRegisteredError (a WorkflowRuntimeError subclass that
-    // classifies as RUNTIME_ERROR) rather than a generic user error.
+    // classifies as WORKFLOW_NOT_REGISTERED) rather than a generic user error.
     // See quickjs-entrypoint.ts's run_failed branch.
     try {
       vm.evalCode(`
@@ -2588,6 +2670,7 @@ export async function startQuickJSWorkflow(
       }),
       historicalAttributeIds,
       () => lastUlid,
+      () => clockReads,
       options.encryptionKey
     );
   }
@@ -2612,6 +2695,12 @@ function makeSettledSession(
     memoryUsage: () => {
       throw new Error(
         'QuickJS workflow session is settled — memoryUsage is only valid while suspended'
+      );
+    },
+    clockReads: () => 0,
+    openHooks: () => {
+      throw new Error(
+        'QuickJS workflow session is settled — openHooks is only valid while suspended'
       );
     },
     dispose: () => {},
@@ -2644,6 +2733,8 @@ function makeLiveSession(
   historicalAttributeIds: Set<string>,
   /** The last correlation-id ULID the VM drew (see isConsumedTerminal). */
   getLastUlid: () => string | undefined,
+  /** See {@link QuickJSWorkflowSession.clockReads}. */
+  getClockReads: () => number,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -2730,6 +2821,33 @@ function makeLiveSession(
         );
       }
       return vm.getMemoryUsage();
+    },
+    clockReads(): number {
+      return getClockReads();
+    },
+    openHooks(): QuickJSOpenHook[] {
+      if (!alive) {
+        throw new Error(
+          'QuickJS workflow session is not alive — openHooks is only valid while suspended'
+        );
+      }
+      using h = vm.evalCode(`(function(){
+        var list = globalThis.__pendingList();
+        var disposed = {};
+        list.forEach(function(p){
+          if (p.type === "hook_dispose") disposed[p.correlationId] = true;
+        });
+        return list.filter(function(p){ return p.type === "hook"; }).map(function(p){
+          return {
+            correlationId: p.correlationId,
+            token: String(p.token),
+            isSystem: p.isSystem === true,
+            disposed: disposed[p.correlationId] === true,
+            observed: !!globalThis.__resolvers[p.correlationId]
+          };
+        });
+      })()`);
+      return vm.dump(h) as QuickJSOpenHook[];
     },
     dispose(): void {
       if (alive) {

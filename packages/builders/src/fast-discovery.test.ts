@@ -291,6 +291,305 @@ describe('fast workflow discovery', () => {
     ).toBe(true);
   });
 
+  describe('packages with no workflow dependency', () => {
+    // The AI SDK provider shape from #4897: the package depends on nothing
+    // from workflow, and its classes are keyed by symbols imported from
+    // another package rather than from `@workflow/serde`.
+    function writeProviderPackage(entrySource: string) {
+      const packageRoot = join(testRoot, 'node_modules', 'model-provider');
+      const packageIndex = join(packageRoot, 'dist', 'index.js');
+      const packageHelper = join(packageRoot, 'dist', 'helper.js');
+      writeFile(
+        join(packageRoot, 'package.json'),
+        JSON.stringify({
+          name: 'model-provider',
+          version: '1.0.0',
+          type: 'module',
+          sideEffects: false,
+          exports: {
+            './package.json': './package.json',
+            '.': { import: './dist/index.js' },
+          },
+          dependencies: { 'provider-utils': '^1.0.0' },
+        })
+      );
+      writeFile(packageIndex, entrySource);
+      writeFile(
+        packageHelper,
+        `export class Helper {
+  static [WORKFLOW_SERIALIZE](value) { return value; }
+  static [WORKFLOW_DESERIALIZE](value) { return new Helper(value); }
+}
+`
+      );
+      return { packageIndex, packageHelper };
+    }
+
+    const providerEntry = `import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from 'provider-utils';
+import './helper.js';
+
+export class ProviderModel {
+  constructor(modelId) { this.modelId = modelId; }
+  static [WORKFLOW_SERIALIZE](model) { return { modelId: model.modelId }; }
+  static [WORKFLOW_DESERIALIZE](options) { return new this(options.modelId); }
+}
+
+export const provider = (modelId) => new ProviderModel(modelId);
+`;
+
+    // The model is only used inside the workflow body, so the step-mode
+    // transform drops the import and only discovery can register the class.
+    function writeWorkflowUsingProvider() {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const workflowFile = join(testRoot, 'src', 'workflow.ts');
+      writeFile(entryFile, `import './workflow';\n`);
+      writeFile(
+        workflowFile,
+        `import { provider } from 'model-provider';
+
+export async function chat() {
+  'use workflow';
+  return provider('model-1');
+}
+`
+      );
+      return entryFile;
+    }
+
+    it('records the file an import resolves to when it defines a serde class', async () => {
+      const { packageIndex } = writeProviderPackage(providerEntry);
+      const entryFile = writeWorkflowUsingProvider();
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredSerdeFiles.has(normalize(packageIndex))).toBe(
+        true
+      );
+    });
+
+    it("does not follow that file's imports", async () => {
+      const { packageIndex, packageHelper } =
+        writeProviderPackage(providerEntry);
+      const entryFile = writeWorkflowUsingProvider();
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(
+        discovered.discoveredSerdeFiles.has(normalize(packageHelper))
+      ).toBe(false);
+      for (const file of [packageIndex, packageHelper]) {
+        expect(discovered.discoveredFiles?.has(normalize(file))).toBe(false);
+      }
+    });
+
+    it('records distinct provider versions resolved by different packages', async () => {
+      const { packageIndex } = writeProviderPackage(providerEntry);
+      const nestedRoot = join(testRoot, 'node_modules', 'workflow-pkg');
+      const nestedProvider = join(
+        nestedRoot,
+        'node_modules',
+        'model-provider',
+        'dist',
+        'index.js'
+      );
+      writeFile(
+        join(nestedRoot, 'package.json'),
+        JSON.stringify({
+          name: 'workflow-pkg',
+          version: '1.0.0',
+          main: './index.js',
+          dependencies: { workflow: '*', 'model-provider': '2.0.0' },
+        })
+      );
+      writeFile(
+        join(nestedRoot, 'index.js'),
+        `import { provider } from 'model-provider';
+export async function nestedWorkflow() {
+  'use workflow';
+  return provider('nested');
+}
+`
+      );
+      writeFile(
+        join(nestedRoot, 'node_modules', 'model-provider', 'package.json'),
+        JSON.stringify({
+          name: 'model-provider',
+          version: '2.0.0',
+          type: 'module',
+          exports: { '.': { import: './dist/index.js' } },
+        })
+      );
+      writeFile(nestedProvider, providerEntry);
+      const entryFile = writeWorkflowUsingProvider();
+      writeFile(entryFile, `import './workflow';\nimport 'workflow-pkg';\n`);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredSerdeFiles).toEqual(
+        new Set([normalize(packageIndex), normalize(nestedProvider)])
+      );
+    });
+
+    it('skips a file that only reads serde symbols', async () => {
+      const { packageIndex } = writeProviderPackage(
+        `import { WORKFLOW_SERIALIZE } from 'provider-utils';
+
+export const isSerializable = (value) =>
+  typeof value?.constructor?.[WORKFLOW_SERIALIZE] === 'function';
+`
+      );
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      writeFile(
+        entryFile,
+        `import { isSerializable } from 'model-provider';\nvoid isSerializable;\n`
+      );
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredSerdeFiles.has(normalize(packageIndex))).toBe(
+        false
+      );
+    });
+
+    it('leaves the package alone when discoverWorkflowsInNodeModules is false', async () => {
+      const { packageIndex } = writeProviderPackage(providerEntry);
+      const entryFile = writeWorkflowUsingProvider();
+
+      const discovered = await createBuilder(testRoot, {
+        discoverWorkflowsInNodeModules: false,
+      }).discoverEntriesPublic([entryFile], join(testRoot, 'out'));
+
+      expect(discovered.discoveredSerdeFiles.has(normalize(packageIndex))).toBe(
+        false
+      );
+    });
+
+    // Only the file the import resolves to is checked, so a class that file
+    // only re-exports is not found. These pin that limit, which the
+    // `WORKFLOW_DISCOVER_NODE_MODULES` docs describe.
+    describe('classes the entry file only re-exports', () => {
+      const modelClass = `import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from 'provider-utils';
+
+export class Model {
+  static [WORKFLOW_SERIALIZE](model) { return {}; }
+  static [WORKFLOW_DESERIALIZE](options) { return new this(); }
+}
+`;
+
+      function writePackage(name: string, files: Record<string, string>) {
+        const packageRoot = join(testRoot, 'node_modules', name);
+        writeFile(
+          join(packageRoot, 'package.json'),
+          JSON.stringify({
+            name,
+            version: '1.0.0',
+            type: 'module',
+            sideEffects: false,
+            exports: {
+              './package.json': './package.json',
+              '.': { import: './dist/index.js' },
+            },
+          })
+        );
+        for (const [file, source] of Object.entries(files)) {
+          writeFile(join(packageRoot, file), source);
+        }
+        return (file: string) => normalize(join(packageRoot, file));
+      }
+
+      function writeWorkflowImporting(specifier: string) {
+        const entryFile = join(testRoot, 'src', 'entry.ts');
+        writeFile(entryFile, `import './workflow';\n`);
+        writeFile(
+          join(testRoot, 'src', 'workflow.ts'),
+          `import { Model } from '${specifier}';
+
+export async function chat() {
+  'use workflow';
+  return new Model();
+}
+`
+        );
+        return entryFile;
+      }
+
+      // `gateway` from `ai`: the class lives in `@ai-sdk/gateway`, which the
+      // app reaches only through `ai`.
+      it('does not find a class re-exported from another package', async () => {
+        const definingPackage = writePackage('defining-pkg', {
+          'dist/index.js': modelClass,
+        });
+        const barrelPackage = writePackage('barrel-pkg', {
+          'dist/index.js': `export { Model } from 'defining-pkg';\n`,
+        });
+        const entryFile = writeWorkflowImporting('barrel-pkg');
+
+        const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+          [entryFile],
+          join(testRoot, 'out')
+        );
+
+        expect(
+          discovered.discoveredSerdeFiles.has(barrelPackage('dist/index.js'))
+        ).toBe(false);
+        expect(
+          discovered.discoveredSerdeFiles.has(definingPackage('dist/index.js'))
+        ).toBe(false);
+      });
+
+      it('finds that class when the defining package is imported directly', async () => {
+        const definingPackage = writePackage('defining-pkg', {
+          'dist/index.js': modelClass,
+        });
+        const entryFile = writeWorkflowImporting('defining-pkg');
+
+        const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+          [entryFile],
+          join(testRoot, 'out')
+        );
+
+        expect(
+          discovered.discoveredSerdeFiles.has(definingPackage('dist/index.js'))
+        ).toBe(true);
+      });
+
+      // The shape a bundler's code splitting emits, e.g. tsup's ESM default.
+      it('does not find a class re-exported from a code-split chunk', async () => {
+        const chunkedPackage = writePackage('chunked-pkg', {
+          'dist/index.js': `export { Model } from './chunk-5KXJ2Q4M.js';\n`,
+          'dist/chunk-5KXJ2Q4M.js': modelClass,
+        });
+        const entryFile = writeWorkflowImporting('chunked-pkg');
+
+        const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+          [entryFile],
+          join(testRoot, 'out')
+        );
+
+        expect(
+          discovered.discoveredSerdeFiles.has(chunkedPackage('dist/index.js'))
+        ).toBe(false);
+        expect(
+          discovered.discoveredSerdeFiles.has(
+            chunkedPackage('dist/chunk-5KXJ2Q4M.js')
+          )
+        ).toBe(false);
+      });
+    });
+  });
+
   it('discovers files reached through tsconfig path aliases', async () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const registryFile = join(testRoot, 'src', '_workflows.ts');

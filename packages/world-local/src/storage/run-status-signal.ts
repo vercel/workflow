@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { envNumber } from '@workflow/world';
 
 /**
  * In-process wakeups for `runs.waitForTerminalStatus`.
@@ -14,7 +13,7 @@ import { envNumber } from '@workflow/world';
  *   that actually fires, and it fires within a tick of the run finishing.
  *
  * - **A short backstop poll** of the run file (see
- *   {@link getRunStatusPollIntervalMs}), which covers everything the emitter
+ *   {@link RUN_STATUS_POLL_INTERVAL_MS}), which covers everything the emitter
  *   cannot see: a second process (a `wf dev` server plus a separate CLI
  *   invocation, or several workers over one data dir), and the narrow window
  *   between a waiter's read and its subscribe.
@@ -29,23 +28,14 @@ const emitter = new EventEmitter<{ [key: `run:${string}`]: [] }>();
 // listeners per event would warn on legitimate fan-out.
 emitter.setMaxListeners(0);
 
-const RUN_STATUS_POLL_INTERVAL_MS = 100;
-
 /**
- * Backstop interval for the terminal-status wait, in ms. Override with
- * `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS`.
+ * Backstop interval for the terminal-status wait, in ms.
  *
  * Deliberately far below the SDK's own 1s `runs.get` poll: re-reading one
  * small JSON file is cheap, and this is the ceiling on how long a *cross
  * process* local run takes to be noticed.
  */
-export function getRunStatusPollIntervalMs(): number {
-  return envNumber(
-    'WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS',
-    RUN_STATUS_POLL_INTERVAL_MS,
-    { integer: true, min: 1 }
-  );
-}
+export const RUN_STATUS_POLL_INTERVAL_MS = 100;
 
 /**
  * Announce that a run reached a terminal status in this process. Call it after

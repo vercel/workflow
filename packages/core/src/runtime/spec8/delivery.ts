@@ -2,6 +2,18 @@
  * The spec 8 (and below) delivery: several orchestrator invocations of a run
  * may write at once, steps keep entities, and the World's precondition guard
  * keeps their writes consistent. See `../delivery.ts`.
+ *
+ * Design notes for this runtime, next to it:
+ *
+ * - `../eager-processing.md`: inline step execution and incremental replay.
+ * - `./turbo-mode.md`: the fast path for a run's first delivery.
+ * - `./lazy-inline-step-start.md`: folding an inline step's `step_created`
+ *   into its `step_started`, parallel inline steps and optimistic start.
+ * - `./step-message-ownership.md`: inline step ownership and its lease.
+ * - `./batched-event-writes.md`: a suspension's writes as one batch.
+ *
+ * Read the relevant one before changing that behaviour, and update it in the
+ * same change.
  */
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
@@ -17,7 +29,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { once } from '@workflow/utils';
+import { once, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type CreateEventParams,
@@ -67,6 +79,7 @@ import {
   type WorkflowResumeResult,
   type WorkflowSession,
 } from '../../workflow.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getOpenWaitClockSkewMs,
@@ -100,7 +113,6 @@ import {
   appendEventLog,
   getWorkflowQueueName,
   insertEventByEventId,
-  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   preconditionEventDelta,
@@ -114,10 +126,6 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
@@ -139,8 +147,6 @@ import {
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
-  isInlineEarlyAdvanceEnabled,
-  isInlineOwnershipEnabled,
   SPEC8_EVENT_SPEC_VERSION,
 } from './constants.js';
 import { countStepStartedEvents } from './count-step-started-events.js';
@@ -239,6 +245,38 @@ function isEarlyAdvanceOutcome(
   );
 }
 
+/**
+ * Per inline step execution of one delivery, a promise that settles once the
+ * delivery published the step's delayed retry under its dispatch key, or
+ * ended without publishing it. A queued delivery of the step that carries
+ * that retry waits on it (see `carryFoldedRetry` in `./step-single-flight.ts`).
+ */
+class InlineRetryPublications {
+  readonly #release = new Map<string, () => void>();
+
+  /** The promise for the execution of `correlationId` about to start. */
+  track(correlationId: string): Promise<void> {
+    this.#release.get(correlationId)?.();
+    const { promise, resolve } = withResolvers<void>();
+    this.#release.set(correlationId, resolve);
+    return promise;
+  }
+
+  /** The retries of `correlationIds` are published. */
+  published(correlationIds: readonly string[]): void {
+    for (const id of correlationIds) {
+      this.#release.get(id)?.();
+      this.#release.delete(id);
+    }
+  }
+
+  /** The delivery ended: nothing it did not publish yet will be. */
+  releaseAll(): void {
+    for (const release of this.#release.values()) release();
+    this.#release.clear();
+  }
+}
+
 /** Runs one delivery of a spec 8 (or older) run's queue message. */
 export async function runSpec8Delivery(
   delivery: WorkflowDelivery
@@ -250,16 +288,26 @@ export async function runSpec8Delivery(
     InlineStepRef,
     InlineStepResult
   >();
+  const inlineRetryPublications = new InlineRetryPublications();
   try {
-    return await runDelivery(delivery, inlineStepsInFlight);
+    return await runDelivery(
+      delivery,
+      inlineStepsInFlight,
+      inlineRetryPublications
+    );
   } finally {
-    await inlineStepsInFlight.settleAll();
+    try {
+      await inlineStepsInFlight.settleAll();
+    } finally {
+      inlineRetryPublications.releaseAll();
+    }
   }
 }
 
 async function runDelivery(
   delivery: WorkflowDelivery,
-  inlineStepsInFlight: InlineStepsInFlight<InlineStepRef, InlineStepResult>
+  inlineStepsInFlight: InlineStepsInFlight<InlineStepRef, InlineStepResult>,
+  inlineRetryPublications: InlineRetryPublications
 ): Promise<DeliveryResult> {
   const {
     workflowCode,
@@ -323,6 +371,7 @@ async function runDelivery(
     observedHook: 0,
     unknownHook: 0,
     abortSignal: 0,
+    systemHook: 0,
     externalStep: 0,
     waitDue: 0,
   };
@@ -757,6 +806,9 @@ async function runDelivery(
           }
         )
       )
+    );
+    inlineRetryPublications.published(
+      retries.map(({ step }) => step.correlationId)
     );
   };
 
@@ -1246,7 +1298,10 @@ async function runDelivery(
         stepResult = await runStepSingleFlight(
           runId,
           incomingStepId,
-          executeQueuedStep
+          executeQueuedStep,
+          // This message may be the one an inline winner's retry was
+          // folded into; if so, carry it.
+          { carryFoldedRetry: true }
         );
       } finally {
         replayBudget.resume();
@@ -1338,7 +1393,6 @@ async function runDelivery(
           // backstop. Fall through to the main loop, whose
           // dispatch table routes it to owned recovery.
           if (
-            isInlineOwnershipEnabled() &&
             hasPendingStepOwnedByMessage(
               loaded.events,
               pendingStepIds,
@@ -2490,7 +2544,6 @@ async function runDelivery(
     );
   };
 
-  const inlineEarlyAdvance = isInlineEarlyAdvanceEnabled();
   let inlineEarlyAdvances = 0;
   let inlineSlotsHeldBack = 0;
 
@@ -2822,20 +2875,18 @@ async function runDelivery(
       // A hole that is merely a write mid-commit fills in on
       // its own, so settleEventSlotGap re-reads before
       // concluding, and adopts whichever log it settled on.
-      if (isSlotGapCheckEnabled()) {
-        const settled = await settleEventSlotGap(runId, {
-          events: eventLog.events,
-          cursor: eventLog.cursor,
-        });
-        eventLog = {
-          ...settled.log,
-          type: 'ready',
-        };
-        if (settled.gap !== undefined) {
-          throw new CorruptedEventLogError(
-            `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
-          );
-        }
+      const settled = await settleEventSlotGap(runId, {
+        events: eventLog.events,
+        cursor: eventLog.cursor,
+      });
+      eventLog = {
+        ...settled.log,
+        type: 'ready',
+      };
+      if (settled.gap !== undefined) {
+        throw new CorruptedEventLogError(
+          `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+        );
       }
 
       // Completing elapsed waits refreshes the event snapshot.
@@ -3033,7 +3084,7 @@ async function runDelivery(
         }
         throw err;
       }
-      dispatchRunCompletedHooks(runId, workflowName);
+      await afterRunCompleted(world, workflowRun ?? runId, workflowName);
 
       span?.setAttributes({
         ...Attribute.WorkflowRunStatus('completed'),
@@ -3063,9 +3114,9 @@ async function runDelivery(
         // This duplicates what OTEL already captures on the
         // run/invocation span, but is collected as client
         // telemetry so the server can emit it as an
-        // UNSAMPLED, full-population metric: workflow-server's
-        // server spans are heavily sampled in production
-        // (~7%), and client spans can't be filtered by SDK
+        // UNSAMPLED, full-population metric: the backend's
+        // server spans are sampled in production, and
+        // client spans can't be filtered by SDK
         // version, so neither can serve as the dashboard's
         // exact TTFS decomposition. On a retained-VM
         // resume this measures the resume (typically ~0ms),
@@ -3243,8 +3294,9 @@ async function runDelivery(
             }
             throw failErr;
           }
-          dispatchRunFailedHooks(
-            runId,
+          await afterRunFailed(
+            world,
+            workflowRun ?? runId,
             workflowName,
             dehydratedError,
             failureKey,
@@ -3716,7 +3768,6 @@ async function runDelivery(
         // delay/key selection rationale.
         const traceCarrier = await nextTraceCarrier();
         const dispatches: Promise<unknown>[] = [];
-        const inlineOwnership = isInlineOwnershipEnabled();
         const dispatchNowMs = Date.now();
         const ownedRecoverySteps: StepInvocationQueueItem[] = [];
         let backstopWakesArmed = 0;
@@ -3764,7 +3815,6 @@ async function runDelivery(
           !pendingSteps.some(
             (step) =>
               !inlineCorrelationIds.has(step.correlationId) &&
-              inlineOwnership &&
               isStepOwnershipActive(step) &&
               step.ownerMessageId === metadata.messageId
           );
@@ -3784,8 +3834,7 @@ async function runDelivery(
           ) {
             continue;
           }
-          const ownershipActive =
-            inlineOwnership && isStepOwnershipActive(step);
+          const ownershipActive = isStepOwnershipActive(step);
           if (ownershipActive && step.ownerMessageId === metadata.messageId) {
             // Owned recovery: this delivery IS the owning
             // message; re-execute the step in this
@@ -4298,6 +4347,9 @@ async function runDelivery(
             if (outOfBandObservation.abortSignalHookCount > 0) {
               outOfBandBoundaries.abortSignal++;
             }
+            if (outOfBandObservation.systemHookCount > 0) {
+              outOfBandBoundaries.systemHook++;
+            }
             if (outOfBandObservation.externalStepCount > 0) {
               outOfBandBoundaries.externalStep++;
             }
@@ -4313,6 +4365,8 @@ async function runDelivery(
               outOfBandBoundaries.unknownHook,
             'workflow.out_of_band.abort_signal_boundaries':
               outOfBandBoundaries.abortSignal,
+            'workflow.out_of_band.system_hook_boundaries':
+              outOfBandBoundaries.systemHook,
             'workflow.out_of_band.external_step_boundaries':
               outOfBandBoundaries.externalStep,
             'workflow.out_of_band.wait_due_boundaries':
@@ -4384,21 +4438,6 @@ async function runDelivery(
         // pays the await-then-run path for the rest of that
         // one invocation, which is cheap next to the
         // alternative.
-        //
-        // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
-        // topics consumed with `maxConcurrency: 1`) would in
-        // principle waive this latch: serialized orchestrator
-        // invocations restore the single-handler guarantee for
-        // the whole delivery. The waiver is intentionally NOT
-        // taken: the env var is a runtime-process setting that
-        // cannot prove the BUILT flow trigger actually carries
-        // `maxConcurrency: 1` (it must be set at build time
-        // too, and some integrations write their own trigger
-        // config), and `capabilities.maxConcurrency` only
-        // declares queue support, not deployed configuration.
-        // Until the build emits a verifiable signal that the
-        // deployed trigger is serialized, the conservative
-        // latch stays.
         const forceOptimisticStart =
           turbo &&
           !suspensionResult.hasAttributeEvents &&
@@ -4516,6 +4555,7 @@ async function runDelivery(
               // from the existing step entity, and for
               // pre-claimed steps, whose pair already
               // carried it.
+              stateContext: replayPayloadCache?.stateContext,
               lazyStepInput: s.lazyStepInput,
               // Pre-claimed inline start: the suspension
               // batch settled this step's create + claim;
@@ -4576,12 +4616,14 @@ async function runDelivery(
           // matching quickjs-entrypoint.
           const isFreshClaim =
             s.lazyStepInput !== undefined || s.preclaimedStart !== undefined;
-          const executed = runStepSingleFlight(
-            runId,
-            s.correlationId,
-            run,
-            isFreshClaim ? 'debug' : 'warn'
-          );
+          const executed = runStepSingleFlight(runId, s.correlationId, run, {
+            logLevel: isFreshClaim ? 'debug' : 'warn',
+            // A `retry` is published under the step's dispatch key
+            // (publishInlineRetries), or the delivery ends without it.
+            retryPublishedUnderDispatchKeyAfter: inlineRetryPublications.track(
+              s.correlationId
+            ),
+          });
           const tracked = executed.finally(() =>
             inFlightOwnedSteps.delete(s.correlationId)
           );
@@ -4630,10 +4672,7 @@ async function runDelivery(
           // step. The others stay tracked; the next pass neither creates,
           // queues nor recovers them (they are left out of the suspension),
           // and a later pass settles them.
-          const round = await inlineStepsInFlight.settle(
-            inlineEarlyAdvance,
-            isEarlyAdvanceOutcome
-          );
+          const round = await inlineStepsInFlight.settle(isEarlyAdvanceOutcome);
           if (round.early) {
             runtimeLogger.debug(
               'Inline step settled; replaying while sibling inline steps run',
@@ -4773,7 +4812,7 @@ async function runDelivery(
         }
 
         // Transient infrastructure failures talking to the
-        // world (workflow-server), such as an exhausted
+        // world backend, such as an exhausted
         // RetryAgent (UND_ERR_REQ_RETRY from a sustained
         // 429/503 storm), a dropped socket, a connect/DNS
         // failure, or a client timeout, must NOT fail the
@@ -5014,8 +5053,9 @@ async function runDelivery(
           }
           throw failErr;
         }
-        dispatchRunFailedHooks(
-          runId,
+        await afterRunFailed(
+          world,
+          workflowRun ?? runId,
           workflowName,
           dehydratedError,
           failureKey,
@@ -5040,7 +5080,7 @@ async function runDelivery(
 export const spec8Orchestrator: Orchestrator = {
   countsTowardMaxDeliveries: () => true,
   async writeMaxDeliveriesFailure(world, runId, eventData, requestId) {
-    await world.events.create(
+    const written = await world.events.create(
       runId,
       {
         eventType: 'run_failed',
@@ -5049,7 +5089,7 @@ export const spec8Orchestrator: Orchestrator = {
       },
       { requestId }
     );
-    return 'written';
+    return { run: written?.run };
   },
   runDelivery: runSpec8Delivery,
 };

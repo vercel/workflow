@@ -29,6 +29,7 @@ export const WorldCapabilitiesSchema = z
     hookRetention: activeFlag,
     atomicStartHook: activeFlag,
     maxConcurrency: flag,
+    experimental_queueHold: flag,
     inBandFence: flag,
     hookResumeDedup: flag,
     resolvedHookResume: flag,

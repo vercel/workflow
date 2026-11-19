@@ -25,16 +25,28 @@
  * opts its server in also sets WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS=1 on the
  * runner, and there that refusal fails the test instead.
  *
+ * On a local World the parent fixtures are started through the app
+ * (WORKFLOW_E2E_START_VIA_APP=1, nextjs-turbopack only): the flow route only
+ * accepts deliveries from the app's own queue while dynamic workflows are on.
+ *
  * Run locally:
  *   1. cd workbench/nextjs-turbopack && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm dev
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
+ *      WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS=1 WORKFLOW_E2E_START_VIA_APP=1 \
  *      pnpm vitest run packages/core/e2e/e2e-dynamic-workflow.test.ts
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { getCurrentTest } from '@vitest/runner';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  TestRunner,
+} from 'vitest';
 import type { Run, start as rawStart } from '../src/runtime';
 import { getRun, getWorld } from '../src/runtime';
 import {
@@ -163,10 +175,10 @@ function skipIfUnsupportedDeployment(error: unknown): never {
       // otherwise shows two bare ids per test — the parent fixture's and this
       // one — with nothing saying which is the dynamic run.
       trackRun(getRun(createdRunId), {
-        testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+        testName: `${TestRunner.getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
       });
     }
-    getCurrentTest()?.context.skip(
+    TestRunner.getCurrentTest()?.context.skip(
       unsupported.reason +
         (createdRunId ? ` (created, unreplayable run: ${createdRunId})` : '')
     );
@@ -174,12 +186,45 @@ function skipIfUnsupportedDeployment(error: unknown): never {
   throw error;
 }
 
+/**
+ * Set on lanes that start the parent fixtures through the app
+ * (nextjs-turbopack's `/api/e2e-dynamic-start`) instead of calling `start()`
+ * here, so the app's own queue sends the first delivery, as in a real app.
+ * That lane runs with queue auth on (it stays on whenever dynamic workflows
+ * are enabled); the other Local lanes keep it off until the team decides to
+ * turn it on there.
+ */
+const startViaApp = process.env.WORKFLOW_E2E_START_VIA_APP === '1';
+
+async function startParentRun(
+  fixture: string,
+  args: unknown[]
+): Promise<Run<unknown>> {
+  if (!startViaApp) return start(await e2e(fixture), args);
+  requireFixture(fixture);
+  const response = await fetch(
+    new URL('/api/e2e-dynamic-start', deploymentUrl),
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ fixture, args }),
+    }
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Starting ${fixture} through the app failed (HTTP ${response.status}): ${await response.text()}`
+    );
+  }
+  const { runId } = (await response.json()) as { runId: string };
+  return trackRun(getRun(runId));
+}
+
 /** Start a parent fixture and read the dynamic child it reports. */
 async function startParent(
   fixture: string,
   args: unknown[]
 ): Promise<DynamicChild> {
-  const parent = await start(await e2e(fixture), args);
+  const parent = await startParentRun(fixture, args);
   try {
     return (await parent.returnValue) as DynamicChild;
   } catch (error) {
@@ -209,7 +254,7 @@ async function readRunRecord(runId: string) {
  */
 async function awaitChildRun(childRunId: string) {
   const child = trackRun(getRun(childRunId), {
-    testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+    testName: `${TestRunner.getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
   });
   const output = await child.returnValue;
   return { output, record: await readRunRecord(childRunId) };
@@ -218,7 +263,7 @@ async function awaitChildRun(childRunId: string) {
 /** As above, for a child expected to fail. */
 async function awaitChildRunFailure(childRunId: string, timeoutMs = 60_000) {
   trackRun(getRun(childRunId), {
-    testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+    testName: `${TestRunner.getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
   });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

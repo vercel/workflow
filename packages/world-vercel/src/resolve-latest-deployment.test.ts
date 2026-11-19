@@ -314,4 +314,181 @@ describe('createResolveLatestDeploymentId', () => {
       'Invalid response from Vercel API: expected { id: string }'
     );
   });
+
+  describe('outside a deployment', () => {
+    beforeEach(() => {
+      delete process.env.VERCEL_DEPLOYMENT_ID;
+    });
+
+    const listResponse = (uids: string[]) =>
+      new Response(
+        JSON.stringify({ deployments: uids.map((uid) => ({ uid })) }),
+        { status: 200 }
+      );
+
+    it('resolves from a deployment of the configured environment', async () => {
+      mockFetch
+        .mockResolvedValueOnce(listResponse(['dpl_any_production']))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 'dpl_latest_production' }), {
+            status: 200,
+          })
+        );
+
+      const result = await createResolveLatestDeploymentId({
+        token: 'test-token',
+        projectConfig: {
+          projectId: 'prj_123',
+          teamId: 'team_abc',
+          environment: 'production',
+        },
+      })();
+
+      expect(result).toBe('dpl_latest_production');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+
+      const listUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(listUrl.pathname).toBe('/v6/deployments');
+      expect(listUrl.searchParams.get('projectId')).toBe('prj_123');
+      expect(listUrl.searchParams.get('target')).toBe('production');
+      expect(listUrl.searchParams.get('limit')).toBe('1');
+      // Only a READY deployment is a source the resolver can anchor on.
+      expect(listUrl.searchParams.get('state')).toBe('READY');
+      expect(listUrl.searchParams.get('teamId')).toBe('team_abc');
+      const listHeaders = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(listHeaders.get('Authorization')).toBe('Bearer test-token');
+
+      // The same endpoint start() uses inside a deployment picks the
+      // deployment; the listed one only stands in for the current deployment.
+      const resolveUrl = new URL(mockFetch.mock.calls[1][0] as string);
+      expect(resolveUrl.pathname).toBe(
+        '/v1/workflow/resolve-latest-deployment/dpl_any_production'
+      );
+      expect(resolveUrl.searchParams.get('teamId')).toBe('team_abc');
+    });
+
+    it('uses the configured preview environment and branch', async () => {
+      mockFetch
+        .mockResolvedValueOnce(listResponse(['dpl_preview']))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 'dpl_latest_preview' }), {
+            status: 200,
+          })
+        );
+
+      const result = await createResolveLatestDeploymentId({
+        token: 'test-token',
+        projectConfig: {
+          projectId: 'prj_123',
+          environment: 'preview',
+          gitBranch: 'feat/a',
+        },
+      })();
+
+      expect(result).toBe('dpl_latest_preview');
+      const listUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(listUrl.searchParams.get('target')).toBe('preview');
+      expect(listUrl.searchParams.get('branch')).toBe('feat/a');
+      expect(listUrl.searchParams.get('state')).toBe('READY');
+      expect(listUrl.searchParams.has('teamId')).toBe(false);
+    });
+
+    it('refuses a preview environment without a branch', async () => {
+      // Without a branch the source would be whichever branch deployed last.
+      await expect(
+        createResolveLatestDeploymentId({
+          token: 'test-token',
+          projectConfig: { projectId: 'prj_123', environment: 'preview' },
+        })()
+      ).rejects.toThrow(/without a git branch/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('ignores the branch outside the preview environment', async () => {
+      mockFetch
+        .mockResolvedValueOnce(listResponse(['dpl_prod']))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 'dpl_latest' }), { status: 200 })
+        );
+
+      await createResolveLatestDeploymentId({
+        token: 'test-token',
+        projectConfig: {
+          projectId: 'prj_123',
+          environment: 'production',
+          gitBranch: 'feat/a',
+        },
+      })();
+
+      const listUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(listUrl.searchParams.has('branch')).toBe(false);
+    });
+
+    it('defaults to production when no environment is configured', async () => {
+      mockFetch
+        .mockResolvedValueOnce(listResponse(['dpl_prod']))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 'dpl_latest' }), { status: 200 })
+        );
+
+      await createResolveLatestDeploymentId({
+        token: 'test-token',
+        projectConfig: { projectId: 'prj_123' },
+      })();
+
+      const listUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(listUrl.searchParams.get('target')).toBe('production');
+    });
+
+    it('fails when the project has no READY deployments in that environment', async () => {
+      mockFetch.mockResolvedValueOnce(listResponse([]));
+
+      await expect(
+        createResolveLatestDeploymentId({
+          token: 'test-token',
+          projectConfig: {
+            projectId: 'prj_123',
+            environment: 'preview',
+            gitBranch: 'feat/a',
+          },
+        })()
+      ).rejects.toThrow(
+        'project prj_123 has no READY preview deployments on branch feat/a'
+      );
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces a failed deployment listing', async () => {
+      mockFetch.mockResolvedValueOnce(
+        new Response('Forbidden', { status: 403 })
+      );
+
+      await expect(
+        createResolveLatestDeploymentId({
+          token: 'test-token',
+          projectConfig: { projectId: 'prj_123' },
+        })()
+      ).rejects.toThrow(
+        'Failed to list production deployments of project prj_123: HTTP 403'
+      );
+    });
+
+    it('prefers VERCEL_DEPLOYMENT_ID over the configured project when both are set', async () => {
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_current_abc123';
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'dpl_latest' }), { status: 200 })
+      );
+
+      await createResolveLatestDeploymentId({
+        token: 'test-token',
+        projectConfig: { projectId: 'prj_123' },
+      })();
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const url = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(url.pathname).toBe(
+        '/v1/workflow/resolve-latest-deployment/dpl_current_abc123'
+      );
+    });
+  });
 });

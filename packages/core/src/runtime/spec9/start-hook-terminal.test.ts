@@ -48,7 +48,15 @@ let dir: string | undefined;
 
 afterEach(async () => {
   setWorld(undefined);
-  if (dir) await rm(dir, { recursive: true, force: true });
+  if (dir)
+    await rm(dir, {
+      recursive: true,
+      force: true,
+      // Windows: world-local closes its connection to the database a moment
+      // after the last operation; until then the file cannot be deleted.
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   dir = undefined;
 });
 

@@ -12,7 +12,11 @@
  */
 
 import { setTimeout as sleep } from 'node:timers/promises';
-import { createWorkflowUrl } from '@workflow/utils';
+import {
+  createWorkflowUrl,
+  getQueueAuthKey,
+  QUEUE_AUTH_HEADER,
+} from '@workflow/utils';
 import { isSingleOrchestratorMessage } from '@workflow/world';
 import { encodeMessage, type QueuedMessage } from './queue.js';
 import type { PendingMessageView } from './types.js';
@@ -231,6 +235,8 @@ async function deliverHoldingLease(
           message.deliveries - (message.handoffs ?? 0)
         ),
         'x-vqs-message-delivery-count': String(message.deliveries),
+        // The simulated queue runs in the route's process, as world-local's.
+        [QUEUE_AUTH_HEADER]: getQueueAuthKey(),
       },
       body: encodeMessage(message.payload),
     }

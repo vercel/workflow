@@ -37,7 +37,7 @@ import {
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
 import {
   absorbSkippedSlotReport,
@@ -58,7 +58,6 @@ import { settlePhase, startSuspensionHookWrites } from '../suspension-hooks.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
   getMaxInlineSteps,
-  isBatchTransitionsEnabled,
   MAX_BATCH_FANOUT_EVENTS,
   SPEC8_EVENT_SPEC_VERSION,
 } from './constants.js';
@@ -157,7 +156,7 @@ export interface SuspensionHandlerParams {
   forceClaimVictimWakes?: Set<string>;
   /**
    * Steps this invocation is already executing inline from an earlier pass
-   * of the same delivery (see `isInlineEarlyAdvanceEnabled`). They are left
+   * of the same delivery (inline early advance). They are left
    * out entirely: nothing is created, deferred, or reported in
    * `pendingSteps` for them, since their own executions write their events.
    * They still occupy inline slots, so fewer new steps are deferred for
@@ -537,6 +536,9 @@ export async function handleSuspension({
       item.type === 'step' &&
       !inFlightStepCorrelationIds?.has(item.correlationId)
   );
+  // At terminal drain a system hook that was never created is not needed:
+  // nothing will resume it once the run ends. An abort that was requested
+  // still has to be recorded, so its hook is created and resumed.
   const allHookItems = suspension.items.filter(
     (item): item is HookInvocationQueueItem =>
       item.type === 'hook' &&
@@ -850,9 +852,9 @@ export async function handleSuspension({
   // method and a run whose events are slot-numbered. Hook writes cannot ride
   // a batch (see `createBatch`), but they need no barrier against one either:
   // they commit through the single path alongside the batch. Everything
-  // outside the gate keeps the single-event path byte-for-byte.
+  // outside the gate keeps the single-event path byte-for-byte. See
+  // `./batched-event-writes.md`.
   const batchFanoutEligible =
-    isBatchTransitionsEnabled() &&
     typeof world.events.createBatch === 'function' &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
     attributeItems.length === 0;
@@ -1318,7 +1320,7 @@ export async function handleSuspension({
               // the compute-instance attribution the single claim sends via
               // CreateEventParams.
               ...(entry.kind === 'inline-started'
-                ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+                ? { computeInstanceId: getComputeInstanceId() }
                 : {}),
             })),
             // Per-write request attribution, same as the single path's

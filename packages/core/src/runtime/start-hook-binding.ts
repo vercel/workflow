@@ -1,6 +1,7 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import {
   type Event,
+  isRunCreationEvent,
   type RunInput,
   startHookId,
   type WorkflowRun,
@@ -53,12 +54,13 @@ function sourceOf(value: unknown): StartHookSource | undefined {
 /**
  * The run's start Hook, or `undefined` for a run started without one.
  *
- * Read, in order, from the log's `run_created.eventData.startHook` (the first
- * event of the log, immutable), the queue message's `runInput.startHook` (the
- * log may not hold `run_created` yet), and `workflowRun.startHook`. Every
- * replay must bind the same token, so sources that are present must agree;
- * one that disagrees is a World bug and throws rather than binding a
- * different id on some replays.
+ * Read, in order, from the log's creation event's `eventData.startHook` (the
+ * first event of the log, immutable: its `run_created`, or on spec >= 9 the
+ * `run_started` that created the run, see `isRunCreationEvent`), the queue
+ * message's `runInput.startHook` (the log may not hold its creation yet), and
+ * `workflowRun.startHook`. Every replay must bind the same token, so sources
+ * that are present must agree; one that disagrees is a World bug and throws
+ * rather than binding a different id on some replays.
  *
  * Pure and synchronous: no I/O, and for a run without a start Hook it reads
  * three fields and returns.
@@ -72,10 +74,12 @@ export function resolveRunStartHook({
   workflowRun: Pick<WorkflowRun, 'runId'> & { startHook?: unknown };
   runInput?: Pick<RunInput, 'startHook'> | undefined;
 }): RunStartHook | undefined {
-  const runCreated = events?.find((e) => e.eventType === 'run_created');
+  // The run's creation event: its `run_created`, or the `run_started` that
+  // created it at the first slot (spec >= 9), which carries the same field.
+  const runCreated = events?.find(isRunCreationEvent);
   const sources: [string, StartHookSource | undefined][] = [
     [
-      'run_created',
+      runCreated?.eventType ?? 'run_created',
       sourceOf(
         runCreated && 'eventData' in runCreated
           ? (runCreated.eventData as { startHook?: unknown } | undefined)

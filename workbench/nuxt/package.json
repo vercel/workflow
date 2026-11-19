@@ -19,13 +19,13 @@
     "ai": "catalog:ai-sdk-v7",
     "h3": "^1.15.5",
     "lodash.chunk": "^4.2.0",
-    "nuxt": "^4.6.3",
-    "openai": "^6.6.0",
+    "nuxt": "^4.6.4",
+    "openai": "^6.49.0",
     "vite": "8.3.5",
     "workflow": "workspace:*",
     "zod": "catalog:"
   },
   "dependencies": {
-    "@node-rs/xxhash": "1.7.6"
+    "@node-rs/xxhash": "1.7.8"
   }
 }

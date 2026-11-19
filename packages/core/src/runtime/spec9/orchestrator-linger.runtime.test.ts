@@ -12,9 +12,10 @@ import {
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
 // A delivery with nothing left to run stays live while the run waits on a
-// hook or a background step (runtime/orchestrator/live-feed.ts,
-// `getOrchestratorLingerMs`), so a payload that arrives meanwhile is handled
-// by the same invocation instead of a queued wake.
+// hook or a background step (runtime/spec9/live-feed.ts,
+// `getOrchestratorLingerMsFor`: the full window for a background step, the
+// shorter hook window for hooks alone), so a payload that arrives meanwhile
+// is handled by the same invocation instead of a queued wake.
 
 const TOKEN = 'linger-hook';
 const hookWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
@@ -166,6 +167,57 @@ describe.each([
 
     expect(await runResult(world)).toBe('done');
     // One orchestrator delivery: the lingering one finished the run.
+    expect(
+      world.deliveries.filter(
+        (d) => (d.message as { stepId?: string }).stepId === undefined
+      )
+    ).toHaveLength(1);
+  });
+
+  // A run that waits only on a hook lingers for the shorter hook window,
+  // whatever the full linger is.
+  it('lingers on an open hook for the hook window only', async () => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '10000');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '200');
+    const { world, start: message } = await start({ subscribe: true });
+    const startedAt = Date.now();
+    await world.deliver(message);
+
+    const lingeredMs = Date.now() - startedAt;
+    expect(lingeredMs).toBeGreaterThanOrEqual(200);
+    expect(lingeredMs).toBeLessThan(5000);
+    expect(eventsOf(world, 'hook_created')).toHaveLength(1);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(0);
+  });
+
+  // A step running from its own message keeps the full window, even with
+  // the hook window off.
+  it('keeps the full linger for a step running from its own message', async () => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '10000');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '0');
+    flakyFailures = 1;
+    const { world, start: message } = await setupOrchestratorRun(
+      retryWorkflow,
+      [],
+      { subscribe: true },
+      engine
+    );
+    const delivery = world.deliver(message);
+    const stepMessage = () =>
+      world.held.find(
+        (h) => (h.message as { stepId?: string }).stepId !== undefined
+      );
+    await vi.waitFor(() => expect(stepMessage()).toBeDefined(), {
+      timeout: 5000,
+    });
+    while (stepMessage()) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await world.deliver(stepMessage()!);
+    }
+    await delivery;
+
+    expect(await runResult(world)).toBe('done');
     expect(
       world.deliveries.filter(
         (d) => (d.message as { stepId?: string }).stepId === undefined

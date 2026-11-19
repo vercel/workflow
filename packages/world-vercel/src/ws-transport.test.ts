@@ -90,6 +90,14 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
       this.emit('close', code);
     }
 
+    terminate(): void {
+      if (this.readyState === FakeSocket.CONNECTING) {
+        this.failHandshake(new Error('terminated while connecting'));
+        return;
+      }
+      this.close(1006);
+    }
+
     // ---- test drivers ----
 
     /** Complete the handshake. */
@@ -284,6 +292,33 @@ describe('request/reply', () => {
   });
 });
 
+describe('isConnected', () => {
+  // `run_started` takes HTTP while this is false (events-v4.ts), so it must
+  // not report a socket that is still connecting, or one that closed.
+  it('is false until the handshake completes, and false again once closed', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    expect(transport.isConnected()).toBe(false);
+
+    const { promise, socket } = await connectAndSend(transport);
+    expect(transport.isConnected()).toBe(true);
+    socket.deliver(ackFrame(1, 201));
+    await tick();
+    await promise;
+
+    socket.close();
+    await tick();
+    expect(transport.isConnected()).toBe(false);
+  });
+
+  it('is false while the socket is still connecting', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const pending = transport.request(eventFrame);
+    void pending.catch(() => {});
+    await nextSocket();
+    expect(transport.isConnected()).toBe(false);
+  });
+});
+
 describe('large frames', () => {
   /** Byte equality without a deep diff, which is slow on multi-MiB arrays. */
   const sameBytes = (a: Uint8Array | undefined, b: Uint8Array) =>
@@ -332,10 +367,12 @@ describe('large frames', () => {
     });
   });
 
-  it('offers the frame-parts flag on every upgrade', async () => {
+  it('offers the frame-parts and run-heartbeat flags on every upgrade', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
     const { socket } = await connectAndSend(transport);
-    expect(socket.headers['x-workflow-ws-flags']).toBe('frame-parts');
+    expect(socket.headers['x-workflow-ws-flags']).toBe(
+      'frame-parts, run-heartbeat'
+    );
   });
 
   it('fails the request when a later part cannot be sent', async () => {
@@ -668,10 +705,11 @@ describe('failures are never silent', () => {
     void promise.catch(() => {});
 
     await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(30_000);
 
-    // A socket that swallowed a request is not the one to send the retry on.
-    expect(latest()).not.toBe(socket);
+    expect(socket.readyState).toBe(3);
+    expect(sockets).toHaveLength(1);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 
   it('disarms the deadline once a reply lands', async () => {
@@ -721,6 +759,128 @@ describe('failures are never silent', () => {
     await tick();
 
     expect(loggedWithoutDebug()).not.toContain('drain notice');
+  });
+});
+
+describe('handshake deadline', () => {
+  it('fails a write waiting on a handshake that never completes', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/handshake .* timed out after/);
+    expect(socket.readyState).toBe(3);
+    expect(socket.sent).toHaveLength(0);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminates a stalled socket whose channel was already released, without an error log', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const socket = await nextSocket();
+    transport.release('invocation complete');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    expect(socket.readyState).toBe(3);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('closes the channel so later writes take HTTP', async () => {
+    const config = { token: 'test-token' };
+    openWsChannel('wrun_1', config);
+    await nextSocket();
+    expect(resolveWsTransport('wrun_1', config).kind).toBe('open');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(resolveWsTransport('wrun_1', config).kind).toBe('no_channel');
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('covers a token fetch that never resolves', async () => {
+    let release: (value: Record<string, string>) => void = () => {};
+    const stalledHeaders = () =>
+      new Promise<Record<string, string>>((resolve) => {
+        release = resolve;
+      });
+    const transport = getWsEventsTransport(WS_URL, stalledHeaders);
+    transport.open();
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/handshake .* timed out after/);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
+
+    release({ authorization: 'Bearer late' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toHaveLength(0);
+  });
+
+  it('honours WORKFLOW_REQUEST_TIMEOUT_MS', async () => {
+    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = '15000';
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(socket.readyState).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    await expect(promise).rejects.toThrow(/timed out after 15000ms/);
+  });
+
+  it('is disarmed once the handshake completes', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({ meta: { reqId: 1 } });
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+
+    expect(socket.readyState).toBe(1);
+    expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
+    expect(loggedErrors()).not.toContain('timed out');
+  });
+
+  it('is disarmed once a handshake fails on its own', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    (await nextSocket()).failHandshake();
+    await expect(promise).rejects.toThrow('ECONNREFUSED');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+
+    expect(loggedErrors()).not.toContain('handshake');
+  });
+
+  it('bounds a stalled eager reconnect and stops reconnecting', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    socket.close(1006);
+    await expect(promise).rejects.toThrow();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sockets).toHaveLength(2);
+    const joined = transport.request(eventFrame);
+    void joined.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    await expect(joined).rejects.toThrow(/handshake .* timed out/);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1].readyState).toBe(3);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 });
 
@@ -1045,7 +1205,7 @@ describe('open', () => {
 });
 
 /**
- * workflow-server tags a `drain` with why it is closing. `max_duration` means
+ * The backend tags a `drain` with why it is closing. `max_duration` means
  * the socket aged out and a plain reconnect is right; `auth_expiry` means the
  * *bearer* ran out, and reconnecting with the same one just earns a 401.
  */
@@ -1209,11 +1369,13 @@ describe('transport selection', () => {
    * "did this invocation open a channel", and every `null` means write over HTTP.
    */
   describe('resolveWsTransport', () => {
-    it('returns null for a run with no open channel', () => {
+    it('finds no channel for a run nothing opened one for', () => {
       // The default for every writer that isn't the flow route — `start()`
       // writing `run_created` most of all, where one write would not repay a
       // handshake.
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig)).toEqual({
+        kind: 'no_channel',
+      });
       expect(sockets).toHaveLength(0);
     });
 
@@ -1222,35 +1384,42 @@ describe('transport selection', () => {
       openWsChannel('wrun_1', directConfig);
       openWsChannel('wrun_2', directConfig);
 
-      const first = resolveWsTransport('wrun_1', directConfig);
-      const second = resolveWsTransport('wrun_1', directConfig);
+      const open = (runId: string) => {
+        const resolved = resolveWsTransport(runId, directConfig);
+        if (resolved.kind !== 'open') throw new Error(`no channel: ${runId}`);
+        return resolved;
+      };
+      const first = open('wrun_1');
+      const second = open('wrun_1');
 
-      expect(first?.wsUrl).toContain('/websockets/v1/runs/wrun_1');
-      expect(second?.transport).toBe(first?.transport);
-      expect(resolveWsTransport('wrun_2', directConfig)?.transport).not.toBe(
-        first?.transport
-      );
+      expect(first.wsUrl).toContain('/websockets/v1/runs/wrun_1');
+      expect(second.transport).toBe(first.transport);
+      expect(open('wrun_2').transport).not.toBe(first.transport);
     });
 
-    it('returns null once the channel is closed', () => {
+    it('finds no channel once the channel is closed', () => {
       // What makes a late write — one the runtime issues after the invocation
       // that opened the channel has returned — fall back instead of failing.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       const release = openWsChannel('wrun_1', directConfig);
-      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe('open');
 
       release?.();
 
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe(
+        'no_channel'
+      );
     });
 
-    it('returns null for a World behind the api-workflow proxy', () => {
+    it('says proxy for a World behind the api-workflow proxy', () => {
       // That gateway does not forward a raw upgrade, so the caller has to fall
       // back to HTTP rather than attempt a connection it can't serve.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       openWsChannel('wrun_1', proxyConfig);
 
-      expect(resolveWsTransport('wrun_1', proxyConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', proxyConfig)).toEqual({
+        kind: 'proxy',
+      });
       expect(sockets).toHaveLength(0);
     });
 
@@ -1318,7 +1487,9 @@ describe('transport selection', () => {
       expect(sockets).toHaveLength(0);
       // And nothing registered, so writes resolve no channel either.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe(
+        'no_channel'
+      );
     });
 
     it('does nothing for a World behind the api-workflow proxy', async () => {
@@ -1397,7 +1568,9 @@ describe('transport selection', () => {
       await tick();
       sockets[0].failHandshake();
       await tick();
-      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe(
+        'no_channel'
+      );
 
       openWsChannel('wrun_1', directConfig);
       await tick();
@@ -1409,7 +1582,7 @@ describe('transport selection', () => {
       await tick();
 
       expect(sockets[1].readyState).toBe(1);
-      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe('open');
     });
 
     it('is inert when called twice', async () => {
@@ -1452,7 +1625,7 @@ describe('transport selection', () => {
       expect(latest().readyState).toBe(1);
       // Registered, so this invocation's writes take the socket rather than
       // silently spending the whole invocation on the HTTP fallback.
-      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+      expect(resolveWsTransport('wrun_1', directConfig).kind).toBe('open');
     });
 
     it('is undefined when the gate is off', () => {

@@ -45,6 +45,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import { isQuickJSBaselineSnapshotEnabled } from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
@@ -56,10 +57,6 @@ import {
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
 import { republishOwedForceClaimVictimWakes } from '../hook-wake.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import { quickjsWasiVersion } from '../quickjs-assets.generated.js';
 import {
   type EventCreator,
@@ -95,11 +92,7 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
-import {
-  getSnapshotThresholdForHandler,
-  isSnapshotThresholdConfigured,
-  isUnencryptedSnapshottingAllowed,
-} from '../vm-mode.js';
+import { getSnapshotThresholdForHandler } from '../vm-mode.js';
 import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
@@ -388,16 +381,16 @@ export async function runWorkflowWithQuickJS(params: {
   // `snapshotThreshold` events have been processed since the last one,
   // and resumptions restore the VM and replay only the delta events.
   //
-  // Forced to 0 (pure full replay, always correct) when:
-  // - the World doesn't provide `experimental_snapshots` (optional);
-  // - the run has no encryption key and the handler hasn't opted in with
-  //   WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED. A snapshot is executable VM
-  //   state holding the run's in-memory data; the key is what keeps it
-  //   confidential at rest and authenticates it on restore.
+  // Forced to 0 (pure full replay, always correct) when the World doesn't
+  // provide `experimental_snapshots` (optional). A run without an encryption
+  // key (world-local, world-postgres, or any World that doesn't implement
+  // `getEncryptionKeyForRun`) is snapshotted in plaintext, the same as its
+  // event log and payloads; a run with a key always seals its snapshot, and
+  // `openSnapshot` rejects a plaintext snapshot for it on restore.
   // An invalid policy value disables snapshotting with a warning rather
   // than failing every invocation (see getSnapshotThresholdForHandler).
   const snapshotsStorage = world.experimental_snapshots;
-  let snapshotThreshold = snapshotsStorage
+  const snapshotThreshold = snapshotsStorage
     ? getSnapshotThresholdForHandler(workflowRun, (message) =>
         warnOnce(`snapshot-threshold:${message}`, () =>
           runtimeLogger.warn(
@@ -407,30 +400,6 @@ export async function runWorkflowWithQuickJS(params: {
         )
       )
     : 0;
-  // The configured policy, before the encryption gate below: terminal
-  // cleanup keys on it, so snapshots saved while the gate was open are
-  // still deleted after it closes.
-  const snapshotPolicyThreshold = snapshotThreshold;
-  if (
-    snapshotThreshold > 0 &&
-    !encryptionKey &&
-    !isUnencryptedSnapshottingAllowed()
-  ) {
-    // Only warn when snapshotting was explicitly configured: with the
-    // default threshold, worlds without run encryption keys (world-local,
-    // world-postgres) would otherwise warn on every QuickJS deployment.
-    if (isSnapshotThresholdConfigured(workflowRun)) {
-      warnOnce('snapshot-unencrypted', () =>
-        runtimeLogger.warn(
-          'QuickJS runtime: VM snapshotting is configured but this run has no encryption key; ' +
-            'snapshots are disabled. Set WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1 to store them unencrypted.',
-          { workflowRunId: runId }
-        )
-      );
-    }
-    snapshotThreshold = 0;
-  }
-
   // Try to load a persisted snapshot. Skipped on the first invocation
   // (nothing can have been saved yet) and on any load/decode failure —
   // the fresh-boot full replay below is always a correct fallback (the
@@ -1496,7 +1465,9 @@ export async function runWorkflowWithQuickJS(params: {
                       ? { inlineDeltaSinceCursor }
                       : {}),
                   }))(),
-              'debug'
+              // Its retry goes out under its own `retry:1` key (below), not
+              // the dispatch key, so no waiting delivery may carry it.
+              { logLevel: 'debug' }
             )
           )
         );
@@ -1788,8 +1759,8 @@ export async function runWorkflowWithQuickJS(params: {
     if (!snapshotsStorage) return;
     const mayExist =
       snapshotStored ||
-      (snapshotPolicyThreshold > 0 &&
-        restoredEventCount + seenEventIds.size >= snapshotPolicyThreshold);
+      (snapshotThreshold > 0 &&
+        restoredEventCount + seenEventIds.size >= snapshotThreshold);
     if (!mayExist) return;
     safeWaitUntil(
       Promise.resolve().then(() => snapshotsStorage.delete(runId)),
@@ -1877,7 +1848,7 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
-    dispatchRunCompletedHooks(runId, workflowName);
+    await afterRunCompleted(world, workflowRun, workflowName);
   } else if (result.suspended) {
     // Workflow still suspended after the inline loop. All durable side
     // effects for the final suspension state were already dispatched by
@@ -2077,7 +2048,8 @@ export async function runWorkflowWithQuickJS(params: {
     // The VM serializes errors as `{ name, message, stack }`, so we
     // reconstruct a host-side Error of the correct class based on the
     // VM-side `name`: specific WorkflowRuntimeError subclasses need
-    // to be preserved so classifyRunError() tags them as RUNTIME_ERROR.
+    // to be preserved so classifyRunError() tags them with their own
+    // code (WORKFLOW_NOT_REGISTERED for WorkflowNotRegisteredError).
     const reconstructed: Error =
       result.failed.name === 'WorkflowNotRegisteredError'
         ? new WorkflowNotRegisteredError(workflowName)
@@ -2263,8 +2235,9 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
-    dispatchRunFailedHooks(
-      runId,
+    await afterRunFailed(
+      world,
+      workflowRun,
       workflowName,
       dehydratedError,
       encryptionKey,

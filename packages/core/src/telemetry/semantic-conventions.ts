@@ -322,14 +322,90 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
 /** Whether this workflow invocation is using the turbo first-delivery path */
 export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
 
+/**
+ * Whether this delivery is a start Hook candidate's first delivery, which
+ * writes `run_started` before loading the log
+ */
+export const WorkflowStartHookFirstDelivery = SemanticConvention<boolean>(
+  'workflow.start_hook.first_delivery'
+);
+
+/**
+ * Why a start Hook candidate's first delivery fell back to a full load after
+ * its `run_started` was refused: by the in-band fence (`fence`), or with a
+ * conflict, which does not say whether the run finished (`conflict`)
+ */
+export const WorkflowStartHookFirstDeliveryFallback = SemanticConvention<
+  'fence' | 'conflict'
+>('workflow.start_hook.first_delivery.fallback');
+
+/**
+ * A start Hook candidate's first delivery acknowledged its message without
+ * loading the log, because its `run_started` found the run already ended
+ */
+export const WorkflowStartHookFirstDeliveryRunEnded =
+  SemanticConvention<boolean>('workflow.start_hook.first_delivery.run_ended');
+
 /** The delivery found nothing new since the last consumed position. */
 export const WorkflowNoopDelivery = SemanticConvention<boolean>(
   'workflow.noop_delivery'
 );
 
+/**
+ * Why a delivery was a no-op: `terminal` acknowledged a run this process saw
+ * end without reading anything, `tail` read the log tail and found nothing
+ * new since the consumed position, `hop` only sent a long wait's next timer.
+ */
+export const WorkflowNoopDeliveryReason = SemanticConvention<
+  'terminal' | 'tail' | 'hop'
+>('workflow.noop_delivery.reason');
+
+/** Time this delivery lingered for a wait due soon, in milliseconds. */
+export const WorkflowLingerWaitMs = SemanticConvention<number>(
+  'workflow.linger.wait_ms'
+);
+
+/** Time this delivery lingered for a background step, in milliseconds. */
+export const WorkflowLingerStepMs = SemanticConvention<number>(
+  'workflow.linger.step_ms'
+);
+
+/** Time this delivery lingered for open hooks, in milliseconds. */
+export const WorkflowLingerHookMs = SemanticConvention<number>(
+  'workflow.linger.hook_ms'
+);
+
 /** The in-band fence refused this orchestrator delivery's write. */
 export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'
+);
+
+/**
+ * This orchestrator delivery's `run_started` conflicted with an earlier start
+ * of the run (a replayed first delivery, or a lost race), so it continued in
+ * place from a full load.
+ */
+export const WorkflowStartConflictRestart = SemanticConvention<boolean>(
+  'workflow.start_conflict_restart'
+);
+
+/**
+ * The age, from when the queue first enqueued it, of a run's first
+ * orchestrator message whose first delivery skipped turbo because it was too
+ * old to be a first delivery (see `TURBO_FIRST_DELIVERY_MAX_AGE_MS`).
+ */
+export const WorkflowTurboSkippedMessageAgeMs = SemanticConvention<number>(
+  'workflow.turbo_skipped_message_age_ms'
+);
+
+/**
+ * This delivery of a run's first orchestrator message reported delivery
+ * count 1, yet its full load found a `run_started` it did not write: a
+ * platform's replay of a first delivery that already ran. It re-sends the
+ * step messages its predecessor may have left unsent, as a redelivery would.
+ */
+export const WorkflowReplayedFirstDelivery = SemanticConvention<boolean>(
+  'workflow.replayed_first_delivery'
 );
 
 /**
@@ -465,7 +541,7 @@ export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
 
 /**
  * Replay passes this invocation started after one inline step settled while
- * sibling inline steps were still running (see `isInlineEarlyAdvanceEnabled`).
+ * sibling inline steps were still running.
  */
 export const WorkflowInlineEarlyAdvances = SemanticConvention<number>(
   'workflow.inline.early_advances'
@@ -535,7 +611,7 @@ export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
 );
 
 /**
- * Compute instance handling this route: the synthesized `COMPUTE_INSTANCE_ID`.
+ * Compute instance handling this route: the synthesized `getComputeInstanceId()`.
  * Uses OTEL `faas.instance` (execution-environment id, reused across
  * invocations to the same function):
  * https://opentelemetry.io/docs/specs/semconv/attributes-registry/faas/
@@ -894,6 +970,15 @@ export const StepDeliveryReason = SemanticConvention<string>(
   'step.delivery.reason'
 );
 
+/**
+ * What a background step's delivery read to decide: `none` (a plain first
+ * delivery), `step_tail` (the step's latest event, which showed a retry not
+ * yet due) or `full_log` (the run's whole log).
+ */
+export const StepDeliveryLogRead = SemanticConvention<
+  'none' | 'step_tail' | 'full_log'
+>('step.delivery.log_read');
+
 /** The delay a `redeliver` delivery asked the queue for, in seconds. */
 export const StepDeliveryTimeoutSeconds = SemanticConvention<number>(
   'step.delivery.timeout_seconds'
@@ -1054,6 +1139,19 @@ export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
 /** Number of pagination pages loaded when fetching workflow events */
 export const WorkflowEventsPagesLoaded = SemanticConvention<number>(
   'workflow.events.pages_loaded'
+);
+
+/**
+ * Whether an event log load stopped following `hasMore` because it already
+ * held the run's event ceiling: the log holds at least that many events.
+ */
+export const WorkflowEventsLoadStoppedAtLimit = SemanticConvention<boolean>(
+  'workflow.events.load_stopped_at_limit'
+);
+
+/** The run's event ceiling a load stopped at. */
+export const WorkflowEventsLimit = SemanticConvention<number>(
+  'workflow.events.limit'
 );
 
 // Queue timing breakdown attributes (workflow-specific)

@@ -32,6 +32,7 @@ import {
 } from '../constants.js';
 import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
+import { exceededMaxRetriesMessage } from './step-executor.js';
 import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
   stepMessageRetentionSeconds,
@@ -415,6 +416,11 @@ describe.each([
          return all.reduce((sum, x) => sum + x, 0);
        }${transform('workflow')}`;
       const expectedSum = (width * (width + 1)) / 2;
+      // How long the inline bodies of a fan-out may take to start while its
+      // background dispatch is held. Locally they start within ~300ms; on a
+      // loaded CI runner (Windows especially) over 2s, and over 10s for the
+      // file's first run. Within the 60s test timeout.
+      const INLINE_BODIES_STARTED_TIMEOUT_MS = 30_000;
       const stepBatchesOf = (world: AppendOnlyWorld) =>
         world.queueBatches.filter((batch) =>
           batch.every(
@@ -500,9 +506,13 @@ describe.each([
           (error: unknown) => error
         );
         try {
-          // Every inline body ran while no step message went out.
+          // Every inline body ran while no step message went out. The step
+          // batch is held until `release()`, so waiting longer cannot let a
+          // step message out first: the budget only has to cover a loaded
+          // runner, where the first run in the file starts its inline
+          // bodies seconds late (module loading, not the dispatch).
           await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
-            timeout: 2_000,
+            timeout: INLINE_BODIES_STARTED_TIMEOUT_MS,
           });
           expect(stepBatchesOf(world).length).toBeGreaterThan(0);
           expect(stepMessagesOf(world)).toEqual([]);
@@ -569,7 +579,7 @@ describe.each([
             if (failed || !isStepBatch(messages)) return;
             // Fail only once the inline bodies ran.
             await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
-              timeout: 2_000,
+              timeout: INLINE_BODIES_STARTED_TIMEOUT_MS,
             });
             failed = true;
             throw new Error('queue unavailable');
@@ -832,6 +842,17 @@ describe.each([
           return (result?.timeoutSeconds ?? 0) > 0;
         })
       ).toBe(true);
+      // Each early hop decided from the step's latest event alone: one
+      // newest-first read of the step, no full log read.
+      const earlyHops = stepDeliveries.slice(1, -1);
+      expect(earlyHops.length).toBeGreaterThanOrEqual(3);
+      const stepReads = world.correlationListCalls.filter(
+        (call) =>
+          (call.pagination as { sortOrder?: string } | undefined)?.sortOrder ===
+          'desc'
+      );
+      expect(stepReads.length).toBeGreaterThanOrEqual(earlyHops.length);
+      expect(stepReads.every((call) => call.resolveData === 'none')).toBe(true);
       // Only two attempts ran: the early hops ran no body.
       expect(calls.so_long_retry).toBe(2);
       expect(
@@ -913,8 +934,17 @@ describe.each([
       for (const attributes of redelivered) {
         expect(attributes['step.delivery.reason']).toBe('retry-after');
         expect(attributes['step.delivery.timeout_seconds']).toBeGreaterThan(0);
+        // Decided from the step's latest event, without the full log.
+        expect(attributes['step.delivery.log_read']).toBe('step_tail');
       }
-      expect(decided.map((a) => a['step.delivery.decision'])).toContain('run');
+      const ran = decided.filter(
+        (attributes) => attributes['step.delivery.decision'] === 'run'
+      );
+      expect(ran.map((a) => a['step.delivery.log_read'])).toEqual([
+        // The first delivery reads nothing; the due retry reads the full log.
+        'none',
+        'full_log',
+      ]);
     } finally {
       traceSpy.mockRestore();
       nowSpy.mockRestore();
@@ -986,9 +1016,17 @@ describe.each([
     await world.runUntilIdle();
 
     expect(calls.so_once).toBe(1);
-    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    const starts = eventsOf(world, 'step_started');
+    expect(starts).toHaveLength(1);
     expect(eventsOf(world, 'step_failed')).toHaveLength(1);
-    expect(await runResult(world)).toMatch(/^failed: /);
+    // No error from the body exists; the failure names the attempt that left
+    // no outcome instead.
+    expect(await runResult(world)).toBe(
+      `failed: ${exceededMaxRetriesMessage('so_once', 0, {
+        attempt: 1,
+        startedAt: new Date(starts[0]!.createdAt),
+      })}`
+    );
   });
 
   describe("a background step's first delivery", () => {
@@ -1799,6 +1837,18 @@ describe.each([
         },
       };
     };
+    /**
+     * Drains the run, step messages ahead of orchestrator wakes. In plain
+     * FIFO order the steps the redelivery creates wait behind a wake per
+     * earlier step outcome, each a full replay that finds nothing to do (the
+     * QuickJS engine has no no-op shortcut for them): ~130 replays of a
+     * ~400-event log, which took over 60s on a loaded Windows runner.
+     */
+    const drain = (world: AppendOnlyWorld) =>
+      world.runUntilIdle(500, {
+        prefer: (held) =>
+          (held.message as { stepId?: string }).stepId !== undefined,
+      });
     const stepMessageIds = (world: AppendOnlyWorld) =>
       world.queueCalls.flatMap((call) => {
         const stepId = (call.message as { stepId?: string }).stepId;
@@ -1828,7 +1878,7 @@ describe.each([
 
         // The redelivery creates the rest and finishes the run; each step
         // runs once.
-        await world.runUntilIdle(500);
+        await drain(world);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
         const starts = eventsOf(world, 'step_started').map(
@@ -1889,7 +1939,7 @@ describe.each([
           messageId: start.messageId,
           deliveryCount: 2,
         });
-        await world.runUntilIdle(500);
+        await drain(world);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
         const starts = eventsOf(world, 'step_started').map(

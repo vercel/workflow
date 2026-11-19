@@ -30,7 +30,8 @@ export function parseWindowsNetstatPortsForPid(
     }
 
     const port = parsePort(localAddress.slice(colonIndex + 1));
-    if (port !== undefined) {
+    // A dual-stack listener has both a `0.0.0.0:port` and a `[::]:port` row.
+    if (port !== undefined && !ports.includes(port)) {
       ports.push(port);
     }
   }

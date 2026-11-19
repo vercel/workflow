@@ -12,6 +12,7 @@ import {
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { debugLog } from '@workflow/utils';
 import type {
   AnyEventRequest,
   AttributeChange,
@@ -21,6 +22,7 @@ import type {
   EventLogSnapshot,
   EventResult,
   EventsResolveData,
+  EventsSubscribeOptions,
   ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
@@ -56,6 +58,8 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  RETENTION_ATTRIBUTE,
+  RETENTION_ZERO,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -78,6 +82,7 @@ import {
   desc,
   eq,
   exists,
+  getTableColumns,
   gt,
   inArray,
   isNull,
@@ -96,10 +101,14 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
-import { purgeRunUserDataIfZeroRetention } from './retention.js';
 import {
-  getRunStatusPollIntervalMs,
+  purgeRunUserDataIfZeroRetention,
+  scrubStepWriteIfRunPurged,
+} from './retention.js';
+import { announceRunEvents, type RunEventsFeed } from './run-events.js';
+import {
   notifyRunTerminal,
+  RUN_STATUS_POLL_INTERVAL_MS,
   type RunStatusListener,
 } from './run-status.js';
 import {
@@ -166,6 +175,17 @@ const SLOT_INSERT_MAX_DELAY_MS = 40;
  */
 const SLOT_INSERT_TRANSACTION = { isolationLevel: 'read committed' } as const;
 
+/**
+ * Why a forced hook claim restarts its takeover. Each restart means the token
+ * changed hands in between (another claim committed, or the owner released
+ * it), so a claim restarts at most about once per concurrent claimer:
+ * - `owner-changed`: the locked row no longer names the owner read before it.
+ * - `row-gone`: the locked read waited on a row a concurrent takeover replaced.
+ * - `claim-lost`: the token was free and a concurrent claim won the claim
+ *   index.
+ */
+type TakeoverRestartReason = 'owner-changed' | 'row-gone' | 'claim-lost';
+
 /** The pg error behind a drizzle wrapper, or an empty shape if there is none. */
 function pgErrorOf(err: unknown): { code?: string; constraint?: string } {
   const direct = err as { code?: string; constraint?: string };
@@ -206,6 +226,19 @@ function nextSlotId(runId: string): SQL<string> {
   const width = sql.raw(String(EVENT_ID_BODY_LENGTH));
   const noEvents = sql.raw(String(FIRST_EVENT_SLOT - 1));
   return sql<string>`${EVENT_ID_PREFIX} || lpad((coalesce((select cast(substring(prev.id from ${bodyFrom}) as bigint) from ${Schema.events} prev where prev.run_id = ${runId} order by prev.id desc limit 1), ${noEvents}) + 1)::text, ${width}, '0')`;
+}
+
+/**
+ * RETURNING columns of a step write: the step row, and whether its run asked
+ * for zero retention (fixed when the run starts), so a write that may land
+ * after the run's purge is checked (`scrubStepWriteIfRunPurged`) without a
+ * query for every other run.
+ */
+function stepRowAndRetention(runId: string) {
+  return {
+    ...getTableColumns(Schema.steps),
+    zeroRetention: sql<boolean>`coalesce((select r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO} from ${Schema.runs} r where r.id = ${runId}), false)`,
+  };
 }
 
 /**
@@ -918,7 +951,7 @@ export function createRunsStorage(
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0 || params?.signal?.aborted) return run;
 
-        const waitMs = Math.min(remainingMs, getRunStatusPollIntervalMs());
+        const waitMs = Math.min(remainingMs, RUN_STATUS_POLL_INTERVAL_MS);
         if (runStatusListener) {
           await runStatusListener.wait(id, waitMs, params?.signal);
         } else {
@@ -1195,89 +1228,135 @@ export function createEventsStorage(
      * created without a prefix and every World recovers them.
      */
     jobPrefix?: string;
+    /**
+     * The live feed behind `events.subscribe`. Omitted, the storage offers
+     * no `subscribe`. Writes announce spec 9 runs on it either way.
+     */
+    runEventsFeed?: RunEventsFeed;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix } = options;
+  const { jobPrefix, runEventsFeed } = options;
   const events = createUnfencedEventsStorage(drizzle, { jobPrefix });
   const unfencedCreate = events.create as (
     runId: string | null,
     data: AnyEventRequest,
     params?: CreateEventParams
   ) => Promise<EventResult>;
+  const create = async (
+    runId: string | null,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    const result = await createFenced(runId, data, params);
+    // Wakes the live feed (see run-events.ts), in any process, of every
+    // spec 9 run the write committed an event to. Only a spec 9 run has
+    // subscribers, and every write to one is stamped 9.
+    const announcedRunId = result.event?.runId ?? runId;
+    if (
+      announcedRunId &&
+      result.event &&
+      (data.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ) {
+      announceRunEvents(drizzle, announcedRunId);
+    }
+    const victimRunId = forceClaimVictimRunId(result);
+    if (victimRunId !== undefined && victimRunId !== announcedRunId) {
+      announceRunEvents(drizzle, victimRunId);
+    }
+    return result;
+  };
+  const createFenced = async (
+    runId: string | null,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    // `run_created` opens the count and is never fenced itself.
+    if (!params?.inBand || !runId || data.eventType === 'run_created') {
+      return unfencedCreate(runId, data, params);
+    }
+    const expected = params.expectedSeqInBand;
+    if (
+      expected === undefined ||
+      !Number.isSafeInteger(expected) ||
+      expected < 0
+    ) {
+      throw new WorkflowWorldError(
+        `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+        { status: 400 }
+      );
+    }
+    // Several event types update their entity row (run status,
+    // attributes, a step or wait) ahead of the event insert, so the fence
+    // check, those updates and the insert that advances the count run in
+    // one transaction that holds the run's slots row lock from the start.
+    // A stale writer is refused before it touches any row, and of writers
+    // holding the same count only the first through the lock writes
+    // anything: the others find the count moved. Only in-band writers take
+    // this lock, so out-of-band writes never wait on it.
+    const terminalRuns: string[] = [];
+    const result = await drizzle.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ seqInBand: Schema.eventSlots.seqInBand })
+        .from(Schema.eventSlots)
+        .where(eq(Schema.eventSlots.runId, runId))
+        .for('update')
+        .limit(1);
+      // No slots row: a run that predates slot-numbered ids, which the
+      // fence does not cover (its inserts allocate no slot).
+      if (row && row.seqInBand !== expected) {
+        throw new InBandSupersededError(
+          `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${row.seqInBand}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+          { seqInBand: row.seqInBand }
+        );
+      }
+      const inTransaction = createUnfencedEventsStorage(tx, {
+        jobPrefix,
+        deferTerminalNotify: (terminalRunId) =>
+          terminalRuns.push(terminalRunId),
+      }).create as (
+        runId: string | null,
+        data: AnyEventRequest,
+        params?: CreateEventParams
+      ) => Promise<EventResult>;
+      const occurredAt =
+        params?.occurredAt !== undefined
+          ? new Date(params.occurredAt)
+          : undefined;
+      return pendingFence.run(
+        {
+          runId,
+          expected,
+          consumed: false,
+          ...(occurredAt && !Number.isNaN(+occurredAt) ? { occurredAt } : {}),
+        },
+        () => inTransaction(runId, data, params)
+      );
+    }, SLOT_INSERT_TRANSACTION);
+    for (const terminalRunId of terminalRuns) {
+      await notifyRunTerminal(drizzle, terminalRunId);
+    }
+    return result;
+  };
   return {
     ...events,
-    async create(
-      runId: string | null,
-      data: AnyEventRequest,
-      params?: CreateEventParams
-    ): Promise<EventResult> {
-      // `run_created` opens the count and is never fenced itself.
-      if (!params?.inBand || !runId || data.eventType === 'run_created') {
-        return unfencedCreate(runId, data, params);
-      }
-      const expected = params.expectedSeqInBand;
-      if (
-        expected === undefined ||
-        !Number.isSafeInteger(expected) ||
-        expected < 0
-      ) {
-        throw new WorkflowWorldError(
-          `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
-          { status: 400 }
-        );
-      }
-      // Several event types update their entity row (run status,
-      // attributes, a step or wait) ahead of the event insert, so the fence
-      // check, those updates and the insert that advances the count run in
-      // one transaction that holds the run's slots row lock from the start.
-      // A stale writer is refused before it touches any row, and of writers
-      // holding the same count only the first through the lock writes
-      // anything: the others find the count moved. Only in-band writers take
-      // this lock, so out-of-band writes never wait on it.
-      const terminalRuns: string[] = [];
-      const result = await drizzle.transaction(async (tx) => {
-        const [row] = await tx
-          .select({ seqInBand: Schema.eventSlots.seqInBand })
-          .from(Schema.eventSlots)
-          .where(eq(Schema.eventSlots.runId, runId))
-          .for('update')
-          .limit(1);
-        // No slots row: a run that predates slot-numbered ids, which the
-        // fence does not cover (its inserts allocate no slot).
-        if (row && row.seqInBand !== expected) {
-          throw new InBandSupersededError(
-            `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${row.seqInBand}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
-            { seqInBand: row.seqInBand }
-          );
+    create,
+    ...(runEventsFeed
+      ? {
+          subscribe: (
+            runId: string,
+            afterSlot: number,
+            onEvent: (event: Event) => void,
+            subscribeOptions?: EventsSubscribeOptions
+          ) =>
+            runEventsFeed.subscribe(
+              runId,
+              afterSlot,
+              onEvent,
+              subscribeOptions,
+              events.list
+            ),
         }
-        const inTransaction = createUnfencedEventsStorage(tx, {
-          jobPrefix,
-          deferTerminalNotify: (terminalRunId) =>
-            terminalRuns.push(terminalRunId),
-        }).create as (
-          runId: string | null,
-          data: AnyEventRequest,
-          params?: CreateEventParams
-        ) => Promise<EventResult>;
-        const occurredAt =
-          params?.occurredAt !== undefined
-            ? new Date(params.occurredAt)
-            : undefined;
-        return pendingFence.run(
-          {
-            runId,
-            expected,
-            consumed: false,
-            ...(occurredAt && !Number.isNaN(+occurredAt) ? { occurredAt } : {}),
-          },
-          () => inTransaction(runId, data, params)
-        );
-      }, SLOT_INSERT_TRANSACTION);
-      for (const terminalRunId of terminalRuns) {
-        await notifyRunTerminal(drizzle, terminalRunId);
-      }
-      return result;
-    },
+      : {}),
     async list(params: ListEventsParams): Promise<EventListResponse> {
       // Read before listing, in one statement: the count, then the highest
       // slot. Every in-band write the count includes committed with it, so
@@ -1287,6 +1366,28 @@ export function createEventsStorage(
       return snapshot ? { ...page, snapshot } : page;
     },
   } as Storage['events'];
+}
+
+/**
+ * The spec 9 run a forced `hook_created` took its token from, when the same
+ * transaction committed `hook_disposed{forceClaimedBy}` to that run's log:
+ * the victim was still running, which is exactly when `claimedFrom` carries
+ * its `runSpecVersion` (see the `hook_created` branch). Its live feed is
+ * announced too, so the victim sees the takeover at once rather than at its
+ * next poll.
+ */
+function forceClaimVictimRunId(result: EventResult): string | undefined {
+  const claimedFrom =
+    result.hook?.claimedFrom ??
+    (
+      result.event?.eventData as
+        | { forceClaimedFrom?: Hook['claimedFrom'] }
+        | undefined
+    )?.forceClaimedFrom;
+  return claimedFrom?.runId !== undefined &&
+    (claimedFrom.runSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ? claimedFrom.runId
+    : undefined;
 }
 
 /**
@@ -2566,6 +2667,7 @@ function createUnfencedEventsStorage(
                 error: data.eventData.error as SerializedData,
                 completedAt: now,
               };
+        let zeroRetention = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2577,10 +2679,12 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning();
+            .returning(stepRowAndRetention(effectiveRunId));
 
           if (stepValue) {
-            step = deserializeStepError(compact(stepValue));
+            const { zeroRetention: zero, ...row } = stepValue;
+            zeroRetention = zero;
+            step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
             const [existing] = await tx
@@ -2622,6 +2726,14 @@ function createUnfencedEventsStorage(
           eventId = eventValue.eventId;
           return { createdAt: eventValue.createdAt };
         }, SLOT_INSERT_TRANSACTION);
+        if (zeroRetention)
+          await scrubStepWriteIfRunPurged(
+            drizzle,
+            effectiveRunId,
+            data.correlationId!,
+            data.eventType,
+            eventId
+          );
       }
 
       // Handle step_retrying event: sets status back to 'pending', records error
@@ -2634,6 +2746,7 @@ function createUnfencedEventsStorage(
         // One transaction with its event, as step_started does: a step put
         // back to pending without its step_retrying would retry with no
         // record of the failed attempt in the log.
+        let zeroRetention = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2649,9 +2762,11 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning();
+            .returning(stepRowAndRetention(effectiveRunId));
           if (stepValue) {
-            step = deserializeStepError(compact(stepValue));
+            const { zeroRetention: zero, ...row } = stepValue;
+            zeroRetention = zero;
+            step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
             const [existing] = await tx
@@ -2677,6 +2792,14 @@ function createUnfencedEventsStorage(
           }
           return insertOwnEvent(tx);
         }, SLOT_INSERT_TRANSACTION);
+        if (zeroRetention)
+          await scrubStepWriteIfRunPurged(
+            drizzle,
+            effectiveRunId,
+            data.correlationId!,
+            data.eventType,
+            eventId
+          );
       }
 
       // Handle hook_created event: create hook entity
@@ -2711,9 +2834,9 @@ function createUnfencedEventsStorage(
         // can be force-claimed by another run the moment its row exists, and
         // that takeover appends OUR `hook_disposed`; a `hook_created` journaled
         // afterwards would land behind it — a non-parkable row no consumer of
-        // the replay can claim (workflow-server guards its journal with a
-        // ConditionCheck on the run's own marker for the same reason; see
-        // `ForceUnguardedJournal.cfg`). One transaction makes the ordering
+        // the replay can claim (world-vercel guards its journal with a
+        // condition on the run's own marker for the same reason). One
+        // transaction makes the ordering
         // impossible to get wrong: the takeover's row lock waits for this
         // commit, so the disposal always follows the creation.
         // The `hook_created` journals below run before the generic publish's
@@ -2838,7 +2961,10 @@ function createUnfencedEventsStorage(
           forceRefusedReason = null;
           conflictingRunId = owner.runId;
         };
-        if (existingHook) {
+        // A forced create goes to the takeover below even when the read found
+        // no owner, so that losing the token to a concurrent claim takes it
+        // over from the winner instead of answering a plain conflict.
+        if (existingHook || eventData.force === true) {
           // Idempotency: if the existing hook is the *same* (runId, hookId)
           // we are trying to create, this is either a duplicate / replayed
           // processing of the same hook_created (not a real conflict), or
@@ -2858,7 +2984,7 @@ function createUnfencedEventsStorage(
           //     row already has the desired state) and fall through to
           //     the events INSERT below, completing the partial write.
           if (
-            existingHook.runId === effectiveRunId &&
+            existingHook?.runId === effectiveRunId &&
             existingHook.hookId === data.correlationId
           ) {
             const [existingEvent] = await getHookCreatedEvent.execute({
@@ -2891,8 +3017,7 @@ function createUnfencedEventsStorage(
             forceRefusedReason = null;
           } else {
             // `createHook({ experimental_force: true })`: take the token over.
-            // One transaction, the same order as workflow-server
-            // (docs/hook-force-claim.md, specs/HookForceClaim.tla): the
+            // One transaction, the same order as the world-vercel backend: the
             // victim's `hook_disposed{forceClaimedBy}` row first, then its
             // hook row deleted, then ours inserted with `claimedFrom`. The
             // victim's row lock (`FOR UPDATE`) is what the concurrent
@@ -2922,6 +3047,7 @@ function createUnfencedEventsStorage(
             // longer names that owner, the token changed hands in between and
             // the transaction restarts from the top, bounded.
             const OWNER_CHANGED = Symbol('owner changed before lock');
+            const ROW_GONE = Symbol('row gone before lock');
             const takeoverAttempt = () =>
               drizzle.transaction(async (tx) => {
                 const [candidate] = await tx
@@ -2953,7 +3079,15 @@ function createUnfencedEventsStorage(
                   .for('update')
                   .limit(1);
                 if (!victim) {
-                  return { free: true as const };
+                  // Not proof the token is free. If this read waited on a
+                  // row a concurrent takeover then deleted, Postgres skips
+                  // that row, and this statement's snapshot cannot see the row
+                  // the takeover inserted in its place. Taken as free, that
+                  // run's claim beat ours to the index and we ended in a plain
+                  // `hook_conflict`. Restart instead: the next attempt's
+                  // unlocked read finds the new owner, or finds no row if the
+                  // token really is free.
+                  throw ROW_GONE;
                 }
                 if (
                   victim.runId !== candidate.runId ||
@@ -3070,42 +3204,76 @@ function createUnfencedEventsStorage(
                 }
                 return { inserted, claimedFrom, journaled, journaledEventData };
               }, SLOT_INSERT_TRANSACTION);
-            const takeover = await journaledHookCreated(async () => {
-              const MAX_OWNER_CHANGES = 5;
-              for (let attempt = 0; ; attempt++) {
-                try {
-                  return await takeoverAttempt();
-                } catch (err) {
-                  if (err !== OWNER_CHANGED || attempt >= MAX_OWNER_CHANGES) {
-                    throw err === OWNER_CHANGED
-                      ? new WorkflowWorldError(
-                          `Hook token "${eventData.token}" changed owner ${attempt} times while being force-claimed; retry`,
-                          { status: 503 }
-                        )
-                      : err;
-                  }
+            // A restart is thrown, not returned, so the attempt rolls back:
+            // a fenced write nests it in a savepoint, and only a rollback
+            // releases the row locks it took. Kept across the restart, they
+            // can deadlock the retry against a concurrent takeover.
+            const restartableTakeover = () =>
+              takeoverAttempt().catch((err: unknown) => {
+                if (err === OWNER_CHANGED) {
+                  return { restart: 'owner-changed' as const };
                 }
+                if (err === ROW_GONE) {
+                  return { restart: 'row-gone' as const };
+                }
+                throw err;
+              });
+            // Every restart means the token changed hands in between (see
+            // `TakeoverRestartReason`); the bound only stops a pathological
+            // storm.
+            const MAX_TAKEOVER_RESTARTS = 32;
+            for (let attempt = 0; ; attempt++) {
+              // With no owner read above, try the plain creation first.
+              const takeover =
+                attempt === 0 && !existingHook
+                  ? ({ free: true } as const)
+                  : await journaledHookCreated(restartableTakeover);
+              let restart: TakeoverRestartReason;
+              if ('restart' in takeover && takeover.restart) {
+                restart = takeover.restart;
+              } else if ('free' in takeover) {
+                // No owner: an ordinary creation after all. A concurrent
+                // claim that wins the claim index has committed, so take the
+                // token from it rather than answer a plain `hook_conflict`,
+                // which the runtime reads as a World that cannot force-claim.
+                if (await insertFreshHook()) break;
+                restart = 'claim-lost';
+              } else if ('owned' in takeover && takeover.owned) {
+                const owned = takeover.owned;
+                owned.metadata ||= owned.metadataJson;
+                hook = HookSchema.parse(compact(owned));
+                break;
+              } else if ('refused' in takeover) {
+                forceRefusedReason = takeover.refused;
+                conflictingRunId = takeover.conflictingRunId;
+                break;
+              } else {
+                if (takeover.inserted) {
+                  takeover.inserted.metadata ||= takeover.inserted.metadataJson;
+                  hook = HookSchema.parse(compact(takeover.inserted));
+                }
+                storedEventData = takeover.journaledEventData;
+                eventId = takeover.journaled.eventId;
+                value = { createdAt: takeover.journaled.createdAt };
+                break;
               }
-            });
-            if ('free' in takeover) {
-              // The token was released between the read above and the
-              // transaction: an ordinary creation after all.
-              if (!(await insertFreshHook())) await answerLostClaim();
-            } else if ('owned' in takeover && takeover.owned) {
-              const owned = takeover.owned;
-              owned.metadata ||= owned.metadataJson;
-              hook = HookSchema.parse(compact(owned));
-            } else if ('refused' in takeover) {
-              forceRefusedReason = takeover.refused;
-              conflictingRunId = takeover.conflictingRunId;
-            } else {
-              if (takeover.inserted) {
-                takeover.inserted.metadata ||= takeover.inserted.metadataJson;
-                hook = HookSchema.parse(compact(takeover.inserted));
+              if (attempt >= MAX_TAKEOVER_RESTARTS) {
+                throw new WorkflowWorldError(
+                  `Hook token "${eventData.token}" changed owner ${attempt + 1} times while being force-claimed; retry`,
+                  { status: 503 }
+                );
               }
-              storedEventData = takeover.journaledEventData;
-              eventId = takeover.journaled.eventId;
-              value = { createdAt: takeover.journaled.createdAt };
+              // Names runs, never the token: a token is the caller's
+              // idempotency key and may carry user data.
+              debugLog(
+                '[world-postgres] hook force-claim: restarting takeover',
+                {
+                  runId: effectiveRunId,
+                  hookId: data.correlationId,
+                  reason: restart,
+                  attempt: attempt + 1,
+                }
+              );
             }
           }
         } else if (!(await insertFreshHook())) {

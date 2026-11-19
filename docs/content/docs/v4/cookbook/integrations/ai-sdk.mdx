@@ -17,7 +17,7 @@ related:
 
 [AI SDK](https://ai-sdk.dev/) is Vercel's framework-agnostic TypeScript toolkit for building AI-powered apps and agents. It provides unified provider access, streaming, tool calling, structured output, and UI hooks. Workflow SDK makes the multi-turn loop durable, so the conversation state, hooks, and per-turn responses survive restarts and timeouts. In this pattern, the durability boundary is the entire turn, and individual tool calls inside a turn are **not** durable on their own (see [Pitfalls](#tools-are-not-individually-durable)).
 
-For the full AI SDK reference, including providers, `streamText`, `generateObject`, `useChat`, and tool calling, see the [AI SDK docs](https://ai-sdk.dev/docs). This page covers the Workflow-specific integration points.
+For the full AI SDK reference, including providers, `streamText`, structured output with `Output.object`, `useChat`, and tool calling, see the [AI SDK docs](https://ai-sdk.dev/docs). This page covers the Workflow-specific integration points.
 
 <Callout type="info">
 For most agent use cases, prefer AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent), which implements the same agent loop as [`streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text), manages tool calling automatically, and runs tools at workflow scope: each tool can be marked `"use step"` for per-call durability and retries, or stay at workflow level to use primitives like `sleep()` and hooks. Use this page's raw `streamText()` pattern when you want the exact AI SDK API (for example `toUIMessageStream()`, `onChunk`, or `generateText`), or when the durability boundary should be an entire user turn in one step, accepting that tool calls inside that turn are not individually durable.
@@ -256,7 +256,7 @@ Store the `runId` in a ref and pass it in the body of every follow-up. `Workflow
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@ai-sdk/workflow";
+import { WorkflowChatTransport } from "@ai-sdk/workflow/client";
 import { useMemo, useRef, useState } from "react";
 
 export function SupportChat() {

@@ -3915,18 +3915,88 @@ export async function startFromWorkflow(inputValue: number) {
 }
 
 /**
+ * Child for the child-run completion tests: sleeps first so the parent's
+ * first read finds it still running and the parent has to suspend on the
+ * completion hook, then doubles `value` or fails.
+ */
+export async function slowChildWorkflow(value: number, fail: boolean) {
+  'use workflow';
+  await sleep('2s');
+  if (fail) {
+    throw new FatalError(`slow child failed for ${value}`);
+  }
+  return await doubleValue(value);
+}
+
+/**
+ * Parent that awaits a child's `returnValue` directly from workflow code.
+ * The wait goes through the system completion hook rather than a polling
+ * step; the e2e test checks the parent's event log for it.
+ */
+export async function awaitChildReturnValueWorkflow(
+  value: number,
+  fail: boolean
+) {
+  'use workflow';
+  const childRun = await start(slowChildWorkflow, [value, fail]);
+  try {
+    const childResult = await childRun.returnValue;
+    return { childRunId: childRun.runId, childResult };
+  } catch (error) {
+    return {
+      childRunId: childRun.runId,
+      childError: (error as Error).name,
+      childErrorCause: ((error as Error).cause as Error | undefined)?.message,
+    };
+  }
+}
+
+/**
+ * Child for the fan-out completion test: finishes only once the test resumes
+ * its hook, then doubles `value`. The test resumes it after the parent is
+ * suspended on its completion hook, so the child's resume always lands on it
+ * (a child that finished before the parent registered would be answered by
+ * the parent's status read instead, with no `hook_received`).
+ */
+export async function gatedChildWorkflow(token: string, value: number) {
+  'use workflow';
+  using hook = createHook<Record<string, never>>({ token });
+  await hook;
+  return await doubleValue(value);
+}
+
+/**
+ * Parent that fans out to several children and awaits them all. Every child
+ * resumes the parent's one completion hook, so the parent's log holds a
+ * single system hook however many children it waits on. Child `i` waits on
+ * the hook `${tokenPrefix}:${i}`.
+ */
+export async function awaitChildrenFanOutWorkflow(
+  values: number[],
+  tokenPrefix: string
+) {
+  'use workflow';
+  const runs = await Promise.all(
+    values.map((value, i) =>
+      start(gatedChildWorkflow, [`${tokenPrefix}:${i}`, value])
+    )
+  );
+  const results = await Promise.all(runs.map((run) => run.returnValue));
+  return { childRunIds: runs.map((run) => run.runId), results };
+}
+
+/**
  * Recursive Fibonacci workflow. start() is called directly to spawn
  * child workflows for fib(n-1) and fib(n-2).
  *
- * WORKER POOL CAVEAT: each `runA.returnValue` / `runB.returnValue` await
- * resolves by polling the child run's status inside a step that holds a
- * worker slot until the child completes. In worker-based worlds (notably
- * `world-postgres`), the peak number of these in-flight polls must fit
- * within `queueConcurrency`, or the workflow will deadlock — all slots
- * end up held by parents waiting for children that can't get a slot to
- * start. For `fib(n)`, the recursion tree produces roughly `2·(T(n)−leaves)`
- * concurrent polls at peak; fib(6) needs ~24 slots, fib(10) needs
- * hundreds. If you raise `n`, raise `queueConcurrency` accordingly.
+ * Each `runA.returnValue` / `runB.returnValue` await suspends the parent on
+ * the child-run completion hook, which the child resumes when it finishes,
+ * so a waiting parent holds no worker slot. (Before that hook existed, each
+ * await polled inside a step that held a slot until the child completed, and
+ * a deep enough tree deadlocked worker-based worlds such as `world-postgres`
+ * once every slot was held by a waiting parent. With
+ * `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` the awaits poll again, and that
+ * caveat applies: fib(6) needs ~24 slots, fib(10) hundreds.)
  */
 export async function fibonacciWorkflow(n: number): Promise<number> {
   'use workflow';
@@ -4591,4 +4661,91 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
   'use workflow';
   const child = await startDisallowedDynamicRun(value);
   return { childRunId: child.runId };
+}
+
+//////////////////////////////////////////////////////////
+// Frozen values stored by reference
+//////////////////////////////////////////////////////////
+
+type StateRefsMessage = { readonly role: string; readonly content: string };
+type StateRefsChat = {
+  readonly history: readonly StateRefsMessage[];
+  readonly turns: number;
+};
+
+/** The next chat, frozen, reusing the unchanged (already frozen) messages. */
+const stateRefsNext = (
+  chat: StateRefsChat,
+  added: StateRefsMessage[]
+): StateRefsChat =>
+  Object.freeze({
+    history: Object.freeze([
+      ...chat.history,
+      ...added.map((m) => Object.freeze({ ...m })),
+    ]),
+    turns: chat.turns + 1,
+  });
+
+const stateRefsMessage = (i: number) =>
+  `Turn ${i}: please summarise the attached report and list its three biggest risks. `.repeat(
+    2
+  );
+
+async function stateRefsReply(
+  chat: StateRefsChat,
+  text: string,
+  failOnce: boolean
+) {
+  'use step';
+  // A failed first attempt makes the retry run in a new invocation, which
+  // rebuilds its input from the run's log.
+  if (failOnce && getStepMetadata().attempt < 2)
+    throw new Error('transient: retry in a new invocation');
+  return stateRefsNext(chat, [
+    { role: 'user', content: text },
+    { role: 'assistant', content: `re ${text.length}` },
+  ]);
+}
+
+async function stateRefsSummary(chat: StateRefsChat, i: number) {
+  'use step';
+  return `${i}:${chat.turns}:${chat.history.length}`;
+}
+
+/**
+ * Frozen state passed from step to step: step inputs are stored as references
+ * and outputs as changes. Covers a hook string referenced by later
+ * state, a retry that rebuilds cold, a replay after a sleep, and a fan-out
+ * wider than the inline limit (queued steps rebuild cold).
+ */
+export async function stateRefsWorkflow(
+  token: string,
+  turns: number,
+  width: number
+) {
+  'use workflow';
+  let chat: StateRefsChat = Object.freeze({
+    history: Object.freeze([]),
+    turns: 0,
+  });
+  using hook = createHook<{ text: string }>({ token });
+  const { text } = await hook;
+  chat = await stateRefsReply(chat, text, false);
+  for (let i = 1; i < turns; i++) {
+    chat = await stateRefsReply(
+      chat,
+      i === 2 ? text : stateRefsMessage(i),
+      i === 3
+    );
+    if (i === 4) await sleep('1s');
+  }
+  const fan = await Promise.all(
+    Array.from({ length: width }, (_, i) => stateRefsSummary(chat, i))
+  );
+  return {
+    turns: chat.turns,
+    first: chat.history[0]?.content,
+    last: chat.history.at(-2)?.content.slice(0, 7),
+    fan,
+  };
 }

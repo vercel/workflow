@@ -23,13 +23,17 @@
     "./build": {
       "types": "./dist/build.d.ts",
       "default": "./dist/build.js"
+    },
+    "./store": {
+      "types": "./dist/store.d.ts",
+      "default": "./dist/store.js"
     }
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run src",
+    "test": "vitest run --config=../../vitest.config.ts src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

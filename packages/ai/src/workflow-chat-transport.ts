@@ -93,6 +93,9 @@ function createOrphanFilter(): OrphanFilter {
   return { shouldDrop };
 }
 
+/**
+ * @deprecated Use the `WorkflowChatTransport` types from `@ai-sdk/workflow`.
+ */
 export interface SendMessagesOptions<UI_MESSAGE extends UIMessage> {
   trigger: 'submit-message' | 'regenerate-message';
   chatId: string;
@@ -101,6 +104,9 @@ export interface SendMessagesOptions<UI_MESSAGE extends UIMessage> {
   abortSignal?: AbortSignal;
 }
 
+/**
+ * @deprecated Use the `WorkflowChatTransport` types from `@ai-sdk/workflow`.
+ */
 export interface ReconnectToStreamOptions {
   chatId: string;
   abortSignal?: AbortSignal;

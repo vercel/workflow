@@ -261,6 +261,11 @@ else
   export WORKFLOW_TARGET_WORLD="local"
   export WORKFLOW_LOCAL_DATA_DIR="$DATA_DIR"
   export WORKFLOW_LOCAL_QUEUE_CONCURRENCY="${WORKFLOW_LOCAL_QUEUE_CONCURRENCY:-$LOCAL_QUEUE_CONCURRENCY}"
+  # Queue auth stays off here, as on the e2e-local CI lanes, until the team
+  # decides to run them with it on. The runtime refuses it while dynamic
+  # workflows are enabled, so do not export
+  # WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
+  export WORKFLOW_QUEUE_AUTH="off"
 fi
 
 export PORT="$PORT"

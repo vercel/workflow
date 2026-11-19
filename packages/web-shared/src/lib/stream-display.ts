@@ -9,7 +9,7 @@ export interface FormattedStreamChunkDisplay {
   decodedFrom?: DecodedStreamChunkSource;
 }
 
-export function summarizeArrayBufferView(value: ArrayBufferView): string {
+function summarizeArrayBufferView(value: ArrayBufferView): string {
   const ta = value as unknown as {
     length: number;
     constructor: { name: string };

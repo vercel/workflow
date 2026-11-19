@@ -2,7 +2,7 @@ import { decodeTime } from 'ulid';
 import { z } from 'zod';
 import { isSlotBody } from './slot-identity.js';
 
-const UlidSchema = z.compile(z.string().ulid());
+const UlidSchema = z.string().ulid();
 
 /**
  * A workflow run ID: the `wrun_` prefix followed by a 26-char ULID (minted
@@ -10,9 +10,7 @@ const UlidSchema = z.compile(z.string().ulid());
  * well-formed ULID) rather than a loose length bound, so callers can't smuggle
  * arbitrary strings through APIs that persist a run ID verbatim.
  */
-export const workflowRunIdSchema = z.compile(
-  z.templateLiteral(['wrun_', z.ulid()])
-);
+export const workflowRunIdSchema = z.templateLiteral(['wrun_', z.ulid()]);
 
 export type WorkflowRunId = z.infer<typeof workflowRunIdSchema>;
 

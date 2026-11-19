@@ -6,6 +6,7 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { runWorkflow } from '../workflow.js';
+import { childRunCompletionToken } from './child-run-completion.js';
 import { observeOutOfBandWriters } from './out-of-band-observation.js';
 
 describe('observeOutOfBandWriters', () => {
@@ -57,7 +58,33 @@ describe('observeOutOfBandWriters', () => {
 
   it('treats an AbortController system hook as observed', () => {
     const result = observe([hook('abrt', { isSystem: true })]);
-    expect(result).toMatchObject({ abortSignalHookCount: 1, inert: false });
+    expect(result).toMatchObject({
+      abortSignalHookCount: 1,
+      systemHookCount: 1,
+      inert: false,
+    });
+  });
+
+  it('classifies the child-run completion hook like a user hook', () => {
+    const completion = hook('cmpl', {
+      token: childRunCompletionToken('wrun_parent'),
+      isSystem: true,
+    });
+    // Open, nothing waiting on it: inert.
+    expect(observe([completion])).toMatchObject({
+      abortSignalHookCount: 0,
+      systemHookCount: 1,
+      unobservedHookCount: 1,
+      inert: true,
+    });
+    // The dispatcher waiting on its next payload: path-changing.
+    expect(
+      observe([completion], { observedHookIds: new Set(['cmpl']) })
+    ).toMatchObject({ systemHookCount: 1, observedHookCount: 1, inert: false });
+    // No observation recorded (QuickJS): path-changing.
+    expect(observe([completion], { observedHookIds: undefined })).toMatchObject(
+      { unknownHookCount: 1, inert: false }
+    );
   });
 
   it('ignores a hook this suspension disposes', () => {

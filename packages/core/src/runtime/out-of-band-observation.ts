@@ -1,4 +1,5 @@
 import type { QueueItem } from '../global.js';
+import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
 
 /**
  * Whether any event an out-of-band writer could append right now is able to
@@ -18,6 +19,7 @@ import type { QueueItem } from '../global.js';
  * | webhook / `resumeHook()` | `hook_received` | workflow code is waiting on that hook's next payload |
  * | another run's `createHook({ experimental_force })` | `hook_disposed` | same: it rejects waiting payload awaiters, and later awaits |
  * | a step's `AbortController.abort()` | `hook_received` on a system hook | always: `signal.aborted` and abort listeners are read synchronously, with no `then` to observe |
+ * | a child run that finished (`child-run-completion.ts`) | `hook_received` on the parent's completion hook | like a user hook: while the parent's dispatcher is waiting on it |
  * | wait timer | `wait_completed` | the wait is due (see below) |
  * | `run.wakeUp()` / dashboard "cancel sleeps" | `wait_completed` | written in-band on single-orchestrator runs, see below |
  * | step executors in other invocations | `step_completed` / `step_failed` / `step_retrying` | unknown: step promises are native, so their awaiters are invisible |
@@ -43,8 +45,15 @@ import type { QueueItem } from '../global.js';
  * it is gone.
  *
  * The QuickJS engine advances its clock on every event it reads, unclaimed
- * payloads included, so this argument does not hold there. Its suspensions do
- * not carry `observedHookIds`, which classifies every open hook as observed.
+ * payloads included, so the clock half of this argument does not hold there:
+ * a payload placed below an event the VM consumed moves the `Date.now()` a
+ * replay reads after that event. The QuickJS VM reports a hook as observed
+ * while a resolver waits on its next payload (`openHooks`), and its run-ahead
+ * makes up for the clock separately: a boundary whose code read the clock
+ * while the VM held an unconfirmed speculative event decides only once that
+ * event is confirmed at its position (`clockReadOnSpeculation`,
+ * `spec9/quickjs-entrypoint.ts`). A decision made without reading the clock
+ * cannot tell where the payload landed.
  *
  * ## Waits
  *
@@ -137,6 +146,14 @@ export interface OutOfBandObservation {
   /** Open `AbortController` system hooks: always path-changing. */
   abortSignalHookCount: number;
   /**
+   * Open SDK-internal hooks of any kind (`AbortController` signals and the
+   * child-run completion hook), for telemetry. A superset of
+   * {@link abortSignalHookCount}. The completion hook is path-changing only
+   * while observed, and is also counted in the observed/unobserved/unknown
+   * counts like a user hook (see {@link isAlwaysObservedHook}).
+   */
+  systemHookCount: number;
+  /**
    * Pending steps this invocation does not execute itself. Their terminal
    * events come from another executor, and their awaiters cannot be seen, so
    * any of them is counted as path-changing.
@@ -153,6 +170,23 @@ export interface OutOfBandObservation {
   inert: boolean;
 }
 
+/**
+ * Whether an open hook is path-changing whether or not workflow code awaits
+ * it. True for `AbortController` hooks only. The child-run completion hook is
+ * also a system hook, but its payloads only reach workflow code through the
+ * dispatcher's `then()` (`child-run-completion.ts`), so it is observed exactly
+ * like a user hook: while that `then()` is pending.
+ */
+export function isAlwaysObservedHook(item: {
+  isSystem?: boolean;
+  token: string;
+}): boolean {
+  return (
+    item.isSystem === true &&
+    !item.token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX)
+  );
+}
+
 export function observeOutOfBandWriters(input: {
   /** The suspension's queue: every open hook, wait, and pending step. */
   items: readonly QueueItem[];
@@ -167,6 +201,7 @@ export function observeOutOfBandWriters(input: {
   let unobservedHookCount = 0;
   let unknownHookCount = 0;
   let abortSignalHookCount = 0;
+  let systemHookCount = 0;
   let externalStepCount = 0;
   for (const item of input.items) {
     if (item.type === 'step') {
@@ -177,7 +212,10 @@ export function observeOutOfBandWriters(input: {
     }
     // A hook this suspension disposes is closed by its own write.
     if (item.type !== 'hook' || item.disposed) continue;
-    if (item.isSystem) {
+    if (item.isSystem) systemHookCount++;
+    if (isAlwaysObservedHook(item)) {
+      // An `AbortController` hook: `signal.aborted` and abort listeners are
+      // read synchronously, with no `then` to observe.
       abortSignalHookCount++;
     } else if (input.observedHookIds === undefined) {
       unknownHookCount++;
@@ -192,6 +230,7 @@ export function observeOutOfBandWriters(input: {
     unobservedHookCount,
     unknownHookCount,
     abortSignalHookCount,
+    systemHookCount,
     externalStepCount,
     waitDue: input.waitDue,
     inert:

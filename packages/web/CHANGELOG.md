@@ -1,5 +1,59 @@
 # @workflow/web
 
+## 5.2.0
+
+### Minor Changes
+
+- [#5357](https://github.com/vercel/workflow/pull/5357) [`2589760`](https://github.com/vercel/workflow/commit/25897607325b93221660290a92272ecc586f4693) Thanks [@mitul-s](https://github.com/mitul-s)! - Keep the Events tab's rows on screen when the tab is re-entered, revalidating the loaded pages in place.
+
+- [#5355](https://github.com/vercel/workflow/pull/5355) [`f36b515`](https://github.com/vercel/workflow/commit/f36b515ab5fe2c597df83c57c79ff4435af9a2e6) Thanks [@mitul-s](https://github.com/mitul-s)! - Show the Events tab as an edge-to-edge compact log with a resizable details panel and keyboard navigation, sorted from the Time header; Decrypt moves from the toolbar onto the encrypted payload, and `EventListView` no longer takes `hasEncryptedData`.
+
+- [#5358](https://github.com/vercel/workflow/pull/5358) [`66d487b`](https://github.com/vercel/workflow/commit/66d487bd5b3809087576d23c8e816d1ae590ff37) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a View in Trace action to the Events tab's details panel, which opens the Trace tab on the event's span through a `spanId` URL param and `TraceViewer`'s new `initialSelectedSpanId` prop.
+
+### Patch Changes
+
+- [#5423](https://github.com/vercel/workflow/pull/5423) [`3b98faf`](https://github.com/vercel/workflow/commit/3b98faf5aa22b74e79fd6372a59ab99fab5cdb2e) Thanks [@mitul-s](https://github.com/mitul-s)! - Switch tabs in the observability UI without waiting on a server round trip: the root loader no longer re-runs on navigations that don't change its data, and tab state updates optimistically on the click.
+
+- [#5396](https://github.com/vercel/workflow/pull/5396) [`54dc65b`](https://github.com/vercel/workflow/commit/54dc65b6c773df9712f8e6c752a1b8481da2e045) Thanks [@mitul-s](https://github.com/mitul-s)! - Stop using opacity to set text colours in the observability UI. Muted text now uses the same Geist colour tokens as the Vercel dashboard, so it stays readable on every surface and in both themes.
+
+- [#5420](https://github.com/vercel/workflow/pull/5420) [`1782a0f`](https://github.com/vercel/workflow/commit/1782a0f78c93ed20d8b56365839e2719b85e74bf) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Preview raster image streams and preserve their original bytes for download.
+
+- [#5395](https://github.com/vercel/workflow/pull/5395) [`7d6a310`](https://github.com/vercel/workflow/commit/7d6a310a95f62b3ebbca548d724b67b53d600fa2) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix the connection status tooltip in the header so env values are readable. It now inherits the shared Geist tooltip's colors and type instead of light-surface `text-foreground` / `text-muted-foreground` classes (which rendered dark-on-dark), and the key/value grid uses a valid Tailwind v4 column template so keys and values sit side by side.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+- Updated dependencies [[`e6a3975`](https://github.com/vercel/workflow/commit/e6a3975c953b366497c29749d7f1ab2e7c17732c), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/world-local@5.4.1
+
+## 5.1.1
+
+### Patch Changes
+
+- Updated dependencies [[`18586f5`](https://github.com/vercel/workflow/commit/18586f54bdfb9ce2f805f349d0464d07c8ec96ea), [`c11fc40`](https://github.com/vercel/workflow/commit/c11fc40013681fef9afe0b315b1d22284579bbe0), [`29094be`](https://github.com/vercel/workflow/commit/29094bed374ab6bc9d3ed3c500b61e93048968a6)]:
+  - @workflow/world-local@5.4.0
+
+## 5.1.0
+
+### Minor Changes
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Send queue deliveries with the app's queue auth key, read from its data directory.
+
+### Patch Changes
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+
+- [#5214](https://github.com/vercel/workflow/pull/5214) [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `createStateResolver()` to `workflow/observability` and `createRunStateHydrator()` to `@workflow/web-shared`, so run inspectors show the actual values of state stored by reference.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`b70daa3`](https://github.com/vercel/workflow/commit/b70daa37c46e6ab0efd384d067e1b9b504fdc555)]:
+  - @workflow/world-local@5.3.0
+
+## 5.0.8
+
+### Patch Changes
+
+- Updated dependencies [[`f98fca1`](https://github.com/vercel/workflow/commit/f98fca13f6659e222db7803511b5e92443e7db63), [`a4123ba`](https://github.com/vercel/workflow/commit/a4123baf9768084f4b31604d609672392cb43c84)]:
+  - @workflow/world-local@5.2.1
+
 ## 5.0.7
 
 ### Patch Changes

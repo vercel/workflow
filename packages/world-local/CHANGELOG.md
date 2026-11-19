@@ -1,5 +1,84 @@
 # @workflow/world-local
 
+## 5.4.1
+
+### Patch Changes
+
+- [#5481](https://github.com/vercel/workflow/pull/5481) [`e6a3975`](https://github.com/vercel/workflow/commit/e6a3975c953b366497c29749d7f1ab2e7c17732c) Thanks [@abhiramshaji-cyber](https://github.com/abhiramshaji-cyber)! - Look up events by correlation ID through `events_by_correlation`, so `hook_created` writes and `events.listByCorrelationId` no longer read every event in the run.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5506](https://github.com/vercel/workflow/pull/5506) [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a bug where spec 9 runs inconsistently enforced the max events per run limit
+
+- [#5494](https://github.com/vercel/workflow/pull/5494) [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop Turbopack from tracing the app's `.gitignore` and from warning that the whole project is traced. A Next.js app deployed from the Vercel CLI could fail with `ENOENT: no such file or directory, lstat '.../.gitignore'` when its build came from cache.
+- Updated dependencies [[`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/errors@5.1.3
+  - @workflow/utils@5.1.1
+  - @workflow/world@5.2.2
+
+## 5.4.0
+
+### Minor Changes
+
+- [#5371](https://github.com/vercel/workflow/pull/5371) [`18586f5`](https://github.com/vercel/workflow/commit/18586f54bdfb9ce2f805f349d0464d07c8ec96ea) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - world-local (spec 9): coalesce a run's orchestrator messages that queue behind its running delivery into re-runs of it (up to 32, with the same `attempt`, the next `deliveryCount`, the same `invocationStartedAt`, and the resume timing of an absorbed hook wake; a `run.wakeUp()` message is never coalesced, so `waitForSleep()` then `wakeUp()` stays reliable); keep the run's gate across a handoff, whose redelivery covers the messages waiting behind it; and resolve an unstamped orchestrator message's spec from the run, so a spec 9 run's message from an older SDK is serialized with the run's other deliveries.
+
+- [#5235](https://github.com/vercel/workflow/pull/5235) [`c11fc40`](https://github.com/vercel/workflow/commit/c11fc40013681fef9afe0b315b1d22284579bbe0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Store the Local World in one SQLite database (`<dataDir>/world.db`, opened with the built-in `node:sqlite` or `bun:sqlite`) instead of one JSON file per entity:
+  
+  - Every `events.create` is one transaction: an event and every change it makes to its run, step, wait and hook commit together or not at all, so a process killed mid-write never leaves a run stuck behind a half-written change. This removes the lock files, claim files and crash-repair paths of earlier releases.
+  - The queue stays in memory, as before. Startup recovery re-enqueues active runs as before, and now also wakes each recovered run when each of its open waits is due (for a wait due within the queue's longest timer, about 24.8 days), as a backstop to the recovery delivery re-arming the run's wait timers.
+  - `close()` no longer aborts a message the app has not received yet, so a short-lived sender (`wf start`, a script calling `start()`) no longer loses the run it just started. It waits until the app has written to the message's run, up to 10 seconds (enough for a dev server compiling its routes on the first request), or up to 1 second for a message without a run.
+  - Reading a data directory that has no database yet (the CLI or web UI pointed at an app that has not run) reads it as empty, and creates nothing: the first write creates the directory and `world.db`.
+  - Stream chunks are numbered in the transaction that writes them, so readers always get them in order. An idle reader's poll costs the same however long the stream is, and a stream takes no writes once it has ended.
+  - Several processes on one data directory (an app and a test runner, `@workflow/vitest`'s workers) wait for each other's writes without blocking their event loop.
+  - `clear()` gives the freed space back to the file system, and the WAL is kept to 64 MiB after a checkpoint.
+  - One `events.list` page ends early, with a cursor, once it holds about 8 MiB, so a page of large payloads does not hold the thread while it decodes.
+  - Node.js 22.x's `ExperimentalWarning` for `node:sqlite` is no longer printed.
+  
+  Requires Node.js 22.13 or later, or Bun. Local run data written by earlier releases is not migrated: it is left in place in the data directory, unread, and new runs start in an empty database. The first write after the upgrade, which creates `world.db`, says so once, naming the directories that can be deleted.
+
+### Patch Changes
+
+- [#5382](https://github.com/vercel/workflow/pull/5382) [`29094be`](https://github.com/vercel/workflow/commit/29094bed374ab6bc9d3ed3c500b61e93048968a6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `start()` now resolves only once the World's queue auth key is written to the data directory, so the CLI, the web UI and the app's other processes can read it as soon as the app has started.
+- Updated dependencies [[`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c), [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72)]:
+  - @workflow/world@5.2.1
+  - @workflow/errors@5.1.2
+
+## 5.3.0
+
+### Minor Changes
+
+- [#5227](https://github.com/vercel/workflow/pull/5227) [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove opt-out and test-only environment variables that are no longer needed. The runtime no longer reads `WORKFLOW_INLINE_EARLY_ADVANCE`, `WORKFLOW_RETURN_VALUE_LONG_POLL`, `WORKFLOW_SLOT_GAP_CHECK`, `WORKFLOW_LOG_ORDER_DRAWS`, `WORKFLOW_INLINE_OWNERSHIP` or `WORKFLOW_BATCH_TRANSITIONS`, and the behavior they could switch off is always on. `WORKFLOW_SEALED_LOG` (deprecated) is no longer read, and `@workflow/world` no longer exports `SEALED_LOG_ENV_VAR`: set `WORKFLOW_SPEC_VERSION=6` to create new runs without the sealed log. The Vercel World no longer reads `WORKFLOW_MAX_CHUNKS_PER_REQUEST` or `WORKFLOW_TEST_LIMIT_OVERRIDES`, and the Local and Postgres Worlds no longer read `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS` and `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`.
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Authenticate queue deliveries (`queueAuthMode: 'loopback'`) with a key in `queue-auth-key` in the data directory, written owner-only each time the app starts and read by the CLI and the web UI (`queueAuthKey: 'read'`). Retry a refused delivery at once when the key changed (up to 16 times per message), give it up after 5 other refusals, and write a `.gitignore` into a data directory that has none.
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5025](https://github.com/vercel/workflow/pull/5025) [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090) Thanks [@pranaygp](https://github.com/pranaygp)! - Avoid repeated filesystem publication collisions between concurrent step events in one process.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+
+- [#5305](https://github.com/vercel/workflow/pull/5305) [`b70daa3`](https://github.com/vercel/workflow/commit/b70daa37c46e6ab0efd384d067e1b9b504fdc555) Thanks [@joelfickson](https://github.com/joelfickson)! - Stop `@vercel/nft` from copying the build machine's temp directory into functions that bundle the local world, such as the SvelteKit catch-all function.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/world@5.2.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
+## 5.2.1
+
+### Patch Changes
+
+- [#5190](https://github.com/vercel/workflow/pull/5190) [`f98fca1`](https://github.com/vercel/workflow/commit/f98fca13f6659e222db7803511b5e92443e7db63) Thanks [@prha](https://github.com/prha)! - Take over a Hook token claim lock left by a dead process at once, instead of after 30 seconds, and create claim and in-band fence locks with their owner recorded in one atomic step. Continue to recognize directory locks written by earlier world-local releases.
+
+- [#5189](https://github.com/vercel/workflow/pull/5189) [`a4123ba`](https://github.com/vercel/workflow/commit/a4123baf9768084f4b31604d609672392cb43c84) Thanks [@prha](https://github.com/prha)! - Create a hook whose interrupted `hook_created` left its token claim naming an event slot another event has since taken, instead of reporting it as already created while no creation exists.
+
 ## 5.2.0
 
 ### Minor Changes
