@@ -71,6 +71,8 @@ export type StepContext = {
    * path, where `run_started` was already durable before the body ran.
    */
   runReadyBarrier?: Promise<unknown>;
+  /** The run's spec version, which a step body's direct writes are stamped with. */
+  runSpecVersion?: number;
 };
 
 /**

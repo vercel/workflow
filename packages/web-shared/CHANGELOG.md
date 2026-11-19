@@ -1,5 +1,72 @@
 # @workflow/web-shared
 
+## 5.2.0
+
+### Minor Changes
+
+- [#5356](https://github.com/vercel/workflow/pull/5356) [`75178b7`](https://github.com/vercel/workflow/commit/75178b7b629c60db5b067446ec2d0469013c15bf) Thanks [@mitul-s](https://github.com/mitul-s)! - Move the trace viewer's span details aside into a shared panel shell that owns its J/K, arrow and Escape shortcuts; the shortcuts are ignored while typing in a field.
+
+- [#5355](https://github.com/vercel/workflow/pull/5355) [`f36b515`](https://github.com/vercel/workflow/commit/f36b515ab5fe2c597df83c57c79ff4435af9a2e6) Thanks [@mitul-s](https://github.com/mitul-s)! - Show the Events tab as an edge-to-edge compact log with a resizable details panel and keyboard navigation, sorted from the Time header; Decrypt moves from the toolbar onto the encrypted payload, and `EventListView` no longer takes `hasEncryptedData`.
+
+- [#5358](https://github.com/vercel/workflow/pull/5358) [`66d487b`](https://github.com/vercel/workflow/commit/66d487bd5b3809087576d23c8e816d1ae590ff37) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a View in Trace action to the Events tab's details panel, which opens the Trace tab on the event's span through a `spanId` URL param and `TraceViewer`'s new `initialSelectedSpanId` prop.
+
+### Patch Changes
+
+- [#5492](https://github.com/vercel/workflow/pull/5492) [`8cc682a`](https://github.com/vercel/workflow/commit/8cc682a2aa39e15d4859c249642ae373208ec3a0) Thanks [@mitul-s](https://github.com/mitul-s)! - Highlight the span the Trace tab opens on from View in Trace, and give the Events details panel the Trace panel's header, with View in Trace as an icon button beside the arrows.
+
+- [#5396](https://github.com/vercel/workflow/pull/5396) [`54dc65b`](https://github.com/vercel/workflow/commit/54dc65b6c773df9712f8e6c752a1b8481da2e045) Thanks [@mitul-s](https://github.com/mitul-s)! - Stop using opacity to set text colours in the observability UI. Muted text now uses the same Geist colour tokens as the Vercel dashboard, so it stays readable on every surface and in both themes.
+
+- [#5420](https://github.com/vercel/workflow/pull/5420) [`1782a0f`](https://github.com/vercel/workflow/commit/1782a0f78c93ed20d8b56365839e2719b85e74bf) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Preview raster image streams and preserve their original bytes for download.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`bb100a9`](https://github.com/vercel/workflow/commit/bb100a9decb69483bb9342dc1062b0c3118b0763), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`f957b8e`](https://github.com/vercel/workflow/commit/f957b8ea5de0d155c02b5c6c4cbf474556971ede), [`d18aff2`](https://github.com/vercel/workflow/commit/d18aff22acec8a3f57237e58624d7a4d25ca7eed), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`b1f9269`](https://github.com/vercel/workflow/commit/b1f92691bcc3bc18b9df094d45379c6464cf4d65), [`021723b`](https://github.com/vercel/workflow/commit/021723bc679a0788332e6ebba9d58da55ba4333c), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c), [`87cde0b`](https://github.com/vercel/workflow/commit/87cde0b52c59bded6ce98a87aef5c2582ac6b19c), [`e4ec16f`](https://github.com/vercel/workflow/commit/e4ec16f9b2aa092782bbd43c9f9fc50083f926f5)]:
+  - @workflow/core@5.6.1
+  - @workflow/utils@5.1.1
+  - @workflow/world@5.2.2
+
+## 5.1.1
+
+### Patch Changes
+
+- Updated dependencies [[`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c), [`55fa58b`](https://github.com/vercel/workflow/commit/55fa58b0b47d45c0e47743ae53e6b087eb6f87b3), [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72)]:
+  - @workflow/world@5.2.1
+  - @workflow/core@5.6.0
+
+## 5.1.0
+
+### Minor Changes
+
+- [#5214](https://github.com/vercel/workflow/pull/5214) [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `createStateResolver()` to `workflow/observability` and `createRunStateHydrator()` to `@workflow/web-shared`, so run inspectors show the actual values of state stored by reference.
+
+### Patch Changes
+
+- [#5270](https://github.com/vercel/workflow/pull/5270) [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a run's creation is recorded on its first `run_started` alone, with no separate `run_created`.
+
+- [#5350](https://github.com/vercel/workflow/pull/5350) [`8dbb733`](https://github.com/vercel/workflow/commit/8dbb7334cc9fe7ebb3b0ba227e465dd1a2e59378) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Show a run's start Hook in the trace viewer and hook lists. A start Hook has no `hook_created` event (the run's creation stands for it), so its span and every `hook_received` delivered to it were dropped from the trace.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`f292ef0`](https://github.com/vercel/workflow/commit/f292ef05cadbd5320298568050e39c96ef19f813), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`f486912`](https://github.com/vercel/workflow/commit/f486912be3b3715747737f68bd5f9a10b8d0cfa4), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`3debce2`](https://github.com/vercel/workflow/commit/3debce2174130c3f54ac6ed7f030f93b2f5576fb), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`b7534aa`](https://github.com/vercel/workflow/commit/b7534aa6d102bd4caa584d28f6c3daef59478dc6), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1), [`d2a0d5a`](https://github.com/vercel/workflow/commit/d2a0d5ae67456a1946e1e29fe32c34e51a933f5b), [`50a1a9f`](https://github.com/vercel/workflow/commit/50a1a9f696729aa7944f7660e004ffe67650a120), [`530abff`](https://github.com/vercel/workflow/commit/530abff0838d260640c033c4ced86cef56f6123e), [`dfe2764`](https://github.com/vercel/workflow/commit/dfe27649e90c5e9b233edd778c64affff63216ee), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0)]:
+  - @workflow/core@5.5.0
+  - @workflow/world@5.2.0
+  - @workflow/utils@5.1.0
+
+## 5.0.8
+
+### Patch Changes
+
+- [#5228](https://github.com/vercel/workflow/pull/5228) [`8e90367`](https://github.com/vercel/workflow/commit/8e903677876631f82fa682e5fbf0b483db2625e8) Thanks [@mitul-s](https://github.com/mitul-s)! - Render the trace viewer’s Wake Up Sleep and Resolve Hook actions as standard text-only secondary buttons, without the nested Actions card, and keep their labels stable while they run.
+- Updated dependencies [[`e1bce44`](https://github.com/vercel/workflow/commit/e1bce44d3faacff855a35265d47afe3819abed1a), [`50d425f`](https://github.com/vercel/workflow/commit/50d425fac77ec212422d57a832411c4515c0ba3c), [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289)]:
+  - @workflow/core@5.4.0
+
+## 5.0.7
+
+### Patch Changes
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Show a run's start Hook token and its `hook_created` (from `run_created`) in the timeline, and revive `WorkflowStartError`; CLI re-runs never forward a start Hook. Ship this before or with the SDK release: older dashboards and CLIs cannot revive the new error.
+- Updated dependencies [[`7d31a0a`](https://github.com/vercel/workflow/commit/7d31a0a329dd020441e0aebba2bb55068f8e0f4b), [`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0), [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183), [`2be58c2`](https://github.com/vercel/workflow/commit/2be58c26f9f95c324a4da6190018545c542227f8), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`44d7c76`](https://github.com/vercel/workflow/commit/44d7c769e94fb8b8a684dd69f2450ea9c52990cc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`e127948`](https://github.com/vercel/workflow/commit/e1279482719168a0987e48f73d107be6287670c3), [`997b03d`](https://github.com/vercel/workflow/commit/997b03df9d987d5f4092fca2209d491434c3fdbe), [`433b345`](https://github.com/vercel/workflow/commit/433b345511420f902962126e4a6713fa66eaf540)]:
+  - @workflow/core@5.3.0
+  - @workflow/world@5.1.0
+
 ## 5.0.6
 
 ### Patch Changes

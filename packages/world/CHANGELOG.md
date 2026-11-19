@@ -1,5 +1,61 @@
 # @workflow/world
 
+## 5.2.2
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5506](https://github.com/vercel/workflow/pull/5506) [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a bug where spec 9 runs inconsistently enforced the max events per run limit
+
+## 5.2.1
+
+### Patch Changes
+
+- [#5159](https://github.com/vercel/workflow/pull/5159) [`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c) Thanks [@pranaygp](https://github.com/pranaygp)! - Experimental: `QueueOptions.experimental_hold` (`true`, or `{ consumerGroup, visibilityTimeoutSeconds }`) asks the queue to claim a message for its sender before `queue()` returns, so the sender can run it in the request that sent it (the result's `experimental_hold` is `{ status: 'held', consume, release, ... }` or `{ status: 'not_held', reason }`; `consume(handler)` takes the same handler and delivery semantics as `createQueueHandler`), with the queue as the crash backstop.
+
+## 5.2.0
+
+### Minor Changes
+
+- [#5227](https://github.com/vercel/workflow/pull/5227) [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove opt-out and test-only environment variables that are no longer needed. The runtime no longer reads `WORKFLOW_INLINE_EARLY_ADVANCE`, `WORKFLOW_RETURN_VALUE_LONG_POLL`, `WORKFLOW_SLOT_GAP_CHECK`, `WORKFLOW_LOG_ORDER_DRAWS`, `WORKFLOW_INLINE_OWNERSHIP` or `WORKFLOW_BATCH_TRANSITIONS`, and the behavior they could switch off is always on. `WORKFLOW_SEALED_LOG` (deprecated) is no longer read, and `@workflow/world` no longer exports `SEALED_LOG_ENV_VAR`: set `WORKFLOW_SPEC_VERSION=6` to create new runs without the sealed log. The Vercel World no longer reads `WORKFLOW_MAX_CHUNKS_PER_REQUEST` or `WORKFLOW_TEST_LIMIT_OVERRIDES`, and the Local and Postgres Worlds no longer read `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS` and `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`.
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Add `Queue.queueAuthMode` (`'loopback' | 'skip'`), declaring how the runtime authenticates a World's deliveries to the flow route. Optional; a World that declares none is not checked.
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5270](https://github.com/vercel/workflow/pull/5270) [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a run's creation is recorded on its first `run_started` alone, with no separate `run_created`.
+
+- [#5281](https://github.com/vercel/workflow/pull/5281) [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: `resumeHook()` and `resumeWebhook()` now send the run's workflow name with their `hook_received`
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+
+## 5.1.0
+
+### Minor Changes
+
+- [#5091](https://github.com/vercel/workflow/pull/5091) [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Reuse the Hook returned by getHookByToken() with resumeHook() to skip the token lookup on later deliveries, including across JSON or other ordinary serialization. Capable Worlds enforce atomic deduplication on cached deliveries. The SDK falls back internally after definite pre-write refusals, retries admission throttles, and never re-sends an uncertain resolved write. Trace attributes identify resolved deliveries and fallback refusals.
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add the atomic start Hook admission contract: `startHook` on `run_created`, the resilient `run_started` and the queued run input, the `atomicStartHook` capability, `startHookId()`, `WorkflowStartError`, the `START_HOOK_ADMISSION_DISABLED` and `START_HOOK_CANDIDATE_CANCELLED` codes, and a conformance suite. Admission creates the run's start Hook in the same atomic step: `run_created` stands for its `hook_created`, it accepts deliveries while the run is still `pending`, and it then follows the ordinary Hook lifecycle. `HookConflictError` gains `kind: 'start'` for a refused start.
+
+### Patch Changes
+
+- [#5070](https://github.com/vercel/workflow/pull/5070) [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Forward the run's `encryptionPublicKey` on a resilient `run_started`, so a run created from its queued copy can still receive sealed writes.
+
+- [#4945](https://github.com/vercel/workflow/pull/4945) [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `SNAPSHOT_FORMAT_VERSION` to 4 for the QuickJS engine's new pending-operation heap layout.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+
 ## 5.0.5
 
 ### Patch Changes

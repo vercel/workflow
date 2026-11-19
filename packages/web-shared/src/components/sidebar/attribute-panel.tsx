@@ -23,6 +23,7 @@ import {
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { Spinner } from '../ui/spinner';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import {
   DetailMonoKeyValueRow,
@@ -191,8 +192,7 @@ function ConversationWithTabs({
 }
 
 /**
- * Render a value with the shared DataInspector (ObjectInspector with
- * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
+ * Placeholder for a field whose data is still encrypted.
  */
 function EncryptedFieldBlock() {
   return <EncryptedDataBlock />;
@@ -265,6 +265,7 @@ const attributeOrder: AttributeKey[] = [
   'attempt',
   'token',
   'tokenRetentionUntil',
+  'startHook',
   'claimedFrom',
   'isWebhook',
   'isSystem',
@@ -328,6 +329,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   runId: 'Run ID',
   token: 'Token',
   tokenRetentionUntil: 'Minimum Retention Until',
+  startHook: 'Start Hook Token',
   claimedFrom: 'Token Taken From Run',
   eventType: 'Event Type',
   errorCode: 'Error Code',
@@ -695,6 +697,11 @@ const attributeToDisplayFn: Record<
   // cross-run writers to seal payloads to this run. Not actionable for users
   // and not secret, so hidden rather than rendered as 44 opaque base64 chars.
   encryptionPublicKey: (_value: unknown) => null,
+  // The token of the Hook `start({ experimental_hook })` created: the run's idempotency key.
+  startHook: (value: unknown) => {
+    const token = (value as { token?: unknown } | undefined)?.token;
+    return typeof token === 'string' && token.length > 0 ? token : null;
+  },
   // A dynamic run's own workflow code — the code the run actually executed,
   // which for these runs exists nowhere in the deployment's source. Shown as
   // its own collapsed section: it is the most useful thing on a dynamic run's
@@ -782,7 +789,7 @@ const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
   dynamicWorkflowCode: 'Workflow Code',
 };
 
-export const AttributeBlock = ({
+const AttributeBlock = ({
   attribute,
   value,
   isLoading,
@@ -854,10 +861,7 @@ export const AttributeBlock = ({
     <div className="relative">
       {typeof isLoading === 'boolean' && isLoading && (
         <div className="absolute top-9 right-4">
-          <div
-            className="animate-spin rounded-full h-4 w-4 border-b-2"
-            style={{ borderColor: 'var(--ds-gray-900)' }}
-          />
+          <Spinner size="md" />
         </div>
       )}
       <div key={attribute} className="my-2 flex flex-col gap-0">

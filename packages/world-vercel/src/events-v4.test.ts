@@ -2649,3 +2649,41 @@ describe('throttled (429) event-log reads', () => {
     expect(urls.slice(1).every((url) => url.includes('cursor='))).toBe(true);
   });
 });
+
+describe('resolved hook delivery endpoint', () => {
+  it.each([
+    8, 9,
+  ])('uses the spec %s deduplicated endpoint without falling back after refusal', async (specVersion) => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    agent
+      .get(origin)
+      .intercept({
+        path: `/api/v${specVersion >= 9 ? 5 : 4}/runs/wrun_1/events/hook_received/resolved`,
+        method: 'POST',
+      })
+      .reply(404, JSON.stringify({ error: { message: 'Not found' } }));
+    try {
+      await expect(
+        createWorkflowRunEventV4(
+          {
+            runId: 'wrun_1',
+            eventType: 'hook_received',
+            specVersion,
+            correlationId: 'hook_1',
+            payload: new Uint8Array([1, 2, 3]),
+            requireHookResumeDedup: true,
+            resumeId: 'resume_1',
+            resumePayloadDigest: 'a'.repeat(64),
+          },
+          { token: 'test-token', dispatcher: agent }
+        )
+      ).rejects.toThrow();
+      agent.assertNoPendingInterceptors();
+    } finally {
+      await agent.close();
+    }
+  });
+});

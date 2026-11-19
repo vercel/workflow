@@ -53,7 +53,7 @@ showSections={['returns']}
 
 The returned `Webhook` object has:
 
-- `url`: The HTTP endpoint URL that external systems can call
+- `url`: The HTTP endpoint URL that external systems can call. On Vercel, it uses the deployment URL. Elsewhere, it's `http://localhost` on the `PORT` environment variable, or on the detected server port when `PORT` is unset
 - `token`: The unique token identifying this webhook
 - `getConflict()`: A promise that resolves with the conflicting run if another active hook already owns this token, or `null` once the webhook endpoint has been registered. The endpoint is registered alongside the steps the workflow starts at the same time, not ahead of them, so await `getConflict()` before a step that hands `url` to a caller who may request it right away. See [Registering a hook before a step uses it](/docs/api-reference/workflow/create-hook#registering-a-hook-before-a-step-uses-it).
 - Implements `AsyncIterable<T>` for handling multiple requests, where `T` is `Request` (default) or `RequestWithResponse` (manual mode)

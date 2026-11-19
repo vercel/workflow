@@ -122,35 +122,23 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
  * Returns the queue trigger configuration for workflow (flow) routes.
  *
  * Builds on `createWorkflowQueueTrigger()`: the namespace comes from
- * `options` or `WORKFLOW_QUEUE_NAMESPACE`, resolved at call time. When
- * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, sets `maxConcurrency: 1` so the
- * queue processes at most one flow invocation per concrete topic at a time.
- * Paired with the per-run physical topic naming in `@workflow/world-vercel`
- * (which appends the run id to the flow topic), this enforces at most one
- * orchestrator invocation per run. Queued step invocations share this flow
- * trigger rather than using a separate route.
- *
- * Integrations that write their own flow trigger config instead of calling
- * this must mirror the conditional `maxConcurrency: 1` themselves, since the
- * runtime half (per-run topics) activates from the env var alone, and without
- * the trigger half those topics are not serialized.
- *
- * Must be read at build time, where the env var gates what is written into
- * the route's `experimentalTriggers` config.
+ * `options` or `WORKFLOW_QUEUE_NAMESPACE`, resolved at call time. Queued
+ * step invocations share this flow trigger rather than using a separate
+ * route. A spec 9 run's orchestrator messages are kept to one invocation at a
+ * time by a concurrency key per run in `@workflow/world-vercel`, so the
+ * trigger sets no `maxConcurrency`.
  */
-/**
- * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`). Read
- * at call time.
- */
-export function isSequentialReplaysEnabled(): boolean {
-  return process.env.WORKFLOW_SEQUENTIAL_REPLAYS === '1';
+export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
+  return createWorkflowQueueTrigger(options);
 }
 
-export function getWorkflowQueueTrigger(options?: { namespace?: string }) {
-  return {
-    ...createWorkflowQueueTrigger(options),
-    ...(isSequentialReplaysEnabled() && {
-      maxConcurrency: 1,
-    }),
-  };
+/**
+ * @deprecated `WORKFLOW_SEQUENTIAL_REPLAYS` was removed: the flow trigger no
+ * longer sets `maxConcurrency`, and `@workflow/world-vercel` no longer routes
+ * flow messages to per-run topics. Always `false`. Kept so an integration
+ * that writes its own flow trigger and adds `maxConcurrency: 1` when this is
+ * true keeps building; remove the call.
+ */
+export function isSequentialReplaysEnabled(): boolean {
+  return false;
 }

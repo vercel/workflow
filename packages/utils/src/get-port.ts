@@ -79,7 +79,12 @@ async function getLinuxPorts(pid: number): Promise<number[]> {
 
   for (const tcpFile of tcpFiles) {
     try {
-      const content = await readFile(tcpFile, 'utf8');
+      // Not a file of the app: without the ignore comment, every Turbopack
+      // build warns that this dynamic path traces the whole project.
+      const content = await readFile(
+        /* turbopackIgnore: true */ tcpFile,
+        'utf8'
+      );
       const lines = content.split('\n').slice(1); // Skip header
 
       for (const line of lines) {
@@ -169,9 +174,11 @@ async function getDarwinPorts(pid: number): Promise<number[]> {
  */
 async function getWindowsPorts(pid: number): Promise<number[]> {
   try {
+    // No `-p tcp`: on Windows it lists IPv4 sockets only, which hides servers
+    // bound to `::1` (Vite's default `localhost` host resolves there).
     const { stdout } = await execFileAsync('cmd', [
       '/c',
-      'netstat -ano -p tcp | findstr LISTENING',
+      'netstat -ano | findstr LISTENING',
     ]);
 
     return parseWindowsNetstatPortsForPid(stdout, pid);

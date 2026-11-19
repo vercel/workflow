@@ -1,4 +1,7 @@
-import { WorkflowRunNotFoundError } from '@workflow/errors';
+import {
+  EncryptionKeyLookupError,
+  WorkflowRunNotFoundError,
+} from '@workflow/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { importKey } from '../encryption.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
@@ -159,9 +162,9 @@ describe('Run#getWritable', () => {
     const writer = writable.getWriter();
     await writer.write('chunk');
     writer.releaseLock();
-    await expect(Promise.all(ops)).rejects.toMatchObject({
-      cause: expect.any(WorkflowRunNotFoundError),
-    });
+    const error = await Promise.all(ops).catch((e) => e);
+    expect(error).toBeInstanceOf(EncryptionKeyLookupError);
+    expect(error.cause).toBeInstanceOf(WorkflowRunNotFoundError);
     expect(world.streams.write).not.toHaveBeenCalled();
     expect(world.runs.get).toHaveBeenCalledTimes(1);
   });

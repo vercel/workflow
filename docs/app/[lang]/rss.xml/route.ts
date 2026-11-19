@@ -1,3 +1,4 @@
+import { isPageVisibleForSurface } from '@vercel/geistdocs/page-visibility';
 import { Feed } from 'feed';
 import type { NextRequest } from 'next/server';
 import { title } from '@/geistdocs';
@@ -29,6 +30,7 @@ export const GET = async (
 
   for (const source of currentSources) {
     for (const page of source.source.getPages(lang)) {
+      if (!isPageVisibleForSurface(page, 'sitemap')) continue;
       const pageData = page.data as typeof page.data & PageDataWithLastModified;
 
       feed.addItem({

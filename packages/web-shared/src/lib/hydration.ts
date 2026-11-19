@@ -20,22 +20,14 @@ import { getEventDataRefFields } from '@workflow/world';
 
 // Re-export types and utilities that consumers need
 export {
-  CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
   ENCRYPTED_PLACEHOLDER,
-  extractStreamIds,
   isClassInstanceRef,
-  isEncryptedData,
   isRunRef,
-  isStreamId,
   isStreamRef,
   type Revivers,
-  RUN_REF_TYPE,
   type RunRef,
-  STREAM_REF_TYPE,
   type StreamRef,
-  serializedInstanceToRef,
-  truncateId,
 } from '@workflow/core/serialization-format';
 
 // ---------------------------------------------------------------------------
@@ -179,7 +171,7 @@ export function getWebRevivers(): Revivers {
     // doesn't need `instanceof FatalError` to pass (no user code runs
     // here). The web o11y UI needs `name`, `message`, `stack`, and any extra
     // enumerable fields to render. Construct a plain `Error` with `name`
-    // set; ObjectInspector reads `constructor.name` for the displayed
+    // set; DataInspector reads `constructor.name` for the displayed
     // class label, but we don't have the real class, so we emit a tagged
     // Error whose `name` field carries the class identity. This matches
     // how the existing base `Error` reviver presents unknown subclasses.
@@ -217,6 +209,18 @@ export function getWebRevivers(): Revivers {
       if (value.claimedByHookId !== undefined) {
         error.claimedByHookId = value.claimedByHookId;
       }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        runId?: string;
+        stage?: string;
+      };
+      error.name = 'WorkflowStartError';
+      error.runId = value.runId;
+      error.stage = value.stage;
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
@@ -398,7 +402,7 @@ export const ENCRYPTED_DISPLAY_NAME = 'Encrypted';
  * Create a display-friendly object for encrypted data.
  *
  * Uses the same named-constructor trick as the Instance reviver so that
- * ObjectInspector renders the constructor name ("🔒 Encrypted") with no
+ * the inspector renders the constructor name ("Encrypted") with no
  * expandable children. The original encrypted bytes are stored in a
  * non-enumerable property for later decryption.
  */
@@ -409,7 +413,7 @@ function createEncryptedMarker(data: Uint8Array): object {
   ]!;
   const obj = Object.create(ctor.prototype);
   // Store original bytes for decryption, but non-enumerable so
-  // ObjectInspector doesn't show them as children
+  // DataInspector doesn't list them as entries
   Object.defineProperty(obj, '__encryptedData', {
     value: data,
     enumerable: false,
@@ -431,14 +435,14 @@ export function isEncryptedMarker(value: unknown): boolean {
 // Expired data display markers
 // ---------------------------------------------------------------------------
 
-export const EXPIRED_DISPLAY_NAME = 'Expired Data';
+const EXPIRED_DISPLAY_NAME = 'Expired Data';
 
 /**
  * Create a display-friendly object for expired data.
  *
  * Uses the same named-constructor trick as the encrypted marker so that
- * ObjectInspector renders the constructor name ("Expired Data") with no
- * expandable children.
+ * DataInspector shows the constructor name ("Expired Data") with no
+ * entries.
  */
 function createExpiredMarker(): object {
   // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
@@ -508,32 +512,19 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
 }
 
 /**
- * Hydrate resource data with decryption support.
- *
- * When a key is provided, encrypted fields are decrypted before hydration.
- * This is the async version used when the user clicks "Decrypt" in the web UI.
- *
- * Handles both top-level fields (input, output, metadata) and nested eventData
- * payload fields for that event type.
- */
-export async function hydrateResourceIOWithKey<T>(
-  resource: T,
-  key: Uint8Array
-): Promise<T> {
-  return hydrateResourceIOAsync(resource, key);
-}
-
-/**
  * Async hydration for web display.
  *
  * This follows the same resource-field mapping as {@link hydrateResourceIO},
  * but can also inflate compressed browser payloads through the registered
  * zstd WASM decoder. When a key is provided, encrypted fields are decrypted
- * first and then inflated/hydrated.
+ * first and then inflated/hydrated. `extraRevivers` are merged over the web
+ * revivers, for example a run's frozen state revivers (see
+ * `createRunStateHydrator`).
  */
 export async function hydrateResourceIOAsync<T>(
   resource: T,
-  key?: Uint8Array
+  key?: Uint8Array,
+  extraRevivers?: Revivers
 ): Promise<T> {
   const { hydrateDataWithKey, deriveRunPayloadKeys } = await import(
     '@workflow/core/serialization-format'
@@ -551,7 +542,9 @@ export async function hydrateResourceIOAsync<T>(
   // run's X25519 scalar in addition to its AES key. Both derive from the same
   // 32 bytes the key-retrieval endpoint returns.
   const cryptoKey = key ? await deriveRunPayloadKeys(key) : undefined;
-  const revivers = getRevivers();
+  const revivers = extraRevivers
+    ? { ...getRevivers(), ...extraRevivers }
+    : getRevivers();
 
   async function hydrateField(value: unknown): Promise<unknown> {
     // Already-hydrated: encrypted marker with stored bytes

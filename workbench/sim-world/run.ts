@@ -6,25 +6,10 @@
  *   pnpm sim in-flight-after-decision   # one scenario, by id
  *   pnpm sim --verbose             # include queue deliveries in the trace
  *   pnpm sim --no-color            # plain ASCII, e.g. for a golden file
- *   pnpm sim --no-fence            # play with the optimistic-concurrency fence off
  *   pnpm sim --report-only         # print failures but exit 0
  *   pnpm sim --summary-file s.md   # markdown counts + table, for a PR comment
  *   pnpm sim --detail-file d.txt   # the full trace, colour-free, as an artifact
  *   pnpm sim --title 'Summary'     # heading for the summary file
- *
- * `--no-fence` turns off the optimistic-concurrency fence (both halves — the
- * count guard is evaluated inside the same predicate) for every scenario that
- * asked for it. The fence rejects a write whose snapshot predates an
- * out-of-band event: a write that an extended prefix invalidated. So a book
- * that scores the same with the fence off is a book in which no emitter is
- * prefix-sensitive, and the fence is protecting against nothing. Anything that
- * goes red only under `--no-fence` names the exception. `--fence` forces it on.
- *
- * `--no-fence` is a diagnostic, not a world: read the *violation* count, not
- * the pass count. A scenario whose whole point is that the guard fired asserts
- * exactly that with `sim.check`, so turning the guard off fails it by design —
- * `in-flight-before-decision-counted` is the one that does this today. The
- * violation count is the number that means something.
  *
  * Colour is on by default when stdout is a terminal and off otherwise, so
  * `pnpm sim > out.txt` already produces a diffable file; `--no-color` and
@@ -55,14 +40,6 @@ const verbose = args.includes('--verbose');
 const color = args.includes('--no-color')
   ? false
   : args.includes('--color')
-    ? true
-    : undefined;
-// Same tri-state as above, and for the same reason: a scenario that turns the
-// fence on itself is the normal case, so `undefined` has to mean "leave it to
-// the spec" rather than "off".
-const preconditionGuard = args.includes('--no-fence')
-  ? false
-  : args.includes('--fence')
     ? true
     : undefined;
 const reportOnly = args.includes('--report-only');
@@ -132,7 +109,6 @@ for (const spec of selected) {
   const result = await runScenario(spec, {
     handler,
     workflowIds: bundle.workflowIds,
-    preconditionGuard,
   });
   results.push(result);
   console.log(renderScenario(result, { verbose, color }));
@@ -157,15 +133,6 @@ if (summaryFile) {
     summaryFile,
     renderMarkdownSummary(results, {
       title: summaryTitle,
-      chips: [
-        `fence=${
-          preconditionGuard === undefined
-            ? 'per-spec'
-            : preconditionGuard
-              ? 'forced-on'
-              : 'off'
-        }`,
-      ],
       detailPath: detailFile,
     }),
     'utf8'

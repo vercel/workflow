@@ -225,6 +225,29 @@ const config: NextConfig = {
         destination: '/docs/comparisons',
         permanent: false,
       },
+      // The docs Changelog section was retired: its pages were design notes
+      // for maintainers, and moved into the repository next to the code they
+      // describe. Old links land on the release changelog.
+      {
+        source: '/docs/changelog.md',
+        destination: '/changelog.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/changelog/:path*',
+        destination: '/changelog',
+        permanent: true,
+      },
+      {
+        source: '/v4/docs/changelog.md',
+        destination: '/changelog.md',
+        permanent: true,
+      },
+      {
+        source: '/v4/docs/changelog/:path*',
+        destination: '/changelog',
+        permanent: true,
+      },
       // Cookbook: child-workflows and distributed-abort-controller moved
       // from common-patterns (now "Reliability Patterns") to advanced
       {
@@ -356,12 +379,6 @@ const config: NextConfig = {
       {
         source: '/v4/docs/api-reference/workflow-api/register-lifecycle-hooks',
         destination: '/v4/docs/api-reference/workflow-api',
-        permanent: false,
-      },
-      {
-        source:
-          '/v4/docs/changelog/(attributes-mvp|batched-event-writes|eager-processing|lazy-hook-resume|resilient-resume|step-message-ownership)',
-        destination: '/v4/docs/changelog',
         permanent: false,
       },
       {

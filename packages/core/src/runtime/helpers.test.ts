@@ -403,6 +403,72 @@ describe('healthCheck response parsing', () => {
     expect(result.hookResumeInputVersion).toBeUndefined();
   });
 
+  it('surfaces the target World capabilities, ignoring ones this build does not know', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        capabilities: {
+          hookRetention: { active: true },
+          atomicStartHook: { active: true },
+          someFutureCapability: { active: true },
+        },
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.capabilities).toEqual({
+      hookRetention: { active: true },
+      atomicStartHook: { active: true },
+    });
+  });
+
+  it('reads malformed capabilities as unsupported and keeps the rest of the response', async () => {
+    // A peer on another SDK version must never read as unhealthy because of
+    // its capabilities: a capability can only fail closed.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        hookResumeInputVersion: 2,
+        capabilities: {
+          atomicStartHook: { active: 'yes' },
+          hookRetention: { active: true },
+        },
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBe(3);
+    expect(result.hookResumeInputVersion).toBe(2);
+    expect(result.capabilities).toEqual({ hookRetention: { active: true } });
+  });
+
+  it('omits capabilities that are not an object', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        capabilities: 'all of them',
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.capabilities).toBeUndefined();
+  });
+
   it('returns healthy with no fields for non-JSON plain-text responses', async () => {
     // Some deployments respond with plain text like
     // 'Workflow SDK "..." endpoint is healthy'. The parser treats any
@@ -452,7 +518,7 @@ describe('healthCheck response parsing', () => {
 
   it('returns unhealthy within the timeout when streams.get never resolves', async () => {
     // Regression test: some worlds hold the stream GET open until data is
-    // written (workflow-server holds unwritten streams for ~2 minutes).
+    // written (world-vercel holds unwritten streams for ~2 minutes).
     // The timeout must bound that call too, not just the poll loop.
     const world = {
       queue: vi.fn().mockResolvedValue(undefined),
@@ -496,9 +562,9 @@ describe('loadWorkflowRunEvents', () => {
   // Regression test for the "Event cursor missing after initial load" warning.
   //
   // A World may legitimately return `{ data: [], cursor: null, hasMore: false }`
-  // on a trailing empty page — workflow-server does this whenever the previous
-  // page's DynamoDB query hit `Limit` exactly and DynamoDB returned a
-  // `LastEvaluatedKey` "just in case." If the pagination loop overwrites the
+  // on a trailing empty page — the world-vercel backend does this whenever
+  // the previous page filled its limit exactly and the backend could not yet
+  // tell whether more rows follow. If the pagination loop overwrites the
   // cursor with `null` on that trailing page, the runtime's incremental-load
   // path can't proceed and falls back to a full reload on every replay
   // iteration, logging "Event cursor missing after initial load" each time.
@@ -826,6 +892,29 @@ describe('settleEventSlotGap', () => {
     expect(eventsListMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the events the caller held that the re-read came back without', async () => {
+    // The orchestrator's log holds its own writes from their responses (and,
+    // with run-ahead, an outcome consumed before its write committed). The
+    // re-read fills the hole below such an event but may not carry the event
+    // itself yet; dropping it would lose a position this delivery took.
+    eventsListMock.mockResolvedValueOnce({
+      data: slotLog(1, 2, 3),
+      cursor: 'eid:filled',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 2, 4),
+      cursor: 'eid:stale',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    expect(settled.log.events.map((e) => e.eventId)).toEqual(
+      slotLog(1, 2, 3, 4).map((e) => e.eventId)
+    );
+    expect(settled.log.cursor).toBe('eid:filled');
+  });
+
   it('reports a hole that survives every re-read', async () => {
     eventsListMock.mockResolvedValue({
       data: slotLog(1, 4),
@@ -1103,6 +1192,24 @@ describe('health check run public key', () => {
     expect(writtenResponse(write).encryptionPublicKey).toBe(
       bytesToBase64(publicKey)
     );
+  });
+
+  it('reports the responding World capabilities', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    (world as { capabilities?: unknown }).capabilities = {
+      atomicStartHook: { active: true },
+    };
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_caps' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).capabilities).toEqual({
+      atomicStartHook: { active: true },
+    });
   });
 
   it('reports the responding deployment Node.js version', async () => {

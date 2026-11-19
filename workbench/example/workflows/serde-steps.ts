@@ -6,6 +6,7 @@
  * step calls. This tests cross-context class registration.
  */
 
+import { Temperature } from './serde-imported-key-models';
 import { Vector } from './serde-models';
 
 /**
@@ -58,4 +59,23 @@ export async function sumVectors(vectors: Vector[]) {
     totalZ += v.z;
   }
   return new Vector(totalX, totalY, totalZ);
+}
+
+/**
+ * Step that creates and returns a Temperature.
+ * Tests: step serializing a class registered only through imported keys
+ */
+export async function createTemperature(celsius: number) {
+  'use step';
+  return new Temperature(celsius);
+}
+
+/**
+ * Step that receives a Temperature and returns a warmer one.
+ * Tests: step deserializing a class registered only through imported keys
+ */
+export async function warmTemperature(temperature: Temperature, by: number) {
+  'use step';
+  console.log('Temperature in Fahrenheit:', temperature.toFahrenheit());
+  return temperature.warmer(by);
 }

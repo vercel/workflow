@@ -4,12 +4,19 @@ import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import { workflowEntrypoint } from '../runtime.js';
+import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import { setWorld } from './world.js';
 
 vi.mock('./lifecycle-hooks.js', () => ({
   dispatchRunFailedHooks: vi.fn(),
   dispatchRunCompletedHooks: vi.fn(),
+}));
+vi.mock('./child-run-completion-notify.js', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('./child-run-completion-notify.js')
+  >()),
+  notifyParentOfRunCompletion: vi.fn().mockResolvedValue(undefined),
 }));
 
 const runId = 'wrun_max_deliveries_lifecycle';
@@ -20,11 +27,19 @@ beforeEach(() => {
   vi.stubEnv('WORKFLOW_MAX_QUEUE_DELIVERIES', '1');
   vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
-    events: { create },
+    events: {
+      create,
+      list: async () => ({ data: [], hasMore: false, cursor: null }),
+    },
     createQueueHandler: (_prefix, handler) => async () => {
       await handler(
-        { runId, requestedAt: new Date() },
+        {
+          runId,
+          requestedAt: new Date(),
+          runSpecVersion: SPEC_VERSION_CURRENT,
+        },
         {
           requestId: 'req_test',
           attempt: 2,
@@ -46,12 +61,12 @@ afterEach(() => {
 const run = () => workflowEntrypoint('')(new Request('http://localhost/'));
 
 it('dispatches max-deliveries failure only after its terminal write lands', async () => {
-  const persisted = withResolvers<void>();
+  const persisted = withResolvers<object>();
   create.mockReturnValueOnce(persisted.promise);
   const execution = run();
   await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
   expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
-  persisted.resolve();
+  persisted.resolve({});
   expect((await execution).status).toBe(204);
   expect(dispatchRunFailedHooks).toHaveBeenCalledExactlyOnceWith(
     runId,
@@ -59,6 +74,12 @@ it('dispatches max-deliveries failure only after its terminal write lands', asyn
     create.mock.calls[0][1].eventData.error,
     undefined,
     'MAX_DELIVERIES_EXCEEDED'
+  );
+  // No run is loaded on this path, so the parent's hook is resolved by id.
+  expect(notifyParentOfRunCompletion).toHaveBeenCalledExactlyOnceWith(
+    expect.anything(),
+    runId,
+    'failed'
   );
 });
 
@@ -71,4 +92,5 @@ it.each([
   expect((await run()).status).toBe(204);
   expect(create).toHaveBeenCalledOnce();
   expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
+  expect(notifyParentOfRunCompletion).not.toHaveBeenCalled();
 });

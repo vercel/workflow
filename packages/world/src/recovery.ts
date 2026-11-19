@@ -12,6 +12,9 @@ import {
  * processing after a world restart. The workflow handler is idempotent
  * (event-log replay), so duplicate enqueues are safe.
  *
+ * Each message carries the run's spec version as `runSpecVersion`, which is
+ * what a World reads to serialize a single-orchestrator run's deliveries.
+ *
  * A run goes back to the queue namespace it recorded when it was created
  * (`executionContext.queueNamespace`, see `getRunQueueNamespace`), so a run
  * started under another namespace, or by a queue consumer other than the
@@ -21,13 +24,25 @@ import {
  * @param runs - Storage runs interface for listing active runs
  * @param enqueue - Queue's enqueue method
  * @param label - Log prefix for identifying the world implementation (e.g. "world-local")
+ * With `queueLost`, each message also carries `recovery: true`: the World's
+ * queue did not survive the restart (world-local's is in memory), so the
+ * run's queued step messages and wait timers are gone, and a
+ * single-orchestrator delivery of the message sends them again. A World
+ * whose queue persists (world-postgres) leaves it unset: its queued messages
+ * still arrive.
+ *
+ * @param runs - Storage runs interface for listing active runs
+ * @param enqueue - Queue's enqueue method
+ * @param label - Log prefix for identifying the world implementation (e.g. "world-local")
  * @param namespace - Optional queue namespace. Defaults to WORKFLOW_QUEUE_NAMESPACE.
+ * @param options.queueLost - Whether the World's queue lost its messages.
  */
 export async function reenqueueActiveRuns(
   runs: Storage['runs'],
   enqueue: Queue['queue'],
   label: string,
-  namespace?: string
+  namespace?: string,
+  options: { queueLost?: boolean } = {}
 ): Promise<void> {
   const defaultNamespace = resolveQueueNamespace(namespace);
   // Validates the default up front, as before: a bad WORKFLOW_QUEUE_NAMESPACE
@@ -52,7 +67,19 @@ export async function reenqueueActiveRuns(
           getRunQueueNamespace(run.executionContext) ?? defaultNamespace
         );
         const queueName: ValidQueueName = `${prefix}${run.workflowName}`;
-        await enqueue(queueName, { runId: run.runId });
+        // The run's spec version rides on the message as on every other
+        // orchestrator message, so a World serializes a single-orchestrator
+        // run's recovery delivery behind its other deliveries and treats its
+        // `{ timeoutSeconds: 0 }` as a handoff (`isSingleOrchestratorMessage`).
+        // A run without a recorded version gets no stamp, and the runtime
+        // reads its version from the run.
+        await enqueue(queueName, {
+          runId: run.runId,
+          ...(typeof run.specVersion === 'number' && {
+            runSpecVersion: run.specVersion,
+          }),
+          ...(options.queueLost === true && { recovery: true }),
+        });
         reenqueued++;
       } catch (err) {
         console.warn(

@@ -116,13 +116,18 @@ async function deliver(options: {
       },
     };
   });
-  const runsGet = vi.fn(async () => ({
-    ...workflowRun,
-    ...(await options.readBack?.()),
-  }));
+  // Only a resolved read returns the stored code; the orchestrator's
+  // identity read (`resolveData: 'none'`) does not touch it.
+  const runsGet = vi.fn(
+    async (_runId: string, params?: { resolveData?: string }) => ({
+      ...workflowRun,
+      ...(params?.resolveData === 'none' ? {} : await options.readBack?.()),
+    })
+  );
 
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
+    capabilities: { inBandFence: true },
     getDeploymentId: vi.fn(async () => 'dpl_current'),
     createQueueHandler: vi.fn(
       (
@@ -290,7 +295,7 @@ describe('dynamic workflow delivery', () => {
     expect(failureMessages().join('\n')).toMatch(
       /does not match the dynamic id/
     );
-    expect(runsGet).not.toHaveBeenCalled();
+    expect(runsGet).toHaveBeenCalled();
   });
 
   it('fails the run when its stored code is missing', async () => {

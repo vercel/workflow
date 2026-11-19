@@ -25,7 +25,7 @@ export {
   MAX_EXECUTION_CONTEXT_BYTES,
   validateRunExecutionContext,
 } from './execution-context.js';
-export { createQueue } from './queue.js';
+export { createQueue, vercelTriggerConsumerGroup } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
@@ -45,8 +45,10 @@ export function createWorld(config?: APIConfig): World {
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
   // Read once: the runtime validates this declaration, and `run_started`
-  // attests the same value (see `APIConfig.mintedSpecVersion`).
-  const specVersion = mintedSpecVersion();
+  // attests the same value (see `APIConfig.mintedSpecVersion`). The backend
+  // fences in-band writes (`capabilities.inBandFence` below), so
+  // `WORKFLOW_SPEC_VERSION=9` creates spec 9 runs; spec 8 otherwise.
+  const specVersion = mintedSpecVersion(process.env, { inBandFence: true });
   config = { ...config, mintedSpecVersion: specVersion };
 
   return {
@@ -62,13 +64,31 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // Vercel Queues supports maxConcurrency-limited consumers, which
-      // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
-      // flow topics (see queue.ts and @workflow/builders).
+      // `start({ experimental_hook })` admission. Only used when a caller passes `experimental_hook` to
+      // `start()`. See `start-hook.ts` in @workflow/world for the contract the
+      // server implements.
+      atomicStartHook: { active: true },
+      // One orchestrator delivery per single-orchestrator run at a time: its
+      // orchestrator messages carry the run id as a VQS concurrency key on
+      // the flow topic (see queue.ts). Spec-8 runs keep the shared,
+      // unserialized flow topic.
+      //
+      // Part of the spec-9 contract rather than capabilities: the backend
+      // stores an in-band event's `occurredAt` as its `createdAt` (clamped
+      // only for clock skew beyond an hour ahead or a week behind), and
+      // orders a batch per entity (409 `batch-earlier-item-failed` behind a
+      // refused item of the same correlation id).
       maxConcurrency: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // `queue()` passes `experimental_hold` to Vercel Queues' send-and-hold.
+      // Support, not configuration: a queue service with it switched off
+      // answers `not_held` / `unsupported` and delivers the message as usual.
+      experimental_queueHold: true,
+      // Cached hook writes use a distinct endpoint that rejects before writing
+      // when the backend cannot enforce the required deduplication contract.
+      resolvedHookResume: true,
       // The backend fences in-band writes on every sealed-log run (spec >= 7,
       // the backend's event sequencer): a stale one is refused with 412
       // `in-band-superseded`, carrying the run's `seq` and `seqInBand`
@@ -78,11 +98,12 @@ export function createWorld(config?: APIConfig): World {
       // version. A list response carries `snapshot` and a single create
       // carries `allocated` where the backend reports them (events-v4.ts); a
       // run whose list carries no snapshot is still fenced, and its refusals
-      // carry the counters.
+      // carry the counters. Single-orchestrator runs (spec >= 9) always list
+      // one, which the runtime requires.
       inBandFence: true,
       // The server implements the takeover protocol behind
-      // `createHook({ experimental_force: true })` (workflow-server
-      // docs/hook-force-claim.md). Static rather than attested per lookup,
+      // `createHook({ experimental_force: true })`. Static rather than
+      // attested per lookup,
       // because the decision is made at `createHook()` time, before any
       // lookup; against a server that has it switched off (or predates it)
       // a forced creation is answered with `hook_conflict`, which the
@@ -104,14 +125,7 @@ export function createWorld(config?: APIConfig): World {
     getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
-    // Analytics list reads are served from an eventually-ingested store.
-    // Tooling that needs read-your-writes listings immediately after a
-    // write (e.g. deterministic e2e assertions) can force the CLI/world
-    // list paths back onto primary storage by disabling the namespace.
-    analytics:
-      process.env.WORKFLOW_DISABLE_ANALYTICS_READS === '1'
-        ? undefined
-        : createAnalytics(config),
+    analytics: createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     regionForRunId,

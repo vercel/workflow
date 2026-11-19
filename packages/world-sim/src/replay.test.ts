@@ -9,7 +9,7 @@
 import { getWorld } from '@workflow/core/runtime';
 import {
   type Event,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
@@ -29,7 +29,7 @@ function event(partial: Partial<Event> & Pick<Event, 'eventType'>): Event {
     runId: RUN,
     eventId: slotToEventId(counter),
     createdAt: new Date(AT.getTime() + counter),
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     ...partial,
   } as Event;
 }
@@ -95,7 +95,7 @@ describe('replay verification', () => {
       handlerWriting(async (world) => {
         await world.events.create(RUN, {
           eventType: 'run_completed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: { output: OUTPUT },
         });
       })
@@ -119,7 +119,7 @@ describe('replay verification', () => {
       handlerWriting(async (world) => {
         await world.events.create(RUN, {
           eventType: 'run_completed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: { output: OUTPUT },
         });
       }),
@@ -136,7 +136,7 @@ describe('replay verification', () => {
       handlerWriting(async (world) => {
         await world.events.create(RUN, {
           eventType: 'run_completed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: { output: new Uint8Array([9, 9, 9]) },
         });
       })
@@ -149,7 +149,7 @@ describe('replay verification', () => {
       handlerWriting(async (world) => {
         await world.events.create(RUN, {
           eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: { error: new Uint8Array(), errorCode: 'USER_ERROR' },
         });
       })
@@ -165,7 +165,7 @@ describe('replay verification', () => {
       handlerWriting(async (world) => {
         await world.events.create(RUN, {
           eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: {
             error: new Uint8Array(),
             errorCode: 'CORRUPTED_EVENT_LOG',

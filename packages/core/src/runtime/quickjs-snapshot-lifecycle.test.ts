@@ -235,7 +235,9 @@ async function invoke(options: {
     }
   );
 
-  const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',
@@ -258,13 +260,12 @@ describe('QuickJS snapshot lifecycle', () => {
   beforeEach(async () => {
     key = await deriveRunPayloadKeys(rawKey);
     const { __resetSnapshotLatchesForTests } = await import(
-      './quickjs-entrypoint.js'
+      './quickjs-delivery-shared.js'
     );
     __resetSnapshotLatchesForTests();
   });
 
   afterEach(() => {
-    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
     setWorld(undefined);
     vi.clearAllMocks();
     vi.restoreAllMocks();
@@ -548,24 +549,15 @@ describe('QuickJS snapshot lifecycle', () => {
     expect(getDictionary).not.toHaveBeenCalled();
   });
 
-  it('restores an unencrypted snapshot only when opted in', async () => {
+  it('restores an unencrypted snapshot for a run without an encryption key', async () => {
     const heap = new Uint8Array(2048).fill(3);
-    const withoutOptIn = await invoke({
+    const { load, restoredFrom } = await invoke({
       log: makeLog(3),
       threshold: 1,
       withKey: false,
       stored: await sealed(snapshotMetadata(), undefined, heap),
     });
-    expect(withoutOptIn.load).not.toHaveBeenCalled();
-
-    vi.clearAllMocks();
-    process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED = '1';
-    const optedIn = await invoke({
-      log: makeLog(3),
-      threshold: 1,
-      withKey: false,
-      stored: await sealed(snapshotMetadata(), undefined, heap),
-    });
-    expect(optedIn.restoredFrom[0]?.data).toEqual(heap);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(restoredFrom[0]?.data).toEqual(heap);
   });
 });

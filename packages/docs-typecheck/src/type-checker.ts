@@ -112,6 +112,14 @@ const compilerOptions: ts.CompilerOptions = {
     // Third-party deps available in docs-typecheck/node_modules
     zod: [path.join(__dirname, '../node_modules/zod')],
     ai: [path.join(__dirname, '../node_modules/ai')],
+    '@ai-sdk/workflow/client': [
+      path.join(__dirname, '../node_modules/@ai-sdk/workflow/dist/client'),
+    ],
+    '@ai-sdk/workflow': [
+      path.join(__dirname, '../node_modules/@ai-sdk/workflow'),
+    ],
+    '@ai-sdk/react': [path.join(__dirname, '../node_modules/@ai-sdk/react')],
+    immer: [path.join(__dirname, '../node_modules/immer')],
     // Pin vite/vitest to a single instance. pnpm can materialize multiple
     // copies of vite (differing only by peer-dep hash), and a docs sample
     // mixing `vitest/config` with `@workflow/vitest` would otherwise see two

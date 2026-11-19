@@ -141,6 +141,20 @@ export function checkInvariants(input: InvariantInput): InvariantViolation[] {
         break;
       }
       case 'step_started': {
+        // An inline step on a spec >= 9 run is created by its first
+        // `step_started`, which carries its input.
+        if (
+          !derivedSteps.has(id) &&
+          (event.eventData as { input?: unknown } | undefined)?.input !==
+            undefined
+        ) {
+          derivedSteps.set(id, {
+            stepId: id,
+            stepName: event.eventData?.stepName,
+            status: 'pending',
+            attempt: 0,
+          });
+        }
         const step = derivedSteps.get(id);
         if (!step) {
           add(

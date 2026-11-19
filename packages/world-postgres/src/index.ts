@@ -1,10 +1,11 @@
-import type { Queue, Storage, World } from '@workflow/world';
+import type { Queue, Storage, World, WorldCapabilities } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
-import type { PostgresWorldConfig } from './config.js';
+import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { createRunEventsFeed, type RunEventsFeed } from './run-events.js';
 import {
   createRunStatusListener,
   type RunStatusListener,
@@ -13,6 +14,7 @@ import { createSnapshotsStorage } from './snapshots.js';
 import {
   createEventsStorage,
   createHooksStorage,
+  createRecoverableRunsList,
   createRunsStorage,
   createStepsStorage,
 } from './storage.js';
@@ -20,11 +22,13 @@ import { createStreamer } from './streamer.js';
 
 function createStorage(
   drizzle: Drizzle,
-  runStatusListener: RunStatusListener
+  runStatusListener: RunStatusListener,
+  jobPrefix: string,
+  runEventsFeed: RunEventsFeed
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
-    events: createEventsStorage(drizzle),
+    events: createEventsStorage(drizzle, { jobPrefix, runEventsFeed }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
@@ -49,6 +53,7 @@ export function createWorld(
   config: PostgresWorldConfig = {
     connectionString: getDefaultConnectionString(),
     jobPrefix: process.env.WORKFLOW_POSTGRES_JOB_PREFIX,
+    deploymentId: process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ID || undefined,
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
       50,
@@ -72,25 +77,64 @@ export function createWorld(
   // Opens its `LISTEN` connection lazily, on the first `waitForTerminalStatus`
   // call, so a deployment that never awaits a run never pays for it.
   const runStatusListener = createRunStatusListener(pool);
-  const storage = createStorage(drizzle, runStatusListener);
+  // The prefix of the Graphile task this World's runner claims. Stamped on
+  // every run this World creates, and the scope of its startup recovery.
+  const jobPrefix = resolveJobPrefix(config);
+  // `events.subscribe` for spec 9 orchestrators: one `LISTEN` connection,
+  // opened on the first subscription. Lingering on it holds a worker slot,
+  // so at most half of this process's slots linger at once. With a single
+  // slot the feed is off: a lingering delivery would hold the only slot
+  // while the background steps it waits for queue behind it.
+  const workerSlots = config.queueConcurrency || 50;
+  const runEventsFeed = createRunEventsFeed(pool, {
+    maxLiveSubscriptions: workerSlots < 2 ? 0 : Math.floor(workerSlots / 2),
+  });
+  const storage = createStorage(
+    drizzle,
+    runStatusListener,
+    jobPrefix,
+    runEventsFeed
+  );
   const streamer = createStreamer(pool, drizzle);
 
+  const capabilities = {
+    hookRetention: { active: true },
+    // `start({ experimental_hook })`: the decision, the start Hook and the run it
+    // admits commit in one transaction; see start-hook.ts. Every worker
+    // serving the database must run a version with start Hook support before
+    // a caller passes `experimental_hook` (an older one would create a candidate's run
+    // without its start Hook).
+    atomicStartHook: { active: true },
+    // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
+    // upload path, so `start()` always sends the code inline.
+    dynamicWorkflowCode: true,
+    hookResumeDedup: true,
+    ...(config.enableInvoke ? { invoke: true } : {}),
+    // One transaction re-points the token, journals the victim's
+    // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
+    // the hook_created branch of storage.ts.
+    hookForceClaim: true,
+    // A single-orchestrator run's orchestrator deliveries take one run
+    // delivery lease (see run-lease.ts), and the events storage fences
+    // in-band writes and stores them at their `occurredAt` (see
+    // storage.ts): the two halves of the single-writer guarantee.
+    maxConcurrency: true,
+    // Required by the runtime; see in-band-fence.test.ts for conformance.
+    inBandFence: true,
+    // With a `deploymentId`, each deployment's workers claim only its own
+    // runs' jobs and messages for another deployment's runs are routed to
+    // its task (queue.ts), so a run executes only where it started.
+    ...(config.deploymentId !== undefined
+      ? { deploymentAffinity: true as const }
+      : {}),
+  } satisfies WorldCapabilities;
   return {
-    specVersion: mintedSpecVersion(),
-    capabilities: {
-      hookRetention: { active: true },
-      // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
-      // upload path, so `start()` always sends the code inline.
-      dynamicWorkflowCode: true,
-      hookResumeDedup: true,
-      ...(config.enableInvoke ? { invoke: true } : {}),
-      // One transaction re-points the token, journals the victim's
-      // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
-      // the hook_created branch of storage.ts.
-      hookForceClaim: true,
-      // The events storage fences in-band writes; see storage.ts.
-      inBandFence: true,
-    },
+    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
+    // the in-band fence declared above; spec 8 otherwise.
+    specVersion: mintedSpecVersion(process.env, {
+      inBandFence: capabilities.inBandFence,
+    }),
+    capabilities,
     ...storage,
     ...streamer,
     ...queue,
@@ -99,8 +143,14 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Recover only this World's runs (and unstamped legacy ones): every
+      // recovered run lands in this World's own task, so a run created under
+      // another `jobPrefix` would be driven by the wrong app's runner.
       await reenqueueActiveRuns(
-        storage.runs,
+        {
+          ...storage.runs,
+          list: createRecoverableRunsList(drizzle, jobPrefix),
+        },
         queue.queue,
         'world-postgres',
         config.namespace
@@ -111,6 +161,7 @@ export function createWorld(
       await queue.close();
       await streamer.close();
       await runStatusListener.close();
+      await runEventsFeed.close();
       if (pool !== config.pool) {
         await pool.end();
       }

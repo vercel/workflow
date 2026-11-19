@@ -1,6 +1,7 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import {
+  EncryptionKeyLookupError,
   FatalError,
   HookConflictError,
   RetryableError,
@@ -8,6 +9,7 @@ import {
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
+  WorkflowStartError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
@@ -19,6 +21,7 @@ import {
   drainFlushableSnapshot,
   type FlushableStreamState,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
 import {
@@ -1178,10 +1181,11 @@ describe('workflow arguments', () => {
 
         const writer = hydrated.getWriter();
         // `write()` early-acks, so the failure lands on `closed` — catchable,
-        // with the world error preserved as the cause.
+        // as the world error itself so its retry semantics survive.
         await writer.write('payload').catch(() => {});
         await expect(writer.closed).rejects.toMatchObject({
-          cause: { code: 'TIMEOUT' },
+          name: 'WorkflowWorldError',
+          code: 'TIMEOUT',
         });
         expect(runsGet).toHaveBeenCalledTimes(1);
 
@@ -4820,6 +4824,47 @@ describe('Workflow error serialization', () => {
     expect(hydrated.message).toContain('wrun_conflicting');
   });
 
+  it("should round-trip a refused start's HookConflictError with its start wording", async () => {
+    const error = new HookConflictError('approval-token', 'wrun_owner', {
+      kind: 'start',
+    });
+    const hydrated = (await roundTrip(error)) as HookConflictError;
+    expect(hydrated).toBeInstanceOf(HookConflictError);
+    expect(hydrated.kind).toBe('start');
+    expect(hydrated.message).toMatch(
+      /^No run was created: workflow run "wrun_owner" already owns this hook token/
+    );
+    expect(hydrated.message).not.toContain('approval-token');
+  });
+
+  it('should round-trip WorkflowStartError preserving the candidate and stage', async () => {
+    const error = new WorkflowStartError(
+      'wrun_candidate',
+      'admission',
+      new Error('gateway timed out')
+    );
+    const hydrated = (await roundTrip(error)) as WorkflowStartError;
+    expect(hydrated).toBeInstanceOf(WorkflowStartError);
+    expect(WorkflowStartError.is(hydrated)).toBe(true);
+    expect(hydrated.runId).toBe('wrun_candidate');
+    expect(hydrated.stage).toBe('admission');
+    expect(hydrated.message).toBe(error.message);
+    expect((hydrated.cause as Error).message).toBe('gateway timed out');
+  });
+
+  it('should serialize WorkflowStartError using its dedicated reducer key', async () => {
+    const serialized = await dehydrateStepReturnValue(
+      new WorkflowStartError('wrun_candidate', 'queue'),
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('["WorkflowStartError",');
+    expect(str).not.toContain('["Error",');
+  });
+
   it('should serialize HookConflictError using its dedicated reducer key', async () => {
     const error = new HookConflictError('approval-token', 'wrun_conflicting');
     const serialized = await dehydrateStepReturnValue(
@@ -6032,6 +6077,93 @@ describe('stream encryption round-trip', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]).toEqual(largeArray);
+  });
+
+  /** Write one chunk through a serialize stream and return the stream's error */
+  async function serializeError(
+    key: Parameters<typeof getSerializeStream>[1],
+    value: unknown
+  ): Promise<unknown> {
+    const serialize = getSerializeStream(reducers, key);
+    const readPromise = serialize.readable.getReader().read();
+    const writer = serialize.writable.getWriter();
+    await writer.write(value).catch(() => {});
+    return readPromise.then(
+      () => expect.fail('expected the serialize stream to error'),
+      (error: unknown) => error
+    );
+  }
+
+  it.each([
+    { label: 'transport failure', options: { code: 'TRANSPORT' } },
+    { label: 'timeout', options: { code: 'TIMEOUT' } },
+    { label: '503', options: { status: 503 } },
+  ])('should pass a key lookup $label through unwrapped so the step retries', async ({
+    options,
+  }) => {
+    const lookupError = new WorkflowWorldError(
+      'GET /v1/workflow/run-key failed',
+      options
+    );
+
+    const error = await serializeError(() => Promise.reject(lookupError), {
+      hello: 'world',
+    });
+
+    expect(error).toBe(lookupError);
+  });
+
+  /** The shape world-vercel throws for a non-2xx run-key response */
+  function runKeyFetchError(status: number): Error {
+    return Object.assign(new Error(`Failed to fetch run key: HTTP ${status}`), {
+      name: 'RunKeyFetchError',
+      status,
+    });
+  }
+
+  it.each([
+    429, 500, 503,
+  ])('should pass a key lookup HTTP %i without a world error type through unwrapped so the step retries', async (status) => {
+    const lookupError = runKeyFetchError(status);
+
+    const error = await serializeError(() => Promise.reject(lookupError), {
+      hello: 'world',
+    });
+
+    expect(error).toBe(lookupError);
+  });
+
+  it.each([
+    {
+      label: '404',
+      lookupError: new WorkflowWorldError('GET /v1/workflow/run-key failed', {
+        status: 404,
+      }),
+    },
+    {
+      label: 'HTTP 404 without a world error type',
+      lookupError: runKeyFetchError(404),
+    },
+    { label: 'non-world error', lookupError: new Error('bad key material') },
+  ])('should raise a fatal EncryptionKeyLookupError for a key lookup $label', async ({
+    lookupError,
+  }) => {
+    const error = await serializeError(() => Promise.reject(lookupError), {
+      hello: 'world',
+    });
+
+    expect(error).toBeInstanceOf(EncryptionKeyLookupError);
+    expect(FatalError.is(error)).toBe(true);
+    expect((error as EncryptionKeyLookupError).cause).toBe(lookupError);
+    expect((error as Error).message).toContain(lookupError.message);
+  });
+
+  it('should still raise a SerializationError for a chunk that cannot be serialized', async () => {
+    const error = await serializeError(async () => cryptoKey, {
+      fn: () => {},
+    });
+
+    expect(error).toBeInstanceOf(SerializationError);
   });
 });
 
@@ -7964,5 +8096,231 @@ describe('WorkflowFunction serialization', () => {
     await expect(
       dehydrateStepReturnValue(plainFn, 'wrun_test', undefined)
     ).rejects.toThrow('Failed to serialize');
+  });
+});
+
+// Regression tests for #5055. A reducer starts piping a stream as soon as it
+// serializes it, but the ops list it pushes the pipe onto is only awaited
+// later (after the rest of the value is serialized, after the step body
+// returns) or never (when the step fails). A source that errors in that gap,
+// like a returned `fetch()` body whose socket closes, used to reject with no
+// handler attached: an unhandled rejection, which ends the process on Vercel.
+describe('stream pipe ops are observed as soon as they are created (#5055)', () => {
+  /** The error undici's `fetch` errors a body stream with when its socket closes. */
+  const terminated = () =>
+    new TypeError('terminated', {
+      cause: Object.assign(new Error('other side closed'), {
+        code: 'UND_ERR_SOCKET',
+      }),
+    });
+
+  /**
+   * A stream whose transport has already failed. A `fetch()` response body is
+   * a byte stream, which takes the step reducers' byte-stream pipe.
+   */
+  const terminatedBody = (type?: 'bytes') =>
+    new ReadableStream<Uint8Array>({
+      type,
+      start(controller) {
+        controller.error(terminated());
+      },
+    } as UnderlyingDefaultSource<Uint8Array>);
+
+  const captureUnhandledRejections = () => {
+    const seen: unknown[] = [];
+    const onUnhandled = (reason: unknown) => seen.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    return {
+      messages: () => seen.map((r) => (r as Error)?.message),
+      stop: () => process.off('unhandledRejection', onUnhandled),
+    };
+  };
+
+  /** Give Node a macrotask boundary to run its unhandled-rejection check. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+  // The step executor dehydrates a return value with the run's encryption key
+  // (world-vercel always supplies one) and unframed byte streams, then calls
+  // `Promise.all(ops)`. Encrypting the payload awaits WebCrypto, which crosses
+  // a macrotask boundary after the reducer has started the pipe, so a source
+  // that has already failed rejects before that handler exists.
+  it.each([
+    ['unframed byte stream', 'bytes', false],
+    ['framed byte stream', 'bytes', true],
+    ['object stream', undefined, false],
+  ] as const)('an encrypted step return value carrying a failed %s', async (_label, type, framed) => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const capture = captureUnhandledRejections();
+    try {
+      const ops: Promise<unknown>[] = [];
+      const body = terminatedBody(type);
+      expect(getStreamType(body)).toBe(type);
+      await dehydrateStepReturnValue(
+        { body },
+        mockRunId,
+        key,
+        ops,
+        globalThis,
+        false,
+        framed
+      );
+      // The step executor attaches its handler right after dehydration.
+      const all = Promise.all(ops);
+      await expect(all).rejects.toThrow('terminated');
+      await settle();
+      expect(capture.messages()).toEqual([]);
+    } finally {
+      capture.stop();
+    }
+  });
+
+  it('a stream nobody awaits, as when the step that wrote it fails', async () => {
+    const capture = captureUnhandledRejections();
+    const debug = vi.spyOn(runtimeLogger, 'debug');
+    try {
+      const ops: Promise<unknown>[] = [];
+      await dehydrateStepReturnValue(
+        { body: terminatedBody() },
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+      await settle();
+      expect(ops).toHaveLength(1);
+      expect(capture.messages()).toEqual([]);
+      // Nothing awaits this list, so the debug log is the error's only trace.
+      expect(debug).toHaveBeenCalledWith('Stream pipe failed', {
+        errorName: 'TypeError',
+        errorMessage: 'terminated',
+        cause: 'other side closed',
+      });
+    } finally {
+      debug.mockRestore();
+      capture.stop();
+    }
+  });
+
+  it('workflow arguments carrying a failed stream', async () => {
+    const capture = captureUnhandledRejections();
+    try {
+      const ops: Promise<void>[] = [];
+      await dehydrateWorkflowArguments(
+        [terminatedBody()],
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+      await settle();
+      expect(ops).toHaveLength(1);
+      await expect(Promise.all(ops)).rejects.toThrow('terminated');
+      expect(capture.messages()).toEqual([]);
+    } finally {
+      capture.stop();
+    }
+  });
+
+  /**
+   * A World live read that connects, then is cut `afterMs` later, the way
+   * world-vercel's live read ends when the server cuts the connection: the
+   * body errors with undici's `TypeError: terminated`. Cancelling it first
+   * stops the cut, as cancelling a `fetch()` body closes its connection.
+   */
+  const liveReadCutAfter = (afterMs: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = vi.fn(() => clearTimeout(timer));
+    const stream = new ReadableStream<Uint8Array>({
+      type: 'bytes',
+      start(controller) {
+        timer = setTimeout(() => controller.error(terminated()), afterMs);
+      },
+      cancel,
+    } as UnderlyingByteSource);
+    return { stream, cancel };
+  };
+
+  const withLiveRead = async <T>(
+    read: ReadableStream<Uint8Array>,
+    body: (get: ReturnType<typeof vi.fn>) => Promise<T>
+  ): Promise<T> => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const world = makeMockWorld();
+    world.streams.get.mockResolvedValue(read);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+    try {
+      return await body(world.streams.get);
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
+  };
+
+  // A step that returns a `WritableStream` it created gets a readback pipe:
+  // a live read of the stream's server copy, piped into the writable. The
+  // read stays open after the step returns, and when it is cut the pipe
+  // rejects with undici's error, whose stack is entirely undici's socket
+  // close. On the failed-step path nothing ever awaits the list.
+  it("a returned WritableStream's readback, whose live read is cut after the step returns", async () => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const liveRead = liveReadCutAfter(20);
+    const capture = captureUnhandledRejections();
+    try {
+      await withLiveRead(liveRead.stream, async (get) => {
+        const ops: Promise<unknown>[] = [];
+        await dehydrateStepReturnValue(
+          { sink: new WritableStream() },
+          mockRunId,
+          key,
+          ops
+        );
+        await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+        // The step has returned. The read is cut later.
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        await settle();
+        expect(capture.messages()).toEqual([]);
+        // Whoever does await the list still sees the cut.
+        await expect(Promise.all(ops)).rejects.toThrow('terminated');
+      });
+    } finally {
+      capture.stop();
+    }
+  });
+
+  // A step that receives a workflow `AbortSignal` opens a live read of the
+  // signal's abort stream for the length of the step. That read handles its
+  // own errors: a cut after the step returns closes the read and leaves the
+  // signal as it was, whether or not the step's teardown reached the signal.
+  it.each([
+    ['cancelled when the step returns', true],
+    ['never cancelled', false],
+  ] as const)("a step's AbortSignal live read cut after the step returns (%s)", async (_label, cancel) => {
+    const liveRead = liveReadCutAfter(20);
+    const capture = captureUnhandledRejections();
+    try {
+      await withLiveRead(liveRead.stream, async (get) => {
+        const input = await dehydrateWorkflowArguments(
+          new AbortController().signal,
+          mockRunId,
+          noEncryptionKey
+        );
+        const ops: Promise<void>[] = [];
+        const signal = (await hydrateStepArguments(
+          input,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        )) as AbortSignal;
+        await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(liveRead.stream.locked).toBe(true));
+        // The step returns; its teardown cancels the readers it can reach.
+        if (cancel) cancelAbortReaders(signal);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        await settle();
+        expect(capture.messages()).toEqual([]);
+        await expect(Promise.all(ops)).resolves.toBeDefined();
+        expect(signal.aborted).toBe(false);
+        expect(liveRead.cancel).toHaveBeenCalledTimes(cancel ? 1 : 0);
+      });
+    } finally {
+      capture.stop();
+    }
   });
 });

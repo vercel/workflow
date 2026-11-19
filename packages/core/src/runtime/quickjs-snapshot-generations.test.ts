@@ -16,6 +16,7 @@
  *   snapshots, and leave no snapshot behind once they finish.
  */
 
+import '../../test-utils/vercel-request-context.js';
 import { waitUntil } from '@vercel/functions';
 import { MaxEventsExceededError } from '@workflow/errors';
 import {
@@ -238,7 +239,9 @@ async function runToCompletion(options: {
 }) {
   const env = makeWorld(options.threshold);
   setWorld(env.world);
-  const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   let heldFrom: number | undefined;
   for (let invocation = 0; invocation < options.hooks + 5; invocation++) {
     if (invocation === options.holdSaveAt) env.holdNextSave();
@@ -289,7 +292,7 @@ async function runToCompletion(options: {
 describe('QuickJS snapshots across many generations', () => {
   beforeEach(async () => {
     const { __resetSnapshotLatchesForTests } = await import(
-      './quickjs-entrypoint.js'
+      './quickjs-delivery-shared.js'
     );
     __resetSnapshotLatchesForTests();
   });
@@ -303,7 +306,9 @@ describe('QuickJS snapshots across many generations', () => {
     const { world, run, log, append, saves, loads } = makeWorld();
     const workflowCode = hookWorkflow(1000);
     setWorld(world);
-    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    const { runWorkflowWithQuickJS } = await import(
+      './spec9/quickjs-entrypoint.js'
+    );
     const maxEventsLimit = 40;
 
     let exceeded: unknown;

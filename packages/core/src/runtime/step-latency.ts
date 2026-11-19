@@ -346,9 +346,9 @@ export function computeStepLatencyEventData(params: {
   /** Whether the body ran optimistically, without awaiting step_started. */
   optimisticStart: boolean;
   /**
-   * Whether the step's `step_created` + `step_started` pair was pre-claimed
-   * inside the suspension handler's batched fan-out write (no start POST of
-   * its own at all).
+   * Whether the step's start was written by its creation (an inline step's
+   * creation-bearing `step_started`), so the executor sent no start POST of
+   * its own at all.
    */
   preclaimedStart?: boolean;
 }): StepLatencyEventData | undefined {
@@ -400,7 +400,7 @@ export function computeStepLatencyEventData(params: {
   // finalSchedulingReplay duplicates what OTEL already captures on the
   // run/invocation span, but is deliberately collected as client telemetry
   // so the server can emit it as an UNSAMPLED, full-population metric:
-  // workflow-server's server spans are heavily sampled in production (~7%),
+  // the backend's server spans are sampled in production,
   // so they cannot serve as the dashboard's exact TTFS decomposition.
   const rsfs =
     tracking.rsfsAnchorMs !== undefined &&

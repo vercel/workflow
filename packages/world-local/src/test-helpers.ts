@@ -18,7 +18,7 @@ import type {
   Wait,
   WorkflowRun,
 } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type SpecVersion } from '@workflow/world';
 
 /**
  * Test helper functions for creating and updating storage entities through events.
@@ -110,11 +110,12 @@ export async function createRun(
     input: SerializedData;
     executionContext?: Record<string, unknown>;
     attributes?: Record<string, string>;
-  }
+  },
+  specVersion: SpecVersion = SPEC_VERSION_CURRENT
 ): Promise<WorkflowRun> {
   const result = await storage.events.create(null, {
     eventType: 'run_created',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion,
     eventData: data,
   });
   if (!result.run) {

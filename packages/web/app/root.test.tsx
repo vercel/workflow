@@ -16,7 +16,7 @@ vi.mock('react-router', async () => {
   };
 });
 
-import { ErrorBoundary } from './root';
+import { ErrorBoundary, shouldRevalidate } from './root';
 
 function Wrapper({ children }: PropsWithChildren) {
   return <MemoryRouter>{children}</MemoryRouter>;
@@ -79,5 +79,39 @@ describe('ErrorBoundary', () => {
 
     const link = screen.getByRole('link', { name: /go to dashboard/i });
     expect(link.getAttribute('href')).toBe('/');
+  });
+});
+
+describe('shouldRevalidate', () => {
+  const base = 'http://localhost/';
+  const args = (
+    current: string,
+    next: string,
+    formMethod?: 'GET' | 'POST'
+  ): Parameters<typeof shouldRevalidate>[0] =>
+    ({
+      currentUrl: new URL(current, base),
+      nextUrl: new URL(next, base),
+      currentParams: {},
+      nextParams: {},
+      formMethod,
+      defaultShouldRevalidate: true,
+    }) as Parameters<typeof shouldRevalidate>[0];
+
+  it('skips the server round trip when only search params change', () => {
+    expect(shouldRevalidate(args('/?tab=runs', '/?tab=hooks'))).toBe(false);
+    expect(shouldRevalidate(args('/run/r1', '/run/r1?tab=events'))).toBe(false);
+  });
+
+  it('skips the server round trip on client-side page changes', () => {
+    expect(shouldRevalidate(args('/?tab=runs', '/run/r1'))).toBe(false);
+  });
+
+  it('keeps the default after a mutation', () => {
+    expect(shouldRevalidate(args('/', '/', 'POST'))).toBe(true);
+  });
+
+  it('keeps the default for explicit revalidation', () => {
+    expect(shouldRevalidate(args('/run/r1', '/run/r1'))).toBe(true);
   });
 });

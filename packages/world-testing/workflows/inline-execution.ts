@@ -65,6 +65,16 @@ export async function sleepWorkflow(): Promise<number> {
 }
 
 /**
+ * Sleeps for an hour, then adds. The queue auth tests wake it early, as the
+ * web UI's "wake up" does.
+ */
+export async function longSleepWorkflow(): Promise<number> {
+  'use workflow';
+  await sleep('1h');
+  return add(1, 2);
+}
+
+/**
  * Promise.all with 2 add steps.
  * Expected: 2 flow invocations (1 inline + 1 background step continuation).
  */

@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
+  FLOW_ASSETS_DIR,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
@@ -75,9 +76,17 @@ export class LocalBuilder extends BaseBuilder {
    * Nitro bundles the flow route into its server build, so the loader
    * resolves the files relative to the chunk it ends up in: the plugin
    * rewrites the placeholder to that chunk's path to its copy of them.
+   *
+   * Nitro v2 (and Nuxt) rewrite `import.meta.url` in every chunk to the
+   * server entry's URL (`globalThis._importMeta_.url`), which sits at the
+   * root of the server output, next to the copy. So when the chunk-relative
+   * read fails, the loader tries the copy relative to the server root before
+   * giving up (and the runtime computes the heap in memory).
    */
   protected override getFlowAssetLoaderCode(): string | undefined {
-    return `(name) => import('node:fs/promises').then((fs) => fs.readFile(new URL(${JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`)} + name, import.meta.url)))`;
+    const chunkRelative = JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`);
+    const rootRelative = JSON.stringify(`./${FLOW_ASSETS_DIR}/`);
+    return `(name) => import('node:fs/promises').then((fs) => fs.readFile(new URL(${chunkRelative} + name, import.meta.url)).catch((err) => fs.readFile(new URL(${rootRelative} + name, import.meta.url)).catch(() => { throw err; })))`;
   }
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');
@@ -110,20 +119,41 @@ export class LocalBuilder extends BaseBuilder {
     return false;
   }
 
-  // Serialize concurrent build() calls so overlapping dev rebuilds don't
-  // stomp on each other's temp files or partially overwrite output.
-  #buildQueue: Promise<void> = Promise.resolve();
+  // Builds never overlap, so two dev rebuilds don't stomp on each other's
+  // temp files or partially overwrite output. Calls made while a build runs
+  // share the one build queued behind it: it starts after every one of them
+  // and reads the input files then, so it covers all of their changes. In
+  // dev, Nitro asks for a build on every `dev:reload`, and a burst of file
+  // events (a save-all, a branch switch, a test restoring its fixtures)
+  // would otherwise queue one full rebuild per event, long after the last
+  // change. This only merges builds: Nitro still restarts its dev worker
+  // once per `dev:reload`, but those restarts now follow the shared build
+  // back to back instead of one build apart.
+  #running: Promise<void> | undefined;
+  #queued: Promise<void> | undefined;
 
   override build(): Promise<void> {
-    const next = this.#buildQueue.then(
-      () => this.#buildOnce(),
-      () => this.#buildOnce()
+    if (this.#queued) return this.#queued;
+    if (!this.#running) return this.#start();
+    // A failed build doesn't stop the next one; each caller still sees its
+    // own build's outcome.
+    const queued = this.#running.then(
+      () => this.#start(),
+      () => this.#start()
     );
-    // Swallow rejections on the queue itself so a failed build doesn't
-    // permanently reject all subsequent builds; each caller still sees
-    // its own rejection via the returned promise.
-    this.#buildQueue = next.catch(() => {});
-    return next;
+    this.#queued = queued;
+    return queued;
+  }
+
+  #start(): Promise<void> {
+    this.#queued = undefined;
+    const running = this.#buildOnce();
+    this.#running = running;
+    const clear = () => {
+      if (this.#running === running) this.#running = undefined;
+    };
+    running.then(clear, clear);
+    return running;
   }
 
   async #buildOnce(): Promise<void> {

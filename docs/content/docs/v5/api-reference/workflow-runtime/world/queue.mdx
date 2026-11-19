@@ -13,6 +13,8 @@ keywords:
   - getDeploymentId
   - queue
   - createQueueHandler
+  - experimental_hold
+  - send-and-hold
   - ValidQueueName
   - queue dispatch
 ---
@@ -58,9 +60,74 @@ const { messageId } = await world.queue(queueName, payload, opts); // [!code hig
 |-----------|------|-------------|
 | `queueName` | `ValidQueueName` | The queue name (branded string) |
 | `message` | `QueuePayload` | Internal SDK payload |
-| `opts` | `QueueOptions` | Optional: `deploymentId`, `idempotencyKey`, `delaySeconds`, `headers`, `region` (regional routing hint), `specVersion` |
+| `opts` | `QueueOptions` | Optional: `deploymentId`, `idempotencyKey`, `delaySeconds`, `headers`, `region` (regional routing hint), `specVersion`, `experimental_hold` (see [Running a message in the request that sent it](#running-a-message-in-the-request-that-sent-it-experimental)) |
 
-**Returns:** `{ messageId: MessageId | null }`
+**Returns:** `QueueResult`: `{ messageId: MessageId | null, experimental_hold?: QueueHoldResult }`. `experimental_hold` is present only when you asked for a hold on a World that supports it (see below).
+
+#### Running a message in the request that sent it (experimental)
+
+By default, a message you queue is delivered to its consumer by a queue hop, a separate invocation. A **hold** lets the process that sends a message run it itself, in the same request, while the queue stays the crash backstop: the queue claims the message's first delivery for the sender before `queue()` returns, and delivers it as usual only if the sender stops renewing that claim. Use it when the sender is about to wait for the message's work, for example to stream an agent's first tokens back on the request that started the turn.
+
+A World that supports holds declares `capabilities.experimental_queueHold` (`@workflow/world-vercel` does; the Local and Postgres Worlds don't). Check it before you send, and keep your existing path where it's unset:
+
+{/* @skip-typecheck: shape illustration, not runnable code */}
+```typescript lineNumbers
+import { waitUntil } from "@vercel/functions";
+
+if (world.capabilities?.experimental_queueHold) {
+  const { messageId, experimental_hold: hold } = await world.queue(queueName, payload, {
+    idempotencyKey, // always send one with a hold
+    experimental_hold: true, // [!code highlight]
+  });
+
+  if (hold?.status === "held") { // [!code highlight]
+    // Run it here as its first delivery, with the same handler the queue
+    // consumer for this prefix passes to createQueueHandler().
+    waitUntil(hold.consume(handler)); // [!code highlight]
+  }
+  // `not_held` (hold.reason says why) or no `experimental_hold` at all:
+  // the queue delivers the message as usual. Don't process it here.
+} else {
+  await world.queue(queueName, payload, { idempotencyKey });
+}
+```
+
+`experimental_hold` is a discriminated union on `status`:
+
+| `status` | Fields | What to do |
+|----------|--------|------------|
+| `held` | `messageId`, `leaseExpiresAt`, `consume(handler)`, `release(delaySeconds?)` | Call `consume(handler)` right away and keep the invocation alive until it settles (for example with `waitUntil`). Or call `release()` to hand the message back to the queue without running it. |
+| `not_held` | `reason` | Nothing. The queue, or a delivery that's already running, takes care of the message. |
+
+**Options**: pass `experimental_hold: true` for the defaults, or an object with any of:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `consumerGroup` | `default` | The consumer group that would otherwise receive the message, so a hold that lapses is delivered to the same route. The Workflow SDK's generated triggers subscribe as `default`. A Function whose trigger is configured in `vercel.json` or `vercel.ts` gets a group named after its path: pass `vercelTriggerConsumerGroup(functionPattern)` from `@workflow/world-vercel`, for example `vercelTriggerConsumerGroup("app/api/agent/route.ts")`. |
+| `visibilityTimeoutSeconds` | `30` | The hold's lease. `consume()` renews it while the handler runs; if nothing renews it, the queue delivers the message about this long after the last renewal. On Vercel it's clamped to 30–3600 seconds and to the message's retention. |
+
+**`consume(handler)`** runs `handler` as the message's first delivery (`deliveryCount: 1`), with the same result rules as `createQueueHandler()`: resolve to acknowledge, return `{ timeoutSeconds }` to have the same message delivered again later, or reject to retry with backoff. It renews the lease while the handler runs. Call it at most once, and not after `release()`. Two `meta` fields differ from a pushed delivery's:
+
+- `invocationStartedAt` is when the enclosing queue delivery began if you call `consume` inside one, otherwise when you called `consume`.
+- `requestId` is set only inside a queue delivery, so don't hold an `invoke: true` request.
+
+**`not_held` reasons:**
+
+| `reason` | Meaning |
+|----------|---------|
+| `unsupported` | The queue ignored the hold: send-and-hold isn't enabled on the queue service, it's local development, or the send was pinned to another deployment. The message is delivered as usual. |
+| `deferred` | The queue accepted the message for deferred processing. It's delivered once it's ingested. |
+| `lost` | Another claim won, or the run's orchestrator is busy. The queue delivers it. |
+| `coalesced` | The run's orchestrator is running in another delivery, which covers this message. |
+| `concurrency_limited` | No delivery slot was free. It's delivered once one is. |
+| `duplicate` | The idempotency key belongs to an earlier message. |
+| `error` | The hold couldn't be taken or read. The queue delivers the message once any lease taken for it lapses. |
+
+**Limits:**
+
+- A hold can't be combined with `delaySeconds` (`TypeError` before anything is sent).
+- A send pinned to another deployment (`deploymentId`) is never held: its own deployment must run it, so it's sent as usual and reports `unsupported`.
+- `queueBatch()` never holds a message, and its results carry no `experimental_hold`.
 
 ### createQueueHandler()
 
@@ -79,7 +146,7 @@ const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
 
 **Returns:** `(req: Request) => Promise<Response>`
 
-`meta.messageId` should be stable across redeliveries of the same message (one ID per enqueued message, reused on every delivery attempt). The runtime records it on inline `step_started` events as a liveness lease so that only a redelivery of the owning message re-executes a crashed inline step before the lease expires (see [Inline step message ownership](/docs/changelog/step-message-ownership)). A World whose queue mints a fresh ID per delivery degrades gracefully. Crashed inline steps recover via the delayed backstop instead of immediately on redelivery, but never wedge or duplicate.
+`meta.messageId` should be stable across redeliveries of the same message (one ID per enqueued message, reused on every delivery attempt). The runtime records it on inline `step_started` events as a liveness lease so that only a redelivery of the owning message re-executes a crashed inline step before the lease expires. A World whose queue mints a fresh ID per delivery degrades gracefully. Crashed inline steps recover via the delayed backstop instead of immediately on redelivery, but never wedge or duplicate.
 
 ## Related
 

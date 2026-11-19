@@ -45,11 +45,13 @@ import {
   NODE_HTTP_HEADERS_TIMEOUT_MS,
   noteEventsTransportOutcome,
   QUEUE_AGENT_CONNECTIONS,
+  QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS,
   QUEUE_REQUEST_TIMEOUT_MS,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 // Everything below this line asserts the undici wiring. `WORKFLOW_NODE_HTTP`
 // takes requests off undici entirely and makes every dispatcher getter return
@@ -257,68 +259,73 @@ JSsW5YzWatjMPka0HLgfbf7gv0+QFF7vGd9TqUO7ZD7NuPDuKuT5BMa6XxoQYkIO
 TTVKDw9WMB6CyIX5kV0cOG/S8OO+1l3ZPaogkzj0P5OnJaYPvpp2kpGrlQ==
 -----END CERTIFICATE-----`;
 
-describe('stream append retries over real TLS HTTP/2', () => {
-  it('resends the complete body after an early 429', async () => {
-    const httpClient = await import('./http-client.js');
-    const { createStreamer } = await import('./streamer.js');
-    let attempts = 0;
-    const received: Buffer[] = [];
-    const saved: Buffer[] = [];
-    const protocols = new Set<string | false | null | undefined>();
-    const server = createSecureServer({ key: TEST_KEY, cert: TEST_CERT });
-    // close() waits for open sessions, and a failed append can leave one
-    // open. Track them so a regression fails fast instead of hanging cleanup.
-    const sessions = new Set<ServerHttp2Session>();
-    server.on('session', (session) => sessions.add(session));
-    server.on('stream', (stream) => {
-      stream.on('error', () => {});
-      const attempt = ++attempts;
-      protocols.add(
-        (stream.session?.socket as TLSSocket | undefined)?.alpnProtocol
-      );
-      const chunks: Buffer[] = [];
-      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
-      stream.on('end', () => {
-        const body = Buffer.concat(chunks);
-        received.push(body);
-        if (attempt > 1) {
-          saved.push(body);
-          stream.respond({ ':status': 200 });
+// The inline WORKFLOW_SERVER_URL_OVERRIDE wins over the loopback server's
+// `VERCEL_WORKFLOW_SERVER_URL`, so these run only when it is empty.
+describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
+  'stream append retries over real TLS HTTP/2',
+  () => {
+    it('resends the complete body after an early 429', async () => {
+      const httpClient = await import('./http-client.js');
+      const { createStreamer } = await import('./streamer.js');
+      let attempts = 0;
+      const received: Buffer[] = [];
+      const saved: Buffer[] = [];
+      const protocols = new Set<string | false | null | undefined>();
+      const server = createSecureServer({ key: TEST_KEY, cert: TEST_CERT });
+      // close() waits for open sessions, and a failed append can leave one
+      // open. Track them so a regression fails fast instead of hanging cleanup.
+      const sessions = new Set<ServerHttp2Session>();
+      server.on('session', (session) => sessions.add(session));
+      server.on('stream', (stream) => {
+        stream.on('error', () => {});
+        const attempt = ++attempts;
+        protocols.add(
+          (stream.session?.socket as TLSSocket | undefined)?.alpnProtocol
+        );
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('end', () => {
+          const body = Buffer.concat(chunks);
+          received.push(body);
+          if (attempt > 1) {
+            saved.push(body);
+            stream.respond({ ':status': 200 });
+            stream.end();
+          }
+        });
+        if (attempt === 1) {
+          stream.respond({ ':status': 429, 'retry-after': '1' });
           stream.end();
         }
       });
-      if (attempt === 1) {
-        stream.respond({ ':status': 429, 'retry-after': '1' });
-        stream.end();
+      const dispatcher = createStreamDispatcher(STREAM_RETRY_OPTIONS, {
+        connect: { rejectUnauthorized: false },
+      });
+      vi.spyOn(httpClient, 'getStreamDispatcher').mockReturnValue(dispatcher);
+      try {
+        await new Promise<void>((resolve) =>
+          server.listen(0, '127.0.0.1', resolve)
+        );
+        vi.stubEnv(
+          'VERCEL_WORKFLOW_SERVER_URL',
+          `https://127.0.0.1:${(server.address() as AddressInfo).port}`
+        );
+        const payload = new TextEncoder().encode('Hello, 世界 👋');
+        await createStreamer().streams.write('wrun_test', 'data', payload);
+        const expected = Buffer.from(payload);
+        expect(protocols).toEqual(new Set(['h2']));
+        expect(attempts).toBe(2);
+        expect(received).toEqual([expected, expected]);
+        expect(saved).toEqual([expected]);
+      } finally {
+        vi.restoreAllMocks();
+        await dispatcher.destroy();
+        for (const session of sessions) session.destroy();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
       }
     });
-    const dispatcher = createStreamDispatcher(STREAM_RETRY_OPTIONS, {
-      connect: { rejectUnauthorized: false },
-    });
-    vi.spyOn(httpClient, 'getStreamDispatcher').mockReturnValue(dispatcher);
-    try {
-      await new Promise<void>((resolve) =>
-        server.listen(0, '127.0.0.1', resolve)
-      );
-      vi.stubEnv(
-        'VERCEL_WORKFLOW_SERVER_URL',
-        `https://127.0.0.1:${(server.address() as AddressInfo).port}`
-      );
-      const payload = new TextEncoder().encode('Hello, 世界 👋');
-      await createStreamer().streams.write('wrun_test', 'data', payload);
-      const expected = Buffer.from(payload);
-      expect(protocols).toEqual(new Set(['h2']));
-      expect(attempts).toBe(2);
-      expect(received).toEqual([expected, expected]);
-      expect(saved).toEqual([expected]);
-    } finally {
-      vi.restoreAllMocks();
-      await dispatcher.destroy();
-      for (const session of sessions) session.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
-});
+  }
+);
 
 // Proves the exact mechanism the v4 events path relies on: a request issued
 // through the *global* `fetch` with an `allowH2` undici dispatcher actually
@@ -1115,6 +1122,28 @@ describe('queue client transport', () => {
     expect(getQueueRequestTimeoutMs()).toBe(45_000);
     vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', '1');
     expect(getQueueRequestTimeoutMs()).toBe(5_000);
+  });
+
+  // Instances publish every few seconds to minutes; a gap above the idle
+  // timeout reopens the connection inside the send. See
+  // QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS.
+  it('keeps idle queue connections longer than the shared pool', () => {
+    const options = getQueueAgentOptions();
+    expect(options.keepAliveTimeout).toBe(QUEUE_AGENT_KEEP_ALIVE_TIMEOUT_MS);
+    expect(options.keepAliveTimeout).toBeGreaterThan(
+      DEFAULT_AGENT_OPTIONS.keepAliveTimeout
+    );
+    // Bounded well below the queue endpoint's idle timeout.
+    expect(options.keepAliveTimeout).toBeLessThanOrEqual(240_000);
+  });
+
+  it('reads the keep-alive override, clamped', () => {
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS', '30000');
+    expect(getQueueAgentOptions().keepAliveTimeout).toBe(30_000);
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS', '900000');
+    expect(getQueueAgentOptions().keepAliveTimeout).toBe(240_000);
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_KEEP_ALIVE_MS', '1');
+    expect(getQueueAgentOptions().keepAliveTimeout).toBe(1_000);
   });
 
   it('reads the connection override', () => {

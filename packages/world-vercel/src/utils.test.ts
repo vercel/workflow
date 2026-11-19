@@ -1,5 +1,6 @@
 import { createServer, type RequestListener, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { getVercelOidcToken } from '@vercel/oidc';
 import { PreconditionFailedError, StreamExpiredError } from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
@@ -33,7 +34,7 @@ describe('getHttpUrl', () => {
     process.env = originalEnv;
   });
 
-  it('uses default workflow-server URL when no config and no env override', () => {
+  it('uses default backend URL when no config and no env override', () => {
     expect(getHttpUrl()).toEqual({
       baseUrl: WORKFLOW_SERVER_URL_OVERRIDE
         ? `${WORKFLOW_SERVER_URL_OVERRIDE}/api`
@@ -83,16 +84,10 @@ describe('getHeaders', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
-    delete process.env.WORKFLOW_TEST_LIMIT_OVERRIDES;
   });
 
   afterEach(() => {
     process.env = originalEnv;
-  });
-
-  it('omits x-workflow-test-limit-overrides when WORKFLOW_TEST_LIMIT_OVERRIDES is unset', () => {
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-workflow-test-limit-overrides')).toBeNull();
   });
 
   it('appends a caller user-agent token to the world-vercel user-agent', () => {
@@ -104,13 +99,6 @@ describe('getHeaders', () => {
     expect(headers.get('User-Agent')).toMatch(
       /^@workflow\/world-vercel\/\S+ node-\S+ \S+ \([^)]*\)(?: \S+)? eve\/0\.18\.1$/
     );
-  });
-
-  it('forwards WORKFLOW_TEST_LIMIT_OVERRIDES verbatim as x-workflow-test-limit-overrides', () => {
-    const overrides = '{"STREAM_MAX_DURATION_MS":5000}';
-    process.env.WORKFLOW_TEST_LIMIT_OVERRIDES = overrides;
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-workflow-test-limit-overrides')).toBe(overrides);
   });
 
   it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
@@ -135,7 +123,7 @@ describe('getHeaders', () => {
   });
 
   it('omits x-vercel-workflow-api-url when override is set but not using proxy', () => {
-    // Direct-to-workflow-server mode uses baseUrl, so the header is redundant.
+    // Direct-to-backend mode uses baseUrl, so the header is redundant.
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
     const headers = getHeaders(undefined, { usingProxy: false });
     expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
@@ -528,7 +516,7 @@ describe('makeRequest body-parse retry', () => {
     ).rejects.toThrow('x-vercel-id=sfo1::req-deny; x-vercel-mitigated=deny');
   });
 
-  it('maps workflow-server error fields onto WorkflowWorldError.code', async () => {
+  it('maps backend error fields onto WorkflowWorldError.code', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -945,6 +933,80 @@ describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
       expect(seen.method).toBe('POST');
       // A declared length, not a chunked body: some origins reject the latter.
       expect(Number(seen.length)).toBeGreaterThan(0);
+    });
+  }
+);
+
+// A redirect is the one response that can hand the request's credentials to a
+// host the client never chose. `fetch` strips `Authorization` across origins
+// but forwards everything else, so a followed hop carries
+// `x-vercel-trusted-oidc-idp-token` — a Trusted Source for every deployment
+// the team's rules cover — to whatever the `Location` names.
+describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
+  'makeRequest redirects',
+  () => {
+    const schema = z.object({ value: z.string() });
+    const originalEnv = process.env;
+    const servers: Server[] = [];
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+      delete process.env.VERCEL_OIDC_TOKEN;
+      // The redirect is followed by `fetch`, not by the node:http client.
+      process.env[NODE_HTTP_ENV_VAR] = '0';
+      vi.mocked(getVercelOidcToken).mockResolvedValue('oidc-token');
+    });
+
+    afterEach(async () => {
+      process.env = originalEnv;
+      vi.mocked(getVercelOidcToken).mockRejectedValue(new Error('no OIDC'));
+      await Promise.all(
+        servers.splice(0).map(async (server) => {
+          server.closeAllConnections();
+          await new Promise((resolve) => server.close(resolve));
+        })
+      );
+    });
+
+    /** Start a loopback origin and return its base URL. */
+    async function listen(handler: RequestListener): Promise<string> {
+      const server = createServer(handler);
+      servers.push(server);
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', resolve)
+      );
+      const { port } = server.address() as AddressInfo;
+      return `http://127.0.0.1:${port}`;
+    }
+
+    it('reports a redirect instead of following it off the API origin', async () => {
+      const collected: (string | undefined)[] = [];
+      const elsewhere = await listen((request, response) => {
+        collected.push(request.headers['x-vercel-trusted-oidc-idp-token']);
+        request.resume();
+        response.setHeader('content-type', 'application/cbor');
+        response.end(encode({ value: 'leaked' }));
+      });
+      const origin = await listen((request, response) => {
+        request.resume();
+        response.statusCode = 307;
+        response.setHeader('location', `${elsewhere}/collect`);
+        response.end();
+      });
+      process.env.VERCEL_WORKFLOW_SERVER_URL = origin;
+
+      await expect(
+        makeRequest({
+          endpoint: '/v3/runs/wrun_test/events',
+          options: { method: 'GET' },
+          schema,
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        status: 307,
+      });
+
+      expect(collected).toEqual([]);
     });
   }
 );

@@ -1,4 +1,5 @@
 import {
+  EncryptionKeyLookupError,
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
@@ -6,10 +7,11 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
-import type { StreamWriteSession } from '@workflow/world';
+import type { StreamInfoResponse, StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { isRetryableWorldError } from './classify-error.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -23,13 +25,14 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
 // world.ts module (and its dynamic-import behaviour) into the flow route.
 // See `packages/core/src/runtime/get-world-lazy.ts` and the
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
-// `docs/content/docs/changelog/eager-processing.mdx`.
+// `packages/core/src/runtime/eager-processing.md`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import {
   bytesToBase64,
@@ -37,7 +40,12 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
+import {
+  frameAbortStreamPayload,
+  readAbortStreamPacket,
+} from './serialization/abort-stream.js';
 import * as clientModule from './serialization/client.js';
+import type { CodecOptions } from './serialization/codec.js';
 import {
   type CompressionMode,
   type CompressionStats,
@@ -87,7 +95,19 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
+import { recoverStateContext } from './serialization/state-recovery.js';
+import {
+  bindStateContextData,
+  STATE_REFS_FIELD,
+  StateContext,
+  stateContextForData,
+  stateContextForGlobal,
+} from './serialization/state-refs.js';
 import * as stepModule from './serialization/step.js';
+
+export { stateSourceId } from './serialization/state-refs.js';
+export { createStateResolver, type StateResolver } from './state-resolver.js';
+
 import {
   type FormatPrefix,
   isFormatPrefix,
@@ -275,6 +295,24 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
   }
 }
 
+/**
+ * Whether a failed encryption key lookup is worth retrying: a retryable world
+ * error (transport, timeout, `429`, `5xx`), or any error carrying a numeric
+ * HTTP `status` of `429` or `>= 500`. Worlds that fetch keys over HTTP do not
+ * necessarily throw `WorkflowWorldError` for a non-2xx response (world-vercel
+ * throws a plain `Error` with `status`), so the status check covers those.
+ */
+function isTransientKeyLookupError(error: unknown): boolean {
+  if (isRetryableWorldError(error)) {
+    return true;
+  }
+  const status =
+    typeof error === 'object' && error !== null
+      ? (error as { status?: unknown }).status
+      : undefined;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -345,6 +383,21 @@ export function getSerializeStream(
         // SerializationError (USER_ERROR).
         if (RuntimeDecryptionError.is(error)) {
           controller.error(error);
+          return;
+        }
+        // A key lookup failure is not a SerializationError either: nothing
+        // was serialized yet. A transient failure passes through unwrapped so
+        // the step retries; anything else (e.g. a 404) becomes a fatal
+        // EncryptionKeyLookupError.
+        if (!keyState.resolved) {
+          controller.error(
+            isTransientKeyLookupError(error)
+              ? error
+              : new EncryptionKeyLookupError(
+                  `Failed to resolve the encryption key for stream writes (owner run key lookup failed: ${error instanceof Error ? error.message : String(error)})`,
+                  { cause: error }
+                )
+          );
           return;
         }
         const { message, hint } = formatSerializationError(
@@ -761,6 +814,7 @@ function recordStreamReadComplete(
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
+  #cancelled = false;
 
   constructor(runId: string, name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
@@ -790,9 +844,20 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         if (!reader) {
           if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
+          // Cancelled while the World loaded: don't open a read just to close it.
+          if (this.#cancelled) return;
           const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
           connectMs = Date.now() - connectStart;
+          if (this.#cancelled) {
+            // Cancelled while connecting: `cancel` below found no reader to
+            // tear down, so the World stream (on world-vercel, a live GET) is
+            // ours to close. Left open it would be held until the server's
+            // max duration. The stream is already closed to the consumer, so
+            // there is nothing to enqueue.
+            await stream.cancel().catch(() => {});
+            return;
+          }
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -839,6 +904,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         }
       },
       cancel: async (reason) => {
+        this.#cancelled = true;
         if (this.#reader) {
           await this.#reader.cancel(reason).catch(() => {});
           this.#reader = undefined;
@@ -891,6 +957,26 @@ const getFramedStreamMaxTotalReconnects = (): number =>
   );
 
 /**
+ * Consecutive live-read sessions that may end without receiving any bytes while
+ * the stream's metadata reports a chunk at the resume index, before the read
+ * fails. Such a session is not waiting for new data: the chunk is known to
+ * exist but was not served, so the index is a hole (the chunk is missing from
+ * storage) and reconnecting from it can never make progress. Each stalled
+ * session typically lasts the server's maximum response duration, so the
+ * general reconnect budget alone would stall a reader for over an hour.
+ */
+export const FRAMED_STREAM_MAX_STALLS_BELOW_TAIL = 3;
+
+/**
+ * Shortest zero-byte session that counts as a stall below the tail. A session
+ * at a hole stays open until the server's maximum response duration (about two
+ * minutes on world-vercel). One that ends sooner is a transport blip: it is
+ * retried against the general reconnect budget as before, and neither counts
+ * toward nor resets {@link FRAMED_STREAM_MAX_STALLS_BELOW_TAIL}.
+ */
+export const FRAMED_STREAM_MIN_STALL_SESSION_MS = 10_000;
+
+/**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
  * transparent auto-reconnect.
  *
@@ -913,6 +999,14 @@ const getFramedStreamMaxTotalReconnects = (): number =>
  * trusted (legacy behavior) rather than failing a read that may well be
  * complete.
  *
+ * A session that stays open for at least `FRAMED_STREAM_MIN_STALL_SESSION_MS`
+ * and ends without receiving any bytes while the metadata reports a chunk at
+ * the resume index is a stall at a hole (a chunk missing from storage). After
+ * `FRAMED_STREAM_MAX_STALLS_BELOW_TAIL` consecutive stalls the read errors
+ * with a `StreamError` naming the missing index, so the consumer can resume
+ * past it with `startIndex` instead of waiting indefinitely. The reader never
+ * skips the hole itself: silently dropping a chunk can corrupt consumer state.
+ *
  * Negative `startIndex` values (last-N semantics) skip the reconnect
  * machinery because we cannot compute an absolute resume position without
  * a tail-index lookup; the returned stream behaves as a single-shot read.
@@ -929,6 +1023,8 @@ export function createReconnectingFramedStream(
   let consumedFrames = 0;
   let reconnectCount = 0;
   let totalReconnectCount = 0;
+  let stallsBelowTail = 0;
+  let sessionStartedAt = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let canceled = false;
   let cancelReason: unknown;
@@ -975,8 +1071,19 @@ export function createReconnectingFramedStream(
       return false;
     }
     if (connectMs === undefined) connectMs = Date.now() - connectStart;
+    sessionStartedAt = Date.now();
     reader = stream.getReader();
     return true;
+  }
+
+  /** The stream's metadata, or `undefined` if the lookup fails. */
+  async function getStreamInfo(): Promise<StreamInfoResponse | undefined> {
+    try {
+      const world = await getWorldLazy();
+      return await world.streams.getInfo(runId, name);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -987,13 +1094,48 @@ export function createReconnectingFramedStream(
    * into an error (or a reconnect loop) on a transient metadata blip would
    * be worse than the legacy behavior this check guards against.
    */
-  async function isVerifiedComplete(): Promise<boolean> {
-    try {
-      const world = await getWorldLazy();
-      const info = await world.streams.getInfo(runId, name);
-      return info.done && currentStartIndex + consumedFrames > info.tailIndex;
-    } catch {
-      return true;
+  function isVerifiedComplete(info: StreamInfoResponse | undefined): boolean {
+    if (!info) return true;
+    return info.done && currentStartIndex + consumedFrames > info.tailIndex;
+  }
+
+  /**
+   * Called when a session ends. Throws once consecutive sessions have stayed
+   * open without receiving any bytes while the metadata reports a chunk at
+   * the resume index. Metadata is only fetched for long sessions that
+   * received nothing (unless the caller already has it), so sessions that
+   * deliver data pay nothing extra.
+   */
+  async function assertNotStalledAtHole(
+    info?: StreamInfoResponse
+  ): Promise<void> {
+    // Partial-frame bytes count as progress: the server is serving the chunk
+    // at the resume index (a large one cut mid-body), so it is not a hole.
+    if (consumedFrames > 0 || buffer.length > 0) {
+      stallsBelowTail = 0;
+      return;
+    }
+    // A zero-byte session that ended quickly is a blip, not a session held
+    // open at a hole: leave it to the general reconnect budget.
+    if (Date.now() - sessionStartedAt < FRAMED_STREAM_MIN_STALL_SESSION_MS) {
+      return;
+    }
+    const resolved = info ?? (await getStreamInfo());
+    // Unknown metadata neither confirms nor rules out a hole.
+    if (!resolved) return;
+    if (resolved.tailIndex < currentStartIndex) {
+      stallsBelowTail = 0;
+      return;
+    }
+    stallsBelowTail++;
+    if (stallsBelowTail >= FRAMED_STREAM_MAX_STALLS_BELOW_TAIL) {
+      throw new StreamError(
+        `Stream "${name}" of run "${runId}" has no readable chunk at index ` +
+          `${currentStartIndex}, below its tail index ${resolved.tailIndex}: ` +
+          `${stallsBelowTail} consecutive reads from that index delivered ` +
+          `nothing. The chunk is missing from storage; read from startIndex ` +
+          `${currentStartIndex + 1} or later to continue past it.`
+      );
     }
   }
 
@@ -1081,6 +1223,8 @@ export function createReconnectingFramedStream(
             return;
           }
           try {
+            await assertNotStalledAtHole();
+            if (canceled) return;
             if (!(await reconnect())) return;
           } catch (reconnectErr) {
             controller.error(reconnectErr);
@@ -1099,11 +1243,11 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body; both
           // would otherwise be silently read as a shorter, complete stream.
-          const verifiedComplete =
-            !reconnectSupported || (await isVerifiedComplete());
+          const info = reconnectSupported ? await getStreamInfo() : undefined;
           if (canceled) return;
-          if (!verifiedComplete) {
+          if (reconnectSupported && !isVerifiedComplete(info)) {
             try {
+              await assertNotStalledAtHole(info);
               if (!(await reconnect())) return;
             } catch (reconnectErr) {
               controller.error(reconnectErr);
@@ -1285,8 +1429,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * optimistically (before `run_started` is durable), the first chunk write to
    * a brand-new stream would otherwise reach the World before the run exists
    * and be rejected as run-not-found. Awaiting this once before the first
-   * flush/close orders the write after the run's creation. `undefined` outside
-   * turbo and on the await path, where the run was already durable.
+   * flush/close orders the write after the run's creation. If it rejects,
+   * every write and the close fail with its error instead of reaching the
+   * World: a refused `run_started` can mean another orchestrator holds the
+   * run, and this body's chunks would land on a stream whose run never
+   * records the step that wrote them. `undefined` outside turbo and on the
+   * await path, where the run was already durable.
    */
   constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
     if (typeof runId !== 'string') {
@@ -1300,17 +1448,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     const worldPromise = getWorldLazy();
 
     // Hold the first server write until the run exists (turbo optimistic
-    // start). Awaited once, then cleared so later flushes pay nothing. The
-    // rejection is swallowed for ordering only: if `run_started` truly failed
-    // the run does not exist, so the write below surfaces the real error.
+    // start). Awaited once, then cleared so later flushes pay nothing. A
+    // rejection is kept, so every later write and the close fail with it.
     let pendingRunReady: Promise<unknown> | undefined = runReadyBarrier;
     const ensureRunReady = async (): Promise<void> => {
       if (pendingRunReady) {
-        try {
-          await pendingRunReady;
-        } catch {
-          // intentional: ordering barrier only, see above.
-        }
+        await pendingRunReady;
         pendingRunReady = undefined;
       }
     };
@@ -1318,15 +1461,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // One stable identity and sequence space per in-memory sink. Start session
     // construction as soon as the run-ready barrier permits, so transports may
     // negotiate eagerly without allowing a write to overtake run creation.
-    // This eager chain cannot strand a new rejection: ensureRunReady absorbs its
-    // ordering-only failure, and every path that can observe worldPromise also
-    // awaits this session promise before it writes, closes, or disposes.
+    // A rejection of this eager chain (a failed run start) is observed by the
+    // write, close and dispose paths, which all await it; the handler below
+    // only keeps it from surfacing as unhandled when none of them runs.
     const writerId = `wrtr_${defaultUlid()}` as const;
     const writeSessionPromise: Promise<StreamWriteSession | undefined> =
       ensureRunReady().then(async () => {
         const world = await worldPromise;
         return world.streams.createWriteSession?.(runId, name, { writerId });
       });
+    writeSessionPromise.catch(() => {});
     let nextChunkSeq = 0;
 
     // ------------------------------------------------------------------
@@ -1868,7 +2012,8 @@ function reduceAbortWithListener(
   global: Record<string, any>,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  framedAbortStreams: boolean
 ): AbortSerializedData {
   let streamName = holder[ABORT_STREAM_NAME];
   let hookToken = holder[ABORT_HOOK_TOKEN];
@@ -1890,7 +2035,8 @@ function reduceAbortWithListener(
     streamName,
     runId,
     cryptoKey,
-    ops
+    ops,
+    framedAbortStreams
   );
 
   return {
@@ -1937,7 +2083,8 @@ function attachAbortListenerOnce(
   streamName: string,
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  ops: Promise<void>[]
+  ops: Promise<void>[],
+  framedAbortStreams: boolean
 ): void {
   if (signal.aborted) return;
   if ((signal as any)[ABORT_LISTENER_ATTACHED]) return;
@@ -1965,7 +2112,11 @@ function attachAbortListenerOnce(
               streamName
             );
             const writer = writable.getWriter();
-            await writer.write(payload as Uint8Array);
+            await writer.write(
+              framedAbortStreams
+                ? frameAbortStreamPayload(payload as Uint8Array)
+                : (payload as Uint8Array)
+            );
             await writer.close();
           } catch {
             // Best-effort stream write
@@ -1974,6 +2125,55 @@ function attachAbortListenerOnce(
       );
     },
     { once: true }
+  );
+}
+
+/**
+ * Push a stream pipe onto an ops list, observed from the moment it exists.
+ *
+ * A pipe starts running as soon as a reducer creates it, but whoever owns the
+ * list only attaches a handler later: after the rest of the value has been
+ * serialized, after the step body returns, or never, when the step fails. A
+ * pipe whose source errors in that gap (a returned `fetch()` body whose socket
+ * closes rejects with undici's `TypeError: terminated`) would reject with no
+ * handler attached, and Node treats that as an unhandled rejection, which ends
+ * the process on Vercel (#5055). The handler only marks the rejection as
+ * observed and logs it at debug level: the list holds the original promise, so
+ * `Promise.all(ops)` still rejects with the pipe's error.
+ */
+function pushPipeOp(ops: Promise<unknown>[], pipe: Promise<void>): void {
+  pipe.catch((err) => {
+    // On paths that never await the list (a failed step, a dehydration that
+    // throws, a failed `start()`), this is the only trace of the pipe's error.
+    try {
+      runtimeLogger.debug('Stream pipe failed', {
+        errorName: err instanceof Error ? err.name : undefined,
+        errorMessage: err instanceof Error ? err.message : String(err),
+        cause:
+          err instanceof Error && err.cause instanceof Error
+            ? err.cause.message
+            : undefined,
+      });
+    } catch {
+      // Best-effort logging must not create another unhandled rejection.
+    }
+  });
+  ops.push(pipe);
+}
+
+/**
+ * Run `pipe` now, or, with a gate, only once it resolves `true`. A `false` or
+ * rejected gate never runs it, and the returned promise still resolves, so an
+ * op that never pipes cannot surface as an unhandled rejection.
+ */
+function afterStreamStartGate(
+  gate: Promise<boolean> | undefined,
+  pipe: () => Promise<void>
+): Promise<void> {
+  if (!gate) return pipe();
+  return gate.then(
+    (open) => (open ? pipe() : undefined),
+    () => undefined
   );
 }
 
@@ -2009,7 +2209,15 @@ export function getExternalReducers(
   // only finish after the workflow runs, so awaiting it before dispatch would
   // deadlock. Defaults to `ops` for existing callers that flush everything in
   // the background.
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false,
+  // `start({ experimental_hook })`'s arguments: pipe each stream (upload or readback)
+  // only once this resolves `true`, the candidate having been admitted. On
+  // `false` the stream is left untouched (never read, locked, or cancelled),
+  // so a refused duplicate never drains a one-shot source such as a webhook
+  // `request.body` into a run that does not exist. Undefined everywhere else:
+  // pipes start immediately.
+  streamStartGate?: Promise<boolean>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2031,37 +2239,39 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(
-        runId,
-        name,
-        runReadyBarrier
-      );
-      if (type === 'bytes') {
-        if (framedByteStreams) {
-          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
-        } else {
-          ops.push(value.pipeTo(writable));
-        }
-      } else {
-        ops.push(
-          value
-            .pipeThrough(
-              getSerializeStream(
-                getExternalReducers(
-                  global,
-                  ops,
-                  runId,
-                  cryptoKey,
-                  framedByteStreams,
-                  runReadyBarrier,
-                  readbackOps
-                ),
-                cryptoKey
-              )
-            )
-            .pipeTo(writable)
+      // The server sink is opened with the pipe, so a gated stream that never
+      // pipes never touches its server stream either.
+      const pipe = (): Promise<void> => {
+        const writable = new WorkflowServerWritableStream(
+          runId,
+          name,
+          runReadyBarrier
         );
-      }
+        if (type === 'bytes') {
+          return framedByteStreams
+            ? value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+            : value.pipeTo(writable);
+        }
+        return value
+          .pipeThrough(
+            getSerializeStream(
+              getExternalReducers(
+                global,
+                ops,
+                runId,
+                cryptoKey,
+                framedByteStreams,
+                runReadyBarrier,
+                readbackOps,
+                framedAbortStreams,
+                streamStartGate
+              ),
+              cryptoKey
+            )
+          )
+          .pipeTo(writable);
+      };
+      pushPipeOp(ops, afterStreamStartGate(streamStartGate, pipe));
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
@@ -2108,8 +2318,12 @@ export function getExternalReducers(
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
-      const readable = new WorkflowServerReadableStream(runId, name);
-      readbackOps.push(readable.pipeTo(value));
+      pushPipeOp(
+        readbackOps,
+        afterStreamStartGate(streamStartGate, () =>
+          new WorkflowServerReadableStream(runId, name).pipeTo(value)
+        )
+      );
 
       return { name };
     },
@@ -2127,7 +2341,8 @@ export function getExternalReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
 
@@ -2144,7 +2359,8 @@ export function getExternalReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
   };
@@ -2341,7 +2557,8 @@ function getStepReducers(
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2384,14 +2601,16 @@ function getStepReducers(
         );
         if (type === 'bytes') {
           if (framing === 'framed-v1') {
-            ops.push(
+            pushPipeOp(
+              ops,
               value.pipeThrough(getByteFramingStream()).pipeTo(writable)
             );
           } else {
-            ops.push(value.pipeTo(writable));
+            pushPipeOp(ops, value.pipeTo(writable));
           }
         } else {
-          ops.push(
+          pushPipeOp(
+            ops,
             value
               .pipeThrough(
                 getSerializeStream(
@@ -2402,7 +2621,8 @@ function getStepReducers(
                     cryptoKey,
                     framedByteStreams,
                     runReadyBarrier,
-                    readbackOps
+                    readbackOps,
+                    framedAbortStreams
                   ),
                   cryptoKey
                 )
@@ -2426,7 +2646,8 @@ function getStepReducers(
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
-        readbackOps.push(
+        pushPipeOp(
+          readbackOps,
           new WorkflowServerReadableStream(runId, name)
             .pipeThrough(
               getDeserializeStream(
@@ -2466,7 +2687,8 @@ function getStepReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
 
@@ -2483,7 +2705,8 @@ function getStepReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
   };
@@ -2554,64 +2777,56 @@ function setupAbortStreamReader(
 
   ops.push(
     (async () => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
         const readable = new WorkflowServerReadableStream(runId, streamName);
-        const reader = readable.getReader();
+        reader = readable.getReader();
+        const ctxForKey = contextStorage.getStore();
+        let decoded: { reason?: unknown } | undefined;
+        const decodePacket = async (packet: Uint8Array) => {
+          decoded = (await hydrateStepArguments(
+            packet,
+            runId,
+            ctxForKey?.encryptionKey
+          )) as { reason?: unknown } | undefined;
+        };
         const result = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true }>((resolve) => {
+          readAbortStreamPacket(reader, decodePacket),
+          new Promise<undefined>((resolve) => {
             if (readerCancel.signal.aborted) {
-              resolve({ value: undefined, done: true });
+              resolve(undefined);
               return;
             }
             readerCancel.signal.addEventListener(
               'abort',
-              () => resolve({ value: undefined, done: true }),
+              () => resolve(undefined),
               { once: true }
             );
           }),
         ]);
-        if (result.value && !result.done) {
-          // An abort packet arrived: propagate it as fast as possible. Release
-          // the lock (synchronous) rather than cancelling here: on a
-          // service-backed World `reader.cancel()` can do a network round-trip,
-          // and awaiting it before `controller.abort()` would delay (or, if it
-          // hangs, drop) real-time abort delivery to the in-flight step.
-          try {
-            reader.releaseLock();
-          } catch {
-            // Reader may already be released; ignore.
-          }
+        if (result) {
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
             // comes from the step context, set up by the step executor before
             // this reader runs. Fallback to undefined for external-context
             // revives (the hydrate path is encryption-key-tolerant).
-            const ctxForKey = contextStorage.getStore();
-            const data = (await hydrateStepArguments(
-              result.value,
-              runId,
-              ctxForKey?.encryptionKey
-            )) as { reason?: unknown } | undefined;
-            controller.abort(data?.reason);
+            // Legacy packets were already hydrated to establish completeness.
+            // Framed packets have a known length and can hydrate once here.
+            if (decoded === undefined) await decodePacket(result);
+            controller.abort(decoded?.reason);
           } catch {
             controller.abort();
           }
-        } else {
-          // The step finished (or the reader was cancelled) without an abort.
-          // Cancel (not just release) so the underlying World stream is torn
-          // down: a polling World (e.g. world-local) otherwise leaks a tail
-          // reader (a 100ms filesystem poll plus emitter listeners) per step
-          // invocation for the life of the process, since a signal-bearing step
-          // opens one of these on every revival and usually never aborts. Fire
-          // and forget: a service-backed World's cancel may hit the network,
-          // and this path must not block the step's ops-settle window.
-          void reader.cancel().catch(() => {});
         }
       } catch {
         // Stream read failed: signal won't propagate in real-time,
         // but hook-based propagation on next replay provides fallback
+      } finally {
+        // Transport teardown may require a network round trip. Do not await
+        // it before abort delivery or hold the finishing step open. Cancelling
+        // also stops a pending partial-packet read when the step finishes.
+        void reader?.cancel().catch(() => {});
       }
     })()
   );
@@ -2717,7 +2932,7 @@ function reviveAbortController(
               value.streamName
             );
             const writer = writable.getWriter();
-            await writer.write(payload as Uint8Array);
+            await writer.write(frameAbortStreamPayload(payload as Uint8Array));
             await writer.close();
           } catch {
             // Best-effort stream write
@@ -3844,6 +4059,8 @@ export function deserializePreparedStepError(
  *   byte streams. Should match the target deployment's capability: see
  *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
  *   backwards compatibility with older runs.
+ * @param framedAbortStreams - Whether the target deployment supports length-framed
+ *   abort packets. Unknown/older targets must retain the unframed format.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateWorkflowArguments(
@@ -3855,7 +4072,10 @@ export async function dehydrateWorkflowArguments(
   v1Compat = false,
   framedByteStreams = false,
   compression: CompressionMode = false,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false,
+  // See getExternalReducers. Only `start({ experimental_hook })` passes one.
+  streamStartGate?: Promise<boolean>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3867,7 +4087,9 @@ export async function dehydrateWorkflowArguments(
         key,
         framedByteStreams,
         undefined,
-        readbackOps
+        readbackOps,
+        framedAbortStreams,
+        streamStartGate
       )
     );
     return revive(str);
@@ -3876,6 +4098,10 @@ export async function dehydrateWorkflowArguments(
     const compressionStats: CompressionStats = {};
     const result = await clientModule.serialize(value, key, {
       global,
+      // A run's input is read outside this run's log (by the new run before it
+      // replays, and by the dashboard), so frozen state values are written
+      // whole rather than as references to versions only this run holds.
+      stateContext: StateContext.standalone(),
       extraReducers: getStreamAndRequestReducers(
         getExternalReducers(
           global,
@@ -3884,7 +4110,9 @@ export async function dehydrateWorkflowArguments(
           key,
           framedByteStreams,
           undefined,
-          readbackOps
+          readbackOps,
+          framedAbortStreams,
+          streamStartGate
         )
       ),
       compression,
@@ -3952,6 +4180,9 @@ export async function dehydrateWorkflowReturnValue(
     };
     const result = await stepModule.serialize(value, key, {
       global,
+      // Read by `run.returnValue` without this run's log, so frozen state
+      // values are written whole rather than as references.
+      stateContext: StateContext.standalone(),
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
@@ -4020,13 +4251,24 @@ export async function dehydrateStepArguments(
     const guestCodeStats: GuestCodeStats = guestCodeStatsOut ?? {
       executions: [],
     };
-    const result = await stepModule.serialize(value, key, {
+    // A workflow running in a replay that reads state records (one is bound
+    // to its global) says so on a step's input, so the step knows it may
+    // write them.
+    const envelope =
+      stateContextForGlobal(global) !== undefined
+        ? markedStepInvocation(value)
+        : undefined;
+    const result = await stepModule.serialize(envelope ?? value, key, {
       global,
+      stateInput: true,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
       guestCodeStats,
     });
+    // An inline step hydrates this input in the same invocation; give it the
+    // replay's state context so its references resolve without recovery.
+    bindStateContextData(result, stateContextForGlobal(global));
     await recordCompression(compressionStats, 'serialize');
     await recordGuestCodeExecutions(guestCodeStats);
     return result;
@@ -4035,6 +4277,28 @@ export async function dehydrateStepArguments(
     const { message, hint } = formatSerializationError('step arguments', cause);
     throw new SerializationError(message, { hint, cause });
   }
+}
+
+/**
+ * A step invocation's `{ args, closureVars, thisVal }` with
+ * {@link STATE_REFS_FIELD} set, or `undefined` for anything else this
+ * serializes (hook metadata, placeholders). Only own data properties are
+ * read, so no workflow code runs.
+ */
+function markedStepInvocation(value: unknown): object | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return undefined;
+  const keys = ['args', 'closureVars', 'thisVal'] as const;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    if (!(keys as readonly string[]).includes(key)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return undefined;
+    out[key] = descriptor.value;
+  }
+  if (!('args' in out)) return undefined;
+  out[STATE_REFS_FIELD] = 1;
+  return out;
 }
 
 /**
@@ -4050,11 +4314,16 @@ export async function hydrateStepArguments(
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string,
   streamStates?: FlushableStreamState[],
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  stateContext?: StateContext
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
-  const result = await stepModule.deserialize(value, key, {
+  const options: CodecOptions = {
     global,
+    stateContext: stateContext ?? stateContextForData(value),
+    stateInput: true,
+    recoverStateContext: (data: unknown) =>
+      recoverStateContext(runId, key, data),
     extraRevivers: {
       ...getStreamAndRequestRevivers(
         getStepRevivers(
@@ -4070,7 +4339,20 @@ export async function hydrateStepArguments(
       ...extraRevivers,
     },
     compressionStats,
-  });
+  };
+  const result = await stepModule.deserialize(value, key, options);
+  // The step's output is encoded against the same context (possibly just
+  // recovered) so a state change can refer to the version it builds on, but
+  // through its own layer: an inline step shares the replay's context with the
+  // steps beside it, and none may build on another's uncommitted output (see
+  // `StateContext.forStep`). A step whose input needed none still writes its
+  // output into the run's log.
+  const outputContext = (options.stateContext ?? new StateContext()).forStep();
+  // Only a workflow that reads state records gets them back: a QuickJS run's
+  // inputs don't carry the field (see `STATE_REFS_FIELD`).
+  if ((result as Record<string, unknown> | null)?.[STATE_REFS_FIELD] !== 1)
+    outputContext.writesRecords = false;
+  bindStateContextData(result, outputContext);
   await recordCompression(compressionStats, 'deserialize');
   return result;
 }
@@ -4090,6 +4372,8 @@ export async function hydrateStepArguments(
  *   byte streams. Should match the target deployment's capability: see
  *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
  *   backwards compatibility with older runs.
+ * @param framedAbortStreams - Whether the target deployment supports length-framed
+ *   abort packets. Unknown/older targets must retain the unframed format.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateStepReturnValue(
@@ -4105,7 +4389,9 @@ export async function dehydrateStepReturnValue(
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false,
+  stateContext?: StateContext
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4117,7 +4403,8 @@ export async function dehydrateStepReturnValue(
         key,
         framedByteStreams,
         runReadyBarrier,
-        readbackOps
+        readbackOps,
+        framedAbortStreams
       )
     );
     return revive(str);
@@ -4126,6 +4413,7 @@ export async function dehydrateStepReturnValue(
     const compressionStats: CompressionStats = {};
     const result = await stepModule.serialize(value, key, {
       global,
+      stateContext,
       extraReducers: getStreamAndRequestReducers(
         getStepReducers(
           global,
@@ -4134,7 +4422,8 @@ export async function dehydrateStepReturnValue(
           key,
           framedByteStreams,
           runReadyBarrier,
-          readbackOps
+          readbackOps,
+          framedAbortStreams
         )
       ),
       compression,

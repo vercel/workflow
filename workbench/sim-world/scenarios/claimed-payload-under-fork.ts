@@ -10,7 +10,9 @@ export const scenario: ScenarioSpec = {
     'the wait no longer parks behind an entry that cannot resolve itself, ' +
     'and the step result gates on the wait the ordinary way. The same ' +
     'assertion is made here, and it holds: whatever the other scenario ' +
-    'shows, it is not caused by the payload existing.',
+    'shows, it is not caused by the payload existing. As there, the timer ' +
+    'overlaps the held delivery only because the script expires its lease, ' +
+    'and the fence refuses that delivery’s step result.',
   workflow: 'claimedPayloadForkWorkflow',
   input: ['doc-33'],
   script: async (sim) => {
@@ -27,6 +29,7 @@ export const scenario: ScenarioSpec = {
     await wf.release();
     await atBody;
 
+    sim.check('the held delivery’s lease expired', sim.expireLease() === 1);
     const atWait = wf.runToEventCommitted('wait_completed');
     const fired = sim.deliverQueued(
       (pending) =>
@@ -34,12 +37,26 @@ export const scenario: ScenarioSpec = {
     );
     await atWait;
 
-    const atCommitted = body.runToEventCommitted('step_completed');
+    const refused = sim.until({
+      eventType: 'step_completed',
+      stepName: 'pokedWork',
+      failed: true,
+    });
     await body.release();
-    await atCommitted;
-    await body.release();
-
+    await refused;
+    sim.check(
+      'the fence refused the stalled delivery’s step result',
+      sim.world
+        .rejections()
+        .some(
+          (r) =>
+            r.eventType === 'step_completed' &&
+            r.errorName === 'InBandSupersededError'
+        )
+    );
+    const finished = sim.until({ eventType: 'run_completed' });
     await wf.release();
+    await finished;
     sim.check('the watchdog fired while the step result was held', await fired);
 
     const events = sim.world.events();
@@ -55,8 +72,22 @@ export const scenario: ScenarioSpec = {
       (e) => e.eventType === 'wait_completed'
     );
     const stepResolved = at('step_completed', 'pokedWork');
-    const sleepBranchResumed = at('step_created', 'afterPokedSleep');
-    const stepBranchResumed = at('step_created', 'afterPokedStep');
+    // Where a step's creation sits in the log: its `step_created`, or, for
+    // an inline step, its first `step_started`, which is its creation.
+    const createdAt = (shortName: string) => {
+      const correlationId = correlationOf(shortName);
+      return events.findIndex(
+        (e) =>
+          (e.eventType === 'step_created' || e.eventType === 'step_started') &&
+          e.correlationId === correlationId
+      );
+    };
+    const sleepBranchResumed = createdAt('afterPokedSleep');
+    const stepBranchResumed = createdAt('afterPokedStep');
+    sim.check(
+      'both branches resumed and created their step',
+      sleepBranchResumed >= 0 && stepBranchResumed >= 0
+    );
 
     const waitWasResolvedFirst = waitResolved < stepResolved;
     const sleepBranchResumedFirst = sleepBranchResumed < stepBranchResumed;

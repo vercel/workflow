@@ -2,8 +2,56 @@ import type { Event } from '@workflow/world';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { EventRow } from '../src/components/event-list-view.js';
+import { EventRow } from '../src/components/event-list/event-row.js';
 import { EventsList } from '../src/components/sidebar/events-list.js';
+import { TooltipProvider } from '../src/components/ui/tooltip.js';
+import {
+  buildEventLookups,
+  buildEventRow,
+} from '../src/lib/event-list-model.js';
+
+const eventsTabEvent = {
+  eventId: 'evnt_run_created',
+  runId: 'wrun_occurred_at_test',
+  eventType: 'run_created',
+  createdAt: new Date(2026, 2, 16, 12, 34, 57, 123),
+  occurredAt: new Date(2026, 2, 16, 12, 34, 56, 789),
+  specVersion: 2,
+} as Event;
+
+function renderEventsTabRow(
+  event: Event,
+  options: { showSeparateEventOccurrenceTimestamps?: boolean } = {}
+): string {
+  const row = buildEventRow(event, buildEventLookups([event], null, new Set()));
+  return renderToStaticMarkup(
+    createElement(
+      TooltipProvider,
+      null,
+      createElement(EventRow, {
+        row,
+        index: 0,
+        isSelected: false,
+        isTabStop: true,
+        isRelated: false,
+        onSelect: () => {},
+        ...options,
+      })
+    )
+  );
+}
+
+/**
+ * Every timestamp a row shows, in column order. Each is rendered as day,
+ * clock and milliseconds in separate elements.
+ */
+function timestampsIn(markup: string): string[] {
+  return [
+    ...markup.matchAll(
+      /<span[^>]*>([A-Z]{3} \d{2} )<\/span>(\d{2}:\d{2}:\d{2})<span[^>]*>(\.\d{3})<\/span>/g
+    ),
+  ].map(([, day, clock, ms]) => `${day}${clock}${ms}`);
+}
 
 describe('event occurredAt display', () => {
   it('omits cancellation reasons from sidebar event details', () => {
@@ -93,70 +141,20 @@ describe('event occurredAt display', () => {
   });
 
   it('uses occurrence time as the created timestamp in each Events tab row by default', () => {
-    const event = {
-      eventId: 'evnt_run_created',
-      runId: 'wrun_occurred_at_test',
-      eventType: 'run_created',
-      createdAt: new Date(2026, 2, 16, 12, 34, 57, 123),
-      occurredAt: new Date(2026, 2, 16, 12, 34, 56, 789),
-      specVersion: 2,
-    } as Event;
+    const markup = renderEventsTabRow(eventsTabEvent);
 
-    const markup = renderToStaticMarkup(
-      createElement(EventRow, {
-        event,
-        index: 0,
-        isFirst: true,
-        isLast: true,
-        isExpanded: false,
-        onToggleExpand: () => {},
-        selectedGroupRange: null,
-        correlationNameMap: new Map(),
-        workflowName: 'occurred-at-workflow',
-        durationMap: new Map(),
-        onSelectGroup: () => {},
-        onHoverGroup: () => {},
-        cachedEventData: null,
-        onCacheEventData: () => {},
-      })
-    );
-
-    expect(markup).toContain('12:34:56.789');
-    expect(markup).not.toContain('12:34:57.123');
+    expect(timestampsIn(markup)).toEqual(['MAR 16 12:34:56.789']);
   });
 
   it('shows separate occurrence and created times in each Events tab row when enabled', () => {
-    const event = {
-      eventId: 'evnt_run_created',
-      runId: 'wrun_occurred_at_test',
-      eventType: 'run_created',
-      createdAt: new Date(2026, 2, 16, 12, 34, 57, 123),
-      occurredAt: new Date(2026, 2, 16, 12, 34, 56, 789),
-      specVersion: 2,
-    } as Event;
+    const markup = renderEventsTabRow(eventsTabEvent, {
+      showSeparateEventOccurrenceTimestamps: true,
+    });
 
-    const markup = renderToStaticMarkup(
-      createElement(EventRow, {
-        event,
-        index: 0,
-        isFirst: true,
-        isLast: true,
-        isExpanded: false,
-        onToggleExpand: () => {},
-        selectedGroupRange: null,
-        correlationNameMap: new Map(),
-        workflowName: 'occurred-at-workflow',
-        durationMap: new Map(),
-        onSelectGroup: () => {},
-        onHoverGroup: () => {},
-        cachedEventData: null,
-        onCacheEventData: () => {},
-        showSeparateEventOccurrenceTimestamps: true,
-      })
-    );
-
-    expect(markup).toContain('12:34:56.789');
-    expect(markup).toContain('12:34:57.123');
+    expect(timestampsIn(markup)).toEqual([
+      'MAR 16 12:34:56.789',
+      'MAR 16 12:34:57.123',
+    ]);
   });
 
   it('omits the detail panel occurrence row for events without occurredAt', () => {

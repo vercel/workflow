@@ -352,9 +352,10 @@ export abstract class BaseBuilder {
    * route (see `FLOW_ASSETS_DIR`).
    *
    * Built for every production build, since the engine is chosen per run
-   * (see {@link prebuildsFlowAssets} for the exceptions). A bundle whose module scope throws in the
-   * QuickJS VM fails the build when the build selects that engine
-   * (`WORKFLOW_VM=quickjs`), because those runs would fail the same way.
+   * (see {@link prebuildsFlowAssets} for the exceptions). A bundle whose
+   * module scope throws in the QuickJS VM fails the build when the build
+   * selects that engine (`WORKFLOW_VM=quickjs`), because those runs would
+   * fail the same way.
    */
   protected async createFlowAssets(
     workflowVMCode: string,
@@ -977,32 +978,51 @@ export abstract class BaseBuilder {
 
     const emittedImportIdentities = new Set<string>([builtInSteps]);
     const importStatements: string[] = [];
+    // Serde-only files are imported as namespaces that the sentinel export
+    // references. The framework bundler consumes this file directly, and for
+    // a package with `"sideEffects": false` (AI SDK providers, for one) it
+    // drops a bare `import "pkg"`, taking the class registrations with it.
+    const serdeNamespaces: string[] = [];
     const routeDir = dirname(outfile);
     const addRegistrationImport = (specifier: string): void => {
       importStatements.push(`import ${JSON.stringify(specifier)};`);
     };
-    const addRegistrationFileImport = (file: string): void => {
+    const addRegistrationFileImport = (
+      file: string,
+      { keepWithoutSideEffects }: { keepWithoutSideEffects: boolean }
+    ): void => {
       const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
       if (emittedImportIdentities.has(identity)) {
         return;
       }
       emittedImportIdentities.add(identity);
-      addRegistrationImport(this.createRouteImportSpecifier(file, routeDir));
+      const specifier = this.createRouteImportSpecifier(file, routeDir);
+      if (!keepWithoutSideEffects) {
+        addRegistrationImport(specifier);
+        return;
+      }
+      const namespace = `__wf_serde_${serdeNamespaces.length}`;
+      serdeNamespaces.push(namespace);
+      importStatements.push(
+        `import * as ${namespace} from ${JSON.stringify(specifier)};`
+      );
     };
 
     addRegistrationImport(builtInSteps);
     for (const file of stepFiles) {
-      addRegistrationFileImport(file);
+      addRegistrationFileImport(file, { keepWithoutSideEffects: false });
     }
     for (const file of serdeOnlyFiles) {
-      addRegistrationFileImport(file);
+      addRegistrationFileImport(file, { keepWithoutSideEffects: true });
     }
 
+    const stepsRegistered =
+      serdeNamespaces.length > 0 ? `[${serdeNamespaces.join(', ')}]` : 'true';
     const output = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 ${importStatements.join('\n')}
 
-export const __steps_registered = true;
+export const __steps_registered = ${stepsRegistered};
 `;
     await mkdir(dirname(outfile), { recursive: true });
     await this.writeGeneratedFile(outfile, output);
@@ -1287,7 +1307,9 @@ export const __steps_registered = true;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      jsx: 'preserve',
+      // A directly loaded steps bundle (Nitro dev) is not compiled again, so
+      // compile JSX here. 'automatic' still honors the tsconfig's `jsxImportSource`.
+      jsx: bundleTransitiveLocalStepDependencies ? 'automatic' : 'preserve',
       logLevel: 'error',
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
@@ -2496,10 +2518,12 @@ export const OPTIONS = handler;`;
     workflowBundlePath,
     manifestDir,
     manifest,
+    manifestFileName = 'manifest.json',
   }: {
     workflowBundlePath: string;
     manifestDir: string;
     manifest: WorkflowManifest;
+    manifestFileName?: string;
   }): Promise<string | undefined> {
     const buildStart = Date.now();
     this.logCreateManifestInfo('Creating manifest...');
@@ -2524,7 +2548,7 @@ export const OPTIONS = handler;`;
 
       await mkdir(manifestDir, { recursive: true });
       await writeFileIfChanged(
-        join(manifestDir, 'manifest.json'),
+        join(manifestDir, manifestFileName),
         manifestJson
       );
 

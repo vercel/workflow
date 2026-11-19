@@ -14,7 +14,7 @@ related:
   text="Compose these workflows. For direct composition, `await` the child workflow function from the parent &quot;use workflow&quot; function: the child's steps flatten into the parent's event log and run as a single run sharing the parent's lifecycle. For independent background work, spawn the child with `start()` from `workflow/api` called directly in the workflow (in v5, `start()` is step-backed and records a deterministic step boundary) and return `run.runId` so callers can track it with `getRun()`. Choose flattening when the parent needs the child's result; choose background spawn when the child should have its own run, retries, and lifetime. Keep all inputs and outputs serializable. Verify flattened execution, background spawn with a separate runId, and replay determinism."
 />
 
-Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or starts the child as an independent run (background spawn). For large fan-out operations with hook-based waiting and partial-failure handling, see [Child Workflows](/cookbook/advanced/child-workflows).
+Workflows can call other workflows. Choose between two composition modes depending on whether the parent needs the child's result inline (direct await) or starts the child as an independent run (background spawn). For large fan-out operations, waiting on children, and partial-failure handling, see [Child Workflows](/cookbook/advanced/child-workflows).
 
 ## When to use this
 
@@ -100,7 +100,7 @@ If you want the child workflow to run on the latest deployment rather than the c
 
 | | Direct await | Background spawn (`start()`) |
 | --- | --- | --- |
-| Parent waits for child | Yes | No |
+| Parent waits for child | Yes | Optional (`await run.returnValue`) |
 | Has its own `runId` | No (shares parent's) | Yes |
 | Has its own event log | No | Yes |
 | Has its own retry boundary | No | Yes |
@@ -108,9 +108,9 @@ If you want the child workflow to run on the latest deployment rather than the c
 
 ## Adapting to your use case
 
-- **Spawn many children at once**: call `start()` in a loop from the workflow. For more advanced fan-out (chunking, hook-based waiting, partial-failure handling), graduate to the [Child Workflows](/cookbook/advanced/child-workflows) recipe.
-- **Wait for a background child to finish**: combine `start()` with a completion hook the child resumes when done. The [Child Workflows](/cookbook/advanced/child-workflows) page covers the recommended `startAndWait()` pattern.
-- **Pass results back from background children**: the wrapped child resumes the parent's hook in `finally` with `{ status, value | error }`; the parent awaits the hook instead of polling `getRun().status`.
+- **Spawn many children at once**: call `start()` in a loop from the workflow. For more advanced fan-out (chunking, partial-failure handling), graduate to the [Child Workflows](/cookbook/advanced/child-workflows) recipe.
+- **Wait for a background child to finish**: `await run.returnValue` on the `Run` that `start()` returned. The parent suspends on a system hook the child resumes when it finishes, so it waits without polling. See [How the parent waits](/cookbook/advanced/child-workflows#how-the-parent-waits).
+- **Hear from a background child before it finishes**: create a hook in the parent and pass its token to the child, which resumes it from a step. See [Signaling the parent before the child finishes](/cookbook/advanced/child-workflows#signaling-the-parent-before-the-child-finishes).
 
 ## Key APIs
 

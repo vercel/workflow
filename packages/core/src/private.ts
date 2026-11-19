@@ -135,6 +135,20 @@ export interface WorkflowOrchestratorContext {
   runId: string;
   encryptionKey: PayloadKey | undefined;
   worldCapabilities?: WorldCapabilities;
+  /**
+   * The run's start Hook (`start(workflow, args, { experimental_hook })`), fixed when the
+   * session is created; `undefined` for a run started without one. The first
+   * `createHook({ token })` with this token binds to `hookId` (setting
+   * `bound`) instead of minting an id and writing `hook_created`: the
+   * admission that created the run created this Hook.
+   */
+  startHook?: {
+    token: string;
+    hookId: string;
+    /** `start({ experimental_hook })`'s retention deadline, when one was set. */
+    tokenRetentionUntil?: Date;
+    bound: boolean;
+  };
   globalThis: typeof globalThis;
   /**
    * Increments when a suspension is accepted and on every retained-session
@@ -144,6 +158,14 @@ export interface WorkflowOrchestratorContext {
    * into boundary N+1.
    */
   suspensionGeneration: number;
+  /**
+   * The {@link suspensionGeneration} whose idle poll
+   * ({@link scheduleWorkflowSuspension}) is running, if one is. Every pending
+   * consumer signals the end of the log, so one boundary of an N-wide fan-out
+   * raises N signals; they share this one poll instead of each running its
+   * own. Optional so lightweight test contexts need not set it.
+   */
+  suspensionPollGeneration?: number;
   eventsConsumer: EventsConsumer;
   /**
    * Map of pending invocations keyed by correlationId.
@@ -490,27 +512,6 @@ function computeResolvesOnItsOwn(
  * that way.)
  */
 /**
- * Whether correlation-id draw order is pinned to event-log order. Default ON:
- * only the literal string `WORKFLOW_LOG_ORDER_DRAWS=0` opts out. `=false`,
- * `=off`, and every other value keep it enabled. Read per call so tests can
- * flip it.
- *
- * Off, a delivery that had to defer yields ONE macrotask after its
- * predecessors resolve. This is enough for short consumers, but a woken branch
- * whose path to its next draw crosses more hops (a `Promise.race` resolution, a
- * user-level semaphore, an async-iterator read) can still be overtaken by a
- * later-in-log delivery's shorter cascade, so the run's draw order, including
- * its correlation ids, depends on how much log this replay loaded.
- * On, the yield becomes a fixpoint: the delivery resolves only once every
- * earlier cascade has quiesced, making the draw sequence a pure function of
- * the dense log, stable under prefix extension, and concurrent writers'
- * duplicate creates identical (deduped) instead of colliding.
- */
-function isLogOrderDrawsEnabled(): boolean {
-  return process.env.WORKFLOW_LOG_ORDER_DRAWS !== '0';
-}
-
-/**
  * One quiescence turn: lets the entire pending microtask queue drain, then
  * yields to the event loop once. `setImmediate` (check phase) is used where
  * available because Node clamps `setTimeout(0)` to ~1ms while `setImmediate`
@@ -623,34 +624,16 @@ export async function awaitEarlierDeliveries(
   if (earlier.length > 0) {
     await Promise.all(earlier);
   }
-  if (isLogOrderDrawsEnabled()) {
-    // Unconditional, not just when a barrier was still registered: an earlier
-    // delivery's barrier deregisters when its resolve() runs, but the branch
-    // it woke may still be hops away from its next draw. A later delivery
-    // consumed after that deregistration sees an empty gate set, and without
-    // this it would resolve mid-cascade and overtake the draw. This is the exact
-    // arrival-order dependence this mode exists to remove. Costs one quiet
-    // macrotask turn when nothing is in flight.
-    await quiesceEarlierCascades(ctx, eventIndex);
-    return;
-  }
-  if (earlier.length > 0) {
-    // An earlier delivery being "delivered" only means its `resolve()` ran.
-    // The branch it woke may need an arbitrary number of further microtask
-    // hops before it reaches its next `useStep` call and draws a ULID: a
-    // `for await` over a hook, for instance, resumes the generator, settles
-    // the promise from `next()`, and only then runs the loop body. Resolving
-    // this delivery on a microtask would let it overtake that branch and
-    // reorder the ULID allocation anyway, turning the guarantee below into a
-    // hop-count race that holds only for the shortest consumers.
-    //
-    // Yielding a macrotask lets the earlier branch's entire microtask chain
-    // drain first, whatever its length, so log order survives regardless of
-    // how the workflow consumes the earlier delivery. Only deliveries that
-    // actually had to defer pay this, so the common single-delivery drain is
-    // unaffected.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
+  // Unconditional, not just when a barrier was still registered: an earlier
+  // delivery's barrier deregisters when its resolve() runs, but the branch it
+  // woke may still be hops away from its next draw. A later delivery consumed
+  // after that deregistration sees an empty gate set, and without this it
+  // would resolve mid-cascade and overtake the draw, making the run's
+  // correlation ids depend on how much log this replay loaded. Waiting for
+  // every earlier cascade to quiesce makes the draw sequence a pure function
+  // of the dense log, stable under prefix extension. Costs one quiet
+  // macrotask turn when nothing is in flight.
+  await quiesceEarlierCascades(ctx, eventIndex);
 }
 
 /** Handle for a registered branch-deciding delivery barrier. */
@@ -1021,9 +1004,15 @@ export function isDeliveryIdle(ctx: WorkflowOrchestratorContext): boolean {
  */
 export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,
-  fn: () => void
+  fn: () => void,
+  /**
+   * Checked before every poll: once it returns true the poll ends without
+   * calling `fn`, instead of polling on until idle only to drop the call.
+   */
+  isStale?: () => boolean
 ): void {
   const check = () => {
+    if (isStale?.()) return;
     if (!isDeliveryIdle(ctx)) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
@@ -1038,26 +1027,57 @@ export function scheduleWhenIdle(
   setTimeout(check, 0);
 }
 
-/** Schedule a generation-guarded suspension after deliveries settle. */
+/**
+ * Schedule a generation-guarded suspension after deliveries settle.
+ *
+ * At most one idle poll runs per generation: a signal raised while that
+ * generation's poll runs joins it, and the poll ends as soon as the
+ * generation moves on. The poll that runs is the earliest one of its
+ * generation, so the suspension is raised no earlier than the first of N
+ * independent polls would have raised it. Before this, each pending consumer
+ * at the end of the log started its own poll, and polls of past generations
+ * kept polling until idle: a lingering orchestrator resuming a 1024-wide
+ * fan-out once per incoming outcome ran about 10^8 timers, which kept the
+ * process busy for over a minute after the last outcome arrived.
+ */
 export function scheduleWorkflowSuspension(
   ctx: WorkflowOrchestratorContext
 ): void {
   const generation = ctx.suspensionGeneration;
-  scheduleWhenIdle(ctx, () => {
-    if (generation !== ctx.suspensionGeneration) return;
-    const suspension = new WorkflowSuspension(
-      ctx.invocationsQueue,
-      ctx.globalThis
-    );
-    // Taken at idle, the same instant the queue is: the awaiters that are
-    // pending now are exactly the ones this suspension's outcome depends on.
-    if (ctx.hookPayloadAwaiters) {
-      const observed = new Set<string>();
-      for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
-        if (isAwaited()) observed.add(correlationId);
-      }
-      suspension.observedHookIds = observed;
+  if (generation !== undefined && ctx.suspensionPollGeneration === generation) {
+    return;
+  }
+  ctx.suspensionPollGeneration = generation;
+  const release = () => {
+    if (ctx.suspensionPollGeneration === generation) {
+      ctx.suspensionPollGeneration = undefined;
     }
-    ctx.onWorkflowError(suspension);
-  });
+  };
+  const isStale = () => {
+    if (generation === ctx.suspensionGeneration) return false;
+    release();
+    return true;
+  };
+  scheduleWhenIdle(
+    ctx,
+    () => {
+      release();
+      if (generation !== ctx.suspensionGeneration) return;
+      const suspension = new WorkflowSuspension(
+        ctx.invocationsQueue,
+        ctx.globalThis
+      );
+      // Taken at idle, the same instant the queue is: the awaiters that are
+      // pending now are exactly the ones this suspension's outcome depends on.
+      if (ctx.hookPayloadAwaiters) {
+        const observed = new Set<string>();
+        for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
+          if (isAwaited()) observed.add(correlationId);
+        }
+        suspension.observedHookIds = observed;
+      }
+      ctx.onWorkflowError(suspension);
+    },
+    isStale
+  );
 }

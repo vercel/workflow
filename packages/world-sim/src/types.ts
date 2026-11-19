@@ -144,8 +144,8 @@ export interface ObservedPoint {
    *
    * Recorded so the level-triggered check agrees with `CallMatch.failed`. A
    * `runToEventCommitted` that ignored this would count a rejected write as the
-   * commit it was waiting for, which is routine under the fence, where a 412
-   * is an expected step on the way to a successful retry.
+   * commit it was waiting for, which is routine under the in-band fence, where
+   * a 412 is how an overlapped orchestrator learns to stop.
    */
   failed: boolean;
 }
@@ -156,7 +156,7 @@ export interface RejectedCall {
   call: WorldCallName;
   writer: WriterId;
   eventType?: EventType;
-  /** Error constructor name, e.g. `PreconditionFailedError`. */
+  /** Error constructor name, e.g. `InBandSupersededError`. */
   errorName: string;
   message: string;
 }
@@ -175,9 +175,9 @@ export interface WorldSnapshot {
   /**
    * Every intercepted world call that threw, in order.
    *
-   * Rejections are the visible mechanism behind a run that self-corrects (a
-   * `PreconditionFailedError` from the optimistic-concurrency fence, an
-   * `EntityConflictError` from a write against an already-terminal run), so
+   * Rejections are the visible mechanism behind a run that self-corrects (an
+   * `InBandSupersededError` from the in-band fence, an `EntityConflictError`
+   * from a write against an already-terminal run), so
    * they are recorded unconditionally rather than left to a scenario to
    * instrument.
    */
@@ -379,12 +379,17 @@ export interface ScenarioApi {
    * `Promise.race([step, sleep])` does whenever the step is slower than the
    * sleep.
    *
-   * Calling this runs a second flow delivery concurrently with the held one,
-   * which is what a real queue does with two messages for the same run.
+   * Calling this runs a second flow delivery concurrently with the held one.
    * Concurrency in this simulator is otherwise structural rather than
    * scheduled, so this is the one place a script creates some; it stays
    * deterministic because the script decides both when it starts and (through
    * the writer it is holding) when the other delivery resumes.
+   *
+   * The queue still serializes a run's orchestrator deliveries: a message
+   * that is one (a timer, a wake) waits until the run's in-flight
+   * orchestrator delivery responds, exactly as the delivery loop would. To
+   * run it alongside that delivery, call {@link expireLease} first. Step
+   * messages are delivered at once.
    *
    * `select` receives the pending messages in the loop's own order (earliest
    * `readyAt`, then enqueue order) and returns a `messageId`. The default
@@ -397,6 +402,28 @@ export interface ScenarioApi {
   deliverQueued(
     select?: (pending: PendingMessageView[]) => string | undefined
   ): Promise<boolean>;
+  /**
+   * Expire the lease of the run's in-flight orchestrator delivery, as if it
+   * had stalled past its visibility timeout. Returns how many leases it
+   * expired (0 or 1).
+   *
+   * The queue delivers a run's orchestrator messages one at a time: while
+   * one is in flight, `deliverQueued` of another for the same run waits for
+   * it to respond, and so does the delivery loop. That is the queue half of
+   * the single-writer guarantee. Expiring the lease is the explicit way to
+   * force the overlap that half cannot rule out: the expired delivery keeps
+   * running, and the next orchestrator message is handed out alongside it.
+   * What keeps that overlap safe is the in-band fence, so a script that
+   * expires a lease is asserting the fence's behavior: the stale writer is
+   * refused and the run still finishes on what the log says.
+   *
+   * Call it while the delivery is held, before `deliverQueued`. With
+   * `redeliver`, the expired message is pending again (same `messageId`, the
+   * next delivery count), as a queue redelivers a message whose lease lapsed;
+   * `deliverQueued` can then pick it. Without it, the scenario delivers some
+   * other pending message alongside the stalled one.
+   */
+  expireLease(options?: { redeliver?: boolean }): number;
   /**
    * Hide the next event this scenario commits from the following `reads`
    * event-log reads, modeling one concurrent writer the reader missed.

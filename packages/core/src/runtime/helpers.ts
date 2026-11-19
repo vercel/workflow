@@ -7,18 +7,22 @@ import type {
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventLogSnapshot,
   EventResult,
   HealthCheckPayload,
   RunDispatchContext,
   ValidQueueName,
   WorkflowRun,
   World,
+  WorldCapabilities,
 } from '@workflow/world';
 import {
   FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  isSealedNoopEvent,
+  parseWorldCapabilities,
   ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
   resolveQueueNamespace,
@@ -36,8 +40,10 @@ import {
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { CHILD_RUN_COMPLETION_VERSION } from './child-run-completion.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { withRunSpecVersion } from './run-spec-routing.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
@@ -131,6 +137,14 @@ export interface HealthCheckResult {
    */
   hookResumeInputVersion?: number;
   /**
+   * The responding deployment's `CHILD_RUN_COMPLETION_VERSION`: whether a run
+   * it executes resumes its parent's child-run completion hook when it
+   * finishes. A cross-deployment `start()` from a workflow stamps the child to
+   * resume that hook only when the target advertises it. Omitted when the
+   * responding deployment predates the hook, so its parents poll instead.
+   */
+  childRunCompletionVersion?: number;
+  /**
    * The format the responding deployment answered in, set whenever it
    * answered: `'text'` for the plain-text reply of deployments that predate
    * the versioned JSON response (spec 3), `'json'` otherwise. A JSON reply
@@ -143,6 +157,16 @@ export interface HealthCheckResult {
    * Present only when the target has opted in to dynamic workflows.
    */
   dynamicWorkflowVersion?: number;
+  /**
+   * The responding deployment's `World.capabilities`, so a cross-deployment
+   * `start()` can check that the World which will execute the run supports a
+   * feature before relying on it (`start({ experimental_hook })` checks
+   * `atomicStartHook`). Parsed tolerantly: an unknown capability is dropped
+   * and a malformed one reads as unsupported, so a peer on a different SDK
+   * version can only ever lose a feature, never its health. Omitted when the
+   * responder predates the field or declares none.
+   */
+  capabilities?: WorldCapabilities;
 }
 
 /**
@@ -223,12 +247,14 @@ export async function handleHealthCheckMessage(
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    childRunCompletionVersion: CHILD_RUN_COMPLETION_VERSION,
     // Advertised only when this deployment has opted in to executing
     // dynamic workflow code; an absent field reads as "unsupported".
     ...(isDynamicWorkflowsEnabled()
       ? { dynamicWorkflowVersion: DYNAMIC_WORKFLOW_VERSION }
       : {}),
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+    ...(world.capabilities ? { capabilities: world.capabilities } : {}),
     timestamp: Date.now(),
   });
   // Use a deterministic fake runId derived from the correlationId so that
@@ -287,7 +313,7 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * Race a promise against a deadline. Rejects with a timeout error when the
  * deadline elapses first. Used to bound `world.streams.get()` inside the
  * health-check poll loop: some worlds hold that request open until the
- * stream has data (e.g. workflow-server holds unwritten streams open for
+ * stream has data (e.g. world-vercel holds unwritten streams open for
  * ~2 minutes), which would otherwise blow through the configured health
  * check timeout, since the `while` condition is only re-checked between
  * iterations.
@@ -391,8 +417,15 @@ function parseHealthCheckResponse(
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
   }
+  if (typeof r.childRunCompletionVersion === 'number') {
+    parsed.childRunCompletionVersion = r.childRunCompletionVersion;
+  }
   if (typeof r.dynamicWorkflowVersion === 'number') {
     parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;
+  }
+  const capabilities = parseWorldCapabilities(r.capabilities);
+  if (capabilities) {
+    parsed.capabilities = capabilities;
   }
   return parsed;
 }
@@ -650,11 +683,31 @@ export function withReplayDelta(
  *   returned (incremental load). If omitted, all events are returned.
  *   The returned cursor can be passed back in on a subsequent call for
  *   incremental loading.
+ * @param options.signal - Abandons the load: handed to every page read, and
+ *   checked between pages.
+ * @param options.specVersion - The run's spec version, handed to every page
+ *   read as `ListEventsParams.specVersion`. The spec 9 orchestrator passes it
+ *   so the World reads from where the fence `snapshot` is reported.
+ * @param options.eventLimit - Maps the World's reported
+ *   {@link EventListResponse.maxEvents} to the ceiling the caller enforces.
+ *   When given, the load stops following `hasMore` once it holds that many
+ *   workflow events (sealed `noop`s are not counted): a run already past its
+ *   ceiling fails on what it holds, rather than reading its whole log first.
+ *   The returned log then ends at its cursor with more events after it, and
+ *   carries the ceiling as {@link LoadedEventLog.stoppedAtEventLimit}.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor?: string
+  afterCursor?: string,
+  options?: {
+    signal?: AbortSignal;
+    specVersion?: number;
+    eventLimit?: (maxEvents: number | undefined) => number | undefined;
+  }
 ): Promise<LoadedEventLog> {
+  const signal = options?.signal;
+  const specVersion = options?.specVersion;
+  const eventLimit = options?.eventLimit;
   const incremental = afterCursor !== undefined;
   return trace('workflow.replay.load', async (span) => {
     span?.setAttributes({
@@ -665,6 +718,13 @@ export async function loadWorkflowRunEvents(
     });
 
     const loadedEvents: Event[] = [];
+    // The fence snapshot of a full load comes from its FIRST page: that is
+    // the sequencer state the listing as a whole covers.
+    let snapshot: EventLogSnapshot | undefined;
+    let snapshotTaken = false;
+    let maxEvents: number | undefined;
+    let workflowEventCount = 0;
+    let stoppedAtLimit: number | undefined;
     const loadedEventIds = new Set<string>();
     const requestedCursors = new Set<string>();
     let cursor: string | null = afterCursor ?? null;
@@ -677,6 +737,7 @@ export async function loadWorkflowRunEvents(
       // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
       // to lazyload the data from the world instead so that we can optimize and make the event log loading
       // much faster and memory efficient
+      signal?.throwIfAborted();
       const pageStart = Date.now();
       const requestedCursor = cursor;
       recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
@@ -690,8 +751,11 @@ export async function loadWorkflowRunEvents(
             cursor: requestedCursor ?? undefined,
           },
           resolveData: REPLAY_RESOLVE_DATA,
+          ...(signal ? { signal } : {}),
+          ...(specVersion !== undefined ? { specVersion } : {}),
         });
       } catch (error) {
+        signal?.throwIfAborted();
         if (
           shouldRetryWithoutEventCursor(
             error,
@@ -705,6 +769,9 @@ export async function loadWorkflowRunEvents(
           );
           loadedEvents.length = 0;
           loadedEventIds.clear();
+          snapshotTaken = false;
+          snapshot = undefined;
+          workflowEventCount = 0;
           requestedCursors.clear();
           cursor = null;
           retriedWithoutCursor = true;
@@ -713,7 +780,18 @@ export async function loadWorkflowRunEvents(
         throw error;
       }
 
+      if (!snapshotTaken && !incremental) {
+        snapshotTaken = true;
+        snapshot = response.snapshot;
+      }
+      maxEvents = response.maxEvents ?? maxEvents;
+      const before = loadedEvents.length;
       appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      if (eventLimit) {
+        for (let i = before; i < loadedEvents.length; i++) {
+          if (!isSealedNoopEvent(loadedEvents[i])) workflowEventCount++;
+        }
+      }
       hasMore = response.hasMore;
       assertEventPaginationProgress(
         runId,
@@ -741,6 +819,18 @@ export async function loadWorkflowRunEvents(
         hasMore,
         pageMs: Date.now() - pageStart,
       });
+
+      const limit = eventLimit?.(maxEvents);
+      if (hasMore && limit !== undefined && workflowEventCount >= limit) {
+        stoppedAtLimit = limit;
+        runtimeLogger.info('Event load stopped at the run event ceiling', {
+          workflowRunId: runId,
+          totalEvents: loadedEvents.length,
+          workflowEvents: workflowEventCount,
+          limit,
+        });
+        break;
+      }
     }
 
     runtimeLogger.debug('Event load complete', {
@@ -754,9 +844,25 @@ export async function loadWorkflowRunEvents(
     span?.setAttributes({
       ...Attribute.WorkflowEventsCount(loadedEvents.length),
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+      ...(eventLimit
+        ? Attribute.WorkflowEventsLoadStoppedAtLimit(
+            stoppedAtLimit !== undefined
+          )
+        : {}),
+      ...(stoppedAtLimit !== undefined
+        ? Attribute.WorkflowEventsLimit(stoppedAtLimit)
+        : {}),
     });
 
-    return { events: loadedEvents, cursor };
+    return {
+      events: loadedEvents,
+      cursor,
+      ...(snapshot !== undefined ? { snapshot } : {}),
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+      ...(stoppedAtLimit !== undefined
+        ? { stoppedAtEventLimit: stoppedAtLimit }
+        : {}),
+    };
   });
 }
 
@@ -768,6 +874,22 @@ export async function loadWorkflowRunEvents(
 export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
+  /**
+   * The fence snapshot from the first page of a full load, when the World
+   * returned one. Absent on incremental loads.
+   */
+  snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling the World reported on the load
+   * ({@link EventListResponse.maxEvents}), when it did.
+   */
+  maxEvents?: number;
+  /**
+   * The ceiling the load stopped at (see `eventLimit`), when it stopped
+   * before the end of the log: the log holds at least that many workflow
+   * events, and more after the returned cursor.
+   */
+  stoppedAtEventLimit?: number;
 }
 
 /**
@@ -789,28 +911,13 @@ export function appendEventLog(
 
 /**
  * Whether a replay refuses to run over a log with a hole in it (see
- * {@link findEventSlotGap}). **On by default**; set
- * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
+ * {@link findEventSlotGap}). Always `true`: the `WORKFLOW_SLOT_GAP_CHECK`
+ * opt-out is no longer read.
  *
- * A World that allocates a position at the moment it commits leaves no hole
- * behind when a write fails, so density is a property the log has by
- * construction rather than one this check maintains. What the check is for is
- * the reads and the Worlds where that does not hold, and by the time it runs
- * the benign explanations are spent: a position missing because a concurrent
- * commit is not visible yet clears on a re-read, which is what
- * {@link settleEventSlotGap} does first.
- *
- * What is left is a hole that persists, and its two causes are
- * indistinguishable from the log. Either a World allocated the position outside
- * the commit and lost the write, in which case nothing happened there and
- * replaying past it is correct, or an event that did happen is missing, in
- * which case replaying past it decides a branch on absence and produces a wrong
- * result with nothing to show for it. Failing is the recoverable side of that
- * trade, and this is the way back out if a fleet turns out to carry holes of
- * the first kind.
+ * @deprecated No longer read by the runtime; always returns `true`.
  */
 export function isSlotGapCheckEnabled(): boolean {
-  return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
+  return true;
 }
 
 /*
@@ -1028,7 +1135,7 @@ export function findEventSlotGap(
  * survives all three re-reads is a position no write will ever occupy.
  */
 export const SLOT_GAP_RECHECK_ATTEMPTS = 3;
-const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
+export const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
 
 /**
  * Re-read a log that looks holey until the hole fills in or the re-reads run
@@ -1041,11 +1148,16 @@ const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
  *
  * The reload is full rather than incremental: the missing position is below the
  * log's maximum, so a cursor-anchored read starts past it and can never see it
- * arrive.
+ * arrive. Each re-read keeps every event the caller already held: the
+ * orchestrator's log holds its own writes from their responses, and with
+ * run-ahead an outcome the workflow consumed before its write committed. A
+ * re-read can come back without one of those, and replacing the log with it
+ * would leave a position this delivery already took in nobody's view.
  */
 export async function settleEventSlotGap(
   runId: string,
-  loaded: LoadedEventLog
+  loaded: LoadedEventLog,
+  options?: { specVersion?: number }
 ): Promise<{ log: LoadedEventLog; gap: EventSlotGap | undefined }> {
   let log = loaded;
   let gap = findEventSlotGap(log.events);
@@ -1057,7 +1169,8 @@ export async function settleEventSlotGap(
     await new Promise((resolve) =>
       setTimeout(resolve, SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt)
     );
-    log = await loadWorkflowRunEvents(runId);
+    log = await loadWorkflowRunEvents(runId, undefined, options);
+    mergeReportedEvents(log.events, loaded.events);
     gap = findEventSlotGap(log.events);
   }
   return { log, gap };
@@ -1277,7 +1390,7 @@ export function runDispatchContext(
 ): RunDispatchContext {
   return {
     deploymentId: run.deploymentId,
-    specVersion: run.specVersion ?? 0,
+    specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
     ...(run.startedAt ? { startedAt: +run.startedAt } : {}),
     rootRunId: rootRunIdFrom(run.attributes, run.runId),
   };
@@ -1321,6 +1434,36 @@ export function stepDispatchIdempotencyKey(
   return `${correlationId}:${fnv1a32Hex(stepName)}`;
 }
 
+// A registered symbol, so a mark set by one bundled copy of this module is
+// read by every other copy in the process.
+const QUEUE_SEND_FAILURE = Symbol.for('workflow.core.queueSendFailure');
+
+/**
+ * Whether `err` came from a failed queue publish ({@link queueMessage} or
+ * {@link queueMessages}). Queue errors are not `WorkflowWorldError`s, so the
+ * orchestrator would otherwise read them as a failure of the run. A failed
+ * publish fails the delivery instead: the queue redelivers it, and the
+ * redelivery publishes again.
+ */
+export function isQueueSendFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { [QUEUE_SEND_FAILURE]?: true })[QUEUE_SEND_FAILURE] === true
+  );
+}
+
+function markQueueSendFailure(err: unknown): never {
+  if (typeof err === 'object' && err !== null) {
+    try {
+      Object.defineProperty(err, QUEUE_SEND_FAILURE, { value: true });
+    } catch {
+      // A frozen error stays unmarked and fails the run as before.
+    }
+  }
+  throw err;
+}
+
 /**
  * Queues a message to the specified queue with tracing.
  */
@@ -1328,7 +1471,19 @@ export async function queueMessage(
   world: World,
   ...args: Parameters<typeof world.queue>
 ) {
-  const queueName = args[0];
+  const [queueName, message, opts] = args;
+  await queueMessageTraced(world, queueName, [
+    queueName,
+    withRunSpecVersion(message, opts?.specVersion),
+    opts,
+  ]).catch(markQueueSendFailure);
+}
+
+async function queueMessageTraced(
+  world: World,
+  queueName: string,
+  args: Parameters<World['queue']>
+) {
   await trace(
     'queue.publish',
     {
@@ -1374,6 +1529,21 @@ export async function queueMessages(
   }[]
 ): Promise<void> {
   if (messages.length === 0) return;
+  await queueMessagesTraced(
+    world,
+    queueName,
+    messages.map((entry) => ({
+      ...entry,
+      message: withRunSpecVersion(entry.message, entry.opts?.specVersion),
+    }))
+  ).catch(markQueueSendFailure);
+}
+
+async function queueMessagesTraced(
+  world: World,
+  queueName: Parameters<World['queue']>[0],
+  messages: Parameters<typeof queueMessages>[2]
+): Promise<void> {
   const batch = world.queueBatch?.bind(world);
   if (!batch) {
     await Promise.all(

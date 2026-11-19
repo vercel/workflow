@@ -129,6 +129,8 @@ While a hook is active, its token is reserved and cannot be used by other workfl
 
 When a workflow ends, its hooks can no longer be resumed. They are normally removed, and their tokens become available again. With `experimental_minRetention`, a hook remains readable, and its token remains unavailable until retention ends. A `hook_disposed` event removes the hook and makes its token available immediately.
 
+A hook disposed as the workflow returns or throws, such as one declared with `using` in the workflow function's top-level scope, is released by the run's `run_completed` or `run_failed` event, so the log records no separate `hook_disposed`. Disposing a hook that uses `experimental_minRetention` still records one, because it releases the token before retention ends.
+
 See [Hooks and webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
 
 ### Wait lifecycle
@@ -170,6 +172,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `run_completed` | Transitions the run to `completed` state with the workflow's return value. |
 | `run_failed` | Transitions the run to `failed` state with error details and optional error code. |
 | `run_cancelled` | Transitions the run to `cancelled` state. Can be triggered from `pending` or `running` states. |
+| `attr_set` | Records attribute changes on the run, one event per [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call. Contains the changes and their writer. A write from the workflow body carries a correlation ID; a write from a step body does not. Does not change the run's state. |
 
 ### Step events
 
@@ -205,7 +208,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 
 ### How fast a log grows
 
-Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events; a retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two, and a hook at least two.
+Every action your run takes adds to the event log. For example, a step that succeeds on the first attempt contributes three events (`step_created`, `step_started`, `step_completed`). A retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two events, and a hook at least two, plus one for each resume.
 
 A run's log is capped — the [Vercel World](/worlds/vercel#per-run-limits) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. Replay reads the whole log, so a run gets slower as it grows and is worth splitting well before it fails: split into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. Runs on the QuickJS VM with snapshotting resume from a snapshot instead of replaying the whole log, and are exempt from the ceiling; see [max-events-exceeded](/docs/errors/max-events-exceeded). How much the growth costs depends on how often the run replays; [Steps and long runs](/docs/performance#steps-and-long-runs) shows how step-to-step overhead changes through a 1,020-step run.
 
@@ -302,7 +305,7 @@ A World that supports this returns the page in `events`, `cursor`, and `hasMore`
 
 ## Sealed positions (noop events)
 
-Runs at `specVersion` 7 and above use a *sealed log*. The backend gives each write its position from a per-run sequencer **before** the write commits, so concurrent writers hold distinct positions and never race for a slot. New runs use this behavior by default. [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) returns a deployment to the previous scheme. Every runtime reads a sealed log regardless, and a run's version is fixed at creation, so changing the setting never affects an in-flight run. However, a writer can claim a position and then stop because of a crashed process or canceled transaction. This leaves a hole that no writer will fill, and a hole looks like an event the reader failed to load.
+Runs at `specVersion` 7 and above use a *sealed log*. The backend gives each write its position from a per-run sequencer **before** the write commits, so concurrent writers hold distinct positions and never race for a slot. New runs use this behavior by default. [`WORKFLOW_SPEC_VERSION=6`](/docs/configuration/runtime-tuning#workflow_spec_version) returns a deployment to the previous scheme. Every runtime reads a sealed log regardless, and a run's version is fixed at creation, so changing the setting never affects an in-flight run. However, a writer can claim a position and then stop because of a crashed process or canceled transaction. This leaves a hole that no writer will fill, and a hole looks like an event the reader failed to load.
 
 The backend restores the dense log at read time by **sealing** these positions. Once a hole is provably abandoned, bounded by the commit time of later positions, the backend writes a `noop` event into it. Positions are assigned in order, so a committed later position proves how long the hole has been open. A `noop` occupies its position, and length-based completeness checks, cursors, and pagination all count it. It has no other effect:
 
@@ -370,7 +373,7 @@ All entities in the Workflow SDK use a consistent ID format: a 4-character prefi
 
 An event ID is a **slot number**: the event's 1-based position in the run's event log, zero-padded to the same width as a ULID. The world assigns it when the event is published, so two writers racing to append never claim the same position and a rejected write leaves no gap behind. Slots are dense, and unique only within a run, so an event ID identifies an event only when paired with its `runId`.
 
-Density is what lets a reader tell a complete log from an incomplete one by its length alone. A replay that loads a log with a position missing below the highest one it can see cannot tell an event that was never written from one it failed to read, so it fails the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across the hole. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
+Density is what lets a reader tell a complete log from an incomplete one by its length alone. A replay that loads a log with a position missing below the highest one it can see cannot tell an event that was never written from one it failed to read, so it fails the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across the hole.
 
 A slot ID carries no timestamp. Zero-padded decimal digits are a subset of the ULID alphabet, so a slot ID passes ULID validation and sorts correctly, but decoding its first 48 bits yields the Unix epoch instead of a creation time. Read `createdAt` on the event when you need to know when it was written, and don't decode the time from an `evnt_` ID you get back from an API, a log line, or a cursor.
 

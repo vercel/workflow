@@ -6,6 +6,18 @@ This package defines the `World` interface that abstracts workflow storage, queu
 
 Used internally by `@workflow/core` and world implementations. Should not be used directly in application code.
 
+## Resolved hook delivery
+
+An adapter may declare `WorldCapabilities.resolvedHookResume` when it enforces
+`CreateEventParams.requireHookResumeDedup`: cached hook writes must use atomic
+resume deduplication or reject before writing. This remains true against older
+backends and when deduplication is disabled. Adapters without this capability
+retain their existing behavior; cached server capabilities are never trusted.
+A definite refusal (400/404) must mean nothing was written: core can then resolve
+the token and fall back. Uncertain failures must not be re-sent or disguised as
+refusals. Hooks are ordinary serializable objects; no parser or hidden marker
+changes their delivery behavior.
+
 ## Stream writer transport lifetime
 
 A stateful `StreamWriteSession` may implement `release()` to retire an idle

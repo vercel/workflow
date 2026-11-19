@@ -1,4 +1,4 @@
-import { getTrustedSourcesHeaders } from '../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../scripts/trusted-sources-headers.mjs';
 
 const PAGE_PATHS = ['/', '/docs', '/worlds'];
 const CONCURRENCY = 8;
@@ -54,11 +54,10 @@ async function collectRenderedPageLinks(
   baseUrl: string
 ): Promise<LinkSource[]> {
   const linkSources = new Map<string, LinkSource>();
-  const headers = await getTrustedSourcesHeaders();
 
   for (const path of PAGE_PATHS) {
     const pageUrl = new URL(path, baseUrl);
-    const response = await fetchWithTimeout(pageUrl, { headers });
+    const response = await fetchWithTimeout(pageUrl);
 
     if (!response.ok) {
       throw new Error(`Rendered page ${path} returned ${response.status}`);
@@ -89,12 +88,11 @@ async function collectRenderedPageLinks(
 
 async function validateLinks(linkSources: LinkSource[]): Promise<LinkError[]> {
   const errors: LinkError[] = [];
-  const headers = await getTrustedSourcesHeaders();
 
   await mapLimit(linkSources, CONCURRENCY, async (link) => {
     let response: Response;
     try {
-      response = await fetchWithTimeout(link.href, { headers });
+      response = await fetchWithTimeout(link.href);
     } catch (error) {
       errors.push({
         href: link.href,
@@ -116,16 +114,9 @@ async function validateLinks(linkSources: LinkSource[]): Promise<LinkError[]> {
   return errors;
 }
 
-async function fetchWithTimeout(
-  url: string | URL,
-  init?: RequestInit
-): Promise<Response> {
+async function fetchWithTimeout(url: string | URL): Promise<Response> {
   const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  return fetch(url, {
-    ...init,
-    redirect: 'follow',
-    signal,
-  });
+  return fetchWithTrustedSources(url, { signal });
 }
 
 function getAnchorHrefs(html: string): string[] {

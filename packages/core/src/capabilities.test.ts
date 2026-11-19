@@ -148,3 +148,23 @@ describe('getRunCapabilities', () => {
     });
   });
 });
+
+describe('framedAbortStreams compatibility', () => {
+  it.each([
+    undefined,
+    '',
+    'dev',
+    '4.2.0',
+    '5.0.0',
+    '5.2.3',
+    '5.3.0-beta.1',
+  ])('keeps unframed writes for unknown/older core %s', (version) =>
+    expect(getRunCapabilities(version).framedAbortStreams).toBe(false));
+
+  it.each([
+    '5.3.0',
+    '5.3.1',
+    '6.0.0',
+  ])('supports framed abort packets for core %s', (version) =>
+    expect(getRunCapabilities(version).framedAbortStreams).toBe(true));
+});

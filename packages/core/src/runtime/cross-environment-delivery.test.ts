@@ -3,6 +3,7 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import { workflowEntrypoint } from '../runtime.js';
+import { acceptingFenceSnapshot } from '../test-support/fence-snapshot.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({
@@ -72,6 +73,7 @@ async function runHandler(options: {
   const getEnvironment = vi.fn(() => environment ?? undefined);
 
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
     getDeploymentId,
     ...(environment === null ? {} : { getEnvironment }),
@@ -103,6 +105,7 @@ async function runHandler(options: {
         data: events,
         hasMore: false,
         cursor: 'cursor_test',
+        snapshot: acceptingFenceSnapshot(events),
       })),
     },
     runs: { get: vi.fn(async () => workflowRun) },

@@ -9,7 +9,9 @@ import type {
 import {
   eventIdToSlot,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  type SpecVersion,
 } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { eq } from 'drizzle-orm';
@@ -1115,16 +1117,67 @@ describe('Storage (Postgres integration)', () => {
         expect(persisted.input).toEqual(new Uint8Array([7, 8, 9]));
       });
 
-      it('writes a synthetic step_created event (input there, not on step_started)', async () => {
+      it('records a single-orchestrator step created by its start alone, keeping the input on it', async () => {
+        const spec9 = await events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+        });
+        const testRunId = spec9.run!.runId;
         await events.create(testRunId, {
           eventType: 'step_started',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          correlationId: 'lazy-step-2',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+            inline: true,
+          },
+        });
+
+        const evts = await events.listByCorrelationId({
+          correlationId: 'lazy-step-2',
+          runId: testRunId,
+          resolveData: 'all',
+        });
+        expect(evts.data.map((e) => e.eventType)).toEqual(['step_started']);
+        expect(evts.data[0]?.eventData).toMatchObject({
+          input: new Uint8Array([1]),
+          inline: true,
+        });
+      });
+
+      it('writes a synthetic step_created event on a run before the single orchestrator (input there, not on step_started)', async () => {
+        const legacySpec = (SPEC_VERSION_SINGLE_ORCHESTRATOR -
+          1) as SpecVersion;
+        const legacy = await events.create(null, {
+          eventType: 'run_created',
+          specVersion: legacySpec,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+        });
+        const legacyRunId = legacy.run!.runId;
+        await events.create(legacyRunId, {
+          eventType: 'run_started',
+          specVersion: legacySpec,
+        });
+        await events.create(legacyRunId, {
+          eventType: 'step_started',
+          specVersion: legacySpec,
           correlationId: 'lazy-step-2',
           eventData: { stepName: 'lazy-step', input: new Uint8Array([1]) },
         });
 
         const evts = await events.listByCorrelationId({
           correlationId: 'lazy-step-2',
-          runId: testRunId,
+          runId: legacyRunId,
         });
         const created = evts.data.find((e) => e.eventType === 'step_created');
         const started = evts.data.find((e) => e.eventType === 'step_started');

@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { RETENTION_ATTRIBUTE } from '@workflow/world';
+import { RETENTION_ATTRIBUTE, startHookId } from '@workflow/world';
 import { ulid } from 'ulid';
 import {
   afterAll,
@@ -230,6 +230,66 @@ describe('Retention ($retention: 0)', () => {
   }
 
   describe('$retention: "0"', () => {
+    it("drops a start Hook's metadata from its Hook row, keeping the Hook and its token for its retention", async () => {
+      const runId = `wrun_${ulid()}`;
+      const token = `start-${ulid()}`;
+      const tokenRetentionUntil = new Date(Date.now() + 60 * 60 * 1000);
+      await events.create(runId, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-1',
+          workflowName: 'retention-workflow',
+          input: new Uint8Array([1]),
+          attributes: { [RETENTION_ATTRIBUTE]: '0' },
+          allowReservedAttributes: true,
+          startHook: {
+            token,
+            tokenRetentionUntil,
+            metadata: new Uint8Array([21, 22]),
+          },
+        },
+      } as never);
+      await events.create(runId, { eventType: 'run_started' });
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([2]) },
+      });
+
+      const run = await runs.get(runId);
+      expect(run.startHook?.token).toBe(token);
+      expect(run.startHook?.metadata).toBeUndefined();
+      expect(run.startHook?.tokenRetentionUntil?.getTime()).toBe(
+        tokenRetentionUntil.getTime()
+      );
+      const { rows } = await pool.query(
+        `SELECT hook_id, metadata_cbor, token_retention_until
+           FROM workflow.workflow_hooks
+          WHERE token = $1`,
+        [token]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].hook_id).toBe(startHookId(runId));
+      expect(rows[0].metadata_cbor).toBeNull();
+      expect(rows[0].token_retention_until.getTime()).toBe(
+        tokenRetentionUntil.getTime()
+      );
+      // The start Hook still holds the token for its retention.
+      const contender = `wrun_${ulid()}`;
+      const refused = await events
+        .create(contender, {
+          eventType: 'run_created',
+          eventData: {
+            deploymentId: 'deployment-1',
+            workflowName: 'retention-workflow',
+            input: new Uint8Array([1]),
+            startHook: { token },
+          },
+        } as never)
+        .catch((e: unknown) => e);
+      expect(refused).toMatchObject({ conflictingRunId: runId });
+      expect(await countRemainingPayloads(runId)).toBe(0);
+    });
+
     it('nulls every payload column, CBOR and legacy JSON alike, and stamps expiredAt', async () => {
       const { runId, streamId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
 
@@ -315,6 +375,62 @@ describe('Retention ($retention: 0)', () => {
       expect(await countRemainingPayloads(runId)).toBe(0);
     });
 
+    /** A step started on `runId` and still running when the run ends. */
+    async function startLateStep(runId: string): Promise<string> {
+      const stepId = `step_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'step_created',
+        correlationId: stepId,
+        eventData: { stepName: 'slow-step', input: new Uint8Array([4, 5]) },
+      });
+      await events.create(runId, {
+        eventType: 'step_started',
+        correlationId: stepId,
+      });
+      return stepId;
+    }
+
+    // A step still running when the run ends (a `Promise.race` loser) may
+    // settle after the purge; what it writes must not bring the data back.
+    for (const [eventType, eventData] of [
+      ['step_completed', { result: new Uint8Array([6, 7]) }],
+      ['step_failed', { error: new Uint8Array([6, 7]) }],
+      ['step_retrying', { error: new Uint8Array([6, 7]) }],
+    ] as const) {
+      it(`clears the payload of a ${eventType} that lands after the purge`, async () => {
+        const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+        const stepId = await startLateStep(runId);
+        await events.create(runId, {
+          eventType: 'run_completed',
+          eventData: { output: new Uint8Array([12, 13]) },
+        });
+        expect(await countRemainingPayloads(runId)).toBe(0);
+
+        await events.create(runId, {
+          eventType,
+          correlationId: stepId,
+          eventData,
+        } as never);
+
+        expect(await countRemainingPayloads(runId)).toBe(0);
+      });
+    }
+
+    it('writes no stream chunk after the purge', async () => {
+      const { runId, streamId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      const before = await rowCounts(runId);
+
+      await streamer.streams.write(runId, 'late-stream', 'secret');
+      await streamer.streams.writeMulti(runId, streamId, ['a', 'b']);
+
+      expect(await countRemainingPayloads(runId)).toBe(0);
+      expect((await rowCounts(runId)).chunks).toBe(before.chunks);
+    });
+
     it('does not purge before the run reaches a terminal state', async () => {
       const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
 
@@ -376,5 +492,85 @@ describe('Retention ($retention: 0)', () => {
         expect(run.output).toBeDefined();
       });
     }
+
+    it('takes no lock on a run that keeps its data when a step settles or a stream is written', async () => {
+      const { runId } = await seedRun();
+      const stepId = `step_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'step_created',
+        correlationId: stepId,
+        eventData: { stepName: 'slow-step', input: new Uint8Array([4, 5]) },
+      });
+      await events.create(runId, {
+        eventType: 'step_started',
+        correlationId: stepId,
+      });
+      // Another writer holds the run row: a write that locked it would wait.
+      const holder = await pool.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query(
+          'SELECT id FROM workflow.workflow_runs WHERE id = $1 FOR UPDATE',
+          [runId]
+        );
+        const within = <T>(p: Promise<T>) =>
+          Promise.race([
+            p,
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error('blocked on the run row')),
+                3_000
+              )
+            ),
+          ]);
+        await within(streamer.streams.write(runId, 'unlocked', 'chunk'));
+        await within(
+          events.create(runId, {
+            eventType: 'step_completed',
+            correlationId: stepId,
+            eventData: { result: new Uint8Array([6, 7]) },
+          })
+        );
+      } finally {
+        await holder.query('ROLLBACK');
+        holder.release();
+      }
+    });
+
+    it('keeps what a step and a stream write after a run that keeps its data ends', async () => {
+      const { runId } = await seedRun();
+      const stepId = `step_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'step_created',
+        correlationId: stepId,
+        eventData: { stepName: 'slow-step', input: new Uint8Array([4, 5]) },
+      });
+      await events.create(runId, {
+        eventType: 'step_started',
+        correlationId: stepId,
+      });
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      const before = await rowCounts(runId);
+      await events.create(runId, {
+        eventType: 'step_completed',
+        correlationId: stepId,
+        eventData: { result: new Uint8Array([6, 7]) },
+      });
+      await streamer.streams.write(runId, 'late-stream', 'kept');
+
+      const { rows } = await pool.query(
+        'SELECT output_cbor FROM workflow.workflow_steps WHERE run_id = $1 AND step_id = $2',
+        [runId, stepId]
+      );
+      expect(rows[0].output_cbor).not.toBeNull();
+      expect((await rowCounts(runId)).chunks).toBe(before.chunks + 1);
+      const chunks = await streamer.streams.getChunks(runId, 'late-stream');
+      expect(chunks.data.map((c) => Buffer.from(c.data).toString())).toEqual([
+        'kept',
+      ]);
+    });
   });
 });

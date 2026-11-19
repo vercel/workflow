@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  getNearDueWaitWindowSeconds,
   getWaitContinuationDispatch,
+  NEAR_DUE_WAIT_WINDOW_SECONDS,
   NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
   WAIT_CONTINUATION_MAX_DELAY_SECONDS,
 } from './wait-continuation.js';
@@ -222,5 +224,25 @@ describe('getWaitContinuationDispatch', () => {
       );
       expect(delaySeconds).toBeLessThanOrEqual(overriddenMax);
     });
+  });
+});
+
+describe('getNearDueWaitWindowSeconds', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('is the larger of the near-due window and the near-elapsed threshold', () => {
+    expect(getNearDueWaitWindowSeconds()).toBe(
+      Math.max(
+        NEAR_DUE_WAIT_WINDOW_SECONDS,
+        NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS
+      )
+    );
+    vi.stubEnv(
+      'WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS',
+      String(NEAR_DUE_WAIT_WINDOW_SECONDS + 3)
+    );
+    expect(getNearDueWaitWindowSeconds()).toBe(
+      NEAR_DUE_WAIT_WINDOW_SECONDS + 3
+    );
   });
 });

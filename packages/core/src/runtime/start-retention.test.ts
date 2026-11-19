@@ -38,6 +38,7 @@ describe('start() retention', () => {
     queue = vi.fn().mockResolvedValue(undefined);
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { inBandFence: true },
       getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
       events: { create: eventsCreate },
       runs: { get: vi.fn() },

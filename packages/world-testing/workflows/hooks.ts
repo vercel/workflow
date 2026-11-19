@@ -1,14 +1,12 @@
-import { defineHook, getWritable } from '@workflow/core';
+import { createHook, defineHook, getWritable } from '@workflow/core';
 import * as z from 'zod';
 
 export const Hook = defineHook({
-  schema: z.compile(
-    z.object({
-      data: z.string(),
-      done: z.boolean().optional(),
-      metadata: z.unknown(),
-    })
-  ),
+  schema: z.object({
+    data: z.string(),
+    done: z.boolean().optional(),
+    metadata: z.unknown(),
+  }),
 });
 
 export async function collectWithHook(token: string, customData: string) {
@@ -44,4 +42,15 @@ async function writeEvent(
       })}\r\n`
     )
   );
+}
+
+// Deliberately leave the hook undisposed: the World must release its token
+// when the run completes or fails, without relying on a hook_disposed event.
+export async function registerUntilTerminal(token: string, fail: boolean) {
+  'use workflow';
+
+  const hook = createHook({ token });
+  if (await hook.getConflict()) throw new Error('Token was not released');
+  if (fail) throw new Error('Intentional terminal failure');
+  return 'registered';
 }

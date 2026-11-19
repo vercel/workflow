@@ -31,6 +31,8 @@ export const setupCliWorld = async (
     authToken: string;
     project: string;
     team: string;
+    /** Git branch for resolving the latest preview deployment. */
+    branch?: string;
   },
   version: string,
   ignoreLocalWorldConfigError = false
@@ -129,13 +131,17 @@ export const setupCliWorld = async (
         projectId: vercelEnvVars.projectId,
         projectName: vercelEnvVars.projectName,
         teamId: vercelEnvVars.teamId,
+        gitBranch: flags.branch,
       },
     });
   } else if (
     flags.backend === 'local' ||
     flags.backend === '@workflow/world-local'
   ) {
-    world = createLocalCliWorld();
+    // Read the key the running app wrote to its data directory, never
+    // replace it: a CLI command acts on that app, and a new key would be one
+    // the app's routes do not hold.
+    world = createLocalCliWorld({ queueAuthKey: 'read' });
   } else {
     world = await createDynamicCliWorld(flags.backend);
   }

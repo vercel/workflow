@@ -4,8 +4,9 @@ import {
   hydrateData,
   isEncryptedData,
   type PayloadKey,
+  SerializationFormat,
 } from '@workflow/core/serialization-format';
-import { getWebRevivers } from '@workflow/web-shared';
+import { getStreamImageType, getWebRevivers } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
@@ -35,17 +36,55 @@ const YIELD_EVERY_N_FRAMES = 64;
  *
  * - **framed**: Current format — 4-byte big-endian length + format-prefixed
  *   payload (`devl`/`encr`). The first uint32 is a plausible frame size.
+ * - **unframed**: One format-prefixed payload, such as an internal abort
+ *   packet. Network chunks must be joined before decoding the payload.
  * - **legacy**: Older SDK versions used newline-delimited devalue strings
  *   with no binary framing.
  */
-type StreamEncoding = 'framed' | 'legacy';
+type StreamEncoding = 'framed' | 'unframed' | 'legacy' | 'image';
 
-function detectEncoding(data: Uint8Array): StreamEncoding {
-  if (data.length < FRAME_HEADER_SIZE) return 'framed';
+function detectEncoding(data: Uint8Array, streamId: string): StreamEncoding {
+  if (getStreamImageType(data)) return 'image';
+  if (data.length < FRAME_HEADER_SIZE) return 'legacy';
+  const prefix = new TextDecoder().decode(data.subarray(0, FRAME_HEADER_SIZE));
+  // Only internal abort streams store unframed serialized packets. A user
+  // text stream may begin with e.g. "encrypted", which shares the encr prefix.
+  if (
+    streamId.endsWith('_system_abort') &&
+    Object.values(SerializationFormat).some((format) => format === prefix)
+  ) {
+    return 'unframed';
+  }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const len = view.getUint32(0, false);
   if (len > 0 && len <= 10 * 1024 * 1024) return 'framed';
   return 'legacy';
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  if (parts.length === 1) return parts[0];
+  const joined = new Uint8Array(
+    parts.reduce((length, part) => length + part.length, 0)
+  );
+  let offset = 0;
+  for (const part of parts) {
+    joined.set(part, offset);
+    offset += part.length;
+  }
+  return joined;
+}
+
+function hasSameImageBytes(previous: StreamChunk[], next: StreamChunk[]) {
+  const before = previous[0]?.value;
+  const after = next[0]?.value;
+  return (
+    previous.length === 1 &&
+    next.length === 1 &&
+    before instanceof Uint8Array &&
+    after instanceof Uint8Array &&
+    before.length === after.length &&
+    before.every((byte, index) => byte === after[index])
+  );
 }
 
 export function useStreamReader(
@@ -148,6 +187,8 @@ export function useStreamReader(
     }
 
     let mounted = true;
+    let isImageStream = false;
+    let imageChunkId: number | undefined;
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
@@ -179,6 +220,7 @@ export function useStreamReader(
       | { encrypted: true }
       | {
           encrypted: false;
+          image: boolean;
           frameCount: number;
           cursor: string | null;
           done: boolean;
@@ -189,15 +231,18 @@ export function useStreamReader(
         streamId,
         runId,
         abortController.signal,
-        options?.cursor
+        isImageStream ? undefined : (options?.cursor ?? undefined)
       );
 
-      const skipFrames = options?.skipFrames ?? 0;
+      const skipFrames = isImageStream ? 0 : (options?.skipFrames ?? 0);
       const reader = streamResponse.body.getReader();
       const decoder = new TextDecoder();
       let buffer = new Uint8Array(0);
       let encoding: StreamEncoding | null = null;
       let textRemainder = '';
+      // Image reads are joined once at the end: growing one buffer per read
+      // copies the image repeatedly and stalls large previews.
+      const imageParts: Uint8Array[] = [];
       let frameIndex = 0;
 
       const appendToBuffer = (data: Uint8Array) => {
@@ -212,10 +257,36 @@ export function useStreamReader(
 
         const { value, done } = await reader.read();
         if (done) {
-          if (encoding === 'legacy' && textRemainder.trim()) {
+          if (encoding === null && buffer.length > 0) {
+            // Refetch a short open stream before deciding whether its
+            // incomplete signature is image bytes or legacy text.
+            if (!streamResponse.done && buffer.length < 12) break;
+            encoding = detectEncoding(buffer, streamId);
+            if (encoding === 'legacy') textRemainder = decoder.decode(buffer);
+          }
+          if (encoding === 'image') {
+            imageChunkId ??= chunkIdRef.current++;
+            frameIndex++;
+            targetBuffer.push({
+              id: imageChunkId,
+              value: concatBytes([buffer, ...imageParts]),
+            });
+          } else if (encoding === 'unframed' && buffer.length > 0) {
             frameIndex++;
             if (frameIndex > skipFrames) {
-              targetBuffer.push(parseLegacyLine(textRemainder.trim()));
+              const result = await processFrame(buffer, cryptoKey, revivers);
+              if (result.encrypted) return { encrypted: true };
+              targetBuffer.push(result.chunk);
+            }
+          } else if (encoding === 'legacy') {
+            textRemainder += decoder.decode();
+            for (const line of textRemainder.split('\n')) {
+              const trimmed = line.trim();
+              if (!trimmed) continue;
+              frameIndex++;
+              if (frameIndex > skipFrames) {
+                targetBuffer.push(parseLegacyLine(trimmed));
+              }
             }
             textRemainder = '';
           }
@@ -225,7 +296,15 @@ export function useStreamReader(
         if (encoding === null) {
           appendToBuffer(value);
           if (buffer.length >= FRAME_HEADER_SIZE) {
-            encoding = detectEncoding(buffer);
+            const detected = detectEncoding(buffer, streamId);
+            // Frame headers are distinguishable after four bytes; WebP
+            // needs twelve bytes before a stream can be decoded as text.
+            if (
+              detected === 'framed' ||
+              detected === 'unframed' ||
+              buffer.length >= 12
+            )
+              encoding = detected;
           }
           if (encoding === 'legacy') {
             textRemainder = decoder.decode(buffer, { stream: true });
@@ -233,6 +312,8 @@ export function useStreamReader(
           }
         } else if (encoding === 'legacy') {
           textRemainder += decoder.decode(value, { stream: true });
+        } else if (encoding === 'image') {
+          imageParts.push(value);
         } else {
           appendToBuffer(value);
         }
@@ -251,6 +332,13 @@ export function useStreamReader(
           }
           continue;
         }
+
+        if (
+          encoding === null ||
+          encoding === 'unframed' ||
+          encoding === 'image'
+        )
+          continue;
 
         let offset = 0;
         let framesInBatch = 0;
@@ -299,10 +387,12 @@ export function useStreamReader(
         buffer = buffer.slice(offset);
       }
 
+      isImageStream ||= encoding === 'image';
       return {
         encrypted: false,
+        image: isImageStream,
         frameCount: frameIndex,
-        cursor: streamResponse.cursor,
+        cursor: encoding === null ? null : streamResponse.cursor,
         done: streamResponse.done,
       };
     };
@@ -357,7 +447,16 @@ export function useStreamReader(
                   serverCursorRef.current = pollResult.cursor;
                 }
                 if (newChunks.length > 0 && mounted) {
-                  setChunks((prev) => [...prev, ...newChunks]);
+                  // Images are one binary value, refreshed from the start
+                  // rather than parsed as frames after a storage cursor.
+                  // Keep the current preview when an open image stream has
+                  // no new bytes, so it isn't reloaded on every poll.
+                  setChunks((prev) => {
+                    if (!pollResult.image) return [...prev, ...newChunks];
+                    return hasSameImageBytes(prev, newChunks)
+                      ? prev
+                      : newChunks;
+                  });
                 }
                 if (pollResult.done) {
                   setIsLive(false);

@@ -1,5 +1,101 @@
 # @workflow/world-postgres
 
+## 5.3.0
+
+### Minor Changes
+
+- [#5397](https://github.com/vercel/workflow/pull/5397) [`90e8d72`](https://github.com/vercel/workflow/commit/90e8d723b9fd1873270916f8a20b715ed33455f8) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `deploymentId` (`WORKFLOW_POSTGRES_DEPLOYMENT_ID`), which pins every run to the deployment that started it. Each deployment claims and recovers only its own runs, a message for another deployment's run (such as a hook resumed from a newer deployment) is routed to that deployment's jobs, `getDeploymentId()` returns it, and the World declares deployment affinity. Runs started without it stay on the unpinned task, which a process without `deploymentId` claims.
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5435](https://github.com/vercel/workflow/pull/5435) [`be8a7ce`](https://github.com/vercel/workflow/commit/be8a7ce296d3654be5e1df18f86195a58abc0ddf) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Serialize a spec 9 run's orchestrator deliveries, and invoke mode's executor deliveries, with a per-run delivery lease (`workflow.workflow_run_delivery_leases`, migration 0031) in place of a Graphile named queue per run. Graphile never deletes a named queue's row, and its job fetch locks every available queue row on each poll, so throughput fell as runs accumulated: about 1,200 jobs/s at 1,000 queue rows, 60 at 52,000 and 7 at 302,000, against about 4,500 for jobs outside named queues. A lease row exists only while a delivery holds it. A delivery that finds the run's lease held leaves its message for the holder, which re-runs for it (coalescing) or re-adds it as a job when it releases. Run `bootstrap` before upgrading. During a rolling upgrade, deliveries of processes on the earlier version are not serialized with those of upgraded processes; the in-band fence refuses an overlapping delivery's writes. Earlier versions' empty queue rows stay until Graphile Worker's `GC_JOB_QUEUES` cleanup task removes them.
+- Updated dependencies [[`e6a3975`](https://github.com/vercel/workflow/commit/e6a3975c953b366497c29749d7f1ab2e7c17732c), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/world-local@5.4.1
+  - @workflow/errors@5.1.3
+  - @workflow/utils@5.1.1
+  - @workflow/world@5.2.2
+
+## 5.2.1
+
+### Patch Changes
+
+- [#5371](https://github.com/vercel/workflow/pull/5371) [`18586f5`](https://github.com/vercel/workflow/commit/18586f54bdfb9ce2f805f349d0464d07c8ec96ea) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - world-local (spec 9): coalesce a run's orchestrator messages that queue behind its running delivery into re-runs of it (up to 32, with the same `attempt`, the next `deliveryCount`, the same `invocationStartedAt`, and the resume timing of an absorbed hook wake; a `run.wakeUp()` message is never coalesced, so `waitForSleep()` then `wakeUp()` stays reliable); keep the run's gate across a handoff, whose redelivery covers the messages waiting behind it; and resolve an unstamped orchestrator message's spec from the run, so a spec 9 run's message from an older SDK is serialized with the run's other deliveries.
+- Updated dependencies [[`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c), [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72), [`18586f5`](https://github.com/vercel/workflow/commit/18586f54bdfb9ce2f805f349d0464d07c8ec96ea), [`c11fc40`](https://github.com/vercel/workflow/commit/c11fc40013681fef9afe0b315b1d22284579bbe0), [`29094be`](https://github.com/vercel/workflow/commit/29094bed374ab6bc9d3ed3c500b61e93048968a6)]:
+  - @workflow/world@5.2.1
+  - @workflow/errors@5.1.2
+  - @workflow/world-local@5.4.0
+
+## 5.2.0
+
+### Minor Changes
+
+- [#5227](https://github.com/vercel/workflow/pull/5227) [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove opt-out and test-only environment variables that are no longer needed. The runtime no longer reads `WORKFLOW_INLINE_EARLY_ADVANCE`, `WORKFLOW_RETURN_VALUE_LONG_POLL`, `WORKFLOW_SLOT_GAP_CHECK`, `WORKFLOW_LOG_ORDER_DRAWS`, `WORKFLOW_INLINE_OWNERSHIP` or `WORKFLOW_BATCH_TRANSITIONS`, and the behavior they could switch off is always on. `WORKFLOW_SEALED_LOG` (deprecated) is no longer read, and `@workflow/world` no longer exports `SEALED_LOG_ENV_VAR`: set `WORKFLOW_SPEC_VERSION=6` to create new runs without the sealed log. The Vercel World no longer reads `WORKFLOW_MAX_CHUNKS_PER_REQUEST` or `WORKFLOW_TEST_LIMIT_OVERRIDES`, and the Local and Postgres Worlds no longer read `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS` and `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`.
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Recover a spec 9 run whose worker died mid-delivery within about 8 minutes by default, instead of after Graphile Worker's 4 hours. With `jobLockStaleSeconds` unset, every delivery now renews its job lock and registers its worker as renewing, and another process releases a job in a spec 9 run's named queue once its lock has gone unrenewed for 300 seconds, if its holder registered. Jobs held by processes on earlier versions are never released this way, so the default is safe during a rolling upgrade. Setting `jobLockStaleSeconds` keeps releasing every job after that window, and `0` turns renewal off. Run `bootstrap` to apply migration `0030_add_job_lock_holders`; without it nothing is released, and a warning names the migration.
+
+- [#5275](https://github.com/vercel/workflow/pull/5275) [`50a1a9f`](https://github.com/vercel/workflow/commit/50a1a9f696729aa7944f7660e004ffe67650a120) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Implement `events.subscribe` World functionality over LISTEN/NOTIFY, improving resumption speed on spec 9.
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Declare `queueAuthMode: 'skip'` until messages are delivered in-process ([#5258](https://github.com/vercel/workflow/issues/5258)); protect the flow route at the network edge. The internal Local World only reads the queue auth key, so a Postgres app creates no key file or `.workflow-data` directory.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+
+- [#5275](https://github.com/vercel/workflow/pull/5275) [`50a1a9f`](https://github.com/vercel/workflow/commit/50a1a9f696729aa7944f7660e004ffe67650a120) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Deduplicate every run's keyed step messages with `unsafe_dedupe`: a spec 8 step message sent again while its job was being delivered added a second job, and another worker ran the step body twice.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf), [`b70daa3`](https://github.com/vercel/workflow/commit/b70daa37c46e6ab0efd384d067e1b9b504fdc555)]:
+  - @workflow/world@5.2.0
+  - @workflow/world-local@5.3.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
+## 5.1.1
+
+### Patch Changes
+
+- [#5048](https://github.com/vercel/workflow/pull/5048) [`e1bce44`](https://github.com/vercel/workflow/commit/e1bce44d3faacff855a35265d47afe3819abed1a) Thanks [@pranaygp](https://github.com/pranaygp)! - Awaiting `run.returnValue` of a child run from the workflow that started it now suspends on one system hook per parent, which each child resumes when it finishes, instead of polling inside a step.
+
+- [#5238](https://github.com/vercel/workflow/pull/5238) [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289) Thanks [@pranaygp](https://github.com/pranaygp)! - Rename the `start()` option `hook` to `experimental_hook`, and enable it by default on the Postgres and Vercel Worlds. `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK` and `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK` are removed, along with the `EXPERIMENTAL_START_HOOK_ENV` exports; the capability is only used when a caller passes `experimental_hook` to `start()`.
+- Updated dependencies [[`f98fca1`](https://github.com/vercel/workflow/commit/f98fca13f6659e222db7803511b5e92443e7db63), [`a4123ba`](https://github.com/vercel/workflow/commit/a4123baf9768084f4b31604d609672392cb43c84)]:
+  - @workflow/world-local@5.2.1
+
+## 5.1.0
+
+### Minor Changes
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Support `start({ hook })` behind `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1` (migration `0028_add_start_hook_admissions`): admitting a run creates its start Hook in the same transaction, so the Hook resolves and accepts resumes as soon as `start()` returns. Every Hook now claims its token through a unique index, so an admission and a concurrent `createHook()` can no longer both win; the migration is required even with the flag off, and every process on the database must run this version before you enable it.
+
+- [#4759](https://github.com/vercel/workflow/pull/4759) [`c07a6a3`](https://github.com/vercel/workflow/commit/c07a6a395fef897602f9d99cf5aff46affd1ae7a) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `jobLockStaleSeconds` (`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`, default `0`, off). When set, a running delivery renews its Graphile job lock, and a job whose process died is redelivered by another process once its lock has gone unrenewed for that many seconds, instead of after Graphile Worker's fixed 4 hours or the next restart. `30` is a good value when more than one process shares the database. It's off by default because of rolling upgrades: processes on an earlier version don't renew their locks, so turn it on once every process that shares the database runs this version.
+
+- [#4761](https://github.com/vercel/workflow/pull/4761) [`8a17d00`](https://github.com/vercel/workflow/commit/8a17d00e79f18db0e845f9355684858ac8c76b33) Thanks [@pranaygp](https://github.com/pranaygp)! - Scope startup recovery to the World's `jobPrefix`: `start()` re-enqueues only the active runs created under its own prefix (plus unprefixed runs from earlier versions), so apps that share a database no longer drive each other's runs after a restart. A migration adds `workflow_runs.job_prefix`; run `bootstrap` before deploying.
+
+### Patch Changes
+
+- [#5136](https://github.com/vercel/workflow/pull/5136) [`62c8a23`](https://github.com/vercel/workflow/commit/62c8a231711d2ff4470ecd91d0c70a7c91442abf) Thanks [@alangenfeld](https://github.com/alangenfeld)! - A `run_started` that races the run ending no longer moves the run back to `running`; it's refused with `RunExpiredError`.
+
+- [#5053](https://github.com/vercel/workflow/pull/5053) [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Every keyed job now keeps its first scheduled delivery time (`preserve_run_at`), so an immediate duplicate cannot erase a delayed retry's backoff.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+- Updated dependencies [[`3ca3bf0`](https://github.com/vercel/workflow/commit/3ca3bf0b36b1bcdf1d105b8af530b6f0e553485b), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`2a3e4c0`](https://github.com/vercel/workflow/commit/2a3e4c00fd4114473d7cf95737bdb70bddc41e8d), [`6455beb`](https://github.com/vercel/workflow/commit/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`72131a2`](https://github.com/vercel/workflow/commit/72131a227d3efbf2613104026976c3a0d887d1c6), [`d4b7b06`](https://github.com/vercel/workflow/commit/d4b7b06cbf918a6af6927a45fd6f2423279c507b)]:
+  - @workflow/world-local@5.2.0
+  - @workflow/world@5.1.0
+  - @workflow/errors@5.1.0
+
 ## 5.0.5
 
 ### Patch Changes

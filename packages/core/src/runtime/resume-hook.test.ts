@@ -6,6 +6,7 @@ import {
 import {
   type Hook,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -18,10 +19,23 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
-import { resumeHook, resumeWebhook } from './resume-hook.js';
+import { trace } from '../telemetry.js';
+import { getHookByToken, resumeHook, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+/** Hands the next `hook.resume` span to the test, returning what it records. */
+function captureResumeSpan(): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {};
+  vi.mocked(trace).mockImplementationOnce(((_name: string, fn: any) =>
+    fn({
+      setAttributes: (attrs: Record<string, unknown>) =>
+        Object.assign(attributes, attrs),
+      addEvent: () => {},
+    })) as any);
+  return attributes;
+}
 vi.mock('../telemetry.js', async (importOriginal) => ({
   // Everything else real: the Request-body stream writes below go through
   // the ordinary span helpers.
@@ -73,6 +87,47 @@ describe('resumeHook', () => {
     expect(createEvent).not.toHaveBeenCalled();
     expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
+    '5.2.3',
+    '5.3.0',
+  ])('keeps hook payload abort packets compatible even with a newer starting client: %s', async (workflowCoreVersion) => {
+    const hook = {
+      runId: 'wrun_abort',
+      hookId: 'hook_abort',
+      token: 'abort-test',
+      ownerId: 'owner',
+      projectId: 'project',
+      environment: 'production',
+      createdAt: new Date(),
+      specVersion: SPEC_VERSION_CURRENT,
+      resumeContext: {
+        deploymentId: 'dpl_target',
+        workflowName: 'abort-test',
+        runSpecVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion,
+      },
+    } as Hook;
+    const write = vi.fn().mockResolvedValue(undefined);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+      runs: { get: vi.fn() },
+      events: { create: vi.fn().mockResolvedValue(undefined) },
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue: vi.fn().mockResolvedValue(undefined),
+      getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+    } as unknown as World);
+    const source = new AbortController();
+    await resumeHook(hook.token, source.signal);
+    source.abort('cancel');
+    await vi.waitFor(() => expect(write).toHaveBeenCalled());
+    expect(peekFormatPrefix(write.mock.calls[0][2])).toBe(
+      SerializationFormat.DEVALUE_V1
+    );
   });
 
   describe('payload encryption', () => {
@@ -502,8 +557,10 @@ describe('resumeHook', () => {
         getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
       } as unknown as World);
 
+      const span = captureResumeSpan();
       const resumed = await resumeHook('shared', { n: 1 });
       expect(resumed.runId).toBe('wrun_claimer');
+      expect(span['workflow.hook.lookup_result']).toBe('redirected');
       expect(getByToken).toHaveBeenCalledTimes(2);
       expect(createEvent).toHaveBeenCalledTimes(2);
       expect(createEvent.mock.calls[0][0]).toBe('wrun_victim');
@@ -525,6 +582,48 @@ describe('resumeHook', () => {
       expect(queue.mock.calls[0][2]).toMatchObject({
         deploymentId: 'dpl_claimer',
       });
+    });
+
+    it('names the new owner’s workflow on a spec 9 resume it was redirected to', async () => {
+      // The payload ref is keyed by workflow name: the claimer's write must
+      // carry the claimer's name, not the victim's it first resolved.
+      const spec9 = (hook: Hook): Hook => ({
+        ...hook,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        resumeContext: {
+          ...hook.resumeContext!,
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+      });
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(spec9(freshVictim()))
+        .mockResolvedValueOnce(spec9(freshClaimer()));
+      const createEvent = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new HookForceClaimedError('shared', 'wrun_claimer', 'hook_claimer')
+        )
+        .mockResolvedValueOnce(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      await resumeHook('shared', { n: 1 });
+
+      expect(createEvent).toHaveBeenCalledTimes(2);
+      expect(createEvent.mock.calls[0][1].eventData.workflowName).toBe(
+        'victimWorkflow'
+      );
+      expect(createEvent.mock.calls[1][0]).toBe('wrun_claimer');
+      expect(createEvent.mock.calls[1][1].eventData.workflowName).toBe(
+        'claimerWorkflow'
+      );
     });
 
     it('re-resolves once on a not-found rejection and retries when the token now names another hook', async () => {
@@ -1016,5 +1115,46 @@ describe('resumeHook', () => {
       expect(createEvent).toHaveBeenCalledTimes(4);
       expect(queue).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('a by-token lookup', () => {
+  afterEach(() => {
+    setWorld(undefined);
+  });
+
+  it('finds a start Hook at once, asking the World only once', async () => {
+    // A start({ experimental_hook }) run's Hook exists from its admission: the lookup is an
+    // ordinary one, with no waiting and no retry.
+    const hook = {
+      runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      hookId: 'hook_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      token: 'order:start',
+      ownerId: 'owner_1',
+      projectId: 'project_1',
+      environment: 'production',
+      createdAt: new Date(),
+    } satisfies Hook;
+    const getByToken = vi.fn().mockResolvedValue(hook);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+    } as unknown as World);
+
+    expect((await getHookByToken(hook.token)).hookId).toBe(hook.hookId);
+    expect(getByToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a lookup that found nothing as not_found', async () => {
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: {
+        getByToken: vi.fn().mockRejectedValue(new HookNotFoundError('t')),
+      },
+    } as unknown as World);
+
+    const span = captureResumeSpan();
+    await resumeHook('t', { n: 1 }).catch(() => undefined);
+    expect(span['workflow.hook.lookup_result']).toBe('not_found');
   });
 });

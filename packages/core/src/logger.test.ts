@@ -59,6 +59,36 @@ describe('logger', () => {
     expect(debugSpy).toHaveBeenCalledTimes(1);
   });
 
+  test('disabled debug and info return before reading their metadata', () => {
+    let reads = 0;
+    const metadata = new Proxy(
+      { stepId: 'step-1' },
+      {
+        ownKeys(target) {
+          reads++;
+          return Reflect.ownKeys(target);
+        },
+      }
+    );
+    vi.stubEnv('DEBUG', '');
+    runtimeLogger.debug('quiet', metadata);
+    runtimeLogger.info('quiet', metadata);
+    runtimeLogger.child({ workflowRunId: 'run-1' }).debug('quiet', metadata);
+    expect(reads).toBe(0);
+
+    vi.stubEnv('DEBUG', 'workflow:runtime:debug');
+    runtimeLogger.debug('loud', metadata);
+    expect(reads).toBeGreaterThan(0);
+    expect(debugSpy).toHaveBeenCalledWith(
+      '[workflow:runtime:debug] loud',
+      expect.objectContaining({ stepId: 'step-1' })
+    );
+    // Warnings print whatever DEBUG says.
+    vi.stubEnv('DEBUG', '');
+    runtimeLogger.warn('watch out', metadata);
+    expect(warnSpy.mock.calls[0][0]).toContain('step-1');
+  });
+
   test('ignores a DEBUG value that a bundler defined as a non-string', () => {
     const env = process.env;
     process.env = { ...env, DEBUG: true as unknown as string };

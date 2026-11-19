@@ -3,13 +3,25 @@ import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
   FLOW_ASSETS_DIR,
+  generatedWorkflowPathPattern,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
+  turbopackContentPattern,
+  useStepPattern,
+  useWorkflowPattern,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
+  workflowSerdeComputedPropertyPattern,
+  workflowSerdeImportPattern,
+  workflowSerdeSymbolPattern,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
+import {
+  joinWorkflowBasePath,
+  normalizeWorkflowRoutePrefix,
+  workflowRoutePrefixDirectory,
+} from './route-prefix.js';
 
 const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
 const QUEUE_PACKAGE = '@vercel/queue';
@@ -45,13 +57,6 @@ const WORKFLOW_BUNDLE_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
-const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
-const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
-const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
-const workflowSerdeSymbolPattern =
-  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
-const workflowSerdeComputedPropertyPattern =
-  /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
@@ -348,17 +353,38 @@ function fileExists(path: string): boolean {
   }
 }
 
+interface WorkflowManifestCopyMetadata {
+  projectDir: string;
+  distDir: string;
+  /** Normalized `workflows.experimentalRoutePrefix`, if configured. */
+  routePrefix?: string;
+}
+
 function getWorkflowManifestCopyPaths({
   projectDir,
   distDir,
-}: {
-  projectDir: string;
-  distDir: string;
-}): { manifestPath: string; diagnosticsManifestPath: string } | undefined {
+  routePrefix,
+}: WorkflowManifestCopyMetadata):
+  | { manifestPath: string; diagnosticsManifestPath: string }
+  | undefined {
+  // The manifest is written next to the generated routes, so it moves with
+  // them when a route prefix is configured. `join` drops the empty fragment,
+  // leaving the unprefixed candidates untouched.
+  const prefixDir = workflowRoutePrefixDirectory(routePrefix);
   const manifestCandidates = [
-    join(projectDir, 'app/.well-known/workflow/v1/manifest.json'),
-    join(projectDir, 'src/app/.well-known/workflow/v1/manifest.json'),
-    join(projectDir, 'public/.well-known/workflow/v1/manifest.json'),
+    join(projectDir, 'app', prefixDir, '.well-known/workflow/v1/manifest.json'),
+    join(
+      projectDir,
+      'src/app',
+      prefixDir,
+      '.well-known/workflow/v1/manifest.json'
+    ),
+    join(
+      projectDir,
+      'public',
+      prefixDir,
+      '.well-known/workflow/v1/manifest.json'
+    ),
   ];
   const manifestPath = manifestCandidates.find(fileExists);
 
@@ -377,10 +403,9 @@ function getWorkflowManifestCopyPaths({
   return { manifestPath, diagnosticsManifestPath };
 }
 
-async function copyWorkflowDiagnosticsManifest(metadata: {
-  projectDir: string;
-  distDir: string;
-}): Promise<void> {
+async function copyWorkflowDiagnosticsManifest(
+  metadata: WorkflowManifestCopyMetadata
+): Promise<void> {
   const paths = getWorkflowManifestCopyPaths(metadata);
   if (!paths) {
     return;
@@ -391,10 +416,9 @@ async function copyWorkflowDiagnosticsManifest(metadata: {
   await copyFile(manifestPath, diagnosticsManifestPath);
 }
 
-function copyWorkflowDiagnosticsManifestSync(metadata: {
-  projectDir: string;
-  distDir: string;
-}): void {
+function copyWorkflowDiagnosticsManifestSync(
+  metadata: WorkflowManifestCopyMetadata
+): void {
   const paths = getWorkflowManifestCopyPaths(metadata);
   if (!paths) {
     return;
@@ -405,13 +429,12 @@ function copyWorkflowDiagnosticsManifestSync(metadata: {
   copyFileSync(manifestPath, diagnosticsManifestPath);
 }
 
-function registerWorkflowDiagnosticsManifestCopy(metadata: {
-  projectDir: string;
-  distDir: string;
-}): void {
+function registerWorkflowDiagnosticsManifestCopy(
+  metadata: WorkflowManifestCopyMetadata
+): void {
   const marker = '__workflowDiagnosticsManifestCopies';
   const globalWithMarker = globalThis as typeof globalThis & {
-    [marker]?: Array<{ projectDir: string; distDir: string }>;
+    [marker]?: WorkflowManifestCopyMetadata[];
   };
 
   if (!globalWithMarker[marker]) {
@@ -499,9 +522,30 @@ export function withWorkflow(
        * environment variable.
        */
       sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+      /**
+       * Experimental: serve the generated workflow routes below a route
+       * segment this app owns, so they answer at
+       * `<prefix>/.well-known/workflow/v1/*` instead of
+       * `/.well-known/workflow/v1/*`. For example `'/dashboard'` emits the flow
+       * route at `/dashboard/.well-known/workflow/v1/flow`.
+       *
+       * Unlike Next.js' `basePath`, this moves only the workflow routes; the
+       * rest of the app keeps its paths. It exists for deployments where the
+       * app cannot own the origin's root paths, such as a Microfrontends
+       * child app whose root `/.well-known/*` requests are routed to the
+       * default app.
+       *
+       * Composes with `basePath`: the runtime resolves workflow URLs against
+       * `basePath` + this prefix. Leave unset to keep the routes at the app
+       * root.
+       */
+      experimentalRoutePrefix?: string;
     };
   } = {}
 ) {
+  const experimentalRoutePrefix = normalizeWorkflowRoutePrefix(
+    workflows?.experimentalRoutePrefix
+  );
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'local';
@@ -542,7 +586,12 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
-    const workflowBasePath = nextConfig.basePath;
+    // The workflow routes sit at `basePath` + the workflow route prefix, so
+    // that is the base every runtime-built workflow URL resolves against.
+    const workflowBasePath = joinWorkflowBasePath(
+      nextConfig.basePath,
+      experimentalRoutePrefix
+    );
     setWorkflowBasePath(workflowBasePath);
     nextConfig.serverExternalPackages = [
       ...new Set([
@@ -644,8 +693,12 @@ export function withWorkflow(
         if (existingRunAfterProductionCompile) {
           await existingRunAfterProductionCompile(metadata);
         }
-        await copyWorkflowDiagnosticsManifest(metadata);
-        registerWorkflowDiagnosticsManifestCopy(metadata);
+        const copyMetadata = {
+          ...metadata,
+          routePrefix: experimentalRoutePrefix,
+        };
+        await copyWorkflowDiagnosticsManifest(copyMetadata);
+        registerWorkflowDiagnosticsManifestCopy(copyMetadata);
       },
     };
 
@@ -668,6 +721,7 @@ export function withWorkflow(
             workingDir,
             distDir,
             basePath: workflowBasePath,
+            experimentalRoutePrefix,
             diagnosticsDir: `${distDir}/diagnostics`,
             buildTarget: 'next',
             workflowsBundlePath: '', // not used in base
@@ -712,13 +766,12 @@ export function withWorkflow(
                 all: [
                   ...(existingRules[key]?.condition?.all || []),
                   // Exclude generated workflow route files from transformation
-                  { not: { path: /[/\\]\.well-known[/\\]workflow[/\\]/ } },
-                  // Match files with workflow directives or custom serialization patterns
-                  // Uses backreferences (\2, \3) to ensure matching quote types
-                  {
-                    content:
-                      /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
-                  },
+                  { not: { path: generatedWorkflowPathPattern } },
+                  // Match files with workflow directives or custom serialization
+                  // patterns, including `static [WORKFLOW_SERIALIZE]` computed keys
+                  // (e.g. @ai-sdk/openai). Shared with the builders so the two
+                  // can't drift apart.
+                  { content: turbopackContentPattern },
                 ],
               },
             }

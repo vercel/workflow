@@ -1,3 +1,4 @@
+import * as fsPromises from 'node:fs/promises';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
@@ -152,6 +153,77 @@ describe('@workflow/nitro builder lifecycle', () => {
     await builder.build();
 
     expect(dispose).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * A LocalBuilder whose builds each take a few milliseconds and log when
+   * they start and finish; `failNext` makes the next build that starts fail.
+   */
+  function recordingBuilder() {
+    const builder = new LocalBuilder(
+      createNitroStub({ routing: true, dev: true })
+    );
+    const log: string[] = [];
+    let builds = 0;
+    let failNext = false;
+    Object.assign(builder, {
+      getInputFiles: async () => {
+        const id = ++builds;
+        const fail = failNext;
+        failNext = false;
+        log.push(`start ${id}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        log.push(`end ${id}`);
+        if (fail) throw new Error(`build ${id} failed`);
+        return [];
+      },
+      createCombinedBundle: async () => ({ manifest: {} }),
+      createWebhookBundle: async () => {},
+      createManifest: async () => {},
+    });
+    return {
+      builder,
+      log,
+      failNextBuild: () => {
+        failNext = true;
+      },
+    };
+  }
+
+  it('coalesces the builds requested while one runs into one build after it', async () => {
+    const { builder, log } = recordingBuilder();
+
+    // A burst of dev reloads: the first starts a build, the rest arrive
+    // while it runs.
+    const burst = [
+      builder.build(),
+      builder.build(),
+      builder.build(),
+      builder.build(),
+    ];
+    await Promise.all(burst);
+
+    // One build covers the rest of the burst, and it starts only after the
+    // first finished, so it reads every change the burst was made for.
+    expect(log).toEqual(['start 1', 'end 1', 'start 2', 'end 2']);
+
+    // A request made once that build started gets a build of its own.
+    const running = builder.build();
+    await vi.waitFor(() => expect(log).toContain('start 3'));
+    await Promise.all([running, builder.build()]);
+    expect(log.slice(4)).toEqual(['start 3', 'end 3', 'start 4', 'end 4']);
+  });
+
+  it('runs a queued build after a failed one, and reports each outcome to its callers', async () => {
+    const { builder, log, failNextBuild } = recordingBuilder();
+
+    failNextBuild();
+    const failing = builder.build();
+    const queued = builder.build();
+
+    await expect(failing).rejects.toThrow('build 1 failed');
+    await expect(queued).resolves.toBeUndefined();
+    expect(log).toEqual(['start 1', 'end 1', 'start 2', 'end 2']);
   });
 });
 
@@ -547,5 +619,67 @@ describe('@workflow/nitro published-package bundling', () => {
     await nitroModule.setup(nitro);
 
     expect(nitro.options).not.toHaveProperty('moduleSideEffects');
+  });
+});
+
+describe('@workflow/nitro flow asset loader', () => {
+  /**
+   * The loader `LocalBuilder` generates, with the placeholder rewritten the
+   * way the `workflow:flow-assets` plugin does for a chunk at `chunkDir`, and
+   * `import.meta.url` replaced by `metaUrl`.
+   */
+  function loaderFor(chunkDir: string, metaUrl: string) {
+    const builder = Object.create(LocalBuilder.prototype) as {
+      getFlowAssetLoaderCode(): string;
+    };
+    const code = builder
+      .getFlowAssetLoaderCode()
+      .replaceAll(
+        JSON.stringify('__WORKFLOW_FLOW_ASSETS_DIR__/'),
+        JSON.stringify(chunkDir)
+      )
+      .replaceAll('import.meta.url', JSON.stringify(metaUrl))
+      // A dynamic import can't run in evaluated code under vitest.
+      .replace("import('node:fs/promises')", 'Promise.resolve(fs)');
+    return new Function('fs', `return ${code}`)(fsPromises) as (
+      name: string
+    ) => Promise<Uint8Array>;
+  }
+
+  async function serverOutput() {
+    const { mkdtemp, mkdir, writeFile } = fsPromises;
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { pathToFileURL } = await import('node:url');
+    const root = await mkdtemp(join(tmpdir(), 'wf-nitro-assets-'));
+    await mkdir(join(root, '__workflow_assets'));
+    await mkdir(join(root, 'chunks', 'nitro'), { recursive: true });
+    await writeFile(join(root, '__workflow_assets', 'asset.bin'), 'heap');
+    return {
+      entryUrl: pathToFileURL(join(root, 'index.mjs')).href,
+      chunkUrl: pathToFileURL(join(root, 'chunks', 'nitro', 'nitro.mjs')).href,
+    };
+  }
+
+  it('reads the copy relative to the chunk the route is bundled into (Nitro v3)', async () => {
+    const { chunkUrl } = await serverOutput();
+    const load = loaderFor('../../__workflow_assets/', chunkUrl);
+    expect(Buffer.from(await load('asset.bin')).toString()).toBe('heap');
+  });
+
+  it('falls back to the server root when import.meta.url is the entry (Nitro v2, Nuxt)', async () => {
+    // Nitro v2 rewrites import.meta.url in every chunk to the server entry's
+    // URL, so the chunk-relative path points outside the server output.
+    const { entryUrl } = await serverOutput();
+    const load = loaderFor('../../__workflow_assets/', entryUrl);
+    expect(Buffer.from(await load('asset.bin')).toString()).toBe('heap');
+  });
+
+  it('rejects with the chunk-relative error when neither copy exists', async () => {
+    const { chunkUrl } = await serverOutput();
+    const load = loaderFor('../../__workflow_assets/', chunkUrl);
+    await expect(load('missing.bin')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 });

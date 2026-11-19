@@ -1,5 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import type { PayloadKey } from './serialization/encryption.js';
+import { StateContext } from './serialization/state-refs.js';
 import {
   type PreparedReplayPayload,
   prepareReplayPayload,
@@ -7,6 +8,20 @@ import {
 } from './serialization.js';
 
 type ReplayPayloadField = 'result' | 'error' | 'payload';
+
+/**
+ * The cache identity of an event's payload: its position and its entity. A
+ * position alone is not an identity within one delivery: a run-ahead write is
+ * prepared at the position it predicts, and when another writer appends first
+ * it commits further up, while the predicted position holds another entity's
+ * event.
+ */
+export function replayPayloadEventKey(event: {
+  eventId: string;
+  correlationId?: string;
+}): string {
+  return `${event.eventId}:${event.correlationId ?? ''}`;
+}
 
 function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
@@ -28,6 +43,9 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * runs or queue deliveries.
  */
 export class ReplayPayloadCache {
+  /** frozen state versions and sources this invocation's replay has seen. */
+  stateContext = new StateContext();
+
   private readonly preparedPayloads = new Map<
     string,
     Promise<PreparedReplayPayload>
@@ -100,11 +118,14 @@ export class ReplayPayloadCache {
    * later replay can retry without hiding the original failure.
    */
   prepareEventPayload(
-    eventId: string,
+    eventKey: string,
     field: ReplayPayloadField,
     value: unknown
   ): Promise<PreparedReplayPayload> {
-    return this.consumePreparation(this.eventPayloadKey(eventId, field), value);
+    return this.consumePreparation(
+      this.eventPayloadKey(eventKey, field),
+      value
+    );
   }
 
   /**
@@ -113,16 +134,16 @@ export class ReplayPayloadCache {
    * every primitive is safe to reuse directly.
    */
   async getStepResult(
-    eventId: string,
+    eventKey: string,
     hydrate: () => Promise<unknown>
   ): Promise<unknown> {
-    if (this.primitiveStepResults.has(eventId)) {
-      return this.primitiveStepResults.get(eventId);
+    if (this.primitiveStepResults.has(eventKey)) {
+      return this.primitiveStepResults.get(eventKey);
     }
 
     const value = await hydrate();
     if (isMemoizablePrimitive(value)) {
-      this.primitiveStepResults.set(eventId, value);
+      this.primitiveStepResults.set(eventKey, value);
     }
     return value;
   }
@@ -197,7 +218,7 @@ export class ReplayPayloadCache {
         return undefined;
     }
     return this.startPreparation(
-      this.eventPayloadKey(event.eventId, field),
+      this.eventPayloadKey(replayPayloadEventKey(event), field),
       value
     );
   }
@@ -216,7 +237,7 @@ export class ReplayPayloadCache {
     return `run:${runId}:input`;
   }
 
-  private eventPayloadKey(eventId: string, field: ReplayPayloadField): string {
-    return `event:${eventId}:${field}`;
+  private eventPayloadKey(eventKey: string, field: ReplayPayloadField): string {
+    return `event:${eventKey}:${field}`;
   }
 }

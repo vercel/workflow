@@ -138,7 +138,9 @@ async function invoke(options: {
     dispose: vi.fn(),
   });
 
-  const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',
@@ -151,29 +153,24 @@ async function invoke(options: {
 
 describe('QuickJS snapshot load gate', () => {
   beforeEach(async () => {
-    // These runs have no encryption key; opt in to unencrypted snapshots
-    // so the load gate is what's under test.
-    process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED = '1';
     const { __resetSnapshotLatchesForTests } = await import(
-      './quickjs-entrypoint.js'
+      './quickjs-delivery-shared.js'
     );
     __resetSnapshotLatchesForTests();
   });
 
   afterEach(() => {
-    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
     setWorld(undefined);
     vi.clearAllMocks();
   });
 
-  it('never probes for a run without an encryption key unless opted in', async () => {
-    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
+  it('probes for a run without an encryption key', async () => {
     const { load } = await invoke({
       log: makeLog(10),
       threshold: 1,
       outcome: 'completed',
     });
-    expect(load).not.toHaveBeenCalled();
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it('skips the load when a complete preload is shorter than the threshold', async () => {

@@ -1,5 +1,5 @@
 name: 'Prepare Workbench Path'
-description: 'Resolve a workbench path, staging tarball-based Next.js workbenches when needed.'
+description: 'Resolve a workbench path, staging the Next.js workbenches outside the monorepo.'
 
 inputs:
   app-name:
@@ -25,10 +25,10 @@ runs:
         fi
         if [[ "$APP_NAME" == "nextjs-turbopack" || "$APP_NAME" == "nextjs-webpack" ]]; then
           STAGE_LOG="$(mktemp)"
-          node scripts/stage-workbench-with-tarballs.mjs "workbench/$APP_NAME" | tee "$STAGE_LOG"
+          node scripts/stage-workbench.mjs "workbench/$APP_NAME" | tee "$STAGE_LOG"
           WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
           if [ -z "$WORKBENCH_APP_PATH" ]; then
-            echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
+            echo "Failed to parse staged workbench path from stage-workbench output"
             exit 1
           fi
         else

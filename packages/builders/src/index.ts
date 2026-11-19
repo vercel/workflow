@@ -1,5 +1,8 @@
 export type { WorkflowManifest } from './apply-swc-transform.js';
-export { applySwcTransform } from './apply-swc-transform.js';
+export {
+  applySwcTransform,
+  getCachedDecoratorOptions,
+} from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
 export { createBuildQueue } from './build-queue.js';
 export {
@@ -67,6 +70,7 @@ export {
   useStepPattern,
   useWorkflowPattern,
   type WorkflowPatternMatch,
+  workflowSerdeComputedPropertyPattern,
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';
