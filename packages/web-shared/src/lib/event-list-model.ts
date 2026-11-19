@@ -609,7 +609,7 @@ export type EventSearchState =
       status: 'error';
       query: string;
       id: ExactWorkflowSearchId;
-      message: string;
+      message?: string;
     };
 
 const NO_EVENTS: Event[] = [];
@@ -648,15 +648,20 @@ function countEvents(n: number): string {
 
 /** Shown in place of the list when it has no rows. */
 export function getEmptyMessage(search: EventSearchState): string {
+  return search.status === 'not_found'
+    ? `No events found for ${search.query}`
+    : 'No events found';
+}
+
+/** Shown under the search box while the query cannot be looked up. */
+export function getSearchHint(search: EventSearchState): string | null {
   switch (search.status) {
-    case 'not_found':
-      return `No events found for ${search.query}`;
-    case 'error':
-      return search.message;
+    case 'incomplete':
+      return 'Enter a full step, wait, hook, or event ID to search';
     case 'unavailable':
-      return 'Exact ID search is unavailable in this view.';
+      return 'Search isn’t available in this view';
     default:
-      return 'No events found';
+      return null;
   }
 }
 
@@ -667,17 +672,15 @@ export function getFooterLabel(
     total: number;
     hasMoreEvents: boolean;
   }
-): string {
+): string | null {
   const { total, hasMoreEvents } = counts;
   switch (search.status) {
     case 'ok':
       return `${countEvents(total)} for ${search.query}${search.truncated ? ' (results may be truncated)' : ''}`;
+    case 'loading':
     case 'not_found':
-      return `No events found for ${search.query}`;
     case 'error':
-      return search.message;
-    case 'incomplete':
-      return 'Enter a full step ID, wait ID, hook ID, or event ID';
+      return null;
     default:
       return `${countEvents(total)}${hasMoreEvents ? ' loaded' : ''}`;
   }

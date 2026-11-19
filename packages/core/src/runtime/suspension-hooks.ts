@@ -22,6 +22,7 @@ import {
 import { importKey } from '../encryption.js';
 import type { HookInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import { runtimeLogger } from '../logger.js';
+import { publishLocalAbort } from '../serialization/abort-local.js';
 import { frameAbortStreamPayload } from '../serialization/abort-stream.js';
 import {
   GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
@@ -376,6 +377,11 @@ export async function startSuspensionHookWrites({
       // (see workflow/abort-controller.ts).
       try {
         const streamName = getAbortStreamIdFromToken(queueItem.token);
+        // An inline step running in this process gets the abort without the
+        // stream, which a zero-retention run clears when it finishes,
+        // possibly before the step reads it (see
+        // serialization/abort-local.ts).
+        publishLocalAbort(runId, streamName, abortPayload as Uint8Array);
         await world.streams.write(
           runId,
           streamName,

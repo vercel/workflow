@@ -524,7 +524,7 @@ QuickJS runs ahead with the same writer, classification, depth and hazard rules,
 
 #### Replay divergence
 
-On the node engine, a replay that diverges from the log discards the VM, reloads the log and replays from cold in a fresh VM in the same delivery, up to [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_replay_divergence_max_retries) times (3 by default), then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence carries `replayDivergenceCount`. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no in-delivery divergence recovery.
+On the node engine, a replay that diverges from the log discards the VM, reloads the log and replays from cold in a fresh VM in the same delivery, up to [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_replay_divergence_max_retries) times (3 by default), then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence, and the `run_failed` of an exhausted budget, carry `replayDivergenceCount` and `replayDivergenceEventIds` (the newest 8 events the replays diverged at, ids only), so a divergence can be located even when the run's error payload is encrypted. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no in-delivery divergence recovery.
 
 ### Turbo
 
@@ -534,9 +534,12 @@ Turbo is on by default (`WORKFLOW_TURBO`) and applies when all of these hold:
 
 - the message carries `runInput`, so it is the message `start()` enqueued, and it is not a `start({ experimental_hook })` candidate;
 - `attempt` is 1 and `deliveryCount` is 1, so it is neither a redelivery (including the one after a fence refusal), a handoff's next delivery nor a coalesced re-run;
+- the queue enqueued the message at most `TURBO_FIRST_DELIVERY_MAX_AGE_MS` (15 s) ago, when it reports when (see below);
 - it is not a step message, a hook resume or a timer.
 
 A restart in place is never turbo.
+
+The delivery count does not prove a first delivery on its own. A platform that re-runs an invocation which crashed (an out-of-memory kill, say) re-sends the same request, so the replay carries the same message with `deliveryCount` 1, while the crashed invocation may have started the run and left an inline step open minutes earlier. A first delivery arrives within a few seconds of `start()` (99.99% under 6 s on Vercel), so an older message is treated as a possible replay and takes the normal path, which loads the log and runs the open step again. A replay younger than the bound still reaches turbo, and its `run_started` conflict restarts it in place (below).
 
 ```mermaid
 sequenceDiagram
@@ -569,8 +572,15 @@ The optimistic start applies while the boundary has no wait and each of its inli
 If the backgrounded `run_started` fails for any reason, the writer stops: nothing else reaches the World and no further inline body starts. Bodies already started settle, their outcomes are discarded, and the delivery ends as an awaited `run_started` failing the same way would:
 
 - refused by the fence: redelivered 1 s later (5 s on Vercel); the redelivery loads the log and takes the normal path;
-- the run already finished (cancelled before its first delivery, say): acknowledged with nothing written;
+- refused as a conflict (`EntityConflictError`): the delivery restarts in place, once, on the normal path. Turbo assumed a log it never read, so the conflict may mean the run already started (a replayed first delivery whose predecessor died) or that it finished; the full load tells them apart. A finished run is then acknowledged by the normal path's own checks, an inline step a dead predecessor left open runs again, and a predecessor still alive keeps the run because the fence refuses whichever of the two writes second. Acknowledging the conflict instead would strand a run whose open step nothing would ever run again;
+- the run expired (`RunExpiredError`): acknowledged with nothing written;
 - anything else: retried by the queue, or recorded as a setup failure.
+
+The start's failure decides the delivery even when the pass returns normally: writes queued behind the refused `run_started` fail with its error, and a handler that reads a conflict as "the run already finished" (a terminal write's) would otherwise acknowledge a run that is still running. So after the pass the delivery waits for the start to settle and, if it failed, handles that failure as above.
+
+A full load that finds a `run_started` this delivery did not write, on a count-1 delivery of the message that carries `runInput`, can only be such a replay (young, after the restart above, or old, past the age bound). Its predecessor may have committed a background step's `step_created` and died before the step's message went out, and no redelivery is owed to send it. So the replay passes the re-send gate (`stepsToReenqueue`) as a redelivery would: within the same age bound and under each step's stable idempotency key, so a message that did go out is deduped.
+
+The normal path loads the log before it writes `run_started`, so a conflict there means the run started or finished in between. A World that says the run is running (`EntityConflictError` with code `run-already-started`) gets the same single restart in place; a second one is thrown, and the queue redelivers. A conflict with no code still means the run finished, and is acknowledged.
 
 Writes waiting on the barrier fail instead of writing, so a refused start leaves no chunks or attributes on a run whose log does not record the step that made them; a body that ran before the refusal runs again on the redelivery. If a step's own start batch is refused, its outcome is not written and the start's error decides. A World that rotates the start message must send a continuation without `runInput`, so the new message loads the log rather than replaying a progressed run against a `run_created`-only log.
 
@@ -582,11 +592,27 @@ Writes waiting on the barrier fail instead of writing, so a refused start leaves
 
 #### Turbo configuration
 
-Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo: every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
+Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo and a start Hook candidate's skipped first load: every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
 
 `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or `false`) keeps turbo's backgrounded `run_started` and skipped load, and makes the first delivery's inline bodies wait for their start to commit. No other value does anything: outside turbo's first delivery there is no optimistic inline start, because only that delivery is known to have no other orchestrator.
 
 Turbo is client-side and needs no World changes. A World with `createBatch` saves the separate `step_started` write; one without it gets the start as its own write, chained behind `step_created`.
+
+### A start Hook candidate's first delivery
+
+Turbo never takes a `start({ experimental_hook })` candidate: its `run_started` may refuse it, so nothing may run before that write returns. Its first delivery (same conditions as turbo's, but for the candidate) still skips the load that would come before `run_started`, since that log can hold only the run's creation and out-of-band writes (a `hook_received` from `resumeHook()`), neither of which moves the in-band count. It starts the writer from `IN_BAND_SEQ_AT_RUN_CREATION` and its log from the run's creation, as turbo does, and awaits `run_started` (which admits or refuses the candidate, and creates the run if `run_created` has not landed). The write's skipped-slot report brings whatever landed between the two, so the log is whole without a read. A report that stops short (`hasMore`) or leaves a hole gets a full load after the write instead, logs it, and sets `workflow.start_hook.first_delivery.fallback` (`report`) on the delivery's span. That normally saves both reads of the normal path on every candidate's first delivery, and that delivery can no longer race `run_created`: a read before it would find no log and be retried.
+
+The deployment-affinity guard runs after `run_started` on this path, not before it as on the normal path. Until `run_started` returns the run may not exist, and the guard's re-queued copy is a plain wake without `runInput`, so a message misrouted before `run_created` landed would reach the run's own deployment unable to create the run. As under turbo, the misrouted delivery writes `run_started` (admitting or refusing the candidate) and then hands the run off.
+
+If the count was wrong because the run has moved past its creation (an earlier delivery started it and the queue reports this one as its first, or the run ended in-band), `run_started` is refused by the fence, nothing is written, and the delivery restarts in place on the normal path, which decides from a full load. It restarts at most once, logs the restart, and sets `workflow.start_hook.first_delivery.fallback` (`fence`) on the delivery's span; `workflow.start_hook.first_delivery` marks a delivery that took the path.
+
+A World may also answer a run that already started with a conflict instead of a fence refusal (one that checks the run's state before the fence), and a conflict alone does not say the run finished. So a conflict on this `run_started` restarts the delivery from a full load too, once, as turbo's does (`workflow.start_hook.first_delivery.fallback` is `conflict`); acknowledging it could drop the only message driving a run whose earlier delivery died. An expiry is terminal in every World: the run ended (a cancel before anything started it, or a run that already finished), and the delivery acknowledges it as "already finished" without a load, setting `workflow.start_hook.first_delivery.run_ended`.
+
+The delivery replays against the `run_created` it rebuilt from the message, not one it read. A World that can hold a run whose creation event has not landed yet (and repairs it when the log is next read from its head) therefore gets no read from this delivery to trigger that repair: the report starts above the first position, so the stored log can begin at `run_started` until some later reader loads it. Replay is unaffected, since the rebuilt event carries the same creation data. The log's seeded cursor is empty too, so the delivery's first later read is a full load, not an incremental one.
+
+As under turbo, a first message older than `TURBO_FIRST_DELIVERY_MAX_AGE_MS` is treated as a possible replay of a first delivery that already ran, and loads the log first.
+
+`WORKFLOW_TURBO=0` (or `false`) disables this path along with turbo; such a delivery then loads the log before `run_started`, as on the normal path. It has no switch of its own: no workflow code runs before `run_started` returns either way, and every answer to that write ends in running the workflow, a full load, a redelivery, or acknowledging a run that has ended.
 
 ### `maxRetries: 0` is at most once per live owner
 
@@ -1080,7 +1106,7 @@ The redelivery costs one more invocation, after at least 5 seconds on Vercel (th
 
 **Run-ahead stop.** The delivery lets the outcomes the stop still allows commit, sends what its writes owe, takes a fresh writer, reloads the log and replays from cold in the same delivery with run-ahead off for the rest of it. `MAX_RUN_AHEAD_RESTARTS` (1) bounds the restarts, and a stop past it hands off. A hazard stop detects a classification gap rather than recovering from one (the check runs on a write that already committed), so it is logged at error level with `possibleLogCorruption: true`.
 
-**Replay divergence.** The delivery discards the VM, reloads the log and replays from cold in a fresh VM, up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` (3) times, then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence carries `replayDivergenceCount`. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no divergence recovery.
+**Replay divergence.** The delivery discards the VM, reloads the log and replays from cold in a fresh VM, up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` (3) times, then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence, and the `run_failed` of an exhausted budget, carry `replayDivergenceCount` and `replayDivergenceEventIds` (the newest 8 events the replays diverged at, ids only), so a divergence can be located even when the run's error payload is encrypted. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no divergence recovery.
 
 ### world-local and world-postgres
 
@@ -1200,7 +1226,7 @@ Three exceptions take other exits: a fence refusal sends the messages the delive
 
 - **Resilient start.** When `run_created` never landed, the first delivery creates the run from `run_started` carrying `runInput`, and the writer starts at the count a run has at creation.
 - **Run already finished at setup.** A `run_started` refused as a conflict, or an expired run, acknowledges without writing. A `run_completed` that loses by position to an earlier out-of-band `run_cancelled` or `run_failed` dispatches no completion hooks.
-- **Wake with nothing new.** A delivery that carries no `runInput`, hook or timer, and finds the log tail at the position this process recorded, acknowledges without a replay, provided it is its message's first delivery or its invocation already ran the [re-send pass](#the-re-send-rule). A coalesced re-run reports the next `deliveryCount` with the same `attempt`, so turbo is off and the log is read.
+- **Wake with nothing new.** A delivery that carries no `runInput`, hook or timer, and finds the log tail at the position this process recorded, acknowledges without a replay, provided it is its message's first delivery or its invocation already ran the [re-send pass](#the-re-send-rule). A `resumeHook()` wake names the `hook_received` it was sent for (`wakeEventId`), so when that event is above the recorded position the delivery skips the tail read and loads the log at once. A coalesced re-run reports the next `deliveryCount` with the same `attempt`, so turbo is off and the log is read.
 - **Inline deadline.** At the top of each pass the delivery hands off once the inline window has passed since the invocation started: 2 minutes, 5 when the function may run 10 minutes or more, 10 at 25 minutes or more (`WORKFLOW_V2_TIMEOUT_MS` overrides). Within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` (60 s) of the window's end, new steps are created as background steps.
 - **Stream writes still flushing**, or **a hook conflict** the workflow has to consume in a fresh pass: the delivery hands off.
 - **An event that landed after the VM decided.** Before suspending, a foreign event above the pass's consumed slot starts another pass instead of acknowledging, because its own wake would find the position already recorded and exit.
@@ -1835,7 +1861,7 @@ A spec 8 run's `{ timeoutSeconds }` always sends a new message before acknowledg
 - **No divergence recovery.** A replay divergence fails the run.
 - **Deadline.** QuickJS applies the node engine's deadline check and inline-start margin: a turn that begins at or past the inline deadline starts nothing more, lets the bodies still running settle, and hands off on the same message; inside the margin new steps are created as background steps, and linger is capped at the deadline minus the margin. One difference: an inline step an earlier delivery left open still runs once per delivery inside the margin on QuickJS, where the node engine leaves it unstarted.
 - **Other continuations.** Exits on the replay budget, an elapsed wait, or an unread write of its own hand off the same way; no test triggers them.
-- **Race losers.** A spec 9 run that finishes while an inline step body still runs (a race's loser) waits on QuickJS for that body, and for speculative writes, to settle before it writes `run_completed` or `run_failed`, so a run won by a sleep or hook against a long inline step completes only when the step does. The node engine writes the terminal event first and lets the body settle afterwards; the loser's outcome, if it lands, follows the terminal event and is inert.
+- **Race losers, as on node.** A spec 9 run that finishes while an inline step body still runs (a race's loser) writes its terminal event without waiting for that body; the loser's outcome, if it lands, follows the terminal event and is inert. Speculative writes still settle first. This holds whatever the run's retention, as on spec 8: on an `experimental_retention: 0` run, world-local and world-postgres discard what a step that settles after the run's end writes (its `step_completed`, `step_failed` or `step_retrying` payload, and any stream chunks), so the run's end is not held up and its data stays gone.
 - **Heap.** The terminal-inert rule (every event after an entity's terminal event is inert) reads closure from state the VM already has instead of keeping a per-entity record, so the heap stays flat over long runs. Only terminals VM state cannot show (an `AbortController` hook, a hook disposed in the log before this VM disposed it) go into a small record, which can grow by one entry per such hook never matched later; expected to be rare, not measured.
 
 ## Decisions and trade-offs
@@ -1943,6 +1969,12 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 
 ## Known limitations
 
+### Step listings on world-vercel trail the event log
+
+On a spec 9 run, world-vercel's `steps.list` and `steps.get` are a view derived from the run's event log (see [Steps on world-vercel](#steps-on-world-vercel)), and they can trail it with no stated bound. CI has seen a finished run whose log held every step's terminal event while the listing still showed a step `running` or `pending`, or left it out, 30 to 60 seconds later. Spec 8 runs are not affected: their listing is current once the step's event is written.
+
+The runtime never reads the listing. Replay, the fence, retries and the re-send rule all fold step state from the log, so a run's behaviour and result do not depend on it. What trails is what reads steps through the World: `world.steps.list` / `world.steps.get` in user code, the observability API, `workflow inspect` and the web UI's step views. To read a step's settled state right after a run ends, read the run's events (`world.events.list`), which are current. The e2e suite does that on the spec 9 lanes and checks the listing on the others. Bounding the lag is a world-vercel follow-up (see [Follow-ups](#follow-ups)).
+
 ### `run.wakeUp()` is best-effort on Vercel and Postgres
 
 A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. A sleep due within [`WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_wait_linger_ms) keeps its delivery live for its whole length, so a wake-up sent during it is lost, and the sleep ends on its own deadline. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
@@ -2014,6 +2046,7 @@ world-vercel logs what the queue did with each handoff (`accepted`, `not_immedia
 
 Open work, not scheduled:
 
+- **Bound how far world-vercel's spec 9 step listing trails the log.** `steps.list` and `steps.get` on a spec 9 run can trail the event log by tens of seconds (see [Step listings on world-vercel trail the event log](#step-listings-on-world-vercel-trail-the-event-log)). Bound it, or serve a spec 9 run's steps from the log on the client.
 - **Stop coalescing speculative creations under run-ahead (measure first).** The hazard check runs on committed writes, and a coalesced run-ahead write can commit an outcome together with the next boundary's speculative creation, so a stop detects a classification gap (logged at error level with `possibleLogCorruption: true`) but cannot undo what committed with it. Keeping speculative creations out of coalesced writes would turn the stop back into a recovery, at the cost of run-ahead's per-turn batching, its latency win. Measure that cost first, and add a test that injects a path-changing event below a speculative write.
 - **A required host contract for the QuickJS orchestrator.** `runWorkflowWithQuickJS` takes its writer, loaded log, message identity, re-send policy and continuation callback as optional parameters, whose unfenced fallbacks only standalone tests use. One required host argument would make a missing fence or handoff a type error, once those tests move to a fence-capable World.
 - **Share timer sends between the engines.** The timer message and key (`waitTimerMessage`) and the ownership rules are shared, but each engine still runs its own sending: owned-chain filtering, sends before the completing commit, the near-due sweep and its bookkeeping. A shared sender, as background step messages have, with the before-commit ordering kept visible at each call site.

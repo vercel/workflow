@@ -79,6 +79,16 @@ export class Store {
     };
   }
 
+  /** A run's status alone, without decoding its document. */
+  getRunStatus(runId: string): WorkflowRun['status'] | null {
+    const row = this.db.get<{ status: WorkflowRun['status'] }>(
+      `SELECT status FROM runs WHERE run_id = ? AND ${tagClause('tag', this.tag)}`,
+      runId,
+      ...tagParams(this.tag)
+    );
+    return row?.status ?? null;
+  }
+
   /** A run regardless of tag: the owner of a hook token can be any run. */
   getRunAnyTag(runId: string): RunRow | null {
     const row = this.db.get<{

@@ -999,6 +999,7 @@ async function createWorkflowRunEventInner(
       ? { expectedSeqInBand: params.expectedSeqInBand }
       : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
+    replayDivergenceEventIds: params?.replayDivergenceEventIds,
     // In-band writer fence. The backend refuses a stale in-band write with
     // 412 `in-band-superseded` (InBandSupersededError).
     ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),

@@ -185,7 +185,11 @@ describe('remembered usage counts', () => {
       purge: true,
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
-    const cached = createUsageStorage(db, undefined, tinyBatches);
+    const recounted: string[] = [];
+    const cached = createUsageStorage(db, undefined, {
+      ...tinyBatches,
+      onRecount: (runId) => recounted.push(runId),
+    });
     for (let i = 0; i < 10; i++) {
       await writeSome(run, i);
       expect(await cached.getRun(run.runId)).toEqual(await recount(run.runId));
@@ -201,7 +205,10 @@ describe('remembered usage counts', () => {
       eventType: 'run_completed',
       eventData: { output: bytes(10) },
     });
+    expect(recounted).toEqual([]);
     const purged = await cached.getRun(run.runId);
+    // Its counts were taken while it ran, before the purge: taken again.
+    expect(recounted).toEqual([run.runId]);
     expect(purged.dataWritten.source).toBe('saved-at-purge');
     expect(purged).toEqual(await recount(run.runId));
     await run.event({
@@ -218,8 +225,10 @@ describe('remembered usage counts', () => {
     const run = await startRun({ purge: true });
     for (let i = 0; i < 10; i++) await writeSome(run, i);
     let purgedOnce = false;
+    const recounted: string[] = [];
     const cached = createUsageStorage(db, undefined, {
       ...tinyBatches,
+      onRecount: (runId) => recounted.push(runId),
       onBatch: async () => {
         if (purgedOnce) return;
         purgedOnce = true;
@@ -232,7 +241,103 @@ describe('remembered usage counts', () => {
     });
     const usage = await cached.getRun(run.runId);
     expect(purgedOnce).toBe(true);
+    // It was running when the read began, so its batches read rows the
+    // purge then rewrote: counted again.
+    expect(recounted).toEqual([run.runId]);
     expect(usage.dataWritten.source).toBe('left-after-purge');
+    expect(usage).toEqual(await recount(run.runId));
+  });
+
+  it('count a run that had finished with its data deleted once, not twice', async () => {
+    const run = await startRun({ purge: true });
+    for (let i = 0; i < 10; i++) await writeSome(run, i);
+    await run.event({
+      eventType: 'run_completed',
+      eventData: { output: bytes(10) },
+    });
+    const recounted: string[] = [];
+    let batches = 0;
+    const cold = createUsageStorage(db, undefined, {
+      ...tinyBatches,
+      onRecount: (runId) => recounted.push(runId),
+      onBatch: () => {
+        batches += 1;
+      },
+    });
+    // Every pass over the run's rows from the start of its log.
+    const all = db.all.bind(db);
+    const fromStart: unknown[] = [];
+    const spy = vi.spyOn(db, 'all').mockImplementation(((
+      sql: string,
+      ...params: unknown[]
+    ) => {
+      if (sql.includes('GROUP BY event_type') && params[1] === 0) {
+        fromStart.push(params);
+      }
+      return all(sql, ...(params as never[]));
+    }) as typeof db.all);
+    let usage: Awaited<ReturnType<typeof cold.getRun>>;
+    try {
+      usage = await cold.getRun(run.runId);
+    } finally {
+      spy.mockRestore();
+    }
+    // Counted in batches, and not again in one block.
+    expect(batches).toBeGreaterThan(1);
+    expect(fromStart).toHaveLength(1);
+    expect(recounted).toEqual([]);
+    expect(usage.dataWritten.source).toBe('saved-at-purge');
+    expect(usage).toEqual(await recount(run.runId));
+  });
+
+  it('sum a purged run’s streams once per read', async () => {
+    const run = await startRun({ purge: true });
+    for (let i = 0; i < 10; i++) await writeSome(run, i);
+    await run.event({
+      eventType: 'run_completed',
+      eventData: { output: bytes(10) },
+    });
+    const reader = createUsageStorage(db);
+    await reader.getRun(run.runId);
+    const get = db.get.bind(db);
+    let sums = 0;
+    const spy = vi.spyOn(db, 'get').mockImplementation(((
+      sql: string,
+      ...params: unknown[]
+    ) => {
+      if (sql.includes('FROM stream_chunks') && sql.includes('SUM(')) {
+        sums += 1;
+      }
+      return get(sql, ...(params as never[]));
+    }) as typeof db.get);
+    try {
+      const usage = await reader.getRun(run.runId);
+      expect(usage.dataWritten.source).toBe('saved-at-purge');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sums).toBe(1);
+  });
+
+  it('equal a full recount when a deletion on demand lands mid-count', async () => {
+    const run = await startRun();
+    for (let i = 0; i < 10; i++) await writeSome(run, i);
+    await run.event({
+      eventType: 'run_completed',
+      eventData: { output: bytes(10) },
+    });
+    let deleted = false;
+    const cached = createUsageStorage(db, undefined, {
+      ...tinyBatches,
+      onBatch: async () => {
+        if (deleted) return;
+        deleted = true;
+        await storage.runs.deleteDataMany!({ runIds: [run.runId] });
+      },
+    });
+    const usage = await cached.getRun(run.runId);
+    expect(deleted).toBe(true);
+    expect(usage.dataWritten.source).toBe('saved-at-purge');
     expect(usage).toEqual(await recount(run.runId));
   });
 

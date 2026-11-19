@@ -48,6 +48,9 @@ without waiting for stream close. Cross-deployment `start()` keeps unframed
 writes for targets whose core version predates abort framing or cannot be
 established. `resumeHook()` retains unframed abort writes until its resume
 context can attest the receiving runtime separately from the starting client.
+An abort is also handed directly to readers in the writer's process, so an
+inline step is aborted even when a zero-retention run's end clears the stream
+before the step reads it (`src/serialization/abort-local.ts`).
 
 Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
 

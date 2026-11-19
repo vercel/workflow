@@ -1,18 +1,22 @@
 'use client';
 
 import type { Event, WorkflowRun } from '@workflow/world';
+import { AlertCircle } from 'lucide-react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { cn } from '../lib/cn';
 import { findDuplicateEventIds } from '../lib/duplicate-events';
 import {
   buildEventLookups,
   buildEventRow,
   buildListItems,
+  type EventSearchState,
   getEmptyMessage,
   getEventEntity,
   getFooterLabel,
   getListSource,
+  getSearchHint,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
@@ -65,6 +69,38 @@ interface EventsListProps {
   onViewInTrace?: (spanId: string) => void;
 }
 
+function EmptyState({
+  search,
+  onRetry,
+}: {
+  search: EventSearchState;
+  onRetry: () => void;
+}) {
+  if (search.status === 'error') {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+        <div className="flex flex-col items-center gap-1">
+          <div className="flex items-center gap-2 text-label-14 font-medium text-gray-1000">
+            <AlertCircle className="h-4 w-4 shrink-0 text-red-800" />
+            Failed to search events
+          </div>
+          {search.message ? (
+            <p className="m-0 text-copy-13 text-gray-900">{search.message}</p>
+          ) : null}
+        </div>
+        <Button variant="secondary" size="small" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-900">
+      {getEmptyMessage(search)}
+    </div>
+  );
+}
+
 function EventListViewInner({
   events,
   run,
@@ -92,7 +128,7 @@ function EventListViewInner({
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>();
-  const { query, setQuery, search } = useEventSearch(onExactIdSearch);
+  const { query, setQuery, search, retry } = useEventSearch(onExactIdSearch);
   const list = getListSource(search, { events, hasMore: hasMoreEvents });
 
   // Rows come from the list's source; names and timings from every event on
@@ -151,6 +187,28 @@ function EventListViewInner({
         ? getEventEntity(search.events[0]).key
         : search.id.id
       : (selectedRow?.entity.key ?? null);
+
+  const [visibleRange, setVisibleRange] = useState({
+    startIndex: 0,
+    endIndex: 0,
+  });
+  const relatedIndexes = useMemo(
+    () =>
+      listItems.flatMap((item, i) =>
+        item.kind === 'event' && item.row.entity.key === relatedKey ? [i] : []
+      ),
+    [listItems, relatedKey]
+  );
+  const relatedAbove = relatedIndexes.filter(
+    (i) => i < visibleRange.startIndex
+  );
+  const relatedBelow = relatedIndexes.filter((i) => i > visibleRange.endIndex);
+  const scrollToItem = (index: number) =>
+    virtuosoRef.current?.scrollToIndex({
+      index,
+      align: 'center',
+      behavior: 'smooth',
+    });
 
   // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
@@ -220,7 +278,13 @@ function EventListViewInner({
 
   const panelWidth = useDetailPanelWidth(bodyRef, selectedRow !== undefined);
 
-  const toolbar = <EventListToolbar query={query} onQueryChange={setQuery} />;
+  const toolbar = (
+    <EventListToolbar
+      query={query}
+      hint={getSearchHint(search)}
+      onQueryChange={setQuery}
+    />
+  );
 
   if (isInitialLoad) {
     return (
@@ -266,54 +330,73 @@ function EventListViewInner({
             {isRefetching || search.status === 'loading' ? (
               <EventRowsSkeleton />
             ) : rows.length === 0 ? (
-              <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-900">
-                {getEmptyMessage(search)}
-              </div>
+              <EmptyState search={search} onRetry={retry} />
             ) : (
-              <Virtuoso
-                ref={virtuosoRef}
-                totalCount={listItems.length}
-                overscan={20}
-                defaultItemHeight={25}
-                computeItemKey={(i) => {
-                  const item = listItems[i];
-                  return item.kind === 'gap'
-                    ? item.key
-                    : item.row.event.eventId;
-                }}
-                endReached={() => {
-                  if (list.hasMore && !isLoadingMoreEvents) {
-                    void onLoadMoreEvents?.();
-                  }
-                }}
-                components={{ Footer: () => <div className="h-2" /> }}
-                itemContent={(i: number) => {
-                  const item = listItems[i];
-                  if (item.kind === 'gap') {
-                    return <IdleGapRow ms={item.ms} reason={item.reason} />;
-                  }
-                  const { row } = item;
-                  const isSelected = selectedEventId === row.event.eventId;
-                  return (
-                    <EventRow
-                      row={row}
-                      index={item.index}
-                      isSelected={isSelected}
-                      isTabStop={
-                        selectedIndex === -1 ? item.index === 0 : isSelected
-                      }
-                      isRelated={
-                        relatedKey !== null && row.entity.key === relatedKey
-                      }
-                      onSelect={toggleSelectedEvent}
-                      showSeparateEventOccurrenceTimestamps={
-                        showSeparateEventOccurrenceTimestamps
-                      }
-                    />
-                  );
-                }}
-                style={{ flex: 1, minHeight: 0 }}
-              />
+              <div className="relative flex min-h-0 flex-1 flex-col">
+                <Virtuoso
+                  ref={virtuosoRef}
+                  rangeChanged={setVisibleRange}
+                  totalCount={listItems.length}
+                  overscan={20}
+                  defaultItemHeight={25}
+                  computeItemKey={(i) => {
+                    const item = listItems[i];
+                    return item.kind === 'gap'
+                      ? item.key
+                      : item.row.event.eventId;
+                  }}
+                  endReached={() => {
+                    if (list.hasMore && !isLoadingMoreEvents) {
+                      void onLoadMoreEvents?.();
+                    }
+                  }}
+                  components={{ Footer: () => <div className="h-2" /> }}
+                  itemContent={(i: number) => {
+                    const item = listItems[i];
+                    if (item.kind === 'gap') {
+                      return <IdleGapRow ms={item.ms} reason={item.reason} />;
+                    }
+                    const { row } = item;
+                    const isSelected = selectedEventId === row.event.eventId;
+                    return (
+                      <EventRow
+                        row={row}
+                        index={item.index}
+                        isSelected={isSelected}
+                        isTabStop={
+                          selectedIndex === -1 ? item.index === 0 : isSelected
+                        }
+                        relation={
+                          relatedKey === null
+                            ? undefined
+                            : row.entity.key === relatedKey
+                              ? 'related'
+                              : 'unrelated'
+                        }
+                        onSelect={toggleSelectedEvent}
+                        showSeparateEventOccurrenceTimestamps={
+                          showSeparateEventOccurrenceTimestamps
+                        }
+                      />
+                    );
+                  }}
+                  style={{ flex: 1, minHeight: 0 }}
+                />
+                {relatedAbove.length > 0 && (
+                  <RelatedHint
+                    direction="above"
+                    count={relatedAbove.length}
+                    onClick={() => scrollToItem(relatedAbove.at(-1) ?? 0)}
+                  />
+                )}
+                {relatedBelow.length > 0 && (
+                  <RelatedHint
+                    direction="below"
+                    count={relatedBelow.length}
+                    onClick={() => scrollToItem(relatedBelow[0])}
+                  />
+                )}
+              </div>
             )}
 
             <div className="relative flex h-10 shrink-0 items-center border-t border-gray-alpha-400 px-4 text-label-13 text-gray-900">
@@ -362,6 +445,48 @@ function EventListViewInner({
         </div>
       </div>
     </DecryptClickContext.Provider>
+  );
+}
+
+function RelatedHint({
+  direction,
+  count,
+  onClick,
+}: {
+  direction: 'above' | 'below';
+  count: number;
+  onClick: () => void;
+}) {
+  const label = `${count} related ${count === 1 ? 'event' : 'events'}`;
+  const layer = cn('absolute inset-0', direction === 'above' && '-scale-y-100');
+  return (
+    <button
+      type="button"
+      aria-label={`${label} ${direction}`}
+      onClick={onClick}
+      className={cn(
+        'group absolute inset-x-0 z-10 flex h-10 cursor-pointer justify-end px-3 py-2 outline-none transition-opacity duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:shadow-[inset_0_0_0_2px_var(--ds-focus-color)] starting:opacity-0',
+        direction === 'above' ? 'top-0 items-start' : 'bottom-0 items-end'
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          layer,
+          'bg-[linear-gradient(to_top,color-mix(in_oklab,var(--ds-background-100)_70%,transparent),30%,transparent)]'
+        )}
+      />
+      <span
+        aria-hidden
+        className={cn(
+          layer,
+          'bg-[linear-gradient(to_top,color-mix(in_oklab,var(--ds-blue-500)_60%,transparent),30%,transparent)] opacity-45 transition-opacity duration-300 ease-[ease] group-hover:opacity-100 group-hover:duration-150 group-focus-visible:opacity-100 group-active:opacity-75 group-active:duration-75'
+        )}
+      />
+      <span className="relative font-medium text-label-12 text-blue-900">
+        {label}
+      </span>
+    </button>
   );
 }
 

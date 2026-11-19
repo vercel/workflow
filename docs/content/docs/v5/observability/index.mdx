@@ -62,15 +62,23 @@ npx workflow inspect run <run_id> --url
 npx workflow inspect run <run_id> --backend vercel --url
 ```
 
-### Run usage
+## Run usage
 
-On the Local World, a run's header shows its **Events**, every event in its log (not only the ones the page has loaded), and its **Data written (local)**, the size of the data the run wrote to your local data directory. Select either one to open the run's **Usage** page (`/run/<run_id>/usage`). It lists where the run's events come from: the workflow, each step function with its calls, share of the events and retries, then the run's own events, attributes, sleeps and hooks. Next to it, the data the run wrote is broken down by run, steps, hooks and streams.
+On the Local World, `--usage` prints what a run used instead of the run: its events, listed by type, and its storage. Steps list each step function with its calls, its share of the run's events and its retries. Hooks list each hook by its token. Attributes, sleeps and the run's own events follow. `--json` prints the same numbers as JSON.
 
-Local runs aren't billed, and data sizes are local storage sizes, which differ from what Vercel measures. For billed amounts, open the run on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard). A run started with `experimental_retention: 0` reports what it wrote before its data was deleted. `npx workflow inspect run <run_id> --usage` prints the same numbers, and `--json` prints them as JSON.
+```bash
+npx workflow inspect run <run_id> --usage
+```
 
-#### How events are counted
+The output includes hook tokens, and a token resumes its hook. Share the output, `--json` included, only where you would share the run's data.
 
-Every event in a run's log counts once, following the [Workflow pricing](https://vercel.com/docs/workflows/pricing) rules. The [event types](/docs/api-reference/workflow-runtime/world/storage#event-types) a run writes:
+### In the web UI
+
+On the Local World, a run's header shows its **Events** and its **Storage (local)**. Select either one, or the run's **Usage** tab, to open the run's Usage page (`/run/<run_id>/usage`), which shows the same table as `--usage`.
+
+### How events are counted
+
+Every event in a run's log counts once. The [event types](/docs/api-reference/workflow-runtime/world/storage#event-types) a run writes:
 
 - **The run:** `run_created`, `run_started`, then `run_completed`, `run_failed` or `run_cancelled`.
 - **Each step call:** `step_created`, `step_started`, then `step_completed` or `step_failed`.
@@ -78,6 +86,19 @@ Every event in a run's log counts once, following the [Workflow pricing](https:/
 - **Each sleep:** `wait_created` and `wait_completed`.
 - **Each hook:** `hook_created`, a `hook_received` for each payload it receives, and `hook_disposed` when it is disposed.
 - **Each attribute write:** one `attr_set` event per [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call.
+
+### How storage is counted
+
+**Storage (local)** counts the bytes of the run's payloads as the SDK sent them (compressed when that saves space, and encrypted when encryption is on): step inputs and results, run inputs and outputs, errors, and hook metadata and payloads. It adds the bytes the run wrote to its streams. Event metadata, such as ids and timestamps, isn't counted. A run started with `experimental_retention: 0` reports what it wrote before its data was deleted.
+
+Two kinds of data aren't counted locally:
+
+- **QuickJS VM snapshots.**
+- **A dynamic workflow's code.** The Local World keeps it on the run, not in the run's events.
+
+### On Vercel
+
+Vercel bills a run by its Workflow Events and its Data Written, among the resources on [Workflow pricing](https://vercel.com/docs/workflows/pricing). The events above are the run's Workflow Events, and storage is counted the way Data Written is, except that Data Written also includes QuickJS VM snapshots and a dynamic workflow's code. Local runs aren't billed. For a run's billed amounts, open it on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard).
 
 ## Backends
 

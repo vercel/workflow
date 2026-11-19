@@ -1,4 +1,8 @@
-import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
+import {
+  formatStepName,
+  parseStepName,
+  parseWorkflowName,
+} from '@workflow/utils/parse-name';
 import { isSealedNoopEvent } from './event-metadata.js';
 import type { WorkflowRunStatus } from './runs.js';
 import { isTerminalWorkflowRunStatus } from './runs.js';
@@ -26,10 +30,13 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
 export const WORKFLOW_PRICING_DOCS_URL =
   'https://vercel.com/docs/workflows/pricing';
 
-/** How many spans the summaries list before collapsing the rest. */
-export const USAGE_SPANS_SHOWN = 5;
+/** The docs section on what each event of a run is, and how it counts. */
+export const USAGE_COUNTING_DOCS_URL =
+  'https://workflow-sdk.dev/docs/observability#how-events-are-counted';
 
-/** What a span's events belong to. Sleeps are `wait`. */
+/** How many children a group of rows shows before folding the rest. */
+const USAGE_SPANS_SHOWN = 5;
+
 /**
  * What a span's events belong to: the run's own lifecycle (`run_*`), a step,
  * a hook, a sleep (`wait`), the run's attributes (`attr_set`), or event
@@ -58,10 +65,13 @@ export interface RunUsageSpan {
   /**
    * What the events are grouped by: the full step name for a step (every
    * call of one step function is one span), the workflow name for the run's
-   * own events, `hook` for hooks, `sleep` for sleeps, `attributes` for
-   * attribute writes and `other` for event types this build does not know.
+   * own events, a hook's token for that hook (each hook is a span of its
+   * own), `sleep` for sleeps, `attributes` for attribute writes and `other`
+   * for event types this build does not know.
    */
   name: string;
+  /** A hook span's hook id (its token can be reused by a later hook). */
+  id?: string;
   events: number;
   /** `events / RunUsage.events`, from 0 to 1. */
   share: number;
@@ -69,8 +79,8 @@ export interface RunUsageSpan {
   retries: number;
   /**
    * How many times the span ran: a step span's steps (calls of the step
-   * function), a sleep or hook span's sleeps or hooks, 1 for the run, and
-   * the events themselves for attributes and other events.
+   * function), a sleep span's sleeps, 1 for a hook or the run, and the
+   * events themselves for attributes and other events.
    */
   calls: number;
 }
@@ -116,23 +126,28 @@ export interface RunUsage {
   stepEvents: RunUsageStepEvents;
   /** Sorted by events, most first. */
   eventsBySpan: RunUsageSpan[];
-  /** Workflow Data Written, in bytes. */
+  /**
+   * Workflow Data Written, in bytes, which the CLI labels `Storage (local)`
+   * for a local run: the run's payloads as the SDK sent them (compressed or
+   * encrypted when those apply), not event metadata, plus its stream bytes.
+   * QuickJS VM snapshots are not counted yet.
+   */
   dataWritten: {
     bytes: number;
     byEntity: Record<RunUsageEntity, number>;
     /**
      * Where the sizes come from: the run's rows as they are (`log`); for a
-     * run whose data was deleted when it finished, the sizes saved before
-     * the deletion plus anything written after (`saved-at-purge`), or, when
-     * none were saved (a run purged before the sizes were kept), what is
-     * left of it (`left-after-purge`).
+     * run whose data was deleted, the sizes saved before the deletion plus
+     * anything written after (`saved-at-purge`), or, when none were saved
+     * (a run deleted before the sizes were kept), what is left of it
+     * (`left-after-purge`).
      */
     source: RunUsageDataWrittenSource;
   };
   /**
-   * The run's data was deleted when it finished (`experimental_retention:
-   * 0`). Its event counts are unaffected; see `dataWritten.source` for
-   * whether its sizes are what it wrote.
+   * The run's data was deleted: when it finished (`experimental_retention:
+   * 0`), or on demand. Its event counts are unaffected; see
+   * `dataWritten.source` for whether its sizes are what it wrote.
    */
   dataPurged: boolean;
   /**
@@ -202,7 +217,7 @@ export interface RunUsageStepEvents {
 
 /**
  * One aggregate row: the events of one type in a run's log, with their
- * stored size. Step events go in {@link RunUsageStepGroup} instead.
+ * payload bytes. Step events go in {@link RunUsageStepGroup} instead.
  */
 export interface RunUsageEventGroup {
   eventType: string;
@@ -210,7 +225,7 @@ export interface RunUsageEventGroup {
   bytes: number;
 }
 
-/** The events of every step with one name, with their stored size. */
+/** The events of every step with one name, with their payload bytes. */
 export interface RunUsageStepGroup {
   /** `null` when the step's row is missing. */
   stepName: string | null;
@@ -236,6 +251,14 @@ export interface RunUsageStepGroup {
   bytes: number;
 }
 
+/** The events of one hook, by its id. */
+export interface RunUsageHookGroup {
+  hookId: string;
+  /** The hook's token; `null` when the World could not find it. */
+  token: string | null;
+  events: number;
+}
+
 export interface RunUsageAggregates {
   runId: string;
   status: WorkflowRunStatus;
@@ -246,7 +269,8 @@ export interface RunUsageAggregates {
   streamBytes: number;
   dataRetained?: RunUsage['dataRetained'];
   /**
-   * The run's data was deleted when it finished. With `savedDataWritten`,
+   * The run's data was deleted (when it finished, or on demand). With
+   * `savedDataWritten`,
    * those are its sizes (what it wrote); without, the rows' sizes are
    * reported as what is left.
    */
@@ -254,10 +278,15 @@ export interface RunUsageAggregates {
   /** Data written by entity, saved before the run's data was deleted. */
   savedDataWritten?: Record<RunUsageEntity, number>;
   /**
-   * Distinct hooks and sleeps in the log. When absent, their `*_created`
-   * events are counted instead.
+   * The hook events by hook. Each is a span of its own, named by its token;
+   * without them, the hook events are one span named `hook`.
    */
-  calls?: { hook: number; wait: number };
+  hookGroups?: RunUsageHookGroup[];
+  /**
+   * Distinct sleeps in the log. When absent, their `wait_created` events are
+   * counted instead.
+   */
+  calls?: { wait: number };
   /** Whether the backend bills this run (default `false`). */
   billed?: boolean;
 }
@@ -339,6 +368,10 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   };
 
   const created = { hook: 0, wait: 0 };
+  // With hook groups, each hook is a span of its own: the hook events count
+  // towards the run here, and go to their hook's span below.
+  const hookGroups = input.hookGroups;
+  let hookEvents = 0;
   const runEvents: RunUsageRunEvents = {
     events: 0,
     byType: { created: 0, started: 0, completed: 0, failed: 0, cancelled: 0 },
@@ -364,10 +397,45 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     if (group.eventType === 'wait_created')
       created.wait += toCount(group.events);
     const { kind, name } = spanOf(group.eventType, input.workflowName);
+    if (kind === 'hook' && hookGroups) {
+      hookEvents += toCount(group.events);
+      events += toCount(group.events);
+      byEntity[entity] += toCount(group.bytes);
+      continue;
+    }
     add(kind, name, entity, toCount(group.events), 0, toCount(group.bytes));
   }
+  if (hookGroups) {
+    let grouped = 0;
+    for (const group of hookGroups) {
+      const count = toCount(group.events);
+      if (count <= 0 || !group.hookId) continue;
+      grouped += count;
+      spans.set(`hook\u0000${group.hookId}`, {
+        kind: 'hook',
+        name: group.token || group.hookId,
+        id: group.hookId,
+        events: count,
+        share: 0,
+        retries: 0,
+        calls: 1,
+      });
+    }
+    // Hook events no group holds (none from world-local), so the spans
+    // still add up to the run's events.
+    if (hookEvents > grouped) {
+      spans.set('hook\u0000', {
+        kind: 'hook',
+        name: 'hook',
+        events: hookEvents - grouped,
+        share: 0,
+        retries: 0,
+        calls: 0,
+      });
+    }
+  }
   const calls = {
-    hook: toCount(input.calls?.hook ?? created.hook),
+    hook: toCount(created.hook),
     wait: toCount(input.calls?.wait ?? created.wait),
   };
   const stepEvents: RunUsageStepEvents = {
@@ -416,7 +484,7 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   }
   for (const span of spans.values()) {
     if (span.kind === 'run') span.calls = 1;
-    if (span.kind === 'hook') span.calls = calls.hook;
+    if (span.kind === 'hook' && !hookGroups) span.calls = calls.hook;
     if (span.kind === 'wait') span.calls = calls.wait;
     if (span.kind === 'attributes' || span.kind === 'other') {
       span.calls = span.events;
@@ -429,7 +497,8 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
       (a, b) =>
         b.events - a.events ||
         compareCodeUnits(a.name, b.name) ||
-        compareCodeUnits(a.kind, b.kind)
+        compareCodeUnits(a.kind, b.kind) ||
+        compareCodeUnits(a.id ?? '', b.id ?? '')
     );
 
   return {
@@ -531,47 +600,25 @@ export function formatCount(count: number, one: string, many: string): string {
   return plural(count, one, many);
 }
 
-const formatRetries = (count: number) => plural(count, 'retry', 'retries');
-
 /** The row the steps past the shown ones fold into: `+ 3 other steps`. */
 export function formatOtherSteps(steps: number): string {
   return `+ ${steps.toLocaleString('en-US')} other ${steps === 1 ? 'step' : 'steps'}`;
 }
 
 /**
- * `12 billable events · 1 retry` on a billed run, `12 events · 1 retry` on
- * one that is not (a Local World run).
+ * The label for {@link RunUsage.dataWritten}: `Storage (local)` on a run
+ * that is not billed, `Storage` on one that is.
  */
-export function formatRunUsageSummary(usage: RunUsage): string {
-  const events = usage.billed
-    ? plural(usage.billableEvents, 'billable event', 'billable events')
-    : formatUsageEvents(usage.events);
-  return `${events} · ${formatRetries(usage.retries.count)}`;
-}
-
-/** The run's events and retries, for the CLI's summary block. */
-export function formatEventsWithRetries(usage: RunUsage): {
-  events: string;
-  retries: string;
-} {
-  return {
-    events: usage.events.toLocaleString('en-US'),
-    retries: formatRetries(usage.retries.count),
-  };
-}
-
-/** The storage table's heading: what the sizes measure. */
 export function formatDataWrittenHeading(usage: RunUsage): string {
-  return usage.billed ? 'Data written' : 'Data written (local)';
+  return usage.billed ? 'Storage' : 'Storage (local)';
 }
 
 /**
- * Why a run that is not billed has a size that differs from Vercel's;
- * `null` on a billed run.
+ * What a local run's storage counts; `null` on a billed run.
  */
 export function formatLocalDataWrittenNote(usage: RunUsage): string | null {
   if (usage.billed) return null;
-  return 'Data this run wrote to your local data directory. Vercel measures Data Written in its own storage, so the number on Vercel will differ.';
+  return "The bytes of the run's payloads and streams in your local data directory, counted the way Vercel counts Data Written. QuickJS VM snapshots aren't counted yet.";
 }
 
 /** The footer under the usage: not a bill, and how to read it. */
@@ -611,245 +658,158 @@ export function formatRunEventsLine(usage: RunUsage): string | null {
 }
 
 /**
- * The sleeps, hooks, attribute writes and unknown events, from their spans:
- * `1 sleep wrote 2 events, 1 hook wrote 3 events.` `null` when there are
- * none.
- */
-export function formatBuiltInEventsLine(usage: RunUsage): string | null {
-  const span = (kind: RunUsageSpanKind) =>
-    usage.eventsBySpan.find((s) => s.kind === kind);
-  const parts: string[] = [];
-  const wait = span('wait');
-  if (wait) {
-    parts.push(
-      `${plural(wait.calls, 'sleep', 'sleeps')} wrote ${formatUsageEvents(wait.events)}`
-    );
-  }
-  const hook = span('hook');
-  if (hook) {
-    parts.push(
-      `${plural(hook.calls, 'hook', 'hooks')} wrote ${formatUsageEvents(hook.events)}`
-    );
-  }
-  const attributes = span('attributes');
-  if (attributes) {
-    parts.push(
-      `${plural(attributes.events, 'attribute write', 'attribute writes')}`
-    );
-  }
-  const other = span('other');
-  if (other) {
-    parts.push(`${plural(other.events, 'other event', 'other events')}`);
-  }
-  if (parts.length === 0) return null;
-  const sentence = parts.join(', ');
-  return `${sentence[0].toUpperCase()}${sentence.slice(1)}.`;
-}
-
-/**
- * What the retries added, from their counts: `2 retries added 4 events: 2
- * retry markers, 2 step starts.` With no retries, what one would add.
- */
-function retryLine(usage: RunUsage): string {
-  const { count, events } = usage.retries;
-  if (count <= 0) {
-    return 'A retry adds a retry marker, and the step starting again.';
-  }
-  const starts = Math.max(0, events - count);
-  const parts = [plural(count, 'retry marker', 'retry markers')];
-  if (starts > 0) parts.push(plural(starts, 'step start', 'step starts'));
-  return `${plural(count, 'retry', 'retries')} added ${formatUsageEvents(events)}: ${parts.join(', ')}.`;
-}
-
-const COUNT_COVERS =
-  'The count covers the whole run, not only the events loaded on this page.';
-
-/**
- * Every line of "How events are counted", from the run's own numbers. The
- * CLI prints {@link formatEventCountingNote}, two of them; a UI shows all.
- */
-export function formatEventCountingLines(usage: RunUsage): string[] {
-  const breakdown = formatStepEventsBreakdown(usage);
-  const creation = formatStepCreationNote(usage);
-  const runLine = formatRunEventsLine(usage);
-  const builtIns = formatBuiltInEventsLine(usage);
-  return [
-    ...(breakdown ? [`${breakdown}.`] : []),
-    ...(creation ? [creation] : []),
-    retryLine(usage),
-    ...(runLine ? [runLine] : []),
-    ...(builtIns ? [builtIns] : []),
-    usage.billed
-      ? `Every event in the log is billable today. ${COUNT_COVERS}`
-      : COUNT_COVERS,
-  ];
-}
-
-/**
- * The two lines of "How events are counted" the CLI prints under its table:
- * how the run's step events add up (or, with no steps, what the run's own
- * events were), and what the retries added. Both are lines of
- * {@link formatEventCountingLines}.
- */
-export function formatEventCountingNote(usage: RunUsage): [string, string] {
-  const breakdown = formatStepEventsBreakdown(usage);
-  return [
-    breakdown
-      ? `${breakdown}.`
-      : (formatRunEventsLine(usage) ?? 'The run wrote no events.'),
-    retryLine(usage),
-  ];
-}
-
-/**
- * For a run whose data was deleted when it finished: what its sizes show.
+ * For a run whose data was deleted (when it finished, or on demand): what
+ * its sizes show.
  * `null` for a run whose data is kept.
  */
 export function formatDataPurgedNote(usage: RunUsage): string | null {
   if (!usage.dataPurged) return null;
   return usage.dataWritten.source === 'saved-at-purge'
-    ? "This run's data was deleted when it finished; sizes show what it wrote."
-    : "This run's data was deleted when it finished, before its sizes were kept; sizes show what is left.";
+    ? "This run's data was deleted; sizes show what it wrote."
+    : "This run's data was deleted before its sizes were kept; sizes show what is left.";
 }
 
-const STEP_EVENT_LABELS: Record<
-  RunUsageStepEventType | 'other',
-  [one: string, many: string]
-> = {
-  created: ['created', 'created'],
-  started: ['started', 'started'],
-  completed: ['completed', 'completed'],
-  failed: ['failed', 'failed'],
-  retrying: ['retry marker', 'retry markers'],
-  other: ['other', 'other'],
+/** What a group of rows holds, in the order the table lists them. */
+export type UsageRowType =
+  | 'steps'
+  | 'hooks'
+  | 'attributes'
+  | 'sleeps'
+  | 'run'
+  | 'other';
+
+const USAGE_ROW_TYPES: readonly UsageRowType[] = [
+  'steps',
+  'hooks',
+  'attributes',
+  'sleeps',
+  'run',
+  'other',
+];
+
+/** The Type column. */
+export const USAGE_ROW_TYPE_LABELS: Record<UsageRowType, string> = {
+  steps: 'Steps',
+  hooks: 'Hooks',
+  attributes: 'Attributes',
+  sleeps: 'Sleeps',
+  run: 'Run',
+  other: 'Other events',
 };
 
-/**
- * How the run's step events add up, from its own counts:
- * `5 steps wrote 14 events: 2 created, 7 started, 5 completed, 2 retry markers`.
- * `null` when no step ran.
- */
-export function formatStepEventsBreakdown(usage: RunUsage): string | null {
-  const { steps, events, byType } = usage.stepEvents;
-  if (events <= 0) return null;
-  const parts = ([...RUN_USAGE_STEP_EVENT_TYPES, 'other'] as const).flatMap(
-    (type) => {
-      const count = byType[type];
-      if (count <= 0) return [];
-      const [one, many] = STEP_EVENT_LABELS[type];
-      return [`${count.toLocaleString('en-US')} ${count === 1 ? one : many}`];
-    }
-  );
-  return `${plural(steps, 'step', 'steps')} wrote ${formatUsageEvents(events)}: ${parts.join(', ')}`;
-}
+const SPAN_KIND_OF_ROW_TYPE: Record<UsageRowType, RunUsageSpanKind> = {
+  steps: 'step',
+  hooks: 'hook',
+  attributes: 'attributes',
+  sleeps: 'wait',
+  run: 'run',
+  other: 'other',
+};
 
-/**
- * Why some steps have no `created` event, when that is so: they ran inline
- * on a spec 9 run, where a step's first `step_started` creates it. `null`
- * when every step has one.
- */
-export function formatStepCreationNote(usage: RunUsage): string | null {
-  const { steps, byType } = usage.stepEvents;
-  const missing = steps - byType.created;
-  if (missing <= 0) return null;
-  return missing === steps
-    ? 'No step has a created event: each ran inline, and its first started event created it.'
-    : `${plural(missing, 'step has', 'steps have')} no created event: they ran inline, and their first started event created them.`;
-}
-
-export interface UsageSpanTreeRow {
-  kind: RunUsageSpanKind;
+export interface UsageRow {
+  /** A step function's short name, or a hook's token. */
   label: string;
   events: number;
+  /** Of the run's events, from 0 to 1. */
   share: number;
   retries: number;
+  /**
+   * Steps: calls of the step function. Hooks: 1. A group: its steps' calls,
+   * its hooks, attribute writes, sleeps, or 1 for the run.
+   */
   calls: number;
   /** A tooltip: what the row's events are. */
   note?: string;
 }
 
-/**
- * The span table the CLI draws (and a UI would): the workflow, its steps
- * (biggest first, the rest folded), then the built-in rows (the run's own
- * events, sleeps, hooks).
- */
-export interface UsageSpanTree {
-  workflow: { label: string; events: number };
-  steps: UsageSpanTreeRow[];
-  /** Steps past the limit, folded into "+ N other steps"; `null` if none. */
-  otherSteps: {
-    steps: number;
-    events: number;
-    share: number;
-    retries: number;
-    calls: number;
-  } | null;
-  builtIns: UsageSpanTreeRow[];
-  /** Label the built-in rows: only when sleeps or hooks are among them. */
-  showBuiltInLabel: boolean;
+export interface UsageRowGroup extends Omit<UsageRow, 'label'> {
+  type: UsageRowType;
+  /** Steps: each step function. Hooks: each hook. Biggest first. */
+  children: UsageRow[];
+  /** The children past the limit, folded into one row; `null` if none. */
+  otherChildren: (Omit<UsageRow, 'note'> & { count: number }) | null;
 }
 
-const BUILT_IN_LABELS: Record<Exclude<RunUsageSpanKind, 'step'>, string> = {
-  run: 'Run start & finish',
-  attributes: 'Attributes',
-  wait: 'Sleeps',
-  hook: 'Hooks',
-  other: 'Other events',
-};
-
-/** The built-in rows' order. */
-const BUILT_IN_KINDS = ['run', 'attributes', 'wait', 'hook', 'other'] as const;
-
-const rowOf = (span: RunUsageSpan, label: string): UsageSpanTreeRow => ({
-  kind: span.kind,
-  label,
-  events: span.events,
-  share: span.share,
-  retries: span.retries,
-  calls: span.calls,
-});
-
-export function usageSpanTree(
+/**
+ * The usage table, one flat list: Steps (each step function under it),
+ * Hooks (each hook, by token), then Attributes, Sleeps and Run, and Other
+ * events for types this build does not know. Only the types the run has.
+ */
+export function usageRows(
   usage: RunUsage,
   limit: number = USAGE_SPANS_SHOWN
-): UsageSpanTree {
-  const steps = usage.eventsBySpan.filter((span) => span.kind === 'step');
-  const { shown, other } = collapseUsageSpans(steps, limit);
+): UsageRowGroup[] {
   const runNote = formatRunEventsLine(usage) ?? undefined;
-  const builtIns = BUILT_IN_KINDS.flatMap((kind) => {
-    const span = usage.eventsBySpan.find((s) => s.kind === kind);
-    if (!span) return [];
-    const row = rowOf(span, BUILT_IN_LABELS[kind]);
-    return [kind === 'run' && runNote ? { ...row, note: runNote } : row];
-  });
-  return {
-    workflow: {
+  return USAGE_ROW_TYPES.flatMap((type): UsageRowGroup[] => {
+    const spans = usage.eventsBySpan.filter(
+      (span) => span.kind === SPAN_KIND_OF_ROW_TYPE[type]
+    );
+    if (spans.length === 0) return [];
+    const total = sumRows(spans);
+    const group: UsageRowGroup = {
+      type,
+      events: total.events,
+      share: total.share,
+      retries: total.retries,
+      calls: type === 'hooks' ? spans.length : total.calls,
+      children: [],
+      otherChildren: null,
+      ...(type === 'run' && runNote ? { note: runNote } : {}),
+    };
+    if (type !== 'steps' && type !== 'hooks') return [group];
+    const { shown, other } = collapseUsageSpans(spans, limit);
+    group.children = childRowsOf(shown);
+    group.otherChildren = other && {
+      count: other.spans,
       label:
-        parseWorkflowName(usage.workflowName)?.shortName || usage.workflowName,
-      events: usage.events,
-    },
-    steps: shown.map((span) => rowOf(span, usageSpanLabel(span))),
-    otherSteps: other && {
-      steps: other.spans,
+        type === 'steps'
+          ? formatOtherSteps(other.spans)
+          : `+ ${other.spans.toLocaleString('en-US')} other ${other.spans === 1 ? 'hook' : 'hooks'}`,
       events: other.events,
       share: other.share,
       retries: other.retries,
       calls: other.calls,
-    },
-    builtIns,
-    showBuiltInLabel: builtIns.some((row) => row.kind !== 'run'),
-  };
+    };
+    return [group];
+  });
+}
+
+function sumRows(spans: RunUsageSpan[]) {
+  return spans.reduce(
+    (sum, span) => ({
+      events: sum.events + span.events,
+      share: sum.share + span.share,
+      retries: sum.retries + span.retries,
+      calls: sum.calls + span.calls,
+    }),
+    { events: 0, share: 0, retries: 0, calls: 0 }
+  );
 }
 
 /**
- * The step the biggest-driver callout names: the one with the most events.
- * Never a built-in row; `null` when the run has no steps.
+ * Child rows, labelled by short name (a step) or token (a hook). Rows whose
+ * labels would read the same carry more: a step its module (`send
+ * (./src/a)` and `send (./src/b)`), a hook its id.
  */
-export function usageBiggestDriver(usage: RunUsage): RunUsageSpan | null {
-  return usage.eventsBySpan.find((span) => span.kind === 'step') ?? null;
+function childRowsOf(spans: RunUsageSpan[]): UsageRow[] {
+  const labels = spans.map((span) => usageSpanLabel(span));
+  const seen = new Map<string, number>();
+  for (const label of labels) seen.set(label, (seen.get(label) ?? 0) + 1);
+  return spans.map((span, i) => ({
+    label:
+      (seen.get(labels[i]) ?? 0) > 1
+        ? span.kind === 'step'
+          ? formatStepName(span.name)
+          : `${labels[i]} (${span.id ?? span.name})`
+        : labels[i],
+    events: span.events,
+    share: span.share,
+    retries: span.retries,
+    calls: span.calls,
+  }));
 }
 
-export interface CollapsedUsageSpans {
+interface CollapsedUsageSpans {
   shown: RunUsageSpan[];
   /** The spans past `limit`, folded into one row; `null` when none are. */
   other: {
@@ -862,7 +822,7 @@ export interface CollapsedUsageSpans {
 }
 
 /** The first `limit` spans, and the rest as "N other spans". */
-export function collapseUsageSpans(
+function collapseUsageSpans(
   spans: RunUsageSpan[],
   limit: number = USAGE_SPANS_SHOWN
 ): CollapsedUsageSpans {

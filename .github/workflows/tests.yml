@@ -755,7 +755,7 @@ jobs:
     # cross-deployment start() stamps the lower of the target's and the
     # caller's version, so with only the deployment env set this lane would
     # silently test spec 8. The e2e test "stamps the spec version the lane
-    # opts in to" fails if either side stops seeing it.
+    # runs at" fails if either side stops seeing it.
     #
     # Same dedicated-deployment pattern as e2e-vercel-ws-transport above.
     name: E2E Vercel Spec 9 Test (${{ matrix.app.name }}, ${{ matrix.vm }})
@@ -1052,8 +1052,6 @@ jobs:
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
-          # Local worlds have no run encryption keys; snapshot legs opt in.
-          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
           # Snapshot legs log each restore so the check below can count them.
           DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
 
@@ -1171,8 +1169,6 @@ jobs:
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
-          # Local worlds have no run encryption keys; snapshot legs opt in.
-          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
           # Snapshot legs log each restore so the check below can count them.
           DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
 
@@ -1208,8 +1204,8 @@ jobs:
     # serves it with the variable set, and runs the full suite against it on
     # both VMs. The variable is set on the server AND on the test runner (a
     # start() from the runner stamps the lower of the two), and the e2e test
-    # "stamps the spec version the lane opts in to" fails if either side
-    # stops seeing it.
+    # "stamps the spec version the lane runs at" fails if either side stops
+    # seeing it.
     name: E2E Local Spec 9 Tests (nextjs-turbopack, ${{ matrix.vm }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1457,8 +1453,6 @@ jobs:
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
-          # Local worlds have no run encryption keys; snapshot legs opt in.
-          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
           # Snapshot legs log each restore so the check below can count them.
           DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
 

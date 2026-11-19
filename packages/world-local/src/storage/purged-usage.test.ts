@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  formatDataPurgedNote,
   RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -14,6 +15,7 @@ import { createWorld } from '../index.js';
 import { createStorage, type LocalStorage } from '../storage/index.js';
 import { createStreamer } from '../streamer.js';
 import { createRun } from '../test-helpers.js';
+import { PAYLOAD_BYTES_SQL } from './purged-usage.js';
 
 let dataDir: string;
 let storage: LocalStorage;
@@ -154,7 +156,8 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     const lateRow =
       purged.after.dataWritten.byEntity.step -
       purged.before.dataWritten.byEntity.step;
-    expect(lateRow).toBeGreaterThan(7000);
+    // The late payload's bytes, exactly: payloads, not the row's JSON.
+    expect(lateRow).toBe(7000);
     expect(lateRow).toBe(
       kept.after.dataWritten.byEntity.step -
         kept.before.dataWritten.byEntity.step
@@ -201,7 +204,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
         ...kept.after.dataWritten,
         source: 'saved-at-purge',
       });
-      expect(purged.after.dataWritten.bytes).toBeGreaterThan(
+      expect(purged.after.dataWritten.bytes).toBe(
         purged.before.dataWritten.bytes + 7000
       );
       // One saved row, now covering the late write.
@@ -233,10 +236,83 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     const usage = await usageOf(purged.runId);
     expect(usage.dataWritten.source).toBe('left-after-purge');
     const left = db.get<{ bytes: number }>(
-      'SELECT SUM(length(CAST(doc AS BLOB))) AS bytes FROM events WHERE run_id = ?',
+      `SELECT SUM(${PAYLOAD_BYTES_SQL}) AS bytes FROM events WHERE run_id = ?`,
       purged.runId
     );
     expect(usage.dataWritten.bytes).toBe(Number(left?.bytes));
+  });
+
+  describe('deleted on demand (runs.deleteDataMany)', () => {
+    const deleteData = (runId: string) =>
+      storage.runs.deleteDataMany!({ runIds: [runId] });
+
+    it('saves what a kept run wrote before deleting it, and says it was deleted', async () => {
+      const kept = await startRun(false);
+      await writeAndFinish(kept);
+      const before = await usageOf(kept.runId);
+      expect(before.dataPurged).toBe(false);
+
+      const result = await deleteData(kept.runId);
+      expect(result.results[0].outcome).toBe('deleted');
+      const after = await usageOf(kept.runId);
+      expect(after.dataPurged).toBe(true);
+      expect(after.dataWritten).toEqual({
+        ...before.dataWritten,
+        source: 'saved-at-purge',
+      });
+      expect(after.events).toBe(before.events);
+      // True for a deletion on demand: nothing about when it finished.
+      expect(formatDataPurgedNote(after)).toBe(
+        "This run's data was deleted; sizes show what it wrote."
+      );
+
+      // Deleting it again changes nothing.
+      expect((await deleteData(kept.runId)).results[0].outcome).toBe(
+        'already_deleted'
+      );
+      expect((await usageOf(kept.runId)).dataWritten).toEqual(
+        after.dataWritten
+      );
+      expect(savedRows(kept.runId)).toHaveLength(1);
+    });
+
+    it('does not save the scrubbed rows of a run deleted before sizes were saved', async () => {
+      const purged = await startRun(true);
+      await writeAndFinish(purged);
+      // A purge by a world-local that did not save sizes.
+      const db = databaseFor(dataDir);
+      db.run('DELETE FROM run_usage_purged WHERE run_id = ?', purged.runId);
+
+      expect((await deleteData(purged.runId)).results[0].outcome).toBe(
+        'already_deleted'
+      );
+      expect(savedRows(purged.runId)).toHaveLength(0);
+      const usage = await usageOf(purged.runId);
+      expect(usage.dataWritten.source).toBe('left-after-purge');
+      expect(formatDataPurgedNote(usage)).toBe(
+        "This run's data was deleted before its sizes were kept; sizes show what is left."
+      );
+    });
+
+    it('counts a late step write on a run deleted on demand in full', async () => {
+      const finishLate = async (purge: boolean) => {
+        const run = await startRun(false, SPEC_VERSION_SINGLE_ORCHESTRATOR);
+        await writeAndFinish(run, { leaveStepRunning: 'step_late' });
+        if (purge) await deleteData(run.runId);
+        await run.event({
+          eventType: 'step_completed',
+          correlationId: 'step_late',
+          eventData: { result: bytes(7000) },
+        });
+        return usageOf(run.runId);
+      };
+      const kept = await finishLate(false);
+      const deleted = await finishLate(true);
+      expect(deleted.dataWritten).toEqual({
+        ...kept.dataWritten,
+        source: 'saved-at-purge',
+      });
+    });
   });
 
   it('falls back to what is left for a run purged before sizes were saved', async () => {
@@ -252,7 +328,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     expect(usage.dataPurged).toBe(true);
     expect(usage.dataWritten.source).toBe('left-after-purge');
     const left = databaseFor(dataDir).get<{ bytes: number }>(
-      'SELECT SUM(length(CAST(doc AS BLOB))) AS bytes FROM events WHERE run_id = ?',
+      `SELECT SUM(${PAYLOAD_BYTES_SQL}) AS bytes FROM events WHERE run_id = ?`,
       purged.runId
     );
     expect(usage.dataWritten.bytes).toBe(Number(left?.bytes));
@@ -272,7 +348,7 @@ describe('data written by a run whose data is deleted when it finishes', () => {
     ).toBeUndefined();
     const usage = await usageOf(kept.runId);
     const rows = db.get<{ bytes: number }>(
-      'SELECT SUM(length(CAST(doc AS BLOB))) AS bytes FROM events WHERE run_id = ?',
+      `SELECT SUM(${PAYLOAD_BYTES_SQL}) AS bytes FROM events WHERE run_id = ?`,
       kept.runId
     );
     expect(usage).toMatchObject({ dataPurged: false });

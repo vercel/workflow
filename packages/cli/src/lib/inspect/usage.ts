@@ -1,18 +1,18 @@
+import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
-  formatEventCountingNote,
-  formatEventsWithRetries,
-  formatOtherSteps,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
   RUN_USAGE_ENTITIES,
   type RunUsage,
   type RunUsageEntity,
-  type UsageSpanTreeRow,
-  usageSpanTree,
+  USAGE_COUNTING_DOCS_URL,
+  USAGE_ROW_TYPE_LABELS,
+  type UsageRowGroup,
+  usageRows,
   WORKFLOW_PRICING_DOCS_URL,
   type WorkflowRunStatus,
 } from '@workflow/world';
@@ -63,12 +63,31 @@ const retryTag = (retries: number) =>
   retries > 0 ? `↻ ${formatCount(retries, 'retry', 'retries')}` : '';
 
 interface Row {
+  type: string;
   name: string;
   events: string;
   share: string;
   extra: string;
-  style: 'workflow' | 'step' | 'builtIn' | 'header' | 'total';
+  style: 'group' | 'child' | 'folded' | 'header' | 'total';
 }
+
+/** What a group's Name column says: how many of its kind it holds. */
+function groupName(group: UsageRowGroup): string {
+  switch (group.type) {
+    case 'steps':
+      return formatCount(group.calls, 'call', 'calls');
+    case 'hooks':
+      return formatCount(group.calls, 'hook', 'hooks');
+    case 'attributes':
+      return formatCount(group.calls, 'write', 'writes');
+    case 'sleeps':
+      return formatCount(group.calls, 'sleep', 'sleeps');
+    default:
+      return '';
+  }
+}
+
+const joinParts = (...parts: string[]) => parts.filter(Boolean).join('  ');
 
 /**
  * `inspect run <id> --usage`, as text, from `RunUsage` and the shared
@@ -87,73 +106,93 @@ export function formatRunUsageText(
 ): string {
   const c = new Chalk({ level: color ? 1 : 0 });
   const lines: string[] = [];
-  const tree = usageSpanTree(usage);
+  const workflow =
+    parseWorkflowName(usage.workflowName)?.shortName || usage.workflowName;
 
   lines.push(
-    `${c.bold(tree.workflow.label)}  ${usage.runId}  ${statusColor(c, usage.status)('●')} ${usage.status}`
+    `${c.bold(workflow)}  ${usage.runId}  ${statusColor(c, usage.status)('●')} ${usage.status}`
   );
   if (usage.inProgress) {
     lines.push(c.dim('This run has not finished; its usage can still grow.'));
   }
   lines.push('');
 
-  // Summary block.
-  const { events, retries } = formatEventsWithRetries(usage);
-  const local = usage.billed ? '' : ' (local)';
+  // Summary block. Retries are on the step rows.
   const summary: [string, string][] = [
-    ['Events', `${events}  (${retries})`],
-    ['Data written', `${formatUsageBytes(usage.dataWritten.bytes)}${local}`],
+    ['Events', usage.events.toLocaleString('en-US')],
+    [
+      formatDataWrittenHeading(usage),
+      formatUsageBytes(usage.dataWritten.bytes),
+    ],
   ];
   const labelWidth = Math.max(...summary.map(([label]) => label.length));
   for (const [label, value] of summary) {
     lines.push(`${c.dim(label.padEnd(labelWidth))}  ${value}`);
   }
 
-  // The span tree: the workflow, its steps, the built-in rows, a total.
-  const children: Row[] = [
-    ...tree.steps.map((row) => stepRow(row)),
-    ...(tree.otherSteps
-      ? [
-          {
-            name: formatOtherSteps(tree.otherSteps.steps),
-            events: tree.otherSteps.events.toLocaleString('en-US'),
-            share: formatUsageShare(tree.otherSteps.share),
-            extra: '',
-            style: 'step' as const,
-          },
-        ]
-      : []),
-    ...tree.builtIns.map(
-      (row): Row => ({
-        name: row.kind === 'run' ? row.label : `${row.label}  ×${row.calls}`,
-        events: row.events.toLocaleString('en-US'),
-        share: formatUsageShare(row.share),
-        extra: '',
-        style: 'builtIn',
-      })
-    ),
-  ];
-  children.forEach((row, i) => {
-    row.name = `${i === children.length - 1 ? '└─' : '├─'} ${row.name}`;
-  });
+  // One flat list: each type, with steps and hooks under theirs.
+  const body: Row[] = [];
+  for (const group of usageRows(usage)) {
+    body.push({
+      type: USAGE_ROW_TYPE_LABELS[group.type],
+      name: joinParts(groupName(group), retryTag(group.retries)),
+      events: group.events.toLocaleString('en-US'),
+      share: formatUsageShare(group.share),
+      extra: bar(group.share),
+      style: 'group',
+    });
+    const children: Row[] = [
+      ...group.children.map(
+        (child): Row => ({
+          type: '',
+          name: joinParts(
+            child.label,
+            // A hook is one hook: only a step function has calls to count.
+            group.type === 'steps'
+              ? formatCount(child.calls, 'call', 'calls')
+              : '',
+            retryTag(child.retries)
+          ),
+          events: child.events.toLocaleString('en-US'),
+          share: formatUsageShare(child.share),
+          extra: bar(child.share),
+          style: 'child',
+        })
+      ),
+      ...(group.otherChildren
+        ? [
+            {
+              type: '',
+              name: joinParts(
+                group.otherChildren.label,
+                retryTag(group.otherChildren.retries)
+              ),
+              events: group.otherChildren.events.toLocaleString('en-US'),
+              share: formatUsageShare(group.otherChildren.share),
+              extra: '',
+              style: 'folded' as const,
+            },
+          ]
+        : []),
+    ];
+    children.forEach((row, i) => {
+      row.name = `${i === children.length - 1 ? '└─' : '├─'} ${row.name}`;
+    });
+    body.push(...children);
+  }
   const rows: Row[] = [
     {
+      type: 'TYPE',
       name: 'NAME',
       events: 'EVENTS',
       share: 'SHARE',
       extra: '',
       style: 'header',
     },
+    ...body,
     {
-      name: `${tree.workflow.label}  workflow`,
-      events: tree.workflow.events.toLocaleString('en-US'),
-      share: '',
-      extra: '',
-      style: 'workflow',
-    },
-    ...children,
-    {
-      name: 'TOTAL',
+      type: 'TOTAL',
+      name: '',
       events: usage.events.toLocaleString('en-US'),
       share: usage.events > 0 ? '100%' : '',
       extra: '',
@@ -161,6 +200,7 @@ export function formatRunUsageText(
     },
   ];
   const width = {
+    type: Math.max(...rows.map((row) => row.type.length)),
     name: Math.max(...rows.map((row) => row.name.length)),
     events: Math.max(...rows.map((row) => row.events.length)),
     share: Math.max(...rows.map((row) => row.share.length)),
@@ -168,6 +208,7 @@ export function formatRunUsageText(
   lines.push('');
   for (const row of rows) {
     const text = [
+      row.type.padEnd(width.type),
       row.name.padEnd(width.name),
       row.events.padStart(width.events),
       row.share.padStart(width.share),
@@ -176,22 +217,19 @@ export function formatRunUsageText(
       .join('  ')
       .trimEnd();
     lines.push(
-      row.style === 'header'
+      row.style === 'header' || row.style === 'folded'
         ? c.dim(text)
-        : row.style === 'workflow' || row.style === 'total'
+        : row.style === 'group' || row.style === 'total'
           ? c.bold(text)
-          : row.style === 'builtIn'
-            ? c.dim(text)
-            : text
+          : text
     );
   }
 
-  // How the step events add up, and what a retry adds: two lines of the
-  // shared "How events are counted".
+  // What each event is lives in the docs.
   lines.push('');
-  for (const line of formatEventCountingNote(usage)) lines.push(c.dim(line));
+  lines.push(c.dim(`How events are counted: ${USAGE_COUNTING_DOCS_URL}`));
 
-  // Data written, without the entities that wrote nothing.
+  // Storage, without the entities that wrote nothing.
   lines.push('');
   const dataRows = RUN_USAGE_ENTITIES.filter(
     (entity) => usage.dataWritten.byEntity[entity] > 0
@@ -228,15 +266,4 @@ export function formatRunUsageText(
   if (pricing) lines.push(`See pricing: ${WORKFLOW_PRICING_DOCS_URL}`);
   lines.push(c.dim('Machine-readable: --json'));
   return lines.join('\n');
-
-  function stepRow(row: UsageSpanTreeRow): Row {
-    const tag = retryTag(row.retries);
-    return {
-      name: `${row.label}  ×${row.calls}${tag ? `  ${tag}` : ''}`,
-      events: row.events.toLocaleString('en-US'),
-      share: formatUsageShare(row.share),
-      extra: bar(row.share),
-      style: 'step',
-    };
-  }
 }

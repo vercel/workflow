@@ -1,29 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildRunUsage,
-  collapseUsageSpans,
-  formatBuiltInEventsLine,
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
-  formatEventCountingLines,
-  formatEventCountingNote,
   formatLocalDataWrittenNote,
   formatOtherSteps,
   formatRunEventsLine,
-  formatRunUsageSummary,
-  formatStepCreationNote,
-  formatStepEventsBreakdown,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
   type RunUsageAggregates,
-  type RunUsageSpan,
   type RunUsageStepGroup,
-  usageBiggestDriver,
+  USAGE_ROW_TYPE_LABELS,
   usageEntityOfEventType,
+  usageRows,
   usageSpanLabel,
-  usageSpanTree,
 } from './usage.js';
 
 const WORKFLOW = 'workflow//./src/w//wf';
@@ -136,6 +128,55 @@ describe('buildRunUsage', () => {
     expect(usage.dataRetained).toBeNull();
   });
 
+  it('makes each hook a span named by its token', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [
+          { eventType: 'run_created', events: 1, bytes: 1 },
+          { eventType: 'hook_created', events: 3, bytes: 30 },
+          { eventType: 'hook_received', events: 4, bytes: 40 },
+        ],
+        hookGroups: [
+          { hookId: 'hook_a', token: 'approve:1', events: 4 },
+          { hookId: 'hook_b', token: null, events: 2 },
+          // Not in a group: still counted, as "hook".
+        ],
+      })
+    );
+    expect(
+      usage.eventsBySpan
+        .filter((span) => span.kind === 'hook')
+        .map((span) => [span.name, span.id, span.events, span.calls])
+    ).toEqual([
+      ['approve:1', 'hook_a', 4, 1],
+      // No token found: its id.
+      ['hook_b', 'hook_b', 2, 1],
+      ['hook', undefined, 1, 0],
+    ]);
+    expect(usage.events).toBe(8);
+    expect(usage.eventsBySpan.reduce((sum, s) => sum + s.events, 0)).toBe(8);
+    expect(usage.dataWritten.byEntity.hook).toBe(70);
+  });
+
+  it('keeps hooks as one span for a World without hook groups', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [
+          { eventType: 'hook_created', events: 2, bytes: 1 },
+          { eventType: 'hook_received', events: 1, bytes: 1 },
+        ],
+      })
+    );
+    expect(usage.eventsBySpan).toEqual([
+      expect.objectContaining({
+        kind: 'hook',
+        name: 'hook',
+        events: 3,
+        calls: 2,
+      }),
+    ]);
+  });
+
   it('does not count placeholders as events', () => {
     const usage = buildRunUsage(
       aggregates({
@@ -173,8 +214,11 @@ describe('buildRunUsage', () => {
     });
 
     const empty = buildRunUsage(aggregates());
-    expect(empty).toMatchObject({ events: 0, eventsBySpan: [] });
-    expect(formatRunUsageSummary(empty)).toBe('0 events · 0 retries');
+    expect(empty).toMatchObject({
+      events: 0,
+      retries: { count: 0, events: 0 },
+      eventsBySpan: [],
+    });
   });
 
   it('ignores malformed counts rather than producing NaN', () => {
@@ -208,17 +252,15 @@ describe('usage formatting', () => {
     );
     expect(one.billed).toBe(false);
     expect(one.billableEvents).toBe(1);
-    expect(formatRunUsageSummary(one)).toBe('1 event · 1 retry');
+    expect(one.retries.count).toBe(1);
     const many = buildRunUsage(
       aggregates({
         stepGroups: [stepGroup('s', { steps: 1, events: 1234, retries: 3 })],
       })
     );
-    expect(formatRunUsageSummary(many)).toBe('1,234 events · 3 retries');
+    expect(many.events).toBe(1234);
     // No line says what the run would count as on Vercel.
-    expect(formatEventCountingLines(many).join('\n')).not.toMatch(
-      /Vercel|billable/
-    );
+    expect(formatUsageFooter(many)).not.toMatch(/On Vercel|billable/);
   });
 
   it('calls a billed run’s events billable', () => {
@@ -229,16 +271,12 @@ describe('usage formatting', () => {
       })
     );
     expect(usage.billed).toBe(true);
-    expect(formatRunUsageSummary(usage)).toBe('12 billable events · 2 retries');
     expect(formatUsageFooter(usage)).toBe('Not your final bill.');
-    expect(formatDataWrittenHeading(usage)).toBe('Data written');
+    expect(formatDataWrittenHeading(usage)).toBe('Storage');
     expect(formatLocalDataWrittenNote(usage)).toBeNull();
-    expect(formatEventCountingLines(usage).at(-1)).toBe(
-      'Every event in the log is billable today. The count covers the whole run, not only the events loaded on this page.'
-    );
   });
 
-  it('words a local run’s footer, storage and counting lines as not billed', () => {
+  it('words a local run’s footer and storage as not billed', () => {
     const usage = buildRunUsage(
       aggregates({
         stepGroups: [
@@ -255,36 +293,23 @@ describe('usage formatting', () => {
     expect(formatUsageFooter(usage)).toBe(
       "Local runs aren't billed. Counted from this run's log in your local data directory."
     );
-    expect(formatDataWrittenHeading(usage)).toBe('Data written (local)');
+    expect(formatDataWrittenHeading(usage)).toBe('Storage (local)');
     expect(formatLocalDataWrittenNote(usage)).toBe(
-      'Data this run wrote to your local data directory. Vercel measures Data Written in its own storage, so the number on Vercel will differ.'
+      "The bytes of the run's payloads and streams in your local data directory, counted the way Vercel counts Data Written. QuickJS VM snapshots aren't counted yet."
     );
-    expect(formatEventCountingLines(usage)).toEqual([
-      '2 steps wrote 8 events: 2 created, 3 started, 2 completed, 1 retry marker.',
-      '1 retry added 2 events: 1 retry marker, 1 step start.',
-      'The count covers the whole run, not only the events loaded on this page.',
-    ]);
-    // The CLI's two lines are lines of the full list.
-    for (const line of formatEventCountingNote(usage)) {
-      expect(formatEventCountingLines(usage)).toContain(line);
-    }
   });
 
-  it('says what the run writes in the CLI note when no step ran', () => {
+  it('says what the run wrote so far, and nothing with no run events', () => {
     const usage = buildRunUsage(
       aggregates({
         status: 'pending',
         eventGroups: [{ eventType: 'run_created', events: 1, bytes: 1 }],
       })
     );
-    expect(formatEventCountingNote(usage)).toEqual([
-      'The run wrote 1 event so far: 1 created.',
-      'A retry adds a retry marker, and the step starting again.',
-    ]);
-    expect(formatEventCountingNote(buildRunUsage(aggregates()))).toEqual([
-      'The run wrote no events.',
-      'A retry adds a retry marker, and the step starting again.',
-    ]);
+    expect(formatRunEventsLine(usage)).toBe(
+      'The run wrote 1 event so far: 1 created.'
+    );
+    expect(formatRunEventsLine(buildRunUsage(aggregates()))).toBeNull();
   });
 
   it.each([
@@ -332,16 +357,17 @@ describe('usage formatting', () => {
       })
     );
     expect(formatRunEventsLine(usage)).toBe(line);
-    expect(formatEventCountingLines(usage)).toContain(line);
-    expect(formatEventCountingNote(usage)[0]).toBe(line);
-    expect(usageSpanTree(usage).builtIns[0]).toMatchObject({
-      label: 'Run start & finish',
-      events: usage.runEvents.events,
-      note: line,
-    });
+    // The Run row's events are the run's own, and its note says which.
+    expect(usageRows(usage)).toEqual([
+      expect.objectContaining({
+        type: 'run',
+        events: usage.runEvents.events,
+        note: line,
+      }),
+    ]);
   });
 
-  it('gives attribute writes and unknown events their own rows and line', () => {
+  it('gives attribute writes and unknown events their own rows', () => {
     const usage = buildRunUsage(
       aggregates({
         eventGroups: [
@@ -355,29 +381,21 @@ describe('usage formatting', () => {
         ],
       })
     );
-    const t = usageSpanTree(usage);
-    expect(t.builtIns.map((row) => [row.label, row.events, row.calls])).toEqual(
-      [
-        ['Run start & finish', 3, 1],
-        ['Attributes', 4, 4],
-        ['Sleeps', 2, 1],
-        ['Other events', 2, 2],
-      ]
-    );
-    // Only the run row says what the run wrote, from its own counts.
-    expect(t.builtIns[0].note).toBe(
+    const rows = usageRows(usage);
+    expect(rows.map((row) => [row.type, row.events, row.calls])).toEqual([
+      ['attributes', 4, 4],
+      ['sleeps', 2, 1],
+      ['run', 3, 1],
+      ['other', 2, 2],
+    ]);
+    // Only the Run row says what the run wrote, from its own counts.
+    expect(rows.find((row) => row.type === 'run')?.note).toBe(
       'The run wrote 3 events: 1 created, 1 started, 1 completed.'
     );
-    expect(t.builtIns.slice(1).every((row) => row.note === undefined)).toBe(
-      true
-    );
-    expect(t.showBuiltInLabel).toBe(true);
-    expect(formatBuiltInEventsLine(usage)).toBe(
-      '1 sleep wrote 2 events, 4 attribute writes, 2 other events.'
-    );
-    expect(formatEventCountingLines(usage)).toContain(
-      '1 sleep wrote 2 events, 4 attribute writes, 2 other events.'
-    );
+    expect(
+      rows.filter((row) => row.type !== 'run').every((row) => !row.note)
+    ).toBe(true);
+    expect(rows.every((row) => row.children.length === 0)).toBe(true);
   });
 
   it('counts the events retries added from the log, not a fixed rate', () => {
@@ -398,15 +416,9 @@ describe('usage formatting', () => {
     // Retried, not started again yet: the marker alone.
     const pending = usage({ retries: 1, restarts: 0 });
     expect(pending.retries).toEqual({ count: 1, events: 1 });
-    expect(formatEventCountingNote(pending)[1]).toBe(
-      '1 retry added 1 event: 1 retry marker.'
-    );
     // Retried twice and started again both times.
     const twice = usage({ started: 3, completed: 1, retries: 2, restarts: 2 });
     expect(twice.retries).toEqual({ count: 2, events: 4 });
-    expect(formatEventCountingNote(twice)[1]).toBe(
-      '2 retries added 4 events: 2 retry markers, 2 step starts.'
-    );
     // Summed over step groups: one restarted, one not yet.
     const mixed = buildRunUsage(
       aggregates({
@@ -417,9 +429,6 @@ describe('usage formatting', () => {
       })
     );
     expect(mixed.retries).toEqual({ count: 2, events: 3 });
-    expect(formatEventCountingNote(mixed)[1]).toBe(
-      '2 retries added 3 events: 2 retry markers, 1 step start.'
-    );
   });
 
   it.each([
@@ -522,10 +531,12 @@ describe('step events by type', () => {
         ],
       })
     );
-    expect(formatStepEventsBreakdown(usage)).toBe(
-      '5 steps wrote 19 events: 5 created, 7 started, 5 completed, 2 retry markers'
-    );
-    expect(formatStepCreationNote(usage)).toBeNull();
+    expect(usage.stepEvents).toMatchObject({
+      steps: 5,
+      events: 19,
+      byType: { created: 5, started: 7, completed: 5, retrying: 2 },
+    });
+    expect(usage.stepEvents.byType.created).toBe(usage.stepEvents.steps);
   });
 
   it('explains a spec 9 run whose steps all ran inline (no created)', () => {
@@ -537,12 +548,11 @@ describe('step events by type', () => {
       })
     );
     expect(usage.stepEvents.byType.created).toBe(0);
-    expect(formatStepEventsBreakdown(usage)).toBe(
-      '5 steps wrote 10 events: 5 started, 5 completed'
-    );
-    expect(formatStepCreationNote(usage)).toBe(
-      'No step has a created event: each ran inline, and its first started event created it.'
-    );
+    expect(usage.stepEvents).toMatchObject({
+      steps: 5,
+      events: 10,
+      byType: { created: 0, started: 5, completed: 5 },
+    });
   });
 
   it('explains a spec 9 run that mixes inline and queued steps', () => {
@@ -561,16 +571,17 @@ describe('step events by type', () => {
         ],
       })
     );
-    expect(formatStepEventsBreakdown(usage)).toBe(
-      '5 steps wrote 16 events: 2 created, 7 started, 4 completed, 1 failed, 2 retry markers'
-    );
-    expect(formatStepCreationNote(usage)).toBe(
-      '3 steps have no created event: they ran inline, and their first started event created them.'
-    );
+    expect(usage.stepEvents).toMatchObject({
+      steps: 5,
+      events: 16,
+      byType: { created: 2, started: 7, completed: 4, failed: 1, retrying: 2 },
+    });
+    // 3 ran inline: no created event.
+    expect(usage.stepEvents.steps - usage.stepEvents.byType.created).toBe(3);
     expect(usage.retries).toEqual({ count: 2, events: 4 });
   });
 
-  it('uses the singular for one step and one marker', () => {
+  it('counts one step and one marker', () => {
     const usage = buildRunUsage(
       aggregates({
         stepGroups: [
@@ -583,12 +594,11 @@ describe('step events by type', () => {
         ],
       })
     );
-    expect(formatStepEventsBreakdown(usage)).toBe(
-      '1 step wrote 4 events: 2 started, 1 completed, 1 retry marker'
-    );
-    expect(formatStepCreationNote(usage)).toBe(
-      'No step has a created event: each ran inline, and its first started event created it.'
-    );
+    expect(usage.stepEvents).toMatchObject({
+      steps: 1,
+      events: 4,
+      byType: { started: 2, completed: 1, retrying: 1 },
+    });
   });
 
   it('says nothing when no step ran', () => {
@@ -605,12 +615,10 @@ describe('step events by type', () => {
         other: 0,
       },
     });
-    expect(formatStepEventsBreakdown(usage)).toBeNull();
-    expect(formatStepCreationNote(usage)).toBeNull();
   });
 });
 
-describe('a run whose data was deleted when it finished', () => {
+describe('a run whose data was deleted', () => {
   const purgedRun = (overrides: Partial<RunUsageAggregates>) =>
     buildRunUsage(
       aggregates({
@@ -642,7 +650,7 @@ describe('a run whose data was deleted when it finished', () => {
     // Counts do not depend on the data.
     expect(usage.events).toBe(4);
     expect(formatDataPurgedNote(usage)).toBe(
-      "This run's data was deleted when it finished; sizes show what it wrote."
+      "This run's data was deleted; sizes show what it wrote."
     );
   });
 
@@ -654,7 +662,7 @@ describe('a run whose data was deleted when it finished', () => {
       source: 'left-after-purge',
     });
     expect(formatDataPurgedNote(usage)).toBe(
-      "This run's data was deleted when it finished, before its sizes were kept; sizes show what is left."
+      "This run's data was deleted before its sizes were kept; sizes show what is left."
     );
   });
 
@@ -681,7 +689,7 @@ describe('a run whose data was deleted when it finished', () => {
   });
 });
 
-describe('the span tree', () => {
+describe('the usage rows', () => {
   const tree = (overrides: Partial<RunUsageAggregates> = {}) =>
     buildRunUsage(
       aggregates({
@@ -722,58 +730,110 @@ describe('the span tree', () => {
       })
     );
 
-  it('puts the workflow first, steps biggest first, built-in rows last', () => {
+  it('lists steps, hooks, sleeps and the run, with no workflow row', () => {
     const usage = tree();
-    const t = usageSpanTree(usage);
-    expect(t.workflow).toEqual({ label: 'wf', events: usage.events });
-    expect(t.steps.map((row) => row.label)).toEqual([
+    const rows = usageRows(usage);
+    expect(rows.map((row) => row.type)).toEqual([
+      'steps',
+      'hooks',
+      'sleeps',
+      'run',
+    ]);
+    const steps = rows[0];
+    // The group adds up its step functions: 10 calls, 1 retry.
+    expect(steps).toMatchObject({ events: 32, calls: 10, retries: 1 });
+    expect(steps.children.map((row) => row.label)).toEqual([
       'big',
       'a',
       'b',
       'c',
       'd',
     ]);
-    expect(t.steps[0]).toMatchObject({ calls: 4, retries: 1, events: 14 });
-    // Steps only fold into "+ N other steps".
-    expect(t.otherSteps).toMatchObject({ steps: 2, events: 6, calls: 2 });
-    expect(t.builtIns.map((row) => [row.label, row.events, row.calls])).toEqual(
-      [
-        ['Run start & finish', 3, 1],
-        ['Sleeps', 4, 2],
-        ['Hooks', 4, 1],
-      ]
+    expect(steps.children[0]).toMatchObject({
+      calls: 4,
+      retries: 1,
+      events: 14,
+    });
+    expect(steps.otherChildren).toMatchObject({
+      label: '+ 2 other steps',
+      count: 2,
+      events: 6,
+      calls: 2,
+    });
+    expect(
+      rows.slice(1).map((row) => [row.type, row.events, row.calls])
+    ).toEqual([
+      ['hooks', 4, 1],
+      ['sleeps', 4, 2],
+      ['run', 3, 1],
+    ]);
+    expect(rows.find((row) => row.type === 'run')?.note).toBe(
+      formatRunEventsLine(usage)
     );
-    expect(t.builtIns[0].note).toBe(formatRunEventsLine(usage));
-    expect(t.showBuiltInLabel).toBe(true);
+    expect(rows.reduce((sum, row) => sum + row.events, 0)).toBe(usage.events);
+    expect(USAGE_ROW_TYPE_LABELS).toMatchObject({
+      steps: 'Steps',
+      hooks: 'Hooks',
+      attributes: 'Attributes',
+      sleeps: 'Sleeps',
+      run: 'Run',
+    });
   });
 
-  it('labels the built-in rows only when sleeps or hooks exist', () => {
+  it('lists each hook under Hooks, by token, folding past five', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [{ eventType: 'hook_received', events: 28, bytes: 1 }],
+        hookGroups: Array.from({ length: 7 }, (_, i) => ({
+          hookId: `hook_${i}`,
+          token: `tok-${i}`,
+          events: 7 - i,
+        })),
+      })
+    );
+    const [hooks] = usageRows(usage);
+    expect(hooks).toMatchObject({ type: 'hooks', events: 28, calls: 7 });
+    expect(hooks.children.map((row) => [row.label, row.events])).toEqual([
+      ['tok-0', 7],
+      ['tok-1', 6],
+      ['tok-2', 5],
+      ['tok-3', 4],
+      ['tok-4', 3],
+    ]);
+    expect(hooks.otherChildren).toMatchObject({
+      label: '+ 2 other hooks',
+      count: 2,
+      events: 3,
+    });
+  });
+
+  it('tells apart two hooks with the same token by their ids', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [{ eventType: 'hook_received', events: 5, bytes: 1 }],
+        hookGroups: [
+          { hookId: 'hook_a', token: 'reused', events: 3 },
+          { hookId: 'hook_b', token: 'reused', events: 2 },
+        ],
+      })
+    );
+    expect(usageRows(usage)[0].children.map((row) => row.label)).toEqual([
+      'reused (hook_a)',
+      'reused (hook_b)',
+    ]);
+  });
+
+  it('leaves out the types the run does not have', () => {
     const usage = tree({
       eventGroups: [{ eventType: 'run_created', events: 1, bytes: 1 }],
+      stepGroups: [],
     });
-    const t = usageSpanTree(usage);
-    expect(t.builtIns.map((row) => row.label)).toEqual(['Run start & finish']);
-    expect(t.showBuiltInLabel).toBe(false);
+    expect(usageRows(usage).map((row) => row.type)).toEqual(['run']);
+    expect(usageRows(buildRunUsage(aggregates()))).toEqual([]);
   });
 
-  it('names the biggest step in the callout, never a built-in row', () => {
-    // The hooks write more events than any step.
-    const usage = tree({
-      eventGroups: [
-        { eventType: 'run_created', events: 1, bytes: 1 },
-        { eventType: 'hook_received', events: 50, bytes: 1 },
-      ],
-    });
-    expect(usage.eventsBySpan[0].kind).toBe('hook');
-    expect(usageBiggestDriver(usage)).toMatchObject({
-      kind: 'step',
-      name: 'step//./src/w//big',
-    });
-    expect(usageBiggestDriver(tree({ stepGroups: [] }))).toBeNull();
-  });
-
-  it('counts calls: steps per name, distinct sleeps and hooks, one run', () => {
-    const usage = tree({ calls: { hook: 2, wait: 5 } });
+  it('counts calls: steps per name, distinct sleeps, one run', () => {
+    const usage = tree({ calls: { wait: 5 } });
     const calls = Object.fromEntries(
       usage.eventsBySpan.map((span) => [
         `${span.kind}:${span.name}`,
@@ -782,12 +842,54 @@ describe('the span tree', () => {
     );
     expect(calls['step:step//./src/w//big']).toBe(4);
     expect(calls['run:workflow//./src/w//wf']).toBe(1);
-    expect(calls['hook:hook']).toBe(2);
+    // Without hook groups, hook_created events stand in for the hooks.
+    expect(calls['hook:hook']).toBe(1);
     expect(calls['wait:sleep']).toBe(5);
     // Without distinct counts, the *_created events stand in.
     const fallback = tree();
     expect(fallback.eventsBySpan.find((s) => s.kind === 'wait')?.calls).toBe(2);
     expect(fallback.eventsBySpan.find((s) => s.kind === 'hook')?.calls).toBe(1);
+  });
+});
+
+describe('step labels in the usage rows', () => {
+  it('adds the module to steps whose short names collide, and only to them', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('step//./src/a//send', { steps: 3, started: 3 }),
+          stepGroup('step//./src/b//send', { steps: 2, started: 2 }),
+          stepGroup('step//./src/a//charge', { steps: 1, started: 1 }),
+        ],
+      })
+    );
+    expect(usageRows(usage)[0].children.map((row) => row.label)).toEqual([
+      'send (./src/a)',
+      'send (./src/b)',
+      'charge',
+    ]);
+  });
+
+  it('keeps short labels when the colliding step is folded away', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          ...['a', 'b', 'c', 'd', 'e', 'f'].map((n, i) =>
+            stepGroup(`step//./src/a//${n}`, { steps: 1, started: 20 - i })
+          ),
+          stepGroup('step//./src/b//a', { steps: 1, started: 1 }),
+        ],
+      })
+    );
+    const [steps] = usageRows(usage);
+    expect(steps.children.map((row) => row.label)).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+    ]);
+    expect(steps.otherChildren?.count).toBe(2);
   });
 });
 
@@ -804,33 +906,40 @@ describe('usageSpanLabel', () => {
   });
 });
 
-describe('collapseUsageSpans', () => {
-  const spans = (n: number): RunUsageSpan[] =>
-    Array.from({ length: n }, (_, i) => ({
-      kind: 'step',
-      name: `s${i}`,
-      events: 10 - i,
-      share: 0.1,
-      retries: i === 7 ? 2 : 0,
-      calls: 1,
-    }));
+describe('folding steps in the usage rows', () => {
+  const steps = (n: number) =>
+    buildRunUsage(
+      aggregates({
+        stepGroups: Array.from({ length: n }, (_, i) =>
+          stepGroup(`step//./src/w//s${i}`, {
+            steps: 1,
+            started: 10 - i,
+            retries: i === 7 ? 2 : 0,
+          })
+        ),
+      })
+    );
 
-  it('folds spans past the limit into one row', () => {
-    const { shown, other } = collapseUsageSpans(spans(8), 5);
-    expect(shown.map((s) => s.name)).toEqual(['s0', 's1', 's2', 's3', 's4']);
-    expect(other).toEqual({
-      spans: 3,
-      events: 5 + 4 + 3,
-      share: expect.closeTo(0.3),
+  it('folds the steps past five into one row', () => {
+    const [group] = usageRows(steps(8));
+    expect(group.children.map((row) => row.label)).toEqual([
+      's0',
+      's1',
+      's2',
+      's3',
+      's4',
+    ]);
+    expect(group.otherChildren).toMatchObject({
+      count: 3,
+      events: 5 + 4 + 3 + 2,
       retries: 2,
       calls: 3,
     });
   });
 
-  it('shows a single extra span rather than "1 other span"', () => {
-    expect(collapseUsageSpans(spans(6), 5)).toMatchObject({
-      other: null,
-    });
-    expect(collapseUsageSpans(spans(6), 5).shown).toHaveLength(6);
+  it('shows a single extra step rather than "+ 1 other step"', () => {
+    const [group] = usageRows(steps(6));
+    expect(group.children).toHaveLength(6);
+    expect(group.otherChildren).toBeNull();
   });
 });

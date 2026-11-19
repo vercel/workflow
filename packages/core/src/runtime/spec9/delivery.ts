@@ -13,6 +13,7 @@ import {
   EntityConflictError,
   FatalError,
   HookNotFoundError,
+  isRunAlreadyStartedError,
   MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
@@ -87,6 +88,7 @@ import {
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
+  isTurboFirstDeliveryAgeAdmitted,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_RUN_AHEAD_RESTARTS,
@@ -130,7 +132,10 @@ import {
 } from '../helpers.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
-import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
+import {
+  ReplayRecoveryReporter,
+  reportedDivergenceEventIds,
+} from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
 import { resolveRunStartHook } from '../start-hook-binding.js';
@@ -146,6 +151,7 @@ import { consumeOwnResolvingWrite } from './consume-after-commit.js';
 import {
   forgetConsumedPosition,
   hasConsumedPosition,
+  isAboveConsumedPosition,
   isCompletedWaitTimer,
   isNoopDelivery,
   isTerminalRun,
@@ -376,6 +382,7 @@ async function runDelivery(
     stepCreatedAt,
     runContext,
     hookResumeTiming,
+    wakeEventId,
     waitContinuation,
     completeWaits,
     recovery,
@@ -408,10 +415,13 @@ async function runDelivery(
   // Background steps with no message are re-sent by any delivery that is
   // not its message's first, counted in deliveries (handoffs and coalesced
   // re-runs included), once per invocation (see `stepsToReenqueue`).
-  const resendGate = passesResendGate({
+  // Opened later by a replayed first delivery (see `noteReplayedFirstDelivery`),
+  // with `resendDeliveryCount` cleared to match.
+  let resendGate = passesResendGate({
     deliveryCount: metadata.deliveryCount,
     recovery: recoveryDelivery,
   });
+  let resendDeliveryCount = metadata.deliveryCount;
   const resends = invocationResends({
     runId,
     messageId: creatorMessageId,
@@ -434,7 +444,7 @@ async function runDelivery(
     if (!resendGate) return new Set();
     const decided = stepsToReenqueue({
       events,
-      deliveryCount: metadata.deliveryCount,
+      deliveryCount: resendDeliveryCount,
       nowMs: Date.now(),
       recovery: recoveryDelivery,
       exclude: {
@@ -488,6 +498,16 @@ async function runDelivery(
   // Restarts in place after run-ahead stopped this delivery (see
   // `MAX_RUN_AHEAD_RESTARTS`). Run-ahead stays off after the first.
   let runAheadRestarts = 0;
+  // Whether this delivery already restarted in place after its `run_started`
+  // conflicted (see `restartAfterStartConflict`). Once at most.
+  let startConflictRestarted = false;
+  // Whether a `run_started` this delivery wrote has committed, so a later
+  // pass's full load that finds one does not mistake it for a predecessor's
+  // (see `noteReplayedFirstDelivery`).
+  let ownRunStartedCommitted = false;
+  // Whether a start Hook first delivery's `run_started`, written without
+  // loading the log, came back as a conflict (see `restartAfterStartConflict`).
+  let startHookStartConflict = false;
   // Compilation is useful only for the Node VM. Wait until the
   // run's engine selection is known so QuickJS deliveries never
   // parse and cache an unused node:vm Script. The promise is
@@ -670,16 +690,72 @@ async function runDelivery(
   // Never for a `start({ experimental_hook })` candidate: its `run_started`
   // may refuse it, and turbo runs inline step bodies before that
   // write returns (see `admitsTurboStart`).
+  // The delivery count alone does not prove a first delivery: a platform
+  // that re-runs a crashed invocation re-sends the same request, so the
+  // replay of a first delivery that already ran the run reports count 1
+  // too. A message older than a first delivery can plausibly be is
+  // treated as such a replay (see `TURBO_FIRST_DELIVERY_MAX_AGE_MS`); a
+  // younger replay is caught by its `run_started` conflict instead (see
+  // `restartAfterStartConflict`).
+  const firstDeliveryAgeAdmitted = isTurboFirstDeliveryAgeAdmitted(
+    metadata.createdAt
+  );
   let turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
     admitsTurboStart(runInput) &&
     metadata.attempt === 1 &&
     (metadata.deliveryCount ?? 1) === 1 &&
+    firstDeliveryAgeAdmitted &&
     !incomingStepId &&
     !hookInput &&
     !waitContinuation;
+  if (
+    !firstDeliveryAgeAdmitted &&
+    runInput !== undefined &&
+    (metadata.deliveryCount ?? 1) === 1
+  ) {
+    const messageAgeMs =
+      metadata.createdAt !== undefined
+        ? Date.now() - metadata.createdAt.getTime()
+        : undefined;
+    // On the span too: debug-gated logs alone would leave the fallback
+    // indistinguishable from turbo being off.
+    if (messageAgeMs !== undefined) {
+      span?.setAttributes(
+        Attribute.WorkflowTurboSkippedMessageAgeMs(messageAgeMs)
+      );
+    }
+    runtimeLogger.info(
+      'First orchestrator message is older than a first delivery can be; loading the log instead of taking the turbo path',
+      { workflowRunId: runId, messageAgeMs, requestId }
+    );
+  }
   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
+  /**
+   * The first delivery of a `start({ experimental_hook })` candidate's first
+   * message, which turbo never takes (see `admitsTurboStart`): it writes
+   * `run_started` without loading the log first.
+   * A restart in place has written it already, so takes the normal path.
+   * `WORKFLOW_TURBO=0` disables it along with turbo, so such a delivery
+   * loads first.
+   */
+  let startHookFirstDelivery =
+    isTurboEnabled() &&
+    !turbo &&
+    runInput?.startHook !== undefined &&
+    !prefetchedRun &&
+    metadata.attempt === 1 &&
+    (metadata.deliveryCount ?? 1) === 1 &&
+    // An older message may be a platform's replay of a first delivery that
+    // already ran (see `TURBO_FIRST_DELIVERY_MAX_AGE_MS`): load the log.
+    firstDeliveryAgeAdmitted &&
+    !incomingStepId &&
+    !hookInput &&
+    !waitContinuation;
+  if (startHookFirstDelivery) {
+    span?.setAttributes(Attribute.WorkflowStartHookFirstDelivery(true));
+  }
   /**
    * Turbo only: settles once the backgrounded `run_started`
    * landed, and rejects with its error if it failed. Every
@@ -1191,6 +1267,14 @@ async function runDelivery(
   }
 
   // --- Orchestrator delivery ---
+  // A wake that names an event above the consumed position has something
+  // new, so the no-op check's tail read below would only find that out.
+  const wakesForNewEvent = (): boolean => {
+    const slot = wakeEventId ? eventIdToSlot(wakeEventId) : null;
+    const isNew = slot !== null && isAboveConsumedPosition(world, runId, slot);
+    if (isNew) span?.setAttributes(Attribute.WorkflowNoopCheckSkipped(true));
+    return isNew;
+  };
   // A delivery with nothing new since the position this
   // process last consumed, and no due timer, exits without a
   // replay. Only consulted when this process holds a
@@ -1229,7 +1313,8 @@ async function runDelivery(
     (!waitContinuation ||
       isCompletedWaitTimer(world, runId, waitContinuation)) &&
     wakeUpWaits.size === 0 &&
-    hasConsumedPosition(world, runId)
+    hasConsumedPosition(world, runId) &&
+    !wakesForNewEvent()
   ) {
     const tail = await world.events.list({
       runId,
@@ -1263,6 +1348,13 @@ async function runDelivery(
   while (true) {
     try {
       const result = await orchestrate();
+      // A failed turbo `run_started` decides the delivery even when the pass
+      // returned normally: a handler that reads a conflict as "the run
+      // already finished" (a terminal write's, say) may have swallowed the
+      // start's own refusal, while nothing of the pass committed. Settled by
+      // now on every path that wrote; awaiting covers one that did not.
+      await runReadyBarrier?.catch(() => {});
+      if (turboStartFailure) throw turboStartFailure.error;
       clearFenceRefusals(runId);
       return result;
     } catch (caught) {
@@ -1370,13 +1462,36 @@ async function runDelivery(
         restartInPlace();
         continue;
       }
+      if (restartAfterStartConflict(err)) {
+        forgetConsumedPosition(world, runId);
+        // The refused `run_started` stopped the in-band writer, so nothing
+        // queued behind it commits. What this delivery's commits owe the
+        // queue still goes out (a turbo pass commits nothing, so this is a
+        // no-op there).
+        await sendUnsentMessages?.();
+        runtimeLogger.info(
+          'run_started conflicted with an earlier start of the run; continuing in place from a full load',
+          {
+            workflowRunId: runId,
+            turbo,
+            code: (err as EntityConflictError).code,
+            deliveryCount: metadata.deliveryCount,
+            requestId,
+          }
+        );
+        span?.setAttributes(Attribute.WorkflowStartConflictRestart(true));
+        continuation.exit = 'start-conflict-restart';
+        startConflictRestarted = true;
+        restartInPlace();
+        continue;
+      }
       if (turboStartFailure) {
         // Defensive: turbo is off for start Hook candidates, so a
         // backgrounded `run_started` never decides one.
         if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
           return undefined;
         }
-        if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+        if (RunExpiredError.is(err)) {
           runtimeLogger.info('Run already finished during setup, skipping', {
             workflowRunId: runId,
             message: (err as Error).message,
@@ -1395,10 +1510,79 @@ async function runDelivery(
   }
 
   /**
+   * Whether this delivery's `run_started` was refused because the run had
+   * already started, in which case it continues in place from a full load
+   * (once) instead of acknowledging its message.
+   *
+   * Acknowledging would strand the run when the earlier start belongs to an
+   * invocation that died: a platform that re-runs a crashed invocation
+   * replays the same request, so the replay of a first delivery finds
+   * `run_started`, and perhaps an inline step its predecessor left open, in
+   * a log turbo never loaded. With the message acknowledged, nothing would
+   * ever run that step again. The full load sees the log as it is: a
+   * finished run is acknowledged by the normal path's own checks, an open
+   * step is run again, and an orchestrator still alive keeps the run
+   * because the in-band fence refuses whichever of the two writes second.
+   *
+   * Turbo restarts on any conflict of its backgrounded `run_started`,
+   * because turbo assumed a log it never read; the full load decides
+   * whether the run had finished. A start Hook candidate's first delivery
+   * does the same, for the same reason. The normal path loaded the log before
+   * writing, so it restarts only on the World's explicit
+   * `run-already-started` answer (the run started between its load and its
+   * write); a bare conflict there keeps meaning the run finished.
+   */
+  /**
+   * Called when a full load finds `run_started` already in the log. On the
+   * first delivery of the run's first message (count 1, carrying
+   * `runInput`) that this delivery did not write, it is a platform's replay
+   * of a first delivery that already ran, young (after
+   * `restartAfterStartConflict`) or old (`TURBO_FIRST_DELIVERY_MAX_AGE_MS`).
+   * Its predecessor may have committed a background step's `step_created`
+   * (or a retry's `step_retrying`) and died before the message went out, and
+   * no later delivery is owed to send it. So the delivery re-sends them as a
+   * redelivery would (see `stepsToReenqueue`), within the same age bound and
+   * keeping each step's idempotency key, so a message that did go out is
+   * deduped.
+   */
+  function noteReplayedFirstDelivery(): void {
+    if (
+      resendGate ||
+      ownRunStartedCommitted ||
+      runInput === undefined ||
+      metadata.deliveryCount !== 1
+    ) {
+      return;
+    }
+    resendGate = true;
+    resendDeliveryCount = undefined;
+    span?.setAttributes(Attribute.WorkflowReplayedFirstDelivery(true));
+    runtimeLogger.info(
+      'First delivery found the run already started by an earlier delivery of its message; re-sending what that delivery may have left unsent',
+      { workflowRunId: runId, requestId }
+    );
+  }
+
+  function restartAfterStartConflict(err: unknown): boolean {
+    if (startConflictRestarted) return false;
+    if (turboStartFailure) {
+      return EntityConflictError.is(turboStartFailure.error);
+    }
+    // A start Hook first delivery assumed a log it never read, as turbo
+    // does, so any conflict of its `run_started` restarts it.
+    if (startHookStartConflict) return EntityConflictError.is(err);
+    return isRunAlreadyStartedError(err);
+  }
+
+  /**
    * Resets the delivery for a fresh orchestrator pass in this same delivery
-   * after run-ahead stopped it: a fresh writer, which adopts the count of
-   * the next full load, no log and no speculative state, no turbo, and no
-   * run-ahead for the rest of the delivery. What it already sent stays sent
+   * after run-ahead stopped it, after its `run_started` conflicted (see
+   * `restartAfterStartConflict`), or after the fence refused a start Hook
+   * first delivery's `run_started`: a fresh writer, which adopts the count
+   * of the next full load, no log and no speculative state, and no turbo
+   * (nor its failed `run_started`) or start Hook first-delivery path. After
+   * a run-ahead stop, run-ahead also stays off for the rest of the delivery
+   * (`runAheadRestarts`). What it already sent stays sent
    * (`sentStepMessages`, `timedWaits`).
    */
   function restartInPlace(): void {
@@ -1411,8 +1595,11 @@ async function runDelivery(
     logBehind = false;
     passConsumedSlot = 0;
     turbo = false;
+    startHookFirstDelivery = false;
+    startHookStartConflict = false;
     turboOptimistic = false;
     turboStartLanded = undefined;
+    turboStartFailure = undefined;
     turboRunStarted = undefined;
     runReadyBarrier = undefined;
     sendUnsentMessages = undefined;
@@ -1487,6 +1674,7 @@ async function runDelivery(
     runReadyBarrier = started.then(
       (result) => {
         turboStartLanded = result;
+        ownRunStartedCommitted = true;
         const limit = clampMaxEvents(result.maxEvents);
         if (limit !== undefined) maxEventsLimit = limit;
       },
@@ -1498,18 +1686,22 @@ async function runDelivery(
     // Observed by every gated write; this only keeps an
     // early failure from surfacing as unhandled.
     runReadyBarrier.catch(() => {});
+    return synthesizedRun(input);
+  }
+
+  /**
+   * The run as `run_started` will have made it, from the first message's
+   * `runInput`. Seed attributes ride in `runInput` (they live on
+   * `run_created`, not in `attr_set` events), so the snapshot carries them
+   * although the log is not loaded. This holds while attributes are
+   * write-only inside a workflow: an in-workflow read API would have to read
+   * this snapshot, not replay `run_created`/`attr_set`, or it would see no
+   * seed attributes on this delivery only. A dynamic run's code rides the
+   * message for the same reason; without it (too large to send inline)
+   * `resolveWorkflowCodeForRun` reads it from the run.
+   */
+  function synthesizedRun(input: RunInput): WorkflowRun {
     const now = new Date();
-    // The run as `run_started` will have made it. Seed
-    // attributes ride in `runInput` (they live on
-    // `run_created`, not in `attr_set` events), so the
-    // snapshot carries them although the log is not loaded.
-    // This holds while attributes are write-only inside a
-    // workflow: an in-workflow read API would have to read
-    // this snapshot, not replay `run_created`/`attr_set`, or
-    // it would see no seed attributes on this delivery only.
-    // A dynamic run's code rides the message for the same
-    // reason; without it (too large to send inline)
-    // `resolveWorkflowCodeForRun` reads it from the run.
     return {
       runId,
       status: 'running',
@@ -1526,6 +1718,27 @@ async function runDelivery(
       createdAt: now,
       updatedAt: now,
     } as WorkflowRun;
+  }
+
+  /**
+   * The setup's deployment-affinity guard. Its re-queued copy is a plain wake
+   * (plus this delivery's hook resume), so it runs only once the run exists.
+   * The log is loaded, so the orchestrator's own DEPLOYMENT_MISMATCH failure
+   * is written in-band.
+   */
+  function guardRunDeployment(
+    run: WorkflowRun
+  ): Promise<DeploymentAffinityOutcome> {
+    return guardDeployment(
+      run,
+      async () => ({
+        ...(await replayMessage()),
+        ...(hookInput ? { hookInput } : {}),
+        ...(hookResumeTiming ? { hookResumeTiming } : {}),
+      }),
+      undefined,
+      writeInBand
+    );
   }
 
   async function orchestrate(): Promise<
@@ -1566,52 +1779,75 @@ async function runDelivery(
         return undefined;
       }
     } else {
-      // --- Run setup: full load (with the fence snapshot) ---
-      const [loadOutcome, runOutcome] = await Promise.allSettled([
-        fullLoad(),
-        prefetchedRun ?? world.runs.get(runId, { resolveData: 'none' }),
-      ]);
-      run =
-        runOutcome.status === 'fulfilled'
-          ? (runOutcome.value as WorkflowRun)
-          : undefined;
-      if (!run) {
-        if (!runInput) {
-          throw runOutcome.status === 'rejected'
-            ? runOutcome.reason
-            : new WorkflowRuntimeError(`Workflow run "${runId}" not found`);
-        }
-        // Resilient start: `run_created` never landed, and this
-        // first delivery carries what the World needs to create
-        // the run from `run_started`. A load that failed left no
-        // snapshot; the run holds no in-band position yet.
-        log = { events: [], cursor: null };
-        if (!writer.hasSnapshot) {
-          writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
-        }
-      } else if (loadOutcome.status === 'rejected') {
-        try {
-          const error = loadOutcome.reason;
-          if (
-            !WorkflowRunNotFoundError.is(error) &&
-            !(WorkflowWorldError.is(error) && error.status === 404)
-          ) {
+      if (startHookFirstDelivery && runInput) {
+        // --- Run setup: a start-hook candidate's first delivery ---
+        // Its `run_started` decides admission (and creates the run if
+        // `run_created` has not landed), and no log is read before it. A load
+        // before it could hold only the run's creation and out-of-band writes
+        // (`hook_received` from `resumeHook()`), which do not move the in-band
+        // count: the count is the one right after the run's creation, as in
+        // turbo. When the run has moved past that, `run_started` is refused
+        // and setup runs again from a full load (see the fallback beside it).
+        writer.adoptSnapshot({
+          seq: FIRST_EVENT_SLOT,
+          seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+        });
+        // Holding the run's creation, as turbo does, makes `run_started`'s
+        // skipped-slot report bring whatever landed between them, so the
+        // write leaves the log whole and nothing is read after it.
+        log = {
+          events: [turboRunCreatedEvent(runId, runInput)],
+          cursor: null,
+        };
+        run = synthesizedRun(runInput);
+      } else {
+        // --- Run setup: full load (with the fence snapshot) ---
+        const [loadOutcome, runOutcome] = await Promise.allSettled([
+          fullLoad(),
+          prefetchedRun ?? world.runs.get(runId, { resolveData: 'none' }),
+        ]);
+        run =
+          runOutcome.status === 'fulfilled'
+            ? (runOutcome.value as WorkflowRun)
+            : undefined;
+        if (!run) {
+          if (!runInput) {
+            throw runOutcome.status === 'rejected'
+              ? runOutcome.reason
+              : new WorkflowRuntimeError(`Workflow run "${runId}" not found`);
+          }
+          // Resilient start: `run_created` never landed, and this
+          // first delivery carries what the World needs to create
+          // the run from `run_started`. A load that failed left no
+          // snapshot; the run holds no in-band position yet.
+          log = { events: [], cursor: null };
+          if (!writer.hasSnapshot) {
+            writer.adoptSnapshot(RESILIENT_START_SNAPSHOT);
+          }
+        } else if (loadOutcome.status === 'rejected') {
+          try {
+            const error = loadOutcome.reason;
+            if (
+              !WorkflowRunNotFoundError.is(error) &&
+              !(WorkflowWorldError.is(error) && error.status === 404)
+            ) {
+              throw error;
+            }
+            // Queue delivery can beat run_created. The concurrent run read
+            // has now found the run, so reload history once before paying for
+            // a queue redelivery. Use fullLoad to adopt the real fence; a
+            // successful run read alone never authorizes an empty snapshot.
+            span?.addEvent('workflow.replay.load.not_found_retry');
+            await fullLoad();
+          } catch (error) {
+            // A World contract error fails the run (out-of-band if no fence
+            // was loaded); any other failure retains normal redelivery.
+            workflowRun ??= run;
+            if (await recordWorkflowSetupFailure(error)) {
+              return undefined;
+            }
             throw error;
           }
-          // Queue delivery can beat run_created. The concurrent run read
-          // has now found the run, so reload history once before paying for
-          // a queue redelivery. Use fullLoad to adopt the real fence; a
-          // successful run read alone never authorizes an empty snapshot.
-          span?.addEvent('workflow.replay.load.not_found_retry');
-          await fullLoad();
-        } catch (error) {
-          // A World contract error fails the run (out-of-band if no fence
-          // was loaded); any other failure retains normal redelivery.
-          workflowRun ??= run;
-          if (await recordWorkflowSetupFailure(error)) {
-            return undefined;
-          }
-          throw error;
         }
       }
       if (run && isTerminalWorkflowRunStatus(run.status)) {
@@ -1638,21 +1874,14 @@ async function runDelivery(
       assert(log, 'The event log is loaded before setup');
       // AUTHORITATIVE deployment-affinity protection, before
       // this delivery writes anything (`run_started` included)
-      // and before replay or inline step execution.
+      // and before replay or inline step execution. A start Hook
+      // candidate's first delivery runs it after `run_started`
+      // instead (see below): until then the run may not exist,
+      // and its re-queued wake carries no `runInput` to create it.
       if (
         run &&
-        (await guardDeployment(
-          run,
-          async () => ({
-            ...(await replayMessage()),
-            ...(hookInput ? { hookInput } : {}),
-            ...(hookResumeTiming ? { hookResumeTiming } : {}),
-          }),
-          undefined,
-          // The log is loaded, so the orchestrator's own
-          // DEPLOYMENT_MISMATCH failure is written in-band.
-          writeInBand
-        )) !== 'continue'
+        !startHookFirstDelivery &&
+        (await guardRunDeployment(run)) !== 'continue'
       ) {
         return undefined;
       }
@@ -1671,16 +1900,20 @@ async function runDelivery(
           startWorkflowCompile(runInput);
           startReplayPayloadCache(runInput);
           span?.addEvent('workflow.run_started.create.start', {
-            'workflow.run_started.skip_preload': false,
+            'workflow.run_started.skip_preload': startHookFirstDelivery,
           });
           const started = await createEvent(runStartedRequest(), {
             requestId,
+            // No preload: the World still returns the skipped-slot report,
+            // which is all this response needs to carry.
+            ...(startHookFirstDelivery ? { skipPreload: true as const } : {}),
           });
           recordAcceptedStartHookCandidate(
             runInput,
             started.run ?? { runId },
             span
           );
+          ownRunStartedCommitted = true;
           run = started.run ?? run;
           maxEventsLimit = clampMaxEvents(started.maxEvents);
           runStartedReceivedAtMs = Date.now();
@@ -1694,7 +1927,57 @@ async function runDelivery(
           if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
             return undefined;
           }
+          // The start-hook fast path assumed the log held only the run's
+          // creation. A fence refusal says the run has moved past it (an
+          // earlier delivery started it, or the run ended in-band): nothing
+          // was written, so set up again from a full load, which decides from
+          // the log. The restart is not a run-ahead one, so run-ahead stays
+          // on.
+          if (
+            startHookFirstDelivery &&
+            (OrchestratorSupersededError.is(err) || writer.isSuperseded)
+          ) {
+            span?.setAttributes(
+              Attribute.WorkflowStartHookFirstDeliveryFallback('fence')
+            );
+            runtimeLogger.info(
+              'Start Hook first delivery: run_started refused, setting up again from a full load',
+              {
+                workflowRunId: runId,
+                reason: 'fence',
+                message: err instanceof Error ? err.message : String(err),
+              }
+            );
+            restartInPlace();
+            return await orchestrate();
+          }
+          // A World may answer a run that already started with a conflict
+          // rather than a fence refusal (it checks the run's state first),
+          // and a conflict alone does not say the run finished. This delivery
+          // never read the log, so, as turbo does, it restarts from a full
+          // load on any conflict (see `restartAfterStartConflict`) instead of
+          // acknowledging the message that may be the run's only driver. An
+          // expiry is terminal in every World and keeps the acknowledgement
+          // below.
+          if (startHookFirstDelivery && EntityConflictError.is(err)) {
+            startHookStartConflict = true;
+            span?.setAttributes(
+              Attribute.WorkflowStartHookFirstDeliveryFallback('conflict')
+            );
+            throw err;
+          }
+          // The run started between this delivery's load and its write: not
+          // finished, so the delivery continues from a fresh load (see
+          // `restartAfterStartConflict`) instead of acknowledging.
+          if (isRunAlreadyStartedError(err)) throw err;
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            // On the span too: this is the one answer that ends a start Hook
+            // first delivery without a load.
+            if (startHookFirstDelivery) {
+              span?.setAttributes(
+                Attribute.WorkflowStartHookFirstDeliveryRunEnded(true)
+              );
+            }
             runtimeLogger.info('Run already finished during setup, skipping', {
               workflowRunId: runId,
               message: err.message,
@@ -1707,9 +1990,31 @@ async function runDelivery(
           return undefined;
         }
         // The log now holds the run's own start (and, after a
-        // resilient start, its creation).
-        await fullLoad();
+        // resilient start, its creation). A start Hook candidate's first
+        // delivery folded it in with the write's report; a report that
+        // stopped short, or left a hole, still needs the load.
+        if (startHookFirstDelivery && logBehind) {
+          span?.setAttributes(
+            Attribute.WorkflowStartHookFirstDeliveryFallback('report')
+          );
+          runtimeLogger.info(
+            'Start Hook first delivery: run_started report incomplete, loading the log',
+            { workflowRunId: runId, reason: 'report' }
+          );
+        }
+        if (!startHookFirstDelivery || logBehind) await fullLoad();
+        // The deployment check the start Hook first delivery
+        // skipped: the run exists now, so a re-queued wake on
+        // its own deployment needs no `runInput`.
+        if (
+          startHookFirstDelivery &&
+          run &&
+          (await guardRunDeployment(run)) !== 'continue'
+        ) {
+          return undefined;
+        }
       } else {
+        noteReplayedFirstDelivery();
         // A redelivery of a candidate's first message whose
         // `run_started` committed but whose answer was lost (a 503
         // `in-band-outcome-unknown`, a crash): the loaded run must
@@ -3304,7 +3609,10 @@ async function runDelivery(
               return await failRun(
                 recovery.error,
                 effectiveWorkflowCode,
-                recovery.divergenceCount,
+                {
+                  count: recovery.divergenceCount,
+                  eventIds: recovery.divergenceEventIds,
+                },
                 recovery.logFields
               );
             }
@@ -4746,6 +5054,7 @@ async function runDelivery(
           type: 'fail';
           error: Error;
           divergenceCount: number;
+          divergenceEventIds: readonly string[];
           logFields: Record<string, unknown>;
         } {
       const priorDivergenceEventId = divergences.at(-1);
@@ -4774,12 +5083,16 @@ async function runDelivery(
           'Workflow replay diverged; replaying again from a fresh load before declaring the event log corrupted',
           { ...logFields, errorMessage: err.message }
         );
-        replayRecoveryReporter = new ReplayRecoveryReporter(divergenceCount);
+        replayRecoveryReporter = new ReplayRecoveryReporter(
+          divergenceCount,
+          divergenceEventIds
+        );
         return { type: 'recover' };
       }
       return {
         type: 'fail',
         divergenceCount,
+        divergenceEventIds,
         logFields,
         error: new CorruptedEventLogError(
           `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}; divergent event ids: ${divergenceEventIds.join(', ')}. Last divergence: ${err.message}`,
@@ -4806,7 +5119,8 @@ async function runDelivery(
   async function failRun(
     terminalError: unknown,
     effectiveWorkflowCode: string,
-    replayDivergenceCount?: number,
+    /** The divergence episode this failure ends, reported on the write. */
+    replayDivergence?: { count: number; eventIds: readonly string[] },
     extraLogFields: Record<string, unknown> = {}
   ): Promise<undefined> {
     if (terminalError instanceof Error) {
@@ -4854,8 +5168,11 @@ async function runDelivery(
         },
         {
           requestId,
-          ...(replayDivergenceCount !== undefined
-            ? { replayDivergenceCount }
+          ...(replayDivergence !== undefined
+            ? {
+                replayDivergenceCount: replayDivergence.count,
+                ...reportedDivergenceEventIds(replayDivergence.eventIds),
+              }
             : {}),
         }
       );

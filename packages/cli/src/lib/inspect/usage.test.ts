@@ -1,10 +1,9 @@
 import {
   buildRunUsage,
-  formatEventCountingLines,
-  formatEventCountingNote,
   formatUsageFooter,
   type RunUsage,
   type RunUsageAggregates,
+  USAGE_COUNTING_DOCS_URL,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
@@ -37,7 +36,7 @@ const usageOf = (overrides: Partial<RunUsageAggregates> = {}): RunUsage =>
     ],
     stepGroups: [step('chargeCard', 2, 1), step('sendEmail', 4)],
     streamBytes: 0,
-    calls: { hook: 0, wait: 1 },
+    calls: { wait: 1 },
     ...overrides,
   });
 
@@ -45,43 +44,83 @@ const usageOf = (overrides: Partial<RunUsageAggregates> = {}): RunUsage =>
 const ANSI = /\u001b\[/;
 
 describe('formatRunUsageText', () => {
-  it('draws the summary, the span tree, the counting note and data written', () => {
+  it('draws the summary, the usage table, the docs link and storage', () => {
     expect(formatRunUsageText(usageOf())).toMatchInlineSnapshot(`
       "processOrder  wrun_01K5WAJZ8W367CV2RFKDSDNWB8  ● completed
 
-      Events        25  (1 retry)
-      Data written  1.11 KB (local)
+      Events           25
+      Storage (local)  1.11 KB
 
-      NAME                          EVENTS  SHARE
-      processOrder  workflow            25
-      ├─ sendEmail  ×4                  12    48%  █████░░░░░
-      ├─ chargeCard  ×2  ↻ 1 retry       8    32%  ███░░░░░░░
-      ├─ Run start & finish              3    12%
-      └─ Sleeps  ×1                      2     8%
-      TOTAL                             25   100%
+      TYPE    NAME                               EVENTS  SHARE
+      Steps   6 calls  ↻ 1 retry                     20    80%  ████████░░
+              ├─ sendEmail  4 calls                  12    48%  █████░░░░░
+              └─ chargeCard  2 calls  ↻ 1 retry       8    32%  ███░░░░░░░
+      Sleeps  1 sleep                                 2     8%  █░░░░░░░░░
+      Run                                             3    12%  █░░░░░░░░░
+      TOTAL                                          25   100%
 
-      6 steps wrote 20 events: 6 created, 7 started, 6 completed, 1 retry marker.
-      1 retry added 2 events: 1 retry marker, 1 step start.
+      How events are counted: https://workflow-sdk.dev/docs/observability#how-events-are-counted
 
-      DATA WRITTEN (LOCAL)     SIZE
-      Run                     510 B
-      Steps                   600 B
-      TOTAL                 1.11 KB
+      STORAGE (LOCAL)     SIZE
+      Run                510 B
+      Steps              600 B
+      TOTAL            1.11 KB
 
       Local runs aren't billed. Counted from this run's log in your local data directory.
       Machine-readable: --json"
     `);
   });
 
-  it('prints the shared footer and counting lines', () => {
+  it('prints the shared footer and points to how events are counted', () => {
     const usage = usageOf();
     const text = formatRunUsageText(usage);
     expect(text).toContain(formatUsageFooter(usage));
-    for (const line of formatEventCountingNote(usage)) {
-      expect(text).toContain(line);
-      // Each one is a line of the full "How events are counted" list.
-      expect(formatEventCountingLines(usage)).toContain(line);
-    }
+    expect(text).toContain(
+      `How events are counted: ${USAGE_COUNTING_DOCS_URL}`
+    );
+    // The counting explanation is in the docs, not printed.
+    expect(text).not.toMatch(/steps? wrote|retr(y|ies) added|A retry adds/);
+  });
+
+  it('prints the events without retries, and the retries on step rows', () => {
+    const text = formatRunUsageText(usageOf());
+    expect(text).toMatch(/^Events +25$/m);
+    expect(text).toMatch(/^Steps .*↻ 1 retry/m);
+    expect(text).toMatch(/└─ chargeCard {2}2 calls {2}↻ 1 retry/);
+  });
+
+  it('lists the types in order, with no workflow row or built-in group', () => {
+    const usage = usageOf({
+      eventGroups: [
+        { eventType: 'run_created', events: 1, bytes: 1 },
+        { eventType: 'run_started', events: 1, bytes: 1 },
+        { eventType: 'run_completed', events: 1, bytes: 1 },
+        { eventType: 'wait_created', events: 1, bytes: 1 },
+        { eventType: 'wait_completed', events: 1, bytes: 1 },
+        { eventType: 'attr_set', events: 2, bytes: 1 },
+        { eventType: 'hook_created', events: 2, bytes: 1 },
+        { eventType: 'hook_received', events: 3, bytes: 1 },
+      ],
+      hookGroups: [
+        { hookId: 'hook_1', token: 'approve:ord_1', events: 3 },
+        { hookId: 'hook_2', token: 'cancel:ord_1', events: 2 },
+      ],
+    });
+    const text = formatRunUsageText(usage);
+    // The usage table: from its header to its total.
+    const table = text.slice(text.indexOf('TYPE'), text.indexOf('TOTAL'));
+    const types = table
+      .split('\n')
+      .map((line) => line.match(/^(Steps|Hooks|Attributes|Sleeps|Run) /)?.[1])
+      .filter(Boolean);
+    expect(types).toEqual(['Steps', 'Hooks', 'Attributes', 'Sleeps', 'Run']);
+    expect(text).toMatch(/^TYPE +NAME +EVENTS +SHARE$/m);
+    expect(text).toMatch(/^Hooks +2 hooks +5 /m);
+    expect(text).toMatch(/├─ approve:ord_1 +3 /);
+    expect(text).toMatch(/└─ cancel:ord_1 +2 /);
+    expect(text).toMatch(/^Attributes +2 writes +2 /m);
+    expect(text).toMatch(/^Sleeps +1 sleep +2 /m);
+    expect(text).not.toMatch(/processOrder {2}workflow|Built-in|Span|×\d/);
   });
 
   it('calls a billed run’s events billable', () => {
@@ -89,7 +128,8 @@ describe('formatRunUsageText', () => {
     expect(text).not.toContain('On Vercel');
     expect(text).not.toContain('(local)');
     expect(text).toContain('Not your final bill.');
-    expect(text).toContain('DATA WRITTEN  ');
+    expect(text).toContain('STORAGE  ');
+    expect(text).toMatch(/^Storage {2}/m);
   });
 
   it('folds the steps past five into one row and ends the tree there', () => {
@@ -101,16 +141,36 @@ describe('formatRunUsageText', () => {
     });
     const tree = formatRunUsageText(many)
       .split('\n')
-      .filter((line) => /^(├─|└─)/.test(line));
-    expect(tree.map((line) => line.split('  ')[0])).toEqual([
+      .filter((line) => /(├─|└─)/.test(line));
+    expect(tree.map((line) => line.trim().split('  ')[0])).toEqual([
       '├─ a',
       '├─ b',
       '├─ c',
       '├─ d',
       '├─ e',
-      '├─ + 2 other steps',
-      '└─ Run start & finish',
+      '└─ + 2 other steps',
     ]);
+  });
+
+  it('tells apart steps of the same name in different files', () => {
+    const usage = usageOf({
+      stepGroups: [
+        { ...step('send', 3), stepName: 'step//./src/a//send' },
+        { ...step('send', 2), stepName: 'step//./src/b//send' },
+      ],
+    });
+    const rows = formatRunUsageText(usage)
+      .split('\n')
+      .filter((line) => /(├─|└─)/.test(line))
+      .map((line) => line.trim().split('  ')[0]);
+    expect(rows).toEqual(['├─ send (./src/a)', '└─ send (./src/b)']);
+  });
+
+  it('labels a local run’s storage "Storage (local)", not "Data written"', () => {
+    const text = formatRunUsageText(usageOf());
+    expect(text).toMatch(/^Storage \(local\) {2}1\.11 KB$/m);
+    expect(text).toMatch(/^STORAGE \(LOCAL\) +SIZE$/m);
+    expect(text).not.toMatch(/data written/i);
   });
 
   it('says nothing of what a run would count as on Vercel', () => {

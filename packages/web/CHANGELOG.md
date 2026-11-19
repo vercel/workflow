@@ -1,5 +1,25 @@
 # @workflow/web
 
+## 5.3.0
+
+### Patch Changes
+
+- [#5522](https://github.com/vercel/workflow/pull/5522) [`5edc5b2`](https://github.com/vercel/workflow/commit/5edc5b2b768272512a7a65a84979ce71bd29c55c) Thanks [@mitul-s](https://github.com/mitul-s)! - Build `DecryptButton` and the app's loading buttons and spinners on `Button`, which gains `loading`, `prefix` and `suffix` props and drops `size="tiny"` (use `small`), and on `Spinner`, which takes named sizes from `sm` to `4xl` (default `lg`).
+
+- [#5575](https://github.com/vercel/workflow/pull/5575) [`0a497dc`](https://github.com/vercel/workflow/commit/0a497dc857056740038a6650757b12c993412fcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add `CopyButton` and use it for every copy button in the observability UI.
+
+- [#5524](https://github.com/vercel/workflow/pull/5524) [`bace5ef`](https://github.com/vercel/workflow/commit/bace5ef5d554711f6eea9d02cee95ab0b4c34e39) Thanks [@mitul-s](https://github.com/mitul-s)! - Align the design tokens with the Vercel dashboard: `styles.css` now carries the full palette, shadows, focus ring, z-index, motion and popover tokens plus a `hocus` variant, and `dark:` follows the theme class. The theme no longer applies under `[data-theme="dark"]`, and the `dark-theme:`/`light-theme:` variants no longer match `.dark`/`.light`; use `dark:` instead.
+
+- [#5544](https://github.com/vercel/workflow/pull/5544) [`d7053a8`](https://github.com/vercel/workflow/commit/d7053a82a561f0a78f8832fbb2df34a73799377a) Thanks [@mitul-s](https://github.com/mitul-s)! - Show the Events search hint under the search box once typing pauses, give a failed search an error state with Try again, and report an ID that does not exist as not found.
+
+- [#5537](https://github.com/vercel/workflow/pull/5537) [`44d4b95`](https://github.com/vercel/workflow/commit/44d4b95df03bc23b9b47d03361fedda3262c434b) Thanks [@mitul-s](https://github.com/mitul-s)! - Replace emoji and glyph icons in the observability UI with icons: the tool call and tool result labels, the stream reference badge, the decoded-bytes disclosure, the agent, tool and conditional flow-graph nodes, and the retry and duration badges.
+
+- [#5525](https://github.com/vercel/workflow/pull/5525) [`3671902`](https://github.com/vercel/workflow/commit/367190219322f3cbb8fc0606989f59473354f6ca) Thanks [@mitul-s](https://github.com/mitul-s)! - Share one search bar between the trace viewer and the Events tab, with a visible keyboard focus outline, a labelled clear button at every width, and the ellipsis character in the placeholder.
+
+- [#5518](https://github.com/vercel/workflow/pull/5518) [`46dff1c`](https://github.com/vercel/workflow/commit/46dff1c9b2130835f3b26752d1d3f030dd62dced) Thanks [@mitul-s](https://github.com/mitul-s)! - Export `cn` from `@workflow/web-shared` and use it in the web UI, so Geist type classes such as `text-label-14` are no longer dropped when merged with a text colour class.
+- Updated dependencies [[`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f), [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`10f35e3`](https://github.com/vercel/workflow/commit/10f35e334a16489916bf117f022c8e1ccdc61efd), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772)]:
+  - @workflow/world-local@5.5.0
+
 ## 5.2.0
 
 ### Minor Changes

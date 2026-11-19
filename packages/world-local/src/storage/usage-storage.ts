@@ -2,12 +2,16 @@
  * Per-run usage (`world.experimental_usage`), counted from the run's rows
  * with aggregate queries. Nothing here decodes an event.
  *
- * Data written is what the run's rows hold in `world.db`: each event as
- * stored (its payloads included) and each stream chunk. A run started with
+ * Data written counts what Vercel's Data Written counts: the bytes of each
+ * event's payloads as the SDK sent them (`PAYLOAD_BYTES_SQL`, from the
+ * stored base64 lengths, nothing decoded), not the event's metadata, and
+ * each stream chunk's bytes. QuickJS VM snapshots are not counted yet. A
+ * run started with
  * zero retention (`$retention: '0'`) has its payloads deleted when it
- * finishes; the purge saves the sizes first (`purged-usage.ts`), and those
- * are reported, plus anything written after. A run purged before the sizes
- * were saved reports what is left, marked as such.
+ * finishes, and any finished run's can be deleted on demand; the purge saves
+ * the sizes first (`purged-usage.ts`), and those are reported, plus anything
+ * written after. A run deleted before the sizes were saved reports what is
+ * left, marked as such.
  *
  * **Counted once, then extended.** node:sqlite is synchronous: while a read
  * runs, the process answers nothing else, and reading a run costs time in
@@ -19,16 +23,20 @@
  *
  * - Safe because a run's log is append-only: rows are added at the next
  *   position and never rewritten or removed, with one exception, the
- *   zero-retention purge, which rewrites every row in the transaction that
- *   finishes the run, and again when a late step write lands. Counts
- *   (types, steps) do not change in a purge, only bytes, and a purged run
- *   reports the sizes the purge saved, not the rows'. To stay exact anyway,
- *   counts taken before a run finished are dropped and taken again once it
- *   has finished with its data deleted (cheap then: the rows are small).
- *   A late purge needs no recount: the run already reports saved sizes.
+ *   deletion of a run's data, which rewrites rows in place: every row when a
+ *   zero-retention run finishes or a finished run's data is deleted on
+ *   demand (`purgeRunData`), and one row when a late step write lands on a
+ *   deleted run (`purgeLateStepWrite`). Counts (types, steps) do not change,
+ *   only bytes, and a run whose data was deleted reports the sizes saved
+ *   before each rewrite, not its rows'. To stay exact anyway, counts taken
+ *   before a run finished are dropped and taken again once it has finished
+ *   with its data deleted (cheap then: the rows are small).
  * - A run that is not writing (sleeping, waiting on a hook) costs one
- *   lookup of its position. Stream bytes are summed fresh on every read
- *   (from the stream index, without reading the chunks' data).
+ *   lookup of its position for its events. Its stream bytes are summed on
+ *   every read, one pass over the lengths of its chunks: a run with many
+ *   chunks costs time in proportion to their count (tens of
+ *   milliseconds for 60,000). Not cached: chunks are keyed by stream and index, and a purge
+ *   deletes them, so a running total would need the same pass to check.
  * - The first count of a run is split into batches of a few milliseconds
  *   each, yielding between them, so even that read leaves the process free
  *   to answer other requests. Rows up to the position the batches stop at
@@ -48,15 +56,17 @@ import {
   type RunUsage,
   type RunUsageEntity,
   type RunUsageEventGroup,
+  type RunUsageHookGroup,
   type RunUsageStepGroup,
+  startHookId,
   type WorkflowRunStatus,
 } from '@workflow/world';
 import type { Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
 import {
-  DOC_BYTES_SQL,
   EntityBytes,
   measureStreamBytes,
+  PAYLOAD_BYTES_SQL,
   readPurgedUsage,
 } from './purged-usage.js';
 import { tagClause, tagParams } from './store.js';
@@ -76,6 +86,8 @@ export interface UsageStorageOptions {
   maxBatchRows?: number;
   /** Called between batches (tests write to the run there). */
   onBatch?: (runId: string, countedSeq: number) => void | Promise<void>;
+  /** Called when a read recounts a run whose data was deleted (tests). */
+  onRecount?: (runId: string) => void;
 }
 
 /** A step event: `step_created`, `step_started`, ... */
@@ -85,7 +97,7 @@ const IS_STEP_EVENT = `event_type LIKE 'step\\_%' ESCAPE '\\'`;
 const EVENT_GROUPS_SQL = `
   SELECT event_type,
          COUNT(*) AS events,
-         SUM(${DOC_BYTES_SQL}) AS bytes
+         SUM(${PAYLOAD_BYTES_SQL}) AS bytes
   FROM events
   WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3 AND NOT (${IS_STEP_EVENT})
   GROUP BY event_type
@@ -104,23 +116,56 @@ const STEP_GROUPS_SQL = `
          SUM(event_type = 'step_completed') AS completed,
          SUM(event_type = 'step_failed') AS failed,
          SUM(event_type = 'step_retrying') AS retries,
-         SUM(${DOC_BYTES_SQL}) AS bytes
+         SUM(${PAYLOAD_BYTES_SQL}) AS bytes
   FROM events
   WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3 AND ${IS_STEP_EVENT}
   GROUP BY correlation_id
 `;
 
 /**
- * The hooks and sleeps a range of positions names, for their span's call
- * counts (`calls`). Event type and correlation id are columns: no doc is
- * read.
+ * The sleeps a range of positions names, for their span's call count.
+ * Event type and correlation id are columns: no doc is read.
  */
-const HOOK_AND_WAIT_IDS_SQL = `
-  SELECT DISTINCT correlation_id, substr(event_type, 1, 5) AS kind
+const WAIT_IDS_SQL = `
+  SELECT DISTINCT correlation_id
   FROM events
   WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3
-    AND correlation_id IS NOT NULL
-    AND (substr(event_type, 1, 5) = 'hook_' OR substr(event_type, 1, 5) = 'wait_')
+    AND correlation_id IS NOT NULL AND substr(event_type, 1, 5) = 'wait_'
+`;
+
+/** Hook events in a range of positions, by hook. No doc is read. */
+const HOOK_GROUPS_SQL = `
+  SELECT correlation_id, COUNT(*) AS events
+  FROM events
+  WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3
+    AND correlation_id IS NOT NULL AND substr(event_type, 1, 5) = 'hook_'
+  GROUP BY correlation_id
+`;
+
+/**
+ * A hook's token, from the event that created it (or the one that reported
+ * its token taken). Looked up once per hook; a purge keeps the token.
+ */
+const HOOK_TOKEN_SQL = `
+  SELECT json_extract(doc, '$.eventData.token') AS token
+  FROM events
+  WHERE run_id = ? AND correlation_id = ?
+    AND event_type IN ('hook_created', 'hook_conflict')
+  ORDER BY seq LIMIT 1
+`;
+
+/** A hook's token from its row, for a hook with no creating event. */
+const HOOK_ROW_TOKEN_SQL = 'SELECT token FROM hooks WHERE hook_id = ?';
+
+/**
+ * A run's start Hook is created with the run (`run_created`'s `startHook`),
+ * not by a `hook_created` event, and its row goes when the run finishes.
+ */
+const START_HOOK_TOKEN_SQL = `
+  SELECT json_extract(doc, '$.eventData.startHook.token') AS token
+  FROM events
+  WHERE run_id = ? AND event_type = 'run_created'
+  LIMIT 1
 `;
 
 /**
@@ -141,15 +186,16 @@ const BATCH_END_SQL = `
 
 /** Events written after a log position, by type: a purged run's late writes. */
 const EVENTS_AFTER_SQL = `
-  SELECT event_type, SUM(${DOC_BYTES_SQL}) AS bytes
+  SELECT event_type, SUM(${PAYLOAD_BYTES_SQL}) AS bytes
   FROM events
   WHERE run_id = ? AND seq > ?
   GROUP BY event_type
 `;
 
 /**
- * Whether a finished run's data was deleted when it finished
- * (`withRunPayloadsPurged` stamps `expiredAt`). Only asked of a finished run
+ * Whether a finished run's data was deleted, when it finished or on demand
+ * (`withRunPayloadsPurged` stamps `expiredAt`; world-local stamps it only
+ * when it deletes). Only asked of a finished run
  * with no saved sizes: the doc is parsed, so a running run skips it.
  */
 const PURGED_RUN_SQL = `
@@ -176,7 +222,8 @@ interface RunCounts {
   eventTypes: Map<string, { events: number; bytes: number }>;
   /** By step id. */
   steps: Map<string, StepCount>;
-  hookIds: Set<string>;
+  /** By hook id. */
+  hooks: Map<string, { token: string | null; events: number }>;
   waitIds: Set<string>;
 }
 
@@ -185,7 +232,7 @@ const newCounts = (): RunCounts => ({
   finished: false,
   eventTypes: new Map(),
   steps: new Map(),
-  hookIds: new Set(),
+  hooks: new Map(),
   waitIds: new Set(),
 });
 
@@ -252,17 +299,52 @@ function countRange(
     step.retries += Number(row.retries);
     step.bytes += Number(row.bytes ?? 0);
   }
-  for (const row of db.all<{ correlation_id: string; kind: string }>(
-    HOOK_AND_WAIT_IDS_SQL,
+  for (const row of db.all<{ correlation_id: string; events: number }>(
+    HOOK_GROUPS_SQL,
     runId,
     from,
     to
   )) {
-    (row.kind === 'hook_' ? counts.hookIds : counts.waitIds).add(
-      row.correlation_id
-    );
+    let hook = counts.hooks.get(row.correlation_id);
+    if (!hook) {
+      hook = { token: hookToken(db, runId, row.correlation_id), events: 0 };
+      counts.hooks.set(row.correlation_id, hook);
+    }
+    hook.events += Number(row.events);
+  }
+  for (const row of db.all<{ correlation_id: string }>(
+    WAIT_IDS_SQL,
+    runId,
+    from,
+    to
+  )) {
+    counts.waitIds.add(row.correlation_id);
   }
   counts.countedSeq = to;
+}
+
+function hookToken(db: Database, runId: string, hookId: string): string | null {
+  const created = db.get<{ token: unknown }>(HOOK_TOKEN_SQL, runId, hookId);
+  if (typeof created?.token === 'string' && created.token) return created.token;
+  const row = db.get<{ token: unknown }>(HOOK_ROW_TOKEN_SQL, hookId);
+  if (typeof row?.token === 'string' && row.token) return row.token;
+  let startHook: string | undefined;
+  try {
+    startHook = startHookId(runId);
+  } catch {
+    return null;
+  }
+  if (hookId !== startHook) return null;
+  const start = db.get<{ token: unknown }>(START_HOOK_TOKEN_SQL, runId);
+  return typeof start?.token === 'string' && start.token ? start.token : null;
+}
+
+function hookGroupsOf(counts: RunCounts): RunUsageHookGroup[] {
+  return [...counts.hooks].map(([hookId, hook]) => ({
+    hookId,
+    token: hook.token,
+    events: hook.events,
+  }));
 }
 
 function eventGroupsOf(counts: RunCounts): RunUsageEventGroup[] {
@@ -308,14 +390,15 @@ function stepGroupsOf(counts: RunCounts): RunUsageStepGroup[] {
 }
 
 /**
- * Data written by a run whose data was deleted when it finished: what the
+ * Data written by a run whose data was deleted: what the
  * purge saved, plus what was written after it. Rows up to the saved position
  * are counted in the saved sizes and not again; the purge deleted the
  * stream chunks it measured, so the chunks there now came after it.
  */
 function purgedDataWritten(
   db: Database,
-  runId: string
+  runId: string,
+  streamBytes: number
 ): Record<RunUsageEntity, number> | null {
   const saved = readPurgedUsage(db, runId);
   if (!saved) return null;
@@ -331,7 +414,7 @@ function purgedDataWritten(
     run: saved.byEntity.run + late.byEntity.run,
     step: saved.byEntity.step + late.byEntity.step,
     hook: saved.byEntity.hook + late.byEntity.hook,
-    stream: saved.byEntity.stream + measureStreamBytes(db, runId),
+    stream: saved.byEntity.stream + streamBytes,
   };
 }
 
@@ -356,10 +439,11 @@ export function createUsageStorage(
   // recency order: a read moves its run to the end.
   //
   // A read counts only the rows after the last position it counted, so the
-  // cache assumes event rows are never rewritten in place. The one path that
-  // does is the zero-retention purge (`purgeRunData` in run-retention.ts),
-  // when the run finishes and on a late step write. The read handles both:
-  // a purged run reports the sizes saved before each purge, and counts
+  // cache assumes event rows are never rewritten in place. The paths that do
+  // are the deletions of a run's data in run-retention.ts: `purgeRunData`
+  // (a zero-retention run's finish, or `runs.deleteDataMany`) and
+  // `purgeLateStepWrite` (a late step write on a deleted run). Each saves
+  // the run's sizes before rewriting, and the read reports those; counts
   // taken before the run finished are taken again.
   const cache = new Map<string, RunCounts>();
   // One count per run at a time: a second read of the same run waits for
@@ -429,6 +513,14 @@ export function createUsageStorage(
     let counts = cache.get(runId) ?? newCounts();
     // A database replaced underneath (positions went back): count afresh.
     if (Number(first.seq) < counts.countedSeq) counts = newCounts();
+    // Whether any row counted here may have been read before the run
+    // finished, and so before a zero-retention purge rewrote it: rows
+    // cached from a read of the running run, or rows this read's batches
+    // count while it is still running. A run that had finished when this
+    // read began was already purged, so its rows are read as they are.
+    let readBeforeFinish =
+      !isTerminalWorkflowRunStatus(first.status as WorkflowRunStatus) ||
+      (counts.countedSeq > 0 && !counts.finished);
     await countInBatches(runId, counts, Number(first.seq));
 
     // The rest in one read transaction: the run's status, the rows written
@@ -440,24 +532,34 @@ export function createUsageStorage(
       const finished = isTerminalWorkflowRunStatus(
         run.status as WorkflowRunStatus
       );
-      if (seq < counts.countedSeq) counts = newCounts();
+      if (seq < counts.countedSeq) {
+        counts = newCounts();
+        // Counted below, inside this read of the finished run.
+        readBeforeFinish = !finished;
+      }
       countRange(db, runId, counts, counts.countedSeq, seq);
-      const savedDataWritten = purgedDataWritten(db, runId) ?? undefined;
+      // Summed once, for the run's streams and a purged run's late ones.
+      const streamBytes = measureStreamBytes(db, runId);
+      const savedDataWritten =
+        purgedDataWritten(db, runId, streamBytes) ?? undefined;
       const dataPurged =
         savedDataWritten !== undefined ||
         (finished &&
           Number(db.get<{ purged: number }>(PURGED_RUN_SQL, runId)?.purged) ===
             1);
       // Counted (in part) before the purge rewrote the rows: count the
-      // finished run again so the bytes are its rows as they are now.
-      if (dataPurged && !counts.finished && counts.countedSeq > 0) {
+      // finished run again so the bytes are its rows as they are now. Not on
+      // a first read of a run that had already finished: every row was read
+      // after its purge, and this recount is one unbatched block.
+      if (dataPurged && readBeforeFinish && counts.countedSeq > 0) {
+        options.onRecount?.(runId);
         counts = newCounts();
         countRange(db, runId, counts, 0, seq);
       }
       counts.finished = finished;
       return {
         run,
-        streamBytes: measureStreamBytes(db, runId),
+        streamBytes,
         dataPurged,
         savedDataWritten,
       };
@@ -476,7 +578,8 @@ export function createUsageStorage(
       streamBytes: snapshot.streamBytes,
       dataPurged: snapshot.dataPurged,
       savedDataWritten: snapshot.savedDataWritten,
-      calls: { hook: counts.hookIds.size, wait: counts.waitIds.size },
+      hookGroups: hookGroupsOf(counts),
+      calls: { wait: counts.waitIds.size },
       // Local runs are not billed.
       billed: false,
       // world-local has no plan retention, so there is no Data Retained to

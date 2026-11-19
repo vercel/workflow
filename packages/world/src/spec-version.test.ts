@@ -144,6 +144,29 @@ describe('spec version constants', () => {
       }
     });
 
+    it('falls back to spec 8 on a fenced World when the value is set but not understood, and says so', () => {
+      // The variable is set to opt in to spec 9, so a typo in it must not
+      // leave a World minting something else silently.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const fenced = { inBandFence: true };
+        const typos = ['9.0', 'v9', 'spec9', 'nine-fenced', '99'];
+        for (const raw of typos) {
+          expect(
+            mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw }, fenced)
+          ).toBe(SPEC_VERSION_DEFAULT_MINTED);
+        }
+        expect(warn).toHaveBeenCalledTimes(typos.length);
+        for (const [message] of warn.mock.calls) {
+          expect(String(message)).toContain(
+            `so new runs use spec ${SPEC_VERSION_DEFAULT_MINTED}`
+          );
+        }
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('stamps the single-orchestrator version only for a fenced World', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {

@@ -1,15 +1,21 @@
-// The text `workflow inspect run <id> --usage` prints, built from the
+// The table `workflow inspect run <id> --usage` prints, built from the
 // `@workflow/world` formatters, checked against a real run's log.
 import { formatRunUsageText } from '@workflow/cli/dist/lib/inspect/usage.js';
+import { waitForHook } from '@workflow/vitest';
 import {
   type Event,
   type RunUsage,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  USAGE_COUNTING_DOCS_URL,
+  usageEntityOfEventType,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { start } from 'workflow/api';
+import { resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
-import { usageCountingWorkflow } from '../workflows/usage-counting.js';
+import {
+  usageCountingWorkflow,
+  usageEverythingWorkflow,
+} from '../workflows/usage-counting.js';
 
 /** Every event of the run, read page by page. */
 async function listAllEvents(runId: string): Promise<Event[]> {
@@ -28,96 +34,145 @@ async function listAllEvents(runId: string): Promise<Event[]> {
   return all;
 }
 
+/**
+ * The run's payload bytes as the World gives them back: every `Uint8Array`
+ * in its events' data (read with `resolveData: 'all'`), by the entity Data
+ * Written reports it under, and every chunk of its streams.
+ */
+async function payloadBytesReadBack(runId: string) {
+  const world = await getWorld();
+  const byEntity = { run: 0, step: 0, hook: 0, stream: 0 };
+  const walk = (value: unknown): number => {
+    if (value instanceof Uint8Array) return value.byteLength;
+    if (value === null || typeof value !== 'object') return 0;
+    return Object.values(value).reduce<number>((n, v) => n + walk(v), 0);
+  };
+  let cursor: string | undefined;
+  do {
+    const page = await world.events.list({
+      runId,
+      pagination: { limit: 100, cursor },
+      resolveData: 'all',
+    });
+    for (const event of page.data) {
+      const entity = usageEntityOfEventType(event.eventType);
+      if (entity) {
+        byEntity[entity] += walk((event as { eventData?: unknown }).eventData);
+      }
+    }
+    cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+  } while (cursor);
+  for (const name of await world.streams.list(runId)) {
+    let chunks: string | undefined;
+    do {
+      const page = await world.streams.getChunks(runId, name, {
+        cursor: chunks,
+      });
+      for (const chunk of page.data) byEntity.stream += chunk.data.byteLength;
+      chunks = page.hasMore ? (page.cursor ?? undefined) : undefined;
+    } while (chunks);
+  }
+  return byEntity;
+}
+
 const countOf = (events: Event[], eventType: string) =>
   events.filter((event) => event.eventType === eventType).length;
 
 const toNumber = (text: string) => Number(text.replaceAll(',', ''));
 
-/** The log names behind the labels the explanation uses. */
-const LABEL_EVENT_TYPES: Record<string, string> = {
-  created: 'step_created',
-  started: 'step_started',
-  completed: 'step_completed',
-  failed: 'step_failed',
-  'retry marker': 'step_retrying',
-  'retry markers': 'step_retrying',
-};
-
-/**
- * What the "How events are counted" text says the run's steps wrote, read
- * the way a user reads it: a breakdown of the run's own counts
- * (`7 steps wrote 21 events: 3 created, 9 started, ...`).
- */
-function stepEventsTheTextClaims(text: string): {
+interface PrintedRow {
+  /** The Type column: `Steps`, `Hooks`, ...; empty on a child row. */
+  type: string;
+  /** The Name column, without the tree characters of a child row. */
+  name: string;
   events: number;
-  steps?: number;
-  byEventType?: Record<string, number>;
-  withoutCreated?: number;
-} {
-  const breakdown = text.match(
-    /([\d,]+) steps? wrote ([\d,]+) events?: ([^\n.]*)/
-  );
-  if (breakdown) {
-    const byEventType: Record<string, number> = {};
-    for (const part of breakdown[3].split(', ')) {
-      const [, count, label] = part.match(/^([\d,]+) (.+)$/) ?? [];
-      const eventType = LABEL_EVENT_TYPES[label];
-      if (!eventType) throw new Error(`Unknown label in ${part}`);
-      byEventType[eventType] = toNumber(count);
-    }
-    // The note on steps without a created event, when the text has it (the
-    // CLI's two-line note leaves it out).
-    const note = text.match(/([\d,]+) steps? ha(?:s|ve) no created event/);
-    const none = /No step has a created event/.test(text);
-    return {
-      steps: toNumber(breakdown[1]),
-      events: toNumber(breakdown[2]),
-      byEventType,
-      withoutCreated: note
-        ? toNumber(note[1])
-        : none
-          ? toNumber(breakdown[1])
-          : undefined,
-    };
-  }
-  throw new Error(`No step event count in:\n${text}`);
 }
 
 /**
- * What the text says the retries added: `2 retries added 4 events: 2 retry
- * markers, 2 step starts.`
+ * The usage table as a user reads it: each row's Type, Name and Events,
+ * cut at the columns the header line sets (Type and Name are padded to the
+ * longest, Events is right-aligned under its header).
  */
-function retryEventsTheTextClaims(text: string) {
-  const line = text.match(
-    /([\d,]+) retr(?:y|ies) added ([\d,]+) events?: ([\d,]+) retry markers?(?:, ([\d,]+) step starts?)?\./
-  );
-  if (!line) throw new Error(`No retry event count in:\n${text}`);
+function printedRows(text: string): PrintedRow[] {
+  const lines = text.split('\n');
+  const header = lines.findIndex((line) => /^TYPE +NAME +EVENTS/.test(line));
+  expect(header, 'the table header').toBeGreaterThanOrEqual(0);
+  const nameAt = lines[header].indexOf('NAME');
+  const eventsEnd = lines[header].indexOf('EVENTS') + 'EVENTS'.length;
+  const rows: PrintedRow[] = [];
+  for (const line of lines.slice(header + 1)) {
+    if (line.startsWith('TOTAL')) break;
+    const [, name, events] =
+      line.slice(nameAt, eventsEnd).match(/^(.*?)\s+([\d,]+)$/) ?? [];
+    if (events === undefined) throw new Error(`Unreadable row: ${line}`);
+    rows.push({
+      type: line.slice(0, nameAt).trim(),
+      name: name.replace(/^[├└]─ /, '').trim(),
+      events: toNumber(events),
+    });
+  }
+  return rows;
+}
+
+/** A group row and the child rows under it. */
+function groupOf(rows: PrintedRow[], type: string) {
+  const at = rows.findIndex((row) => row.type === type);
+  if (at < 0) return undefined;
+  const end = rows.findIndex((row, i) => i > at && row.type !== '');
   return {
-    retries: toNumber(line[1]),
-    events: toNumber(line[2]),
-    markers: toNumber(line[3]),
-    starts: line[4] ? toNumber(line[4]) : 0,
+    row: rows[at],
+    children: rows.slice(at + 1, end < 0 ? undefined : end),
   };
 }
 
-/**
- * The starts a retry caused, read off the log: per step, its starts after
- * the first, up to its retry markers.
- */
-function retryStartsInTheLog(events: Event[]): number {
-  const byStep = new Map<string, { started: number; retrying: number }>();
-  for (const event of events) {
-    if (!event.correlationId) continue;
-    const step = byStep.get(event.correlationId) ?? { started: 0, retrying: 0 };
-    if (event.eventType === 'step_started') step.started += 1;
-    if (event.eventType === 'step_retrying') step.retrying += 1;
-    byStep.set(event.correlationId, step);
+/** What every run's printed usage must say, checked against its log. */
+function checkPrinted(text: string, events: Event[]) {
+  const rows = printedRows(text);
+  const stepLog = events.filter((event) => event.eventType.startsWith('step_'));
+  const ofPrefix = (prefix: string) =>
+    events.filter((event) => event.eventType.startsWith(prefix)).length;
+
+  // Each type's events are the log's, and they add up to the run's.
+  const steps = groupOf(rows, 'Steps');
+  expect(steps?.row.events).toBe(stepLog.length);
+  expect(groupOf(rows, 'Run')?.row.events).toBe(ofPrefix('run_'));
+  const groups = rows.filter((row) => row.type !== '');
+  expect(groups.reduce((sum, row) => sum + row.events, 0)).toBe(events.length);
+  expect(text).toMatch(
+    new RegExp(`^TOTAL +${events.length.toLocaleString('en-US')} +100%`, 'm')
+  );
+
+  // Each step function's events are its steps' in the log.
+  const stepNames = new Map<string, string>();
+  for (const event of stepLog) {
+    const name = (event as { eventData?: { stepName?: string } }).eventData
+      ?.stepName;
+    if (name && event.correlationId) stepNames.set(event.correlationId, name);
   }
-  let starts = 0;
-  for (const { started, retrying } of byStep.values()) {
-    starts += Math.min(retrying, Math.max(0, started - 1));
+  for (const child of steps?.children ?? []) {
+    const fn = child.name.split('  ')[0];
+    const ids = [...stepNames]
+      .filter(([, name]) => name.endsWith(`//${fn}`))
+      .map(([id]) => id);
+    const logged = stepLog.filter((event) =>
+      ids.includes(event.correlationId ?? '')
+    ).length;
+    expect(child.events, fn).toBe(logged);
+    // "N calls", never "×N".
+    expect(child.name).toMatch(
+      new RegExp(`^${fn} {2}${ids.length} calls?( |$)`)
+    );
   }
-  return starts;
+
+  // No counting explanation: a pointer to the docs instead.
+  expect(text).toContain(`How events are counted: ${USAGE_COUNTING_DOCS_URL}`);
+  expect(text).not.toMatch(/steps? wrote|retr(y|ies) added|×\d/);
+  expect(text).not.toMatch(/On Vercel|would count as|See pricing/);
+  // The summary's events have no retries; the retries are on step rows.
+  expect(text).toMatch(
+    new RegExp(`^Events +${events.length.toLocaleString('en-US')}$`, 'm')
+  );
+  return rows;
 }
 
 async function runAndCheck(options?: { specVersion: number }) {
@@ -138,48 +193,26 @@ async function runAndCheck(options?: { specVersion: number }) {
   expect(steps).toBe(7);
   expect(retries).toBe(2);
 
-  // What the user reads first: the explanation's numbers are the log's.
+  // What the user reads first: the table's numbers are the log's.
   const text = formatRunUsageText(usage);
-  // The paragraph that explains the count, as printed.
-  const explained = text
-    .split('\n\n')
-    .filter((paragraph) => /steps? wrote/.test(paragraph))
-    .join('\n');
-  console.log(
-    `spec ${specVersion}: ${events.length} events, ${stepLog.length} of them step events in the log\n${explained}`
-  );
-  const claim = stepEventsTheTextClaims(text);
-  expect(
-    claim.events,
-    'the step events the explanation adds up to are the ones in the log'
-  ).toBe(stepLog.length);
-  // Whatever else the text states must be the log's too.
-  if (claim.steps !== undefined) expect(claim.steps).toBe(steps);
-  for (const [eventType, count] of Object.entries(claim.byEventType ?? {})) {
-    expect(count, eventType).toBe(countOf(events, eventType));
-  }
-  if (claim.withoutCreated !== undefined) {
-    expect(claim.withoutCreated).toBe(steps - countOf(events, 'step_created'));
-  }
+  console.log(`spec ${specVersion}: ${events.length} events\n${text}`);
+  const rows = checkPrinted(text, events);
+  expect(groupOf(rows, 'Steps')?.row.name).toBe('7 calls  ↻ 2 retries');
+  expect(groupOf(rows, 'Steps')?.children.map((row) => row.name)).toEqual([
+    expect.stringMatching(/^sendEmail {2}6 calls$/),
+    expect.stringMatching(/^flakyCharge {2}1 call {2}↻ 2 retries$/),
+  ]);
 
-  // What the retries added, as printed, is the log's too.
-  const retryStarts = retryStartsInTheLog(events);
-  expect(retryEventsTheTextClaims(text)).toEqual({
-    retries,
-    events: retries + retryStarts,
-    markers: retries,
-    starts: retryStarts,
-  });
-  // No line says what the run would count as on Vercel, or links pricing for
-  // a local run.
-  expect(text).not.toMatch(/On Vercel|would count as|See pricing/);
+  // Data Written is the payload bytes the World gives back.
+  expect(usage.dataWritten.byEntity).toEqual(
+    await payloadBytesReadBack(run.runId)
+  );
 
   // Usage counts the log it pages through, event for event.
   expect(usage.events).toBe(events.length);
   expect(usage.billableEvents).toBe(events.length);
-  expect(usage.retries).toEqual({ count: 2, events: retries + retryStarts });
-  // Both retries started their step again.
-  expect(retryStarts).toBe(2);
+  // Both retries started their step again: a marker and a start each.
+  expect(usage.retries).toEqual({ count: 2, events: 4 });
   expect(usage.stepEvents).toEqual({
     steps,
     events: stepLog.length,
@@ -192,11 +225,6 @@ async function runAndCheck(options?: { specVersion: number }) {
       other: 0,
     },
   });
-  // And the breakdown adds up to the step spans.
-  const stepSpans = usage.eventsBySpan.filter((span) => span.kind === 'step');
-  expect(stepSpans.reduce((sum, span) => sum + span.events, 0)).toBe(
-    usage.stepEvents.events
-  );
   return {
     specVersion: specVersion ?? 0,
     created: countOf(events, 'step_created'),
@@ -207,7 +235,7 @@ async function runAndCheck(options?: { specVersion: number }) {
 describe('run usage from a real run', () => {
   // A step retried twice, and a fan-out wider than the inline limit, so
   // some calls run inline and the rest are queued.
-  it('explains the step events a run at the default spec wrote', async () => {
+  it('counts the step events a run at the default spec wrote', async () => {
     const { specVersion, created, steps } = await runAndCheck();
     if (specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR) {
       // Spec 8 writes a step_created for every step, inline ones included.
@@ -216,11 +244,62 @@ describe('run usage from a real run', () => {
   }, 60_000);
 
   // Forced in-process, so CI covers spec 9 without WORKFLOW_SPEC_VERSION.
-  it('explains the step events a spec 9 run wrote', async () => {
+  it('counts the step events a spec 9 run wrote', async () => {
     const { created, steps } = await runAndCheck({
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
     // An inline step is created by its first step_started.
     expect(created).toBeLessThan(steps);
+  }, 60_000);
+
+  it('lists every type of row, each hook by its token', async () => {
+    const orderId = `ord_${Math.random().toString(36).slice(2)}`;
+    const token = `usage-approve:${orderId}`;
+    const run = await start(usageEverythingWorkflow, [orderId]);
+    await waitForHook(run, { token });
+    await resumeHook(token, { ok: true });
+    await expect(run.returnValue).resolves.toEqual({
+      charged: `charged ${orderId}`,
+      ok: true,
+    });
+
+    const world = await getWorld();
+    const usage = await world.experimental_usage!.getRun(run.runId);
+    const events = await listAllEvents(run.runId);
+    const text = formatRunUsageText(usage);
+    console.log(`${events.length} events\n${text}`);
+    const rows = checkPrinted(text, events);
+
+    expect(rows.filter((row) => row.type).map((row) => row.type)).toEqual([
+      'Steps',
+      'Hooks',
+      'Attributes',
+      'Sleeps',
+      'Run',
+    ]);
+    const hookEvents = events.filter((e) => e.eventType.startsWith('hook_'));
+    const hooks = groupOf(rows, 'Hooks');
+    expect(hooks?.row).toMatchObject({
+      name: '1 hook',
+      events: hookEvents.length,
+    });
+    expect(hooks?.children).toEqual([
+      { type: '', name: token, events: hookEvents.length },
+    ]);
+    expect(groupOf(rows, 'Attributes')?.row).toMatchObject({
+      name: '1 write',
+      events: countOf(events, 'attr_set'),
+    });
+    expect(groupOf(rows, 'Sleeps')?.row).toMatchObject({
+      name: '1 sleep',
+      events: events.filter((e) => e.eventType.startsWith('wait_')).length,
+    });
+    // Data Written is the payload bytes the World gives back, the stream's
+    // chunks included.
+    const readBack = await payloadBytesReadBack(run.runId);
+    console.log(`payload bytes read back: ${JSON.stringify(readBack)}`);
+    expect(usage.dataWritten.byEntity).toEqual(readBack);
+    expect(readBack.stream).toBeGreaterThan(0);
+    expect(readBack.hook).toBeGreaterThan(0);
   }, 60_000);
 });
