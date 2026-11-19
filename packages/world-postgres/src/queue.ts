@@ -63,7 +63,12 @@ import {
   resolveJobLeasePolicy,
 } from './job-lease.js';
 import { MessageData } from './message.js';
-import { createRunLeases, isMissingTable, type LeftJob } from './run-lease.js';
+import {
+  createRunLeases,
+  escapeIdentifier,
+  isMissingTable,
+  type LeftJob,
+} from './run-lease.js';
 
 /**
  * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
@@ -287,6 +292,13 @@ export type PostgresQueue = Omit<Queue, 'queue'> & {
   ): void;
   /** Deliver a queue prefix's messages over HTTP to `path` on the app (see `Queue.registerRoute`). */
   registerRoute(prefix: QueuePrefix, path: string): void;
+  /**
+   * The runs with an orchestrator job that a worker holds locked: a delivery
+   * running here or in a live peer, or cut off by a process that died.
+   * Startup recovery lists them even when they look parked (see
+   * `createRecoverableRunsList`). `undefined` when the jobs cannot be read.
+   */
+  lockedOrchestratorRunIds(): Promise<string[] | undefined>;
 };
 
 export function createQueue(
@@ -1773,7 +1785,42 @@ export function createQueue(
     }
   }
 
+  async function lockedOrchestratorRunIds(): Promise<string[] | undefined> {
+    const graphileSchema = escapeIdentifier(
+      process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
+    );
+    try {
+      // Only the jobs being delivered: a few per worker, whatever the
+      // backlog.
+      const { rows } = await pool.query<{ payload: unknown }>(
+        `SELECT payload FROM ${graphileSchema}._private_jobs
+         WHERE locked_at IS NOT NULL`
+      );
+      const runIds = new Set<string>();
+      for (const { payload } of rows) {
+        const message = MessageData.safeParse(payload);
+        // Another queue consumer's job, whatever `runId` it carries.
+        if (
+          !message.success ||
+          (message.data.prefix ?? ownPrefix()) !== ownPrefix()
+        )
+          continue;
+        const runId = orchestratorRunIdOf(
+          await deserializeMessageBody(message.data.data).catch(() => undefined)
+        );
+        if (runId) runIds.add(runId);
+      }
+      return [...runIds];
+    } catch (error) {
+      console.warn(
+        `[world-postgres] Could not read locked jobs; startup recovery re-enqueues every active run: ${error}`
+      );
+      return undefined;
+    }
+  }
+
   return {
+    lockedOrchestratorRunIds,
     // The runtime does not check the flow route until messages are delivered
     // in-process and the route is denied
     // (https://github.com/vercel/workflow/issues/5258). Meanwhile the database

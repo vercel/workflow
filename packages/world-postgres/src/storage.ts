@@ -927,10 +927,19 @@ function createRunsList(
  * a hook delivery or wait timer that writes its own event and queues its own
  * job, so replaying it on every boot only adds load. Every other active run
  * is listed, including a legacy one, which never sets `wake_pending`.
+ *
+ * A parked run in `inFlightRunIds` is listed too: it has an orchestrator job
+ * a worker holds locked, a delivery that may have been cut off. On a spec 8
+ * run, whose deliveries are not serialized, another delivery of the run that
+ * completed meanwhile cleared `wake_pending` (as does a first delivery that
+ * hands the run to a continuation), so the flag alone would skip the run,
+ * and a dead worker's lock is otherwise released only after Graphile
+ * Worker's 4 hours. `undefined` (the jobs could not be read) skips no run.
  */
 export function createRecoverableRunsList(
   drizzle: Drizzle,
-  jobPrefix: string
+  jobPrefix: string,
+  inFlightRunIds: readonly string[] | undefined
 ): Storage['runs']['list'] {
   const { runs, steps, waits, hooks } = Schema;
   const rowsOf = (table: typeof steps | typeof waits | typeof hooks) =>
@@ -940,9 +949,12 @@ export function createRecoverableRunsList(
     eq(waits.status, 'waiting')
   );
   // `and` is typed `SQL | undefined` only because it accepts undefined
-  // arguments; every argument here is defined.
+  // arguments; its first argument here is always defined.
   const parked = and(
     eq(runs.status, 'running'),
+    inFlightRunIds?.length
+      ? notInArray(runs.runId, [...inFlightRunIds])
+      : undefined,
     eq(runs.wakePending, false),
     gt(runs.specVersion, SPEC_VERSION_LEGACY),
     or(
@@ -965,7 +977,9 @@ export function createRecoverableRunsList(
     drizzle,
     and(
       or(eq(runs.jobPrefix, jobPrefix), isNull(runs.jobPrefix)),
-      or(isNull(runs.specVersion), not(parked))
+      inFlightRunIds === undefined
+        ? undefined
+        : or(isNull(runs.specVersion), not(parked))
     )
   );
 }

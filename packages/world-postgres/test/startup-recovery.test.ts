@@ -308,6 +308,68 @@ describe('startup recovery of parked vs runnable runs', () => {
     }
   }, 60_000);
 
+  test('recovers a parked run whose orchestrator job a dead worker still holds locked', async () => {
+    const world = createWorld({ pool });
+    const cutOff = `wrun_${ulid()}`;
+    const parked = `wrun_${ulid()}`;
+    const startParked = async (runId: string, workflowName: string) => {
+      await world.events.create(runId, runCreated(workflowName));
+      await world.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      await world.events.create(runId, {
+        eventType: 'hook_created',
+        correlationId: `hook_${runId}`,
+        eventData: { token: `tok_${runId}` },
+      });
+    };
+    try {
+      // Both look parked: an open hook, no step, and the flag cleared by a
+      // delivery that completed (on a spec 8 run, another delivery of the
+      // run, or a first delivery that handed the run to a continuation).
+      await startParked(cutOff, 'wfCutOff');
+      await startParked(parked, 'wfParkedToo');
+      await markDelivered(cutOff, parked);
+
+      // The continuation's job, locked by a worker that died mid-delivery.
+      await pool.query(
+        `SELECT graphile_worker.add_job('workflow_flows', $1::json,
+           job_key => $2, run_at => now() + interval '1 hour')`,
+        [
+          JSON.stringify(
+            MessageData.encode({
+              id: 'wfCutOff',
+              prefix: '__wkf_workflow_',
+              data: Buffer.from(
+                JSON.stringify({
+                  runId: cutOff,
+                  runSpecVersion: SPEC_VERSION_CURRENT,
+                })
+              ),
+              attempt: 1,
+              messageId: `msg_${ulid()}`,
+            } as MessageData)
+          ),
+          `dead-delivery:${cutOff}`,
+        ]
+      );
+      await pool.query(
+        `UPDATE graphile_worker._private_jobs
+           SET locked_at = now(), locked_by = 'dead-worker'
+           WHERE key = $1`,
+        [`dead-delivery:${cutOff}`]
+      );
+
+      await world.start();
+      const keys = (await outstandingJobs()).map((job) => job.key);
+      expect(keys).toContain(recoveryJobKey(cutOff));
+      expect(keys).not.toContain(recoveryJobKey(parked));
+    } finally {
+      await world.close().catch(() => {});
+    }
+  }, 60_000);
+
   test('the upgrade backfill starts existing runs with a wake owed and new runs without', async () => {
     const world = createWorld({ pool });
     const existing = `wrun_${ulid()}`;

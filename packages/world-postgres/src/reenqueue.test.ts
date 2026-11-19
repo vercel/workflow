@@ -1,10 +1,11 @@
 import { getWorkflowPort } from '@workflow/utils/get-port';
+import { MessageId, QueuePrefix } from '@workflow/world';
 import { createWorld as createLocalTestWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
-import type { MessageData } from './message.js';
+import { MessageData } from './message.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -126,6 +127,7 @@ describe('re-enqueue active runs on start', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    pool.query.mockImplementation(async () => ({ rows: [{ exists: false }] }));
     runnerMock.promise = Promise.resolve();
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
@@ -252,6 +254,65 @@ describe('re-enqueue active runs on start', () => {
     }
   });
 
+  it('passes the runs with a locked orchestrator job to the recovery listing', async () => {
+    const job = (prefix: string, body: Record<string, unknown>) => ({
+      payload: MessageData.encode({
+        id: 'wfA',
+        prefix: QueuePrefix.parse(prefix),
+        data: Buffer.from(JSON.stringify(body)),
+        attempt: 1,
+        messageId: MessageId.parse('msg_01ABC'),
+      }),
+    });
+    pool.query.mockImplementation(async (sql: string) =>
+      sql.includes('locked_at IS NOT NULL')
+        ? {
+            rows: [
+              job('__wkf_workflow_', { runId: 'wrun_LOCKED' }),
+              // A step delivery is not an orchestrator delivery.
+              job('__wkf_workflow_', { runId: 'wrun_STEP', stepId: 'step_1' }),
+              // Nor is another queue consumer's job.
+              job('__agent_wkf_workflow_', { runId: 'wrun_OTHER' }),
+            ],
+          }
+        : { rows: [{ exists: false }] }
+    );
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start();
+
+    expect(createRecoverableRunsList).toHaveBeenCalledWith(
+      expect.anything(),
+      'workflow_',
+      ['wrun_LOCKED']
+    );
+    await world.close();
+  });
+
+  it('skips no parked run when the locked jobs cannot be read', async () => {
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('locked_at IS NOT NULL')) {
+        throw new Error('connection reset');
+      }
+      return { rows: [{ exists: false }] };
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start();
+
+    expect(createRecoverableRunsList).toHaveBeenCalledWith(
+      expect.anything(),
+      'workflow_',
+      undefined
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not read locked jobs')
+    );
+    warn.mockRestore();
+    await world.close();
+  });
+
   it('recovers through the jobPrefix-scoped listing, not the public runs.list', async () => {
     mockRunsList(
       { pending: [{ runId: 'wrun_OURS', workflowName: 'wfOurs' }] },
@@ -268,7 +329,8 @@ describe('re-enqueue active runs on start', () => {
 
     expect(createRecoverableRunsList).toHaveBeenCalledWith(
       expect.anything(),
-      'workflow_'
+      'workflow_',
+      []
     );
     expect(world.runs.list).not.toHaveBeenCalled();
     expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(1);
@@ -297,7 +359,8 @@ describe('re-enqueue active runs on start', () => {
     );
     expect(createRecoverableRunsList).toHaveBeenCalledWith(
       expect.anything(),
-      'myapp_'
+      'myapp_',
+      []
     );
     expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
       'myapp_flows',
@@ -320,7 +383,8 @@ describe('re-enqueue active runs on start', () => {
     );
     expect(createRecoverableRunsList).toHaveBeenCalledWith(
       expect.anything(),
-      'envapp_'
+      'envapp_',
+      []
     );
 
     await world.close();

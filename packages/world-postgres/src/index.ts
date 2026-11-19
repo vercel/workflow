@@ -153,11 +153,16 @@ export function createWorld(
       // listing leaves out runs parked on a hook or a wait (see
       // `createRecoverableRunsList`), and each run's recovery job is keyed by
       // the run, so a boot replaces the job an earlier boot left queued
-      // rather than adding another.
+      // rather than adding another. A parked run with a locked orchestrator
+      // job, a delivery that may have been cut off, is recovered anyway.
       await reenqueueActiveRuns(
         {
           ...storage.runs,
-          list: createRecoverableRunsList(drizzle, jobPrefix),
+          list: createRecoverableRunsList(
+            drizzle,
+            jobPrefix,
+            await queue.lockedOrchestratorRunIds()
+          ),
         },
         (queueName, message, opts) =>
           queue.queue(queueName, message, {
