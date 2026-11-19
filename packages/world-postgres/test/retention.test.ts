@@ -428,6 +428,52 @@ describe('Retention ($retention: 0)', () => {
       });
     }
 
+    it('makes a stream write that starts while the run is finishing wait for the deletion, and refuses it', async () => {
+      const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+      // Hold the run's row lock in a transaction that finishes the run and
+      // deletes its data, as the finishing commit and the deletion that
+      // follows it would: until it commits, other sessions read the run as
+      // running.
+      const finishing = await pool.connect();
+      try {
+        await finishing.query('BEGIN');
+        await finishing.query(
+          `UPDATE workflow.workflow_runs
+              SET status = 'completed', expired_at = now()
+            WHERE id = $1`,
+          [runId]
+        );
+        await finishing.query(
+          `UPDATE workflow.workflow_stream_chunks SET data = ''::bytea
+            WHERE run_id = $1`,
+          [runId]
+        );
+
+        let settled = false;
+        const write = streamer.streams
+          .write(runId, 'racing-stream', 'secret')
+          .finally(() => {
+            settled = true;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        // It waits on the run's row lock rather than writing past the
+        // deletion.
+        expect(settled).toBe(false);
+
+        await finishing.query('COMMIT');
+        await write;
+      } finally {
+        finishing.release();
+      }
+
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM workflow.workflow_stream_chunks
+          WHERE run_id = $1 AND stream_id = 'racing-stream'`,
+        [runId]
+      );
+      expect(rows[0].n).toBe(0);
+    });
+
     it('writes no stream chunk after the purge', async () => {
       const { runId, streamId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
       await events.create(runId, {
