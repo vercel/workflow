@@ -60,6 +60,7 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  readRunRetention,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -103,6 +104,7 @@ import {
   invocationExpiredError,
 } from './invocation-retention.js';
 import {
+  addPurgeBackstop,
   purgeRunUserData,
   purgeRunUserDataIfZeroRetention,
   scrubStepWriteIfRunPurged,
@@ -1599,7 +1601,9 @@ async function readEventLogSnapshot(
  * - A failed `NOTIFY` (or one that fails at commit) would fail the write
  *   itself.
  * Run in that order, the purge before the announcement, as an unfenced
- * terminal write runs them.
+ * terminal write runs them. Only in memory, the purge would be lost to a
+ * process that stops after the commit; the backstop job the terminal
+ * transaction adds runs it then (see `purgeTask` in retention.ts).
  */
 type DeferredTerminal = {
   runId: string;
@@ -2552,6 +2556,14 @@ function createUnfencedEventsStorage(
             .returning();
           if (runValue) {
             run = deserializeRunError(compact(runValue));
+            // The purge of a zero-retention run runs after this commits;
+            // its backstop commits with it (see `purgeTask`).
+            if (
+              jobPrefix !== undefined &&
+              readRunRetention(runValue.attributes ?? undefined).mode === 'none'
+            ) {
+              await addPurgeBackstop(tx, jobPrefix, effectiveRunId);
+            }
           } else {
             const [existing] = await tx
               .select({ status: Schema.runs.status })

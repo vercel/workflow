@@ -1,5 +1,5 @@
 import { debugLog } from '@workflow/utils';
-import { readRunRetention } from '@workflow/world';
+import { isTerminalWorkflowRunStatus, readRunRetention } from '@workflow/world';
 import { and, eq, sql } from 'drizzle-orm';
 import { type DrizzleHandle, Schema } from './drizzle/index.js';
 
@@ -155,8 +155,8 @@ export async function purgeRunUserData(
  *
  * Never throws. A run must still finish if its purge fails; a purge Postgres
  * fails to break a deadlock or a serialization conflict runs again, and any
- * other failure is logged, and the run keeps data it asked to have deleted,
- * which is loud enough to notice and safe enough to leave.
+ * other failure is logged and left to the purge backstop, which the terminal
+ * transaction adds (see {@link purgeTask}) and Graphile retries.
  *
  * Never call this inside the transaction that writes the terminal event: the
  * purge waits for the run's step rows, and a step outcome holding one may be
@@ -272,4 +272,92 @@ export async function scrubStepWriteIfRunPurged(
       cause
     );
   }
+}
+
+/**
+ * The Graphile task of a World's purge backstop: a job that deletes a
+ * finished zero-retention run's data if the purge that should follow its
+ * terminal write never completed.
+ *
+ * The purge runs after the terminal write commits (see `DeferredTerminal` in
+ * storage.ts), so it is not part of that transaction, and on its own its
+ * obligation would exist only in the memory of the process that made the
+ * write. A process that dies between the commit and the purge, or a purge
+ * that keeps failing, would leave the run finished with its data readable,
+ * and nothing retries a terminal write: the run is already terminal. So the
+ * terminal transaction also adds this job, which commits with it or not at
+ * all. It runs {@link PURGE_BACKSTOP_DELAY_SECONDS} later, by when the purge
+ * after the commit has normally finished and the job finds nothing to do;
+ * otherwise it purges, and Graphile retries it until that succeeds.
+ *
+ * Every runner of the World with this job prefix claims it (see queue.ts).
+ * A runner that predates it does not, and the job waits for one that does.
+ */
+export function purgeTask(jobPrefix: string): string {
+  return `${jobPrefix}purge`;
+}
+
+/** How long after the terminal write the purge backstop runs. */
+export const PURGE_BACKSTOP_DELAY_SECONDS = 60;
+
+/**
+ * Graphile's retry backoff is exp(min(attempts, 10)) seconds, so 25 attempts
+ * (Graphile's default) keep retrying a failing purge for about 3 days.
+ */
+const PURGE_BACKSTOP_MAX_ATTEMPTS = 25;
+
+/**
+ * Add `runId`'s purge backstop (see {@link purgeTask}) in `tx`, the
+ * transaction that writes the run's terminal transition. Keyed by the run,
+ * so a run has at most one.
+ */
+export async function addPurgeBackstop(
+  tx: DrizzleHandle,
+  jobPrefix: string,
+  runId: string
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT graphile_worker.add_job(
+      identifier => ${purgeTask(jobPrefix)},
+      payload => ${JSON.stringify({ runId })}::json,
+      run_at => now() + make_interval(secs => ${PURGE_BACKSTOP_DELAY_SECONDS}),
+      max_attempts => ${PURGE_BACKSTOP_MAX_ATTEMPTS},
+      job_key => ${`purge:${runId}`}
+    )`
+  );
+}
+
+/**
+ * The purge backstop's handler (see {@link purgeTask}). Deletes the run's
+ * data if it is finished, asked for zero retention and has not had its data
+ * deleted yet (`expired_at` is stamped in the same transaction that clears
+ * it). Throws when the purge fails, so Graphile retries the job.
+ */
+export function createPurgeBackstopTask(drizzle: DrizzleHandle) {
+  return async (payload: unknown): Promise<void> => {
+    const runId = (payload as { runId?: unknown } | null)?.runId;
+    if (typeof runId !== 'string') return;
+    const { runs } = Schema;
+    const [run] = await drizzle
+      .select({
+        status: runs.status,
+        attributes: runs.attributes,
+        expiredAt: runs.expiredAt,
+      })
+      .from(runs)
+      .where(eq(runs.runId, runId))
+      .limit(1);
+    if (
+      !run ||
+      run.expiredAt ||
+      !isTerminalWorkflowRunStatus(run.status) ||
+      readRunRetention(run.attributes ?? undefined).mode !== 'none'
+    ) {
+      return;
+    }
+    await purgeRunUserData(drizzle, runId, new Date());
+    console.warn(
+      `[workflow] deleted the data of zero-retention run "${runId}", whose purge did not complete when it finished`
+    );
+  };
 }

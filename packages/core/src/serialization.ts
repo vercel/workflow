@@ -2771,13 +2771,20 @@ export function cancelAbortReaders(...values: unknown[]): void {
  * Sets up a stream reader on the controller that listens for an abort packet.
  * Returns the readerCancel controller so it can be stored on both the
  * controller and signal for cleanup by cancelAbortReaders.
+ *
+ * With `untilCancelled` (a step's arguments), a stream that ends or fails
+ * without a packet leaves the reader listening for an abort published in
+ * this process until `cancelAbortReaders` stops it, which the step executor
+ * does when the step returns. Elsewhere nothing cancels the reader, so it
+ * stops with the stream.
  */
 function setupAbortStreamReader(
   controller: AbortController,
   runId: string,
   streamName: string,
   ops: Promise<void>[],
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  untilCancelled: boolean
 ): AbortController {
   const readerCancel = new AbortController();
   // An abort published in this process (by the workflow, or by a sibling
@@ -2828,13 +2835,26 @@ function setupAbortStreamReader(
         } catch {
           streamPacket = new Promise<never>(() => {});
         }
-        const winner = await Promise.race([
-          localPacket.then((packet) => ({ packet, local: true })),
-          streamPacket.then((packet) =>
-            packet ? { packet, local: false } : undefined
-          ),
+        const local = localPacket.then((packet) => ({ packet, local: true }));
+        let winner = await Promise.race([
+          local,
+          untilCancelled
+            ? // An empty or failed stream is not the end of the abort.
+              streamPacket.then(
+                (packet) => (packet ? { packet, local: false } : undefined),
+                () => undefined
+              )
+            : streamPacket.then((packet) =>
+                packet ? { packet, local: false } : undefined
+              ),
           cancelled,
         ]);
+        // The stream ended (a finished zero-retention run's is cleared) or
+        // failed without a packet before an abort published in this process
+        // arrived: keep listening for that until the step returns.
+        if (!winner && untilCancelled && !readerCancel.signal.aborted) {
+          winner = await Promise.race([local, cancelled]);
+        }
         const result = winner?.packet;
         // A legacy stream read decodes its candidate as it goes; a local
         // packet is decoded below on its own.
@@ -2924,7 +2944,8 @@ function reviveAbortController(
   value: SerializableSpecial['AbortController'],
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  untilCancelled = false
 ): AbortController {
   const controller = new AbortController();
 
@@ -2937,7 +2958,8 @@ function reviveAbortController(
       runId,
       value.streamName,
       ops,
-      cryptoKey
+      cryptoKey,
+      untilCancelled
     );
     tagAbortPair(controller, value, readerCancel);
   } else {
@@ -3026,7 +3048,8 @@ function reviveAbortSignal(
   value: SerializableSpecial['AbortSignal'],
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  untilCancelled = false
 ): AbortSignal {
   const controller = new AbortController();
 
@@ -3039,7 +3062,8 @@ function reviveAbortSignal(
       runId,
       value.streamName,
       ops,
-      cryptoKey
+      cryptoKey,
+      untilCancelled
     );
     tagAbortPair(controller, value, readerCancel);
   } else {
@@ -3957,9 +3981,12 @@ function getStepRevivers(
       return writable;
     },
 
+    // A step's readers are cancelled when the step returns
+    // (`cancelAbortReaders`), so they may outlive an empty stream.
     AbortController: (value) =>
-      reviveAbortController(value, ops, runId, cryptoKey),
-    AbortSignal: (value) => reviveAbortSignal(value, ops, runId, cryptoKey),
+      reviveAbortController(value, ops, runId, cryptoKey, true),
+    AbortSignal: (value) =>
+      reviveAbortSignal(value, ops, runId, cryptoKey, true),
   };
 }
 

@@ -55,6 +55,7 @@ import {
   resolveJobPrefix,
   UNPINNED_DEPLOYMENT_ID,
 } from './config.js';
+import { createClient } from './drizzle/index.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import {
@@ -63,6 +64,7 @@ import {
   resolveJobLeasePolicy,
 } from './job-lease.js';
 import { MessageData } from './message.js';
+import { createPurgeBackstopTask, purgeTask } from './retention.js';
 import {
   createRunLeases,
   escapeIdentifier,
@@ -1702,6 +1704,11 @@ export function createQueue(
       taskList[executorTask()] = jobLeases.wrap(
         createTaskHandler(workflowPrefix, true)
       );
+    // The backstop of a zero-retention run's purge, which its terminal
+    // transaction adds (see `purgeTask`). Not a delivery: no run lease.
+    taskList[purgeTask(resolveJobPrefix(config))] = createPurgeBackstopTask(
+      createClient(pool)
+    );
 
     runner = await run({
       pgPool: pool,

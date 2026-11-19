@@ -12,6 +12,7 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   hydrateStepArguments,
+  hydrateWorkflowReturnValue,
   peekFormatPrefix,
 } from './serialization.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
@@ -344,6 +345,9 @@ describe('real abort reducers and revivers', () => {
       undefined,
       ops
     )) as AbortSignal;
+    await vi.waitFor(() => expect(world.streams.get).toHaveBeenCalled());
+    // The step returns, and the executor stops its readers.
+    cancelAbortReaders(signal);
     await Promise.all(ops);
     expect(signal.aborted).toBe(false);
   });
@@ -436,6 +440,72 @@ describe('in-process abort delivery', () => {
     await Promise.all(ops);
     expect(signal.aborted).toBe(true);
     expect(signal.reason.message).toBe(reason.message);
+  });
+
+  it.each([
+    'ends empty',
+    'fails',
+  ] as const)("keeps a step's reader listening in-process after its stream %s", async (outcome) => {
+    const stepRunId = `${runId}_after_${outcome.replace(' ', '_')}`;
+    const input = await dehydrateWorkflowArguments(
+      new AbortController().signal,
+      stepRunId,
+      undefined
+    );
+    const read = vi.fn();
+    world.streams.get.mockImplementationOnce(async () => {
+      read();
+      return outcome === 'fails'
+        ? chunksStream([frameAbortStreamPayload(new Uint8Array(8)).slice(0, 5)])
+        : chunksStream([]);
+    });
+    const ops: Promise<void>[] = [];
+    const signal = (await hydrateStepArguments(
+      input,
+      stepRunId,
+      undefined,
+      ops
+    )) as AbortSignal;
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
+    // Let the stream outcome settle before the abort is published.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(signal.aborted).toBe(false);
+
+    publishLocalAbort(
+      stepRunId,
+      (signal as unknown as Record<symbol, string>)[ABORT_STREAM_NAME],
+      (await dehydrateStepArguments(
+        { aborted: true, reason },
+        stepRunId,
+        undefined
+      )) as Uint8Array
+    );
+    await Promise.all(ops);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason.message).toBe(reason.message);
+  });
+
+  it('stops an external reader with its empty stream', async () => {
+    const source = new AbortController();
+    const ops: Promise<void>[] = [];
+    // A signal a step returns, revived by the caller of `returnValue`: no
+    // one cancels its reader, so it must not outlive the stream.
+    const serialized = await dehydrateStepReturnValue(
+      source.signal,
+      runId,
+      undefined,
+      ops
+    );
+    world.streams.get.mockImplementationOnce(async () => chunksStream([]));
+    const hydrateOps: Promise<void>[] = [];
+    const signal = (await hydrateWorkflowReturnValue(
+      serialized,
+      runId,
+      undefined,
+      hydrateOps
+    )) as AbortSignal;
+    await Promise.all(hydrateOps);
+    expect(signal.aborted).toBe(false);
   });
 
   it('aborts a signal revived just after the abort was published', async () => {
