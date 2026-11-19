@@ -37,6 +37,7 @@ import {
   compress,
   DecompressedSizeLimitError,
   decompress,
+  isCompressionDisabledByEnv,
   isZstdDictionaryAvailable,
   zstdCompressWithDictionary,
   zstdDecompressWithDictionary,
@@ -87,9 +88,15 @@ export interface SnapshotDictionary {
   digest: string;
 }
 
-/** Whether snapshots can be compressed against a dictionary here. */
+/**
+ * Whether snapshots should be compressed against a dictionary here: the
+ * runtime supports it, and compression is not turned off
+ * (`WORKFLOW_DISABLE_COMPRESSION=1`, which a snapshot save honors the same
+ * way with or without a dictionary). Write side only: a stored dictionary
+ * snapshot stays readable either way.
+ */
 export function isSnapshotDictionaryCompressionAvailable(): boolean {
-  return isZstdDictionaryAvailable();
+  return !isCompressionDisabledByEnv() && isZstdDictionaryAvailable();
 }
 
 export class SnapshotRejectedError extends Error {
@@ -183,6 +190,11 @@ export async function sealSnapshot(params: {
       'sealSnapshot: metadata.baselineDigest does not match the dictionary'
     );
   }
+  if (digest !== undefined && !isSnapshotDictionaryCompressionAvailable()) {
+    throw new Error(
+      'sealSnapshot: dictionary compression is unavailable or turned off (WORKFLOW_DISABLE_COMPRESSION)'
+    );
+  }
   const sealed = new TextEncoder().encode(
     canonicalSealedMetadata(params.runId, params.metadata)
   );
@@ -223,18 +235,16 @@ export async function openSnapshot(params: {
    * names one. Absent or with another digest, the snapshot is rejected.
    */
   dictionary?: SnapshotDictionary;
+  /**
+   * Produces that dictionary on demand, in place of `dictionary`. Called
+   * only once the stored bytes decrypted, so for a run with a key, metadata
+   * alone (which anyone who can write snapshot storage controls) never
+   * makes this instance build a baseline heap.
+   */
+  getDictionary?: () => Promise<SnapshotDictionary | undefined>;
 }): Promise<Uint8Array> {
-  const { runId, stored, metadata, encryptionKey, dictionary } = params;
+  const { runId, stored, metadata, encryptionKey } = params;
   const digest = metadata.baselineDigest;
-  if (
-    digest !== undefined &&
-    (dictionary?.digest !== digest || !isZstdDictionaryAvailable())
-  ) {
-    throw new SnapshotRejectedError(
-      'dictionary_unavailable',
-      'snapshot was compressed against a baseline heap this instance cannot produce'
-    );
-  }
   if (encryptionKey && !isEncrypted(stored)) {
     throw new SnapshotRejectedError(
       'unencrypted',
@@ -249,6 +259,19 @@ export async function openSnapshot(params: {
       'undecryptable',
       `snapshot could not be decrypted: ${(err as Error)?.message}`
     );
+  }
+  let dictionary: SnapshotDictionary | undefined;
+  if (digest !== undefined) {
+    dictionary = isZstdDictionaryAvailable()
+      ? (params.dictionary ??
+        (await params.getDictionary?.().catch(() => undefined)))
+      : undefined;
+    if (dictionary?.digest !== digest) {
+      throw new SnapshotRejectedError(
+        'dictionary_unavailable',
+        'snapshot was compressed against a baseline heap this instance cannot produce'
+      );
+    }
   }
   let frame: unknown;
   try {
