@@ -76,6 +76,7 @@ import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { CommitThenThrow, type Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
 import {
+  purgeLateStepWrite,
   purgeRunData,
   purgesUserDataOnFinish,
   ranPurge,
@@ -997,22 +998,52 @@ export function createEventsStorage(
 
     // A step still running when its zero-retention run ended (a
     // `Promise.race` loser, or one on another delivery) settles after the
-    // purge. Step events are not checked against the run's state, so what it
-    // writes is scrubbed here, in the same transaction: the run's data stays
-    // gone.
+    // purge: only a running step writes on an ended run (see Step ordering).
+    // What it writes is scrubbed here, in the same transaction, so the run's
+    // data stays gone.
     const lateOnPurgedRun =
       !runPurged &&
+      step !== undefined &&
       (data.eventType === 'step_completed' ||
         data.eventType === 'step_failed' ||
         data.eventType === 'step_retrying') &&
-      ranPurge((current ?? store.getRun(runId))?.run);
-    if (runPurged || lateOnPurgedRun) {
+      ranPurge(runForLateStepCheck());
+
+    let reported = stored;
+    if (runPurged) {
       purgeRunData(db, runId);
       // The scrubbed bytes are still in the WAL until it is checkpointed.
       effects.push(() => db.checkpoint());
+    } else if (lateOnPurgedRun && step) {
+      // Only this write's step and event: the rest of the run is already
+      // scrubbed, and re-running the whole purge per late write would cost
+      // the run's size times the number of steps still running.
+      const seq = Number(stored.eventId.slice('evnt_'.length));
+      purgeLateStepWrite(db, runId, step.stepId, seq);
+      effects.push(() => db.checkpoint());
+      // Answer with what is stored, not with the payload just scrubbed.
+      step = store.getStep(runId, step.stepId) ?? step;
+      reported = store.getEventAt(runId, seq) ?? stored;
     }
 
-    return finish(stored, resultRun, { step, hook, wait, stepCreatedLazily });
+    return finish(reported, resultRun, {
+      step,
+      hook,
+      wait,
+      stepCreatedLazily,
+    });
+
+    /**
+     * The run, for the late-step check. step_completed and step_retrying do
+     * not read it up front, so only its status is read, and its document
+     * only when it is terminal.
+     */
+    function runForLateStepCheck(): WorkflowRun | undefined {
+      if (run) return run;
+      const status = store.getRunStatus(runId);
+      if (!status || !isTerminalWorkflowRunStatus(status)) return undefined;
+      return store.getRun(runId)?.run;
+    }
 
     function finish(
       committed: Event,

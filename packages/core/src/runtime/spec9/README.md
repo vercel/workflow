@@ -534,9 +534,12 @@ Turbo is on by default (`WORKFLOW_TURBO`) and applies when all of these hold:
 
 - the message carries `runInput`, so it is the message `start()` enqueued, and it is not a `start({ experimental_hook })` candidate;
 - `attempt` is 1 and `deliveryCount` is 1, so it is neither a redelivery (including the one after a fence refusal), a handoff's next delivery nor a coalesced re-run;
+- the queue enqueued the message at most `TURBO_FIRST_DELIVERY_MAX_AGE_MS` (15 s) ago, when it reports when (see below);
 - it is not a step message, a hook resume or a timer.
 
 A restart in place is never turbo.
+
+The delivery count does not prove a first delivery on its own. A platform that re-runs an invocation which crashed (an out-of-memory kill, say) re-sends the same request, so the replay carries the same message with `deliveryCount` 1, while the crashed invocation may have started the run and left an inline step open minutes earlier. A first delivery arrives within a few seconds of `start()` (99.99% under 6 s on Vercel), so an older message is treated as a possible replay and takes the normal path, which loads the log and runs the open step again. A replay younger than the bound still reaches turbo, and its `run_started` conflict restarts it in place (below).
 
 ```mermaid
 sequenceDiagram
@@ -569,8 +572,15 @@ The optimistic start applies while the boundary has no wait and each of its inli
 If the backgrounded `run_started` fails for any reason, the writer stops: nothing else reaches the World and no further inline body starts. Bodies already started settle, their outcomes are discarded, and the delivery ends as an awaited `run_started` failing the same way would:
 
 - refused by the fence: redelivered 1 s later (5 s on Vercel); the redelivery loads the log and takes the normal path;
-- the run already finished (cancelled before its first delivery, say): acknowledged with nothing written;
+- refused as a conflict (`EntityConflictError`): the delivery restarts in place, once, on the normal path. Turbo assumed a log it never read, so the conflict may mean the run already started (a replayed first delivery whose predecessor died) or that it finished; the full load tells them apart. A finished run is then acknowledged by the normal path's own checks, an inline step a dead predecessor left open runs again, and a predecessor still alive keeps the run because the fence refuses whichever of the two writes second. Acknowledging the conflict instead would strand a run whose open step nothing would ever run again;
+- the run expired (`RunExpiredError`): acknowledged with nothing written;
 - anything else: retried by the queue, or recorded as a setup failure.
+
+The start's failure decides the delivery even when the pass returns normally: writes queued behind the refused `run_started` fail with its error, and a handler that reads a conflict as "the run already finished" (a terminal write's) would otherwise acknowledge a run that is still running. So after the pass the delivery waits for the start to settle and, if it failed, handles that failure as above.
+
+A full load that finds a `run_started` this delivery did not write, on a count-1 delivery of the message that carries `runInput`, can only be such a replay (young, after the restart above, or old, past the age bound). Its predecessor may have committed a background step's `step_created` and died before the step's message went out, and no redelivery is owed to send it. So the replay passes the re-send gate (`stepsToReenqueue`) as a redelivery would: within the same age bound and under each step's stable idempotency key, so a message that did go out is deduped.
+
+The normal path loads the log before it writes `run_started`, so a conflict there means the run started or finished in between. A World that says the run is running (`EntityConflictError` with code `run-already-started`) gets the same single restart in place; a second one is thrown, and the queue redelivers. A conflict with no code still means the run finished, and is acknowledged.
 
 Writes waiting on the barrier fail instead of writing, so a refused start leaves no chunks or attributes on a run whose log does not record the step that made them; a body that ran before the refusal runs again on the redelivery. If a step's own start batch is refused, its outcome is not written and the start's error decides. A World that rotates the start message must send a continuation without `runInput`, so the new message loads the log rather than replaying a progressed run against a `run_created`-only log.
 
@@ -582,11 +592,27 @@ Writes waiting on the barrier fail instead of writing, so a refused start leaves
 
 #### Turbo configuration
 
-Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo: every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
+Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo and a start Hook candidate's skipped first load: every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
 
 `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or `false`) keeps turbo's backgrounded `run_started` and skipped load, and makes the first delivery's inline bodies wait for their start to commit. No other value does anything: outside turbo's first delivery there is no optimistic inline start, because only that delivery is known to have no other orchestrator.
 
 Turbo is client-side and needs no World changes. A World with `createBatch` saves the separate `step_started` write; one without it gets the start as its own write, chained behind `step_created`.
+
+### A start Hook candidate's first delivery
+
+Turbo never takes a `start({ experimental_hook })` candidate: its `run_started` may refuse it, so nothing may run before that write returns. Its first delivery (same conditions as turbo's, but for the candidate) still skips the load that would come before `run_started`, since that log can hold only the run's creation and out-of-band writes (a `hook_received` from `resumeHook()`), neither of which moves the in-band count. It starts the writer from `IN_BAND_SEQ_AT_RUN_CREATION` and its log from the run's creation, as turbo does, and awaits `run_started` (which admits or refuses the candidate, and creates the run if `run_created` has not landed). The write's skipped-slot report brings whatever landed between the two, so the log is whole without a read. A report that stops short (`hasMore`) or leaves a hole gets a full load after the write instead, logs it, and sets `workflow.start_hook.first_delivery.fallback` (`report`) on the delivery's span. That normally saves both reads of the normal path on every candidate's first delivery, and that delivery can no longer race `run_created`: a read before it would find no log and be retried.
+
+The deployment-affinity guard runs after `run_started` on this path, not before it as on the normal path. Until `run_started` returns the run may not exist, and the guard's re-queued copy is a plain wake without `runInput`, so a message misrouted before `run_created` landed would reach the run's own deployment unable to create the run. As under turbo, the misrouted delivery writes `run_started` (admitting or refusing the candidate) and then hands the run off.
+
+If the count was wrong because the run has moved past its creation (an earlier delivery started it and the queue reports this one as its first, or the run ended in-band), `run_started` is refused by the fence, nothing is written, and the delivery restarts in place on the normal path, which decides from a full load. It restarts at most once, logs the restart, and sets `workflow.start_hook.first_delivery.fallback` (`fence`) on the delivery's span; `workflow.start_hook.first_delivery` marks a delivery that took the path.
+
+A World may also answer a run that already started with a conflict instead of a fence refusal (one that checks the run's state before the fence), and a conflict alone does not say the run finished. So a conflict on this `run_started` restarts the delivery from a full load too, once, as turbo's does (`workflow.start_hook.first_delivery.fallback` is `conflict`); acknowledging it could drop the only message driving a run whose earlier delivery died. An expiry is terminal in every World: the run ended (a cancel before anything started it, or a run that already finished), and the delivery acknowledges it as "already finished" without a load, setting `workflow.start_hook.first_delivery.run_ended`.
+
+The delivery replays against the `run_created` it rebuilt from the message, not one it read. A World that can hold a run whose creation event has not landed yet (and repairs it when the log is next read from its head) therefore gets no read from this delivery to trigger that repair: the report starts above the first position, so the stored log can begin at `run_started` until some later reader loads it. Replay is unaffected, since the rebuilt event carries the same creation data. The log's seeded cursor is empty too, so the delivery's first later read is a full load, not an incremental one.
+
+As under turbo, a first message older than `TURBO_FIRST_DELIVERY_MAX_AGE_MS` is treated as a possible replay of a first delivery that already ran, and loads the log first.
+
+`WORKFLOW_TURBO=0` (or `false`) disables this path along with turbo; such a delivery then loads the log before `run_started`, as on the normal path. It has no switch of its own: no workflow code runs before `run_started` returns either way, and every answer to that write ends in running the workflow, a full load, a redelivery, or acknowledging a run that has ended.
 
 ### `maxRetries: 0` is at most once per live owner
 

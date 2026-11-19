@@ -322,6 +322,12 @@ retained Hook's run ends and its deadline passes, reads treat the Hook as absent
 and its token can be reused. If the token is never reused, the expired
 `workflow_hooks` row remains.
 
+## Kubernetes
+
+The package includes a Helm chart for Kubernetes in its `chart` directory, as an optional way for production deployments into Kubernetes clusters. It works by pinning each run to its image tag, and by keeping around older releases' worker pods until their runs finish. It's scale-to-zero and supports pruning.
+
+World postgres comes with optional Kubernetes support. See [`chart/README.md`](./chart/README.md) for more information.
+
 ## Features
 
 - **Durable storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
