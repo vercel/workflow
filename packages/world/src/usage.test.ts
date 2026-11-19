@@ -295,7 +295,7 @@ describe('usage formatting', () => {
     );
     expect(formatDataWrittenHeading(usage)).toBe('Storage (local)');
     expect(formatLocalDataWrittenNote(usage)).toBe(
-      "The bytes of the run's payloads and streams in your local data directory, counted the way Vercel counts Data Written. QuickJS VM snapshots aren't counted yet."
+      "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
     );
   });
 
@@ -821,6 +821,18 @@ describe('the usage rows', () => {
       'reused (hook_a)',
       'reused (hook_b)',
     ]);
+    // Keyed on the hook id, not the token the two share.
+    expect(usageRows(usage)[0].children.map((row) => row.key)).toEqual([
+      'hook_a',
+      'hook_b',
+    ]);
+  });
+
+  it('keys each group on its type, and the folded children on theirs', () => {
+    const rows = usageRows(tree());
+    expect(rows.map((row) => row.key)).toEqual(rows.map((row) => row.type));
+    const steps = rows.find((row) => row.type === 'steps');
+    expect(steps?.otherChildren?.key).toBe('steps:other');
   });
 
   it('leaves out the types the run does not have', () => {
@@ -868,6 +880,23 @@ describe('step labels in the usage rows', () => {
       'send (./src/b)',
       'charge',
     ]);
+  });
+
+  it('keys each step on its full name, so colliding labels never share a key', () => {
+    const read = (a: number, b: number) =>
+      usageRows(
+        buildRunUsage(
+          aggregates({
+            stepGroups: [
+              stepGroup('step//./src/a//send', { steps: a, started: a }),
+              stepGroup('step//./src/b//send', { steps: b, started: b }),
+            ],
+          })
+        )
+      )[0].children.map((row) => row.key);
+    expect(read(3, 1)).toEqual(['step//./src/a//send', 'step//./src/b//send']);
+    // When the other one overtakes, each key moves with its step.
+    expect(read(1, 3)).toEqual(['step//./src/b//send', 'step//./src/a//send']);
   });
 
   it('keeps short labels when the colliding step is folded away', () => {

@@ -618,7 +618,7 @@ export function formatDataWrittenHeading(usage: RunUsage): string {
  */
 export function formatLocalDataWrittenNote(usage: RunUsage): string | null {
   if (usage.billed) return null;
-  return "The bytes of the run's payloads and streams in your local data directory, counted the way Vercel counts Data Written. QuickJS VM snapshots aren't counted yet.";
+  return "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code.";
 }
 
 /** The footer under the usage: not a bill, and how to read it. */
@@ -707,6 +707,13 @@ const SPAN_KIND_OF_ROW_TYPE: Record<UsageRowType, RunUsageSpanKind> = {
 };
 
 export interface UsageRow {
+  /**
+   * Stable across reads, for a UI to key the row on: a step function's full
+   * name, a hook's id (a token can be reused by a later hook), and the row
+   * type for a group. Labels are not unique enough: two step functions in
+   * different files can share a short name.
+   */
+  key: string;
   /** A step function's short name, or a hook's token. */
   label: string;
   events: number;
@@ -748,6 +755,7 @@ export function usageRows(
     const total = sumRows(spans);
     const group: UsageRowGroup = {
       type,
+      key: type,
       events: total.events,
       share: total.share,
       retries: total.retries,
@@ -760,6 +768,7 @@ export function usageRows(
     const { shown, other } = collapseUsageSpans(spans, limit);
     group.children = childRowsOf(shown);
     group.otherChildren = other && {
+      key: `${type}:other`,
       count: other.spans,
       label:
         type === 'steps'
@@ -796,6 +805,7 @@ function childRowsOf(spans: RunUsageSpan[]): UsageRow[] {
   const seen = new Map<string, number>();
   for (const label of labels) seen.set(label, (seen.get(label) ?? 0) + 1);
   return spans.map((span, i) => ({
+    key: span.kind === 'hook' ? (span.id ?? span.name) : span.name,
     label:
       (seen.get(labels[i]) ?? 0) > 1
         ? span.kind === 'step'
