@@ -1,5 +1,19 @@
 # @workflow/nitro
 
+## 4.1.23
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump dev dependencies `next` to 16.4.5 and `vite` to 7.3.7 to pick up security fixes.
+
+- Updated dependencies [[`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964), [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964), [`b3eb7ae`](https://github.com/vercel/workflow/commit/b3eb7aed0cb2e5a63146254d9d3e1df7afd4784e), [`bc78ec6`](https://github.com/vercel/workflow/commit/bc78ec641b9cfbc7ed3f61e0d3a8b28d17a2cc37), [`5fb02cd`](https://github.com/vercel/workflow/commit/5fb02cde20011647298b102d6d4cfccd16b7da16), [`ad3cc9e`](https://github.com/vercel/workflow/commit/ad3cc9ee3dd19f760b8ca1915b49b889cbe3102d)]:
+  - @workflow/vite@4.0.32
+  - @workflow/core@4.8.17
+  - @workflow/swc-plugin@4.1.4
+  - @workflow/builders@4.1.22
+  - @workflow/web@4.1.33
+  - @workflow/rollup@4.0.32
+
 ## 4.1.22
 
 ### Patch Changes

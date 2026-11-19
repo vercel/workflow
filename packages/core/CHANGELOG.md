@@ -1,5 +1,23 @@
 # @workflow/core
 
+## 4.8.17
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- [#5285](https://github.com/vercel/workflow/pull/5285) [`bc78ec6`](https://github.com/vercel/workflow/commit/bc78ec641b9cfbc7ed3f61e0d3a8b28d17a2cc37) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix an unhandled rejection that could end the process when a stream passed across a workflow boundary (a step return value, a workflow argument, or a stream written into `getWritable()`) failed before its pipe was awaited, such as a returned `fetch()` body whose socket closed (`TypeError: terminated`). The pipe's error still surfaces to the runtime's stream-op handling.
+
+- [#4334](https://github.com/vercel/workflow/pull/4334) [`5fb02cd`](https://github.com/vercel/workflow/commit/5fb02cde20011647298b102d6d4cfccd16b7da16) Thanks [@pranaygp](https://github.com/pranaygp)! - Fail a live stream read with an error naming the index when consecutive reads stall at a chunk the stream reports but never serves, instead of reconnecting to it until the reconnect budget runs out
+
+- [#5612](https://github.com/vercel/workflow/pull/5612) [`ad3cc9e`](https://github.com/vercel/workflow/commit/ad3cc9ee3dd19f760b8ca1915b49b889cbe3102d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Omit private backend URLs from request diagnostics and sanitize captured E2E CLI output before it reaches CI reports.
+
+- Updated dependencies [[`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964), [`78cab5b`](https://github.com/vercel/workflow/commit/78cab5bebf7fcd58429f8bb87cc9aceaf898c9f8), [`ad3cc9e`](https://github.com/vercel/workflow/commit/ad3cc9ee3dd19f760b8ca1915b49b889cbe3102d)]:
+  - @workflow/world@4.5.2
+  - @workflow/world-local@4.4.6
+  - @workflow/world-vercel@4.7.9
+  - @workflow/errors@4.2.2
+
 ## 4.8.16
 
 ### Patch Changes

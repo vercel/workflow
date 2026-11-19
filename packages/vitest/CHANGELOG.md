@@ -1,5 +1,18 @@
 # @workflow/vitest
 
+## 4.0.33
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump dev dependencies `next` to 16.4.5 and `vite` to 7.3.7 to pick up security fixes.
+
+- Updated dependencies [[`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964), [`bc78ec6`](https://github.com/vercel/workflow/commit/bc78ec641b9cfbc7ed3f61e0d3a8b28d17a2cc37), [`5fb02cd`](https://github.com/vercel/workflow/commit/5fb02cde20011647298b102d6d4cfccd16b7da16), [`ad3cc9e`](https://github.com/vercel/workflow/commit/ad3cc9ee3dd19f760b8ca1915b49b889cbe3102d)]:
+  - @workflow/core@4.8.17
+  - @workflow/world@4.5.2
+  - @workflow/world-local@4.4.6
+  - @workflow/builders@4.1.22
+  - @workflow/rollup@4.0.32
+
 ## 4.0.32
 
 ### Patch Changes

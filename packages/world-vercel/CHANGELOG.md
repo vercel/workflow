@@ -1,5 +1,19 @@
 # @workflow/world-vercel
 
+## 4.7.9
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- [#5430](https://github.com/vercel/workflow/pull/5430) [`78cab5b`](https://github.com/vercel/workflow/commit/78cab5bebf7fcd58429f8bb87cc9aceaf898c9f8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Re-send a queue message after a transient send failure (a closed or reset connection, the queue request deadline, a 5xx or a short 429), up to 3 attempts. A failed `start()` send previously left a run that was created but never queued.
+
+- [#5612](https://github.com/vercel/workflow/pull/5612) [`ad3cc9e`](https://github.com/vercel/workflow/commit/ad3cc9ee3dd19f760b8ca1915b49b889cbe3102d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Omit private backend URLs from request diagnostics and sanitize captured E2E CLI output before it reaches CI reports.
+
+- Updated dependencies [[`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964)]:
+  - @workflow/world@4.5.2
+  - @workflow/errors@4.2.2
+
 ## 4.7.8
 
 ### Patch Changes
