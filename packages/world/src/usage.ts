@@ -61,10 +61,13 @@ export interface RunUsageSpan {
   /**
    * What the events are grouped by: the full step name for a step (every
    * call of one step function is one span), the workflow name for the run's
-   * own events, `hook` for hooks, `sleep` for sleeps, `attributes` for
-   * attribute writes and `other` for event types this build does not know.
+   * own events, a hook's token for that hook (each hook is a span of its
+   * own), `sleep` for sleeps, `attributes` for attribute writes and `other`
+   * for event types this build does not know.
    */
   name: string;
+  /** A hook span's hook id (its token can be reused by a later hook). */
+  id?: string;
   events: number;
   /** `events / RunUsage.events`, from 0 to 1. */
   share: number;
@@ -72,8 +75,8 @@ export interface RunUsageSpan {
   retries: number;
   /**
    * How many times the span ran: a step span's steps (calls of the step
-   * function), a sleep or hook span's sleeps or hooks, 1 for the run, and
-   * the events themselves for attributes and other events.
+   * function), a sleep span's sleeps, 1 for a hook or the run, and the
+   * events themselves for attributes and other events.
    */
   calls: number;
 }
@@ -239,6 +242,14 @@ export interface RunUsageStepGroup {
   bytes: number;
 }
 
+/** The events of one hook, by its id. */
+export interface RunUsageHookGroup {
+  hookId: string;
+  /** The hook's token; `null` when the World could not find it. */
+  token: string | null;
+  events: number;
+}
+
 export interface RunUsageAggregates {
   runId: string;
   status: WorkflowRunStatus;
@@ -258,10 +269,15 @@ export interface RunUsageAggregates {
   /** Data written by entity, saved before the run's data was deleted. */
   savedDataWritten?: Record<RunUsageEntity, number>;
   /**
-   * Distinct hooks and sleeps in the log. When absent, their `*_created`
-   * events are counted instead.
+   * The hook events by hook. Each is a span of its own, named by its token;
+   * without them, the hook events are one span named `hook`.
    */
-  calls?: { hook: number; wait: number };
+  hookGroups?: RunUsageHookGroup[];
+  /**
+   * Distinct sleeps in the log. When absent, their `wait_created` events are
+   * counted instead.
+   */
+  calls?: { wait: number };
   /** Whether the backend bills this run (default `false`). */
   billed?: boolean;
 }
@@ -343,6 +359,10 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   };
 
   const created = { hook: 0, wait: 0 };
+  // With hook groups, each hook is a span of its own: the hook events count
+  // towards the run here, and go to their hook's span below.
+  const hookGroups = input.hookGroups;
+  let hookEvents = 0;
   const runEvents: RunUsageRunEvents = {
     events: 0,
     byType: { created: 0, started: 0, completed: 0, failed: 0, cancelled: 0 },
@@ -368,10 +388,45 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     if (group.eventType === 'wait_created')
       created.wait += toCount(group.events);
     const { kind, name } = spanOf(group.eventType, input.workflowName);
+    if (kind === 'hook' && hookGroups) {
+      hookEvents += toCount(group.events);
+      events += toCount(group.events);
+      byEntity[entity] += toCount(group.bytes);
+      continue;
+    }
     add(kind, name, entity, toCount(group.events), 0, toCount(group.bytes));
   }
+  if (hookGroups) {
+    let grouped = 0;
+    for (const group of hookGroups) {
+      const count = toCount(group.events);
+      if (count <= 0 || !group.hookId) continue;
+      grouped += count;
+      spans.set(`hook\u0000${group.hookId}`, {
+        kind: 'hook',
+        name: group.token || group.hookId,
+        id: group.hookId,
+        events: count,
+        share: 0,
+        retries: 0,
+        calls: 1,
+      });
+    }
+    // Hook events no group holds (none from world-local), so the spans
+    // still add up to the run's events.
+    if (hookEvents > grouped) {
+      spans.set('hook\u0000', {
+        kind: 'hook',
+        name: 'hook',
+        events: hookEvents - grouped,
+        share: 0,
+        retries: 0,
+        calls: 0,
+      });
+    }
+  }
   const calls = {
-    hook: toCount(input.calls?.hook ?? created.hook),
+    hook: toCount(created.hook),
     wait: toCount(input.calls?.wait ?? created.wait),
   };
   const stepEvents: RunUsageStepEvents = {
@@ -420,7 +475,7 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
   }
   for (const span of spans.values()) {
     if (span.kind === 'run') span.calls = 1;
-    if (span.kind === 'hook') span.calls = calls.hook;
+    if (span.kind === 'hook' && !hookGroups) span.calls = calls.hook;
     if (span.kind === 'wait') span.calls = calls.wait;
     if (span.kind === 'attributes' || span.kind === 'other') {
       span.calls = span.events;
@@ -433,7 +488,8 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
       (a, b) =>
         b.events - a.events ||
         compareCodeUnits(a.name, b.name) ||
-        compareCodeUnits(a.kind, b.kind)
+        compareCodeUnits(a.kind, b.kind) ||
+        compareCodeUnits(a.id ?? '', b.id ?? '')
     );
 
   return {
@@ -737,8 +793,19 @@ export function usageSpanTree(
   const { shown, other } = collapseUsageSpans(steps, limit);
   const runNote = formatRunEventsLine(usage) ?? undefined;
   const builtIns = BUILT_IN_KINDS.flatMap((kind) => {
-    const span = usage.eventsBySpan.find((s) => s.kind === kind);
-    if (!span) return [];
+    const of = usage.eventsBySpan.filter((s) => s.kind === kind);
+    if (of.length === 0) return [];
+    // Hooks are a span each; their built-in row adds them up.
+    const span = of.slice(1).reduce(
+      (sum, s) => ({
+        ...sum,
+        events: sum.events + s.events,
+        share: sum.share + s.share,
+        retries: sum.retries + s.retries,
+        calls: sum.calls + s.calls,
+      }),
+      of[0]
+    );
     const row = rowOf(span, BUILT_IN_LABELS[kind]);
     return [kind === 'run' && runNote ? { ...row, note: runNote } : row];
   });

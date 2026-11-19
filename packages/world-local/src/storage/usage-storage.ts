@@ -53,7 +53,9 @@ import {
   type RunUsage,
   type RunUsageEntity,
   type RunUsageEventGroup,
+  type RunUsageHookGroup,
   type RunUsageStepGroup,
+  startHookId,
   type WorkflowRunStatus,
 } from '@workflow/world';
 import type { Database } from '../db/index.js';
@@ -118,16 +120,49 @@ const STEP_GROUPS_SQL = `
 `;
 
 /**
- * The hooks and sleeps a range of positions names, for their span's call
- * counts (`calls`). Event type and correlation id are columns: no doc is
- * read.
+ * The sleeps a range of positions names, for their span's call count.
+ * Event type and correlation id are columns: no doc is read.
  */
-const HOOK_AND_WAIT_IDS_SQL = `
-  SELECT DISTINCT correlation_id, substr(event_type, 1, 5) AS kind
+const WAIT_IDS_SQL = `
+  SELECT DISTINCT correlation_id
   FROM events
   WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3
-    AND correlation_id IS NOT NULL
-    AND (substr(event_type, 1, 5) = 'hook_' OR substr(event_type, 1, 5) = 'wait_')
+    AND correlation_id IS NOT NULL AND substr(event_type, 1, 5) = 'wait_'
+`;
+
+/** Hook events in a range of positions, by hook. No doc is read. */
+const HOOK_GROUPS_SQL = `
+  SELECT correlation_id, COUNT(*) AS events
+  FROM events
+  WHERE run_id = ?1 AND seq > ?2 AND seq <= ?3
+    AND correlation_id IS NOT NULL AND substr(event_type, 1, 5) = 'hook_'
+  GROUP BY correlation_id
+`;
+
+/**
+ * A hook's token, from the event that created it (or the one that reported
+ * its token taken). Looked up once per hook; a purge keeps the token.
+ */
+const HOOK_TOKEN_SQL = `
+  SELECT json_extract(doc, '$.eventData.token') AS token
+  FROM events
+  WHERE run_id = ? AND correlation_id = ?
+    AND event_type IN ('hook_created', 'hook_conflict')
+  ORDER BY seq LIMIT 1
+`;
+
+/** A hook's token from its row, for a hook with no creating event. */
+const HOOK_ROW_TOKEN_SQL = 'SELECT token FROM hooks WHERE hook_id = ?';
+
+/**
+ * A run's start Hook is created with the run (`run_created`'s `startHook`),
+ * not by a `hook_created` event, and its row goes when the run finishes.
+ */
+const START_HOOK_TOKEN_SQL = `
+  SELECT json_extract(doc, '$.eventData.startHook.token') AS token
+  FROM events
+  WHERE run_id = ? AND event_type = 'run_created'
+  LIMIT 1
 `;
 
 /**
@@ -184,7 +219,8 @@ interface RunCounts {
   eventTypes: Map<string, { events: number; bytes: number }>;
   /** By step id. */
   steps: Map<string, StepCount>;
-  hookIds: Set<string>;
+  /** By hook id. */
+  hooks: Map<string, { token: string | null; events: number }>;
   waitIds: Set<string>;
 }
 
@@ -193,7 +229,7 @@ const newCounts = (): RunCounts => ({
   finished: false,
   eventTypes: new Map(),
   steps: new Map(),
-  hookIds: new Set(),
+  hooks: new Map(),
   waitIds: new Set(),
 });
 
@@ -260,17 +296,52 @@ function countRange(
     step.retries += Number(row.retries);
     step.bytes += Number(row.bytes ?? 0);
   }
-  for (const row of db.all<{ correlation_id: string; kind: string }>(
-    HOOK_AND_WAIT_IDS_SQL,
+  for (const row of db.all<{ correlation_id: string; events: number }>(
+    HOOK_GROUPS_SQL,
     runId,
     from,
     to
   )) {
-    (row.kind === 'hook_' ? counts.hookIds : counts.waitIds).add(
-      row.correlation_id
-    );
+    let hook = counts.hooks.get(row.correlation_id);
+    if (!hook) {
+      hook = { token: hookToken(db, runId, row.correlation_id), events: 0 };
+      counts.hooks.set(row.correlation_id, hook);
+    }
+    hook.events += Number(row.events);
+  }
+  for (const row of db.all<{ correlation_id: string }>(
+    WAIT_IDS_SQL,
+    runId,
+    from,
+    to
+  )) {
+    counts.waitIds.add(row.correlation_id);
   }
   counts.countedSeq = to;
+}
+
+function hookToken(db: Database, runId: string, hookId: string): string | null {
+  const created = db.get<{ token: unknown }>(HOOK_TOKEN_SQL, runId, hookId);
+  if (typeof created?.token === 'string' && created.token) return created.token;
+  const row = db.get<{ token: unknown }>(HOOK_ROW_TOKEN_SQL, hookId);
+  if (typeof row?.token === 'string' && row.token) return row.token;
+  let startHook: string | undefined;
+  try {
+    startHook = startHookId(runId);
+  } catch {
+    return null;
+  }
+  if (hookId !== startHook) return null;
+  const start = db.get<{ token: unknown }>(START_HOOK_TOKEN_SQL, runId);
+  return typeof start?.token === 'string' && start.token ? start.token : null;
+}
+
+function hookGroupsOf(counts: RunCounts): RunUsageHookGroup[] {
+  return [...counts.hooks].map(([hookId, hook]) => ({
+    hookId,
+    token: hook.token,
+    events: hook.events,
+  }));
 }
 
 function eventGroupsOf(counts: RunCounts): RunUsageEventGroup[] {
@@ -504,7 +575,8 @@ export function createUsageStorage(
       streamBytes: snapshot.streamBytes,
       dataPurged: snapshot.dataPurged,
       savedDataWritten: snapshot.savedDataWritten,
-      calls: { hook: counts.hookIds.size, wait: counts.waitIds.size },
+      hookGroups: hookGroupsOf(counts),
+      calls: { wait: counts.waitIds.size },
       // Local runs are not billed.
       billed: false,
       // world-local has no plan retention, so there is no Data Retained to

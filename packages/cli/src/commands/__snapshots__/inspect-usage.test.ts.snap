@@ -125,8 +125,9 @@ exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with
     {
       "calls": 1,
       "events": 2,
+      "id": "hook_1",
       "kind": "hook",
-      "name": "hook",
+      "name": "approve-order",
       "retries": 0,
       "share": 0.05405405405405406,
     },

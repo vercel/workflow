@@ -5,10 +5,13 @@ import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   formatEventCountingNote,
   formatStepEventsBreakdown,
+  RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  startHookId,
   usageSpanTree,
 } from '@workflow/world';
+import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { databaseFor } from '../db/index.js';
 import { createWorld } from '../index.js';
@@ -222,9 +225,11 @@ describe('experimental_usage.getRun (world-local)', () => {
     const usage = await usageOf(runId);
     const { byEntity } = usage.dataWritten;
 
+    // The hook is a span of its own, named by its token.
     expect(usage.eventsBySpan).toContainEqual({
       kind: 'hook',
-      name: 'hook',
+      name: 'approval-token',
+      id: 'hook_1',
       events: 3,
       share: 3 / 5,
       retries: 0,
@@ -237,6 +242,89 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(usage.dataWritten.bytes).toBe(
       byEntity.run + byEntity.step + byEntity.hook + byEntity.stream
     );
+  });
+
+  it('counts each hook on its own, named by its token', async () => {
+    const runId = await startRun();
+    for (const [hookId, received] of [
+      ['hook_a', 3],
+      ['hook_b', 1],
+    ] as const) {
+      await createHook(storage, runId, { hookId, token: `tok-${hookId}` });
+      for (let i = 0; i < received; i++) {
+        await storage.events.create(runId, {
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hookId,
+          eventData: { payload: bytes(4) },
+        });
+      }
+    }
+    await disposeHook(storage, runId, 'hook_a');
+    const usage = await usageOf(runId);
+    const hooks = usage.eventsBySpan.filter((span) => span.kind === 'hook');
+    expect(hooks.map((span) => [span.name, span.id, span.events])).toEqual([
+      // created, 3 received, disposed
+      ['tok-hook_a', 'hook_a', 5],
+      ['tok-hook_b', 'hook_b', 2],
+    ]);
+    expect(usage.eventsBySpan.reduce((sum, s) => sum + s.events, 0)).toBe(
+      usage.events
+    );
+  });
+
+  it('keeps a hook’s token through a zero-retention purge', async () => {
+    const run = await createRun(storage, {
+      deploymentId: 'dpl_test',
+      workflowName: WORKFLOW,
+      input: bytes(16),
+      attributes: { [RETENTION_ATTRIBUTE]: '0' },
+      allowReservedAttributes: true,
+    } as never);
+    await updateRun(storage, run.runId, 'run_started');
+    await createHook(storage, run.runId, {
+      hookId: 'hook_p',
+      token: 'kept-token',
+      metadata: bytes(32),
+    });
+    await updateRun(storage, run.runId, 'run_completed', { output: bytes(4) });
+
+    // The run's end deleted the hook's row: the token comes from its event.
+    expect(
+      databaseFor(dataDir).get(
+        'SELECT 1 FROM hooks WHERE hook_id = ?',
+        'hook_p'
+      )
+    ).toBeUndefined();
+    const usage = await usageOf(run.runId);
+    expect(usage.dataPurged).toBe(true);
+    expect(
+      usage.eventsBySpan.find((span) => span.kind === 'hook')
+    ).toMatchObject({ name: 'kept-token', id: 'hook_p' });
+  });
+
+  it('names a run’s start Hook by its token', async () => {
+    const runId = `wrun_${ulid()}`;
+    await storage.events.create(runId, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: WORKFLOW,
+        input: bytes(4),
+        startHook: { token: 'start:order-1' },
+      },
+    } as never);
+    await storage.events.create(runId, {
+      eventType: 'hook_received',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: startHookId(runId),
+      eventData: { payload: bytes(4) },
+    } as never);
+    const usage = await usageOf(runId);
+    expect(
+      usage.eventsBySpan.find((span) => span.kind === 'hook')
+    ).toMatchObject({ name: 'start:order-1', id: startHookId(runId) });
   });
 
   it('counts a failed run, its exhausted retries included', async () => {
@@ -417,15 +505,17 @@ describe('experimental_usage.getRun (world-local)', () => {
     const usage = await usageOf(runId);
     const calls = Object.fromEntries(
       usage.eventsBySpan.map((span) => [
-        span.kind === 'step' ? span.name : span.kind,
+        span.kind === 'step' || span.kind === 'hook' ? span.name : span.kind,
         span.calls,
       ])
     );
+    // Each hook is its own span, received twice and still one call.
     expect(calls).toEqual({
       [CHARGE]: 3,
       [EMAIL]: 1,
       run: 1,
-      hook: 2,
+      [`token-${runId}-hook_1`]: 1,
+      [`token-${runId}-hook_2`]: 1,
       wait: 3,
     });
     expect(usage.billed).toBe(false);

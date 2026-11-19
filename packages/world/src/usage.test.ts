@@ -130,6 +130,55 @@ describe('buildRunUsage', () => {
     expect(usage.dataRetained).toBeNull();
   });
 
+  it('makes each hook a span named by its token', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [
+          { eventType: 'run_created', events: 1, bytes: 1 },
+          { eventType: 'hook_created', events: 3, bytes: 30 },
+          { eventType: 'hook_received', events: 4, bytes: 40 },
+        ],
+        hookGroups: [
+          { hookId: 'hook_a', token: 'approve:1', events: 4 },
+          { hookId: 'hook_b', token: null, events: 2 },
+          // Not in a group: still counted, as "hook".
+        ],
+      })
+    );
+    expect(
+      usage.eventsBySpan
+        .filter((span) => span.kind === 'hook')
+        .map((span) => [span.name, span.id, span.events, span.calls])
+    ).toEqual([
+      ['approve:1', 'hook_a', 4, 1],
+      // No token found: its id.
+      ['hook_b', 'hook_b', 2, 1],
+      ['hook', undefined, 1, 0],
+    ]);
+    expect(usage.events).toBe(8);
+    expect(usage.eventsBySpan.reduce((sum, s) => sum + s.events, 0)).toBe(8);
+    expect(usage.dataWritten.byEntity.hook).toBe(70);
+  });
+
+  it('keeps hooks as one span for a World without hook groups', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [
+          { eventType: 'hook_created', events: 2, bytes: 1 },
+          { eventType: 'hook_received', events: 1, bytes: 1 },
+        ],
+      })
+    );
+    expect(usage.eventsBySpan).toEqual([
+      expect.objectContaining({
+        kind: 'hook',
+        name: 'hook',
+        events: 3,
+        calls: 2,
+      }),
+    ]);
+  });
+
   it('does not count placeholders as events', () => {
     const usage = buildRunUsage(
       aggregates({
@@ -736,7 +785,7 @@ describe('the span tree', () => {
   });
 
   it('counts calls: steps per name, distinct sleeps and hooks, one run', () => {
-    const usage = tree({ calls: { hook: 2, wait: 5 } });
+    const usage = tree({ calls: { wait: 5 } });
     const calls = Object.fromEntries(
       usage.eventsBySpan.map((span) => [
         `${span.kind}:${span.name}`,
@@ -745,7 +794,8 @@ describe('the span tree', () => {
     );
     expect(calls['step:step//./src/w//big']).toBe(4);
     expect(calls['run:workflow//./src/w//wf']).toBe(1);
-    expect(calls['hook:hook']).toBe(2);
+    // Without hook groups, hook_created events stand in for the hooks.
+    expect(calls['hook:hook']).toBe(1);
     expect(calls['wait:sleep']).toBe(5);
     // Without distinct counts, the *_created events stand in.
     const fallback = tree();
