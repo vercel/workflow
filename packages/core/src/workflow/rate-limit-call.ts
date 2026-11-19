@@ -20,16 +20,31 @@ function durationMs(value: StringValue | number, name: string): number {
 export function resolveRateLimitCall(
   options: RateLimitOptions,
   nowMs: number
-): { key: string; limit: number; periodMs: number; expiresAt: Date } {
+): {
+  key: string;
+  limit: number;
+  periodMs: number;
+  burst?: number;
+  expiresAt: Date;
+} {
   if (!options || typeof options !== 'object') {
     throw new TypeError(
       'experimental_rateLimit() expects an options object: { key, limit, period }'
+    );
+  }
+  if (options.burst !== undefined && typeof options.burst !== 'boolean') {
+    throw new TypeError(
+      `experimental_rateLimit(): burst must be true or false, got ${JSON.stringify(options.burst)}`
     );
   }
   const call = {
     key: options.key,
     limit: options.limit,
     periodMs: durationMs(options.period, 'period'),
+    // A full window. The wire takes a count, so a partial burst can come
+    // later; a burst of 1 is no burst, so it isn't sent.
+    ...(options.burst === true &&
+      options.limit > 1 && { burst: options.limit }),
   };
   try {
     validateRateLimitCall(call);

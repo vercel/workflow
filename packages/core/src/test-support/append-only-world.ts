@@ -20,6 +20,7 @@ import {
   type QueueBatchResult,
   RATE_MAX_LATE_WAKES,
   rateLimitIntervalUs,
+  rateLimitToleranceUs,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorContinuationPayload,
   slotToEventId,
@@ -638,6 +639,8 @@ export class AppendOnlyWorld {
         key: eventData.key as string,
         limit: eventData.limit as number,
         periodMs: eventData.periodMs as number,
+        ...(typeof eventData.burst === 'number' &&
+          eventData.burst > 1 && { burst: eventData.burst }),
       };
       const expiresAt = new Date(
         Math.min(
@@ -649,6 +652,7 @@ export class AppendOnlyWorld {
       const decision = decideRateLimit({
         tatUs: this.rateTats.get(call.key),
         intervalUs: rateLimitIntervalUs(call),
+        toleranceUs: rateLimitToleranceUs(call),
         nowUs,
         deadlineUs: expiresAt.getTime() * 1000,
       });

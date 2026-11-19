@@ -229,6 +229,8 @@ interface SplitEventData {
     /** rate_created: how many calls the key admits per `ratePeriodMs`. */
     rateLimit?: number;
     ratePeriodMs?: number;
+    /** rate_created: how many calls may go at once. Absent for no burst. */
+    rateBurst?: number;
     /** rate_created: the call's deadline. */
     rateExpiresAt?: Date;
     /** rate_acquired after a wait: the log slot of the call's rate_created. */
@@ -285,11 +287,13 @@ type MetaSourceField =
   | 'inline'
   | 'creatorMessageId'
   // Rate limit calls (spec >= 10), renamed on the wire: `key` → `rateKey`,
-  // `limit` → `rateLimit`, `periodMs` → `ratePeriodMs`, `expiresAt` →
-  // `rateExpiresAt`, `createdSlot` → `rateCreatedSlot`.
+  // `limit` → `rateLimit`, `periodMs` → `ratePeriodMs`, `burst` →
+  // `rateBurst`, `expiresAt` → `rateExpiresAt`, `createdSlot` →
+  // `rateCreatedSlot`.
   | 'key'
   | 'limit'
   | 'periodMs'
+  | 'burst'
   | 'expiresAt'
   | 'createdSlot'
   // World-written on the committed rate event (never sent by the SDK): the
@@ -542,6 +546,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     meta.rateKey = eventData.key as string;
     meta.rateLimit = eventData.limit as number;
     meta.ratePeriodMs = eventData.periodMs as number;
+    if (typeof eventData.burst === 'number') {
+      meta.rateBurst = eventData.burst;
+    }
     const expiresAt = eventData.expiresAt;
     meta.rateExpiresAt =
       expiresAt instanceof Date ? expiresAt : new Date(expiresAt as string);

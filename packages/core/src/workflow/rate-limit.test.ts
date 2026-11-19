@@ -105,6 +105,7 @@ describe('createRateLimit', () => {
     [{ ...CALL, period: 'soon' }, /invalid period/],
     [{ ...CALL, period: '2d' }, /24 hours/],
     [{ ...CALL, timeout: -1 }, /invalid timeout/],
+    [{ ...CALL, burst: 'yes' }, /burst must be true or false/],
   ])('refuses %o', async (options, message) => {
     const { rateLimit, ctx } = rateLimitFor([]);
     await expect(rateLimit(options as never)).rejects.toThrow(message);
@@ -126,6 +127,27 @@ describe('createRateLimit', () => {
     if (item?.type !== 'rate') throw new Error('not a rate item');
     expect(item.expiresAt.getTime()).toBe(ctx.globalThis.Date.now() + 30_000);
     expect(item.hasCreatedEvent).toBeUndefined();
+  });
+
+  it('asks for a full window with burst: true, and nothing without it', async () => {
+    const bursting = rateLimitFor([]);
+    void bursting.rateLimit({ ...CALL, burst: true });
+    await bursting.errorReceived.promise;
+    expect(bursting.ctx.invocationsQueue.get(CID)).toMatchObject({
+      burst: 60,
+    });
+
+    for (const options of [
+      CALL,
+      { ...CALL, burst: false },
+      // A burst of one is no burst.
+      { ...CALL, limit: 1, burst: true },
+    ]) {
+      const plain = rateLimitFor([]);
+      void plain.rateLimit(options);
+      await plain.errorReceived.promise;
+      expect(plain.ctx.invocationsQueue.get(CID)).not.toHaveProperty('burst');
+    }
   });
 
   it('waits up to 30 days without a timeout, and no longer with one', async () => {

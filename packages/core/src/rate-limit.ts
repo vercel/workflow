@@ -24,6 +24,15 @@ export interface RateLimitOptions {
    * to 30 days, which is also the longest a timeout can be.
    */
   timeout?: StringValue | number;
+  /**
+   * Let an idle key admit up to `limit` calls at once, then refill one every
+   * `period / limit`, like a token bucket. Without it (the default), calls are
+   * always at least `period / limit` apart. With it, a rolling `period` can
+   * see up to `2 * limit - 1` calls, which suits an upstream that is itself a
+   * token bucket or counts fixed windows. Use one setting per key: a bursting
+   * call can go ahead of calls already waiting without one.
+   */
+  burst?: boolean;
 }
 
 /**

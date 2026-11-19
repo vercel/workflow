@@ -148,6 +148,7 @@ export {
   rateGraceMs,
   rateLateAdmitMaxMs,
   rateLimitIntervalUs,
+  rateLimitToleranceUs,
   validateRateLimitCall,
 } from './rate-limits.js';
 export { reenqueueActiveRuns } from './recovery.js';

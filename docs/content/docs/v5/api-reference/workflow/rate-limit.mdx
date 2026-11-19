@@ -45,6 +45,8 @@ showSections={['parameters']}
 - Calls on one key share it across runs, so they are admitted in the order the World receives them. Calls that ask for different rates on one key each use up their own share of its time.
 - The rate is per project and environment: preview and production deployments have separate budgets for the same key.
 - Keys are stored as-is in the run's event log. Don't put personal data in them.
+- A `period` can be at most 24 hours.
+- With `burst: true`, an idle key admits up to `limit` calls at once, then refills one every `period / limit`. A rolling `period` can then see up to `2 * limit - 1` calls, which suits an upstream that is itself a token bucket or counts fixed windows, but not one that strictly enforces `limit` in any rolling window. Use one setting per key: a bursting call can go ahead of calls on the key that are already waiting without one.
 - A call that cannot get a slot before its `timeout` rejects with [`RateLimitTimeoutError`](/docs/errors/rate-limit-timeout) and uses up none of the key's capacity. Without a `timeout`, a call waits up to 30 days, which is also the longest a `timeout` can be.
 
 ## Examples
@@ -66,5 +68,21 @@ export async function notify(userId: string) {
   }
   await sendSms(userId)
   return "sent"
+}
+```
+
+### Letting a burst through at once
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow"
+declare function fetchPage(url: string): Promise<void>; // @setup
+
+export async function crawl(urls: string[]) {
+  "use workflow"
+  for (const url of urls) {
+    // The first 100 go at once; after that, one every 600 ms.
+    await experimental_rateLimit({ key: "crawler", limit: 100, period: "1m", burst: true }) // [!code highlight]
+    await fetchPage(url)
+  }
 }
 ```
