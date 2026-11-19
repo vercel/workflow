@@ -17,7 +17,8 @@ import {
   type Event,
   eventIdToSlot,
   MAX_RATE_WAIT_MS,
-  RATE_ACQUIRE_GRACE_MS,
+  rateGraceMs,
+  rateLateAdmitMaxMs,
   SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
@@ -214,7 +215,7 @@ describe('rate limits on the Local World', () => {
     };
 
     // Overslept, and meanwhile a third call took the key's next slot.
-    vi.setSystemTime(slot + RATE_ACQUIRE_GRACE_MS + 1);
+    vi.setSystemTime(slot + rateGraceMs(60_000) + 1);
     const third = committed(await inBand(runId, rateCreated()));
     expect(third.eventType).toBe('rate_created');
 
@@ -229,6 +230,78 @@ describe('rate limits on the Local World', () => {
     );
     // The old rate_created is settled; the new one is the call's.
     await expect(inBand(runId, acquired)).rejects.toThrow(EntityConflictError);
+    expect(late.eventData.lateWakes).toBe(1);
+  });
+
+  /**
+   * Takes one call through two late wakes, each reserved again behind
+   * another call, and returns its third rate_created and how to wake it.
+   */
+  async function lateTwice(expiresAt: Date) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const runId = await createRun();
+    committed(await inBand(runId, rateCreated()));
+    let waiting = committed(await inBand(runId, rateCreated({ expiresAt })));
+    const wake = (event: Event) => ({
+      eventType: 'rate_acquired',
+      specVersion: SPEC_VERSION_RATE_LIMITS,
+      correlationId: event.correlationId,
+      eventData: { createdSlot: eventIdToSlot(event.eventId) },
+    });
+    for (const lateWakes of [1, 2]) {
+      if (waiting.eventType !== 'rate_created') throw new Error('not waiting');
+      vi.setSystemTime(
+        waiting.eventData.acquireAt!.getTime() +
+          rateGraceMs(60_000, lateWakes - 1) +
+          1
+      );
+      committed(await inBand(runId, rateCreated()));
+      waiting = committed(await inBand(runId, wake(waiting)));
+      if (waiting.eventType !== 'rate_created') throw new Error('not waiting');
+      expect(waiting.eventData.lateWakes).toBe(lateWakes);
+    }
+    if (waiting.eventType !== 'rate_created') throw new Error('not waiting');
+    return { runId, waiting, acquired: wake(waiting) };
+  }
+
+  it('lets a call late on every wake through at its largest grace', async () => {
+    const { runId, waiting, acquired } = await lateTwice(
+      new Date(Date.now() + 60 * 60_000)
+    );
+    const slot = waiting.eventData.acquireAt!.getTime();
+    vi.setSystemTime(slot + rateGraceMs(60_000, 2) + 1);
+    const through = committed(await inBand(runId, acquired));
+    expect(through.eventType).toBe('rate_acquired');
+    if (through.eventType !== 'rate_acquired') return;
+    expect(through.eventData.acquireAt!.getTime()).toBe(slot);
+  });
+
+  it('reserves it again past the ceiling, keeping the count at its largest', async () => {
+    const { runId, waiting, acquired } = await lateTwice(
+      new Date(Date.now() + 60 * 60_000)
+    );
+    vi.setSystemTime(
+      waiting.eventData.acquireAt!.getTime() + rateLateAdmitMaxMs(60_000) + 1
+    );
+    // Another call takes the key's slot, so the call waits behind it.
+    committed(await inBand(runId, rateCreated()));
+    const again = committed(await inBand(runId, acquired));
+    if (again.eventType !== 'rate_created') throw new Error('not waiting');
+    expect(again.eventData.lateWakes).toBe(2);
+  });
+
+  it('fails a late admission past the call deadline', async () => {
+    // The two re-reservations put its slot about 300 s out; the third wake
+    // is 24 s after that. A deadline in between lets it be reserved, but not
+    // go ahead.
+    const { runId, waiting, acquired } = await lateTwice(
+      new Date(Date.now() + 310_000)
+    );
+    const slot = waiting.eventData.acquireAt!.getTime();
+    expect(slot).toBeLessThanOrEqual(waiting.eventData.expiresAt.getTime());
+    vi.setSystemTime(slot + rateGraceMs(60_000, 2) + 1);
+    const failed = committed(await inBand(runId, acquired));
+    expect(failed.eventType).toBe('rate_failed');
   });
 
   it('refuses rate events it may not decide', async () => {

@@ -596,6 +596,12 @@ const RateCreatedEventSchema = BaseEventSchema.extend({
      * committed event.
      */
     creatorMessageId: z.string().optional(),
+    /**
+     * Set by the World on a `rate_created` it reserved again after a late
+     * wake: how many times the call was woken past its grace. It sets the
+     * grace the call's next wake is judged with. Never set by the runtime.
+     */
+    lateWakes: z.number().int().nonnegative().optional(),
   }),
 });
 
@@ -626,6 +632,8 @@ const RateFailedEventSchema = BaseEventSchema.extend({
     reason: z.literal('timeout'),
     /** The slot the call would have had. */
     acquireAt: z.coerce.date().optional(),
+    /** As on `rate_created`: late wakes before the call failed. */
+    lateWakes: z.number().int().nonnegative().optional(),
   }),
 });
 

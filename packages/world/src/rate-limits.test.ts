@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   decideRateLimit,
+  decideRateWake,
   MAX_RATE_PERIOD_MS,
+  RATE_GRACE_FLOOR_MS,
+  RATE_GRACE_MAX_MS,
+  RATE_MAX_LATE_WAKES,
+  rateGraceMs,
+  rateLateAdmitMaxMs,
   rateLimitIntervalUs,
   validateRateLimitCall,
 } from './rate-limits.js';
@@ -25,7 +31,7 @@ describe('validateRateLimitCall', () => {
     [{ limit: 1.5 }, /positive integer/],
     [{ periodMs: 0 }, /positive whole number/],
     [{ periodMs: 0.5 }, /positive whole number/],
-    [{ periodMs: MAX_RATE_PERIOD_MS + 1 }, /365 days/],
+    [{ periodMs: MAX_RATE_PERIOD_MS + 1 }, /24 hours/],
   ])('refuses %o', (bad, message) => {
     expect(() => validateRateLimitCall({ ...ok, ...bad })).toThrow(message);
   });
@@ -108,5 +114,64 @@ describe('decideRateLimit', () => {
       deadlineUs: 8.64e15 * 1_000,
     });
     expect(decision.status).toBe('deadline_exceeded');
+  });
+});
+
+describe('rateGraceMs', () => {
+  it('is a tenth of the period, between the floor and the max', () => {
+    expect(rateGraceMs(60_000)).toBe(6_000);
+    expect(rateGraceMs(1_000)).toBe(RATE_GRACE_FLOOR_MS);
+    expect(rateGraceMs(24 * 60 * 60 * 1000)).toBe(RATE_GRACE_MAX_MS);
+  });
+
+  it('doubles on each late wake, up to four times the first', () => {
+    expect([0, 1, 2, 3, 10].map((k) => rateGraceMs(60_000, k))).toEqual([
+      6_000, 12_000, 24_000, 24_000, 24_000,
+    ]);
+    // The max bounds the first grace, not the doubled ones.
+    expect(rateGraceMs(24 * 60 * 60 * 1000, 2)).toBe(4 * RATE_GRACE_MAX_MS);
+  });
+});
+
+describe('decideRateWake', () => {
+  const NOW_MS = 1_900_000_000_000;
+  const wake = (
+    lateWakes: number,
+    lateByMs: number,
+    expiresAt = new Date(NOW_MS + 30 * 24 * 60 * 60 * 1000)
+  ) =>
+    decideRateWake({
+      acquireAt: new Date(NOW_MS),
+      nowMs: NOW_MS + lateByMs,
+      periodMs: 60_000,
+      lateWakes,
+      expiresAt,
+    });
+  // A minute's graces are 6, 12 and 24 s, and its ceiling 84 s.
+  const ceilingMs = rateLateAdmitMaxMs(60_000);
+
+  it('goes ahead within its grace, at any count', () => {
+    expect(RATE_MAX_LATE_WAKES).toBe(2);
+    expect(ceilingMs).toBe(84_000);
+    expect(wake(0, 6_000)).toBe('acquire');
+    expect(wake(1, 12_000)).toBe('acquire');
+    expect(wake(2, 24_000)).toBe('acquire');
+  });
+
+  it('is reserved again past its grace while the grace can still grow', () => {
+    expect(wake(0, 6_001)).toBe('reserve_again');
+    expect(wake(1, 24 * 60 * 60 * 1000)).toBe('reserve_again');
+  });
+
+  it('goes ahead late at the largest grace, up to the ceiling', () => {
+    expect(wake(2, 24_001)).toBe('acquire_late');
+    expect(wake(2, ceilingMs)).toBe('acquire_late');
+    expect(wake(2, ceilingMs + 1)).toBe('reserve_again');
+  });
+
+  it('fails a late admission past the deadline rather than going ahead', () => {
+    const expiresAt = new Date(NOW_MS + 10_000);
+    expect(wake(2, 24_001, expiresAt)).toBe('fail');
+    expect(wake(2, 24_000, expiresAt)).toBe('acquire');
   });
 });

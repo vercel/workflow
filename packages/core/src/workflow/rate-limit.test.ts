@@ -103,7 +103,7 @@ describe('createRateLimit', () => {
     [{ ...CALL, key: '' }, /non-empty/],
     [{ ...CALL, limit: 0 }, /positive integer/],
     [{ ...CALL, period: 'soon' }, /invalid period/],
-    [{ ...CALL, period: '2y' }, /365 days/],
+    [{ ...CALL, period: '2d' }, /24 hours/],
     [{ ...CALL, timeout: -1 }, /invalid timeout/],
   ])('refuses %o', async (options, message) => {
     const { rateLimit, ctx } = rateLimitFor([]);

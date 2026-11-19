@@ -134,11 +134,19 @@ export {
 } from './queue.js';
 export {
   decideRateLimit,
+  decideRateWake,
   MAX_RATE_KEY_BYTES,
   MAX_RATE_PERIOD_MS,
   MAX_RATE_WAIT_MS,
-  RATE_ACQUIRE_GRACE_MS,
+  RATE_GRACE_FLOOR_MS,
+  RATE_GRACE_MAX_DOUBLING,
+  RATE_GRACE_MAX_MS,
+  RATE_GRACE_PERIOD_SHARE,
+  RATE_MAX_LATE_WAKES,
   type RateLimitDecision,
+  type RateWakeDecision,
+  rateGraceMs,
+  rateLateAdmitMaxMs,
   rateLimitIntervalUs,
   validateRateLimitCall,
 } from './rate-limits.js';

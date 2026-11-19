@@ -48,6 +48,7 @@ import type {
 import {
   applyAttributeChanges,
   decideRateLimit,
+  decideRateWake,
   getEventDataRefFields,
   getMaxEventsForRun,
   getMaxEventsPerRun,
@@ -61,7 +62,7 @@ import {
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
   MAX_RATE_WAIT_MS,
-  RATE_ACQUIRE_GRACE_MS,
+  RATE_MAX_LATE_WAKES,
   rateLimitIntervalUs,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
@@ -356,7 +357,10 @@ export function createEventsStorage(
       periodMs: number;
       expiresAt: Date;
       creatorMessageId?: string;
-    }
+    },
+    // The World's own count of late wakes, for a call reserved again: never
+    // the runtime's.
+    lateWakes = 0
   ): Event {
     const call = {
       key: eventData.key,
@@ -390,7 +394,11 @@ export function createEventsStorage(
       nowUs,
       deadlineUs: expiresAt.getTime() * 1000,
     });
-    const request = { ...call, expiresAt };
+    const request = {
+      ...call,
+      expiresAt,
+      ...(lateWakes > 0 && { lateWakes }),
+    };
     if (decision.status === 'deadline_exceeded') {
       return {
         ...event,
@@ -473,15 +481,43 @@ export function createEventsStorage(
         { retryAfter: Math.ceil(waitMs / 1000) }
       );
     }
-    if (-waitMs > RATE_ACQUIRE_GRACE_MS) {
+    const lateWakes = created.eventData.lateWakes ?? 0;
+    const wake = decideRateWake({
+      acquireAt,
+      nowMs: Date.now(),
+      periodMs: created.eventData.periodMs,
+      lateWakes,
+      expiresAt: new Date(created.eventData.expiresAt),
+    });
+    if (wake === 'reserve_again') {
       // Woken past its grace window: reserved again from what the call
-      // recorded, and what that decided is committed in its place.
+      // recorded, with one more late wake, and what that decided is
+      // committed in its place.
       return decideRateCreated(
         { ...event, eventType: 'rate_created' } as Event,
-        created.eventData
+        created.eventData,
+        Math.min(lateWakes + 1, RATE_MAX_LATE_WAKES)
       );
     }
-    const { creatorMessageId: _creator, ...call } = created.eventData;
+    const {
+      creatorMessageId: _creator,
+      lateWakes: _lateWakes,
+      ...call
+    } = created.eventData;
+    if (wake === 'fail') {
+      // Late past its largest grace and past its own deadline: it fails as a
+      // timed-out call would, rather than going ahead after it.
+      return {
+        ...event,
+        eventType: 'rate_failed',
+        eventData: {
+          ...call,
+          ...(lateWakes > 0 && { lateWakes }),
+          reason: 'timeout',
+          acquireAt,
+        },
+      } as Event;
+    }
     return {
       ...event,
       eventData: { ...call, createdSlot },

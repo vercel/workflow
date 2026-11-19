@@ -293,9 +293,11 @@ type MetaSourceField =
   | 'expiresAt'
   | 'createdSlot'
   // World-written on the committed rate event (never sent by the SDK): the
-  // reserved slot. Listed so the exhaustiveness guard knows it is accounted
-  // for; `splitEventDataForV4` never puts it on the wire.
-  | 'acquireAt';
+  // reserved slot, and the late wakes of a call reserved again. Listed so the
+  // exhaustiveness guard knows they are accounted for; `splitEventDataForV4`
+  // never puts them on the wire.
+  | 'acquireAt'
+  | 'lateWakes';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
