@@ -7,7 +7,7 @@ import { cn } from '../../lib/cn';
 import {
   type EventLevel,
   type EventListRow,
-  formatSinceStart,
+  formatElapsed,
   formatTimestampParts,
   getEffectiveEventDate,
   parseEventDate,
@@ -25,7 +25,7 @@ import { TimestampTooltip } from '../ui/timestamp-tooltip';
 const COL = {
   level: 'w-6 justify-center',
   time: 'w-[172px]',
-  since: 'w-[100px]',
+  since: 'w-[100px] justify-end pr-4',
   event: 'w-[136px]',
   name: 'w-[280px]',
   duration: 'w-[96px] justify-end',
@@ -158,7 +158,12 @@ export function EventListHeader({
       ) : (
         sortButton('Time')
       )}
-      <div className={cn(CELL, COL.since)} />
+      <div
+        className={cn(CELL, COL.since)}
+        title="Time since the previous event"
+      >
+        Elapsed
+      </div>
       <div className={cn(CELL, COL.name)}>Name</div>
       <div className={cn(CELL, COL.event)}>Event</div>
       <div
@@ -191,6 +196,8 @@ export interface EventRowProps {
   row: EventListRow;
   /** Position among events (not gap rows); drives zebra striping. */
   index: number;
+  /** Time since the listed event before this one; unset for the earliest. */
+  sincePreviousMs?: number;
   isSelected: boolean;
   /** The one row Tab lands on (roving tabindex): the selection, else the first row. */
   isTabStop: boolean;
@@ -204,6 +211,7 @@ export interface EventRowProps {
 export function EventRow({
   row,
   index,
+  sincePreviousMs,
   isSelected,
   isTabStop,
   relation,
@@ -253,10 +261,15 @@ export function EventRow({
           <div className={cn(CELL, COL.time, secondaryClass)}>—</div>
         ))}
       <TimestampCell date={displayedAt} secondaryClass={secondaryClass} />
-      <div className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}>
-        {row.sinceStartMs !== undefined
-          ? formatSinceStart(row.sinceStartMs)
-          : ''}
+      <div
+        className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}
+        title={
+          row.sinceStartMs !== undefined
+            ? `${formatElapsed(row.sinceStartMs)} since the run started`
+            : undefined
+        }
+      >
+        {sincePreviousMs !== undefined ? formatElapsed(sincePreviousMs) : ''}
       </div>
       <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
         <ResourceIcon

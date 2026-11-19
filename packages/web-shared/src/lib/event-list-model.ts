@@ -63,7 +63,7 @@ function formatClock(value: unknown): string | null {
   return date ? formatTimestampParts(date).clock : null;
 }
 
-export function formatSinceStart(ms: number): string {
+export function formatElapsed(ms: number): string {
   return ms <= 0 ? '0ms' : `+${formatDurationPrecise(ms)}`;
 }
 
@@ -541,7 +541,13 @@ export function buildEventRow(
 const IDLE_GAP_MS = 30_000;
 
 export type EventListItem =
-  | { kind: 'event'; row: EventListRow; index: number }
+  | {
+      kind: 'event';
+      row: EventListRow;
+      index: number;
+      /** Time since the listed event before this one; unset for the earliest. */
+      sincePreviousMs?: number;
+    }
   | { kind: 'gap'; key: string; ms: number; reason: string };
 
 function describeGap(later: Event, hookNameMap: Map<string, string>): string {
@@ -561,6 +567,13 @@ export function buildListItems(
   options: { showGaps: boolean; hookNameMap: Map<string, string> }
 ): EventListItem[] {
   const items: EventListItem[] = [];
+  // The event before a row in time sits above it in an oldest-first list and
+  // below it in a newest-first one.
+  const isNewestFirst =
+    rows.length > 1 &&
+    getEffectiveEventTime(rows[0].event) >
+      getEffectiveEventTime(rows[rows.length - 1].event);
+  const previousOffset = isNewestFirst ? 1 : -1;
   rows.forEach((row, index) => {
     if (options.showGaps && index > 0) {
       const prev = rows[index - 1].event;
@@ -578,7 +591,16 @@ export function buildListItems(
         });
       }
     }
-    items.push({ kind: 'event', row, index });
+    const previous = rows[index + previousOffset];
+    items.push({
+      kind: 'event',
+      row,
+      index,
+      sincePreviousMs: previous
+        ? getEffectiveEventTime(row.event) -
+          getEffectiveEventTime(previous.event)
+        : undefined,
+    });
   });
   return items;
 }
