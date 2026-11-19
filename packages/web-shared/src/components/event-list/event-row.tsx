@@ -25,7 +25,7 @@ import { TimestampTooltip } from '../ui/timestamp-tooltip';
 const COL = {
   level: 'w-6 justify-center',
   time: 'w-[172px]',
-  since: 'w-[128px] justify-end pr-4',
+  since: 'w-[100px] justify-end pr-4',
   event: 'w-[136px]',
   name: 'w-[280px]',
   duration: 'w-[96px] justify-end',
@@ -158,7 +158,12 @@ export function EventListHeader({
       ) : (
         sortButton('Time')
       )}
-      <div className={cn(CELL, COL.since)}>Since previous</div>
+      <div
+        className={cn(CELL, COL.since)}
+        title="Time since the previous event"
+      >
+        Delta
+      </div>
       <div className={cn(CELL, COL.name)}>Name</div>
       <div className={cn(CELL, COL.event)}>Event</div>
       <div
