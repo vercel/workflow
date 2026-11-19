@@ -550,6 +550,44 @@ describe('Retention ($retention: 0)', () => {
       });
     }
 
+    it('blanks a stream write that was in flight while the run finished and had its data deleted', async () => {
+      const { runId } = await seedRun();
+      // Hold every stream insert open after it has read the run (as running,
+      // so it takes no lock), long enough for the run to finish and have its
+      // data deleted before the insert commits.
+      await pool.query(`
+        CREATE OR REPLACE FUNCTION workflow.test_slow_chunk_insert()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_sleep(1); RETURN NEW; END $$`);
+      await pool.query(`
+        CREATE TRIGGER test_slow_chunk_insert
+        BEFORE INSERT ON workflow.workflow_stream_chunks
+        FOR EACH ROW EXECUTE FUNCTION workflow.test_slow_chunk_insert()`);
+      try {
+        const write = streamer.streams.write(runId, 'in-flight', 'secret');
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await events.create(runId, {
+          eventType: 'run_completed',
+          eventData: { output: new Uint8Array([12, 13]) },
+        });
+        const deleted = await runs.deleteDataMany?.({ runIds: [runId] });
+        expect(deleted?.results).toEqual([{ runId, outcome: 'deleted' }]);
+        await write;
+      } finally {
+        await pool.query(
+          'DROP TRIGGER test_slow_chunk_insert ON workflow.workflow_stream_chunks'
+        );
+        await pool.query('DROP FUNCTION workflow.test_slow_chunk_insert()');
+      }
+
+      const { rows } = await pool.query(
+        `SELECT octet_length(data)::int AS n FROM workflow.workflow_stream_chunks
+          WHERE run_id = $1 AND stream_id = 'in-flight'`,
+        [runId]
+      );
+      expect(rows).toEqual([{ n: 0 }]);
+    });
+
     it('writes no stream chunk after the deletion, to a new stream or an existing one', async () => {
       const { runId, streamId } = await seedRun();
       await events.create(runId, {
