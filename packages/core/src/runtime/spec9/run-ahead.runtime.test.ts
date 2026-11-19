@@ -759,9 +759,16 @@ describe.each([
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(runAheadDepth));
     let injected = false;
     const code = withSleep('1h');
+    // Until the hazard, outcomes are held until the next body returned, so
+    // the next writes queue behind them and the first batch comes early
+    // however slow the machine is. With a fixed delay instead, a loaded
+    // runner wrote outcome after outcome alone, and run-ahead had started
+    // every body by the time a batch carried the hazard.
+    const holdOutcome = holdOutcomesUntilAhead(1);
     const { world, runId, start } = await run(code, [STEPS], {
       async beforeCreate(data, _params, source) {
-        await slowOutcomes.beforeCreate(data);
+        if (injected) await slowOutcomes.beforeCreate(data);
+        else await holdOutcome(data);
         if (!injected && data.eventType === 'step_completed' && source?.batch) {
           injected = true;
           // The far-future sleep completed by another writer: run-ahead

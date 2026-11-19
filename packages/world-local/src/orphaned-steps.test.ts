@@ -299,7 +299,11 @@ describe('orphaned inline steps on restart', () => {
   it('releases several runs at once, each before its own delivery', async () => {
     const previous = createWorld({ dataDir });
     const runIds: string[] = [];
-    for (let i = 0; i < 3 * RELEASE_CONCURRENCY; i++) {
+    // A couple more runs than are released at once are enough to see the
+    // bound. Every run costs about a dozen database operations here and at
+    // the restart, which on a loaded Windows runner (a connection opened per
+    // operation, see vitest.config.ts) took 24 runs past the test timeout.
+    for (let i = 0; i < RELEASE_CONCURRENCY + 2; i++) {
       const runId = await startRun(previous);
       await startInlineStep(previous, runId, 'step_inline');
       runIds.push(runId);
