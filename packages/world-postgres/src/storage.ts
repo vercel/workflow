@@ -60,6 +60,7 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  readRunRetention,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -103,6 +104,7 @@ import {
   invocationExpiredError,
 } from './invocation-retention.js';
 import {
+  addPurgeBackstop,
   purgeRunUserData,
   purgeRunUserDataIfZeroRetention,
   scrubStepWriteIfRunPurged,
@@ -1395,14 +1397,23 @@ export function createEventsStorage(
      */
     jobPrefix?: string;
     /**
+     * The task of the purge backstop a zero-retention run's terminal write
+     * adds (see `purgeTask` in retention.ts). `createWorld` passes its
+     * `worldPurgeTask`. Omitted, no backstop is added.
+     */
+    purgeTask?: string;
+    /**
      * The live feed behind `events.subscribe`. Omitted, the storage offers
      * no `subscribe`. Writes announce spec 9 runs on it either way.
      */
     runEventsFeed?: RunEventsFeed;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix, runEventsFeed } = options;
-  const events = createUnfencedEventsStorage(drizzle, { jobPrefix });
+  const { jobPrefix, purgeTask, runEventsFeed } = options;
+  const events = createUnfencedEventsStorage(drizzle, {
+    jobPrefix,
+    purgeTask,
+  });
   const unfencedCreate = events.create as (
     runId: string | null,
     data: AnyEventRequest,
@@ -1459,7 +1470,7 @@ export function createEventsStorage(
     // holding the same count only the first through the lock writes
     // anything: the others find the count moved. Only in-band writers take
     // this lock, so out-of-band writes never wait on it.
-    const terminalRuns: string[] = [];
+    const terminalRuns: DeferredTerminal[] = [];
     const result = await drizzle.transaction(async (tx) => {
       const [row] = await tx
         .select({ seqInBand: Schema.eventSlots.seqInBand })
@@ -1477,8 +1488,8 @@ export function createEventsStorage(
       }
       const inTransaction = createUnfencedEventsStorage(tx, {
         jobPrefix,
-        deferTerminalNotify: (terminalRunId) =>
-          terminalRuns.push(terminalRunId),
+        purgeTask,
+        deferTerminal: (terminal) => terminalRuns.push(terminal),
       }).create as (
         runId: string | null,
         data: AnyEventRequest,
@@ -1498,8 +1509,16 @@ export function createEventsStorage(
         () => inTransaction(runId, data, params)
       );
     }, SLOT_INSERT_TRANSACTION);
-    for (const terminalRunId of terminalRuns) {
-      await notifyRunTerminal(drizzle, terminalRunId);
+    // The terminal write has committed: purge, then announce, on the pool,
+    // as an unfenced terminal write does (see `DeferredTerminal`).
+    for (const terminal of terminalRuns) {
+      await purgeRunUserDataIfZeroRetention(
+        drizzle,
+        terminal.runId,
+        terminal.attributes,
+        terminal.purgedAt
+      );
+      await notifyRunTerminal(drizzle, terminal.runId);
     }
     return result;
   };
@@ -1580,6 +1599,29 @@ async function readEventLogSnapshot(
 }
 
 /**
+ * A run-terminal transition whose zero-retention purge and `NOTIFY` its
+ * write handed off to run after the commit. A fenced create runs in a
+ * transaction, and neither belongs inside it:
+ * - The purge needs the run's step rows, while the transaction holds the
+ *   event slot its terminal event took. A step outcome settling at the same
+ *   time (a race's loser) takes its step row and then waits for that slot,
+ *   so the two would deadlock, and Postgres would break the deadlock by
+ *   failing the purge while the terminal write committed, leaving the data
+ *   of a run that asked to keep none. After the commit, the slot is free.
+ * - A failed `NOTIFY` (or one that fails at commit) would fail the write
+ *   itself.
+ * Run in that order, the purge before the announcement, as an unfenced
+ * terminal write runs them. Only in memory, the purge would be lost to a
+ * process that stops after the commit; the backstop job the terminal
+ * transaction adds runs it then (see `purgeTask` in retention.ts).
+ */
+type DeferredTerminal = {
+  runId: string;
+  attributes: Record<string, string> | undefined;
+  purgedAt: Date;
+};
+
+/**
  * The events storage without the fence, on the pool or, for a fenced
  * in-band create, on that create's transaction (nested transactions inside
  * become savepoints).
@@ -1589,15 +1631,13 @@ function createUnfencedEventsStorage(
   options: {
     /** See `createEventsStorage`. */
     jobPrefix?: string;
-    /**
-     * Takes the run-terminal `NOTIFY` off this handle. A fenced create runs
-     * in a transaction, where a failed `NOTIFY` (or one that fails at commit)
-     * would fail the write itself; it announces after the commit instead.
-     */
-    deferTerminalNotify?: (runId: string) => void;
+    /** See `createEventsStorage`. */
+    purgeTask?: string;
+    /** See `DeferredTerminal`. */
+    deferTerminal?: (terminal: DeferredTerminal) => void;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix } = options;
+  const { jobPrefix, purgeTask } = options;
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -2528,6 +2568,14 @@ function createUnfencedEventsStorage(
             .returning();
           if (runValue) {
             run = deserializeRunError(compact(runValue));
+            // The purge of a zero-retention run runs after this commits;
+            // its backstop commits with it (see `purgeTask`).
+            if (
+              purgeTask !== undefined &&
+              readRunRetention(runValue.attributes ?? undefined).mode === 'none'
+            ) {
+              await addPurgeBackstop(tx, purgeTask, effectiveRunId);
+            }
           } else {
             const [existing] = await tx
               .select({ status: Schema.runs.status })
@@ -4006,15 +4054,23 @@ function createUnfencedEventsStorage(
         // of catching the output on its way out. `run` is only set on the
         // writer that won the conditional terminal UPDATE, so this fires once
         // per run rather than on every idempotent retry.
-        await purgeRunUserDataIfZeroRetention(
-          drizzle,
-          effectiveRunId,
-          run.attributes,
-          now
-        );
-        if (options.deferTerminalNotify) {
-          options.deferTerminalNotify(effectiveRunId);
+        //
+        // A fenced write is still inside its transaction here, so it hands
+        // both to its caller, which runs them after the commit (see
+        // `DeferredTerminal`).
+        if (options.deferTerminal) {
+          options.deferTerminal({
+            runId: effectiveRunId,
+            attributes: run.attributes,
+            purgedAt: now,
+          });
         } else {
+          await purgeRunUserDataIfZeroRetention(
+            drizzle,
+            effectiveRunId,
+            run.attributes,
+            now
+          );
           await notifyRunTerminal(drizzle, effectiveRunId);
         }
       }

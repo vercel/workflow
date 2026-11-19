@@ -1,11 +1,12 @@
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { RETENTION_ATTRIBUTE, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { makeWorkerUtils, type WorkerUtils } from 'graphile-worker';
+import { makeWorkerUtils, runOnce, type WorkerUtils } from 'graphile-worker';
 import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createClient } from '../src/drizzle/index.js';
 import { createWorld } from '../src/index.js';
 import {
   countUnpinnedRuns,
@@ -13,6 +14,7 @@ import {
   getDeploymentBacklog,
   listActiveDeployments,
 } from '../src/kubernetes/index.js';
+import { createPurgeBackstopTask, worldPurgeTask } from '../src/retention.js';
 import { TestPool } from './pool.js';
 
 /**
@@ -105,6 +107,7 @@ describe.skipIf(process.platform === 'win32')(
         deploymentId: 'v1',
         activeRuns: 2,
         dueDeliveries: 2,
+        pendingPurges: 0,
         wanted: 2,
       });
       // A due backstop of a finished run does not wake a drained deployment.
@@ -112,6 +115,7 @@ describe.skipIf(process.platform === 'win32')(
         deploymentId: 'v2',
         activeRuns: 0,
         dueDeliveries: 1,
+        pendingPurges: 0,
         wanted: 0,
       });
       await expect(
@@ -186,6 +190,90 @@ describe.skipIf(process.platform === 'win32')(
         status: 200,
         body: { versions: { abc: 3 }, unpinnedRuns: 1 },
       });
+    });
+
+    // Last: it adds a deployment, and drains it again before it ends.
+    it("keeps a drained deployment until its finished run's purge backstop has run", async () => {
+      const world = createWorld({ pool, jobPrefix: 'kb_', deploymentId: 'v3' });
+      const runId = `wrun_${ulid()}`;
+      try {
+        await world.events.create(runId, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'v3',
+            workflowName: 'backlog-test',
+            input: new Uint8Array([1]),
+            attributes: { [RETENTION_ATTRIBUTE]: '0' },
+            allowReservedAttributes: true,
+          },
+        });
+        await world.events.create(runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        await world.events.create(runId, {
+          eventType: 'run_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { output: new Uint8Array([2]) },
+        });
+      } finally {
+        await world.close?.();
+      }
+
+      // The backstop is on the task every deployment's runner claims.
+      const { rows } = await pool.query(
+        `SELECT task_identifier FROM graphile_worker.jobs WHERE key = $1`,
+        [`purge:${runId}`]
+      );
+      expect(rows).toEqual([{ task_identifier: worldPurgeTask(config) }]);
+      expect(worldPurgeTask(config)).toBe('kb_purge');
+
+      // The run finished, but v3 keeps its workers until the backstop ran.
+      await expect(getDeploymentBacklog(pool, config, 'v3')).resolves.toEqual({
+        deploymentId: 'v3',
+        activeRuns: 1,
+        dueDeliveries: 0,
+        pendingPurges: 1,
+        wanted: 0,
+      });
+      await expect(listActiveDeployments(pool, config)).resolves.toEqual(
+        new Map([
+          ['v1', 2],
+          ['svc@abc', 3],
+          ['v3', 1],
+        ])
+      );
+
+      // Once due, it wakes v3's workers.
+      await pool.query(
+        `UPDATE graphile_worker._private_jobs SET run_at = now() WHERE key = $1`,
+        [`purge:${runId}`]
+      );
+      await expect(
+        getDeploymentBacklog(pool, config, 'v3')
+      ).resolves.toMatchObject({ activeRuns: 1, dueDeliveries: 1, wanted: 1 });
+
+      // A runner without v3's tasks runs it: the task is the World's.
+      await runOnce({
+        pgPool: pool,
+        taskList: {
+          [worldPurgeTask(config)]: createPurgeBackstopTask(createClient(pool)),
+        },
+      });
+      await expect(getDeploymentBacklog(pool, config, 'v3')).resolves.toEqual({
+        deploymentId: 'v3',
+        activeRuns: 0,
+        dueDeliveries: 0,
+        pendingPurges: 0,
+        wanted: 0,
+      });
+      await expect(listActiveDeployments(pool, config)).resolves.toEqual(
+        new Map([
+          ['v1', 2],
+          ['svc@abc', 3],
+        ])
+      );
     });
   }
 );

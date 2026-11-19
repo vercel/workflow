@@ -226,7 +226,7 @@ The package includes a Helm chart for Kubernetes in its `chart` directory, and t
 
 - **Workers per version.** Each release gets a worker Deployment that runs only the runs it started. A rollout leaves the previous release's workers in place.
 - **Scale to zero.** KEDA scales each version's workers on its due deliveries, which the application reports through `createBacklogEndpoints`. Workers drop to zero while that version's runs sleep or wait on a hook.
-- **Pruning.** A CronJob deletes a version's workers once all its runs have finished, and recreates them for a version that still has unfinished runs.
+- **Pruning.** A CronJob deletes a version's workers once all its runs have finished, and recreates them for a version that still has unfinished runs. A run with `experimental_retention: 0` counts as unfinished until its data deletion is confirmed, about a minute after it ends.
 - **Graceful shutdown.** `createLifecycle` stops a pod from receiving traffic, then lets its running deliveries finish before it exits.
 - **Migrations.** An optional init container runs `bootstrap` before each pod starts.
 
