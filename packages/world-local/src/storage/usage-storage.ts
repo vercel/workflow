@@ -29,8 +29,11 @@
  *   before a run finished are dropped and taken again once it has finished
  *   with its data deleted (cheap then: the rows are small).
  * - A run that is not writing (sleeping, waiting on a hook) costs one
- *   lookup of its position. Stream bytes are summed fresh on every read
- *   (from the stream index, without reading the chunks' data).
+ *   lookup of its position for its events. Its stream bytes are summed on
+ *   every read, one pass over the lengths of its chunks: a run with many
+ *   chunks costs time in proportion to their count (tens of
+ *   milliseconds for 60,000). Not cached: chunks are keyed by stream and index, and a purge
+ *   deletes them, so a running total would need the same pass to check.
  * - The first count of a run is split into batches of a few milliseconds
  *   each, yielding between them, so even that read leaves the process free
  *   to answer other requests. Rows up to the position the batches stop at
@@ -320,7 +323,8 @@ function stepGroupsOf(counts: RunCounts): RunUsageStepGroup[] {
  */
 function purgedDataWritten(
   db: Database,
-  runId: string
+  runId: string,
+  streamBytes: number
 ): Record<RunUsageEntity, number> | null {
   const saved = readPurgedUsage(db, runId);
   if (!saved) return null;
@@ -336,7 +340,7 @@ function purgedDataWritten(
     run: saved.byEntity.run + late.byEntity.run,
     step: saved.byEntity.step + late.byEntity.step,
     hook: saved.byEntity.hook + late.byEntity.hook,
-    stream: saved.byEntity.stream + measureStreamBytes(db, runId),
+    stream: saved.byEntity.stream + streamBytes,
   };
 }
 
@@ -460,7 +464,10 @@ export function createUsageStorage(
         readBeforeFinish = !finished;
       }
       countRange(db, runId, counts, counts.countedSeq, seq);
-      const savedDataWritten = purgedDataWritten(db, runId) ?? undefined;
+      // Summed once, for the run's streams and a purged run's late ones.
+      const streamBytes = measureStreamBytes(db, runId);
+      const savedDataWritten =
+        purgedDataWritten(db, runId, streamBytes) ?? undefined;
       const dataPurged =
         savedDataWritten !== undefined ||
         (finished &&
@@ -478,7 +485,7 @@ export function createUsageStorage(
       counts.finished = finished;
       return {
         run,
-        streamBytes: measureStreamBytes(db, runId),
+        streamBytes,
         dataPurged,
         savedDataWritten,
       };

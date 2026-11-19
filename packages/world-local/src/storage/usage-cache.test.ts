@@ -290,6 +290,35 @@ describe('remembered usage counts', () => {
     expect(usage).toEqual(await recount(run.runId));
   });
 
+  it('sum a purged run’s streams once per read', async () => {
+    const run = await startRun({ purge: true });
+    for (let i = 0; i < 10; i++) await writeSome(run, i);
+    await run.event({
+      eventType: 'run_completed',
+      eventData: { output: bytes(10) },
+    });
+    const reader = createUsageStorage(db);
+    await reader.getRun(run.runId);
+    const get = db.get.bind(db);
+    let sums = 0;
+    const spy = vi.spyOn(db, 'get').mockImplementation(((
+      sql: string,
+      ...params: unknown[]
+    ) => {
+      if (sql.includes('FROM stream_chunks') && sql.includes('SUM(')) {
+        sums += 1;
+      }
+      return get(sql, ...(params as never[]));
+    }) as typeof db.get);
+    try {
+      const usage = await reader.getRun(run.runId);
+      expect(usage.dataWritten.source).toBe('saved-at-purge');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sums).toBe(1);
+  });
+
   it('equal a full recount when a deletion on demand lands mid-count', async () => {
     const run = await startRun();
     for (let i = 0; i < 10; i++) await writeSome(run, i);
