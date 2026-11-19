@@ -194,10 +194,7 @@ export interface EventRowProps {
   isSelected: boolean;
   /** The one row Tab lands on (roving tabindex): the selection, else the first row. */
   isTabStop: boolean;
-  /**
-   * Whether the row belongs to the selected event's step, hook, wait or run.
-   * Unset while no entity is marked.
-   */
+  /** Whether the row belongs to the selected event's step, hook, wait or run. */
   relation?: 'related' | 'unrelated';
   onSelect: (event: Event) => void;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
@@ -218,7 +215,7 @@ export function EventRow({
   const displayedAt = showSeparateEventOccurrenceTimestamps
     ? new Date(event.createdAt)
     : getEffectiveEventDate(event);
-  // Warning and error rows keep their own fill and text color throughout.
+  // Tinted rows keep one color throughout.
   const isTinted = level === 'warning' || level === 'error';
   const isRelated = relation === 'related';
   const isMuted = relation === 'unrelated' && !isTinted;

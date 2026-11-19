@@ -188,7 +188,6 @@ function EventListViewInner({
         : search.id.id
       : (selectedRow?.entity.key ?? null);
 
-  // Related rows scrolled out of view get a hint at that edge of the list.
   const [visibleRange, setVisibleRange] = useState({
     startIndex: 0,
     endIndex: 0,
@@ -449,22 +448,6 @@ function EventListViewInner({
   );
 }
 
-/**
- * A gradient from `color` at `strength` percent down to nothing. The alpha
- * eases out, because a two-stop linear gradient ends in a visible edge.
- */
-function easedFade(to: 'top' | 'bottom', color: string, strength: number) {
-  const stops = Array.from({ length: 11 }, (_, i) => {
-    const alpha = strength * (1 - i / 10) ** 1.6;
-    return `color-mix(in oklab, ${color} ${alpha.toFixed(1)}%, transparent) ${i * 10}%`;
-  });
-  return `linear-gradient(to ${to}, ${stops.join(', ')})`;
-}
-
-/**
- * A glow at one edge of the list: related events are out of view that way.
- * Clicking it scrolls to the nearest one.
- */
 function RelatedHint({
   direction,
   count,
@@ -474,8 +457,8 @@ function RelatedHint({
   count: number;
   onClick: () => void;
 }) {
-  const fadeTo = direction === 'above' ? 'bottom' : 'top';
   const label = `${count} related ${count === 1 ? 'event' : 'events'}`;
+  const layer = cn('absolute inset-0', direction === 'above' && '-scale-y-100');
   return (
     <button
       type="button"
@@ -486,19 +469,19 @@ function RelatedHint({
         direction === 'above' ? 'top-0 items-start' : 'bottom-0 items-end'
       )}
     >
-      {/* Fades the rows underneath so the label stays legible. */}
       <span
         aria-hidden
-        className="absolute inset-0"
-        style={{
-          background: easedFade(fadeTo, 'var(--ds-background-100)', 70),
-        }}
+        className={cn(
+          layer,
+          'bg-[linear-gradient(to_top,color-mix(in_oklab,var(--ds-background-100)_70%,transparent),30%,transparent)]'
+        )}
       />
-      {/* A gradient cannot transition, so this layer's opacity does. */}
       <span
         aria-hidden
-        className="absolute inset-0 opacity-45 transition-opacity duration-300 ease-[ease] group-hover:opacity-100 group-hover:duration-150 group-focus-visible:opacity-100 group-active:opacity-75 group-active:duration-75"
-        style={{ background: easedFade(fadeTo, 'var(--ds-blue-500)', 60) }}
+        className={cn(
+          layer,
+          'bg-[linear-gradient(to_top,color-mix(in_oklab,var(--ds-blue-500)_60%,transparent),30%,transparent)] opacity-45 transition-opacity duration-300 ease-[ease] group-hover:opacity-100 group-hover:duration-150 group-focus-visible:opacity-100 group-active:opacity-75 group-active:duration-75'
+        )}
       />
       <span className="relative font-medium text-label-12 text-blue-900">
         {label}
