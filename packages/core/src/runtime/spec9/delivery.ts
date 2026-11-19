@@ -13,6 +13,7 @@ import {
   EntityConflictError,
   FatalError,
   HookNotFoundError,
+  isRunAlreadyStartedError,
   MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
@@ -87,6 +88,7 @@ import {
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
+  isTurboFirstDeliveryAgeAdmitted,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_RUN_AHEAD_RESTARTS,
@@ -408,10 +410,13 @@ async function runDelivery(
   // Background steps with no message are re-sent by any delivery that is
   // not its message's first, counted in deliveries (handoffs and coalesced
   // re-runs included), once per invocation (see `stepsToReenqueue`).
-  const resendGate = passesResendGate({
+  // Opened later by a replayed first delivery (see `noteReplayedFirstDelivery`),
+  // with `resendDeliveryCount` cleared to match.
+  let resendGate = passesResendGate({
     deliveryCount: metadata.deliveryCount,
     recovery: recoveryDelivery,
   });
+  let resendDeliveryCount = metadata.deliveryCount;
   const resends = invocationResends({
     runId,
     messageId: creatorMessageId,
@@ -434,7 +439,7 @@ async function runDelivery(
     if (!resendGate) return new Set();
     const decided = stepsToReenqueue({
       events,
-      deliveryCount: metadata.deliveryCount,
+      deliveryCount: resendDeliveryCount,
       nowMs: Date.now(),
       recovery: recoveryDelivery,
       exclude: {
@@ -488,6 +493,13 @@ async function runDelivery(
   // Restarts in place after run-ahead stopped this delivery (see
   // `MAX_RUN_AHEAD_RESTARTS`). Run-ahead stays off after the first.
   let runAheadRestarts = 0;
+  // Whether this delivery already restarted in place after its `run_started`
+  // conflicted (see `restartAfterStartConflict`). Once at most.
+  let startConflictRestarted = false;
+  // Whether a `run_started` this delivery wrote has committed, so a later
+  // pass's full load that finds one does not mistake it for a predecessor's
+  // (see `noteReplayedFirstDelivery`).
+  let ownRunStartedCommitted = false;
   // Compilation is useful only for the Node VM. Wait until the
   // run's engine selection is known so QuickJS deliveries never
   // parse and cache an unused node:vm Script. The promise is
@@ -670,15 +682,47 @@ async function runDelivery(
   // Never for a `start({ experimental_hook })` candidate: its `run_started`
   // may refuse it, and turbo runs inline step bodies before that
   // write returns (see `admitsTurboStart`).
+  // The delivery count alone does not prove a first delivery: a platform
+  // that re-runs a crashed invocation re-sends the same request, so the
+  // replay of a first delivery that already ran the run reports count 1
+  // too. A message older than a first delivery can plausibly be is
+  // treated as such a replay (see `TURBO_FIRST_DELIVERY_MAX_AGE_MS`); a
+  // younger replay is caught by its `run_started` conflict instead (see
+  // `restartAfterStartConflict`).
+  const firstDeliveryAgeAdmitted = isTurboFirstDeliveryAgeAdmitted(
+    metadata.createdAt
+  );
   let turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
     admitsTurboStart(runInput) &&
     metadata.attempt === 1 &&
     (metadata.deliveryCount ?? 1) === 1 &&
+    firstDeliveryAgeAdmitted &&
     !incomingStepId &&
     !hookInput &&
     !waitContinuation;
+  if (
+    !firstDeliveryAgeAdmitted &&
+    runInput !== undefined &&
+    (metadata.deliveryCount ?? 1) === 1
+  ) {
+    const messageAgeMs =
+      metadata.createdAt !== undefined
+        ? Date.now() - metadata.createdAt.getTime()
+        : undefined;
+    // On the span too: debug-gated logs alone would leave the fallback
+    // indistinguishable from turbo being off.
+    if (messageAgeMs !== undefined) {
+      span?.setAttributes(
+        Attribute.WorkflowTurboSkippedMessageAgeMs(messageAgeMs)
+      );
+    }
+    runtimeLogger.info(
+      'First orchestrator message is older than a first delivery can be; loading the log instead of taking the turbo path',
+      { workflowRunId: runId, messageAgeMs, requestId }
+    );
+  }
   span?.setAttributes(Attribute.WorkflowTurbo(turbo));
   /**
    * Turbo only: settles once the backgrounded `run_started`
@@ -1263,6 +1307,13 @@ async function runDelivery(
   while (true) {
     try {
       const result = await orchestrate();
+      // A failed turbo `run_started` decides the delivery even when the pass
+      // returned normally: a handler that reads a conflict as "the run
+      // already finished" (a terminal write's, say) may have swallowed the
+      // start's own refusal, while nothing of the pass committed. Settled by
+      // now on every path that wrote; awaiting covers one that did not.
+      await runReadyBarrier?.catch(() => {});
+      if (turboStartFailure) throw turboStartFailure.error;
       clearFenceRefusals(runId);
       return result;
     } catch (caught) {
@@ -1370,13 +1421,36 @@ async function runDelivery(
         restartInPlace();
         continue;
       }
+      if (restartAfterStartConflict(err)) {
+        forgetConsumedPosition(world, runId);
+        // The refused `run_started` stopped the in-band writer, so nothing
+        // queued behind it commits. What this delivery's commits owe the
+        // queue still goes out (a turbo pass commits nothing, so this is a
+        // no-op there).
+        await sendUnsentMessages?.();
+        runtimeLogger.info(
+          'run_started conflicted with an earlier start of the run; continuing in place from a full load',
+          {
+            workflowRunId: runId,
+            turbo,
+            code: (err as EntityConflictError).code,
+            deliveryCount: metadata.deliveryCount,
+            requestId,
+          }
+        );
+        span?.setAttributes(Attribute.WorkflowStartConflictRestart(true));
+        continuation.exit = 'start-conflict-restart';
+        startConflictRestarted = true;
+        restartInPlace();
+        continue;
+      }
       if (turboStartFailure) {
         // Defensive: turbo is off for start Hook candidates, so a
         // backgrounded `run_started` never decides one.
         if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
           return undefined;
         }
-        if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+        if (RunExpiredError.is(err)) {
           runtimeLogger.info('Run already finished during setup, skipping', {
             workflowRunId: runId,
             message: (err as Error).message,
@@ -1395,11 +1469,74 @@ async function runDelivery(
   }
 
   /**
+   * Whether this delivery's `run_started` was refused because the run had
+   * already started, in which case it continues in place from a full load
+   * (once) instead of acknowledging its message.
+   *
+   * Acknowledging would strand the run when the earlier start belongs to an
+   * invocation that died: a platform that re-runs a crashed invocation
+   * replays the same request, so the replay of a first delivery finds
+   * `run_started`, and perhaps an inline step its predecessor left open, in
+   * a log turbo never loaded. With the message acknowledged, nothing would
+   * ever run that step again. The full load sees the log as it is: a
+   * finished run is acknowledged by the normal path's own checks, an open
+   * step is run again, and an orchestrator still alive keeps the run
+   * because the in-band fence refuses whichever of the two writes second.
+   *
+   * Turbo restarts on any conflict of its backgrounded `run_started`,
+   * because turbo assumed a log it never read; the full load decides
+   * whether the run had finished. The normal path loaded the log before
+   * writing, so it restarts only on the World's explicit
+   * `run-already-started` answer (the run started between its load and its
+   * write); a bare conflict there keeps meaning the run finished.
+   */
+  /**
+   * Called when a full load finds `run_started` already in the log. On the
+   * first delivery of the run's first message (count 1, carrying
+   * `runInput`) that this delivery did not write, it is a platform's replay
+   * of a first delivery that already ran, young (after
+   * `restartAfterStartConflict`) or old (`TURBO_FIRST_DELIVERY_MAX_AGE_MS`).
+   * Its predecessor may have committed a background step's `step_created`
+   * (or a retry's `step_retrying`) and died before the message went out, and
+   * no later delivery is owed to send it. So the delivery re-sends them as a
+   * redelivery would (see `stepsToReenqueue`), within the same age bound and
+   * keeping each step's idempotency key, so a message that did go out is
+   * deduped.
+   */
+  function noteReplayedFirstDelivery(): void {
+    if (
+      resendGate ||
+      ownRunStartedCommitted ||
+      runInput === undefined ||
+      metadata.deliveryCount !== 1
+    ) {
+      return;
+    }
+    resendGate = true;
+    resendDeliveryCount = undefined;
+    span?.setAttributes(Attribute.WorkflowReplayedFirstDelivery(true));
+    runtimeLogger.info(
+      'First delivery found the run already started by an earlier delivery of its message; re-sending what that delivery may have left unsent',
+      { workflowRunId: runId, requestId }
+    );
+  }
+
+  function restartAfterStartConflict(err: unknown): boolean {
+    if (startConflictRestarted) return false;
+    if (turboStartFailure) {
+      return EntityConflictError.is(turboStartFailure.error);
+    }
+    return isRunAlreadyStartedError(err);
+  }
+
+  /**
    * Resets the delivery for a fresh orchestrator pass in this same delivery
-   * after run-ahead stopped it: a fresh writer, which adopts the count of
-   * the next full load, no log and no speculative state, no turbo, and no
-   * run-ahead for the rest of the delivery. What it already sent stays sent
-   * (`sentStepMessages`, `timedWaits`).
+   * after run-ahead stopped it, or after its `run_started` conflicted (see
+   * `restartAfterStartConflict`): a fresh writer, which adopts the count of
+   * the next full load, no log and no speculative state, and no turbo (nor
+   * its failed `run_started`). After a run-ahead stop, run-ahead also stays
+   * off for the rest of the delivery (`runAheadRestarts`). What it already
+   * sent stays sent (`sentStepMessages`, `timedWaits`).
    */
   function restartInPlace(): void {
     writer = newWriter();
@@ -1413,6 +1550,7 @@ async function runDelivery(
     turbo = false;
     turboOptimistic = false;
     turboStartLanded = undefined;
+    turboStartFailure = undefined;
     turboRunStarted = undefined;
     runReadyBarrier = undefined;
     sendUnsentMessages = undefined;
@@ -1487,6 +1625,7 @@ async function runDelivery(
     runReadyBarrier = started.then(
       (result) => {
         turboStartLanded = result;
+        ownRunStartedCommitted = true;
         const limit = clampMaxEvents(result.maxEvents);
         if (limit !== undefined) maxEventsLimit = limit;
       },
@@ -1681,6 +1820,7 @@ async function runDelivery(
             started.run ?? { runId },
             span
           );
+          ownRunStartedCommitted = true;
           run = started.run ?? run;
           maxEventsLimit = clampMaxEvents(started.maxEvents);
           runStartedReceivedAtMs = Date.now();
@@ -1694,6 +1834,10 @@ async function runDelivery(
           if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
             return undefined;
           }
+          // The run started between this delivery's load and its write: not
+          // finished, so the delivery continues from a fresh load (see
+          // `restartAfterStartConflict`) instead of acknowledging.
+          if (isRunAlreadyStartedError(err)) throw err;
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info('Run already finished during setup, skipping', {
               workflowRunId: runId,
@@ -1710,6 +1854,7 @@ async function runDelivery(
         // resilient start, its creation).
         await fullLoad();
       } else {
+        noteReplayedFirstDelivery();
         // A redelivery of a candidate's first message whose
         // `run_started` committed but whose answer was lost (a 503
         // `in-band-outcome-unknown`, a crash): the loaded run must

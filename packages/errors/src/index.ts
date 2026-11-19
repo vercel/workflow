@@ -992,16 +992,37 @@ export class HookNotFoundError extends WorkflowError {
  *
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
+ *
+ * `code` carries the World's reason for the conflict when it gives one, such
+ * as {@link RUN_ALREADY_STARTED_CODE}. Without a code, the conflict says
+ * nothing about which of those cases it is.
  */
 export class EntityConflictError extends WorkflowWorldError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { code?: string; url?: string }) {
+    super(message, options);
     this.name = 'EntityConflictError';
   }
 
   static is(value: unknown): value is EntityConflictError {
     return isError(value) && value.name === 'EntityConflictError';
   }
+}
+
+/**
+ * Error code a World gives an {@link EntityConflictError} refusing a second
+ * `run_started` for a run that is running: the run was started, by this
+ * delivery's own earlier attempt or by another one, and has not finished. It
+ * does not mean the run finished, which a World answers differently.
+ */
+export const RUN_ALREADY_STARTED_CODE = 'run-already-started';
+
+/** Whether `error` refuses a `run_started` because the run already started. */
+export function isRunAlreadyStartedError(
+  error: unknown
+): error is EntityConflictError {
+  return (
+    EntityConflictError.is(error) && error.code === RUN_ALREADY_STARTED_CODE
+  );
 }
 
 /**

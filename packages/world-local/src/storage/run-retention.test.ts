@@ -486,6 +486,259 @@ describe('run retention (world-local)', () => {
   });
 
   // ---------------------------------------------------------------------
+  // $retention: '0' — a step still running when the run ends
+  // ---------------------------------------------------------------------
+
+  describe("$retention: '0', a step that finishes after the run ended", () => {
+    // A step that was running when its run was cancelled may still finish
+    // afterwards: the World accepts the result of a running step whatever its
+    // run's state. The run's purge has already run by then, so the late
+    // result has to be scrubbed on its own write. Long, distinctive payloads
+    // so they can be looked for as raw bytes; the result starts with the
+    // step's input, as a step that echoes its input back would.
+    const LATE_INPUT = new TextEncoder().encode('late-step-input-'.repeat(40));
+    const LATE_RESULT = new Uint8Array([
+      ...LATE_INPUT,
+      ...new TextEncoder().encode('late-step-result-'.repeat(40)),
+    ]);
+    const LATE_ERROR = new TextEncoder().encode('late-step-error-'.repeat(40));
+    const STEP_ID = 'step_late';
+
+    /** A run with one running step, ended by `end` while the step runs. */
+    async function runWithRunningStep(
+      attributes: Record<string, string> | undefined
+    ): Promise<string> {
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_test',
+          workflowName: 'retention-workflow',
+          input: RUN_INPUT,
+          ...(attributes ? { attributes, allowReservedAttributes: true } : {}),
+        },
+      });
+      const runId = created.run?.runId as string;
+      await storage.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      } as never);
+      await createStep(storage, runId, {
+        stepId: STEP_ID,
+        stepName: 'step//./mod//slowWork',
+        input: LATE_INPUT,
+      });
+      await updateStep(storage, runId, STEP_ID, 'step_started');
+      return runId;
+    }
+
+    async function cancel(runId: string): Promise<void> {
+      await storage.events.create(runId, {
+        eventType: 'run_cancelled',
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+    }
+
+    async function finishStep(runId: string) {
+      return storage.events.create(runId, {
+        eventType: 'step_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: STEP_ID,
+        eventData: { result: LATE_RESULT },
+      } as never);
+    }
+
+    /** Whether `bytes` are anywhere in the database files, raw or encoded. */
+    async function onDisk(bytes: Uint8Array): Promise<boolean> {
+      const buffer = Buffer.from(bytes);
+      // Payloads are stored base64-encoded; a prefix of the encoding finds
+      // any payload that starts with `bytes`.
+      const needles = [
+        buffer,
+        Buffer.from(buffer.toString('base64').slice(0, 64)),
+      ];
+      for (const file of ['world.db', 'world.db-wal']) {
+        const contents = await fs
+          .readFile(path.join(testDir, file))
+          .catch(() => Buffer.alloc(0));
+        if (needles.some((needle) => contents.includes(needle))) return true;
+      }
+      return false;
+    }
+
+    async function eventData(runId: string, eventType: string) {
+      const { data } = await storage.events.list({ runId, pagination: {} });
+      const event = data.find((e) => e.eventType === eventType);
+      expect(event).toBeDefined();
+      return (event as { eventData?: Record<string, unknown> }).eventData;
+    }
+
+    it('scrubs a step_completed that lands after the run was cancelled', async () => {
+      const runId = await runWithRunningStep({ [RETENTION_ATTRIBUTE]: '0' });
+      await cancel(runId);
+      // The cancel purged the step's input along with the run.
+      expect((await storage.steps.get(runId, STEP_ID)).input).toBeUndefined();
+
+      const late = await finishStep(runId);
+
+      // The step still finishes: the World records that it completed.
+      expect(late.step?.status).toBe('completed');
+      expect(late.event?.eventType).toBe('step_completed');
+      // The write answers with what it stored, not with the payload.
+      expect(late.step?.output).toBeUndefined();
+      expect(
+        (late.event as { eventData?: Record<string, unknown> }).eventData
+          ?.result
+      ).toBeUndefined();
+
+      const step = await storage.steps.get(runId, STEP_ID);
+      expect(step.status).toBe('completed');
+      expect(step.output).toBeUndefined();
+      expect(step.input).toBeUndefined();
+      expect(await eventData(runId, 'step_completed')).not.toHaveProperty(
+        'result'
+      );
+      const { data } = await storage.events.list({ runId, pagination: {} });
+      expect(data.map((e) => e.eventType)).toEqual([
+        'run_created',
+        'run_started',
+        'step_created',
+        'step_started',
+        'run_cancelled',
+        'step_completed',
+      ]);
+      expect(await eventPayloads(runId)).toEqual([]);
+
+      const run = await storage.runs.get(runId);
+      expect(run.status).toBe('cancelled');
+      expect(run.input).toBeUndefined();
+
+      // Not in the files either, the WAL included: neither the result nor
+      // the input it carried back.
+      expect(await onDisk(LATE_RESULT)).toBe(false);
+      expect(await onDisk(LATE_INPUT)).toBe(false);
+    });
+
+    it('scrubs a step_failed that lands after the run ended', async () => {
+      const runId = await runWithRunningStep({ [RETENTION_ATTRIBUTE]: '0' });
+      await cancel(runId);
+
+      const late = await storage.events.create(runId, {
+        eventType: 'step_failed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: STEP_ID,
+        eventData: { error: LATE_ERROR },
+      } as never);
+      expect(late.step?.status).toBe('failed');
+      expect(late.step?.error).toBeUndefined();
+
+      const step = await storage.steps.get(runId, STEP_ID);
+      expect(step.status).toBe('failed');
+      expect(step.error).toBeUndefined();
+      expect(await eventPayloads(runId)).toEqual([]);
+      expect(await onDisk(LATE_ERROR)).toBe(false);
+    });
+
+    it('scrubs a step_retrying that lands after the run ended', async () => {
+      // The retry never runs (no step starts on an ended run), but its error
+      // would stay behind.
+      const runId = await runWithRunningStep({ [RETENTION_ATTRIBUTE]: '0' });
+      await cancel(runId);
+
+      const late = await storage.events.create(runId, {
+        eventType: 'step_retrying',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: STEP_ID,
+        eventData: { error: LATE_ERROR },
+      } as never);
+      expect(late.step?.status).toBe('pending');
+      expect(late.step?.error).toBeUndefined();
+
+      const step = await storage.steps.get(runId, STEP_ID);
+      expect(step.error).toBeUndefined();
+      expect(await eventPayloads(runId)).toEqual([]);
+      expect(await onDisk(LATE_ERROR)).toBe(false);
+    });
+
+    // World-local serializes writes, so the cancel and the step's result
+    // land in one order or the other. Each order is driven explicitly, and
+    // both must leave nothing behind.
+    for (const order of ['cancel first', 'step first'] as const) {
+      it(`leaves no payload whichever write commits first (${order})`, async () => {
+        const runId = await runWithRunningStep({ [RETENTION_ATTRIBUTE]: '0' });
+        if (order === 'cancel first') {
+          await cancel(runId);
+          await finishStep(runId);
+        } else {
+          await finishStep(runId);
+          await cancel(runId);
+        }
+
+        const step = await storage.steps.get(runId, STEP_ID);
+        expect(step.status).toBe('completed');
+        expect(step.input).toBeUndefined();
+        expect(step.output).toBeUndefined();
+        expect((await storage.runs.get(runId)).status).toBe('cancelled');
+        expect(await eventPayloads(runId)).toEqual([]);
+        expect(await onDisk(LATE_RESULT)).toBe(false);
+      });
+    }
+
+    it('still scrubs when both writes are in flight at once', async () => {
+      const runId = await runWithRunningStep({ [RETENTION_ATTRIBUTE]: '0' });
+      await Promise.all([cancel(runId), finishStep(runId)]);
+
+      const step = await storage.steps.get(runId, STEP_ID);
+      expect(step.output).toBeUndefined();
+      expect(await eventPayloads(runId)).toEqual([]);
+      expect(await onDisk(LATE_RESULT)).toBe(false);
+    });
+
+    it('keeps a late result on a run without zero retention', async () => {
+      const runId = await runWithRunningStep(undefined);
+      await cancel(runId);
+
+      const late = await finishStep(runId);
+      expect(late.step?.output).toEqual(LATE_RESULT);
+
+      const step = await storage.steps.get(runId, STEP_ID);
+      expect(step.input).toEqual(LATE_INPUT);
+      expect(step.output).toEqual(LATE_RESULT);
+      expect((await eventData(runId, 'step_completed'))?.result).toEqual(
+        LATE_RESULT
+      );
+      expect((await storage.runs.get(runId)).input).toEqual(RUN_INPUT);
+    });
+
+    it("deletes nothing a run kept when it was given $retention: '0' after it ended", async () => {
+      // The run finished keeping its data, and a retention attribute set
+      // afterwards does not delete it. It does count as zero retention from
+      // then on (`ranPurge`), so the late result itself is not stored, as a
+      // stream first written then is refused.
+      const runId = await runWithRunningStep(undefined);
+      await cancel(runId);
+      await storage.runs.experimentalSetAttributes?.(
+        runId,
+        [{ key: RETENTION_ATTRIBUTE, value: '0' }],
+        { allowReservedAttributes: true }
+      );
+
+      await finishStep(runId);
+
+      const step = await storage.steps.get(runId, STEP_ID);
+      expect(step.status).toBe('completed');
+      expect(step.input).toEqual(LATE_INPUT);
+      expect(step.output).toBeUndefined();
+      expect((await eventData(runId, 'step_created'))?.input).toEqual(
+        LATE_INPUT
+      );
+      const run = await storage.runs.get(runId);
+      expect(run.input).toEqual(RUN_INPUT);
+      expect(run.expiredAt).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // Everything else — the data stays
   // ---------------------------------------------------------------------
 
