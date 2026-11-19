@@ -4,10 +4,7 @@
  * same delivery, a call that has to wait sleeps on a timer until its slot and
  * records `rate_acquired`, and a call past its timeout rejects.
  */
-import {
-  RATE_ACQUIRE_GRACE_MS,
-  SPEC_VERSION_RATE_LIMITS,
-} from '@workflow/world';
+import { rateGraceMs, SPEC_VERSION_RATE_LIMITS } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HeldMessage } from '../../test-support/append-only-world.js';
 import {
@@ -101,7 +98,7 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
         if (timer !== undefined && !delayed) {
           // A queue outage: the timer arrives well after the slot.
           delayed = true;
-          vi.setSystemTime(Date.now() + RATE_ACQUIRE_GRACE_MS + 2_000);
+          vi.setSystemTime(Date.now() + rateGraceMs(1_000) + 2_000);
         }
         return held;
       },
@@ -118,7 +115,7 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     expect(dataOf(second)?.createdSlot).toBeUndefined();
     expect(
       new Date(dataOf(second)?.acquireAt as Date).getTime() - slot
-    ).toBeGreaterThan(RATE_ACQUIRE_GRACE_MS);
+    ).toBeGreaterThan(rateGraceMs(1_000));
   }, 60_000);
 
   it('rejects a call whose slot is past its timeout, reserving nothing', async () => {

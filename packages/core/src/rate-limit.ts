@@ -14,7 +14,7 @@ export interface RateLimitOptions {
   limit: number;
   /**
    * The period `limit` applies to: a duration string like `"1s"`, `"1m"` or
-   * `"1h"`, or milliseconds. At most 365 days.
+   * `"1h"`, or milliseconds. At most 24 hours.
    */
   period: StringValue | number;
   /**

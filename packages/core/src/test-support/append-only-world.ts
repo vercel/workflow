@@ -9,6 +9,7 @@ import {
   type BatchEventRequest,
   type CreateEventParams,
   decideRateLimit,
+  decideRateWake,
   type Event,
   type EventListResponse,
   type EventResult,
@@ -17,7 +18,7 @@ import {
   MAX_RATE_WAIT_MS,
   orchestratorRunIdOf,
   type QueueBatchResult,
-  RATE_ACQUIRE_GRACE_MS,
+  RATE_MAX_LATE_WAKES,
   rateLimitIntervalUs,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorContinuationPayload,
@@ -656,7 +657,11 @@ export class AppendOnlyWorld {
    * after its `acquireAt`. `reserve` stores the reservation; the caller runs
    * it only once the write is accepted.
    */
-  private committedRate(data: Partial<Event>): {
+  private committedRate(
+    data: Partial<Event>,
+    // The World's own count, for a call reserved again after a late wake.
+    lateWakes = 0
+  ): {
     event: Partial<Event>;
     reserve?: () => void;
   } {
@@ -681,7 +686,11 @@ export class AppendOnlyWorld {
         nowUs,
         deadlineUs: expiresAt.getTime() * 1000,
       });
-      const request = { ...call, expiresAt };
+      const request = {
+        ...call,
+        expiresAt,
+        ...(lateWakes > 0 && { lateWakes }),
+      };
       if (decision.status === 'deadline_exceeded') {
         const failed = {
           ...data,
@@ -745,15 +754,45 @@ export class AppendOnlyWorld {
           retryAfter: Math.ceil((acquireAt.getTime() - Date.now()) / 1000),
         });
       }
-      if (Date.now() - acquireAt.getTime() > RATE_ACQUIRE_GRACE_MS) {
+      const lateWakes =
+        (created.eventData.lateWakes as number | undefined) ?? 0;
+      const wake = decideRateWake({
+        acquireAt,
+        nowMs: Date.now(),
+        periodMs: created.eventData.periodMs as number,
+        lateWakes,
+        expiresAt: new Date(created.eventData.expiresAt as Date),
+      });
+      if (wake === 'reserve_again') {
         // Woken past its grace window: reserved again from the recorded call.
-        return this.committedRate({
-          ...data,
-          eventType: 'rate_created',
-          eventData: created.eventData,
-        } as Partial<Event>);
+        return this.committedRate(
+          {
+            ...data,
+            eventType: 'rate_created',
+            eventData: created.eventData,
+          } as Partial<Event>,
+          Math.min(lateWakes + 1, RATE_MAX_LATE_WAKES)
+        );
       }
-      const { creatorMessageId: _creator, ...recorded } = created.eventData;
+      const {
+        creatorMessageId: _creator,
+        lateWakes: _lateWakes,
+        ...recorded
+      } = created.eventData;
+      if (wake === 'fail') {
+        // Late past its largest grace and past its deadline: it fails.
+        const failed = {
+          ...data,
+          eventType: 'rate_failed',
+          eventData: {
+            ...recorded,
+            ...(lateWakes > 0 && { lateWakes }),
+            reason: 'timeout',
+            acquireAt,
+          },
+        } as Partial<Event>;
+        return { event: failed };
+      }
       const acquired = {
         ...data,
         eventData: { ...recorded, createdSlot: eventData.createdSlot },

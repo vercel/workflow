@@ -23,19 +23,112 @@
 /** The longest key a call may use, in UTF-8 bytes. */
 export const MAX_RATE_KEY_BYTES = 512;
 
-/** The longest period a call may use: 365 days. */
-export const MAX_RATE_PERIOD_MS = 365 * 24 * 60 * 60 * 1000;
+/**
+ * The longest period a call may use: 24 hours. With a call waiting at most
+ * {@link MAX_RATE_WAIT_MS}, a daily limit already queues up to 30 times its
+ * limit before calls fail. The Vercel World's backend uses the same bound.
+ */
+export const MAX_RATE_PERIOD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The shortest grace (see {@link rateGraceMs}): about how late a normal wake
+ * through the queue arrives, with a cold start, the replay and a cross-region
+ * write, at p99.
+ */
+export const RATE_GRACE_FLOOR_MS = 5_000;
+
+/** The grace as a share of the period, between the floor and the max. */
+export const RATE_GRACE_PERIOD_SHARE = 0.1;
+
+/** The longest first grace, for long periods. */
+export const RATE_GRACE_MAX_MS = 60_000;
+
+/** How many times its first grace a call woken late again can get. */
+export const RATE_GRACE_MAX_DOUBLING = 4;
+
+/**
+ * Late wakes after which the grace stops growing. A call at this count that
+ * is late again is not counted further ({@link decideRateWake}).
+ */
+export const RATE_MAX_LATE_WAKES = Math.log2(RATE_GRACE_MAX_DOUBLING);
 
 /**
  * How long after its slot a call may still go ahead. A `rate_acquired` later
  * than this (an orchestrator woken late by a queue delay or a cold start, or
  * every waiter resuming at once after an outage) does not go ahead on its old
  * slot: the World reserves the call again and commits what that decided in
- * place of the `rate_acquired`. Calls go ahead at least `T - grace` apart, so
- * a period can admit up to `limit + ceil(grace / T)` of them. The Vercel
- * World's backend uses the same window.
+ * place of the `rate_acquired`. A call goes ahead up to its grace late, so any
+ * window of length `W` admits at most `floor((W + grace) / T) + 1` calls: over
+ * one period, about `grace / period` more than the limit.
+ *
+ * So the grace is a share of the period ({@link RATE_GRACE_PERIOD_SHARE}),
+ * never below {@link RATE_GRACE_FLOOR_MS} and never above
+ * {@link RATE_GRACE_MAX_MS}. A call woken late again (`lateWakes`, recorded by
+ * the World on the `rate_created` it reserves again) gets twice its last
+ * grace, up to {@link RATE_GRACE_MAX_DOUBLING} times its first. The Vercel
+ * World's backend uses the same grace.
  */
-export const RATE_ACQUIRE_GRACE_MS = 5_000;
+export function rateGraceMs(periodMs: number, lateWakes = 0): number {
+  const first = Math.min(
+    Math.max(RATE_GRACE_FLOOR_MS, periodMs * RATE_GRACE_PERIOD_SHARE),
+    RATE_GRACE_MAX_MS
+  );
+  return Math.min(first * 2 ** lateWakes, first * RATE_GRACE_MAX_DOUBLING);
+}
+
+/**
+ * How late a call at the largest grace may still go ahead on its recorded
+ * slot: that grace plus one period. Any window then sees at most about
+ * `largest grace / T + limit` calls that went ahead late, however long an
+ * incident held them back.
+ */
+export function rateLateAdmitMaxMs(periodMs: number): number {
+  return rateGraceMs(periodMs, RATE_MAX_LATE_WAKES) + periodMs;
+}
+
+/** What a World does with a `rate_acquired` (see {@link decideRateWake}). */
+export type RateWakeDecision =
+  | 'acquire'
+  | 'acquire_late'
+  | 'reserve_again'
+  | 'fail';
+
+/**
+ * What a `rate_acquired` woken at `nowMs` for its recorded slot does:
+ *
+ * | Wake                                                     | Outcome         |
+ * | -------------------------------------------------------- | --------------- |
+ * | within its grace                                         | `acquire`       |
+ * | past it, while its grace can still grow                  | `reserve_again` |
+ * | past the largest grace, within {@link rateLateAdmitMaxMs} | `acquire_late`, or `fail` past the call's deadline |
+ * | later than that                                          | `reserve_again` |
+ *
+ * `acquire_late` is for a call whose wake-to-write time (a cold start, a long
+ * replay) is always longer than the largest grace: re-reserving it would loop
+ * until its deadline. The ceiling keeps a sustained delivery incident, which
+ * can bring every waiting call to the largest grace, from letting them all
+ * through at once when it clears: those are reserved again, and drain at the
+ * limit. A call reserved again records
+ * `min(lateWakes + 1, RATE_MAX_LATE_WAKES)`. The Vercel World's backend makes
+ * the same decision.
+ */
+export function decideRateWake(args: {
+  acquireAt: Date;
+  nowMs: number;
+  periodMs: number;
+  lateWakes: number;
+  expiresAt: Date;
+}): RateWakeDecision {
+  const lateByMs = args.nowMs - args.acquireAt.getTime();
+  if (lateByMs <= rateGraceMs(args.periodMs, args.lateWakes)) return 'acquire';
+  if (
+    args.lateWakes < RATE_MAX_LATE_WAKES ||
+    lateByMs > rateLateAdmitMaxMs(args.periodMs)
+  ) {
+    return 'reserve_again';
+  }
+  return args.nowMs > args.expiresAt.getTime() ? 'fail' : 'acquire_late';
+}
 
 /**
  * The longest a call may wait for its slot: a later deadline is capped to 30
@@ -77,7 +170,7 @@ export function validateRateLimitCall(call: RateLimitCall): void {
   }
   if (call.periodMs > MAX_RATE_PERIOD_MS) {
     throw new RangeError(
-      `rate limit period of ${call.periodMs}ms is longer than the 365 days allowed`
+      `rate limit period of ${call.periodMs}ms is longer than the 24 hours allowed`
     );
   }
 }
