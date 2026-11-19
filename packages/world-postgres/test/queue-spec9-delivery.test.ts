@@ -211,15 +211,30 @@ describe.skipIf(process.platform === 'win32')(
       );
     };
 
-    /** Wait until the run's lease is released with nothing left waiting. */
+    /** The run's jobs, taken by a worker or not, by message body. */
+    const runJobs = async (runId: string) =>
+      (
+        await pool.query<{ payload: { data: string } }>(
+          'SELECT payload FROM graphile_worker._private_jobs'
+        )
+      ).rows
+        .map((row) => decode(row.payload))
+        .filter((body) => body.runId === runId);
+
+    /**
+     * Wait until the run has no jobs left, taken or not, and its lease is
+     * released. A job a worker has taken but not yet delivered still claims
+     * the lease, so waiting only for untaken jobs could pass before it does.
+     * The jobs are read first: a lease is only taken or handed on by a job
+     * of the run, so with none left a released lease stays released.
+     */
     const untilReleased = async (runId: string) => {
       await until(
-        () => leftOnLease(runId),
-        (left) => left === undefined
-      );
-      await until(
-        () => waitingJobs(runId),
-        (jobs) => jobs.length === 0
+        async () => ({
+          jobs: (await runJobs(runId)).length,
+          left: await leftOnLease(runId),
+        }),
+        ({ jobs, left }) => jobs === 0 && left === undefined
       );
     };
 

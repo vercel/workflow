@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { readdir, rm, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 /**
  * What earlier releases stored as JSON files, one per entity. This release
@@ -73,7 +74,11 @@ export async function removeLegacyData(
   if (tag === undefined) {
     // Not following symbolic links: only what is in the data directory goes.
     await Promise.all(
-      entries.map((dir) => rm(dir, { recursive: true, force: true }))
+      entries.map((dir) =>
+        // Windows refuses, for a moment, to remove what another clear() or
+        // a virus scanner still has open: `maxRetries` waits for it.
+        rm(dir, { recursive: true, force: true, maxRetries: 5 })
+      )
     );
     return;
   }
@@ -83,7 +88,7 @@ export async function removeLegacyData(
   const gone = (error: unknown) =>
     (error as NodeJS.ErrnoException).code === 'ENOENT';
   const removeDir = (dir: string) =>
-    rmdir(dir).catch((error: unknown) => {
+    settled(() => rmdir(dir)).catch((error: unknown) => {
       // Not empty: another tag's file, or one written meanwhile, keeps it.
       if (gone(error) || (error as NodeJS.ErrnoException).code === 'ENOTEMPTY')
         return;
@@ -93,7 +98,7 @@ export async function removeLegacyData(
   const removeTagged = async (dir: string): Promise<boolean> => {
     let entries: import('node:fs').Dirent[];
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      entries = await settled(() => readdir(dir, { withFileTypes: true }));
     } catch (error) {
       if (gone(error)) return false;
       throw error;
@@ -108,7 +113,7 @@ export async function removeLegacyData(
         entry.isFile() &&
         suffixes.some((suffix) => entry.name.endsWith(suffix))
       ) {
-        await unlink(at).catch((error: unknown) => {
+        await settled(() => unlink(at)).catch((error: unknown) => {
           if (!gone(error)) throw error;
         });
       } else {
@@ -119,5 +124,31 @@ export async function removeLegacyData(
   };
   for (const dir of entries) {
     if (await removeTagged(dir)) await removeDir(dir);
+  }
+}
+
+/** How many times `settled` tries; its waits add up to about half a second. */
+const SETTLE_ATTEMPTS = 10;
+
+/**
+ * Runs a file system operation, again while it fails as Windows fails on a
+ * file or directory another process holds open or is removing: `EPERM` for
+ * one already removed but still open somewhere ("delete pending": another
+ * tagged clear() listing it, or a virus scanner), `EBUSY` for one open
+ * without sharing its deletion. Both pass in a moment, when the other handle
+ * closes, and the operation then succeeds or fails for good (`ENOENT` once
+ * the entry is gone). Anything else, or the same error once the retries are
+ * spent, rejects.
+ */
+async function settled<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code !== 'EPERM' && code !== 'EBUSY') || attempt === SETTLE_ATTEMPTS)
+        throw error;
+    }
+    await sleep(attempt * 10);
   }
 }

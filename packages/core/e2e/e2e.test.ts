@@ -470,27 +470,94 @@ async function allEvents(
   );
 }
 
+/** The payload field of each step event type that carries one. */
+const STEP_PAYLOAD_FIELD: Record<string, 'input' | 'result' | undefined> = {
+  step_created: 'input',
+  // A spec 9 inline step's creation-bearing `step_started` carries its input.
+  step_started: 'input',
+  step_completed: 'result',
+};
+
 /**
- * Every step of a run, across pages and without step payloads, read from the
- * World's primary storage.
- *
- * Assertions on a run's steps read here rather than through
- * `workflow inspect steps`, whose listing prefers the World's eventually
- * ingested `analytics` namespace and can return a page missing the freshest
- * rows. Storage can still trail a just-finished run (on world-vercel a
- * single-orchestrator run's step list lags its events), so a read moments
- * after `returnValue` settles may not have converged yet: poll with
- * `readUntil`.
+ * The step input and result payloads present on a run's events, as listed by
+ * `workflow inspect events --withData --json`.
  */
-async function allSteps(runId: string) {
+function stepPayloadsOfEvents(
+  events: any[]
+): { eventType: string; value: unknown }[] {
+  return events.flatMap((event) => {
+    const field = STEP_PAYLOAD_FIELD[event?.eventType];
+    const value = field ? event.eventData?.[field] : undefined;
+    return value === undefined ? [] : [{ eventType: event.eventType, value }];
+  });
+}
+
+type StepStateFromEvents = {
+  stepId: string;
+  stepName: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+};
+
+/**
+ * Every step of a run with its state, derived from the run's event log rather
+ * than read from `world.steps.list()`.
+ *
+ * The event log is the source of truth for a step's state. A World's step
+ * listing is a view over it that is allowed to trail it: on a spec 9 run
+ * world-vercel's `steps.list` "can lag the log (a step written moments ago
+ * can be missing or behind)" (see "Steps on world-vercel" in
+ * packages/core/src/runtime/spec9/README.md), with no bound on how long. CI
+ * saw a finished run whose log held every step's terminal event while the
+ * listing still showed a step `running`, `pending` or missing 30 s later, so
+ * assertions about which steps ran and how they ended read the log.
+ *
+ * State follows the replay rules: a step's first terminal event
+ * (`step_completed` / `step_failed`) settles it and every later event for the
+ * same step is inert. The name comes from the first event that carries one
+ * (`step_created`, or a spec 9 inline step's creation-bearing `step_started`).
+ * Event metadata only (`resolveData: 'none'`), which keeps `stepName`.
+ */
+async function stepsFromEvents(runId: string): Promise<StepStateFromEvents[]> {
   const world = await getWorld();
-  return allPages((cursor) =>
-    world.steps.list({
+  const events = await allPages((cursor) =>
+    world.events.list({
       runId,
       resolveData: 'none',
-      pagination: { limit: 100, cursor },
+      pagination: { limit: 100, cursor, sortOrder: 'asc' },
     })
   );
+  const steps = new Map<string, StepStateFromEvents>();
+  for (const event of events) {
+    if (!event.eventType.startsWith('step_')) continue;
+    const stepId = (event as { correlationId?: string }).correlationId;
+    if (!stepId) continue;
+    let step = steps.get(stepId);
+    if (!step) {
+      step = { stepId, stepName: '', status: 'pending' };
+      steps.set(stepId, step);
+    }
+    const stepName = (event as { eventData?: { stepName?: unknown } }).eventData
+      ?.stepName;
+    if (!step.stepName && typeof stepName === 'string') {
+      step.stepName = stepName;
+    }
+    if (step.status === 'completed' || step.status === 'failed') continue;
+    switch (event.eventType) {
+      case 'step_started':
+        step.status = 'running';
+        break;
+      case 'step_retrying':
+        step.status = 'pending';
+        break;
+      case 'step_completed':
+        step.status = 'completed';
+        break;
+      case 'step_failed':
+        step.status = 'failed';
+        break;
+    }
+  }
+  return [...steps.values()];
 }
 
 /** The `hook_created` events of a parent's child-run completion hook. */
@@ -1979,7 +2046,7 @@ describe.concurrent('e2e', () => {
 
           // … and the step itself is recorded as failed.
           const steps = await readUntil(
-            () => allSteps(run.runId),
+            () => stepsFromEvents(run.runId),
             (steps) =>
               steps.some(
                 (s) =>
@@ -2110,7 +2177,7 @@ describe.concurrent('e2e', () => {
 
           // Verify the step itself failed
           const steps = await readUntil(
-            () => allSteps(run.runId),
+            () => stepsFromEvents(run.runId),
             (steps) =>
               steps.some(
                 (s) =>
@@ -5037,7 +5104,7 @@ describe.concurrent('e2e', () => {
       // - 1 invokeAdderFromStep wrapper (which itself triggers another
       //   makeAdder arrow step inside it)
       const steps = await readUntil(
-        () => allSteps(run.runId),
+        () => stepsFromEvents(run.runId),
         (steps) => {
           const byName = (needle: string) =>
             steps.filter((s) => s.stepName.includes(needle));
@@ -6629,10 +6696,13 @@ describe.concurrent('e2e', () => {
   // setAttributes
   // ==========================================================================
 
+  // These tests await `run.returnValue`, whose single wait call can block for
+  // up to 50s before it re-checks, so they use the suite's usual 60s budget:
+  // a 30s budget turns one missed completion wake into a timeout.
   describe('setAttributes', () => {
     test(
       'start: initial attributes are seeded on run creation',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesWorkflow'), [2], {
           attributes: { sourceAtStart: 'api' },
@@ -6650,7 +6720,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'start: reserved-prefix initial attributes are seeded with allowReservedAttributes',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesWorkflow'), [2], {
           attributes: { $seededByFramework: 'e2e', tenant: 't1' },
@@ -6673,7 +6743,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'setAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesWorkflow'), [7]);
         const output = await run.returnValue;
@@ -6698,7 +6768,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'setAttributesInsideStepWorkflow: step-body calls append attributed native events',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesInsideStepWorkflow'),
@@ -6728,7 +6798,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'fire-and-forget: void setAttributes lands without awaiting',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesFireAndForgetWorkflow'),
@@ -6746,7 +6816,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'Promise.all of disjoint-key writes: every key lands',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesParallelWorkflow'), []);
         const output = await run.returnValue;
@@ -6763,7 +6833,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'workflow throws after awaited setAttributes: attribute still persists on the failed run',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesThrowsAfterWorkflow'),
@@ -6790,7 +6860,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'validation DX: invalid writes throw catchable FatalErrors naming rule and limit',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesValidationWorkflow'),
@@ -6933,17 +7003,34 @@ describe.concurrent('e2e', () => {
           });
 
           // Step payloads go with it, not just the run's own input/output.
-          const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId} --withData`,
-            (json) =>
-              Array.isArray(json) &&
-              json.length > 0 &&
-              json.every((step: any) => step.output === EXPIRED_DATA_JSON),
+          // Read off the event log, where a step's input and result live,
+          // not the step listing: on a spec 9 run world-vercel derives the
+          // listing from the log, and with payloads requested it leaves out
+          // a step it cannot settle from the log (see "Steps on world-vercel"
+          // in packages/core/src/runtime/spec9/README.md), which CI saw as an
+          // empty listing for a purged run. The step's creation event
+          // (`step_created`, or a spec 9 inline step's creation-bearing
+          // `step_started`) carries its input, `step_completed` its result.
+          const purged = (events: unknown) => {
+            if (!Array.isArray(events)) return false;
+            const payloads = stepPayloadsOfEvents(events);
+            return (
+              payloads.some((p) => p.eventType === 'step_completed') &&
+              payloads.every((p) => p.value === EXPIRED_DATA_JSON)
+            );
+          };
+          const events = await cliInspectJsonUntil(
+            `events --runId ${run.runId} --withData --sort asc --all`,
+            purged,
             { timeoutMs: 60_000, intervalMs: 5_000 }
           );
-          expect(steps.length).toBeGreaterThan(0);
-          for (const step of steps) {
-            expect(step.output).toBe(EXPIRED_DATA_JSON);
+          const payloads = stepPayloadsOfEvents(events);
+          expect(payloads.map((p) => p.eventType)).toContain('step_completed');
+          for (const payload of payloads) {
+            expect(payload).toEqual({
+              eventType: payload.eventType,
+              value: EXPIRED_DATA_JSON,
+            });
           }
 
           // And the run carries the marker the CLI and web UI gate their

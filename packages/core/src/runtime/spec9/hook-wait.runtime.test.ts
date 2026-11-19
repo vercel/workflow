@@ -214,13 +214,18 @@ async function hookPayload(runId: string, value: unknown) {
   return dehydrateStepReturnValue(value, runId, undefined);
 }
 
-/** A clock the runtime reads through `Date.now()`, moved by tests. */
+/**
+ * A clock the runtime reads through `Date.now()`, moved only by tests. It
+ * does not run on its own: on the real clock, a delivery that took longer
+ * than a 1s sleep (a loaded runner) would find the sleep elapsed before the
+ * test moved the clock past it.
+ */
 function offsetClock() {
   let offsetMs = 0;
-  const realNow = Date.now.bind(Date);
+  const startMs = Date.now();
   const spy = vi
     .spyOn(Date, 'now')
-    .mockImplementation(() => realNow() + offsetMs);
+    .mockImplementation(() => startMs + offsetMs);
   return {
     advance(ms: number) {
       offsetMs += ms;

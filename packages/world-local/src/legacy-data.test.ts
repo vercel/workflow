@@ -13,6 +13,65 @@ import { createWorld } from './index.js';
 import { createStorage } from './storage.js';
 import { createRun } from './test-helpers.js';
 
+/**
+ * Windows does not remove a directory another handle has open, such as
+ * another clear() listing it: it only marks it "delete pending", and until
+ * that handle closes, listing or removing it again fails with EPERM, where
+ * POSIX removes it at once. This models that rule for the legacy directories,
+ * so tagged clear()s running side by side meet it on any OS, as they did on
+ * the Windows runner. Every other file operation is the real one.
+ */
+const listing = new Map<string, number>();
+const deletePending = new Set<string>();
+let listings = 0;
+const isLegacy = (dir: unknown) =>
+  typeof dir === 'string' && dir.startsWith(dataDir + path.sep);
+const deniedFor = (syscall: string, dir: string) =>
+  Object.assign(
+    new Error(`EPERM: operation not permitted, ${syscall} '${dir}'`),
+    { code: 'EPERM', syscall, path: dir }
+  );
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const fs = { ...actual };
+  fs.readdir = (async (dir: any, ...rest: any[]) => {
+    if (!isLegacy(dir)) return actual.readdir(dir, ...(rest as [any]));
+    if (deletePending.has(dir)) throw deniedFor('scandir', dir);
+    listing.set(dir, (listing.get(dir) ?? 0) + 1);
+    try {
+      const entries = await actual.readdir(dir, ...(rest as [any]));
+      // Held open a moment, for longer by some calls than by others, as a
+      // larger directory or a slower worker would be.
+      await new Promise((resolve) => setTimeout(resolve, (listings++ % 4) * 5));
+      return entries;
+    } finally {
+      const count = (listing.get(dir) ?? 1) - 1;
+      if (count > 0) listing.set(dir, count);
+      else {
+        listing.delete(dir);
+        // The last handle closed: the pending removal happens.
+        if (deletePending.delete(dir)) await actual.rmdir(dir);
+      }
+    }
+  }) as typeof actual.readdir;
+  fs.rmdir = (async (dir: any, ...rest: any[]) => {
+    if (!isLegacy(dir) || !listing.has(dir))
+      return actual.rmdir(dir, ...(rest as [any]));
+    if (deletePending.has(dir)) throw deniedFor('rmdir', dir);
+    if ((await actual.readdir(dir)).length > 0) {
+      throw Object.assign(
+        new Error(`ENOTEMPTY: directory not empty, rmdir '${dir}'`),
+        { code: 'ENOTEMPTY', syscall: 'rmdir', path: dir }
+      );
+    }
+    // Removed for good if that listing ended meanwhile.
+    if (listing.has(dir)) deletePending.add(dir);
+    else await actual.rmdir(dir);
+  }) as typeof actual.rmdir;
+  return { ...fs, default: fs };
+});
+
 let dataDir: string;
 
 beforeEach(() => {

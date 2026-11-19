@@ -68,12 +68,29 @@ describe('run-ahead outcome committed above its predicted slot (node engine)', (
     async (_label, retained) => {
       vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
       vi.stubEnv('WORKFLOW_RETAINED_VM', retained);
-      // A write round trip longer than several step bodies, so the
-      // orchestrator runs more than one outcome ahead of the first commit.
+      let payloadsAppended: () => void = () => {};
+      const appended = new Promise<void>((resolve) => {
+        payloadsAppended = resolve;
+      });
+      let firstOutcome = true;
       const { world, runId, start } = await setupOrchestratorRun(
         workflowCode,
         [STEPS],
-        { createDelayMs: 200 },
+        {
+          // A write round trip longer than several step bodies, so the
+          // orchestrator runs more than one outcome ahead of the first
+          // commit.
+          createDelayMs: 200,
+          // Step 0's outcome, which the orchestrator ran ahead of, commits
+          // only once step 1's body appended the payloads, so above them
+          // however long the run-ahead took to start step 1: past one round
+          // trip (a loaded runner) it committed below them.
+          async beforeCreate(data) {
+            if (data.eventType !== 'step_completed' || !firstOutcome) return;
+            firstOutcome = false;
+            await appended;
+          },
+        },
         'node'
       );
       onBody = async (index) => {
@@ -90,12 +107,13 @@ describe('run-ahead outcome committed above its predicted slot (node engine)', (
             },
           } as unknown as Partial<Event>);
         }
+        payloadsAppended();
       };
 
       await world.deliver(start);
       await world.runUntilIdle();
 
-      // Step 1's outcome committed above the out-of-band payloads, so the
+      // Step 0's outcome committed above the out-of-band payloads, so the
       // slots run-ahead predicted for it and its successors held other events.
       const types = world.events.map((event) => event.eventType);
       const firstHook = types.indexOf('hook_received');
