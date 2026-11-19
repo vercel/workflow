@@ -28,11 +28,12 @@ const SLOW_MS = 2000;
 const lockstepEngine = process.env.WORKFLOW_VM === 'quickjs';
 
 /**
- * Runs pinned to spec 8. New runs are spec 9 by default; the precondition
- * guard exists only on spec 8, and the race-loser retry test keeps a spec 8
- * variant beside its default one.
+ * Runs pinned to one spec version. The precondition guard exists only on
+ * spec 8, and the race-loser retry test runs at both versions, whatever the
+ * default.
  */
 const SPEC_8 = { specVersion: 8 };
+const SPEC_9 = { specVersion: 9 };
 
 async function markerFile() {
   const dir = await mkdtemp(join(tmpdir(), 'wf-4457-'));
@@ -176,14 +177,14 @@ describe('parallel branches advance independently (#4457)', () => {
     60_000
   );
 
-  // A race loser that retries after the run ended. At spec 9, the default,
-  // both engines end the run over the loser, so its retry is never attempted
+  // A race loser that retries after the run ended. At spec 9 both engines
+  // end the run over the loser, so its retry is never attempted
   // (the World refuses a step start on a terminal run) and the step is left
   // pending after the terminal event. On spec 8 the node:vm loop does the
   // same, and the QuickJS loop waits for the loser's first attempt only, then
   // ends the run with the step still pending.
   for (const [label, options] of [
-    ['spec 9, the default', undefined],
+    ['spec 9', SPEC_9],
     ['spec 8', SPEC_8],
   ] as const) {
     it(`a race loser that retries after the run ended (${label})`, async () => {
@@ -204,7 +205,7 @@ describe('parallel branches advance independently (#4457)', () => {
         resolveData: 'none',
       });
       const slow = steps.find((s) => s.stepName.endsWith('retryOnceStep'));
-      if (options !== undefined && lockstepEngine) {
+      if (options === SPEC_8 && lockstepEngine) {
         expect(types.slice(-2)).toEqual(['step_retrying', 'run_completed']);
       } else {
         expect(types.slice(types.indexOf('run_completed') + 1)).toEqual([

@@ -9,12 +9,12 @@ import { expect, onTestFinished, test, vi } from 'vitest';
 import { createFetcher, startServer } from '../src/util.mjs';
 import type { Hook } from '../workflows/hooks.ts';
 
-const SPEC_8 = String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+const SPEC_9 = String(SPEC_VERSION_SINGLE_ORCHESTRATOR);
 
 /**
  * Starts a Local World server on `dataDir` that mints `specVersion`
  * (`undefined` leaves `WORKFLOW_SPEC_VERSION` unset, so the server mints the
- * default, spec 9).
+ * default, spec 8).
  */
 async function serverAt(dataDir: string, specVersion: string | undefined) {
   return createFetcher(
@@ -82,20 +82,20 @@ function tempDataDir() {
   });
 }
 
-// The upgrade users do: a Local World that created a spec 8 run (an earlier
-// release, here `WORKFLOW_SPEC_VERSION=8`) is restarted with the variable
-// unset while the run waits on a hook. The restarted server keeps driving the
-// run with the spec 8 orchestrator, and its new runs are spec 9, the default.
+// Opting in: a Local World that created a spec 8 run at the default is
+// restarted with `WORKFLOW_SPEC_VERSION=9` while the run waits on a hook. The
+// restarted server keeps driving the run with the spec 8 orchestrator, and its
+// new runs are spec 9.
 test(
-  'a spec 8 run in flight finishes after its World upgrades to the spec 9 default',
+  'a spec 8 run in flight finishes after its World opts in to spec 9',
   { timeout: 60_000 },
   async () => {
     const dataDir = await tempDataDir();
-    const before = await serverAt(dataDir, SPEC_8);
+    const before = await serverAt(dataDir, undefined);
     const token = `upgrade-${Date.now().toString(36)}`;
     const runId = await parkOnHook(before, token);
 
-    const after = await serverAt(dataDir, undefined);
+    const after = await serverAt(dataDir, SPEC_9);
     await after.resumeHook<typeof Hook>(token, { data: 'last', done: true });
 
     const run = await completedRun(after, runId);
@@ -110,20 +110,20 @@ test(
   }
 );
 
-// The documented opt-out: a Local World that created a spec 9 run at the
-// default is restarted with `WORKFLOW_SPEC_VERSION=8` while the run waits on
-// a hook. The restarted server keeps driving the run with the spec 9
-// orchestrator, and its new runs are spec 8.
+// Opting out: a Local World that created a spec 9 run with
+// `WORKFLOW_SPEC_VERSION=9` is restarted with the variable unset while the run
+// waits on a hook. The restarted server keeps driving the run with the spec 9
+// orchestrator, and its new runs are spec 8, the default.
 test(
-  'a spec 9 run in flight finishes after its World opts out with WORKFLOW_SPEC_VERSION=8',
+  'a spec 9 run in flight finishes after its World unsets WORKFLOW_SPEC_VERSION',
   { timeout: 60_000 },
   async () => {
     const dataDir = await tempDataDir();
-    const before = await serverAt(dataDir, undefined);
+    const before = await serverAt(dataDir, SPEC_9);
     const token = `opt-out-${Date.now().toString(36)}`;
     const runId = await parkOnHook(before, token);
 
-    const after = await serverAt(dataDir, SPEC_8);
+    const after = await serverAt(dataDir, undefined);
     await after.resumeHook<typeof Hook>(token, { data: 'last', done: true });
 
     const run = await completedRun(after, runId);
