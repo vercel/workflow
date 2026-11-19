@@ -312,7 +312,7 @@ describe('workflow inspect run <id> --usage', () => {
       'local',
     ]);
     expect(stdout).toContain(
-      "This run's data was deleted when it finished; sizes show what it wrote."
+      "This run's data was deleted; sizes show what it wrote."
     );
     // The 50 KB input, as written (base64 inside the event), not what is left.
     expect(stdout).toMatch(/TOTAL\s+6\d\.\d KB/);

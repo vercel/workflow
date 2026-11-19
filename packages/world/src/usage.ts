@@ -122,17 +122,17 @@ export interface RunUsage {
     byEntity: Record<RunUsageEntity, number>;
     /**
      * Where the sizes come from: the run's rows as they are (`log`); for a
-     * run whose data was deleted when it finished, the sizes saved before
-     * the deletion plus anything written after (`saved-at-purge`), or, when
-     * none were saved (a run purged before the sizes were kept), what is
-     * left of it (`left-after-purge`).
+     * run whose data was deleted, the sizes saved before the deletion plus
+     * anything written after (`saved-at-purge`), or, when none were saved
+     * (a run deleted before the sizes were kept), what is left of it
+     * (`left-after-purge`).
      */
     source: RunUsageDataWrittenSource;
   };
   /**
-   * The run's data was deleted when it finished (`experimental_retention:
-   * 0`). Its event counts are unaffected; see `dataWritten.source` for
-   * whether its sizes are what it wrote.
+   * The run's data was deleted: when it finished (`experimental_retention:
+   * 0`), or on demand. Its event counts are unaffected; see
+   * `dataWritten.source` for whether its sizes are what it wrote.
    */
   dataPurged: boolean;
   /**
@@ -246,7 +246,8 @@ export interface RunUsageAggregates {
   streamBytes: number;
   dataRetained?: RunUsage['dataRetained'];
   /**
-   * The run's data was deleted when it finished. With `savedDataWritten`,
+   * The run's data was deleted (when it finished, or on demand). With
+   * `savedDataWritten`,
    * those are its sizes (what it wrote); without, the rows' sizes are
    * reported as what is left.
    */
@@ -702,14 +703,15 @@ export function formatEventCountingNote(usage: RunUsage): [string, string] {
 }
 
 /**
- * For a run whose data was deleted when it finished: what its sizes show.
+ * For a run whose data was deleted (when it finished, or on demand): what
+ * its sizes show.
  * `null` for a run whose data is kept.
  */
 export function formatDataPurgedNote(usage: RunUsage): string | null {
   if (!usage.dataPurged) return null;
   return usage.dataWritten.source === 'saved-at-purge'
-    ? "This run's data was deleted when it finished; sizes show what it wrote."
-    : "This run's data was deleted when it finished, before its sizes were kept; sizes show what is left.";
+    ? "This run's data was deleted; sizes show what it wrote."
+    : "This run's data was deleted before its sizes were kept; sizes show what is left.";
 }
 
 const STEP_EVENT_LABELS: Record<

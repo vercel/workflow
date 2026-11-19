@@ -5,9 +5,10 @@
  * Data written is what the run's rows hold in `world.db`: each event as
  * stored (its payloads included) and each stream chunk. A run started with
  * zero retention (`$retention: '0'`) has its payloads deleted when it
- * finishes; the purge saves the sizes first (`purged-usage.ts`), and those
- * are reported, plus anything written after. A run purged before the sizes
- * were saved reports what is left, marked as such.
+ * finishes, and any finished run's can be deleted on demand; the purge saves
+ * the sizes first (`purged-usage.ts`), and those are reported, plus anything
+ * written after. A run deleted before the sizes were saved reports what is
+ * left, marked as such.
  *
  * **Counted once, then extended.** node:sqlite is synchronous: while a read
  * runs, the process answers nothing else, and reading a run costs time in
@@ -19,13 +20,14 @@
  *
  * - Safe because a run's log is append-only: rows are added at the next
  *   position and never rewritten or removed, with one exception, the
- *   zero-retention purge, which rewrites every row in the transaction that
- *   finishes the run, and again when a late step write lands. Counts
- *   (types, steps) do not change in a purge, only bytes, and a purged run
- *   reports the sizes the purge saved, not the rows'. To stay exact anyway,
- *   counts taken before a run finished are dropped and taken again once it
- *   has finished with its data deleted (cheap then: the rows are small).
- *   A late purge needs no recount: the run already reports saved sizes.
+ *   deletion of a run's data, which rewrites rows in place: every row when a
+ *   zero-retention run finishes or a finished run's data is deleted on
+ *   demand (`purgeRunData`), and one row when a late step write lands on a
+ *   deleted run (`purgeLateStepWrite`). Counts (types, steps) do not change,
+ *   only bytes, and a run whose data was deleted reports the sizes saved
+ *   before each rewrite, not its rows'. To stay exact anyway, counts taken
+ *   before a run finished are dropped and taken again once it has finished
+ *   with its data deleted (cheap then: the rows are small).
  * - A run that is not writing (sleeping, waiting on a hook) costs one
  *   lookup of its position. Stream bytes are summed fresh on every read
  *   (from the stream index, without reading the chunks' data).
@@ -148,8 +150,9 @@ const EVENTS_AFTER_SQL = `
 `;
 
 /**
- * Whether a finished run's data was deleted when it finished
- * (`withRunPayloadsPurged` stamps `expiredAt`). Only asked of a finished run
+ * Whether a finished run's data was deleted, when it finished or on demand
+ * (`withRunPayloadsPurged` stamps `expiredAt`; world-local stamps it only
+ * when it deletes). Only asked of a finished run
  * with no saved sizes: the doc is parsed, so a running run skips it.
  */
 const PURGED_RUN_SQL = `
@@ -308,7 +311,7 @@ function stepGroupsOf(counts: RunCounts): RunUsageStepGroup[] {
 }
 
 /**
- * Data written by a run whose data was deleted when it finished: what the
+ * Data written by a run whose data was deleted: what the
  * purge saved, plus what was written after it. Rows up to the saved position
  * are counted in the saved sizes and not again; the purge deleted the
  * stream chunks it measured, so the chunks there now came after it.
@@ -356,10 +359,11 @@ export function createUsageStorage(
   // recency order: a read moves its run to the end.
   //
   // A read counts only the rows after the last position it counted, so the
-  // cache assumes event rows are never rewritten in place. The one path that
-  // does is the zero-retention purge (`purgeRunData` in run-retention.ts),
-  // when the run finishes and on a late step write. The read handles both:
-  // a purged run reports the sizes saved before each purge, and counts
+  // cache assumes event rows are never rewritten in place. The paths that do
+  // are the deletions of a run's data in run-retention.ts: `purgeRunData`
+  // (a zero-retention run's finish, or `runs.deleteDataMany`) and
+  // `purgeLateStepWrite` (a late step write on a deleted run). Each saves
+  // the run's sizes before rewriting, and the read reports those; counts
   // taken before the run finished are taken again.
   const cache = new Map<string, RunCounts>();
   // One count per run at a time: a second read of the same run waits for

@@ -610,7 +610,7 @@ describe('step events by type', () => {
   });
 });
 
-describe('a run whose data was deleted when it finished', () => {
+describe('a run whose data was deleted', () => {
   const purgedRun = (overrides: Partial<RunUsageAggregates>) =>
     buildRunUsage(
       aggregates({
@@ -642,7 +642,7 @@ describe('a run whose data was deleted when it finished', () => {
     // Counts do not depend on the data.
     expect(usage.events).toBe(4);
     expect(formatDataPurgedNote(usage)).toBe(
-      "This run's data was deleted when it finished; sizes show what it wrote."
+      "This run's data was deleted; sizes show what it wrote."
     );
   });
 
@@ -654,7 +654,7 @@ describe('a run whose data was deleted when it finished', () => {
       source: 'left-after-purge',
     });
     expect(formatDataPurgedNote(usage)).toBe(
-      "This run's data was deleted when it finished, before its sizes were kept; sizes show what is left."
+      "This run's data was deleted before its sizes were kept; sizes show what is left."
     );
   });
 

@@ -1,13 +1,15 @@
 /**
- * What a zero-retention run wrote, saved when its data is deleted.
+ * What a run wrote, saved when its data is deleted.
  *
  * Usage reports Data Written from the run's rows (`usage-storage.ts`). A run
  * started with `experimental_retention: 0` has its payloads deleted in the
- * transaction that makes it terminal (`purgeRunData`), after which its rows
- * hold almost nothing. Deleting the data saves on Data Retained, not on Data
- * Written, so the purge first adds up the sizes it is about to delete and
- * saves them here, with the log position they cover. Usage then reports the
- * saved sizes plus anything the run wrote after that position.
+ * transaction that makes it terminal (`purgeRunData`), and any finished
+ * run's can be deleted on demand (`runs.deleteDataMany`); after that its
+ * rows hold almost nothing. Deleting the data saves on Data Retained, not on
+ * Data Written, so the purge first adds up the sizes it is about to delete
+ * and saves them here, with the log position they cover. Usage then reports
+ * the saved sizes plus anything the run wrote after that position, and a
+ * late step write moves that position forward (`purgeLateStepWrite`).
  *
  * The table is created on first use, outside the schema migrations, so the
  * database's `user_version` does not change: a world-local that predates it
@@ -78,9 +80,9 @@ function tableExists(db: Database): boolean {
 
 /**
  * Saves what a run wrote up to `seq`, replacing an earlier save. Inside the
- * purge's transaction. A run is purged when it finishes and again when a
- * late step write lands (`purgeRunData`), and each save covers the one
- * before it: the caller adds what was written since to the sizes it read.
+ * purge's transaction. A run's data can be scrubbed more than once (a late
+ * step write, a deletion on demand), and each save covers the one before
+ * it: the caller adds what was written since to the sizes it read.
  */
 export function savePurgedUsage(
   db: Database,
