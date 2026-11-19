@@ -35,7 +35,7 @@ The framework uses compiler transformations to split workflow files into separat
 
 Runs default to spec 8. The opt-in spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`, a single orchestrator per run behind the World's in-band fence) lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
 
-Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
+Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume, QuickJS against node:vm performance) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
 
 ## Development commands
 
