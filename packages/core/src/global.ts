@@ -72,6 +72,8 @@ export interface RateInvocationQueueItem {
   key: string;
   limit: number;
   periodMs: number;
+  /** How many calls may go at once on an idle key. Absent for no burst. */
+  burst?: number;
   /** The call's deadline: past it, the call fails instead of waiting. */
   expiresAt: Date;
   hasCreatedEvent?: boolean;

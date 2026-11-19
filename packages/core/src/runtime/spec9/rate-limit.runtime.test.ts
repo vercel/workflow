@@ -31,6 +31,15 @@ const sequential = `${header}
     return at;
   }${registerWorkflow()}`;
 
+/** `n` calls in a row on one key at 3 per second, with a full burst. */
+const bursting = `${header}
+  async function workflow(n) {
+    for (let i = 0; i < n; i++) {
+      await rateLimit({ key: "bursty", limit: 3, period: "1s", burst: true });
+    }
+    return n;
+  }${registerWorkflow()}`;
+
 /** Two calls on a key at one per minute, the second willing to wait 1s. */
 const timedOut = `${header}
   async function workflow() {
@@ -84,6 +93,27 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     }
     const at = (await runResult(world)) as number[];
     expect(at).toHaveLength(3);
+  }, 60_000);
+
+  it('lets a burst go at once, then waits one interval per call', async () => {
+    const { world } = await setupOrchestratorRun(bursting, [4], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+    });
+    await world.runOnClock();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    // The burst of 3 was answered in place; only the 4th waited.
+    expect(eventsOf(world, 'rate_created')).toHaveLength(1);
+    const acquired = eventsOf(world, 'rate_acquired');
+    expect(acquired).toHaveLength(4);
+    // Every call carries its burst, the one that waited included.
+    expect(acquired.map((event) => dataOf(event)?.burst)).toEqual([3, 3, 3, 3]);
+    const slots = acquired.map((event) =>
+      new Date(dataOf(event)?.acquireAt as Date).getTime()
+    );
+    expect(slots[1]).toBe(slots[0]);
+    expect(slots[2]).toBe(slots[0]);
+    expect(slots[3]! - slots[0]!).toBeGreaterThanOrEqual(333);
   }, 60_000);
 
   it('reserves a call again when its timer is delivered past the grace window', async () => {

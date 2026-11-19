@@ -64,6 +64,7 @@ import {
   MAX_RATE_WAIT_MS,
   RATE_MAX_LATE_WAKES,
   rateLimitIntervalUs,
+  rateLimitToleranceUs,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -355,6 +356,7 @@ export function createEventsStorage(
       key: string;
       limit: number;
       periodMs: number;
+      burst?: number;
       expiresAt: Date;
       creatorMessageId?: string;
     },
@@ -366,6 +368,9 @@ export function createEventsStorage(
       key: eventData.key,
       limit: eventData.limit,
       periodMs: eventData.periodMs,
+      // Recorded, so a call reserved again keeps its burst.
+      ...(eventData.burst !== undefined &&
+        eventData.burst > 1 && { burst: eventData.burst }),
     };
     try {
       validateRateLimitCall(call);
@@ -391,6 +396,7 @@ export function createEventsStorage(
     const decision = decideRateLimit({
       tatUs: store.getRateTat(call.key),
       intervalUs: rateLimitIntervalUs(call),
+      toleranceUs: rateLimitToleranceUs(call),
       nowUs,
       deadlineUs: expiresAt.getTime() * 1000,
     });

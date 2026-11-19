@@ -509,6 +509,9 @@ export async function handleSuspension({
                 key: queueItem.key,
                 limit: queueItem.limit,
                 periodMs: queueItem.periodMs,
+                ...(queueItem.burst !== undefined && {
+                  burst: queueItem.burst,
+                }),
                 expiresAt: queueItem.expiresAt,
                 ...(creatorMessageId !== undefined && { creatorMessageId }),
               },

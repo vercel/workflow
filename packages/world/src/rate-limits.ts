@@ -8,16 +8,26 @@
  * Vercel World's backend does this on its own store; this module is the same
  * algorithm for Worlds that keep their own state, such as `world-local`.
  *
- * The algorithm is GCRA with no burst tolerance. Each key stores `tat`, the
- * next free slot. A call whose interval is `T = periodMs / limit` gets
+ * The algorithm is GCRA. Each key stores `tat`, the next free slot. A call
+ * whose interval is `T = periodMs / limit` and whose burst tolerance is `τ`
+ * gets
  *
- *     acquireAt = max(now, tat)        then        tat = acquireAt + T
+ *     acquireAt = max(now, tat - τ)        then        tat = max(tat, now) + T
  *
- * so slots are exactly `T` apart and no period holds more than `limit` of
- * them. Each call uses its own `T`, so calls on one key that ask for
- * different rates blend: each uses up its own share of the key's time. Times
- * are microseconds so an interval that isn't a whole millisecond (400/s is
- * 2.5 ms) stays exact.
+ * - **No burst** (the default, `τ = 0`): slots are exactly `T` apart and no
+ *   period holds more than `limit` of them.
+ * - **Burst** (`burst` on the call, `τ = (burst - 1) * T`, never more than the
+ *   period): the key is a token bucket holding `burst` calls. An idle key
+ *   admits `burst` at once, then refills one per `T`. Any window of length `W`
+ *   holds at most `floor((W + τ) / T) + 1` slots, so a full burst can see up
+ *   to `2 * limit - 1` calls in one rolling period.
+ *
+ * Each call uses its own `T` and `τ`, so calls on one key that ask for
+ * different rates or bursts blend: each uses up its own share of the key's
+ * time, and a bursting call can go ahead of non-bursting calls already
+ * waiting. Use one setting per key. Times are microseconds so an interval
+ * that isn't a whole millisecond (400/s is 2.5 ms) stays exact. The Vercel
+ * World's backend makes the same decision.
  */
 
 /** The longest key a call may use, in UTF-8 bytes. */
@@ -142,6 +152,11 @@ export interface RateLimitCall {
   key: string;
   limit: number;
   periodMs: number;
+  /**
+   * How many calls may go at once on an idle key, from 1 to `limit`. Absent
+   * (or 1) for no burst.
+   */
+  burst?: number;
 }
 
 /**
@@ -173,6 +188,16 @@ export function validateRateLimitCall(call: RateLimitCall): void {
       `rate limit period of ${call.periodMs}ms is longer than the 24 hours allowed`
     );
   }
+  if (
+    call.burst !== undefined &&
+    (!Number.isSafeInteger(call.burst) ||
+      call.burst < 1 ||
+      call.burst > call.limit)
+  ) {
+    throw new RangeError(
+      `rate limit burst must be an integer from 1 to the limit (${call.limit}), got ${call.burst}`
+    );
+  }
 }
 
 /**
@@ -181,6 +206,20 @@ export function validateRateLimitCall(call: RateLimitCall): void {
  */
 export function rateLimitIntervalUs(call: RateLimitCall): number {
   return Math.max(1, Math.ceil((call.periodMs * 1000) / call.limit));
+}
+
+/**
+ * A call's burst tolerance `(burst - 1) * T` in microseconds: what lets
+ * `burst` calls go at once. 0 for no burst. Never more than the period: a full
+ * window is less than one anyway, unless `T` was rounded up to a whole
+ * microsecond, which would otherwise stretch it without bound.
+ */
+export function rateLimitToleranceUs(call: RateLimitCall): number {
+  const burst = call.burst ?? 1;
+  return Math.min(
+    (burst - 1) * rateLimitIntervalUs(call),
+    call.periodMs * 1000
+  );
 }
 
 export type RateLimitDecision =
@@ -208,17 +247,28 @@ export type RateLimitDecision =
 export function decideRateLimit(args: {
   tatUs: number | undefined;
   intervalUs: number;
+  /** The call's burst tolerance (`rateLimitToleranceUs`). 0 if absent. */
+  toleranceUs?: number;
   nowUs: number;
   deadlineUs: number;
 }): RateLimitDecision {
   const { intervalUs, nowUs } = args;
-  const acquireAtUs = Math.max(nowUs, args.tatUs ?? nowUs);
+  const toleranceUs = args.toleranceUs ?? 0;
+  const acquireAtUs =
+    args.tatUs === undefined
+      ? nowUs
+      : Math.max(nowUs, args.tatUs - toleranceUs);
+  // A slot at `acquireAt` leaves `tat <= acquireAt + τ + T`.
   const deadlineUs = Math.min(
     args.deadlineUs,
-    Number.MAX_SAFE_INTEGER - intervalUs
+    Number.MAX_SAFE_INTEGER - intervalUs - toleranceUs
   );
   if (acquireAtUs > deadlineUs) {
     return { status: 'deadline_exceeded', wouldAcquireAtUs: acquireAtUs };
   }
-  return { status: 'reserved', acquireAtUs, tatUs: acquireAtUs + intervalUs };
+  return {
+    status: 'reserved',
+    acquireAtUs,
+    tatUs: Math.max(args.tatUs ?? nowUs, nowUs) + intervalUs,
+  };
 }

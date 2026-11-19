@@ -9,6 +9,7 @@ import {
   rateGraceMs,
   rateLateAdmitMaxMs,
   rateLimitIntervalUs,
+  rateLimitToleranceUs,
   validateRateLimitCall,
 } from './rate-limits.js';
 
@@ -32,6 +33,9 @@ describe('validateRateLimitCall', () => {
     [{ periodMs: 0 }, /positive whole number/],
     [{ periodMs: 0.5 }, /positive whole number/],
     [{ periodMs: MAX_RATE_PERIOD_MS + 1 }, /24 hours/],
+    [{ burst: 0 }, /burst must be an integer from 1 to the limit/],
+    [{ burst: 11 }, /burst must be an integer from 1 to the limit \(10\)/],
+    [{ burst: 1.5 }, /burst must be/],
   ])('refuses %o', (bad, message) => {
     expect(() => validateRateLimitCall({ ...ok, ...bad })).toThrow(message);
   });
@@ -173,5 +177,83 @@ describe('decideRateWake', () => {
     const expiresAt = new Date(NOW_MS + 10_000);
     expect(wake(2, 24_001, expiresAt)).toBe('fail');
     expect(wake(2, 24_000, expiresAt)).toBe('acquire');
+  });
+});
+
+describe('burst', () => {
+  // 10 per minute: T = 6 s.
+  const call = { key: 'k', limit: 10, periodMs: 60_000 };
+  const T = 6_000_000;
+  const NOW = 1_900_000_000_000_000;
+
+  /** Reserves one call per arrival, in order, and returns their slots. */
+  function slotsFor(arrivalsUs: number[], burst?: number) {
+    let tatUs: number | undefined;
+    const withBurst = { ...call, ...(burst && { burst }) };
+    return arrivalsUs.map((nowUs) => {
+      const decision = decideRateLimit({
+        tatUs,
+        intervalUs: rateLimitIntervalUs(withBurst),
+        toleranceUs: rateLimitToleranceUs(withBurst),
+        nowUs,
+        deadlineUs: nowUs + 3_600_000_000,
+      });
+      if (decision.status !== 'reserved') throw new Error('refused');
+      tatUs = decision.tatUs;
+      return decision.acquireAtUs;
+    });
+  }
+
+  it('is (burst - 1) intervals, 0 without one', () => {
+    expect(rateLimitToleranceUs(call)).toBe(0);
+    expect(rateLimitToleranceUs({ ...call, burst: 1 })).toBe(0);
+    expect(rateLimitToleranceUs({ ...call, burst: 10 })).toBe(9 * T);
+  });
+
+  it('is never more than the period, even when T rounds up', () => {
+    const huge = { key: 'k', limit: Number.MAX_SAFE_INTEGER, periodMs: 1 };
+    expect(rateLimitIntervalUs(huge)).toBe(1);
+    expect(
+      rateLimitToleranceUs({ ...huge, burst: Number.MAX_SAFE_INTEGER })
+    ).toBe(1_000);
+  });
+
+  it('admits a full burst at once on an idle key, then one per interval', () => {
+    const slots = slotsFor(Array(12).fill(NOW), 10);
+    expect(slots.slice(0, 10)).toEqual(Array(10).fill(NOW));
+    expect(slots[10]).toBe(NOW + T);
+    expect(slots[11]).toBe(NOW + 2 * T);
+  });
+
+  it('spaces calls T apart without a burst, as before', () => {
+    expect(slotsFor([NOW, NOW, NOW])).toEqual([NOW, NOW + T, NOW + 2 * T]);
+  });
+
+  it('refills one call per interval, never past the burst', () => {
+    // A full burst, then an hour idle: still only `burst` go at once.
+    const slots = slotsFor(
+      [...Array(10).fill(NOW), ...Array(11).fill(NOW + 3_600_000_000)],
+      10
+    );
+    const later = slots.slice(10);
+    expect(later.slice(0, 10)).toEqual(Array(10).fill(NOW + 3_600_000_000));
+    expect(later[10]).toBe(NOW + 3_600_000_000 + T);
+  });
+
+  it('measures the deadline from tat - τ', () => {
+    const withBurst = { ...call, burst: 3 };
+    const decision = decideRateLimit({
+      tatUs: NOW + 2 * T,
+      intervalUs: rateLimitIntervalUs(withBurst),
+      toleranceUs: rateLimitToleranceUs(withBurst),
+      nowUs: NOW,
+      // Before tat, but at tat - τ: the slot is now, within it.
+      deadlineUs: NOW,
+    });
+    expect(decision).toEqual({
+      status: 'reserved',
+      acquireAtUs: NOW,
+      tatUs: NOW + 3 * T,
+    });
   });
 });

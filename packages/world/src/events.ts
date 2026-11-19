@@ -578,6 +578,11 @@ const RateCallSchema = z.object({
   periodMs: z.number(),
   /** The call's deadline: past it, the call fails instead of waiting. */
   expiresAt: z.coerce.date(),
+  /**
+   * How many calls may go at once on an idle key, from 1 to `limit`. Absent
+   * for no burst. Recorded, so a call reserved again keeps it.
+   */
+  burst: z.number().int().positive().optional(),
 });
 
 const RateCreatedEventSchema = BaseEventSchema.extend({

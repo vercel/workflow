@@ -453,6 +453,8 @@ interface CreateEventV4InputBase {
   rateKey?: string;
   rateLimit?: number;
   ratePeriodMs?: number;
+  /** rate_created: how many calls may go at once. Absent for no burst. */
+  rateBurst?: number;
   rateExpiresAt?: Date;
   /** rate_acquired after a wait: the log slot of the call's rate_created. */
   rateCreatedSlot?: number;
@@ -879,6 +881,7 @@ function buildPostFrameMeta(
   if (input.rateKey !== undefined) meta.rateKey = input.rateKey;
   if (input.rateLimit !== undefined) meta.rateLimit = input.rateLimit;
   if (input.ratePeriodMs !== undefined) meta.ratePeriodMs = input.ratePeriodMs;
+  if (input.rateBurst !== undefined) meta.rateBurst = input.rateBurst;
   if (input.rateExpiresAt !== undefined) {
     meta.rateExpiresAt = input.rateExpiresAt;
   }

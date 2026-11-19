@@ -200,6 +200,61 @@ describe('rate limits on the Local World', () => {
     await expect(inBand(runId, acquired)).rejects.toThrow(EntityConflictError);
   });
 
+  it('admits a burst at once on an idle key, then one per interval', async () => {
+    const runId = await createRun();
+    // 3 per minute with a full burst: three at once, then 20 s apart.
+    const call = { key: 'bursty', limit: 3, burst: 3 };
+    const events = [];
+    for (let i = 0; i < 4; i++) {
+      events.push(committed(await inBand(runId, rateCreated(call))));
+    }
+    expect(events.map((e) => e.eventType)).toEqual([
+      'rate_acquired',
+      'rate_acquired',
+      'rate_acquired',
+      'rate_created',
+    ]);
+    const [first, , , fourth] = events;
+    if (first?.eventType !== 'rate_acquired') throw new Error('unexpected');
+    if (fourth?.eventType !== 'rate_created') throw new Error('unexpected');
+    // Recorded, so a re-reservation allows the same burst.
+    expect(first.eventData.burst).toBe(3);
+    expect(
+      fourth.eventData.acquireAt!.getTime() -
+        first.eventData.acquireAt!.getTime()
+    ).toBeGreaterThanOrEqual(20_000 - 1);
+  });
+
+  it('refuses a burst outside 1 to the limit', async () => {
+    const runId = await createRun();
+    await expect(
+      inBand(runId, rateCreated({ limit: 3, burst: 4 }))
+    ).rejects.toThrow(/burst must be an integer from 1 to the limit/);
+  });
+
+  it('keeps the burst when it reserves a late wake again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const runId = await createRun();
+    // 2 per minute with a burst of 2: two at once, then 30 s apart.
+    const call = { key: 'bursty-late', limit: 2, burst: 2 };
+    committed(await inBand(runId, rateCreated(call)));
+    committed(await inBand(runId, rateCreated(call)));
+    const waiting = committed(await inBand(runId, rateCreated(call)));
+    if (waiting.eventType !== 'rate_created') throw new Error('not waiting');
+    vi.setSystemTime(
+      waiting.eventData.acquireAt!.getTime() + rateGraceMs(60_000) + 1
+    );
+    const late = committed(
+      await inBand(runId, {
+        eventType: 'rate_acquired',
+        specVersion: SPEC_VERSION_RATE_LIMITS,
+        correlationId: waiting.correlationId,
+        eventData: { createdSlot: eventIdToSlot(waiting.eventId) },
+      })
+    );
+    expect(late.eventData).toMatchObject({ burst: 2, lateWakes: 1 });
+  });
+
   it('reserves a call again when it wakes past its grace window', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const runId = await createRun();
