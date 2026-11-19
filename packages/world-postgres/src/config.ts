@@ -48,12 +48,14 @@ export type PostgresWorldConfig = PgConnectionConfig & {
   /**
    * Run no workers in this process. `start()` still prepares the queue, so
    * this World can start runs, resume hooks, cancel runs and read them, but
-   * it claims none of the jobs those create and doesn't recover interrupted
-   * runs at startup: processes that run workers against the same database
-   * and `jobPrefix` do both. Use it for processes that should send work but
-   * not execute it, such as those far from the database. Defaults to false.
-   * The package's default createWorld() configuration enables it when
-   * WORKFLOW_POSTGRES_SKIP_WORKERS is `1`.
+   * it claims none of the jobs those create, and doesn't recover interrupted
+   * runs at startup. Processes with workers on the same database, `jobPrefix`
+   * and `deploymentId` (when one is set) execute those runs; a run on another
+   * deployment ID stays pending. A run this process created but didn't get
+   * to enqueue is recovered the next time such a process starts. Use it for
+   * processes that should send work but not execute it, such as those far
+   * from the database. Defaults to false. The package's default createWorld()
+   * configuration enables it when WORKFLOW_POSTGRES_SKIP_WORKERS is `1`.
    */
   skipWorkers?: boolean;
   /** Enable experimental invoke() delivery with one Graphile execution queue per run. */

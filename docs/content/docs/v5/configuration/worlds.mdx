@@ -190,7 +190,8 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: `WORKFLOW_POSTGRES_SKIP_WORKERS` (`1` enables)
 - Default: `false`
 - Runs no workers in this process. It can still start runs, resume hooks, cancel runs and read them, but it claims none of the jobs those create and doesn't recover interrupted runs at startup.
-- At least one process with workers must share the database and `jobPrefix`: it executes those runs and recovers them.
+- At least one process with workers must share the database, `jobPrefix` and, when one is set, `deploymentId`: it executes those runs. A run on a deployment ID no worker claims stays pending.
+- A run this process created but didn't get to enqueue (it stopped in between) is recovered the next time a process with workers starts.
 - Use it for processes that should send work but not execute it, such as those in a region far from the database. See [Postgres World: `WORKFLOW_POSTGRES_SKIP_WORKERS`](/worlds/postgres#workflow_postgres_skip_workers).
 
 ### `jobLockStaleSeconds`

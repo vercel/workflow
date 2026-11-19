@@ -409,7 +409,9 @@ Change it when: the application or framework coordinates shutdown and awaits `wo
 - Default: unset (`false`)
 - Factory option: `skipWorkers`
 
-Runs no workers in this process. Set to `1` to enable. The process can still start runs, resume hooks, cancel runs and read them, but it claims none of the jobs those create, and it doesn't recover interrupted runs at startup. Processes that run workers against the same database and `WORKFLOW_POSTGRES_JOB_PREFIX` do both, so at least one must be running.
+Runs no workers in this process. Set to `1` to enable. The process can still start runs, resume hooks, cancel runs and read them, but it claims none of the jobs those create, and it doesn't recover interrupted runs at startup.
+
+Its runs execute on processes with workers on the same database, `WORKFLOW_POSTGRES_JOB_PREFIX` and, when one is set, `WORKFLOW_POSTGRES_DEPLOYMENT_ID`, so at least one must be running. A run on a deployment ID that no worker claims stays pending. A run this process created but didn't get to enqueue (it stopped in between) is recovered the next time a process with workers starts. At startup the process logs the job prefix and deployment ID its runs need.
 
 Change it when: some processes should send work without executing it, for example application instances in a region far from the database, whose step executions would wait on many cross-region round trips. Run the workers near the database.
 
