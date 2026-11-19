@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { WorkflowRunFailedError } from '@workflow/errors';
+import { mintedSpecVersion } from '@workflow/world';
 import { beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
@@ -1715,15 +1716,16 @@ let budgetExhausted = false;
 let lastCheckpointAt = 0;
 
 /**
- * The spec version this lane's runs must have, when the lane opts in to one
- * with `WORKFLOW_SPEC_VERSION` (set on both the deployment and this runner: a
- * cross-deployment `start()` stamps the lower of the two). Without it the
- * runs take the default, which this harness does not pin.
+ * The spec version this lane's runs must have: what the lane's World mints,
+ * spec 9 by default and `WORKFLOW_SPEC_VERSION` when the lane pins one (set
+ * on both the deployment and this runner: a cross-deployment `start()` stamps
+ * the lower of the two). Every World this harness races declares the in-band
+ * fence, so the default cells pin spec 9 too and fail if the default ever
+ * stops being spec 9.
  */
-const expectedSpecVersion = (() => {
-  const raw = process.env.WORKFLOW_SPEC_VERSION?.trim();
-  return raw ? Number(raw) : undefined;
-})();
+const expectedSpecVersion: number = mintedSpecVersion(process.env, {
+  inBandFence: true,
+});
 
 function writeResults(results: ReproRunResult[], complete: boolean) {
   fs.writeFileSync(
@@ -1732,7 +1734,7 @@ function writeResults(results: ReproRunResult[], complete: boolean) {
       {
         completedAt: new Date().toISOString(),
         deploymentUrl,
-        ...(expectedSpecVersion !== undefined ? { expectedSpecVersion } : {}),
+        expectedSpecVersion,
         // `partial` is the renderer's signal that the distribution below counts
         // fewer runs than were planned, so its rates are still meaningful but
         // its totals are not comparable to a full run's.
@@ -1965,19 +1967,17 @@ describe('event log race repro', { retry: 0 }, () => {
       );
       expect(regressions).toEqual([]);
 
-      // A lane that opts in to a spec version and silently races another one
+      // A lane that silently races another spec version than it expects
       // would report a clean result for the wrong orchestrator.
-      if (expectedSpecVersion !== undefined) {
-        const offVersion = results.filter(
-          (result) =>
-            result.specVersion !== undefined &&
-            result.specVersion !== expectedSpecVersion
-        );
-        expect(offVersion).toEqual([]);
-        expect(
-          results.some((result) => result.specVersion === expectedSpecVersion)
-        ).toBe(true);
-      }
+      const offVersion = results.filter(
+        (result) =>
+          result.specVersion !== undefined &&
+          result.specVersion !== expectedSpecVersion
+      );
+      expect(offVersion).toEqual([]);
+      expect(
+        results.some((result) => result.specVersion === expectedSpecVersion)
+      ).toBe(true);
     }
   );
 });

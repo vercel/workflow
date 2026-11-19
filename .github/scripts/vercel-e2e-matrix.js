@@ -107,10 +107,10 @@ const HTTP_TRANSPORT_APPS = [
   'hono',
 ];
 
-// Apps whose dedicated deployment opts in to spec 9 runs
-// (WORKFLOW_SPEC_VERSION=9). Every other Vercel lane runs the default, spec 8.
-// Both VMs, since each engine has its own spec 9 orchestrator.
-const SPEC9_APPS = ['nextjs-turbopack'];
+// Apps whose dedicated deployment pins spec 8 runs (WORKFLOW_SPEC_VERSION=8),
+// for backwards compatibility. Every other Vercel lane runs the default,
+// spec 9. Both VMs, since each engine has its own spec 8 orchestrator.
+const SPEC8_APPS = ['nextjs-turbopack'];
 
 function project(name) {
   const found = PROJECTS.find((candidate) => candidate.name === name);
@@ -145,8 +145,8 @@ function buildMatrices() {
         app: appEntry(project(name)),
       })),
     },
-    'vercel-spec9-matrix': {
-      include: SPEC9_APPS.flatMap((name) => {
+    'vercel-spec8-matrix': {
+      include: SPEC8_APPS.flatMap((name) => {
         const app = project(name);
         return (app.vms ?? VMS).map((vm) => ({ app: appEntry(app), vm }));
       }),
