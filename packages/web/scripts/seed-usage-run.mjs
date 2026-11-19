@@ -11,10 +11,13 @@
  *
  * - `processOrder`, completed: two attributes, eight step functions (so the
  *   table folds the smallest into "+ N other steps"), one of them retried
- *   twice and one called four times, a sleep, a hook that receives one
- *   payload, and a stream with three chunks.
+ *   twice and one called four times, a sleep, two hooks (one receives a
+ *   payload), and a stream with three chunks.
  * - `syncInventory`, still running (no `run_completed`): its page keeps
- *   polling, and the header and the page show the numbers so far.
+ *   polling, and the header and the page show the numbers so far. Two of
+ *   its step functions are both named `send`, in different files.
+ * - `cleanupCart`, started with `experimental_retention: 0`: its data is
+ *   deleted when it finishes, and its usage shows what it wrote.
  *
  * The events go through the World's storage API (`events.create`), the call
  * the runtime makes, so the counts are the ones a real run of these shapes
@@ -69,12 +72,18 @@ async function event(runId, eventType, rest = {}) {
   });
 }
 
-async function startRun(workflowName, attributes) {
+async function startRun(workflowName, attributes, createdAttributes) {
   const { run } = await event(null, 'run_created', {
     eventData: {
       deploymentId: 'dpl_usage_seed',
       workflowName,
       input: bytes(400),
+      // What `start()` writes, e.g. `$retention: '0'` for
+      // `experimental_retention: 0`.
+      ...(createdAttributes && {
+        attributes: createdAttributes,
+        allowReservedAttributes: true,
+      }),
     },
   });
   await event(run.runId, 'run_started');
@@ -146,13 +155,18 @@ await event(order, 'wait_completed', { correlationId: 'wait_0001' });
 
 await event(order, 'hook_created', {
   correlationId: 'hook_0001',
-  eventData: { token: `approval:${order}` },
+  eventData: { token: 'approval:order-1042' },
 });
 await event(order, 'hook_received', {
   correlationId: 'hook_0001',
   eventData: { payload: bytes(800) },
 });
 await event(order, 'hook_disposed', { correlationId: 'hook_0001' });
+await event(order, 'hook_created', {
+  correlationId: 'hook_0002',
+  eventData: { token: 'refund:order-1042' },
+});
+await event(order, 'hook_disposed', { correlationId: 'hook_0002' });
 
 for (const chunk of ['label printed', 'picked up', 'delivered']) {
   await world.streams.write(order, 'shipment-updates', chunk);
@@ -166,6 +180,22 @@ const sync = await startRun(
 );
 await step(sync, stepName('inventory', 'fetchStock'));
 await step(sync, stepName('inventory', 'writeStock'), { retries: 1 });
+// Two step functions named `send`, in different files: the table names
+// their modules so the rows read differently.
+await step(sync, stepName('notify', 'send'));
+await step(sync, stepName('notify', 'send'));
+await step(sync, stepName('audit', 'send'));
+
+// A run started with `experimental_retention: 0`: the World deletes its data
+// when it finishes, and its usage reports what it wrote before that.
+const cleanup = await startRun(
+  'workflow//./src/workflows/cart//cleanupCart',
+  undefined,
+  { $retention: '0' }
+);
+await step(cleanup, stepName('cart', 'loadCart'), { size: 3000 });
+await step(cleanup, stepName('cart', 'clearCart'));
+await event(cleanup, 'run_completed', { eventData: { output: bytes(200) } });
 
 await world.close();
 
@@ -173,6 +203,7 @@ const base = `http://localhost:${PORT}`;
 console.log(`Seeded ${dataDir}`);
 console.log(`  processOrder (completed): ${base}/run/${order}/usage`);
 console.log(`  syncInventory (running):  ${base}/run/${sync}/usage`);
+console.log(`  cleanupCart (zero retention): ${base}/run/${cleanup}/usage`);
 
 if (values.serve) {
   console.log(`Serving the web UI on ${base} (Ctrl+C to stop)`);
