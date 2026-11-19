@@ -36,7 +36,10 @@ describe.skipIf(process.platform === 'win32')(
     const queues: PostgresQueue[] = [];
     const children: ChildProcess[] = [];
 
-    function startQueue(config: Partial<Parameters<typeof createQueue>[0]>) {
+    function startQueue(
+      config: Partial<Parameters<typeof createQueue>[0]>,
+      internal?: Parameters<typeof createQueue>[2]
+    ) {
       const queue = createQueue(
         {
           connectionString,
@@ -45,7 +48,8 @@ describe.skipIf(process.platform === 'win32')(
           jobLockStaleSeconds: STALE_SECONDS,
           ...config,
         } as Parameters<typeof createQueue>[0],
-        pool
+        pool,
+        internal
       );
       queues.push(queue);
       return queue;
@@ -239,6 +243,84 @@ describe.skipIf(process.platform === 'win32')(
         { id: claimed.id, attempts: 1, locked_by: 'worker-successor' },
       ]);
       expect(deliveries).toEqual([{ attempt: '1' }]);
+    }, 30_000);
+
+    // https://github.com/vercel/workflow/issues/5272: a peer sweeping with a
+    // shorter window (while `jobLockStaleSeconds` is being changed across
+    // processes) released the job right after this holder's last renewal,
+    // and a successor claimed it. With a 300 second window this holder's
+    // renewals cannot have noticed yet; its acknowledgement must still not
+    // delete the successor's row.
+    test("a delivery released right after its last renewal leaves the successor's job alone", async () => {
+      const release = Promise.withResolvers<void>();
+      releaseHeldResponses = release.resolve;
+      respond = (response) => {
+        release.promise.then(() => response.end('{}'));
+      };
+      const queue = startQueue({ jobLockStaleSeconds: 300 });
+      await queue.start();
+      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
+        runId: 'wrun_peer_window',
+      });
+      await expect
+        .poll(() => deliveries.length, { timeout: 5_000, interval: 50 })
+        .toBe(1);
+      const [claimed] = await jobRows();
+      await pool.query(
+        `UPDATE graphile_worker._private_jobs SET locked_by = 'worker-successor',
+           locked_at = now(), attempts = attempts + 1 WHERE id = $1`,
+        [claimed.id]
+      );
+      release.resolve();
+      await queue.close();
+
+      expect(await jobRows()).toMatchObject([
+        { id: claimed.id, attempts: 2, locked_by: 'worker-successor' },
+      ]);
+      expect(deliveries).toEqual([{ attempt: '1' }]);
+    }, 30_000);
+
+    test('acknowledging a job an earlier version put in a per-run queue unlocks the queue, which is then removed', async () => {
+      const runId = 'wrun_01LEGACYQUEUE';
+      const transport = new JsonTransport();
+      const utils = await makeWorkerUtils({ pgPool: pool });
+      try {
+        await utils.addJob(
+          'workflow_flows',
+          MessageData.encode({
+            id: 'test',
+            data: transport.serialize({ runId }),
+            attempt: 1,
+            messageId: MessageId.parse('msg_01LEGACYQUEUE'),
+          }),
+          { queueName: `workflow_flows:${runId}`, maxAttempts: 73 }
+        );
+      } finally {
+        await utils.release();
+      }
+      // And the empty queues of runs an earlier version finished.
+      await pool.query(
+        `INSERT INTO graphile_worker._private_job_queues (queue_name)
+         SELECT 'workflow_flows:wrun_' || n || ':executor' FROM generate_series(1, 3) AS n`
+      );
+
+      await startQueue({}, { orphanedLeaseIntervalMs: 200 }).start();
+
+      await expect
+        .poll(() => deliveries, { timeout: 10_000, interval: 50 })
+        .toEqual([{ attempt: '1' }]);
+      await expect.poll(jobRows, { timeout: 5_000, interval: 50 }).toEqual([]);
+      await expect
+        .poll(
+          async () =>
+            (
+              await pool.query(
+                'SELECT queue_name FROM graphile_worker._private_job_queues'
+              )
+            ).rows,
+          { timeout: 10_000, interval: 100 }
+        )
+        .toEqual([]);
     }, 30_000);
 
     test("releases a dead executor's job and its per-run queue lock in invoke mode, and only this World's jobs", async () => {
