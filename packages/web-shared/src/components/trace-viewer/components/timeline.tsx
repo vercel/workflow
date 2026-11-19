@@ -539,8 +539,6 @@ const TimelineBar = memo(function TimelineBar({
   );
 });
 
-export { TimelineBar };
-
 // ---------------------------------------------------------------------------
 // DeltaMeasureLine (Alt-key measurement overlays: the selected ↔ hovered
 // measurement, and the ambient consecutive-gap indicators shown without a

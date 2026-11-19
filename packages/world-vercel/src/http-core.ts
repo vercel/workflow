@@ -44,6 +44,7 @@ import {
   NODE_HTTP_BODY_TIMEOUT_MS,
   NODE_HTTP_HEADERS_TIMEOUT_MS,
 } from './http-client.js';
+import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import {
   ErrorType,
   getSpanKind,
@@ -90,6 +91,8 @@ const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'EAI_AGAIN',
   'EPIPE',
   'ETIMEDOUT',
+  // The queue dispatcher's own request deadline (see http-client.ts).
+  QUEUE_REQUEST_DEADLINE_CODE,
 ]);
 
 export function getTransientTransportCode(error: unknown): string | undefined {
@@ -499,7 +502,14 @@ export function errorForResponse(
       code: START_HOOK_CANDIDATE_CANCELLED,
     });
   }
-  if (status === 409) return new EntityConflictError(message);
+  // The code (e.g. `run-already-started`) is the only thing that tells one
+  // conflict from another, so it is kept for the caller.
+  if (status === 409) {
+    return new EntityConflictError(message, {
+      ...(code !== undefined ? { code } : {}),
+      ...(url !== undefined ? { url } : {}),
+    });
+  }
   if (status === 410) {
     if (code === 'stream-expired') {
       const streamDetails =

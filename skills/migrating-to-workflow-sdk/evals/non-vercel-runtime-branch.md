@@ -9,14 +9,16 @@ We are migrating a Temporal workflow to the Workflow SDK, but the app runs on Ho
 - migrated workflow / step structure
 - a note that the workflow / step code can stay the same
 - `World extends Storage, Queue, Streamer`
-- `await getWorld().start?.()`
+- `const world = await getWorld()` followed by `await world.start?.()` (not `getWorld().start?.()`, which never starts the World in v5)
 - a startup helper like:
 
 ```ts
 import { getWorld } from 'workflow/runtime';
 
 export async function startWorkflowWorld(): Promise<void> {
-  await getWorld().start?.();
+  // getWorld() is async in v5: await it before calling start()
+  const world = await getWorld();
+  await world.start?.();
 }
 ```
 
@@ -40,6 +42,8 @@ interface World extends Storage, Queue, Streamer {
 import { getWorld } from 'workflow/runtime';
 
 export async function startWorkflowWorld(): Promise<void> {
-  await getWorld().start?.();
+  // getWorld() is async in v5: await it before calling start()
+  const world = await getWorld();
+  await world.start?.();
 }
 ```

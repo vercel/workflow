@@ -86,11 +86,7 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
-import {
-  getSnapshotThresholdForHandler,
-  isSnapshotThresholdConfigured,
-  isUnencryptedSnapshottingAllowed,
-} from '../vm-mode.js';
+import { getSnapshotThresholdForHandler } from '../vm-mode.js';
 import { getWaitContinuationDispatch } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
@@ -372,16 +368,16 @@ export async function runWorkflowWithQuickJS(params: {
   // `snapshotThreshold` events have been processed since the last one,
   // and resumptions restore the VM and replay only the delta events.
   //
-  // Forced to 0 (pure full replay, always correct) when:
-  // - the World doesn't provide `experimental_snapshots` (optional);
-  // - the run has no encryption key and the handler hasn't opted in with
-  //   WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED. A snapshot is executable VM
-  //   state holding the run's in-memory data; the key is what keeps it
-  //   confidential at rest and authenticates it on restore.
+  // Forced to 0 (pure full replay, always correct) when the World doesn't
+  // provide `experimental_snapshots` (optional). A run without an encryption
+  // key (world-local, world-postgres, or any World that doesn't implement
+  // `getEncryptionKeyForRun`) is snapshotted in plaintext, the same as its
+  // event log and payloads; a run with a key always seals its snapshot, and
+  // `openSnapshot` rejects a plaintext snapshot for it on restore.
   // An invalid policy value disables snapshotting with a warning rather
   // than failing every invocation (see getSnapshotThresholdForHandler).
   const snapshotsStorage = world.experimental_snapshots;
-  let snapshotThreshold = snapshotsStorage
+  const snapshotThreshold = snapshotsStorage
     ? getSnapshotThresholdForHandler(workflowRun, (message) =>
         warnOnce(`snapshot-threshold:${message}`, () =>
           runtimeLogger.warn(
@@ -391,30 +387,6 @@ export async function runWorkflowWithQuickJS(params: {
         )
       )
     : 0;
-  // The configured policy, before the encryption gate below: terminal
-  // cleanup keys on it, so snapshots saved while the gate was open are
-  // still deleted after it closes.
-  const snapshotPolicyThreshold = snapshotThreshold;
-  if (
-    snapshotThreshold > 0 &&
-    !encryptionKey &&
-    !isUnencryptedSnapshottingAllowed()
-  ) {
-    // Only warn when snapshotting was explicitly configured: with the
-    // default threshold, worlds without run encryption keys (world-local,
-    // world-postgres) would otherwise warn on every QuickJS deployment.
-    if (isSnapshotThresholdConfigured(workflowRun)) {
-      warnOnce('snapshot-unencrypted', () =>
-        runtimeLogger.warn(
-          'QuickJS runtime: VM snapshotting is configured but this run has no encryption key; ' +
-            'snapshots are disabled. Set WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1 to store them unencrypted.',
-          { workflowRunId: runId }
-        )
-      );
-    }
-    snapshotThreshold = 0;
-  }
-
   // Try to load a persisted snapshot. Skipped on the first invocation
   // (nothing can have been saved yet) and on any load/decode failure —
   // the fresh-boot full replay below is always a correct fallback (the
@@ -1745,8 +1717,8 @@ export async function runWorkflowWithQuickJS(params: {
     if (!snapshotsStorage) return;
     const mayExist =
       snapshotStored ||
-      (snapshotPolicyThreshold > 0 &&
-        restoredEventCount + seenEventIds.size >= snapshotPolicyThreshold);
+      (snapshotThreshold > 0 &&
+        restoredEventCount + seenEventIds.size >= snapshotThreshold);
     if (!mayExist) return;
     safeWaitUntil(
       Promise.resolve().then(() => snapshotsStorage.delete(runId)),

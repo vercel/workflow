@@ -7,12 +7,13 @@ A response passes only if it:
 3. uses `"use step"` for side effects
 4. keeps `sleep()` in workflow context only
 5. may call `getWritable()` in workflow or step context, but keeps all stream interaction (`getWriter()`, `write()`, `close()`) in step context only
-6. uses step-wrapped `start()` / `getRun()` for child workflows
+6. calls `start()` directly in the workflow for child workflows and collects results with `await run.returnValue` on the returned `Run` (no step wrapper, no `getRun()` in workflow context)
 7. adds `getStepMetadata().stepId` for external idempotent writes
 8. adds hooks/webhooks when the source used signals, wait-for-event, or task tokens
 9. stays framework-agnostic when the target framework is unspecified
 10. does not claim managed execution when the prompt says the target is self-hosted
 11. chooses plain `createWebhook()` for generated callback-URL flows unless the prompt explicitly requires a custom HTTP response; when manual mode is chosen, `request.respondWith()` stays in step context
+12. passes every variable a lifted `step.run()`-style closure read from the enclosing function as a step argument, and moves writes to such variables back into the workflow
 
 ## Sample input for manual check
 

@@ -9,7 +9,9 @@
 import {
   EntityConflictError,
   HookConflictError,
+  RUN_ALREADY_STARTED_CODE,
   RUN_ERROR_CODES,
+  RunExpiredError,
   START_HOOK_ADMISSION_DISABLED,
   START_HOOK_ADMISSION_REJECTED,
   ThrottleError,
@@ -62,6 +64,7 @@ type Decision =
   | 'reject'
   | 'disabled'
   | 'finished'
+  | 'expired'
   | 'admit-on-run-started';
 
 /**
@@ -121,6 +124,9 @@ async function candidate(
       }
       if (decision === 'finished') {
         throw new EntityConflictError('finished');
+      }
+      if (decision === 'expired') {
+        throw new RunExpiredError('expired');
       }
     },
   });
@@ -403,8 +409,8 @@ describe.each([
     expect(bodies).toBe(0);
   });
 
-  it('keeps the ordinary handling of a run that already finished', async () => {
-    const { world, start, listsBeforeRunStarted } = await candidate('finished');
+  it('acknowledges an expiry on a first delivery without reading the log', async () => {
+    const { world, start, listsBeforeRunStarted } = await candidate('expired');
     const info = vi.spyOn(runtimeLogger, 'info');
 
     const result = await world.deliver(start);
@@ -414,14 +420,132 @@ describe.each([
       'Run already finished during setup, skipping',
       expect.anything()
     );
-    // A conflict got past the fence, so the run ended out-of-band: the
-    // first delivery acknowledges without reading the log or restarting.
+    // An expiry is terminal in every World: the run ended, so the first
+    // delivery acknowledges without reading the log or restarting.
     expect(listsBeforeRunStarted).toEqual([0]);
     expect(world.listCalls).toHaveLength(0);
-    expect(info).not.toHaveBeenCalledWith(
-      expect.stringMatching(/run_started refused, setting up again/),
+  });
+
+  it('decides a bare conflict on a first delivery from a full load before acknowledging', async () => {
+    const { world, start, listsBeforeRunStarted } = await candidate('finished');
+    const info = vi.spyOn(runtimeLogger, 'info');
+
+    const result = await world.deliver(start);
+
+    expectAcknowledged(world, result, start);
+    // A conflict does not say the run finished, and the first delivery never
+    // read the log: it restarts once from a full load, whose own run_started
+    // gets the conflict again and is then acknowledged as on the normal path.
+    expect(info).toHaveBeenCalledWith(
+      expect.stringMatching(/run_started conflicted with an earlier start/),
       expect.anything()
     );
+    expect(listsBeforeRunStarted).toHaveLength(2);
+    expect(listsBeforeRunStarted[0]).toBe(0);
+    expect(listsBeforeRunStarted[1]).toBeGreaterThan(0);
+    expect(info).toHaveBeenCalledWith(
+      'Run already finished during setup, skipping',
+      expect.anything()
+    );
+    expect(bodies).toBe(0);
+  });
+
+  it.each([
+    ['run-already-started', RUN_ALREADY_STARTED_CODE],
+    ['a bare conflict', undefined],
+  ] as const)('drives a run an earlier delivery started and left running, when the World answers %s', async (_, code) => {
+    // A World that checks the run's state before the fence answers the
+    // replayed first delivery's run_started with a conflict, not a fence
+    // refusal. The earlier delivery wrote run_started and died.
+    const runId = `wrun_${ulid()}`;
+    const input = await dehydrateWorkflowArguments([1], runId, undefined, []);
+    const executionContext = { workflowVm: currentEngine };
+    const at = new Date();
+    const runStarted: number[] = [];
+    const world: AppendOnlyWorld = new AppendOnlyWorld({
+      fence: true,
+      async beforeCreate(data) {
+        if (data.eventType !== 'run_started') return;
+        runStarted.push(world.listCalls.length);
+        throw new EntityConflictError(
+          'already started',
+          code ? { code } : undefined
+        );
+      },
+    });
+    world.seedLog(
+      {
+        runId,
+        workflowName: 'workflow',
+        deploymentId: 'dpl_test',
+        status: 'running',
+        executionContext,
+        input,
+        startHook: { token: TOKEN, hookId: startHookId(runId) },
+        createdAt: at,
+        updatedAt: at,
+        startedAt: at,
+      } as any,
+      [
+        {
+          eventId: slotToEventId(1),
+          runId,
+          eventType: 'run_created',
+          createdAt: at,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          eventData: {
+            deploymentId: 'dpl_test',
+            workflowName: 'workflow',
+            input,
+            executionContext,
+            startHook: { token: TOKEN, hookId: startHookId(runId) },
+          },
+        },
+        {
+          eventId: slotToEventId(2),
+          runId,
+          eventType: 'run_started',
+          createdAt: at,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+      ] as unknown as Event[]
+    );
+    setWorld(world.asWorld());
+    await workflowEntrypoint(oneStep)(new Request('https://example.test'));
+    const start = world.enqueue(QUEUE, {
+      runId,
+      requestedAt: new Date(),
+      runInput: {
+        input,
+        deploymentId: 'dpl_test',
+        workflowName: 'workflow',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        executionContext,
+        startHook: { token: TOKEN },
+      },
+    });
+    const info = vi.spyOn(runtimeLogger, 'info');
+
+    const result = await world.deliver(start);
+    await world.runUntilIdle();
+
+    expectAcknowledged(world, result, start);
+    // One run_started attempt, before any read; the restart loaded the log,
+    // found the run started, and carried it to completion.
+    expect(runStarted).toEqual([0]);
+    expect(world.listCalls.length).toBeGreaterThan(0);
+    expect(info).toHaveBeenCalledWith(
+      expect.stringMatching(/run_started conflicted with an earlier start/),
+      expect.anything()
+    );
+    expect(info).not.toHaveBeenCalledWith(
+      'Run already finished during setup, skipping',
+      expect.anything()
+    );
+    expect(bodies).toBe(1);
+    const types = world.events.map((e) => e.eventType);
+    expect(types.filter((t) => t === 'run_started')).toHaveLength(1);
+    expect(types).toContain('run_completed');
   });
 
   it.each([

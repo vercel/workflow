@@ -1,5 +1,7 @@
 import {
   EntityConflictError,
+  isRunAlreadyStartedError,
+  RUN_ALREADY_STARTED_CODE,
   RunExpiredError,
   StreamError,
   StreamExpiredError,
@@ -96,6 +98,23 @@ describe('errorForResponse', () => {
   // single source they both delegate to.
   it('maps 409 to EntityConflictError', () => {
     expect(errorForResponse(409, 'boom')).toBeInstanceOf(EntityConflictError);
+  });
+
+  it("keeps a 409's code, so a started run is told apart from a finished one", () => {
+    const started = errorForResponse(409, 'already started', {
+      code: RUN_ALREADY_STARTED_CODE,
+      url: 'https://example.test/v5/runs/wrun_1/events/run_started',
+    });
+    expect(started).toBeInstanceOf(EntityConflictError);
+    expect(isRunAlreadyStartedError(started)).toBe(true);
+    expect((started as EntityConflictError).url).toBe(
+      'https://example.test/v5/runs/wrun_1/events/run_started'
+    );
+
+    const bare = errorForResponse(409, 'conflict');
+    expect(bare).toBeInstanceOf(EntityConflictError);
+    expect((bare as EntityConflictError).code).toBeUndefined();
+    expect(isRunAlreadyStartedError(bare)).toBe(false);
   });
 
   it('maps an unstructured 410 to RunExpiredError', () => {
