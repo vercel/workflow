@@ -87,7 +87,6 @@ import {
   getReplayDivergenceMaxRetries,
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
-  isStartHookSkipLoadEnabled,
   isTurboEnabled,
   isTurboFirstDeliveryAgeAdmitted,
   MAX_BATCH_EVENTS,
@@ -733,11 +732,11 @@ async function runDelivery(
    * message, which turbo never takes (see `admitsTurboStart`): it writes
    * `run_started` without loading the log first.
    * A restart in place has written it already, so takes the normal path.
-   * `WORKFLOW_START_HOOK_SKIP_LOAD=0` disables it alone, and
-   * `WORKFLOW_TURBO=0` with turbo, so such a delivery loads first.
+   * `WORKFLOW_TURBO=0` disables it along with turbo, so such a delivery
+   * loads first.
    */
   let startHookFirstDelivery =
-    isStartHookSkipLoadEnabled() &&
+    isTurboEnabled() &&
     !turbo &&
     runInput?.startHook !== undefined &&
     !prefetchedRun &&

@@ -592,7 +592,7 @@ Writes waiting on the barrier fail instead of writing, so a refused start leaves
 
 #### Turbo configuration
 
-Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo and a start Hook candidate's skipped first load (which `WORKFLOW_START_HOOK_SKIP_LOAD=0` disables on its own): every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
+Set `WORKFLOW_TURBO=0` (or `false`) to disable turbo and a start Hook candidate's skipped first load: every delivery then loads the log, awaits `run_started`, and waits for each inline step's start to commit before its body runs. Use it where first-step bodies are not idempotent, or while debugging.
 
 `WORKFLOW_OPTIMISTIC_INLINE_START=0` (or `false`) keeps turbo's backgrounded `run_started` and skipped load, and makes the first delivery's inline bodies wait for their start to commit. No other value does anything: outside turbo's first delivery there is no optimistic inline start, because only that delivery is known to have no other orchestrator.
 
@@ -612,7 +612,7 @@ The delivery replays against the `run_created` it rebuilt from the message, not 
 
 As under turbo, a first message older than `TURBO_FIRST_DELIVERY_MAX_AGE_MS` is treated as a possible replay of a first delivery that already ran, and loads the log first.
 
-`WORKFLOW_START_HOOK_SKIP_LOAD=0` (or `false`) disables this path alone, leaving turbo on; such a delivery then loads the log before `run_started`, as on the normal path. `WORKFLOW_TURBO=0` disables it along with turbo.
+`WORKFLOW_TURBO=0` (or `false`) disables this path along with turbo; such a delivery then loads the log before `run_started`, as on the normal path. It has no switch of its own: no workflow code runs before `run_started` returns either way, and every answer to that write ends in running the workflow, a full load, a redelivery, or acknowledging a run that has ended.
 
 ### `maxRetries: 0` is at most once per live owner
 
