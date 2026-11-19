@@ -202,7 +202,7 @@ function getCliArgs(): string {
     return '';
   }
 
-  return `--backend vercel --verbose`;
+  return `--backend vercel`;
 }
 
 const awaitCommand = async (
@@ -222,12 +222,17 @@ const awaitCommand = async (
         cwd,
         env: {
           ...process.env,
-          DEBUG: '1',
           WORKFLOW_NO_UPDATE_CHECK: '1',
           ...envOverrides,
+          DEBUG: '',
         },
       });
 
+      const privateBackendUrl = process.env.VERCEL_WORKFLOW_SERVER_URL;
+      const sanitizeOutput = (text: string) =>
+        privateBackendUrl
+          ? text.replaceAll(privateBackendUrl, '[REDACTED]')
+          : text;
       let stdout = '';
       let stderr = '';
 
@@ -236,7 +241,6 @@ const awaitCommand = async (
           const text = Buffer.isBuffer(chunk)
             ? chunk.toString('utf8')
             : String(chunk);
-          process.stdout.write(chunk);
           stdout += text;
         });
       }
@@ -246,13 +250,18 @@ const awaitCommand = async (
           const text = Buffer.isBuffer(chunk)
             ? chunk.toString('utf8')
             : String(chunk);
-          process.stderr.write(chunk);
           stderr += text;
         });
       }
 
       child.on('error', (err) => reject(err));
       child.on('close', (code, signal) => {
+        // Sanitize complete streams before logging or returning them: the URL
+        // can straddle chunks, and reporters persist errors outside CI masking.
+        stdout = sanitizeOutput(stdout);
+        stderr = sanitizeOutput(stderr);
+        if (stdout) process.stdout.write(stdout);
+        if (stderr) process.stderr.write(stderr);
         if (code !== 0) {
           const exitReason = signal
             ? `killed by signal ${signal}`
