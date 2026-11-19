@@ -188,22 +188,28 @@ function EventListViewInner({
         : search.id.id
       : (selectedRow?.entity.key ?? null);
 
-  // Related rows scrolled out of view get a jump-to hint at that edge of the list.
+  // Related rows scrolled out of view get a hint at that edge of the list.
   const [visibleRange, setVisibleRange] = useState({
     startIndex: 0,
     endIndex: 0,
   });
-  const relatedOutOfView = useMemo(() => {
-    const above: number[] = [];
-    const below: number[] = [];
-    if (relatedKey === null) return { above, below };
-    listItems.forEach((item, i) => {
-      if (item.kind !== 'event' || item.row.entity.key !== relatedKey) return;
-      if (i < visibleRange.startIndex) above.push(i);
-      if (i > visibleRange.endIndex) below.push(i);
+  const relatedIndexes = useMemo(
+    () =>
+      listItems.flatMap((item, i) =>
+        item.kind === 'event' && item.row.entity.key === relatedKey ? [i] : []
+      ),
+    [listItems, relatedKey]
+  );
+  const relatedAbove = relatedIndexes.filter(
+    (i) => i < visibleRange.startIndex
+  );
+  const relatedBelow = relatedIndexes.filter((i) => i > visibleRange.endIndex);
+  const scrollToItem = (index: number) =>
+    virtuosoRef.current?.scrollToIndex({
+      index,
+      align: 'center',
+      behavior: 'smooth',
     });
-    return { above, below };
-  }, [listItems, relatedKey, visibleRange]);
 
   // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
@@ -353,8 +359,6 @@ function EventListViewInner({
                     }
                     const { row } = item;
                     const isSelected = selectedEventId === row.event.eventId;
-                    const isRelated =
-                      relatedKey !== null && row.entity.key === relatedKey;
                     return (
                       <EventRow
                         row={row}
@@ -363,8 +367,13 @@ function EventListViewInner({
                         isTabStop={
                           selectedIndex === -1 ? item.index === 0 : isSelected
                         }
-                        isRelated={isRelated}
-                        isUnrelated={relatedKey !== null && !isRelated}
+                        relation={
+                          relatedKey === null
+                            ? undefined
+                            : row.entity.key === relatedKey
+                              ? 'related'
+                              : 'unrelated'
+                        }
                         onSelect={toggleSelectedEvent}
                         showSeparateEventOccurrenceTimestamps={
                           showSeparateEventOccurrenceTimestamps
@@ -374,30 +383,18 @@ function EventListViewInner({
                   }}
                   style={{ flex: 1, minHeight: 0 }}
                 />
-                {relatedOutOfView.above.length > 0 && (
+                {relatedAbove.length > 0 && (
                   <RelatedHint
                     direction="above"
-                    count={relatedOutOfView.above.length}
-                    onClick={() =>
-                      virtuosoRef.current?.scrollToIndex({
-                        index: relatedOutOfView.above.at(-1) ?? 0,
-                        align: 'center',
-                        behavior: 'smooth',
-                      })
-                    }
+                    count={relatedAbove.length}
+                    onClick={() => scrollToItem(relatedAbove.at(-1) ?? 0)}
                   />
                 )}
-                {relatedOutOfView.below.length > 0 && (
+                {relatedBelow.length > 0 && (
                   <RelatedHint
                     direction="below"
-                    count={relatedOutOfView.below.length}
-                    onClick={() =>
-                      virtuosoRef.current?.scrollToIndex({
-                        index: relatedOutOfView.below[0],
-                        align: 'center',
-                        behavior: 'smooth',
-                      })
-                    }
+                    count={relatedBelow.length}
+                    onClick={() => scrollToItem(relatedBelow[0])}
                   />
                 )}
               </div>
@@ -453,35 +450,20 @@ function EventListViewInner({
 }
 
 /**
- * A fade from `color` at `strength` percent to nothing. The stops follow an
- * ease-out curve, so the far end has no visible edge the way a two-stop
- * linear gradient does.
+ * A gradient from `color` at `strength` percent down to nothing. The alpha
+ * eases out, because a two-stop linear gradient ends in a visible edge.
  */
 function easedFade(to: 'top' | 'bottom', color: string, strength: number) {
-  const stops = [
-    [0, 1],
-    [19, 0.738],
-    [34, 0.541],
-    [47, 0.382],
-    [56.5, 0.278],
-    [65, 0.194],
-    [73, 0.126],
-    [80.2, 0.075],
-    [86.1, 0.042],
-    [91, 0.021],
-    [95.2, 0.008],
-    [98.2, 0.002],
-    [100, 0],
-  ].map(
-    ([at, alpha]) =>
-      `color-mix(in oklab, ${color} ${(alpha * strength).toFixed(2)}%, transparent) ${at}%`
-  );
+  const stops = Array.from({ length: 11 }, (_, i) => {
+    const alpha = strength * (1 - i / 10) ** 1.6;
+    return `color-mix(in oklab, ${color} ${alpha.toFixed(1)}%, transparent) ${i * 10}%`;
+  });
   return `linear-gradient(to ${to}, ${stops.join(', ')})`;
 }
 
 /**
- * A glow fading in from one edge of the list: related events are out of view
- * that way. Clicking it scrolls to the nearest one.
+ * A glow at one edge of the list: related events are out of view that way.
+ * Clicking it scrolls to the nearest one.
  */
 function RelatedHint({
   direction,
@@ -493,41 +475,33 @@ function RelatedHint({
   onClick: () => void;
 }) {
   const fadeTo = direction === 'above' ? 'bottom' : 'top';
-  const label = `${count} related ${count === 1 ? 'event' : 'events'} ${direction}`;
+  const label = `${count} related ${count === 1 ? 'event' : 'events'}`;
   return (
     <button
       type="button"
-      aria-label={label}
-      title={label}
+      aria-label={`${label} ${direction}`}
       onClick={onClick}
       className={cn(
         'group absolute inset-x-0 z-10 flex h-10 cursor-pointer justify-end px-3 py-2 outline-none transition-opacity duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] focus-visible:shadow-[inset_0_0_0_2px_var(--ds-focus-color)] starting:opacity-0',
         direction === 'above' ? 'top-0 items-start' : 'bottom-0 items-end'
       )}
     >
-      {/* Rows fade toward the surface here, so the label stays legible over them. */}
+      {/* Fades the rows underneath so the label stays legible. */}
       <span
         aria-hidden
-        className={cn(
-          'pointer-events-none absolute inset-x-0 h-10',
-          direction === 'above' ? 'top-0' : 'bottom-0'
-        )}
+        className="absolute inset-0"
         style={{
           background: easedFade(fadeTo, 'var(--ds-background-100)', 70),
         }}
       />
-      {/* A gradient cannot transition, so its layer fades instead: quickly
-          in on hover, slower back out, with a dip while pressed. */}
+      {/* A gradient cannot transition, so this layer's opacity does. */}
       <span
         aria-hidden
-        className={cn(
-          'pointer-events-none absolute inset-x-0 h-10 opacity-45 transition-opacity duration-300 ease-[ease] group-hover:opacity-100 group-hover:duration-150 group-focus-visible:opacity-100 group-active:opacity-75 group-active:duration-75',
-          direction === 'above' ? 'top-0' : 'bottom-0'
-        )}
+        className="absolute inset-0 opacity-45 transition-opacity duration-300 ease-[ease] group-hover:opacity-100 group-hover:duration-150 group-focus-visible:opacity-100 group-active:opacity-75 group-active:duration-75"
         style={{ background: easedFade(fadeTo, 'var(--ds-blue-500)', 60) }}
       />
       <span className="relative font-medium text-label-12 text-blue-900">
-        {count} related {count === 1 ? 'event' : 'events'}
+        {label}
       </span>
     </button>
   );

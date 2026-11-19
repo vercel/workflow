@@ -194,10 +194,11 @@ export interface EventRowProps {
   isSelected: boolean;
   /** The one row Tab lands on (roving tabindex): the selection, else the first row. */
   isTabStop: boolean;
-  /** The row belongs to the selected event's step, hook, wait or run. */
-  isRelated: boolean;
-  /** Another entity's events are marked as related, and this row is not one of them. */
-  isUnrelated: boolean;
+  /**
+   * Whether the row belongs to the selected event's step, hook, wait or run.
+   * Unset while no entity is marked.
+   */
+  relation?: 'related' | 'unrelated';
   onSelect: (event: Event) => void;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
@@ -208,8 +209,7 @@ export function EventRow({
   index,
   isSelected,
   isTabStop,
-  isRelated,
-  isUnrelated,
+  relation,
   onSelect,
   showSeparateEventOccurrenceTimestamps = false,
 }: EventRowProps) {
@@ -218,18 +218,11 @@ export function EventRow({
   const displayedAt = showSeparateEventOccurrenceTimestamps
     ? new Date(event.createdAt)
     : getEffectiveEventDate(event);
+  // Warning and error rows keep their own fill and text color throughout.
   const isTinted = level === 'warning' || level === 'error';
-  // The stripes go away while related rows are marked, so the only filled
-  // rows are the related ones.
-  const zebra = !isTinted && !isRelated && !isUnrelated && index % 2 === 1;
-  // Warnings and errors stay at full strength next to a related entity.
-  const isMuted = isUnrelated && !isTinted;
-  // Tinted rows keep one color throughout.
-  const secondaryClass = isTinted
-    ? undefined
-    : isMuted
-      ? 'text-gray-700'
-      : 'text-gray-900';
+  const isRelated = relation === 'related';
+  const isMuted = relation === 'unrelated' && !isTinted;
+  const secondaryClass = isTinted || isMuted ? undefined : 'text-gray-900';
 
   return (
     <div
@@ -247,9 +240,9 @@ export function EventRow({
       className={cn(
         'mx-1 mt-px flex h-6 cursor-pointer items-center rounded-md font-mono text-[13px] leading-5 outline-none focus-visible:relative focus-visible:z-10 focus-visible:shadow-[0_0_0_2px_var(--ds-focus-color)]',
         LEVEL_ROW_CLASS[level],
-        zebra && 'bg-gray-alpha-100',
+        !isTinted && !relation && index % 2 === 1 && 'bg-gray-alpha-100',
         isRelated && !isTinted && 'bg-blue-300/50 hover:bg-blue-300/75',
-        isMuted && 'text-gray-700',
+        isMuted && 'text-gray-700 [&_svg]:text-gray-700',
         isSelected && LEVEL_SELECTED_CLASS[level]
       )}
     >
@@ -268,15 +261,7 @@ export function EventRow({
           ? formatSinceStart(row.sinceStartMs)
           : ''}
       </div>
-      <div
-        className={cn(
-          CELL,
-          COL.name,
-          'gap-2',
-          isMuted && '[&_svg]:text-gray-700'
-        )}
-        title={name || undefined}
-      >
+      <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
         <ResourceIcon
           resource={row.resource}
           isErrored={level === 'error'}
