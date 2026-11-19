@@ -1,5 +1,13 @@
 # @workflow/rollup
 
+## 5.0.12
+
+### Patch Changes
+
+- [#5568](https://github.com/vercel/workflow/pull/5568) [`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc) Thanks [@abhiramshaji-cyber](https://github.com/abhiramshaji-cyber)! - Read decorator options from tsconfig in the Rollup transform, so Nitro and Nuxt builds parse decorators in workflow files when `experimentalDecorators` is on.
+- Updated dependencies [[`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc)]:
+  - @workflow/builders@5.1.3
+
 ## 5.0.11
 
 ### Patch Changes
