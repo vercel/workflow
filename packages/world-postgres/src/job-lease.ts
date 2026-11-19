@@ -88,12 +88,13 @@ function isValidStaleSeconds(value: number): boolean {
 }
 
 /**
- * Thrown in place of a delivery's result when this process can no longer show
- * that it holds the delivery's job lock. Graphile Worker completes a job with a
- * delete that is not fenced on the lock holder, so acknowledging here could
- * delete the row of a successor that has already claimed the job. Failing is
- * fenced on the holder, so it changes nothing; the job is (or has been)
- * redelivered instead, which the at-least-once contract already allows.
+ * Thrown in place of a delivery's result when this process no longer holds
+ * the delivery's job lock. The delivery acknowledges with a delete fenced on
+ * the lock holder (see {@link JobLeases.wrap}), which then deletes nothing:
+ * the job belongs to a successor that claimed it, or is waiting for one.
+ * Failing is fenced on the holder too, so it changes nothing; the job is (or
+ * has been) redelivered instead, which the at-least-once contract already
+ * allows.
  */
 export class JobLockLostError extends Error {
   readonly jobId: string;
@@ -131,6 +132,41 @@ const renewSql = (schema: string) => `WITH held AS (
     AND job_queues.locked_by = renewed.locked_by
 )
 SELECT id::text AS id, locked_by AS worker FROM renewed`;
+
+// Acknowledge a delivery: delete its job only while the worker that claimed it
+// still holds the lock, and unlock the job's named queue (a job an earlier
+// version put in a per-run named queue), as Graphile Worker's own completion
+// does. That completion, which runs next, is a delete fenced on nothing, so a
+// delivery whose job was released and claimed again would otherwise delete
+// its successor's row. Once this statement deleted the row, Graphile Worker's
+// completion finds none and changes nothing. No row back means the lock was
+// lost.
+const acknowledgeSql = (schema: string) => `WITH acknowledged AS (
+  DELETE FROM ${schema}._private_jobs AS jobs
+  WHERE jobs.id = $1::bigint AND jobs.locked_by = $2::text
+  RETURNING jobs.id, jobs.job_queue_id
+), unlocked_queues AS (
+  UPDATE ${schema}._private_job_queues AS job_queues
+  SET locked_at = NULL, locked_by = NULL
+  FROM acknowledged
+  WHERE job_queues.id = acknowledged.job_queue_id
+    AND job_queues.locked_by = $2::text
+)
+SELECT id::text AS id FROM acknowledged`;
+
+// Who holds a job now, once an acknowledgement that failed in flight is
+// retried and finds nothing to delete. No row: the job is gone (that attempt
+// committed, or a successor completed it).
+const jobHolderSql = (schema: string) =>
+  `SELECT locked_by FROM ${schema}._private_jobs WHERE id = $1::bigint`;
+
+/**
+ * Waits before each retry of an acknowledgement that failed in flight (a
+ * dropped connection), as Graphile Worker retries its own completion: a
+ * delivery whose handler succeeded is not failed, and run again, for one
+ * failed statement.
+ */
+const ACKNOWLEDGE_RETRY_DELAYS_MS = [100, 500, 2_000];
 
 // Graphile Worker's own stale-lock reset (`resetLockedAt`), with a configurable
 // window and scoped to this World's task identifiers so that other
@@ -259,14 +295,21 @@ interface HeldJob {
   workerId: string;
   taskIdentifier: string | undefined;
   lost: boolean;
-  /** Monotonic ms at which a renewal that found the job still ours was sent. */
-  confirmedAt: number;
+  /**
+   * Set once the delivery sends its acknowledgement, which deletes the job:
+   * a renewal that misses the job from then on is not a lost lock.
+   */
+  acknowledging: boolean;
 }
 
 export interface JobLeases {
   /** Whether renewal and the stale-lock sweep are on. */
   readonly enabled: boolean;
-  /** Renew a task's job lock while it runs, and refuse to acknowledge a delivery whose lock was lost. */
+  /**
+   * Renew a task's job lock while it runs, and acknowledge the delivery
+   * fenced on the lock holder: a delivery whose lock was lost throws
+   * {@link JobLockLostError} instead of completing.
+   */
   wrap(task: GraphileTask): GraphileTask;
   /**
    * Start releasing this World's jobs whose locks went unrenewed. Idempotent.
@@ -322,9 +365,6 @@ export function createJobLeases(
   const staleMs = staleSeconds * 1000;
   const renewIntervalMs = Math.min(10_000, Math.max(250, staleMs / 4));
   const sweepIntervalMs = Math.max(500, staleMs / 2);
-  // A delivery whose lock was last shown to be ours within this window cannot
-  // have been swept yet, and has at least this long before it could be.
-  const confirmWindowMs = staleMs / 2;
 
   // The schema Graphile Worker itself resolves when no `schema` option is
   // passed, which this World never passes.
@@ -332,6 +372,8 @@ export function createJobLeases(
     process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
   );
   const renewQuery = renewSql(schema);
+  const acknowledgeQuery = acknowledgeSql(schema);
+  const jobHolderQuery = jobHolderSql(schema);
   const sweepQuery =
     scope === 'all' ? sweepSql(schema) : runLeaseSweepSql(schema);
   const cleanupQuery = cleanupSql(schema);
@@ -427,9 +469,8 @@ export function createJobLeases(
   }
 
   async function renewHeldJobs() {
-    const jobs = [...held].filter((job) => !job.lost);
+    const jobs = [...held].filter((job) => !job.lost && !job.acknowledging);
     if (jobs.length === 0) return;
-    const sentAt = now();
     try {
       const { rows } = await pool.query<RenewedRow>(renewQuery, [
         jobs.map((job) => job.id),
@@ -437,11 +478,11 @@ export function createJobLeases(
       ]);
       const renewed = new Set(rows.map((row) => holder(row.id, row.worker)));
       for (const job of jobs) {
-        // A job released since the query was sent was acknowledged by Graphile
-        // Worker (which deletes it); it was not lost.
-        if (!held.has(job)) continue;
-        if (renewed.has(holder(job.id, job.workerId))) job.confirmedAt = sentAt;
-        else markLost(job);
+        // A job acknowledged since the query was sent was deleted by its
+        // acknowledgement; it was not lost. The acknowledgement itself
+        // tells a lost lock apart.
+        if (!held.has(job) || job.acknowledging) continue;
+        if (!renewed.has(holder(job.id, job.workerId))) markLost(job);
       }
       if (renewFailing) {
         renewFailing = false;
@@ -473,20 +514,52 @@ export function createJobLeases(
     }
   }
 
-  async function confirm(job: HeldJob) {
+  /**
+   * Acknowledge a finished delivery, fenced on its lock holder (see
+   * `acknowledgeSql`). Fenced on every delivery, not only on those whose
+   * renewals stalled: when it may be released depends on the window of
+   * whichever process sweeps, which can be shorter than this one's while
+   * `jobLockStaleSeconds` is being changed across processes. It replaces
+   * Graphile Worker's delete rather than adding a write: that delete then
+   * matches no row.
+   */
+  async function acknowledge(job: HeldJob) {
     if (job.lost) throw new JobLockLostError(job.id, job.workerId);
-    if (stopped || now() - job.confirmedAt <= confirmWindowMs) return;
-    // Renewals have not shown the lock to be ours recently (a slow pool or a
-    // database outage), so show it now: a successful renewal also keeps the
-    // job from being swept before Graphile Worker acknowledges it.
-    const { rows } = await pool.query<RenewedRow>(renewQuery, [
-      [job.id],
-      [job.workerId],
-    ]);
-    if (!rows.some((row) => row.id === job.id && row.worker === job.workerId)) {
+    // Stopped only once the runner drained its deliveries; a delivery still
+    // running then is acknowledged by Graphile Worker, as before renewal.
+    if (stopped) return;
+    job.acknowledging = true;
+    for (let retry = 0; ; retry++) {
+      let acknowledged: boolean;
+      try {
+        acknowledged = await acknowledgeOnce(job, retry > 0);
+      } catch (error) {
+        if (retry >= ACKNOWLEDGE_RETRY_DELAYS_MS.length) throw error;
+        await new Promise((resolve) =>
+          setTimeout(resolve, ACKNOWLEDGE_RETRY_DELAYS_MS[retry])
+        );
+        continue;
+      }
+      if (acknowledged) return;
       markLost(job);
       throw new JobLockLostError(job.id, job.workerId);
     }
+  }
+
+  /**
+   * One attempt at {@link acknowledge}: whether the job is acknowledged, or
+   * `false` when its lock is lost. `afterFailure`: an earlier attempt failed
+   * in flight, and may have committed without its answer arriving; a job
+   * that is gone altogether, as when a successor completed it, then leaves
+   * nothing to acknowledge.
+   */
+  async function acknowledgeOnce(job: HeldJob, afterFailure: boolean) {
+    // The statement matches this job's id and holder, so a row back is it.
+    const { rows } = await pool.query(acknowledgeQuery, [job.id, job.workerId]);
+    if (rows.length > 0) return true;
+    if (!afterFailure) return false;
+    const holder = await pool.query(jobHolderQuery, [job.id]);
+    return holder.rows.length === 0;
   }
 
   function scheduleSweep() {
@@ -559,10 +632,8 @@ export function createJobLeases(
           return;
         }
         // Held, and renewed, from the claim on: a registration that stalls
-        // must neither keep the lock from being renewed nor make it look
-        // more recently shown to be ours than it is, or a delivery could
-        // acknowledge, unfenced, a job that a successor holds by then.
-        const job: HeldJob = { ...identity, lost: false, confirmedAt: now() };
+        // must not keep the lock from being renewed.
+        const job: HeldJob = { ...identity, lost: false, acknowledging: false };
         held.add(job);
         scheduleRenewal();
         try {
@@ -572,7 +643,7 @@ export function createJobLeases(
             await register([identity.workerId]);
           }
           await task(payload, helpers);
-          await confirm(job);
+          await acknowledge(job);
         } finally {
           held.delete(job);
           if (held.size === 0 && renewTimer) {

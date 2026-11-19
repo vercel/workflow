@@ -17,6 +17,8 @@ const isRenewal = (sql: string) => sql.includes('unnest(');
 const isSweep = (sql: string) => sql.includes('_private_tasks');
 const isRegistration = (sql: string) =>
   sql.startsWith('INSERT INTO "workflow"."workflow_job_lock_holders"');
+const isAcknowledgement = (sql: string) =>
+  sql.startsWith('WITH acknowledged AS');
 const isCleanup = (sql: string) =>
   sql.startsWith('DELETE FROM "workflow"."workflow_job_lock_holders"');
 
@@ -30,11 +32,19 @@ function renewedRows(params?: unknown[]) {
   return { rows: ids.map((id, i) => ({ id, worker: workers[i] })) };
 }
 
+/** The row an acknowledgement returns when its worker still holds the job. */
+function acknowledgedRow(params?: unknown[]) {
+  const [id] = params as [string, string];
+  return { rows: [{ id }] };
+}
+
 /**
- * A pool whose renewals renew every job they are asked about. Registrations
- * of renewing workers go to `register`, so `query` sees the rest.
+ * A pool whose renewals renew every job they are asked about, and whose
+ * acknowledgements find every job still held. Registrations of renewing
+ * workers go to `register` and acknowledgements to `acknowledge`, so `query`
+ * sees the rest.
  */
-function renewingPool(query?: Query, register?: Query) {
+function renewingPool(query?: Query, register?: Query, acknowledge?: Query) {
   return {
     query: vi.fn<Query>(
       query ??
@@ -44,16 +54,24 @@ function renewingPool(query?: Query, register?: Query) {
         })
     ),
     register: vi.fn<Query>(register ?? (async () => ({ rows: [] }))),
+    acknowledge: vi.fn<Query>(
+      acknowledge ?? (async (_sql, params) => acknowledgedRow(params))
+    ),
   };
 }
 
-/** The pool `createJobLeases` sees: registrations routed to `register`. */
+/**
+ * The pool `createJobLeases` sees: registrations routed to `register` and
+ * acknowledgements to `acknowledge`.
+ */
 function routed(pool: ReturnType<typeof renewingPool>) {
   return {
     query: (sql: string, params?: unknown[]) =>
       isRegistration(sql)
         ? pool.register(sql, params)
-        : pool.query(sql, params),
+        : isAcknowledgement(sql)
+          ? pool.acknowledge(sql, params)
+          : pool.query(sql, params),
   } as any;
 }
 
@@ -185,6 +203,14 @@ describe('createJobLeases', () => {
 
     done.resolve();
     await expect(delivery).resolves.toBeUndefined();
+    // Acknowledged with a delete fenced on the worker that claimed the job,
+    // which also unlocks its named queue, as Graphile Worker's own does.
+    expect(pool.acknowledge).toHaveBeenCalledTimes(1);
+    const [ackSql, ackParams] = pool.acknowledge.mock.calls[0];
+    expect(ackSql).toContain('DELETE FROM "graphile_worker"._private_jobs');
+    expect(ackSql).toContain('jobs.locked_by = $2::text');
+    expect(ackSql).toContain('UPDATE "graphile_worker"._private_job_queues');
+    expect(ackParams).toEqual(['7', 'worker-a']);
     await advance(60_000);
     expect(pool.query).toHaveBeenCalledTimes(2);
     await leases.stop();
@@ -248,6 +274,7 @@ describe('createJobLeases', () => {
     const error = await outcome;
     expect(error).toBeInstanceOf(JobLockLostError);
     expect(error).toMatchObject({ jobId: '7', workerId: 'worker-a' });
+    expect(pool.acknowledge).not.toHaveBeenCalled();
     await leases.stop();
   });
 
@@ -323,15 +350,10 @@ describe('createJobLeases', () => {
     await leases.stop();
   });
 
-  it('shows the lock is still held before acknowledging when renewals have stalled', async () => {
-    let renewals = 0;
+  it('acknowledges fenced on the holder while a renewal is stalled', async () => {
     const stalled = Promise.withResolvers<{ rows: Array<{ id: string }> }>();
-    const pool = renewingPool(async (_sql, params) => {
-      renewals++;
-      // The timer's renewal never gets a connection; the final one does.
-      if (renewals === 1) return stalled.promise;
-      return renewedRows(params);
-    });
+    // The timer's renewal never gets a connection.
+    const pool = renewingPool(() => stalled.promise);
     const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
     const delivery = leases.wrap(task)('payload', job('7'));
@@ -340,26 +362,149 @@ describe('createJobLeases', () => {
     await advance(15_000);
     done.resolve();
     await expect(delivery).resolves.toBeUndefined();
-    expect(pool.query).toHaveBeenCalledTimes(2);
-    expect(pool.query.mock.calls[1][1]).toEqual([['7'], ['worker-a']]);
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    expect(pool.acknowledge.mock.calls.map(([, params]) => params)).toEqual([
+      ['7', 'worker-a'],
+    ]);
     stalled.resolve({ rows: [] });
+    await advance(0);
+    expect(console.warn).not.toHaveBeenCalled();
     await leases.stop();
   });
 
-  it('refuses to acknowledge when that final check finds the lock gone', async () => {
-    const pool = renewingPool(async () => ({ rows: [] }));
-    const leases = createJobLeases(routed(pool), {
-      staleSeconds: 20,
-      now,
-    });
-    const delivery = leases.wrap(async () => {
-      // A delivery that blocked its event loop past half the window: no
-      // renewal ran while it held the thread.
-      clock += 11_000;
-    })('payload', job('7'));
+  // https://github.com/vercel/workflow/issues/5272: a renewal has just found
+  // the lock ours, but a peer that sweeps with a shorter window (while
+  // `jobLockStaleSeconds` is being changed across processes) released it
+  // anyway, and a successor claimed the job. Only the acknowledgement's own
+  // fence can tell.
+  it('refuses to acknowledge a job claimed again right after a renewal found it ours', async () => {
+    const pool = renewingPool(undefined, undefined, async () => ({
+      rows: [],
+    }));
+    const leases = createJobLeases(routed(pool), { staleSeconds: 300, now });
+    const { task, done } = pendingTask();
+    const delivery = leases.wrap(task)('payload', job('7'));
+    const outcome = delivery.catch((error: unknown) => error);
 
-    await expect(delivery).rejects.toBeInstanceOf(JobLockLostError);
+    await advance(10_000);
     expect(pool.query).toHaveBeenCalledTimes(1);
+    done.resolve();
+    expect(await outcome).toMatchObject({
+      name: 'JobLockLostError',
+      jobId: '7',
+      workerId: 'worker-a',
+    });
+    expect(pool.acknowledge).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Lost the lock on Graphile job 7')
+    );
+    await leases.stop();
+  });
+
+  it('does not count a renewal that misses the job its own acknowledgement deleted as a lost lock', async () => {
+    const renewal = Promise.withResolvers<{ rows: Array<{ id: string }> }>();
+    const acknowledgement = Promise.withResolvers<{
+      rows: Array<{ id: string }>;
+    }>();
+    const pool = renewingPool(
+      () => renewal.promise,
+      undefined,
+      () => acknowledgement.promise
+    );
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const { task, done } = pendingTask();
+    const delivery = leases.wrap(task)('payload', job('7'));
+
+    await advance(5_000);
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    done.resolve();
+    await advance(0);
+    expect(pool.acknowledge).toHaveBeenCalledTimes(1);
+    // The acknowledgement deleted the row before the renewal reached it.
+    renewal.resolve({ rows: [] });
+    await advance(0);
+    acknowledgement.resolve({ rows: [{ id: '7' }] });
+    await expect(delivery).resolves.toBeUndefined();
+    expect(console.warn).not.toHaveBeenCalled();
+    // No renewal is sent for a job being acknowledged.
+    await advance(5_000);
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    await leases.stop();
+  });
+
+  it('retries an acknowledgement that cannot reach the database, then fails the delivery', async () => {
+    const pool = renewingPool(undefined, undefined, async () => {
+      throw new Error('connection terminated');
+    });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const outcome = leases
+      .wrap(async () => {})('payload', job('7'))
+      .catch((error: unknown) => error);
+
+    await advance(100 + 500 + 2_000);
+    // Graphile Worker then fails the job, fenced on the holder, and it is
+    // delivered again: at least once.
+    expect(await outcome).toMatchObject({ message: 'connection terminated' });
+    expect(pool.acknowledge).toHaveBeenCalledTimes(4);
+    await leases.stop();
+  });
+
+  // The first attempt committed, but its answer was lost with the connection:
+  // the retry finds nothing to delete, and nothing holds the job.
+  it('counts a job gone after an acknowledgement failed in flight as acknowledged', async () => {
+    let attempts = 0;
+    const pool = renewingPool(
+      async (sql) => {
+        expect(sql).toContain('SELECT locked_by FROM');
+        return { rows: [] };
+      },
+      undefined,
+      async () => {
+        if (attempts++ === 0) throw new Error('connection terminated');
+        return { rows: [] };
+      }
+    );
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const delivery = leases.wrap(async () => {})('payload', job('7'));
+
+    await advance(100);
+    await expect(delivery).resolves.toBeUndefined();
+    expect(pool.acknowledge).toHaveBeenCalledTimes(2);
+    expect(console.warn).not.toHaveBeenCalled();
+    await leases.stop();
+  });
+
+  it('refuses to acknowledge when the retry finds the job held by a successor', async () => {
+    let attempts = 0;
+    const pool = renewingPool(
+      async () => ({ rows: [{ id: '7', worker: 'worker-successor' }] }),
+      undefined,
+      async () => {
+        if (attempts++ === 0) throw new Error('connection terminated');
+        return { rows: [] };
+      }
+    );
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const outcome = leases
+      .wrap(async () => {})('payload', job('7'))
+      .catch((error: unknown) => error);
+
+    await advance(100);
+    expect(await outcome).toBeInstanceOf(JobLockLostError);
+    expect(pool.acknowledge).toHaveBeenCalledTimes(2);
+    await leases.stop();
+  });
+
+  it('does not acknowledge a delivery that failed', async () => {
+    const pool = renewingPool();
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+
+    await expect(
+      leases.wrap(async () => {
+        throw new Error('step failed');
+      })('payload', job('7'))
+    ).rejects.toThrow('step failed');
+    expect(pool.acknowledge).not.toHaveBeenCalled();
     await leases.stop();
   });
 
@@ -378,6 +523,8 @@ describe('createJobLeases', () => {
     expect(pool.query).not.toHaveBeenCalled();
     done.resolve();
     await Promise.all(deliveries);
+    // Left to Graphile Worker's own completion.
+    expect(pool.acknowledge).not.toHaveBeenCalled();
     await leases.stop();
   });
 
@@ -596,20 +743,15 @@ describe('createJobLeases', () => {
     await leases.stop();
   });
 
-  it('shows the lock is still held before acknowledging when only the registration stalled it', async () => {
+  it('refuses to acknowledge a job lost while only the registration stalled it', async () => {
     const registration = Promise.withResolvers<{ rows: [] }>();
     const stalledRenewal = Promise.withResolvers<{ rows: [] }>();
     let lost = false;
     const pool = renewingPool(
-      async (sql) => {
-        if (isRenewal(sql)) {
-          // Renewals stall on the pool while the registration holds it.
-          if (!lost) return stalledRenewal.promise;
-          return { rows: [] };
-        }
-        return { rows: [] };
-      },
-      () => registration.promise
+      // Renewals stall on the pool while the registration holds it.
+      async (sql) => (isRenewal(sql) ? stalledRenewal.promise : { rows: [] }),
+      () => registration.promise,
+      async (_sql, params) => (lost ? { rows: [] } : acknowledgedRow(params))
     );
     const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const delivery = leases.wrap(async () => {})('payload', job('7'));
@@ -620,8 +762,8 @@ describe('createJobLeases', () => {
     await advance(30_000);
     lost = true;
     registration.resolve({ rows: [] });
-    // The lock was last shown to be ours at the claim, 30 seconds ago, so the
-    // delivery renews once more before acknowledging, and finds it gone.
+    // No renewal came back to show the lock lost; the acknowledgement's
+    // fence finds it gone.
     expect(await settled).toBeInstanceOf(JobLockLostError);
     stalledRenewal.resolve({ rows: [] });
     await leases.stop();

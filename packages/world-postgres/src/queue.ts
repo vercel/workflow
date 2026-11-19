@@ -60,6 +60,7 @@ import {
   type JobLeasePolicy,
   resolveJobLeasePolicy,
 } from './job-lease.js';
+import { createLegacyJobQueues } from './legacy-job-queues.js';
 import { MessageData } from './message.js';
 import { createRunLeases, isMissingTable, type LeftJob } from './run-lease.js';
 
@@ -185,8 +186,10 @@ const MAX_GRAPHILE_JOB_ATTEMPTS =
 export const MAX_COALESCED_RERUNS = 32;
 /**
  * How often a process with a runner recovers orphaned run leases (see
- * `RunLeases.recoverOrphans`). An owner can stop being able to run only
- * after the stale-lock sweep released it, so this need not be frequent.
+ * `RunLeases.recoverOrphans`), and removes the per-run Graphile queues that
+ * earlier versions left (see `legacy-job-queues.ts`). An owner can stop
+ * being able to run only after the stale-lock sweep released it, so this
+ * need not be frequent.
  */
 const ORPHANED_LEASE_INTERVAL_MS = 60_000;
 /**
@@ -380,6 +383,9 @@ export function createQueue(
     config.jobLockStaleSeconds,
     internal?.defaultJobLockStaleSeconds
   );
+  const legacyJobQueues = createLegacyJobQueues(pool, {
+    jobPrefix: resolveJobPrefix({ jobPrefix: config.jobPrefix }),
+  });
   const runLeases = createRunLeases(
     pool,
     internal?.maxDeferredPerLease !== undefined
@@ -1664,10 +1670,12 @@ export function createQueue(
   let orphanTimer: ReturnType<typeof setTimeout> | undefined;
   let recoveringOrphans: Promise<void> | undefined;
   let orphanRecoveryFailing = false;
+  let legacyQueueReclaimFailing = false;
 
   /**
    * Periodically recover the run leases whose owner can no longer run (see
-   * `RunLeases.recoverOrphans`), with jitter so the processes sharing the
+   * `RunLeases.recoverOrphans`), and remove the per-run Graphile queues
+   * earlier versions left, with jitter so the processes sharing the
    * database spread their checks. Every process with a runner recovers
    * every deployment's leases: a pinned deployment whose workers scaled to
    * zero runs no process of its own to recover them.
@@ -1677,10 +1685,12 @@ export function createQueue(
     orphanTimer = setTimeout(
       () => {
         orphanTimer = undefined;
-        recoveringOrphans = recoverOrphanedLeases().finally(() => {
-          recoveringOrphans = undefined;
-          scheduleOrphanRecovery();
-        });
+        recoveringOrphans = recoverOrphanedLeases()
+          .then(reclaimLegacyJobQueues)
+          .finally(() => {
+            recoveringOrphans = undefined;
+            scheduleOrphanRecovery();
+          });
       },
       orphanedLeaseIntervalMs * (0.8 + 0.4 * Math.random())
     );
@@ -1710,6 +1720,40 @@ export function createQueue(
         );
       }
       orphanRecoveryFailing = true;
+    }
+  }
+
+  /**
+   * Remove the per-run Graphile queues earlier versions left behind (see
+   * `legacy-job-queues.ts`). Every process with a runner does, for every
+   * deployment sharing the job prefix, as for orphaned leases.
+   */
+  async function reclaimLegacyJobQueues() {
+    try {
+      const reclaimed = await legacyJobQueues.reclaim(() => closing);
+      legacyQueueReclaimFailing = false;
+      if (process.env.WORKFLOW_JSON_MODE === '1') return;
+      if (reclaimed.queues > 0) {
+        console.warn(
+          `[world-postgres] Removed ${reclaimed.queues} empty per-run Graphile job queue(s) left by an earlier version`
+        );
+      }
+      if (reclaimed.jobs > 0) {
+        console.warn(
+          `[world-postgres] Moved ${reclaimed.jobs} Graphile job(s) whose named queue no longer exists out of it, so that they run`
+        );
+      }
+    } catch (error) {
+      if (
+        !legacyQueueReclaimFailing &&
+        process.env.WORKFLOW_JSON_MODE !== '1'
+      ) {
+        console.warn(
+          '[world-postgres] Failed to remove per-run Graphile job queues left by an earlier version; retrying:',
+          error
+        );
+      }
+      legacyQueueReclaimFailing = true;
     }
   }
 
