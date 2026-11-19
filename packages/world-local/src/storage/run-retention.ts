@@ -11,6 +11,8 @@
  * (`secure_delete`), and the WAL, which still holds the old pages, is
  * checkpointed and truncated right after the purge commits.
  *
+ * The run's VM snapshot, if it has one, is deleted in the same transaction.
+ *
  * A step still running when the run finished (a `Promise.race` loser) may
  * settle after it, and a stream may first be written after it: those writes
  * are scrubbed (`purgeLateStepWrite`) or refused as they land (`ranPurge`).
@@ -40,14 +42,20 @@ export function purgesUserDataOnFinish(
 }
 
 /**
- * Whether a run's user data was purged when it finished: it is terminal and
- * asked for zero retention. Not `expiredAt`, which is a retention deadline.
+ * Whether a run's user data is gone, so a late write to it (a step still
+ * running when the run finished) must be scrubbed or refused: the run is
+ * terminal and either asked for zero retention, or had its data deleted on
+ * demand (`runs.deleteDataMany`), which stamps an `expiredAt` that has
+ * passed. A future `expiredAt` is a retention deadline, not a deletion.
  */
 export function ranPurge(run: WorkflowRun | undefined): boolean {
+  if (run === undefined || !isTerminalWorkflowRunStatus(run.status)) {
+    return false;
+  }
+  if (readRunRetention(run.attributes).mode === 'none') return true;
   return (
-    run !== undefined &&
-    isTerminalWorkflowRunStatus(run.status) &&
-    readRunRetention(run.attributes).mode === 'none'
+    run.expiredAt !== undefined &&
+    new Date(run.expiredAt).getTime() <= Date.now()
   );
 }
 
@@ -82,6 +90,12 @@ export function purgeRunData(db: Database, runId: string): void {
   }
 
   purgeRunStreams(db, runId);
+
+  // A suspended run's VM snapshot holds its heap, and so the input and every
+  // value it computed from it; it may be stored unencrypted. A finished run
+  // is never resumed from it, and a snapshot load does not check the run's
+  // `expiredAt`, so it goes.
+  db.run('DELETE FROM snapshots WHERE run_id = ?', runId);
 }
 
 /**

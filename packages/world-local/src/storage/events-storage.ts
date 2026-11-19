@@ -996,11 +996,11 @@ export function createEventsStorage(
       );
     }
 
-    // A step still running when its zero-retention run ended (a
-    // `Promise.race` loser, or one on another delivery) settles after the
-    // purge: only a running step writes on an ended run (see Step ordering).
-    // What it writes is scrubbed here, in the same transaction, so the run's
-    // data stays gone.
+    // A step still running when its run ended (a `Promise.race` loser, or
+    // one on another delivery) can settle after the run's data was deleted,
+    // by zero retention or on demand: only a running step writes on an ended
+    // run (see Step ordering). What it writes is scrubbed here, in the same
+    // transaction, so the run's data stays gone.
     const lateOnPurgedRun =
       !runPurged &&
       step !== undefined &&
