@@ -474,6 +474,30 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(usage.dataWritten.byEntity).toEqual(readBack);
   });
 
+  it('does not count a dynamic run’s code, which is kept on the run', async () => {
+    const created = await storage.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: WORKFLOW,
+        input: bytes(40),
+        dynamicWorkflowCode: bytes(900),
+      },
+    } as never);
+    const runId = created.run!.runId;
+    // The code is on the run, where replay reads it, not on its event.
+    expect((await storage.runs.get(runId)).dynamicWorkflowCode).toEqual(
+      bytes(900)
+    );
+    const usage = await usageOf(runId);
+    // Only the input: the docs list the code as not counted locally.
+    expect(usage.dataWritten.byEntity.run).toBe(40);
+    expect(usage.dataWritten.byEntity).toEqual(
+      await payloadBytesReadBack(runId)
+    );
+  });
+
   it('reads the payload of every event type that has one', () => {
     // Every type the World strips payloads from is one Data Written counts.
     const withPayloads = EventTypeSchema.options.filter(

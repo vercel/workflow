@@ -28,16 +28,10 @@ import type { Database } from '../db/index.js';
  * Data Written does not count.
  */
 const PAYLOAD_PATHS: Readonly<Record<string, readonly string[]>> = {
-  run_created: [
-    '$.eventData.input',
-    '$.eventData.dynamicWorkflowCode',
-    '$.eventData.startHook.metadata',
-  ],
-  run_started: [
-    '$.eventData.input',
-    '$.eventData.dynamicWorkflowCode',
-    '$.eventData.startHook.metadata',
-  ],
+  // A dynamic run's code is kept on the run, not on its events, so it is
+  // not here.
+  run_created: ['$.eventData.input', '$.eventData.startHook.metadata'],
+  run_started: ['$.eventData.input', '$.eventData.startHook.metadata'],
   run_completed: ['$.eventData.output'],
   run_failed: ['$.eventData.error'],
   step_created: ['$.eventData.input'],
