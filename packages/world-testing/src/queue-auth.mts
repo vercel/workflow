@@ -231,13 +231,21 @@ async function waitForStatus(
   );
 }
 
-/** Runs the `wf` CLI against the app's data directory and base URL. */
-function wf(server: Server, args: string[]) {
+/**
+ * Runs the `wf` CLI against the app's data directory and base URL.
+ *
+ * Asynchronously: `spawnSync` would block this process's event loop for the
+ * CLI's whole run, which on a slow Windows runner can outlast the server's
+ * 5 s keep-alive timeout. The server then closes this process's idle
+ * keep-alive connections while nothing here can see it, and the next request
+ * reuses one and fails with `ECONNRESET`.
+ */
+async function wf(server: Server, args: string[]): Promise<string> {
   const bin = createRequire(import.meta.url).resolve(
     '@workflow/cli/bin/run.js'
   );
-  const result = cp.spawnSync(process.execPath, [bin, ...args], {
-    encoding: 'utf8',
+  const child = cp.spawn(process.execPath, [bin, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 60_000,
     env: {
       ...process.env,
@@ -246,8 +254,20 @@ function wf(server: Server, args: string[]) {
       WORKFLOW_LOCAL_BASE_URL: `http://localhost:${server.info.port}`,
     },
   });
-  const output = `${result.stdout}${result.stderr}`;
-  expect(result.status, output).toBe(0);
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding('utf8').on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const status = await new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code) => resolve(code));
+  });
+  const output = `${stdout}${stderr}`;
+  expect(status, output).toBe(0);
   return output;
 }
 
@@ -654,7 +674,7 @@ export function queueAuth(world: string) {
       const keyFile = path.join(server.dataDir, 'queue-auth-key');
       const appKey = await readKeyFile(server.dataDir);
       const { runId: parked } = await parkedRun(fetcher);
-      wf(server, ['cancel', parked]);
+      await wf(server, ['cancel', parked]);
       await waitForStatus(fetcher, parked, 'cancelled');
 
       const { runId: done } = await fetcher.invoke(
@@ -663,7 +683,7 @@ export function queueAuth(world: string) {
         [2, 3]
       );
       await waitForStatus(fetcher, done, 'completed');
-      const output = wf(server, ['start', done]);
+      const output = await wf(server, ['start', done]);
       const recreated = output
         .match(/wrun_[0-9A-Z]{26}/g)
         ?.find((id) => id !== done);

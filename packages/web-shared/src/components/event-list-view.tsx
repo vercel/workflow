@@ -1,6 +1,7 @@
 'use client';
 
 import type { Event, WorkflowRun } from '@workflow/world';
+import { AlertCircle } from 'lucide-react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
@@ -9,10 +10,12 @@ import {
   buildEventLookups,
   buildEventRow,
   buildListItems,
+  type EventSearchState,
   getEmptyMessage,
   getEventEntity,
   getFooterLabel,
   getListSource,
+  getSearchHint,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
@@ -65,6 +68,38 @@ interface EventsListProps {
   onViewInTrace?: (spanId: string) => void;
 }
 
+function EmptyState({
+  search,
+  onRetry,
+}: {
+  search: EventSearchState;
+  onRetry: () => void;
+}) {
+  if (search.status === 'error') {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+        <div className="flex flex-col items-center gap-1">
+          <div className="flex items-center gap-2 text-label-14 font-medium text-gray-1000">
+            <AlertCircle className="h-4 w-4 shrink-0 text-red-800" />
+            Failed to search events
+          </div>
+          {search.message ? (
+            <p className="m-0 text-copy-13 text-gray-900">{search.message}</p>
+          ) : null}
+        </div>
+        <Button variant="secondary" size="small" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-900">
+      {getEmptyMessage(search)}
+    </div>
+  );
+}
+
 function EventListViewInner({
   events,
   run,
@@ -92,7 +127,7 @@ function EventListViewInner({
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const [selectedEventId, setSelectedEventId] = useState<string | undefined>();
-  const { query, setQuery, search } = useEventSearch(onExactIdSearch);
+  const { query, setQuery, search, retry } = useEventSearch(onExactIdSearch);
   const list = getListSource(search, { events, hasMore: hasMoreEvents });
 
   // Rows come from the list's source; names and timings from every event on
@@ -220,7 +255,13 @@ function EventListViewInner({
 
   const panelWidth = useDetailPanelWidth(bodyRef, selectedRow !== undefined);
 
-  const toolbar = <EventListToolbar query={query} onQueryChange={setQuery} />;
+  const toolbar = (
+    <EventListToolbar
+      query={query}
+      hint={getSearchHint(search)}
+      onQueryChange={setQuery}
+    />
+  );
 
   if (isInitialLoad) {
     return (
@@ -266,9 +307,7 @@ function EventListViewInner({
             {isRefetching || search.status === 'loading' ? (
               <EventRowsSkeleton />
             ) : rows.length === 0 ? (
-              <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-900">
-                {getEmptyMessage(search)}
-              </div>
+              <EmptyState search={search} onRetry={retry} />
             ) : (
               <Virtuoso
                 ref={virtuosoRef}

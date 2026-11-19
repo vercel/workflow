@@ -126,6 +126,44 @@ describe.skipIf(process.platform === 'win32')(
       return rows[0]?.owner_job_id;
     }
 
+    /**
+     * The run's invocations, lease and executor jobs, and the HTTP
+     * deliveries in flight for it: what a stalled invocation waits on.
+     */
+    async function deliveryState(runId: string) {
+      const [invocations, lease, jobs] = await Promise.all([
+        pool.query(
+          `SELECT request_id, created_at, responded_at
+             FROM workflow.workflow_invocations WHERE run_id = $1`,
+          [runId]
+        ),
+        pool.query(
+          'SELECT owner_job_id, claimed_at, wake IS NOT NULL AS has_wake FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+          [runId]
+        ),
+        pool.query<{ payload: { data: string } }>(
+          `SELECT jobs.id::text AS id, tasks.identifier AS task, jobs.locked_by,
+                  jobs.locked_at, jobs.run_at, jobs.attempts, jobs.last_error,
+                  jobs.payload
+             FROM graphile_worker._private_jobs AS jobs
+             JOIN graphile_worker._private_tasks AS tasks ON tasks.id = jobs.task_id`
+        ),
+      ]);
+      return {
+        now: new Date(),
+        active: active.get(runId) ?? 0,
+        invocations: invocations.rows,
+        lease: lease.rows[0],
+        jobs: jobs.rows
+          .filter(
+            (row) =>
+              JSON.parse(Buffer.from(row.payload.data, 'base64').toString())
+                .runId === runId
+          )
+          .map(({ payload: _payload, ...job }) => job),
+      };
+    }
+
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       pool = new TestPool({
@@ -1027,15 +1065,30 @@ describe.skipIf(process.platform === 'win32')(
                     []
                   );
                   calls++;
-                  await expect(
-                    producer.invoke(runId, {
+                  const result = await producer
+                    .invoke(runId, {
                       type: 'hook_resume',
                       version: 1,
                       hookId: target.hookId,
                       token: target.token,
                       payload,
                     })
-                  ).resolves.toEqual({ status: 'accepted' });
+                    .catch(async (error) => {
+                      // Name what the run was waiting on, so a timeout here
+                      // says which part of the delivery path stalled. A
+                      // snapshot that fails itself (a pool exhausted by the
+                      // same stall) must not replace the invoke's error.
+                      const state = await deliveryState(runId).catch(
+                        (snapshotError: unknown) => ({
+                          snapshotError: String(snapshotError),
+                        })
+                      );
+                      throw new Error(
+                        `invoke ${wave}:${index}:${slot} failed: ${JSON.stringify(state)}`,
+                        { cause: error }
+                      );
+                    });
+                  expect(result).toEqual({ status: 'accepted' });
                 })
               );
               return runId;
