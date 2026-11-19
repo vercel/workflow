@@ -127,9 +127,10 @@ export interface RunUsage {
   /** Sorted by events, most first. */
   eventsBySpan: RunUsageSpan[];
   /**
-   * Workflow Data Written, in bytes: the run's payloads as the SDK sent them
-   * (compressed or encrypted when those apply), not event metadata, plus
-   * its stream bytes. QuickJS VM snapshots are not counted yet.
+   * Workflow Data Written, in bytes, which the CLI labels `Storage (local)`
+   * for a local run: the run's payloads as the SDK sent them (compressed or
+   * encrypted when those apply), not event metadata, plus its stream bytes.
+   * QuickJS VM snapshots are not counted yet.
    */
   dataWritten: {
     bytes: number;
@@ -604,18 +605,20 @@ export function formatOtherSteps(steps: number): string {
   return `+ ${steps.toLocaleString('en-US')} other ${steps === 1 ? 'step' : 'steps'}`;
 }
 
-/** The storage table's heading: what the sizes measure. */
+/**
+ * The label for {@link RunUsage.dataWritten}: `Storage (local)` on a run
+ * that is not billed, `Storage` on one that is.
+ */
 export function formatDataWrittenHeading(usage: RunUsage): string {
-  return usage.billed ? 'Data written' : 'Data written (local)';
+  return usage.billed ? 'Storage' : 'Storage (local)';
 }
 
 /**
- * Why a run that is not billed has a size that differs from Vercel's;
- * `null` on a billed run.
+ * What a local run's storage counts; `null` on a billed run.
  */
 export function formatLocalDataWrittenNote(usage: RunUsage): string | null {
   if (usage.billed) return null;
-  return 'Data this run wrote to your local data directory. Vercel measures Data Written in its own storage, so the number on Vercel will differ.';
+  return "The bytes of the run's payloads and streams in your local data directory, counted the way Vercel counts Data Written. QuickJS VM snapshots aren't counted yet.";
 }
 
 /** The footer under the usage: not a bill, and how to read it. */

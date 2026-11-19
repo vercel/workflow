@@ -118,10 +118,12 @@ export function formatRunUsageText(
   lines.push('');
 
   // Summary block. Retries are on the step rows.
-  const local = usage.billed ? '' : ' (local)';
   const summary: [string, string][] = [
     ['Events', usage.events.toLocaleString('en-US')],
-    ['Data written', `${formatUsageBytes(usage.dataWritten.bytes)}${local}`],
+    [
+      formatDataWrittenHeading(usage),
+      formatUsageBytes(usage.dataWritten.bytes),
+    ],
   ];
   const labelWidth = Math.max(...summary.map(([label]) => label.length));
   for (const [label, value] of summary) {
@@ -227,7 +229,7 @@ export function formatRunUsageText(
   lines.push('');
   lines.push(c.dim(`How events are counted: ${USAGE_COUNTING_DOCS_URL}`));
 
-  // Data written, without the entities that wrote nothing.
+  // Storage, without the entities that wrote nothing.
   lines.push('');
   const dataRows = RUN_USAGE_ENTITIES.filter(
     (entity) => usage.dataWritten.byEntity[entity] > 0

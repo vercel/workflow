@@ -44,12 +44,12 @@ const usageOf = (overrides: Partial<RunUsageAggregates> = {}): RunUsage =>
 const ANSI = /\u001b\[/;
 
 describe('formatRunUsageText', () => {
-  it('draws the summary, the span tree, the counting note and data written', () => {
+  it('draws the summary, the usage table, the docs link and storage', () => {
     expect(formatRunUsageText(usageOf())).toMatchInlineSnapshot(`
       "processOrder  wrun_01K5WAJZ8W367CV2RFKDSDNWB8  ● completed
 
-      Events        25
-      Data written  1.11 KB (local)
+      Events           25
+      Storage (local)  1.11 KB
 
       TYPE    NAME                               EVENTS  SHARE
       Steps   6 calls  ↻ 1 retry                     20    80%  ████████░░
@@ -61,10 +61,10 @@ describe('formatRunUsageText', () => {
 
       How events are counted: https://workflow-sdk.dev/docs/observability#how-events-are-counted
 
-      DATA WRITTEN (LOCAL)     SIZE
-      Run                     510 B
-      Steps                   600 B
-      TOTAL                 1.11 KB
+      STORAGE (LOCAL)     SIZE
+      Run                510 B
+      Steps              600 B
+      TOTAL            1.11 KB
 
       Local runs aren't billed. Counted from this run's log in your local data directory.
       Machine-readable: --json"
@@ -84,7 +84,7 @@ describe('formatRunUsageText', () => {
 
   it('prints the events without retries, and the retries on step rows', () => {
     const text = formatRunUsageText(usageOf());
-    expect(text).toMatch(/^Events {8}25$/m);
+    expect(text).toMatch(/^Events +25$/m);
     expect(text).toMatch(/^Steps .*↻ 1 retry/m);
     expect(text).toMatch(/└─ chargeCard {2}2 calls {2}↻ 1 retry/);
   });
@@ -128,7 +128,8 @@ describe('formatRunUsageText', () => {
     expect(text).not.toContain('On Vercel');
     expect(text).not.toContain('(local)');
     expect(text).toContain('Not your final bill.');
-    expect(text).toContain('DATA WRITTEN  ');
+    expect(text).toContain('STORAGE  ');
+    expect(text).toMatch(/^Storage {2}/m);
   });
 
   it('folds the steps past five into one row and ends the tree there', () => {
@@ -163,6 +164,13 @@ describe('formatRunUsageText', () => {
       .filter((line) => /(├─|└─)/.test(line))
       .map((line) => line.trim().split('  ')[0]);
     expect(rows).toEqual(['├─ send (./src/a)', '└─ send (./src/b)']);
+  });
+
+  it('labels a local run’s storage "Storage (local)", not "Data written"', () => {
+    const text = formatRunUsageText(usageOf());
+    expect(text).toMatch(/^Storage \(local\) {2}1\.11 KB$/m);
+    expect(text).toMatch(/^STORAGE \(LOCAL\) +SIZE$/m);
+    expect(text).not.toMatch(/data written/i);
   });
 
   it('says nothing of what a run would count as on Vercel', () => {

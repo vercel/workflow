@@ -64,7 +64,7 @@ npx workflow inspect run <run_id> --backend vercel --url
 
 ## Run usage
 
-On the Local World, `--usage` prints what a run used instead of the run: its events, listed by type, and the storage its data takes. Steps list each step function with its calls, its share of the run's events and its retries. Hooks list each hook by its token. Attributes, sleeps and the run's own events follow. `--json` prints the same numbers as JSON.
+On the Local World, `--usage` prints what a run used instead of the run: its events, listed by type, and its storage. Steps list each step function with its calls, its share of the run's events and its retries. Hooks list each hook by its token. Attributes, sleeps and the run's own events follow. `--json` prints the same numbers as JSON.
 
 ```bash
 npx workflow inspect run <run_id> --usage
@@ -82,6 +82,10 @@ Every event in a run's log counts once, following the [Workflow pricing](https:/
 - **Each sleep:** `wait_created` and `wait_completed`.
 - **Each hook:** `hook_created`, a `hook_received` for each payload it receives, and `hook_disposed` when it is disposed.
 - **Each attribute write:** one `attr_set` event per [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call.
+
+### How storage is counted
+
+**Storage (local)** counts the bytes of the run's payloads as the SDK sent them (compressed when that saves space, and encrypted when encryption is on): step inputs and results, run inputs and outputs, errors, and hook metadata and payloads. It adds the bytes the run wrote to its streams. This is the same way Vercel's Data Written counts a run. Event metadata, such as ids and timestamps, isn't counted, and neither are QuickJS VM snapshots yet. A run started with `experimental_retention: 0` reports what it wrote before its data was deleted.
 
 ## Backends
 

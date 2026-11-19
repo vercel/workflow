@@ -272,7 +272,7 @@ describe('usage formatting', () => {
     );
     expect(usage.billed).toBe(true);
     expect(formatUsageFooter(usage)).toBe('Not your final bill.');
-    expect(formatDataWrittenHeading(usage)).toBe('Data written');
+    expect(formatDataWrittenHeading(usage)).toBe('Storage');
     expect(formatLocalDataWrittenNote(usage)).toBeNull();
   });
 
@@ -293,9 +293,9 @@ describe('usage formatting', () => {
     expect(formatUsageFooter(usage)).toBe(
       "Local runs aren't billed. Counted from this run's log in your local data directory."
     );
-    expect(formatDataWrittenHeading(usage)).toBe('Data written (local)');
+    expect(formatDataWrittenHeading(usage)).toBe('Storage (local)');
     expect(formatLocalDataWrittenNote(usage)).toBe(
-      'Data this run wrote to your local data directory. Vercel measures Data Written in its own storage, so the number on Vercel will differ.'
+      "The bytes of the run's payloads and streams in your local data directory, counted the way Vercel counts Data Written. QuickJS VM snapshots aren't counted yet."
     );
   });
 

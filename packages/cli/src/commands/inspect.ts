@@ -188,7 +188,7 @@ export default class Inspect extends BaseCommand {
     }),
     usage: Flags.boolean({
       description:
-        "show a run's usage: events, retries, and data written (only for `inspect run <id>`; local backend)",
+        "show a run's usage: its events by type, and its storage (only for `inspect run <id>`; local backend)",
       required: false,
       default: false,
       helpGroup: 'Display',
