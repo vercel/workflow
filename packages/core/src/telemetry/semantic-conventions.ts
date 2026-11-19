@@ -331,12 +331,13 @@ export const WorkflowStartHookFirstDelivery = SemanticConvention<boolean>(
 );
 
 /**
- * Why a start Hook candidate's first delivery fell back to a full load after
- * its `run_started` was refused: by the in-band fence (`fence`), or with a
- * conflict, which does not say whether the run finished (`conflict`)
+ * Why a start Hook candidate's first delivery fell back to a full load: its
+ * `run_started` was refused by the in-band fence (`fence`) or with a conflict,
+ * which does not say whether the run finished (`conflict`), or the write's
+ * skipped-slot report stopped short or left a hole (`report`)
  */
 export const WorkflowStartHookFirstDeliveryFallback = SemanticConvention<
-  'fence' | 'conflict'
+  'fence' | 'conflict' | 'report'
 >('workflow.start_hook.first_delivery.fallback');
 
 /**
