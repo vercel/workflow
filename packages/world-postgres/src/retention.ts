@@ -2,6 +2,7 @@ import { debugLog } from '@workflow/utils';
 import { isTerminalWorkflowRunStatus, readRunRetention } from '@workflow/world';
 import { and, eq, sql } from 'drizzle-orm';
 import { type DrizzleHandle, Schema } from './drizzle/index.js';
+import { graphileSchemaIdentifier } from './run-lease.js';
 
 /**
  * SQL `NULL`, not a CBOR-encoded `null`.
@@ -317,7 +318,7 @@ export async function addPurgeBackstop(
   runId: string
 ): Promise<void> {
   await tx.execute(
-    sql`SELECT graphile_worker.add_job(
+    sql`SELECT ${sql.raw(graphileSchemaIdentifier())}.add_job(
       identifier => ${purgeTask(jobPrefix)},
       payload => ${JSON.stringify({ runId })}::json,
       run_at => now() + make_interval(secs => ${PURGE_BACKSTOP_DELAY_SECONDS}),

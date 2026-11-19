@@ -46,23 +46,37 @@ const JOB_PREFIX = 'backstop_test_';
  * The purge of a zero-retention run runs after its terminal write commits.
  * Its backstop, a Graphile job the terminal transaction adds, deletes the
  * run's data when that purge never ran.
+ *
+ * Run against Graphile's default schema and against a database provisioned
+ * only in a custom `GRAPHILE_WORKER_SCHEMA`, where the job must land in that
+ * schema: a terminal write that reached for the default one would fail, and
+ * a zero-retention run could never finish.
  */
-describe('zero-retention purge backstop (world-postgres)', () => {
+describe.each([
+  ['the default Graphile schema', undefined],
+  ['a custom Graphile schema', 'custom_graphile'],
+] as const)('zero-retention purge backstop (world-postgres, %s)', (_label, graphileSchema) => {
   if (process.platform === 'win32') {
     test.skip('skipped on Windows since it relies on a docker container', () => {});
     return;
   }
 
+  /** Graphile's schema, quoted, as the queries below name it. */
+  const graphile = `"${graphileSchema ?? 'graphile_worker'}"`;
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
   let pool: TestPool;
   let drizzle: ReturnType<typeof createClient>;
   let events: ReturnType<typeof createEventsStorage>;
+  const previousSchema = process.env.GRAPHILE_WORKER_SCHEMA;
 
   beforeAll(async () => {
+    if (graphileSchema) process.env.GRAPHILE_WORKER_SCHEMA = graphileSchema;
+    else delete process.env.GRAPHILE_WORKER_SCHEMA;
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
     const dbUrl = container.getConnectionUri();
     process.env.DATABASE_URL = dbUrl;
     process.env.WORKFLOW_POSTGRES_URL = dbUrl;
+    // Installs Graphile in `GRAPHILE_WORKER_SCHEMA` only.
     execSync('pnpm db:push', {
       stdio: 'inherit',
       cwd: process.cwd(),
@@ -75,12 +89,14 @@ describe('zero-retention purge backstop (world-postgres)', () => {
 
   beforeEach(async () => {
     interrupted.value = false;
-    await pool.query('DELETE FROM graphile_worker._private_jobs');
+    await pool.query(`DELETE FROM ${graphile}._private_jobs`);
   });
 
   afterAll(async () => {
-    await pool.end();
-    await container.stop();
+    await pool?.end();
+    await container?.stop();
+    if (previousSchema === undefined) delete process.env.GRAPHILE_WORKER_SCHEMA;
+    else process.env.GRAPHILE_WORKER_SCHEMA = previousSchema;
   });
 
   const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
@@ -139,7 +155,7 @@ describe('zero-retention purge backstop (world-postgres)', () => {
 
   async function backstopJobs(runId: string) {
     const { rows } = await pool.query(
-      `SELECT task_identifier, key, run_at FROM graphile_worker.jobs WHERE key = $1`,
+      `SELECT task_identifier, key, run_at FROM ${graphile}.jobs WHERE key = $1`,
       [`purge:${runId}`]
     );
     return rows as { task_identifier: string; key: string; run_at: Date }[];
@@ -148,13 +164,34 @@ describe('zero-retention purge backstop (world-postgres)', () => {
   /** Runs every due backstop job, as a runner of the World would. */
   async function runDueBackstops() {
     await pool.query(
-      `UPDATE graphile_worker._private_jobs SET run_at = now() WHERE key LIKE 'purge:%'`
+      `UPDATE ${graphile}._private_jobs SET run_at = now() WHERE key LIKE 'purge:%'`
     );
     await runOnce({
       pgPool: pool,
+      ...(graphileSchema ? { schema: graphileSchema } : {}),
       taskList: { [purgeTask(JOB_PREFIX)]: createPurgeBackstopTask(drizzle) },
     });
   }
+
+  test.skipIf(!graphileSchema)(
+    'provisions only the custom schema, and finishes and purges a zero-retention run there',
+    async () => {
+      const { rows } = await pool.query(
+        `SELECT nspname FROM pg_namespace WHERE nspname IN ('graphile_worker', $1)`,
+        [graphileSchema]
+      );
+      expect(rows.map((row) => row.nspname)).toEqual([graphileSchema]);
+
+      for (const fenced of [true, false]) {
+        const runId = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
+        await complete(runId, fenced);
+        const state = await runState(runId);
+        expect(state.expired_at).toBeInstanceOf(Date);
+        expect(state.output_cbor).toBeNull();
+        expect(await backstopJobs(runId)).toHaveLength(1);
+      }
+    }
+  );
 
   for (const fenced of [true, false]) {
     test(`purges a run whose purge never ran after its ${fenced ? 'fenced' : 'unfenced'} terminal write`, async () => {

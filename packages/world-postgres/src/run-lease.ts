@@ -272,9 +272,7 @@ export function createRunLeases(
   pool: Pool,
   { maxDeferred = DEFAULT_MAX_DEFERRED }: { maxDeferred?: number } = {}
 ): RunLeases {
-  const graphileSchema = escapeIdentifier(
-    process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
-  );
+  const graphileSchema = graphileSchemaIdentifier();
   const claimQuery = claimSql(graphileSchema);
   const leaveQuery = leaveSql(graphileSchema);
   const fullQuery = fullSql(graphileSchema);
@@ -425,4 +423,17 @@ export function createRunLeases(
 /** Quote an SQL identifier, as `pg`'s `escapeIdentifier` does. */
 export function escapeIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+/**
+ * The schema Graphile Worker installs into and works in, quoted for SQL: the
+ * one it resolves itself when no `schema` option is passed, which this World
+ * never passes. Every query this World makes against Graphile's tables and
+ * functions goes through it, so a database provisioned with a custom
+ * `GRAPHILE_WORKER_SCHEMA` works throughout.
+ */
+export function graphileSchemaIdentifier(): string {
+  return escapeIdentifier(
+    process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
+  );
 }

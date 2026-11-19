@@ -67,7 +67,7 @@ import { MessageData } from './message.js';
 import { createPurgeBackstopTask, purgeTask } from './retention.js';
 import {
   createRunLeases,
-  escapeIdentifier,
+  graphileSchemaIdentifier,
   isMissingTable,
   type LeftJob,
 } from './run-lease.js';
@@ -514,7 +514,7 @@ export function createQueue(
           // rather than trusting a boolean header. It is an admission check,
           // NOT a fence on later journal writes.
           const { rows } = await pool.query(
-            `SELECT jobs.id FROM graphile_worker.jobs AS jobs
+            `SELECT jobs.id FROM ${graphileSchemaIdentifier()}.jobs AS jobs
          JOIN workflow.workflow_run_delivery_leases AS leases
            ON leases.owner_job_id = jobs.id AND leases.run_id = $3
          WHERE jobs.id = $1 AND jobs.task_identifier = $2
@@ -1180,7 +1180,7 @@ export function createQueue(
         // The mailbox insertion and wake share this transaction. No job_key:
         // every invoke (including a completed request's retry) gets a wake.
         await client.query(
-          `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
+          `SELECT ${graphileSchemaIdentifier()}.add_job(identifier => $1, payload => $2::json,
           max_attempts => $3)`,
           [executorTask(), JSON.stringify(wake), MAX_GRAPHILE_JOB_ATTEMPTS]
         );
@@ -1793,9 +1793,7 @@ export function createQueue(
   }
 
   async function lockedOrchestratorRunIds(): Promise<string[] | undefined> {
-    const graphileSchema = escapeIdentifier(
-      process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
-    );
+    const graphileSchema = graphileSchemaIdentifier();
     try {
       // Only the jobs being delivered: a few per worker, whatever the
       // backlog.
