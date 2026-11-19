@@ -1,5 +1,13 @@
 # @workflow/errors
 
+## 5.1.4
+
+### Patch Changes
+
+- [#5485](https://github.com/vercel/workflow/pull/5485) [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Resume a spec 9 run whose first delivery is replayed after a crashed invocation instead of leaving its open step stranded.
+- Updated dependencies [[`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9)]:
+  - @workflow/world@5.3.0
+
 ## 5.1.3
 
 ### Patch Changes

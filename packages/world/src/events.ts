@@ -1027,6 +1027,14 @@ export interface CreateEventParams {
    */
   replayDivergenceCount?: number;
   /**
+   * The ids of the events at which the replays of that episode diverged,
+   * oldest first, sent with {@link CreateEventParams.replayDivergenceCount}.
+   * Event ids only, never payloads, so a divergence can be located even when
+   * the run's error payload is encrypted. Request telemetry like the count:
+   * Worlds may log it, and must not require or persist it.
+   */
+  replayDivergenceEventIds?: readonly string[];
+  /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
    * strictly after this cursor (via `events`/`cursor`/`hasMore`): the

@@ -89,6 +89,13 @@ export async function parkedRun(
   // require no step in flight: every step the log names (by `step_created` or
   // `step_started`, which both engines write) has ended in `step_completed` or
   // `step_failed`.
+  //
+  // Nor is it enough on spec 9, where an inline step's creation is its
+  // `step_started`: until that commits, the log names no step at all, so a
+  // log of `run_created`, `run_started`, `hook_created` can stay quiet for
+  // two polls with the workflow's first step still to come. That step
+  // (`writeEvent(wf, 'hookCreated')`) runs before the workflow waits on the
+  // hook, so also require it to have ended.
   let last = '';
   await vi.waitFor(
     async () => {
@@ -107,6 +114,7 @@ export async function parkedRun(
         (stepId) => !ended.has(stepId)
       );
       expect(inFlight).toEqual([]);
+      expect(ended.size).toBeGreaterThanOrEqual(1);
       expect(stable).toBe(true);
     },
     { interval: 500, timeout: 25_000 }

@@ -1,6 +1,13 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { RETENTION_ATTRIBUTE, startHookId } from '@workflow/world';
+import {
+  type AnyEventRequest,
+  IN_BAND_SEQ_AT_RUN_CREATION,
+  RETENTION_ATTRIBUTE,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  slotToEventId,
+  startHookId,
+} from '@workflow/world';
 import { ulid } from 'ulid';
 import {
   afterAll,
@@ -427,6 +434,107 @@ describe('Retention ($retention: 0)', () => {
         expect(await countRemainingPayloads(runId)).toBe(0);
       });
     }
+
+    it('purges a spec 9 run whose fenced terminal write races a step outcome for its event slot', async () => {
+      // A spec 9 run ends through a fenced write, which commits in one
+      // transaction with the fence. A race's loser settling at the same time
+      // holds its step row and then waits for the event slot the terminal
+      // event took. Were the purge part of that transaction, it would wait
+      // for the step row in turn, and Postgres would break the deadlock by
+      // failing the purge while the terminal write still commits.
+      const runId = `wrun_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        eventData: {
+          deploymentId: 'deployment-1',
+          workflowName: 'retention-workflow',
+          input: new Uint8Array([1, 2, 3]),
+          attributes: { [RETENTION_ATTRIBUTE]: '0' },
+          allowReservedAttributes: true,
+        },
+      } as AnyEventRequest);
+      await events.create(
+        runId,
+        {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION }
+      );
+      const stepId = `step_${ulid()}`;
+      await events.create(runId, {
+        eventType: 'step_created',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        correlationId: stepId,
+        eventData: { stepName: 'slow-step', input: new Uint8Array([4, 5]) },
+      } as AnyEventRequest);
+      await events.create(runId, {
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        correlationId: stepId,
+      } as AnyEventRequest);
+      const { snapshot } = await events.list({ runId });
+      if (!snapshot) throw new Error('Expected a fence snapshot');
+
+      const loser = await pool.connect();
+      try {
+        // The loser's outcome: its step row first, as `step_completed` takes it.
+        await loser.query('BEGIN');
+        await loser.query(
+          `SELECT 1 FROM workflow.workflow_steps WHERE step_id = $1 FOR UPDATE`,
+          [stepId]
+        );
+
+        const terminal = events.create(
+          runId,
+          {
+            eventType: 'run_completed',
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            eventData: { output: new Uint8Array([12, 13]) },
+          } as AnyEventRequest,
+          { inBand: true, expectedSeqInBand: snapshot.seqInBand }
+        );
+        // The purge waits for the loser's step row.
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const { rows } = await pool.query(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+              WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()`
+          );
+          if (rows[0].n > 0) break;
+          if (Date.now() > deadline) throw new Error('The purge never waited');
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        // Then the loser's event insert takes the next slot, the one the
+        // terminal event holds.
+        await loser
+          .query(
+            `INSERT INTO workflow.workflow_events (id, type, correlation_id, run_id, spec_version)
+             VALUES ($1, 'step_completed', $2, $3, $4) ON CONFLICT DO NOTHING`,
+            [
+              slotToEventId(snapshot.seq + 1),
+              stepId,
+              runId,
+              SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            ]
+          )
+          .catch(() => {});
+        await loser.query('ROLLBACK');
+
+        const result = await terminal;
+        expect(result.run?.status).toBe('completed');
+      } finally {
+        loser.release();
+      }
+
+      expect(await countRemainingPayloads(runId)).toBe(0);
+      const { rows } = await pool.query(
+        'SELECT expired_at FROM workflow.workflow_runs WHERE id = $1',
+        [runId]
+      );
+      expect(rows[0].expired_at).toBeInstanceOf(Date);
+    });
 
     it('makes a stream write that starts while the run is finishing wait for the deletion, and refuses it', async () => {
       const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });

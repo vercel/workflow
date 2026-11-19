@@ -226,7 +226,7 @@ The package includes a Helm chart for Kubernetes in its `chart` directory, and t
 
 - **Workers per version.** Each release gets a worker Deployment that runs only the runs it started. A rollout leaves the previous release's workers in place.
 - **Scale to zero.** KEDA scales each version's workers on its due deliveries, which the application reports through `createBacklogEndpoints`. Workers drop to zero while that version's runs sleep or wait on a hook.
-- **Pruning.** A CronJob deletes a version's workers once all its runs have finished, and recreates them for a version that still has unfinished runs.
+- **Pruning.** A CronJob deletes a version's workers once all its runs have finished, and recreates them for a version that still has unfinished runs. A run with `experimental_retention: 0` counts as unfinished until its data deletion is confirmed, about a minute after it ends.
 - **Graceful shutdown.** `createLifecycle` stops a pod from receiving traffic, then lets its running deliveries finish before it exits.
 - **Migrations.** An optional init container runs `bootstrap` before each pod starts.
 
@@ -581,7 +581,7 @@ The Postgres World uses PostgreSQL as a durable backend:
 
 - **Storage**: Workflow runs, events, steps, and hooks are stored in PostgreSQL tables.
 - **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries.
-- **Crash recovery**: The next `start()` re-enqueues active runs. A running delivery also renews its job lock. If its process dies, any other process redelivers a spec 9 run's orchestrator job once its lock has gone unrenewed for 300 seconds, and with [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) set, any job of this World once its lock has gone unrenewed for that many seconds.
+- **Crash recovery**: The next `start()` re-enqueues active runs, except a run parked on a hook or a wait that is not yet due with no wake left to deliver and no delivery in progress. A run's recovery job is keyed by the run, so repeated boots do not stack duplicates. A running delivery also renews its job lock. If its process dies, any other process redelivers a spec 9 run's orchestrator job once its lock has gone unrenewed for 300 seconds, and with [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) set, any job of this World once its lock has gone unrenewed for that many seconds.
 - **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution. If the database drops the `LISTEN` connection, the World reconnects every second and re-reads persisted chunks for open stream readers, so readers don't miss chunks written during the outage.
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).

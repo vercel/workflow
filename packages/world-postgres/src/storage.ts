@@ -60,6 +60,7 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  readRunRetention,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -88,6 +89,7 @@ import {
   isNull,
   lt,
   lte,
+  not,
   notExists,
   notInArray,
   or,
@@ -102,6 +104,7 @@ import {
   invocationExpiredError,
 } from './invocation-retention.js';
 import {
+  addPurgeBackstop,
   purgeRunUserData,
   purgeRunUserDataIfZeroRetention,
   scrubStepWriteIfRunPurged,
@@ -465,6 +468,25 @@ async function fencedInsertAttempt(
   }
 }
 
+/**
+ * Records that `runId` is owed an orchestrator delivery
+ * (`workflow_runs.wake_pending`, cleared in queue.ts when one completes), in
+ * the transaction of the event that wakes it: `hook_received`,
+ * `hook_disposed`, `wait_completed`, `step_completed` or `step_failed`.
+ * (`run_started` sets it in its own run update, for a first delivery that
+ * dies after creating its hook or wait.) Called once the run row is locked,
+ * or before the hook, wait or step row is, so the run row is always locked
+ * first, as every other writer of both does.
+ */
+async function markWakePending(db: DrizzleLike, runId: string): Promise<void> {
+  await db
+    .update(Schema.runs)
+    .set({ wakePending: true })
+    .where(
+      and(eq(Schema.runs.runId, runId), eq(Schema.runs.wakePending, false))
+    );
+}
+
 /** Puts back the count a fenced attempt advanced before losing its slot. */
 async function revertFenceAdvance(
   db: DrizzleLike,
@@ -720,6 +742,7 @@ async function createHookResume(
     ) {
       throw new HookNotFoundError(data.correlationId);
     }
+    await markWakePending(tx, runId);
     const created = await insertEventRow(tx, {
       runId,
       eventId: await allocateEventId(tx, runId),
@@ -813,8 +836,14 @@ function parseErrorJson(_errorJson: string | null): SerializedData | null {
  */
 function deserializeRunError(run: any): WorkflowRun {
   // Drop any stale legacy-only fields we might still encounter on read, and
-  // the internal `jobPrefix` routing column, which is not part of a run.
-  const { errorStack: _errorStack, jobPrefix: _jobPrefix, ...rest } = run;
+  // the internal `jobPrefix` / `wakePending` columns, which are not part of
+  // a run.
+  const {
+    errorStack: _errorStack,
+    jobPrefix: _jobPrefix,
+    wakePending: _wakePending,
+    ...rest
+  } = run;
   return rest as WorkflowRun;
 }
 
@@ -893,15 +922,67 @@ function createRunsList(
  * and this World's runner then drives it. Listing every active run in a
  * shared database would hand other apps' runs to this runner on every boot,
  * whatever their `jobPrefix`. The public `runs.list` stays unscoped.
+ *
+ * It also leaves out a running run that is parked: one with an open hook or
+ * a wait that is not yet due, no unfinished step, and no wake stored since
+ * its last completed orchestrator delivery (`wake_pending`). Its next wake is
+ * a hook delivery or wait timer that writes its own event and queues its own
+ * job, so replaying it on every boot only adds load. Every other active run
+ * is listed, including a legacy one, which never sets `wake_pending`.
+ *
+ * A parked run in `inFlightRunIds` is listed too: it has an orchestrator job
+ * a worker holds locked, a delivery that may have been cut off. On a spec 8
+ * run, whose deliveries are not serialized, another delivery of the run that
+ * completed meanwhile cleared `wake_pending` (as does a first delivery that
+ * hands the run to a continuation), so the flag alone would skip the run,
+ * and a dead worker's lock is otherwise released only after Graphile
+ * Worker's 4 hours. `undefined` (the jobs could not be read) skips no run.
  */
 export function createRecoverableRunsList(
   drizzle: Drizzle,
-  jobPrefix: string
+  jobPrefix: string,
+  inFlightRunIds: readonly string[] | undefined
 ): Storage['runs']['list'] {
-  const { runs } = Schema;
+  const { runs, steps, waits, hooks } = Schema;
+  const rowsOf = (table: typeof steps | typeof waits | typeof hooks) =>
+    drizzle.select({ runId: table.runId }).from(table);
+  const openWaits = and(
+    eq(waits.runId, runs.runId),
+    eq(waits.status, 'waiting')
+  );
+  // `and` is typed `SQL | undefined` only because it accepts undefined
+  // arguments; its first argument here is always defined.
+  const parked = and(
+    eq(runs.status, 'running'),
+    inFlightRunIds?.length
+      ? notInArray(runs.runId, [...inFlightRunIds])
+      : undefined,
+    eq(runs.wakePending, false),
+    gt(runs.specVersion, SPEC_VERSION_LEGACY),
+    or(
+      exists(rowsOf(hooks).where(eq(hooks.runId, runs.runId))),
+      exists(rowsOf(waits).where(openWaits))
+    ),
+    notExists(
+      rowsOf(steps).where(
+        and(
+          eq(steps.runId, runs.runId),
+          inArray(steps.status, ['pending', 'running'])
+        )
+      )
+    ),
+    notExists(
+      rowsOf(waits).where(and(openWaits, lte(waits.resumeAt, sql`now()`)))
+    )
+  ) as SQL;
   return createRunsList(
     drizzle,
-    or(eq(runs.jobPrefix, jobPrefix), isNull(runs.jobPrefix))
+    and(
+      or(eq(runs.jobPrefix, jobPrefix), isNull(runs.jobPrefix)),
+      inFlightRunIds === undefined
+        ? undefined
+        : or(isNull(runs.specVersion), not(parked))
+    )
   );
 }
 
@@ -1316,14 +1397,23 @@ export function createEventsStorage(
      */
     jobPrefix?: string;
     /**
+     * The task of the purge backstop a zero-retention run's terminal write
+     * adds (see `purgeTask` in retention.ts). `createWorld` passes its
+     * `worldPurgeTask`. Omitted, no backstop is added.
+     */
+    purgeTask?: string;
+    /**
      * The live feed behind `events.subscribe`. Omitted, the storage offers
      * no `subscribe`. Writes announce spec 9 runs on it either way.
      */
     runEventsFeed?: RunEventsFeed;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix, runEventsFeed } = options;
-  const events = createUnfencedEventsStorage(drizzle, { jobPrefix });
+  const { jobPrefix, purgeTask, runEventsFeed } = options;
+  const events = createUnfencedEventsStorage(drizzle, {
+    jobPrefix,
+    purgeTask,
+  });
   const unfencedCreate = events.create as (
     runId: string | null,
     data: AnyEventRequest,
@@ -1380,7 +1470,7 @@ export function createEventsStorage(
     // holding the same count only the first through the lock writes
     // anything: the others find the count moved. Only in-band writers take
     // this lock, so out-of-band writes never wait on it.
-    const terminalRuns: string[] = [];
+    const terminalRuns: DeferredTerminal[] = [];
     const result = await drizzle.transaction(async (tx) => {
       const [row] = await tx
         .select({ seqInBand: Schema.eventSlots.seqInBand })
@@ -1398,8 +1488,8 @@ export function createEventsStorage(
       }
       const inTransaction = createUnfencedEventsStorage(tx, {
         jobPrefix,
-        deferTerminalNotify: (terminalRunId) =>
-          terminalRuns.push(terminalRunId),
+        purgeTask,
+        deferTerminal: (terminal) => terminalRuns.push(terminal),
       }).create as (
         runId: string | null,
         data: AnyEventRequest,
@@ -1419,8 +1509,16 @@ export function createEventsStorage(
         () => inTransaction(runId, data, params)
       );
     }, SLOT_INSERT_TRANSACTION);
-    for (const terminalRunId of terminalRuns) {
-      await notifyRunTerminal(drizzle, terminalRunId);
+    // The terminal write has committed: purge, then announce, on the pool,
+    // as an unfenced terminal write does (see `DeferredTerminal`).
+    for (const terminal of terminalRuns) {
+      await purgeRunUserDataIfZeroRetention(
+        drizzle,
+        terminal.runId,
+        terminal.attributes,
+        terminal.purgedAt
+      );
+      await notifyRunTerminal(drizzle, terminal.runId);
     }
     return result;
   };
@@ -1501,6 +1599,29 @@ async function readEventLogSnapshot(
 }
 
 /**
+ * A run-terminal transition whose zero-retention purge and `NOTIFY` its
+ * write handed off to run after the commit. A fenced create runs in a
+ * transaction, and neither belongs inside it:
+ * - The purge needs the run's step rows, while the transaction holds the
+ *   event slot its terminal event took. A step outcome settling at the same
+ *   time (a race's loser) takes its step row and then waits for that slot,
+ *   so the two would deadlock, and Postgres would break the deadlock by
+ *   failing the purge while the terminal write committed, leaving the data
+ *   of a run that asked to keep none. After the commit, the slot is free.
+ * - A failed `NOTIFY` (or one that fails at commit) would fail the write
+ *   itself.
+ * Run in that order, the purge before the announcement, as an unfenced
+ * terminal write runs them. Only in memory, the purge would be lost to a
+ * process that stops after the commit; the backstop job the terminal
+ * transaction adds runs it then (see `purgeTask` in retention.ts).
+ */
+type DeferredTerminal = {
+  runId: string;
+  attributes: Record<string, string> | undefined;
+  purgedAt: Date;
+};
+
+/**
  * The events storage without the fence, on the pool or, for a fenced
  * in-band create, on that create's transaction (nested transactions inside
  * become savepoints).
@@ -1510,15 +1631,13 @@ function createUnfencedEventsStorage(
   options: {
     /** See `createEventsStorage`. */
     jobPrefix?: string;
-    /**
-     * Takes the run-terminal `NOTIFY` off this handle. A fenced create runs
-     * in a transaction, where a failed `NOTIFY` (or one that fails at commit)
-     * would fail the write itself; it announces after the commit instead.
-     */
-    deferTerminalNotify?: (runId: string) => void;
+    /** See `createEventsStorage`. */
+    purgeTask?: string;
+    /** See `DeferredTerminal`. */
+    deferTerminal?: (terminal: DeferredTerminal) => void;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix } = options;
+  const { jobPrefix, purgeTask } = options;
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -2382,6 +2501,7 @@ function createUnfencedEventsStorage(
               status: 'running',
               startedAt: now,
               updatedAt: now,
+              wakePending: true,
             })
             .where(
               and(
@@ -2448,6 +2568,14 @@ function createUnfencedEventsStorage(
             .returning();
           if (runValue) {
             run = deserializeRunError(compact(runValue));
+            // The purge of a zero-retention run runs after this commits;
+            // its backstop commits with it (see `purgeTask`).
+            if (
+              purgeTask !== undefined &&
+              readRunRetention(runValue.attributes ?? undefined).mode === 'none'
+            ) {
+              await addPurgeBackstop(tx, purgeTask, effectiveRunId);
+            }
           } else {
             const [existing] = await tx
               .select({ status: Schema.runs.status })
@@ -2756,6 +2884,7 @@ function createUnfencedEventsStorage(
               };
         let runFinished = false;
         value = await drizzle.transaction(async (tx) => {
+          await markWakePending(tx, effectiveRunId);
           const [stepValue] = await tx
             .update(Schema.steps)
             .set(terminalSet)
@@ -3226,6 +3355,7 @@ function createUnfencedEventsStorage(
                   };
                 }
                 if (victimRunning) {
+                  await markWakePending(tx, victim.runId);
                   const disposed = await insertEventRow(tx, {
                     runId: victim.runId,
                     eventId: await allocateEventId(tx, victim.runId),
@@ -3431,6 +3561,7 @@ function createUnfencedEventsStorage(
       if (data.eventType === 'hook_disposed' && data.correlationId) {
         const disposedHookId = data.correlationId;
         value = await drizzle.transaction(async (tx) => {
+          await markWakePending(tx, effectiveRunId);
           const [deleted] = await tx
             .delete(Schema.hooks)
             .where(eq(Schema.hooks.hookId, disposedHookId))
@@ -3528,6 +3659,7 @@ function createUnfencedEventsStorage(
               throw new HookNotFoundError(data.correlationId);
             }
           }
+          await markWakePending(tx, effectiveRunId);
 
           // Allocate the position only after the row locks are acquired,
           // matching step_started's ordering guarantee: a writer blocked
@@ -3638,6 +3770,7 @@ function createUnfencedEventsStorage(
       if (data.eventType === 'wait_completed') {
         const waitId = `${effectiveRunId}-${data.correlationId}`;
         value = await drizzle.transaction(async (tx) => {
+          await markWakePending(tx, effectiveRunId);
           let [waitValue] = await tx
             .update(Schema.waits)
             .set({
@@ -3921,15 +4054,23 @@ function createUnfencedEventsStorage(
         // of catching the output on its way out. `run` is only set on the
         // writer that won the conditional terminal UPDATE, so this fires once
         // per run rather than on every idempotent retry.
-        await purgeRunUserDataIfZeroRetention(
-          drizzle,
-          effectiveRunId,
-          run.attributes,
-          now
-        );
-        if (options.deferTerminalNotify) {
-          options.deferTerminalNotify(effectiveRunId);
+        //
+        // A fenced write is still inside its transaction here, so it hands
+        // both to its caller, which runs them after the commit (see
+        // `DeferredTerminal`).
+        if (options.deferTerminal) {
+          options.deferTerminal({
+            runId: effectiveRunId,
+            attributes: run.attributes,
+            purgedAt: now,
+          });
         } else {
+          await purgeRunUserDataIfZeroRetention(
+            drizzle,
+            effectiveRunId,
+            run.attributes,
+            now
+          );
           await notifyRunTerminal(drizzle, effectiveRunId);
         }
       }

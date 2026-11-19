@@ -430,6 +430,8 @@ interface CreateEventV4InputBase {
   maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
+  /** The events those replays diverged at, oldest first. Telemetry only. */
+  replayDivergenceEventIds?: readonly string[];
   /**
    * Whether the run's orchestrator made this write (spec >= 9). Required by
    * the backend on every write to a single-orchestrator run; ignored for
@@ -846,6 +848,9 @@ function buildPostFrameMeta(
   if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;
+  }
+  if (input.replayDivergenceEventIds !== undefined) {
+    meta.replayDivergenceEventIds = input.replayDivergenceEventIds;
   }
   if (input.resumePayloadDigest !== undefined) {
     meta.resumePayloadDigest = input.resumePayloadDigest;

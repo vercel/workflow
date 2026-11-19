@@ -755,7 +755,7 @@ jobs:
     # cross-deployment start() stamps the lower of the target's and the
     # caller's version, so with only the deployment env set this lane would
     # silently test spec 8. The e2e test "stamps the spec version the lane
-    # opts in to" fails if either side stops seeing it.
+    # runs at" fails if either side stops seeing it.
     #
     # Same dedicated-deployment pattern as e2e-vercel-ws-transport above.
     name: E2E Vercel Spec 9 Test (${{ matrix.app.name }}, ${{ matrix.vm }})
@@ -1204,8 +1204,8 @@ jobs:
     # serves it with the variable set, and runs the full suite against it on
     # both VMs. The variable is set on the server AND on the test runner (a
     # start() from the runner stamps the lower of the two), and the e2e test
-    # "stamps the spec version the lane opts in to" fails if either side
-    # stops seeing it.
+    # "stamps the spec version the lane runs at" fails if either side stops
+    # seeing it.
     name: E2E Local Spec 9 Tests (nextjs-turbopack, ${{ matrix.vm }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
