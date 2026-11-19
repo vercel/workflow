@@ -13,6 +13,29 @@ export const RUN_TABS = [
 
 export type RunTab = (typeof RUN_TABS)[number]['value'];
 
+/** An item of the row: a tab, or the Usage page. */
+export type RunViewItem = RunTab | 'usage';
+
+/**
+ * Focuses the row's active item: after switching between the run page and
+ * the Usage page, the row is a new element, and focus would otherwise drop
+ * to the document. Only the item in its active state counts (the current
+ * page's link, or the selected tab): while the navigation is pending, the
+ * old row's inactive item of the same name is still in the document.
+ * Returns whether it found the item.
+ */
+export function focusRunViewItem(
+  root: ParentNode | null,
+  item: RunViewItem
+): boolean {
+  const target = root?.querySelector(
+    `[data-run-view-item="${item}"]:is([aria-current="page"], [data-state="active"])`
+  );
+  if (!(target instanceof HTMLElement)) return false;
+  target.focus();
+  return true;
+}
+
 /** A run tab's URL, for links from outside the run page. */
 export function runTabPath(runId: string, tab: RunTab): string {
   return `${runPath(runId)}?tab=${tab}`;
@@ -26,9 +49,12 @@ export function runTabPath(runId: string, tab: RunTab): string {
 export function UsageNavLink({
   runId,
   current = false,
+  onNavigate,
 }: {
   runId: string;
   current?: boolean;
+  /** Called when the link is followed, to move focus once the page renders. */
+  onNavigate?: (item: RunViewItem) => void;
 }) {
   return (
     <Link
@@ -36,6 +62,8 @@ export function UsageNavLink({
       className={cn(tabsTriggerClassName, 'gap-2')}
       aria-current={current ? 'page' : undefined}
       data-testid="run-usage-nav-link"
+      data-run-view-item="usage"
+      onClick={() => onNavigate?.('usage')}
     >
       <BarChart3 className="h-4 w-4" aria-hidden="true" />
       Usage
@@ -61,10 +89,13 @@ export const RUN_VIEW_ROW_CLASS = cn(
 export function RunViewNav({
   runId,
   showUsage,
+  onNavigate,
 }: {
   runId: string;
   /** Hidden where the World does not count usage, like the header fields. */
   showUsage: boolean;
+  /** Called when an item is followed, to move focus once the page renders. */
+  onNavigate?: (item: RunViewItem) => void;
 }) {
   return (
     <nav aria-label="Run views" className={RUN_VIEW_ROW_CLASS}>
@@ -73,12 +104,16 @@ export function RunViewNav({
           key={tab.value}
           to={runTabPath(runId, tab.value)}
           className={cn(tabsTriggerClassName, 'gap-2')}
+          data-run-view-item={tab.value}
+          onClick={() => onNavigate?.(tab.value)}
         >
           <List className="h-4 w-4" aria-hidden="true" />
           {tab.label}
         </Link>
       ))}
-      {showUsage && <UsageNavLink runId={runId} current />}
+      {showUsage && (
+        <UsageNavLink runId={runId} current onNavigate={onNavigate} />
+      )}
     </nav>
   );
 }

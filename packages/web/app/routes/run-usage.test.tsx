@@ -378,6 +378,45 @@ describe('the Usage route', () => {
     expect(fetchRunUsage).toHaveBeenCalledTimes(1);
   });
 
+  it('moves focus to the active Usage item after opening the page from the row', async () => {
+    renderAt('/run/wrun_1?tab=events');
+    const usageLink = await screen.findByRole('link', { name: 'Usage' });
+    usageLink.focus();
+    await act(async () => {
+      fireEvent.click(usageLink);
+    });
+    await screen.findByTestId('run-usage-page');
+    // The row is a new element on this page; focus is on its Usage item,
+    // not dropped to the document.
+    const current = runViews().getByRole('link', { name: 'Usage' });
+    await waitFor(() => expect(document.activeElement).toBe(current));
+    expect(current.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('moves focus to the tab after going back to it from the row', async () => {
+    renderAt('/run/wrun_1/usage');
+    await screen.findByTestId('run-usage-page');
+    const events = runViews().getByRole('link', { name: 'Events' });
+    events.focus();
+    await act(async () => {
+      fireEvent.click(events);
+    });
+    const tab = await screen.findByRole('tab', { name: 'Events' });
+    await waitFor(() => expect(document.activeElement).toBe(tab));
+    expect(tab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('leaves focus alone when the Usage page opens another way', async () => {
+    const router = renderAt('/run/wrun_1');
+    await screen.findByRole('link', { name: 'Usage' });
+    const before = document.activeElement;
+    await act(async () => {
+      await router.navigate('/run/wrun_1/usage');
+    });
+    await screen.findByTestId('run-usage-page');
+    expect(document.activeElement).toBe(before);
+  });
+
   it('keeps ?tab=usage on the run page showing the trace', async () => {
     renderAt('/run/wrun_1?tab=usage');
     await waitFor(() =>

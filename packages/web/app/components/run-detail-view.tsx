@@ -20,7 +20,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { AlertCircle, GitBranch, HelpCircle, List, Lock } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useOutlet } from 'react-router';
 import { toast } from 'sonner';
 import { RunEventsTab } from '~/components/run-events-tab';
@@ -75,7 +75,13 @@ import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
 import { RunUsageHeaderStats, runPath, usageVisible } from './run-usage';
-import { RUN_VIEW_ROW_CLASS, RunViewNav, UsageNavLink } from './run-view-nav';
+import {
+  focusRunViewItem,
+  RUN_VIEW_ROW_CLASS,
+  type RunViewItem,
+  RunViewNav,
+  UsageNavLink,
+} from './run-view-nav';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -427,6 +433,21 @@ export function RunDetailView({
   };
   const usagePage = useOutlet(usageContext);
 
+  // Going between the run page and the Usage page from the tab row swaps
+  // the row for another element; put focus on the new page's active item
+  // instead of letting it drop to the document.
+  const viewRootRef = useRef<HTMLDivElement>(null);
+  const pendingRowFocus = useRef<RunViewItem | null>(null);
+  const focusRowItemAfterNavigation = useCallback((item: RunViewItem) => {
+    pendingRowFocus.current = item;
+  }, []);
+  useEffect(() => {
+    const item = pendingRowFocus.current;
+    if (item && focusRunViewItem(viewRootRef.current, item)) {
+      pendingRowFocus.current = null;
+    }
+  });
+
   // Fetch streams for this run
   const {
     streams,
@@ -562,6 +583,7 @@ export function RunDetailView({
       </AlertDialog>
 
       <div
+        ref={viewRootRef}
         className={
           usagePage ? 'flex flex-col' : 'flex flex-col h-[calc(100vh-97px)]'
         }
@@ -765,7 +787,11 @@ export function RunDetailView({
 
         {usagePage ? (
           <div className="mt-4">
-            <RunViewNav runId={runId} showUsage={showUsage} />
+            <RunViewNav
+              runId={runId}
+              showUsage={showUsage}
+              onNavigate={focusRowItemAfterNavigation}
+            />
             <ErrorBoundary title="Failed to load run usage">
               {usagePage}
             </ErrorBoundary>
@@ -782,7 +808,11 @@ export function RunDetailView({
                   same row. */}
               <div className={RUN_VIEW_ROW_CLASS}>
                 <TabsList className="h-auto border-0 bg-transparent p-0">
-                  <TabsTrigger value="trace" className="gap-2">
+                  <TabsTrigger
+                    value="trace"
+                    className="gap-2"
+                    data-run-view-item="trace"
+                  >
                     <List className="h-4 w-4" />
                     Trace
                   </TabsTrigger>
@@ -793,16 +823,29 @@ export function RunDetailView({
                       Graph
                     </TabsTrigger>
                   )}
-                  <TabsTrigger value="events" className="gap-2">
+                  <TabsTrigger
+                    value="events"
+                    className="gap-2"
+                    data-run-view-item="events"
+                  >
                     <List className="h-4 w-4" />
                     Events
                   </TabsTrigger>
-                  <TabsTrigger value="streams" className="gap-2">
+                  <TabsTrigger
+                    value="streams"
+                    className="gap-2"
+                    data-run-view-item="streams"
+                  >
                     <List className="h-4 w-4" />
                     Streams
                   </TabsTrigger>
                 </TabsList>
-                {showUsage && <UsageNavLink runId={runId} />}
+                {showUsage && (
+                  <UsageNavLink
+                    runId={runId}
+                    onNavigate={focusRowItemAfterNavigation}
+                  />
+                )}
               </div>
 
               <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
