@@ -94,13 +94,22 @@ export function useRunUsage(
     setError(null);
   }, [runId]);
 
-  // First read, and a fresh read whenever the run starts or stops being
-  // live, so a run that just finished shows its final numbers.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-read when `live` flips
+  // First read (and a new one for another run).
   useEffect(() => {
     if (!enabled) return;
     void read();
-  }, [enabled, read, live]);
+  }, [enabled, read]);
+
+  // A fresh read when the run stops being live, so a run that just finished
+  // shows its final numbers. Not when it becomes live: on first load the
+  // page reads the run after the first usage read started, so `live` goes
+  // from false to true at once, and polling already reads a live run.
+  const wasLiveRef = useRef(live);
+  useEffect(() => {
+    const wasLive = wasLiveRef.current;
+    wasLiveRef.current = live;
+    if (enabled && wasLive && !live) void read();
+  }, [enabled, live, read]);
 
   // A World without usage answers `null` every time: no point polling it.
   const unsupported = usage === null;

@@ -265,6 +265,31 @@ describe('useRunUsage', () => {
     expect(fetchRunUsage).toHaveBeenCalledTimes(2);
   });
 
+  it('does not read twice when the run turns out to be live on first load', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchRunUsage).mockResolvedValue(ok(usage('wrun_a', 3)));
+    // The page renders before it has read the run (not live), then reads it
+    // as running: `live` flips to true right after the first usage read.
+    const { rerender } = renderHook(
+      ({ live }) => useRunUsage(env, 'wrun_a', { live, refreshInterval: 1000 }),
+      { initialProps: { live: false } }
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    rerender({ live: true });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(1);
+
+    // The next read is the poll.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(fetchRunUsage).toHaveBeenCalledTimes(2);
+  });
+
   it('does not poll a World without usage', async () => {
     vi.useFakeTimers();
     vi.mocked(fetchRunUsage).mockResolvedValue(ok(null));
