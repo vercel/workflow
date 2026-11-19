@@ -8,7 +8,6 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_DEFAULT_MINTED,
-  SPEC_VERSION_DEFAULT_MINTED_FENCED,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -82,44 +81,16 @@ describe('spec version constants', () => {
     expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBe(9);
     expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
     expect(SPEC_VERSION_DEFAULT_MINTED).toBe(SPEC_VERSION_CURRENT);
-    expect(SPEC_VERSION_DEFAULT_MINTED_FENCED).toBe(
-      SPEC_VERSION_SINGLE_ORCHESTRATOR
-    );
-    // Spec 9 is structural, so the version assumed for a run that reports
-    // none stays below it; only a fenced World mints it.
+    // Spec 9 is opt-in: the default stays below the readable ceiling.
     expect(SPEC_VERSION_CURRENT).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
   });
 
   describe('mintedSpecVersion', () => {
-    it('stamps the current version by default for a World without the fence', () => {
+    it('stamps the current version by default', () => {
       expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
-      expect(mintedSpecVersion({}, { inBandFence: false })).toBe(
-        SPEC_VERSION_CURRENT
-      );
       expect(mintedSpecVersion({})).toBeGreaterThanOrEqual(
         SPEC_VERSION_SUPPORTS_SEALED_LOG
       );
-    });
-
-    it('stamps the single-orchestrator version by default for a fenced World', () => {
-      const fenced = { inBandFence: true };
-      expect(mintedSpecVersion({}, fenced)).toBe(
-        SPEC_VERSION_SINGLE_ORCHESTRATOR
-      );
-      expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '' }, fenced)).toBe(
-        SPEC_VERSION_SINGLE_ORCHESTRATOR
-      );
-      // Spec 8 stays one setting away.
-      expect(
-        mintedSpecVersion(
-          {
-            WORKFLOW_SPEC_VERSION: String(
-              SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
-            ),
-          },
-          fenced
-        )
-      ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
     });
 
     it('stamps any supported version WORKFLOW_SPEC_VERSION names', () => {
@@ -173,13 +144,13 @@ describe('spec version constants', () => {
       }
     });
 
-    it('falls back to spec 8 on a fenced World when the value is set but not understood', () => {
-      // The variable is usually set to opt out of spec 9 during a rolling
-      // upgrade, so a typo in it must not create spec 9 runs.
+    it('falls back to spec 8 on a fenced World when the value is set but not understood, and says so', () => {
+      // The variable is set to opt in to spec 9, so a typo in it must not
+      // leave a World minting something else silently.
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const fenced = { inBandFence: true };
-        const typos = ['8.0', 'v8', 'spec8', 'eight-fenced', '99'];
+        const typos = ['9.0', 'v9', 'spec9', 'nine-fenced', '99'];
         for (const raw of typos) {
           expect(
             mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw }, fenced)
@@ -191,13 +162,6 @@ describe('spec version constants', () => {
             `so new runs use spec ${SPEC_VERSION_DEFAULT_MINTED}`
           );
         }
-        // Unset or empty still takes the fenced default.
-        expect(mintedSpecVersion({}, fenced)).toBe(
-          SPEC_VERSION_DEFAULT_MINTED_FENCED
-        );
-        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ' ' }, fenced)).toBe(
-          SPEC_VERSION_DEFAULT_MINTED_FENCED
-        );
       } finally {
         warn.mockRestore();
       }
@@ -227,17 +191,14 @@ describe('spec version constants', () => {
       }
     });
 
-    it('never stamps the single-orchestrator version for a World without the fence', () => {
-      expect(mintedSpecVersion({})).toBeLessThan(
+    it('never stamps the single-orchestrator version unless asked to', () => {
+      expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThan(
         SPEC_VERSION_SINGLE_ORCHESTRATOR
       );
     });
 
     it('never stamps a version this build cannot read back', () => {
       expect(mintedSpecVersion({})).toBeLessThanOrEqual(
-        SPEC_VERSION_MAX_SUPPORTED
-      );
-      expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThanOrEqual(
         SPEC_VERSION_MAX_SUPPORTED
       );
     });

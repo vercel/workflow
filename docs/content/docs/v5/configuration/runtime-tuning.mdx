@@ -377,16 +377,16 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
 - QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
 
-## Spec 9
+## Spec 9 (experimental)
 
-Everything above describes spec 8 runs. New runs are spec 9 by default on the Vercel, Local and Postgres Worlds, and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8. Spec 9 runs read some of the settings above differently, and add the settings below.
+Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below.
 
 ### `WORKFLOW_SPEC_VERSION`
 
-- Default: unset. New runs use spec version 9 on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do) and 8 on one that does not.
-- `8` keeps new runs on spec 8. `6` to `9` select that version; `9` on a World without the fence creates spec 8 runs. Any other value is ignored with a one-time warning and creates spec 8 runs, so a typo in an opt-out never creates spec 9 runs. A run keeps the version it was created with.
+- Default: unset. New runs use spec version 8.
+- `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
 - `6` creates new runs on the scheme from before the [sealed log](/docs/how-it-works/event-sourcing), where each event position is allocated by the write that occupies it. Use it in an environment shared with a runtime that cannot read sealed logs yet, such as one that pins its own accepted spec range (the Python runtime). Runs below `8` cannot have their hook tokens taken over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds): a forced hook in another run gets `HookConflictError` instead.
-- Upgrade every deployment and process that shares the World together, setting `8` on the upgraded ones until all of them run this release, and do not roll back below this release once spec 9 runs exist.
+- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist.
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 
