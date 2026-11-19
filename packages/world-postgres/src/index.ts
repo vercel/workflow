@@ -70,6 +70,7 @@ export function createWorld(
     pollInterval: getPositiveIntEnv('WORKFLOW_POSTGRES_POLL_INTERVAL_MS'),
     applicationManagedShutdown:
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
+    skipWorkers: process.env.WORKFLOW_POSTGRES_SKIP_WORKERS === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
   }
 ): World &
@@ -154,6 +155,11 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Recovery enqueues runs for this World's own workers; without workers,
+      // the processes that run them recover them.
+      if (config.skipWorkers) {
+        return;
+      }
       // Recover only this World's runs (and unstamped legacy ones): every
       // recovered run lands in this World's own task, so a run created under
       // another `jobPrefix` would be driven by the wrong app's runner. The

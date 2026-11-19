@@ -1074,7 +1074,9 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await startRunnerWhenExecutorIsReady();
+          if (!config.skipWorkers) {
+            await startRunnerWhenExecutorIsReady();
+          }
         } catch (err) {
           startPromise = null;
           throw err;
@@ -1082,7 +1084,7 @@ export function createQueue(
       })();
     }
     await startPromise;
-    if (!closing && !runner && !runnerStart) {
+    if (!closing && !config.skipWorkers && !runner && !runnerStart) {
       await startRunnerWhenExecutorIsReady();
     }
   }

@@ -309,6 +309,7 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_POSTGRES_POLL_INTERVAL_MS`](#workflow_postgres_poll_interval_ms) | `500` ms | Idle job polling |
 | [`WORKFLOW_POSTGRES_MAX_POOL_SIZE`](#workflow_postgres_max_pool_size) | `10` | Connection pool size |
 | [`WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`](#workflow_postgres_application_managed_shutdown) | off | Who coordinates shutdown |
+| [`WORKFLOW_POSTGRES_SKIP_WORKERS`](#workflow_postgres_skip_workers) | off | Send work without executing it |
 | [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](#workflow_postgres_headers_timeout_ms) | `0` ms (no deadline) | Hung delivery detection |
 | [`WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`](#workflow_postgres_body_timeout_ms) | `0` ms (no deadline) | Stalled response detection |
 | [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) | unset: 300 s for spec 9 run-lease jobs only | Redelivery after a process dies |
@@ -402,6 +403,15 @@ Change it when: you raise worker concurrency. Graphile Worker recommends setting
 Whether the application, instead of Graphile Worker, coordinates shutdown. Set to `1` to enable.
 
 Change it when: the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. See [Application-managed shutdown](#application-managed-shutdown).
+
+### `WORKFLOW_POSTGRES_SKIP_WORKERS`
+
+- Default: unset (`false`)
+- Factory option: `skipWorkers`
+
+Runs no workers in this process. Set to `1` to enable. The process can still start runs, resume hooks, cancel runs and read them, but it claims none of the jobs those create, and it doesn't recover interrupted runs at startup. Processes that run workers against the same database and `WORKFLOW_POSTGRES_JOB_PREFIX` do both, so at least one must be running.
+
+Change it when: some processes should send work without executing it, for example application instances in a region far from the database, whose step executions would wait on many cross-region round trips. Run the workers near the database.
 
 ### `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`
 

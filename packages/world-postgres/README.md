@@ -204,6 +204,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. A parent workflow awaiting `returnValue` of a child it started suspends on a system hook and holds no slot, but a `returnValue` polled inside a step holds one until the child run terminates, so cover the peak number of those in flight. |
 | `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
+| `skipWorkers` | `boolean` | `false`; `WORKFLOW_POSTGRES_SKIP_WORKERS=1` enables it for the default package configuration | Run no workers in this process: it can start, resume, cancel and read runs, but claims no jobs and doesn't recover interrupted runs at startup, leaving both to processes that run workers against the same database and `jobPrefix`. |
 | `jobLockStaleSeconds` | `number` | `process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`, or unset: renew every delivery and release only spec 9 run-lease jobs of renewing holders after 300 s | Seconds a running delivery's job lock may go unrenewed before another process redelivers any of this World's jobs. `0` turns renewal and the release of stale locks off. `30` is a good value when more than one process shares the database. See [Crash recovery](#crash-recovery). |
 
 ## Environment variables
@@ -218,6 +219,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`   | Milliseconds between idle job fetches per worker             | `500`                                           |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
+| `WORKFLOW_POSTGRES_SKIP_WORKERS` | Set to `1` to run no workers in this process: it sends work but leaves executing and recovering runs to other processes | unset (`false`) |
 | `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |
 | `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job; `0` disables | unset: 300 s, spec 9 run-lease jobs only |
 

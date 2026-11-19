@@ -45,6 +45,17 @@ export type PostgresWorldConfig = PgConnectionConfig & {
   queueConcurrency?: number;
   /** Milliseconds between idle job fetches per worker. Defaults to 500. */
   pollInterval?: number;
+  /**
+   * Run no workers in this process. `start()` still prepares the queue, so
+   * this World can start runs, resume hooks, cancel runs and read them, but
+   * it claims none of the jobs those create and doesn't recover interrupted
+   * runs at startup: processes that run workers against the same database
+   * and `jobPrefix` do both. Use it for processes that should send work but
+   * not execute it, such as those far from the database. Defaults to false.
+   * The package's default createWorld() configuration enables it when
+   * WORKFLOW_POSTGRES_SKIP_WORKERS is `1`.
+   */
+  skipWorkers?: boolean;
   /** Enable experimental invoke() delivery with one Graphile execution queue per run. */
   enableInvoke?: boolean;
   /**

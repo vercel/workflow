@@ -137,6 +137,38 @@ describe('startup recovery scope', () => {
     }
   });
 
+  test('a World with skipWorkers enqueues but leaves recovery to worker processes', async () => {
+    const sender = createWorld({
+      pool,
+      jobPrefix: 'app_d_',
+      skipWorkers: true,
+    });
+    const worker = createWorld({ pool, jobPrefix: 'app_d_' });
+
+    const interrupted = `wrun_${ulid()}`;
+    const sent = `wrun_${ulid()}`;
+    await sender.events.create(interrupted, runEvent('run_created'));
+    try {
+      await sender.start();
+      expect(await queuedRunIds('app_d_flows')).not.toContain(interrupted);
+
+      // Starting a run or resuming a hook sends a message like this one.
+      await sender.queue(
+        '__wkf_workflow_recovery-scope-test' as never,
+        {
+          runId: sent,
+        } as never
+      );
+      expect(await queuedRunIds('app_d_flows')).toContain(sent);
+
+      await worker.start();
+      expect(await queuedRunIds('app_d_flows')).toContain(interrupted);
+    } finally {
+      await sender.close();
+      await worker.close();
+    }
+  });
+
   test('both run creation paths stamp the effective jobPrefix of the World', async () => {
     const custom = createWorld({ pool, jobPrefix: 'app_c_' });
     const defaults = createWorld({ pool });
