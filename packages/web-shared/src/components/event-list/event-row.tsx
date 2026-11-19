@@ -34,8 +34,8 @@ const COL = {
 const CELL = 'flex h-full shrink-0 items-center overflow-hidden px-1.5';
 
 const LEVEL_ROW_CLASS: Record<EventLevel, string> = {
-  default: 'text-gray-1000 hover:bg-gray-alpha-200',
-  muted: 'text-gray-700 hover:bg-gray-alpha-200',
+  default: 'text-gray-1000 hover:bg-gray-100',
+  muted: 'text-gray-700 hover:bg-gray-100',
   warning: 'bg-amber-100 text-amber-900 hover:bg-amber-200',
   error: 'bg-red-100 text-red-900 hover:bg-red-200',
 };
@@ -237,7 +237,7 @@ export function EventRow({
       className={cn(
         'mx-1 mt-px flex h-6 cursor-pointer items-center rounded-md font-mono text-[13px] leading-5 outline-none focus-visible:relative focus-visible:z-10 focus-visible:shadow-[0_0_0_2px_var(--ds-focus-color)]',
         LEVEL_ROW_CLASS[level],
-        !isTinted && !relation && index % 2 === 1 && 'bg-gray-alpha-100',
+        !isTinted && !relation && index % 2 === 1 && 'bg-background-200',
         isRelated && !isTinted && 'bg-blue-300/50 hover:bg-blue-300/75',
         isMuted && 'text-gray-700 [&_svg]:text-gray-700',
         isSelected && LEVEL_SELECTED_CLASS[level]
@@ -319,7 +319,7 @@ export function EventRowsSkeleton() {
           key={i}
           className={cn(
             'mx-1 mt-px flex h-6 items-center rounded-md',
-            i % 2 === 1 && 'bg-gray-alpha-100'
+            i % 2 === 1 && 'bg-background-200'
           )}
         >
           <div className={cn(CELL, COL.level)} />
