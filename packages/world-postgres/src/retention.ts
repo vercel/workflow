@@ -1,6 +1,7 @@
 import { debugLog } from '@workflow/utils';
 import { isTerminalWorkflowRunStatus, readRunRetention } from '@workflow/world';
 import { and, eq, sql } from 'drizzle-orm';
+import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { type DrizzleHandle, Schema } from './drizzle/index.js';
 import { graphileSchemaIdentifier } from './run-lease.js';
 
@@ -291,11 +292,26 @@ export async function scrubStepWriteIfRunPurged(
  * after the commit has normally finished and the job finds nothing to do;
  * otherwise it purges, and Graphile retries it until that succeeds.
  *
- * Every runner of the World with this job prefix claims it (see queue.ts).
- * A runner that predates it does not, and the job waits for one that does.
+ * The task is named by the World's job prefix without its deployment (see
+ * {@link worldPurgeTask}), so the runners of every deployment sharing the
+ * prefix claim it, not only those of the deployment that finished the run:
+ * that one may have drained and been retired by then. Until the job is done,
+ * Kubernetes scaling and pruning count it as unfinished work of the
+ * deployment that finished the run (see kubernetes/backlog.ts), so a cluster
+ * whose other deployments are all scaled to zero still wakes a worker for
+ * it. A runner that predates the task does not claim it, and the job waits
+ * for one that does.
  */
 export function purgeTask(jobPrefix: string): string {
   return `${jobPrefix}purge`;
+}
+
+/** The purge backstop's task of a World configured with `config`. */
+export function worldPurgeTask(
+  config: Pick<PostgresWorldConfig, 'jobPrefix'>
+): string {
+  // No deployment: shared by every deployment of the World.
+  return purgeTask(resolveJobPrefix({ jobPrefix: config.jobPrefix }));
 }
 
 /** How long after the terminal write the purge backstop runs. */
@@ -308,18 +324,18 @@ export const PURGE_BACKSTOP_DELAY_SECONDS = 60;
 const PURGE_BACKSTOP_MAX_ATTEMPTS = 25;
 
 /**
- * Add `runId`'s purge backstop (see {@link purgeTask}) in `tx`, the
- * transaction that writes the run's terminal transition. Keyed by the run,
- * so a run has at most one.
+ * Add `runId`'s purge backstop (see {@link purgeTask}) on `task` in `tx`,
+ * the transaction that writes the run's terminal transition. Keyed by the
+ * run, so a run has at most one.
  */
 export async function addPurgeBackstop(
   tx: DrizzleHandle,
-  jobPrefix: string,
+  task: string,
   runId: string
 ): Promise<void> {
   await tx.execute(
     sql`SELECT ${sql.raw(graphileSchemaIdentifier())}.add_job(
-      identifier => ${purgeTask(jobPrefix)},
+      identifier => ${task},
       payload => ${JSON.stringify({ runId })}::json,
       run_at => now() + make_interval(secs => ${PURGE_BACKSTOP_DELAY_SECONDS}),
       max_attempts => ${PURGE_BACKSTOP_MAX_ATTEMPTS},

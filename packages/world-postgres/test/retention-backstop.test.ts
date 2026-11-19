@@ -84,7 +84,10 @@ describe.each([
     });
     pool = new TestPool({ connectionString: dbUrl, max: 4 });
     drizzle = createClient(pool);
-    events = createEventsStorage(drizzle, { jobPrefix: JOB_PREFIX });
+    events = createEventsStorage(drizzle, {
+      jobPrefix: JOB_PREFIX,
+      purgeTask: purgeTask(JOB_PREFIX),
+    });
   }, 120_000);
 
   beforeEach(async () => {

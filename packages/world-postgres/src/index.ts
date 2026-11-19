@@ -9,6 +9,7 @@ import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { worldPurgeTask } from './retention.js';
 import { createRunEventsFeed, type RunEventsFeed } from './run-events.js';
 import {
   createRunStatusListener,
@@ -28,11 +29,16 @@ function createStorage(
   drizzle: Drizzle,
   runStatusListener: RunStatusListener,
   jobPrefix: string,
+  purgeTask: string,
   runEventsFeed: RunEventsFeed
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
-    events: createEventsStorage(drizzle, { jobPrefix, runEventsFeed }),
+    events: createEventsStorage(drizzle, {
+      jobPrefix,
+      purgeTask,
+      runEventsFeed,
+    }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
@@ -97,6 +103,7 @@ export function createWorld(
     drizzle,
     runStatusListener,
     jobPrefix,
+    worldPurgeTask(config),
     runEventsFeed
   );
   const streamer = createStreamer(pool, drizzle);

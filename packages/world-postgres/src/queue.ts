@@ -64,7 +64,7 @@ import {
   resolveJobLeasePolicy,
 } from './job-lease.js';
 import { MessageData } from './message.js';
-import { createPurgeBackstopTask, purgeTask } from './retention.js';
+import { createPurgeBackstopTask, worldPurgeTask } from './retention.js';
 import {
   createRunLeases,
   graphileSchemaIdentifier,
@@ -1706,7 +1706,8 @@ export function createQueue(
       );
     // The backstop of a zero-retention run's purge, which its terminal
     // transaction adds (see `purgeTask`). Not a delivery: no run lease.
-    taskList[purgeTask(resolveJobPrefix(config))] = createPurgeBackstopTask(
+    // Shared by every deployment (see `worldPurgeTask`).
+    taskList[worldPurgeTask(config)] = createPurgeBackstopTask(
       createClient(pool)
     );
 

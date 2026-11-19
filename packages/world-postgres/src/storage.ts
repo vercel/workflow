@@ -1397,14 +1397,23 @@ export function createEventsStorage(
      */
     jobPrefix?: string;
     /**
+     * The task of the purge backstop a zero-retention run's terminal write
+     * adds (see `purgeTask` in retention.ts). `createWorld` passes its
+     * `worldPurgeTask`. Omitted, no backstop is added.
+     */
+    purgeTask?: string;
+    /**
      * The live feed behind `events.subscribe`. Omitted, the storage offers
      * no `subscribe`. Writes announce spec 9 runs on it either way.
      */
     runEventsFeed?: RunEventsFeed;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix, runEventsFeed } = options;
-  const events = createUnfencedEventsStorage(drizzle, { jobPrefix });
+  const { jobPrefix, purgeTask, runEventsFeed } = options;
+  const events = createUnfencedEventsStorage(drizzle, {
+    jobPrefix,
+    purgeTask,
+  });
   const unfencedCreate = events.create as (
     runId: string | null,
     data: AnyEventRequest,
@@ -1479,6 +1488,7 @@ export function createEventsStorage(
       }
       const inTransaction = createUnfencedEventsStorage(tx, {
         jobPrefix,
+        purgeTask,
         deferTerminal: (terminal) => terminalRuns.push(terminal),
       }).create as (
         runId: string | null,
@@ -1621,11 +1631,13 @@ function createUnfencedEventsStorage(
   options: {
     /** See `createEventsStorage`. */
     jobPrefix?: string;
+    /** See `createEventsStorage`. */
+    purgeTask?: string;
     /** See `DeferredTerminal`. */
     deferTerminal?: (terminal: DeferredTerminal) => void;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix } = options;
+  const { jobPrefix, purgeTask } = options;
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -2559,10 +2571,10 @@ function createUnfencedEventsStorage(
             // The purge of a zero-retention run runs after this commits;
             // its backstop commits with it (see `purgeTask`).
             if (
-              jobPrefix !== undefined &&
+              purgeTask !== undefined &&
               readRunRetention(runValue.attributes ?? undefined).mode === 'none'
             ) {
-              await addPurgeBackstop(tx, jobPrefix, effectiveRunId);
+              await addPurgeBackstop(tx, purgeTask, effectiveRunId);
             }
           } else {
             const [existing] = await tx
