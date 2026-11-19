@@ -94,7 +94,7 @@ Two kinds of data aren't counted locally:
 
 ### On Vercel
 
-Vercel bills a run by its Workflow Events and its Data Written, among the resources on [Workflow pricing](https://vercel.com/docs/workflows/pricing). The events above are the run's Workflow Events, and storage is counted the way Data Written is, except that Data Written also includes a dynamic workflow's code. Local runs aren't billed. For a run's billed amounts, open it on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard).
+Vercel bills a run by its Workflow Events and its Data Written, among the resources on [Workflow pricing](https://vercel.com/docs/workflows/pricing). The events above are the run's Workflow Events, and storage is counted the way Data Written is, except that Data Written also includes QuickJS VM snapshots and a dynamic workflow's code. Local runs aren't billed. For a run's billed amounts, open it on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard).
 
 ## Backends
 
