@@ -17,6 +17,7 @@ import type {
   AnyEventRequest,
   AttributeChange,
   CreateEventParams,
+  DeleteRunDataResult,
   Event,
   EventListResponse,
   EventLogSnapshot,
@@ -42,6 +43,7 @@ import type {
 import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
+  DeleteRunsDataRequestSchema,
   EVENT_ID_BODY_LENGTH,
   EVENT_ID_PREFIX,
   EventSchema,
@@ -58,8 +60,6 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
-  RETENTION_ATTRIBUTE,
-  RETENTION_ZERO,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -102,6 +102,7 @@ import {
   invocationExpiredError,
 } from './invocation-retention.js';
 import {
+  purgeRunUserData,
   purgeRunUserDataIfZeroRetention,
   scrubStepWriteIfRunPurged,
 } from './retention.js';
@@ -229,15 +230,21 @@ function nextSlotId(runId: string): SQL<string> {
 }
 
 /**
- * RETURNING columns of a step write: the step row, and whether its run asked
- * for zero retention (fixed when the run starts), so a write that may land
- * after the run's purge is checked (`scrubStepWriteIfRunPurged`) without a
- * query for every other run.
+ * RETURNING columns of a step write: the step row, and whether its run has
+ * finished. Only a finished run's data can have been deleted (by zero
+ * retention or on demand), so only then is a step write that may land after
+ * the deletion checked (`scrubStepWriteIfRunPurged`), without a query for
+ * every running run. A run that finishes while the step write is still open
+ * cannot have its data deleted under it: the deletion updates the step row,
+ * so it waits for this write to commit and then clears it.
  */
-function stepRowAndRetention(runId: string) {
+function stepRowAndRunFinished(runId: string) {
   return {
     ...getTableColumns(Schema.steps),
-    zeroRetention: sql<boolean>`coalesce((select r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO} from ${Schema.runs} r where r.id = ${runId}), false)`,
+    runFinished: sql<boolean>`coalesce((select r.status in (${sql.join(
+      TERMINAL_WORKFLOW_RUN_STATUSES.map((status) => sql`${status}`),
+      sql`, `
+    )}) from ${Schema.runs} r where r.id = ${runId}), false)`,
   };
 }
 
@@ -986,6 +993,86 @@ export function createRunsStorage(
       return ids.map((id) => runsById.get(id) ?? null);
     }) as NonNullable<Storage['runs']['getMany']>,
     list: createRunsList(drizzle),
+
+    /**
+     * Delete the data of many finished runs. See
+     * `Storage['runs'].deleteDataMany`.
+     *
+     * Each finished run is cleared exactly as a zero-retention run is when
+     * it finishes, in its own transaction, which also deletes its VM
+     * snapshot. Reading the status first is race-free: a terminal run never
+     * leaves its terminal state, and a run read as unfinished is left
+     * untouched.
+     */
+    deleteDataMany: (async (request) => {
+      const { runIds } = DeleteRunsDataRequestSchema.parse(request);
+      const rows = await drizzle
+        .select({
+          runId: runs.runId,
+          status: runs.status,
+          expiredAt: runs.expiredAt,
+        })
+        .from(runs)
+        .where(inArray(runs.runId, runIds));
+      const rowsById = new Map(rows.map((row) => [row.runId, row]));
+      const now = new Date();
+
+      const results = await Promise.all(
+        runIds.map(async (runId): Promise<DeleteRunDataResult> => {
+          const row = rowsById.get(runId);
+          if (!row) return { runId, outcome: 'not_found' };
+          if (!isTerminalWorkflowRunStatus(row.status)) {
+            return {
+              runId,
+              outcome: 'skipped',
+              reason: 'run_not_terminal',
+              status: row.status,
+            };
+          }
+          const alreadyDeleted =
+            row.expiredAt !== null && row.expiredAt.getTime() <= now.getTime();
+          try {
+            // Also for an already deleted run: whatever an earlier pass left
+            // behind goes too, and its original `expired_at` is kept.
+            await purgeRunUserData(
+              drizzle,
+              runId,
+              alreadyDeleted && row.expiredAt ? row.expiredAt : now
+            );
+          } catch (cause) {
+            console.error(
+              `[workflow] failed to delete the data of run "${runId}"`,
+              cause
+            );
+            return {
+              runId,
+              outcome: 'failed',
+              code: 'internal_error',
+              retryable: true,
+            };
+          }
+          return {
+            runId,
+            outcome: alreadyDeleted ? 'already_deleted' : 'deleted',
+          };
+        })
+      );
+
+      const count = (outcome: DeleteRunDataResult['outcome']) =>
+        results.filter((result) => result.outcome === outcome).length;
+      return {
+        summary: {
+          requested: runIds.length,
+          deleted: count('deleted'),
+          alreadyDeleted: count('already_deleted'),
+          skipped: count('skipped'),
+          notCreated: count('not_created'),
+          notFound: count('not_found'),
+          failed: count('failed'),
+        },
+        results,
+      };
+    }) as NonNullable<Storage['runs']['deleteDataMany']>,
 
     experimentalSetAttributes: async (
       runId: string,
@@ -2667,7 +2754,7 @@ function createUnfencedEventsStorage(
                 error: data.eventData.error as SerializedData,
                 completedAt: now,
               };
-        let zeroRetention = false;
+        let runFinished = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2679,11 +2766,11 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning(stepRowAndRetention(effectiveRunId));
+            .returning(stepRowAndRunFinished(effectiveRunId));
 
           if (stepValue) {
-            const { zeroRetention: zero, ...row } = stepValue;
-            zeroRetention = zero;
+            const { runFinished: finished, ...row } = stepValue;
+            runFinished = finished;
             step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
@@ -2726,7 +2813,7 @@ function createUnfencedEventsStorage(
           eventId = eventValue.eventId;
           return { createdAt: eventValue.createdAt };
         }, SLOT_INSERT_TRANSACTION);
-        if (zeroRetention)
+        if (runFinished)
           await scrubStepWriteIfRunPurged(
             drizzle,
             effectiveRunId,
@@ -2746,7 +2833,7 @@ function createUnfencedEventsStorage(
         // One transaction with its event, as step_started does: a step put
         // back to pending without its step_retrying would retry with no
         // record of the failed attempt in the log.
-        let zeroRetention = false;
+        let runFinished = false;
         value = await drizzle.transaction(async (tx) => {
           const [stepValue] = await tx
             .update(Schema.steps)
@@ -2762,10 +2849,10 @@ function createUnfencedEventsStorage(
                 notInArray(Schema.steps.status, terminalStepStatuses)
               )
             )
-            .returning(stepRowAndRetention(effectiveRunId));
+            .returning(stepRowAndRunFinished(effectiveRunId));
           if (stepValue) {
-            const { zeroRetention: zero, ...row } = stepValue;
-            zeroRetention = zero;
+            const { runFinished: finished, ...row } = stepValue;
+            runFinished = finished;
             step = deserializeStepError(compact(row));
           } else {
             // Step not updated - check if it exists and why
@@ -2792,7 +2879,7 @@ function createUnfencedEventsStorage(
           }
           return insertOwnEvent(tx);
         }, SLOT_INSERT_TRANSACTION);
-        if (zeroRetention)
+        if (runFinished)
           await scrubStepWriteIfRunPurged(
             drizzle,
             effectiveRunId,
