@@ -267,6 +267,33 @@ const fanOutBesideSleep = `const inc = ${step};
     return all.length;
   }${registerWorkflow()}`;
 
+// Two concurrent chains whose every step has its own name: a step outcome
+// the workflow takes in out of slot order makes the chains draw each other's
+// correlation ids, which a replay of the committed log reports as a divergence.
+const CHAIN_STEPS = 5;
+for (const chain of ['x', 'y']) {
+  for (let i = 0; i < CHAIN_STEPS; i++) {
+    const name = `ra_chain_${chain}_${i}`;
+    registerStepFunction(name, async () => {
+      // The chains' bodies return at different, interleaving moments.
+      const ms = chain === 'x' ? (i % 2) * 7 : ((i + 1) % 3) * 5;
+      if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+      return name;
+    });
+  }
+}
+const twoNamedChains = `const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
+  async function chain(name) {
+    const out = [];
+    for (let i = 0; i < ${CHAIN_STEPS}; i++) {
+      out.push(await useStep("ra_chain_" + name + "_" + i)());
+    }
+    return out;
+  }
+  async function workflow() {
+    return await Promise.all([chain("x"), chain("y")]);
+  }${registerWorkflow()}`;
+
 const STEPS = 6;
 
 /**
@@ -393,6 +420,57 @@ describe.each([
     expect(cold.result).toBe(STEPS);
     // It runs no step again: every outcome is in the log.
     expect(eventsOf(cold.world, 'step_started')).toHaveLength(STEPS);
+  });
+
+  it('places speculative events at the slots they take when the live feed echoes a write before its answer', async () => {
+    // A remote World pushes a committed event to the live feed apart from
+    // the write's answer, so the echo of this delivery's own write can
+    // arrive first. The position must be counted once: counted as both seen
+    // and still pending, every later speculative event is placed past the
+    // slot it takes.
+    const debug = vi
+      .spyOn(runtimeLogger, 'debug')
+      .mockImplementation(() => undefined);
+    const { world } = await run(sequential, [STEPS], {
+      subscribe: true,
+      createDelayMs: 15,
+    });
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(STEPS);
+    expect(world.deliveries).toHaveLength(1);
+    expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+    // No other writer appended: nothing was placed at a wrong slot.
+    expect(
+      debug.mock.calls.filter(([message]) => message === 'Run-ahead repaired')
+    ).toEqual([]);
+    debug.mockRestore();
+
+    const cold = await coldReplay(world, sequential);
+    expect(cold.result).toBe(STEPS);
+    expect(eventsOf(cold.world, 'step_started')).toHaveLength(STEPS);
+  });
+
+  it('hands concurrent chains their outcomes in slot order when the live feed echoes writes before their answers', async () => {
+    const { world } = await run(twoNamedChains, [], {
+      subscribe: true,
+      createDelayMs: 20,
+    });
+    await world.runUntilIdle();
+
+    const expected = ['x', 'y'].map((chain) =>
+      Array.from({ length: CHAIN_STEPS }, (_, i) => `ra_chain_${chain}_${i}`)
+    );
+    expect(eventsOf(world, 'run_failed')).toEqual([]);
+    expect(await runResult(world)).toEqual(expected);
+    expect(world.deliveries).toHaveLength(1);
+
+    // The committed log decides the same way from cold, running no step
+    // again: the live run took each outcome in at the slot it committed at.
+    const cold = await coldReplay(world, twoNamedChains);
+    expect(eventsOf(cold.world, 'run_failed')).toEqual([]);
+    expect(cold.result).toEqual(expected);
+    expect(eventsOf(cold.world, 'step_started')).toHaveLength(2 * CHAIN_STEPS);
   });
 
   it('does not read a queued sibling start below a speculative outcome as a hole in the log', async () => {

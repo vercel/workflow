@@ -164,6 +164,8 @@ export class AppendOnlyWorld {
     afterSlot: number;
     onEvent: (event: Event) => void;
   }>();
+  /** Delayed live-feed pushes, in commit order (`subscribeDelayMs`). */
+  private pushes: Promise<void> = Promise.resolve();
   private run: WorkflowRun | undefined;
   /** The orchestrator delivery in flight, in `coalesce` mode. */
   private activeOrchestrator: { coalesced: number } | undefined;
@@ -223,6 +225,20 @@ export class AppendOnlyWorld {
        * milliseconds late, after committing, as a remote World's round trip.
        */
       createDelayMs?: number;
+      /**
+       * Push each event to the live feed this many milliseconds after it
+       * committed (in commit order), as on a World whose push travels apart
+       * from a write's answer and can arrive well after it. Without it the
+       * push is synchronous with the commit.
+       */
+      subscribeDelayMs?: number;
+      /**
+       * Called after an `events.create` or `events.createBatch` committed and
+       * before it answers. A test awaits in it to hold the answer back while
+       * the commit is already visible (the live feed has pushed it), as on a
+       * remote World whose push outruns the answer.
+       */
+      afterCommit?: () => void | Promise<void>;
       /**
        * Hook tokens another run already holds: a `hook_created` for one of
        * them commits `hook_conflict` instead, as a World with a token index
@@ -476,8 +492,25 @@ export class AppendOnlyWorld {
     this.events.push(event);
     this.events.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
     this.applyToRun(event);
-    for (const sub of this.subscribers) {
-      if (slot > sub.afterSlot) sub.onEvent(event);
+    const push = () => {
+      for (const sub of this.subscribers) {
+        if (slot > sub.afterSlot) sub.onEvent(event);
+      }
+    };
+    const delayMs = this.options.subscribeDelayMs;
+    if (delayMs === undefined) {
+      push();
+    } else {
+      // One chain, so pushes keep commit order whatever their timers do.
+      this.pushes = this.pushes.then(
+        () =>
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              push();
+              resolve();
+            }, delayMs)
+          )
+      );
     }
     return event;
   }
@@ -939,6 +972,7 @@ export class AppendOnlyWorld {
         if (self.options.createDelayMs) {
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));
         }
+        await self.options.afterCommit?.();
         return {
           event: self.responseEvent(event),
           run: self.run,
@@ -996,12 +1030,12 @@ export class AppendOnlyWorld {
         if (params?.inBand && params.eventCount !== undefined) {
           self.reportSpans.push({ eventCount: params.eventCount, firstSlot });
         }
+        const committed = self.commitBatch(batch, params, firstSlot);
         if (self.options.createDelayMs) {
-          const committed = self.commitBatch(batch, params, firstSlot);
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));
-          return committed;
         }
-        return self.commitBatch(batch, params, firstSlot);
+        await self.options.afterCommit?.();
+        return committed;
       },
       async get(_runId: string, eventId: string) {
         const event = self.events.find((e) => e.eventId === eventId);

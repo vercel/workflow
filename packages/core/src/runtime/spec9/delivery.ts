@@ -859,6 +859,42 @@ async function runDelivery(
    * are not folded into the log meanwhile.
    */
   let runAheadRepair = false;
+  /**
+   * Every event a run-ahead write placed in the log before
+   * its commit, for as long as it is referenced: what tells
+   * a speculative copy of an event from its committed one.
+   */
+  const everSpeculative = new WeakSet<Event>();
+  /**
+   * The speculative event the log holds under `eventId`
+   * while its write is unconfirmed, if any. A handful of
+   * events at most (the run-ahead depth).
+   */
+  const speculativeEventAt = (eventId: string): Event | undefined => {
+    for (const event of speculativeEvents) {
+      if (event.eventId === eventId) return event;
+    }
+    return undefined;
+  };
+  /**
+   * Whether `event` is committed at a position the log holds
+   * another event's speculative copy at: that copy was
+   * placed at the wrong slot, so the log's order is no
+   * longer the run's, and folding `event` in would drop it
+   * (the log keeps one event per id).
+   */
+  const displacesSpeculation = (event: Event): boolean => {
+    const ahead = speculativeEventAt(event.eventId);
+    return (
+      ahead !== undefined &&
+      (ahead.eventType !== event.eventType ||
+        ahead.correlationId !== event.correlationId)
+    );
+  };
+  /** Marks a run-ahead repair due (set by the orchestrator loop). */
+  let noteDisplacedSpeculation = (): void => {
+    runAheadRepair = true;
+  };
   // Set when an accepted write could not be folded into the
   // log without leaving a hole; the next pass reads first.
   let logBehind = false;
@@ -909,6 +945,14 @@ async function runDelivery(
     const report = (result.events ?? []).filter(
       (event) => event.eventId !== own.eventId
     );
+    if (displacesSpeculation(own) || report.some(displacesSpeculation)) {
+      // A speculative event sits where this write, or
+      // something below it, committed. The repair rebuilds
+      // the log from the writes' responses, this one's too.
+      noteDisplacedSpeculation();
+      repairWrites.push(result);
+      return;
+    }
     const below = Math.max(
       indexOf(log.events).maxSlot() ?? 0,
       maxEventSlot(report) ?? 0
@@ -992,6 +1036,9 @@ async function runDelivery(
     }
     logBehind = false;
     log = { events: loaded.events, cursor: loaded.cursor };
+    // The load can hold events above the snapshot its first
+    // page carried.
+    writer.observeSlot(indexOf(log.events).maxSlot() ?? 0);
     return log;
   };
   /**
@@ -1027,6 +1074,9 @@ async function runDelivery(
     );
     for (const event of page.events) {
       prepareReplayEvent(event);
+      // The writer predicts speculative slots from the
+      // positions it knows are taken.
+      writer.observeEvent(event);
     }
     indexOf(log.events).merge(page.events);
     log.cursor = page.cursor ?? log.cursor;
@@ -2321,6 +2371,14 @@ async function runDelivery(
       return log?.events.some((e) => e.eventId === event.eventId) ?? false;
     };
     const settledInline: InlineSettled[] = [];
+    /**
+     * Outcomes of inline steps being written on the awaited
+     * path (a step started at a boundary that was not inert):
+     * sent, and not yet answered. The workflow consumes such
+     * an outcome only once it committed, at a slot below
+     * every speculative event placed while it is in flight.
+     */
+    let awaitedOutcomeWrites = 0;
     // Creation commits still in flight while the bodies they
     // create run (turbo's `optimisticCreation`), a fan-out's
     // later creation batches, and step dispatches sent next to
@@ -2391,7 +2449,10 @@ async function runDelivery(
       if (pendingFeedEvents.length > 0) {
         const events = pendingFeedEvents.splice(0).filter((event) => {
           const slot = eventIdToSlot(event.eventId);
-          if (slot !== null) writer.observeSlot(slot);
+          // The feed echoes this delivery's own writes too,
+          // some before their answers: the writer counts
+          // each position once (`observeEvent`).
+          writer.observeEvent(event);
           checkRunAheadHazard(event, 'live feed');
           // A speculative position is the delivery's own
           // until its write confirms or repairs it.
@@ -2447,7 +2508,11 @@ async function runDelivery(
     const ensureLiveFeed = (): void => {
       if (liveFeed || !log) return;
       liveFeed = new LiveLogFeed(world, runId, {
-        afterSlot: indexOf(log.events).maxSlot() ?? 0,
+        // From the highest confirmed position: a speculative
+        // event sits at a predicted slot, and another
+        // writer's event that takes that slot must still be
+        // offered.
+        afterSlot: slotSnapshot().eventCount ?? 0,
         cursor: log.cursor,
         pollIntervalMs: getOrchestratorPollIntervalMs(),
         feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
@@ -2616,7 +2681,7 @@ async function runDelivery(
        * Counted once per repair, by what found it first.
        */
       repairs: 0,
-      repairsByCause: { feed: 0, outcome: 0, creation: 0 },
+      repairsByCause: { feed: 0, outcome: 0, creation: 0, response: 0 },
       /** Wall time spent repairing, in milliseconds. */
       repairMs: 0,
       /** Repairs whose retained session survived them. */
@@ -2632,13 +2697,32 @@ async function runDelivery(
       contextsMax: 0,
     };
     const markRunAheadRepair = (
-      cause: 'feed' | 'outcome' | 'creation'
+      cause: 'feed' | 'outcome' | 'creation' | 'response'
     ): void => {
       if (runAheadRepair) return;
       runAheadRepair = true;
       runAheadStats.repairs++;
       runAheadStats.repairsByCause[cause]++;
       recordRunAheadSpan();
+    };
+    noteDisplacedSpeculation = () => markRunAheadRepair('response');
+    /**
+     * The slot the next speculative write is placed at: the
+     * writer's prediction, and never at or below a position
+     * the log already holds or an unconfirmed speculative
+     * write was predicted at. Two events must not share an
+     * id (the log keeps one per id and would drop the
+     * second), and speculative events must sit in the order
+     * their writes were queued, which is the order they
+     * commit in and the order the workflow consumed them.
+     * When the prediction is exact this changes nothing.
+     */
+    const nextSpeculativeSlot = (): number => {
+      let floor = log ? (indexOf(log.events).maxSlot() ?? 0) : 0;
+      for (const slot of speculativeSlots) {
+        if (slot > floor) floor = slot;
+      }
+      return Math.max(writer.predictNextSlot(), floor + 1);
     };
     const outOfBandBoundaries = {
       inert: 0,
@@ -2675,6 +2759,8 @@ async function runDelivery(
           runAheadStats.repairsByCause.outcome,
         'workflow.run_ahead.repairs.creation':
           runAheadStats.repairsByCause.creation,
+        'workflow.run_ahead.repairs.response':
+          runAheadStats.repairsByCause.response,
         'workflow.run_ahead.repair_ms': runAheadStats.repairMs,
         'workflow.run_ahead.repairs_retained': runAheadStats.repairsRetained,
         'workflow.run_ahead.repair_reads': runAheadStats.repairReads,
@@ -2853,7 +2939,13 @@ async function runDelivery(
       runAheadContexts.clear();
       return runAheadRepair ? 'repair' : 'clean';
     }
-    /** Replaces a repaired run-ahead's log with the World's. */
+    /** Repairs the log before a pass, when a repair is due. */
+    async function repairRunAheadIfDue(): Promise<void> {
+      if (!runAheadRepair) return;
+      await settleRunAhead();
+      if (runAheadFailure !== undefined) throw runAheadFailure;
+      await repairRunAhead();
+    }
     /**
      * Puts a repaired run-ahead's log right. Its speculative
      * events leave the log, and the responses of its writes
@@ -2910,6 +3002,17 @@ async function runDelivery(
         runAheadStats.repairReads++;
         await loadAfter();
       }
+      // A rebase covers speculative events shifted up, by
+      // what another writer placed below them. One that
+      // committed below its predicted slot was placed past
+      // the position it took; the session replays from cold
+      // over the rebuilt log instead.
+      for (const [predicted, committed] of repairAliases) {
+        if (committed < predicted) {
+          session = null;
+          break;
+        }
+      }
       if (session) {
         const sensitive = new Set(runAheadSensitiveHookIds);
         pendingRebase = {
@@ -2941,7 +3044,7 @@ async function runDelivery(
       context: RunAheadContext
     ): EventResult {
       const occurredAt = new Date();
-      const slot = writer.predictNextSlot();
+      const slot = nextSpeculativeSlot();
       const event = {
         ...data,
         runId,
@@ -2950,6 +3053,7 @@ async function runDelivery(
       } as Event;
       speculativeSlots.add(slot);
       speculativeEvents.add(event);
+      everSpeculative.add(event);
       const releaseContext = noteRunAheadContext(context);
       const commit = writer.createAhead(
         data,
@@ -3021,7 +3125,7 @@ async function runDelivery(
     ): Map<string, StartedInBatch> {
       assert(log, 'The event log is loaded to run ahead');
       const occurredAt = new Date();
-      const first = writer.predictNextSlot();
+      const first = nextSpeculativeSlot();
       const speculative = events.map(
         (data, index) =>
           ({
@@ -3130,6 +3234,7 @@ async function runDelivery(
       speculative.forEach((event, index) => {
         speculativeSlots.add(first + index);
         speculativeEvents.add(event);
+        everSpeculative.add(event);
         speculationsBySlot.set(first + index, {
           event,
           settled,
@@ -3309,14 +3414,11 @@ async function runDelivery(
 
         let replayStart = 0;
         try {
-          if (runAheadRepair) {
-            await settleRunAhead();
-            if (runAheadFailure !== undefined) {
-              throw runAheadFailure;
-            }
-            await repairRunAhead();
-          }
+          await repairRunAheadIfDue();
           flushPending();
+          // A write folded in just now can have committed where
+          // a speculative event was placed.
+          await repairRunAheadIfDue();
           if (logBehind) await loadAfter();
           assert(log, 'The event log is loaded in the loop');
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
@@ -3377,15 +3479,27 @@ async function runDelivery(
           // it). That is no hole: let the speculative writes
           // and everything queued before them commit, and
           // fold them in, before judging the log.
+          //
+          // The same holds, without a hole to show for it,
+          // while an inline step's outcome is being written on
+          // the awaited path: the workflow consumes it only
+          // once it committed, below every speculative event
+          // placed since it was sent. Another writer's event
+          // can take the slot it was expected at and make the
+          // log look dense, and a pass over that log would
+          // hand the workflow a later outcome first, which no
+          // replay of the committed log does.
           if (
             speculationsBySlot.size > 0 &&
-            indexOf(log.events).slotGap() !== undefined
+            (awaitedOutcomeWrites > 0 ||
+              indexOf(log.events).slotGap() !== undefined)
           ) {
             if ((await drainRunAhead()) === 'repair') {
               await repairRunAhead();
             }
             await writer.idle();
             flushPending();
+            await repairRunAheadIfDue();
           }
           // A dense log, which the index answers without a pass, has
           // nothing to settle.
@@ -4476,14 +4590,20 @@ async function runDelivery(
                       return writeOutcomeAhead(data, params, runAhead);
                     }
                   }
-                  const result = await writer.create(
-                    withRetryCreator(data, creatorMessageId),
-                    {
-                      ...params,
-                      ...slotSnapshot(),
-                      resolveData: REPLAY_RESOLVE_DATA,
-                    }
-                  );
+                  awaitedOutcomeWrites++;
+                  let result: Awaited<ReturnType<typeof writer.create>>;
+                  try {
+                    result = await writer.create(
+                      withRetryCreator(data, creatorMessageId),
+                      {
+                        ...params,
+                        ...slotSnapshot(),
+                        resolveData: REPLAY_RESOLVE_DATA,
+                      }
+                    );
+                  } finally {
+                    awaitedOutcomeWrites--;
+                  }
                   pendingAbsorbs.push(result);
                   return result;
                 },
@@ -4667,9 +4787,29 @@ async function runDelivery(
           pendingStreamOps = true;
         }
         assert(log, 'The event log is loaded after inline steps');
+        const outcomeEvent = result.result.event;
+        const writtenAhead =
+          outcomeEvent !== undefined && everSpeculative.has(outcomeEvent);
         if (runAheadRepair) {
           // Not folded: the log is reloaded once the
           // speculative writes settle.
+          reload = true;
+        } else if (writtenAhead && !speculativeEvents.has(outcomeEvent)) {
+          // Written ahead, and its write settled before the
+          // body did. The committed event already reached the
+          // log with the write's answer, or a repair rebuilt
+          // the log from it. This copy still carries the slot
+          // it was predicted at, which may be another event's
+          // by now: folding it in would hold that id against
+          // the event that committed there.
+        } else if (
+          writtenAhead &&
+          indexOf(log.events).has(outcomeEvent.eventId)
+        ) {
+          // The slot it was predicted at is taken: its write
+          // commits elsewhere, and the log is rebuilt from
+          // the writes' answers.
+          markRunAheadRepair('outcome');
           reload = true;
         } else if (
           consumeOwnResolvingWrite(
