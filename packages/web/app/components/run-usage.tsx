@@ -10,6 +10,7 @@ import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
+  formatLocalDataWrittenNote,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
@@ -26,20 +27,13 @@ import {
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import { AlertCircle, ChevronRight, HelpCircle, RotateCw } from 'lucide-react';
-import { type ReactNode, useId, useState } from 'react';
+import { Fragment, type ReactNode, useId, useState } from 'react';
 import { Link } from 'react-router';
 import { Skeleton } from './ui/skeleton';
 
 /** The docs section on what a run's storage counts. */
 export const STORAGE_COUNTING_DOCS_URL =
   'https://workflow-sdk.dev/docs/observability#how-storage-is-counted';
-
-/**
- * What a local run's storage counts, for the header's tooltip. The docs
- * section ({@link STORAGE_COUNTING_DOCS_URL}) has the detail.
- */
-export const LOCAL_STORAGE_NOTE =
-  "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code.";
 
 /** The run's Usage page. */
 export function runUsagePath(runId: string): string {
@@ -237,7 +231,7 @@ export function RunUsageHeaderStats({
 }) {
   const failed = !usage && error !== null;
   const failedTitle = failed ? failedMessage(error) : undefined;
-  const localNote = usage && !usage.billed ? LOCAL_STORAGE_NOTE : null;
+  const localNote = usage ? formatLocalDataWrittenNote(usage) : null;
   const to = runUsagePath(runId);
   const label = dataWrittenLabel(usage, isLocalBackend);
   const events = usage ? usage.events.toLocaleString('en-US') : UNAVAILABLE;
@@ -348,24 +342,24 @@ function groupDetail(group: UsageRowGroup, usage: RunUsage): string | null {
 }
 
 /**
- * Stable keys for a group's child rows: the step's full name, or the hook's
- * id (a token can be reused by a later hook), never the short label, which
- * two step functions in different files can share. `usageRows()` lists a
- * group's children in the order of `usage.eventsBySpan`, filtered to the
- * group's kind, so the i-th child is the i-th span of that kind.
+ * A long step name or hook token, with break opportunities after the
+ * characters that separate its parts (`approval:` `order-1042`,
+ * `./src/workflows/`), so a narrow screen wraps it there rather than in
+ * the middle of a word. The full label is also the row's tooltip.
  */
-export function usageChildKeys(
-  usage: RunUsage,
-  type: 'steps' | 'hooks',
-  count: number
-): string[] {
-  const kind = type === 'steps' ? 'step' : 'hook';
-  return usage.eventsBySpan
-    .filter((span) => span.kind === kind)
-    .slice(0, count)
-    .map((span) =>
-      kind === 'hook' ? `hook:${span.id ?? span.name}` : `step:${span.name}`
-    );
+function BreakableLabel({ label }: { label: string }) {
+  const parts = label.split(/(?<=[:/._-])/);
+  return (
+    <>
+      {parts.map((part, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of one fixed label
+        <Fragment key={i}>
+          {i > 0 && <wbr />}
+          {part}
+        </Fragment>
+      ))}
+    </>
+  );
 }
 
 /** The Events, share and retries cells every row has. */
@@ -429,13 +423,6 @@ function UsageGroup({
           (g) => g.type === group.type
         ) ?? group)
       : group;
-  const keys = expandable
-    ? usageChildKeys(
-        usage,
-        group.type as 'steps' | 'hooks',
-        shown.children.length
-      )
-    : [];
   const name = (
     <>
       <RowIcon type={group.type} />
@@ -501,20 +488,21 @@ function UsageGroup({
           data-testid="run-usage-children"
           data-type={group.type}
         >
-          {shown.children.map((child, i) => (
+          {shown.children.map((child) => (
             <tr
-              key={keys[i] ?? `${group.type}:${i}`}
+              key={child.key}
               className="border-b border-gray-alpha-200"
               data-testid="run-usage-child"
-              data-key={keys[i]}
+              data-key={child.key}
             >
               <td className={cn(CELL, 'pl-12')}>
                 <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
                   <span
                     className="min-w-0 font-mono text-gray-1000 [overflow-wrap:anywhere]"
+                    title={child.label}
                     data-testid="run-usage-child-label"
                   >
-                    {child.label}
+                    <BreakableLabel label={child.label} />
                   </span>
                   {group.type === 'steps' && (
                     <RowDetail testId="run-usage-calls">
@@ -571,7 +559,7 @@ function UsageTable({ usage }: { usage: RunUsage }) {
         </thead>
         {usageRows(usage).map((group) => (
           <UsageGroup
-            key={group.type}
+            key={group.key}
             group={group}
             usage={usage}
             idPrefix={idPrefix}
@@ -600,7 +588,10 @@ function DataWrittenTable({ usage }: { usage: RunUsage }) {
           </tr>
         </thead>
         <tbody>
-          {RUN_USAGE_ENTITIES.map((entity) => (
+          {RUN_USAGE_ENTITIES.filter(
+            // Like the CLI: only the entities that wrote something.
+            (entity) => usage.dataWritten.byEntity[entity] > 0
+          ).map((entity) => (
             <tr
               key={entity}
               className="border-b border-gray-alpha-200"

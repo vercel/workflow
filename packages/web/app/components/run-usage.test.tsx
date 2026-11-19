@@ -8,6 +8,7 @@ import {
 import { TooltipProvider } from '@workflow/web-shared';
 import {
   buildRunUsage,
+  formatLocalDataWrittenNote,
   type RunUsage,
   type RunUsageAggregates,
   USAGE_COUNTING_DOCS_URL,
@@ -18,14 +19,12 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dataWrittenLabel,
-  LOCAL_STORAGE_NOTE,
   RunUsageHeaderStats,
   RunUsagePage,
   RunUsagePageSkeleton,
   runUsagePath,
   STORAGE_COUNTING_DOCS_URL,
   USAGE_TABLES_LAYOUT,
-  usageChildKeys,
 } from './run-usage';
 
 /** The app's root provides tooltips and the router; so does each test. */
@@ -252,7 +251,8 @@ describe('RunUsageHeaderStats', () => {
     });
     fireEvent.focus(help);
     const tooltip = (await screen.findByRole('tooltip')).textContent ?? '';
-    expect(tooltip).toBe(LOCAL_STORAGE_NOTE);
+    // The shared note, the same sentence the other surfaces read.
+    expect(tooltip).toBe(formatLocalDataWrittenNote(bigRun()));
     // What it counts, and what it leaves out.
     expect(tooltip).toContain('payloads as the SDK sent them');
     expect(tooltip).toContain('streams');
@@ -425,9 +425,8 @@ describe('the usage table', () => {
         .getAllByTestId('run-usage-child')
         .find((row) => row.textContent?.includes(file));
     const smsRow = rowFor('sms');
-    expect(smsRow?.getAttribute('data-key')).toBe(
-      `step:${step('send', 'sms')}`
-    );
+    // Keyed on usageRows()' key: the step's full name.
+    expect(smsRow?.getAttribute('data-key')).toBe(step('send', 'sms'));
 
     // The sms step overtakes: the rows re-sort, each keeping its element.
     rerender(<RunUsagePage runId="wrun_1" usage={read(3, 5)} error={null} />);
@@ -448,23 +447,29 @@ describe('the usage table', () => {
       ],
       stepGroups: [],
     });
-    expect(usageChildKeys(usage, 'hooks', 2)).toEqual([
-      'hook:hook_1',
-      'hook:hook_2',
-    ]);
     render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
     expect(childLabels('hooks')).toHaveLength(2);
+    expect(
+      childrenOf('hooks')
+        .getAllByTestId('run-usage-child')
+        .map((row) => row.getAttribute('data-key'))
+    ).toEqual(['hook_1', 'hook_2']);
   });
 
-  it('lines its keys up with usageRows()’ children', () => {
-    const usage = bigRun();
+  it('shows a long hook token in full on hover, and lets it wrap at its separators', () => {
+    const token = 'approval:order-1042/region.us-east_1';
+    const usage = runOf({
+      eventGroups: [{ eventType: 'hook_created', events: 1, bytes: 1 }],
+      hookGroups: [{ hookId: 'hook_1', token, events: 1 }],
+      stepGroups: [],
+    });
     render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
-    const keys = childrenOf('steps')
-      .getAllByTestId('run-usage-child')
-      .map((row) => row.getAttribute('data-key'));
-    expect(keys).toEqual(
-      ['chargeCard', 'sendEmail', 'a', 'b', 'c'].map((n) => `step:${step(n)}`)
-    );
+    const label = childrenOf('hooks').getByTestId('run-usage-child-label');
+    expect(label.getAttribute('title')).toBe(token);
+    // Nothing is cut: the whole token is the text, split only by <wbr>.
+    expect(label.textContent).toBe(token);
+    // After each of : - / . - _
+    expect(label.querySelectorAll('wbr')).toHaveLength(6);
   });
 
   it('keeps the removed content off the page', () => {
@@ -509,6 +514,18 @@ describe('the usage table', () => {
 });
 
 describe('the storage table', () => {
+  it('leaves out the entities that wrote nothing, like the CLI', () => {
+    const usage = runOf({
+      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 400 }],
+      stepGroups: [stepGroup(step('a'), 1)],
+    });
+    render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
+    expect(
+      screen.getAllByTestId('run-usage-entity').map((row) => row.textContent)
+    ).toEqual(['Run400 B', 'Steps100 B']);
+    expect(screen.getByTestId('run-usage-total').textContent).toBe('500 B');
+  });
+
   it('heads it “Storage (local)” and lists it by entity with a total', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-data-heading').textContent).toBe(
