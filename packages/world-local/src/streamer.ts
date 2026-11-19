@@ -124,9 +124,9 @@ export function createStreamer(
     const appended = await db.transactAsync(() => {
       const last = lastRow(name);
       if (last?.eof) return false;
-      // The purge of a zero-retention run ended every stream it had; one
-      // first written after it (by a step still running when the run ended)
-      // is ended the same way, with nothing in it.
+      // Deleting a run's data (zero retention, or on demand) ended every
+      // stream it had; one first written afterwards (by a step still running
+      // when the run ended) is ended the same way, with nothing in it.
       if (!last && runWasPurged(runId)) {
         db.run(
           'INSERT INTO stream_chunks (name, idx, run_id, tag, data, eof) VALUES (?, 0, ?, ?, NULL, 1)',

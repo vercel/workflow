@@ -1,0 +1,42 @@
+{{- if .Values.unpinnedWorker.enabled }}
+{{- $name := printf "%s-wf-unpinned" (include "workflow-postgres.name" . | trunc 51 | trimSuffix "-") }}
+# Runs the runs no version claims: those started without a deployment ID. Its
+# role label keeps it out of pruning, which reports such runs while this
+# Deployment doesn't exist.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    workflow.vercel.com/service: {{ include "workflow-postgres.name" . }}
+    workflow.vercel.com/role: unpinned-worker
+spec:
+  replicas: {{ .Values.unpinnedWorker.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/component: unpinned-worker
+        workflow.vercel.com/service: {{ include "workflow-postgres.name" . }}
+        workflow.vercel.com/role: unpinned-worker
+    spec:
+      serviceAccountName: {{ include "workflow-postgres.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "workflow-postgres.initContainers" . | nindent 6 }}
+      containers:
+        - name: worker
+          {{- include "workflow-postgres.container" . | nindent 10 }}
+          env:
+            - name: WORKFLOW_ROLE
+              value: worker
+            {{- include "workflow-postgres.unpinnedEnv" . | nindent 12 }}
+{{- end }}

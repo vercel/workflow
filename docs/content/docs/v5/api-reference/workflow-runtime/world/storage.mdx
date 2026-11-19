@@ -247,6 +247,8 @@ To cancel a run, create a `run_cancelled` event through `world.events.create()` 
 
 To cancel a batch in one call, a world may implement the optional `runs.cancelMany({ runIds })`. It returns a summary plus a per-run outcome (`cancelled`, `already_cancelled`, `not_cancellable`, `not_found`, or `failed`). Backends that omit it fall back to per-run cancellation automatically.
 
+To delete the stored data of finished runs, a world may implement the optional `runs.deleteDataMany({ runIds })`. It deletes run payloads but not metadata: it keeps the run, step, event and hook records listed, with their IDs, names, statuses, timestamps and the run's attributes. It must delete only the data of finished runs and answer every other run `skipped` without cancelling it. It returns a summary plus a per-run outcome, in the order of `runIds`: `deleted`, `already_deleted` (the data was already gone; anything left behind is deleted too), `skipped` (with a `reason` and the run's `status`), `not_created`, `not_found`, or `failed` (with a `code`, and `retryable` when retrying can succeed). Deletion must be idempotent. Backends that omit it have no fallback: `deleteRuns()` throws.
+
 ### WorkflowRun type
 
 | Field | Type | Description |

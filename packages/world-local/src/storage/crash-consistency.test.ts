@@ -71,6 +71,7 @@ describe('crash consistency (world-local)', () => {
       round++
     ) {
       const writers = [1, 2, 3].map((i) => startWriter(`${round}-${i}`));
+      // Each writer is ready once it has written its first run.
       await Promise.all(writers.map((writer) => writer.ready));
       await new Promise((resolve) =>
         setTimeout(resolve, 40 + Math.random() * 120)

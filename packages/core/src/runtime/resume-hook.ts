@@ -1054,8 +1054,12 @@ async function resumeHookAttempt<T = any>(
           ...(resolved ? { requireHookResumeDedup: true } : {}),
         }
       );
+    // The event this resume committed, named on its wake (`wakeEventId`).
+    let committedEventId: string | undefined;
     try {
-      await write(canClaimResume, resolvedHandle && canClaimResume);
+      committedEventId = (
+        await write(canClaimResume, resolvedHandle && canClaimResume)
+      )?.event?.eventId;
     } catch (err) {
       // Only explicit pre-write refusals permit another delivery attempt.
       // Transport errors, timeouts, and lost responses may follow a commit.
@@ -1144,7 +1148,7 @@ async function resumeHookAttempt<T = any>(
             HOOK_RESUME_DEDUP_VERSION ||
           world.capabilities?.hookResumeDedup === true;
         try {
-          await write(freshDedup, false);
+          committedEventId = (await write(freshDedup, false))?.event?.eventId;
         } catch (fallbackError) {
           if (isHookGoneError(fallbackError))
             throw new HookNotFoundError(hook.token);
@@ -1178,6 +1182,9 @@ async function resumeHookAttempt<T = any>(
               runSpecVersion: resumeContext.runSpecVersion,
             }),
             traceCarrier: resumeContext.traceCarrier ?? undefined,
+            ...(committedEventId !== undefined && {
+              wakeEventId: committedEventId,
+            }),
             hookResumeTiming: {
               resumeRequestedAtMs,
               queuePublishRequestedAtMs,

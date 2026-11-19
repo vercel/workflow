@@ -607,7 +607,8 @@ describe.each([
           [FAN_OUT],
           {
             // Holds every later creation batch until a body started, or
-            // for 2s if none does.
+            // for 20s if none does: long enough for a loaded runner, short
+            // enough to fail a regression within the test's timeout.
             async beforeCreate(data, _params, source) {
               if (
                 timedOut ||
@@ -621,7 +622,7 @@ describe.each([
               const byBody = await Promise.race([
                 bodyStarted.promise.then(() => true),
                 new Promise<boolean>((resolve) =>
-                  setTimeout(() => resolve(false), 2000)
+                  setTimeout(() => resolve(false), 20_000)
                 ),
               ]);
               if (byBody) releasedByBody++;

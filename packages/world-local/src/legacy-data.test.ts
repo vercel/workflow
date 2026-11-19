@@ -13,6 +13,68 @@ import { createWorld } from './index.js';
 import { createStorage } from './storage.js';
 import { createRun } from './test-helpers.js';
 
+/**
+ * Windows does not remove a directory another handle has open, such as
+ * another clear() listing it: it only marks it "delete pending", and until
+ * that handle closes, listing or removing it again fails with EPERM, where
+ * POSIX removes it at once. This models that rule for the legacy directories,
+ * so tagged clear()s running side by side meet it on any OS, as they did on
+ * the Windows runner. Every other file operation is the real one.
+ */
+const listing = new Map<string, number>();
+const deletePending = new Set<string>();
+let listings = 0;
+/** Runs once a listing has read its entries, before it returns them. */
+let afterListing: ((dir: string) => Promise<void>) | undefined;
+const isLegacy = (dir: unknown) =>
+  typeof dir === 'string' && dir.startsWith(dataDir + path.sep);
+const deniedFor = (syscall: string, dir: string) =>
+  Object.assign(
+    new Error(`EPERM: operation not permitted, ${syscall} '${dir}'`),
+    { code: 'EPERM', syscall, path: dir }
+  );
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const fs = { ...actual };
+  fs.readdir = (async (dir: any, ...rest: any[]) => {
+    if (!isLegacy(dir)) return actual.readdir(dir, ...(rest as [any]));
+    if (deletePending.has(dir)) throw deniedFor('scandir', dir);
+    listing.set(dir, (listing.get(dir) ?? 0) + 1);
+    try {
+      const entries = await actual.readdir(dir, ...(rest as [any]));
+      await afterListing?.(dir);
+      // Held open a moment, for longer by some calls than by others, as a
+      // larger directory or a slower worker would be.
+      await new Promise((resolve) => setTimeout(resolve, (listings++ % 4) * 5));
+      return entries;
+    } finally {
+      const count = (listing.get(dir) ?? 1) - 1;
+      if (count > 0) listing.set(dir, count);
+      else {
+        listing.delete(dir);
+        // The last handle closed: the pending removal happens.
+        if (deletePending.delete(dir)) await actual.rmdir(dir);
+      }
+    }
+  }) as typeof actual.readdir;
+  fs.rmdir = (async (dir: any, ...rest: any[]) => {
+    if (!isLegacy(dir) || !listing.has(dir))
+      return actual.rmdir(dir, ...(rest as [any]));
+    if (deletePending.has(dir)) throw deniedFor('rmdir', dir);
+    if ((await actual.readdir(dir)).length > 0) {
+      throw Object.assign(
+        new Error(`ENOTEMPTY: directory not empty, rmdir '${dir}'`),
+        { code: 'ENOTEMPTY', syscall: 'rmdir', path: dir }
+      );
+    }
+    // Removed for good if that listing ended meanwhile.
+    if (listing.has(dir)) deletePending.add(dir);
+    else await actual.rmdir(dir);
+  }) as typeof actual.rmdir;
+  return { ...fs, default: fs };
+});
+
 let dataDir: string;
 
 beforeEach(() => {
@@ -22,6 +84,7 @@ beforeEach(() => {
 afterEach(() => {
   closeAllDatabases();
   rmSync(dataDir, { recursive: true, force: true });
+  afterListing = undefined;
   vi.restoreAllMocks();
 });
 
@@ -119,4 +182,30 @@ it('tagged clear()s running side by side do not trip over each other', async () 
   for (const file of [...files.tagged, ...files.otherTag])
     expect(exists(file), file).toBe(false);
   for (const file of files.untagged) expect(exists(file), file).toBe(true);
+});
+
+it('clear()s of two tags listing a directory that holds a file of each remove it', async () => {
+  mkdirSync(path.join(dataDir, 'runs'));
+  writeFileSync(path.join(dataDir, 'runs', 'wrun_A.vitest-0.json'), '{}');
+  writeFileSync(path.join(dataDir, 'runs', 'wrun_B.vitest-1.json'), '{}');
+  // Both list `runs` before either deletes its file, so each sees the
+  // other's file there and keeps the directory for it.
+  const runsDir = path.join(dataDir, 'runs');
+  let arrived = 0;
+  let bothListed: () => void = () => {};
+  const listed = new Promise<void>((resolve) => {
+    bothListed = resolve;
+  });
+  afterListing = async (dir) => {
+    if (dir !== runsDir) return;
+    if (++arrived === 2) bothListed();
+    await listed;
+  };
+  const worlds = ['vitest-0', 'vitest-1'].map((tag) =>
+    createWorld({ dataDir, tag })
+  );
+  await Promise.all(worlds.map((world) => world.clear()));
+  await Promise.all(worlds.map((world) => world.close?.()));
+  expect(arrived).toBe(2);
+  expect(exists('runs')).toBe(false);
 });
