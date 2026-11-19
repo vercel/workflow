@@ -17,6 +17,7 @@ export {
 export {
   createWorkflowEntrypointOptionsCode,
   createWorkflowQueueTrigger,
+  FLOW_ASSETS_DIR,
   getWorkflowQueueTrigger,
   isSequentialReplaysEnabled,
   WORKFLOW_QUEUE_TRIGGER,

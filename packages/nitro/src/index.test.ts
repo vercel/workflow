@@ -1,3 +1,4 @@
+import * as fsPromises from 'node:fs/promises';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
@@ -618,5 +619,67 @@ describe('@workflow/nitro published-package bundling', () => {
     await nitroModule.setup(nitro);
 
     expect(nitro.options).not.toHaveProperty('moduleSideEffects');
+  });
+});
+
+describe('@workflow/nitro flow asset loader', () => {
+  /**
+   * The loader `LocalBuilder` generates, with the placeholder rewritten the
+   * way the `workflow:flow-assets` plugin does for a chunk at `chunkDir`, and
+   * `import.meta.url` replaced by `metaUrl`.
+   */
+  function loaderFor(chunkDir: string, metaUrl: string) {
+    const builder = Object.create(LocalBuilder.prototype) as {
+      getFlowAssetLoaderCode(): string;
+    };
+    const code = builder
+      .getFlowAssetLoaderCode()
+      .replaceAll(
+        JSON.stringify('__WORKFLOW_FLOW_ASSETS_DIR__/'),
+        JSON.stringify(chunkDir)
+      )
+      .replaceAll('import.meta.url', JSON.stringify(metaUrl))
+      // A dynamic import can't run in evaluated code under vitest.
+      .replace("import('node:fs/promises')", 'Promise.resolve(fs)');
+    return new Function('fs', `return ${code}`)(fsPromises) as (
+      name: string
+    ) => Promise<Uint8Array>;
+  }
+
+  async function serverOutput() {
+    const { mkdtemp, mkdir, writeFile } = fsPromises;
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { pathToFileURL } = await import('node:url');
+    const root = await mkdtemp(join(tmpdir(), 'wf-nitro-assets-'));
+    await mkdir(join(root, '__workflow_assets'));
+    await mkdir(join(root, 'chunks', 'nitro'), { recursive: true });
+    await writeFile(join(root, '__workflow_assets', 'asset.bin'), 'heap');
+    return {
+      entryUrl: pathToFileURL(join(root, 'index.mjs')).href,
+      chunkUrl: pathToFileURL(join(root, 'chunks', 'nitro', 'nitro.mjs')).href,
+    };
+  }
+
+  it('reads the copy relative to the chunk the route is bundled into (Nitro v3)', async () => {
+    const { chunkUrl } = await serverOutput();
+    const load = loaderFor('../../__workflow_assets/', chunkUrl);
+    expect(Buffer.from(await load('asset.bin')).toString()).toBe('heap');
+  });
+
+  it('falls back to the server root when import.meta.url is the entry (Nitro v2, Nuxt)', async () => {
+    // Nitro v2 rewrites import.meta.url in every chunk to the server entry's
+    // URL, so the chunk-relative path points outside the server output.
+    const { entryUrl } = await serverOutput();
+    const load = loaderFor('../../__workflow_assets/', entryUrl);
+    expect(Buffer.from(await load('asset.bin')).toString()).toBe('heap');
+  });
+
+  it('rejects with the chunk-relative error when neither copy exists', async () => {
+    const { chunkUrl } = await serverOutput();
+    const load = loaderFor('../../__workflow_assets/', chunkUrl);
+    await expect(load('missing.bin')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 });

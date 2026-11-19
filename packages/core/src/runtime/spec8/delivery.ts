@@ -324,6 +324,7 @@ async function runDelivery(
     prefetchedRun,
     runSpecVersion,
     quickjsBaseline,
+    loadAsset,
   } = delivery;
   let { resumeTracking } = delivery;
   const {
@@ -2692,6 +2693,7 @@ async function runDelivery(
           // under a fresh key instead of losing the timer.
           waitContinuation,
           quickjsBaseline,
+          loadAsset,
           // Inline-step ownership plumbing: redeliveries of
           // this message drive crash recovery for steps an
           // earlier invocation claimed inline (see the

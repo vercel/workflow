@@ -422,7 +422,14 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
       import('./builder.js'),
       import('@workflow/builders'),
     ]);
-    const builder = new NestLocalBuilder({ ...this.options, basePath });
+    // A build at startup skips the flow assets: computing them here would
+    // add their cost to every boot, where the runtime computes them only
+    // for QuickJS runs, on first use.
+    const builder = new NestLocalBuilder({
+      ...this.options,
+      basePath,
+      prebuildFlowAssets: false,
+    });
     await createBuildQueue()(() => builder.build());
   }
 

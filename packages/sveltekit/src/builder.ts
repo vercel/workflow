@@ -20,6 +20,16 @@ const SVELTEKIT_VIRTUAL_MODULES = [
 export class SvelteKitBuilder extends BaseBuilder {
   #routesDir: string;
 
+  /**
+   * SvelteKit re-bundles the flow route (adapter-node bundles it again) and
+   * offers no non-public way to ship a server-only file with it. Ship
+   * nothing: QuickJS runs compute the baseline heap in memory on each cold
+   * instance instead (same result).
+   */
+  protected override getFlowAssetLoaderCode(): string | undefined {
+    return undefined;
+  }
+
   constructor(config: Partial<SvelteKitConfig> & { routesDir?: string } = {}) {
     const workingDir = resolve(config.workingDir || process.cwd());
     const dirs = config.dirs ?? [

@@ -29,6 +29,15 @@ export interface NestBuilderOptions {
    */
   watch?: boolean;
   /**
+   * Prebuild the files shipped with the flow route (the QuickJS engine's
+   * baseline heap). On for `workflow-nest build`; off for the build the
+   * module runs at application startup, where the runtime computes the same
+   * data in memory, lazily and only for QuickJS runs, instead of on every
+   * boot.
+   * @default true
+   */
+  prebuildFlowAssets?: boolean;
+  /**
    * SWC module compilation type.
    * Set to 'commonjs' if your NestJS project compiles to CJS via SWC.
    * When 'commonjs', the builder rewrites externalized imports in the
@@ -60,6 +69,7 @@ export interface NestBuilderOptions {
 
 export class NestLocalBuilder extends BaseBuilder {
   #outDir: string;
+  #prebuildFlowAssets: boolean;
   #moduleType: 'es6' | 'commonjs';
   #distDir: string;
   #dirs: string[];
@@ -85,6 +95,7 @@ export class NestLocalBuilder extends BaseBuilder {
       webhookBundlePath: join(outDir, 'webhook.mjs'),
     });
     this.#outDir = outDir;
+    this.#prebuildFlowAssets = options.prebuildFlowAssets ?? true;
     this.#moduleType = options.moduleType ?? 'es6';
     this.#distDir = options.distDir ?? 'dist';
     this.#dirs = dirs;
@@ -93,6 +104,10 @@ export class NestLocalBuilder extends BaseBuilder {
 
   get outDir(): string {
     return this.#outDir;
+  }
+
+  protected override get prebuildsFlowAssets(): boolean {
+    return this.#prebuildFlowAssets && super.prebuildsFlowAssets;
   }
 
   override async build(): Promise<void> {

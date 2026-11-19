@@ -55,7 +55,10 @@ import {
 } from './dynamic-workflow.js';
 import { memoizeEncryptionKey, queueMessage } from './helpers.js';
 import type { RunInputActivity } from './invocations.js';
-import type { PrebuiltQuickJSBaseline } from './quickjs-runtime.js';
+import type {
+  PrebuiltQuickJSBaseline,
+  WorkflowAssetLoader,
+} from './quickjs-runtime.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -113,6 +116,11 @@ export interface WorkflowDelivery {
    * engine so this instance restores it instead of building it.
    */
   readonly quickjsBaseline: PrebuiltQuickJSBaseline | undefined;
+  /**
+   * Reads the files the builder shipped with the flow route (see
+   * `workflowEntrypoint`'s `loadAsset` option): the baseline heap above.
+   */
+  readonly loadAsset: WorkflowAssetLoader | undefined;
 }
 
 /**

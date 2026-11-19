@@ -110,6 +110,7 @@ import {
   type QuickJSOpenHook,
   registerPrebuiltQuickJSBaseline,
   startQuickJSWorkflow,
+  type WorkflowAssetLoader,
 } from '../quickjs-runtime.js';
 import {
   checkSnapshotMetadataBounds,
@@ -510,13 +511,16 @@ export async function runWorkflowWithQuickJS(params: {
     optimistic: boolean;
   };
   /**
-   * The deployment bundle's baseline heap, prebuilt by the workflow builder
-   * (see `workflowEntrypoint`'s `quickjsBaseline` option). Registered so
-   * this instance restores it instead of evaluating the bundle to build it.
+   * The header of the deployment bundle's baseline heap, prebuilt by the
+   * workflow builder (see `workflowEntrypoint`'s `quickjsBaseline` option).
+   * Registered so this instance restores it instead of evaluating the
+   * bundle to build it.
    */
   quickjsBaseline?: PrebuiltQuickJSBaseline;
+  /** Reads the files shipped with the flow route (the baseline heap). */
+  loadAsset?: WorkflowAssetLoader;
 }): Promise<{ timeoutSeconds?: number } | void> {
-  registerPrebuiltQuickJSBaseline(params.quickjsBaseline);
+  registerPrebuiltQuickJSBaseline(params.quickjsBaseline, params.loadAsset);
   const {
     workflowCode,
     workflowName,

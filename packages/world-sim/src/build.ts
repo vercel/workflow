@@ -47,6 +47,15 @@ class SimBuilder extends BaseBuilder {
   #outDir: string;
   manifest: WorkflowManifest = {};
 
+  /**
+   * Built at test time, right before use: the runtime computes the flow
+   * assets (the QuickJS baseline heap) in memory on first use instead, and
+   * only for QuickJS runs.
+   */
+  protected override get prebuildsFlowAssets(): boolean {
+    return false;
+  }
+
   constructor(workingDir: string, outDir: string, dirs: string[]) {
     super({
       ...createBaseBuilderConfig({ workingDir, dirs }),

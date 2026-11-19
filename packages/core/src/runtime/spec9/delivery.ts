@@ -363,6 +363,7 @@ async function runDelivery(
     prefetchedRun,
     runSpecVersion,
     quickjsBaseline,
+    loadAsset,
   } = delivery;
   let { resumeTracking } = delivery;
   const {
@@ -2167,6 +2168,7 @@ async function runDelivery(
           nextTraceCarrier,
           waitContinuation,
           quickjsBaseline,
+          loadAsset,
           deliveryAttempt: creatorDeliveryCount,
           armsNearDueWaits: mayHoldCoalescedTimer,
           ownerMessageId: creatorMessageId,

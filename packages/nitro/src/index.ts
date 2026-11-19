@@ -1,11 +1,16 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cp } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import { FLOW_ASSETS_DIR, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
-import { join } from 'pathe';
-import { LocalBuilder, VercelBuilder } from './builders.js';
+import { dirname, join, relative } from 'pathe';
+import {
+  FLOW_ASSETS_DIR_PLACEHOLDER,
+  LocalBuilder,
+  VercelBuilder,
+} from './builders.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
@@ -66,6 +71,42 @@ function addNodeRequireBanner(config: RollupConfig): void {
   }
 }
 
+/**
+ * Ship the files the workflow builder writes next to the flow route (the
+ * QuickJS baseline heap, in `<buildDir>/workflow/__workflow_assets`) with the
+ * server build, and point the route's asset loader at them.
+ *
+ * The route is bundled into a chunk whose location only the bundler knows,
+ * so the loader is generated with a placeholder base directory that
+ * `renderChunk` replaces with the path from that chunk to the copy. The
+ * files are copied in `writeBundle` rather than emitted as assets: Vite's
+ * server environments discard emitted assets, and a copy behaves the same
+ * under Rollup, Rolldown and Vite. The copy lands in the server output
+ * directory, which Nitro's presets (Vercel included) ship whole.
+ */
+function workflowFlowAssetsPlugin(nitro: Nitro) {
+  const sourceDir = join(nitro.options.buildDir, 'workflow', FLOW_ASSETS_DIR);
+  const placeholder = JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`);
+  return {
+    name: 'workflow:flow-assets',
+    renderChunk(code: string, chunk: { fileName: string }) {
+      if (!code.includes(placeholder)) return null;
+      const rel = relative(dirname(chunk.fileName), FLOW_ASSETS_DIR);
+      const base = rel.startsWith('.') ? `${rel}/` : `./${rel}/`;
+      return {
+        code: code.replaceAll(placeholder, JSON.stringify(base)),
+        map: null,
+      };
+    },
+    async writeBundle(options: { dir?: string }) {
+      if (!options.dir || !existsSync(sourceDir)) return;
+      await cp(sourceDir, join(options.dir, FLOW_ASSETS_DIR), {
+        recursive: true,
+      });
+    },
+  };
+}
+
 const WORKFLOW_MODULE_SIDE_EFFECT_PREFIXES = ['@workflow/', 'workflow/'];
 
 const INSTALLED_WORKFLOW_PACKAGE_DIR =
@@ -123,6 +164,9 @@ export default {
       // real `node:http2` resolves. Skipped in dev (Vite SSR provides require).
       if (!nitro.options.dev) {
         addNodeRequireBanner(config);
+        (config.plugins as Array<unknown>).push(
+          workflowFlowAssetsPlugin(nitro)
+        );
       }
     });
 

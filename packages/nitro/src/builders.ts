@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
+  FLOW_ASSETS_DIR,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
@@ -62,8 +63,31 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   }
 }
 
+/**
+ * Base directory of the flow assets in the generated route's loader,
+ * replaced per chunk by the `workflow:flow-assets` plugin (see index.ts).
+ */
+export const FLOW_ASSETS_DIR_PLACEHOLDER = '__WORKFLOW_FLOW_ASSETS_DIR__';
+
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
+
+  /**
+   * Nitro bundles the flow route into its server build, so the loader
+   * resolves the files relative to the chunk it ends up in: the plugin
+   * rewrites the placeholder to that chunk's path to its copy of them.
+   *
+   * Nitro v2 (and Nuxt) rewrite `import.meta.url` in every chunk to the
+   * server entry's URL (`globalThis._importMeta_.url`), which sits at the
+   * root of the server output, next to the copy. So when the chunk-relative
+   * read fails, the loader tries the copy relative to the server root before
+   * giving up (and the runtime computes the heap in memory).
+   */
+  protected override getFlowAssetLoaderCode(): string | undefined {
+    const chunkRelative = JSON.stringify(`${FLOW_ASSETS_DIR_PLACEHOLDER}/`);
+    const rootRelative = JSON.stringify(`./${FLOW_ASSETS_DIR}/`);
+    return `(name) => import('node:fs/promises').then((fs) => fs.readFile(new URL(${chunkRelative} + name, import.meta.url)).catch((err) => fs.readFile(new URL(${rootRelative} + name, import.meta.url)).catch(() => { throw err; })))`;
+  }
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');
     super({
