@@ -28,9 +28,9 @@ const SLOW_MS = 2000;
 const lockstepEngine = process.env.WORKFLOW_VM === 'quickjs';
 
 /**
- * Runs pinned to spec 8. New runs are spec 9 by default, and the tests that
- * pin spec 8 behavior (a race loser that retries after the run ended, the
- * precondition guard) start their runs at spec 8, which keeps them covered.
+ * Runs pinned to spec 8. New runs are spec 9 by default; the precondition
+ * guard exists only on spec 8, and the race-loser retry test keeps a spec 8
+ * variant beside its default one.
  */
 const SPEC_8 = { specVersion: 8 };
 
@@ -176,39 +176,45 @@ describe('parallel branches advance independently (#4457)', () => {
     60_000
   );
 
-  // Pins the current behavior. The node:vm loop ends the run over the loser,
-  // so its retry is never attempted (the World refuses a step start on a
-  // terminal run) and the step is left pending after the terminal event. The
-  // QuickJS loop waits for the loser's first attempt only, then ends the run
-  // with the step still pending.
-  it('a race loser that retries after the run ended', async () => {
-    const markerPath = await markerFile();
-    const run = await start(
-      raceLoserRetriesWorkflow,
-      [FAST_MS, FAST_MS * 4, markerPath],
-      SPEC_8
-    );
-    await expect(run.returnValue).resolves.toBe('fast');
-    // Past the loser's first attempt and its 100ms retryAfter.
-    await new Promise((resolve) => setTimeout(resolve, FAST_MS * 10));
+  // A race loser that retries after the run ended. At spec 9, the default,
+  // both engines end the run over the loser, so its retry is never attempted
+  // (the World refuses a step start on a terminal run) and the step is left
+  // pending after the terminal event. On spec 8 the node:vm loop does the
+  // same, and the QuickJS loop waits for the loser's first attempt only, then
+  // ends the run with the step still pending.
+  for (const [label, options] of [
+    ['spec 9, the default', undefined],
+    ['spec 8', SPEC_8],
+  ] as const) {
+    it(`a race loser that retries after the run ended (${label})`, async () => {
+      const markerPath = await markerFile();
+      const run = await start(
+        raceLoserRetriesWorkflow,
+        [FAST_MS, FAST_MS * 4, markerPath],
+        options
+      );
+      await expect(run.returnValue).resolves.toBe('fast');
+      // Past the loser's first attempt and its 100ms retryAfter.
+      await new Promise((resolve) => setTimeout(resolve, FAST_MS * 10));
 
-    const types = await eventsThroughTerminal(run.runId, 'run_completed');
-    const world = await getWorld();
-    const { data: steps } = await world.steps.list({
-      runId: run.runId,
-      resolveData: 'none',
-    });
-    const slow = steps.find((s) => s.stepName.endsWith('retryOnceStep'));
-    if (lockstepEngine) {
-      expect(types.slice(-2)).toEqual(['step_retrying', 'run_completed']);
-    } else {
-      expect(types.slice(types.indexOf('run_completed') + 1)).toEqual([
-        'step_retrying',
-      ]);
-    }
-    expect(slow?.status).toBe('pending');
-    expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
-  }, 60_000);
+      const types = await eventsThroughTerminal(run.runId, 'run_completed');
+      const world = await getWorld();
+      const { data: steps } = await world.steps.list({
+        runId: run.runId,
+        resolveData: 'none',
+      });
+      const slow = steps.find((s) => s.stepName.endsWith('retryOnceStep'));
+      if (options !== undefined && lockstepEngine) {
+        expect(types.slice(-2)).toEqual(['step_retrying', 'run_completed']);
+      } else {
+        expect(types.slice(types.indexOf('run_completed') + 1)).toEqual([
+          'step_retrying',
+        ]);
+      }
+      expect(slow?.status).toBe('pending');
+      expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
+    }, 60_000);
+  }
 
   it('registers a hook in one branch while the other branch is still running a step', async () => {
     const markerPath = await markerFile();

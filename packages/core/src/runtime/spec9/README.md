@@ -82,7 +82,7 @@ Lazy inline step start, batched step claims, optimistic inline start outside tur
 
 ## Settings and behaviour on spec 9 runs
 
-The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9-experimental) lists the spec 9 settings briefly and links here.
+The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9) lists the spec 9 settings briefly and links here.
 
 ### Runtime settings
 
@@ -1970,6 +1970,12 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 
 ## Known limitations
 
+### Step listings on world-vercel trail the event log
+
+On a spec 9 run, world-vercel's `steps.list` and `steps.get` are a view derived from the run's event log (see [Steps on world-vercel](#steps-on-world-vercel)), and they can trail it with no stated bound. CI has seen a finished run whose log held every step's terminal event while the listing still showed a step `running` or `pending`, or left it out, 30 to 60 seconds later. Spec 8 runs are not affected: their listing is current once the step's event is written.
+
+The runtime never reads the listing. Replay, the fence, retries and the re-send rule all fold step state from the log, so a run's behaviour and result do not depend on it. What trails is what reads steps through the World: `world.steps.list` / `world.steps.get` in user code, the observability API, `workflow inspect` and the web UI's step views. To read a step's settled state right after a run ends, read the run's events (`world.events.list`), which are current. The e2e suite does that on the spec 9 lanes and checks the listing on the spec 8 lanes. Bounding the lag is a world-vercel follow-up (see [Follow-ups](#follow-ups)).
+
 ### `run.wakeUp()` is best-effort on Vercel and Postgres
 
 A wake-up that arrives while an orchestrator delivery of the run is live is folded into it and lost (on world-postgres, the running delivery removes the waiting message when it acknowledges and covers it with a re-run), and the sleeps run their full length. A delivery stays live after its last pass for up to [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_linger_ms) while the run waits on a background step, or [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_hook_linger_ms) while it waits on open hooks alone, so a wake-up sent shortly after such a run was active can be lost too. A sleep due within [`WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_orchestrator_wait_linger_ms) keeps its delivery live for its whole length, so a wake-up sent during it is lost, and the sleep ends on its own deadline. `stoppedCount` counts the sleeps the call asked to complete, not completions. This is by decision (see [`run.wakeUp()` stays best-effort](#runwakeup-stays-best-effort)).
@@ -2041,6 +2047,7 @@ world-vercel logs what the queue did with each handoff (`accepted`, `not_immedia
 
 Open work, not scheduled:
 
+- **Bound how far world-vercel's spec 9 step listing trails the log.** `steps.list` and `steps.get` on a spec 9 run can trail the event log by tens of seconds (see [Step listings on world-vercel trail the event log](#step-listings-on-world-vercel-trail-the-event-log)). Bound it, or serve a spec 9 run's steps from the log on the client.
 - **Stop coalescing speculative creations under run-ahead (measure first).** The hazard check runs on committed writes, and a coalesced run-ahead write can commit an outcome together with the next boundary's speculative creation, so a stop detects a classification gap (logged at error level with `possibleLogCorruption: true`) but cannot undo what committed with it. Keeping speculative creations out of coalesced writes would turn the stop back into a recovery, at the cost of run-ahead's per-turn batching, its latency win. Measure that cost first, and add a test that injects a path-changing event below a speculative write.
 - **A required host contract for the QuickJS orchestrator.** `runWorkflowWithQuickJS` takes its writer, loaded log, message identity, re-send policy and continuation callback as optional parameters, whose unfenced fallbacks only standalone tests use. One required host argument would make a missing fence or handoff a type error, once those tests move to a fence-capable World.
 - **Share timer sends between the engines.** The timer message and key (`waitTimerMessage`) and the ownership rules are shared, but each engine still runs its own sending: owned-chain filtering, sends before the completing commit, the near-due sweep and its bookkeeping. A shared sender, as background step messages have, with the before-commit ordering kept visible at each call site.

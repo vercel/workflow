@@ -377,9 +377,9 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
 - QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
 
-## Spec 9 (experimental)
+## Spec 9
 
-Everything above describes spec 8 runs. New runs are spec 9 by default on the Vercel, Local and Postgres Worlds, and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8. The experimental spec 9 runtime reads some of the settings above differently, and adds the settings below.
+Everything above describes spec 8 runs. New runs are spec 9 by default on the Vercel, Local and Postgres Worlds, and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8. Spec 9 runs read some of the settings above differently, and add the settings below.
 
 ### `WORKFLOW_SPEC_VERSION`
 

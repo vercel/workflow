@@ -552,14 +552,15 @@ async function allSteps(runId: string) {
 }
 
 /**
- * The steps a test asserts on: the World's step listing, except on the
- * spec 9 lane, where the listing on world-vercel can lag the event log (see
- * `stepsFromEvents`) and the steps are read from the log instead. The other
- * lanes keep checking that the listing reaches every step's final state.
+ * The steps a test asserts on: the World's step listing, except on lanes
+ * that run at spec 9 (what the runner's World mints: the default on a World
+ * with the in-band fence), where the listing on world-vercel can lag the
+ * event log (see `stepsFromEvents`) and the steps are read from the log
+ * instead. The spec 8 lanes keep checking that the listing reaches every
+ * step's final state.
  */
-function stepsOf(runId: string): Promise<StepStateFromEvents[]> {
-  return process.env.WORKFLOW_SPEC_VERSION?.trim() ===
-    String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+async function stepsOf(runId: string): Promise<StepStateFromEvents[]> {
+  return (await getWorld()).specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
     ? stepsFromEvents(runId)
     : allSteps(runId).then((steps) =>
         steps.map(({ stepId, stepName, status }) => ({
