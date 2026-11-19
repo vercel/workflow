@@ -132,7 +132,10 @@ import {
 } from '../helpers.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
-import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
+import {
+  ReplayRecoveryReporter,
+  reportedDivergenceEventIds,
+} from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
 import { resolveRunStartHook } from '../start-hook-binding.js';
@@ -3606,7 +3609,10 @@ async function runDelivery(
               return await failRun(
                 recovery.error,
                 effectiveWorkflowCode,
-                recovery.divergenceCount,
+                {
+                  count: recovery.divergenceCount,
+                  eventIds: recovery.divergenceEventIds,
+                },
                 recovery.logFields
               );
             }
@@ -5048,6 +5054,7 @@ async function runDelivery(
           type: 'fail';
           error: Error;
           divergenceCount: number;
+          divergenceEventIds: readonly string[];
           logFields: Record<string, unknown>;
         } {
       const priorDivergenceEventId = divergences.at(-1);
@@ -5076,12 +5083,16 @@ async function runDelivery(
           'Workflow replay diverged; replaying again from a fresh load before declaring the event log corrupted',
           { ...logFields, errorMessage: err.message }
         );
-        replayRecoveryReporter = new ReplayRecoveryReporter(divergenceCount);
+        replayRecoveryReporter = new ReplayRecoveryReporter(
+          divergenceCount,
+          divergenceEventIds
+        );
         return { type: 'recover' };
       }
       return {
         type: 'fail',
         divergenceCount,
+        divergenceEventIds,
         logFields,
         error: new CorruptedEventLogError(
           `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}; divergent event ids: ${divergenceEventIds.join(', ')}. Last divergence: ${err.message}`,
@@ -5108,7 +5119,8 @@ async function runDelivery(
   async function failRun(
     terminalError: unknown,
     effectiveWorkflowCode: string,
-    replayDivergenceCount?: number,
+    /** The divergence episode this failure ends, reported on the write. */
+    replayDivergence?: { count: number; eventIds: readonly string[] },
     extraLogFields: Record<string, unknown> = {}
   ): Promise<undefined> {
     if (terminalError instanceof Error) {
@@ -5156,8 +5168,11 @@ async function runDelivery(
         },
         {
           requestId,
-          ...(replayDivergenceCount !== undefined
-            ? { replayDivergenceCount }
+          ...(replayDivergence !== undefined
+            ? {
+                replayDivergenceCount: replayDivergence.count,
+                ...reportedDivergenceEventIds(replayDivergence.eventIds),
+              }
             : {}),
         }
       );

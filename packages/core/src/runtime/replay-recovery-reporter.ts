@@ -1,6 +1,28 @@
 import type { CreateEventParams } from '@workflow/world';
 
 /**
+ * The most divergent event ids a write reports, newest kept. The recovery
+ * budget is env-tunable without a clamp, so the list a delivery keeps is not
+ * bounded by itself.
+ */
+export const MAX_REPORTED_DIVERGENCE_EVENT_IDS = 8;
+
+/**
+ * The divergent event ids a write reports (`replayDivergenceEventIds`): the
+ * newest {@link MAX_REPORTED_DIVERGENCE_EVENT_IDS} of them, or none.
+ */
+export function reportedDivergenceEventIds(
+  eventIds: readonly string[] | undefined
+): Pick<CreateEventParams, 'replayDivergenceEventIds'> {
+  if (!eventIds || eventIds.length === 0) return {};
+  return {
+    replayDivergenceEventIds: eventIds.slice(
+      -MAX_REPORTED_DIVERGENCE_EVENT_IDS
+    ),
+  };
+}
+
+/**
  * Invocation-scoped, one-shot reporter for a replay-divergence recovery.
  *
  * The reporter stays dormant until replay reaches a valid deterministic
@@ -12,7 +34,11 @@ export class ReplayRecoveryReporter {
   private active = false;
   private reported = false;
 
-  constructor(private readonly divergenceCount: number) {}
+  constructor(
+    private readonly divergenceCount: number,
+    /** The event each divergence of the episode was found at, oldest first. */
+    private readonly divergenceEventIds: readonly string[] = []
+  ) {}
 
   /**
    * A reporter for an invocation that never diverged: `activate()` cannot arm
@@ -50,6 +76,7 @@ export class ReplayRecoveryReporter {
       return await create({
         ...params,
         replayDivergenceCount: this.divergenceCount,
+        ...reportedDivergenceEventIds(this.divergenceEventIds),
       });
     } catch (error) {
       this.reported = false;

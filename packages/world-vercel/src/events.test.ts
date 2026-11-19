@@ -1164,11 +1164,16 @@ describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
       } as AnyEventRequest,
       {
         replayDivergenceCount: 2,
+        replayDivergenceEventIds: ['evnt_1', 'evnt_2'],
       },
       { token: 'test-token', dispatcher: agent }
     );
 
     expect(capturedMeta?.replayDivergenceCount).toBe(2);
+    expect(capturedMeta?.replayDivergenceEventIds).toEqual([
+      'evnt_1',
+      'evnt_2',
+    ]);
     expect(capturedMeta?.eventData).toBeUndefined();
     agent.assertNoPendingInterceptors();
   });
