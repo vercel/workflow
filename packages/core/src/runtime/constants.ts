@@ -375,25 +375,6 @@ export function isTurboEnabled(): boolean {
 }
 
 /**
- * Whether a spec 9 `start({ experimental_hook })` candidate's first delivery
- * writes `run_started` without loading the event log first. Turbo never takes
- * such a candidate, so this is its own first-delivery shortcut.
- *
- * Reads `process.env.WORKFLOW_START_HOOK_SKIP_LOAD` lazily. Default **ON**;
- * disabled only by an explicit `'0'` / `'false'` (case-insensitive), which
- * turns off this path alone and leaves turbo as it is. `WORKFLOW_TURBO=0`
- * turns it off too.
- *
- * Design: "A start Hook candidate's first delivery" in `./spec9/README.md`.
- */
-export function isStartHookSkipLoadEnabled(): boolean {
-  if (!isTurboEnabled()) return false;
-  const raw = process.env.WORKFLOW_START_HOOK_SKIP_LOAD;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
-}
-
-/**
  * The oldest a spec 9 run's first orchestrator message may be, measured from
  * when the queue first enqueued it, for its delivery to take the turbo path.
  *

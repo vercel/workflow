@@ -160,7 +160,8 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Fast path for a run's first delivery.
 - Applies only while that delivery's queue message is at most 15 seconds old. An older one, such as a platform re-running a crashed invocation, loads the event log first.
 - Stops forcing optimistic inline step start once the run creates a hook or wait.
-- Set `0` or `false` to disable.
+- A run started with `start({ experimental_hook })` never runs steps before `run_started` returns, but its first delivery still writes `run_started` without loading the event log first.
+- Set `0` or `false` to disable, including for such runs.
 
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
 
@@ -426,13 +427,6 @@ Everything above describes spec 8 runs, the default. The experimental spec 9 run
 
 - Default: unset
 - `1` or `true` starts a background step's body before its `step_started` commits. Use only when background step bodies are idempotent.
-
-### `WORKFLOW_START_HOOK_SKIP_LOAD`
-
-- Default: enabled
-- On the first delivery of a run started with `start({ experimental_hook })`, writes `run_started` without loading the event log first.
-- Set `0` or `false` to disable it while keeping [`WORKFLOW_TURBO`](#workflow_turbo). `WORKFLOW_TURBO=0` disables it too.
-- No workflow code runs before `run_started` returns either way, so there is no idempotency reason to disable it. Disable it only to debug or isolate a problem starting such runs; the delivery then loads the event log before `run_started`, as other deliveries do.
 
 ### `WORKFLOW_RUN_AHEAD_DEPTH`
 
