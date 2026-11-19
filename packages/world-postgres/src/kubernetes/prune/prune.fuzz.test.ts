@@ -222,7 +222,7 @@ const versionsWith = (store: Map<string, Record<string, any>>) =>
 
 describe('pruneWorkers (randomized)', () => {
   it.each(
-    Array.from({ length: 400 }, (_, seed) => seed)
+    Array.from({ length: 1000 }, (_, seed) => seed)
   )('keeps what versions need and converges, seed %i', async (seed) => {
     const random = prng(seed);
     const first = sha(random);
@@ -256,11 +256,10 @@ describe('pruneWorkers (randomized)', () => {
         // A rollout finishes: old ReplicaSets lose their pods.
         model.liveReplicaSets.clear();
       } else if (roll < 0.68) {
-        // Someone deletes a Deployment or a ScaledObject by hand.
+        // Someone deletes a Deployment or a ScaledObject by hand, of any
+        // version, the current one included.
         const store = random() < 0.5 ? model.deployments : model.scaledObjects;
-        const names = [...store.keys()].filter(
-          (name) => name !== workerName(model.mainVersion)
-        );
+        const names = [...store.keys()];
         if (names.length > 0) {
           store.delete(names[Math.floor(random() * names.length)]!);
         }
@@ -295,20 +294,26 @@ describe('pruneWorkers (randomized)', () => {
     model.liveReplicaSets.clear();
     model.now += 2 * MIN_AGE_MS;
     const result = await prune(model, random, 0);
-    expect(result.errors).toEqual([]);
+    // The only acceptable failure: nothing of any other version is left to
+    // copy (every Deployment or every ScaledObject was deleted by hand).
+    const uncopyable =
+      /no (worker Deployment|ScaledObject) of any version to copy/;
+    for (const error of result.errors) expect(error).toMatch(uncopyable);
+    const stuck = new Set(
+      result.errors.map((e) => e.split(' ')[1]?.replace(/:$/, ''))
+    );
 
     const deployments = versionsWith(model.deployments);
     const scaledObjects = versionsWith(model.scaledObjects);
     const active = [...model.runs].filter(([, n]) => n > 0).map(([v]) => v);
-    // A version cannot be restored with no workers of any version to copy.
-    if (deployments.size > 0 || active.length === 0) {
-      for (const version of active) {
-        expect(deployments).toContain(version);
-        expect(scaledObjects).toContain(version);
-      }
+    for (const version of active) {
+      if (stuck.has(version)) continue;
+      expect(deployments).toContain(version);
+      expect(scaledObjects).toContain(version);
     }
     // No Deployment is left without a ScaledObject to scale it.
     for (const version of deployments) {
+      if (stuck.has(version)) continue;
       expect(scaledObjects).toContain(version);
     }
     // Drained versions are gone.
