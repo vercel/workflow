@@ -1,5 +1,29 @@
 # @workflow/world-postgres
 
+## 5.4.0
+
+### Minor Changes
+
+- [#5353](https://github.com/vercel/workflow/pull/5353) [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `runs.deleteDataMany` method to the World interface, which deletes the stored data (payloads, not metadata) of finished runs on demand, and implement it in the Vercel, Local and Postgres Worlds. Exposed as `run.delete()` and `deleteRuns()` (`workflow/api`), `deleteRuns(world, runIds)` (`@workflow/core/runtime`), and `pnpx workflow delete <runId>` in the CLI. `workflow cancel` and `workflow start` no longer accept listing flags they ignored, such as `--limit` on `start` or `--cursor` and `--sort` on either. `workflow delete`, `workflow cancel` and `workflow start` now print the error they fail with, such as an unknown flag, instead of exiting with no output.
+
+### Patch Changes
+
+- [#5421](https://github.com/vercel/workflow/pull/5421) [`f41f84f`](https://github.com/vercel/workflow/commit/f41f84ff9e3665b3bb384e611e707e23a8aa4368) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix concurrent forced hook claims in Postgres World. When several runs called `createHook()` with `experimental_force: true` (`force: true` once renamed) on one token at the same time, some of them could get a plain `hook_conflict`, which fails the run with "the configured World does not support force-claiming hook tokens", or a 503 "changed owner 5 times while being force-claimed". Every forced claim now ends registered, and the claims form one chain to the final owner.
+
+- [#5535](https://github.com/vercel/workflow/pull/5535) [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep spec 9 orchestrator deliveries alive through short sleeps instead of re-invoking for each one, and lower the default `WORKFLOW_ORCHESTRATOR_LINGER_MS` to 5 seconds
+
+- [#5468](https://github.com/vercel/workflow/pull/5468) [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9) Thanks [@benpankow](https://github.com/benpankow)! - A `resumeHook()` wake names the `hook_received` it was sent for, so a spec 9 orchestrator delivery in a process that already consumed the run's log below that event skips the tail read that checks for a no-op wake.
+
+- [#5531](https://github.com/vercel/workflow/pull/5531) [`58de1dc`](https://github.com/vercel/workflow/commit/58de1dc05d6615c855a2f1e7203c8d65cb3fc030) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add Kubernetes support for runs pinned to a `deploymentId`. Features per-deployment backlog queries, KEDA autoscaling, pruning of drained versions' worker Deployments. See Helm chart in the package's `chart` directory. Works by deploying app pods and a separate worker Deployment and KEDA ScaledObject per version, kept across upgrades until that version's runs finish.
+
+- [#5407](https://github.com/vercel/workflow/pull/5407) [`96c8d36`](https://github.com/vercel/workflow/commit/96c8d36fae7ec92ecaa0b0df24801a03b0541f8f) Thanks [@div-cowboy](https://github.com/div-cowboy)! - Skip runs parked on a hook or a future wait in startup recovery, and stop restarts from stacking duplicate recovery jobs; run `bootstrap` before upgrading (migration 0032).
+
+- [#5495](https://github.com/vercel/workflow/pull/5495) [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep a run started with `experimental_retention: 0` free of data after it ends: the bundled Worlds clear what a step still running when the run ended (a `Promise.race` loser) writes to it, and write no stream chunks to it.
+- Updated dependencies [[`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f), [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`10f35e3`](https://github.com/vercel/workflow/commit/10f35e334a16489916bf117f022c8e1ccdc61efd), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772)]:
+  - @workflow/world-local@5.5.0
+  - @workflow/world@5.3.0
+  - @workflow/errors@5.1.4
+
 ## 5.3.0
 
 ### Minor Changes
