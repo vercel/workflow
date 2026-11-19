@@ -1,12 +1,9 @@
 import { EventEmitter } from 'node:events';
 import {
   type GetChunksOptions,
-  RETENTION_ATTRIBUTE,
-  RETENTION_ZERO,
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
-  TERMINAL_WORKFLOW_RUN_STATUSES,
 } from '@workflow/world';
 import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
@@ -344,20 +341,11 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   /**
    * Inserts data chunks in one statement, unless the run's data has been
    * deleted (by zero retention or on demand): a step still running when its
-   * run finished would otherwise write past the deletion. The run's row lock
-   * is taken to read `expired_at`, so a deletion in progress is waited for,
-   * and one that has not reached the run yet waits for this insert and then
-   * clears it. `FOR SHARE` locks only the rows the subquery returns, so the
-   * lock is taken only where a deletion can happen:
-   *
-   * - a zero-retention run, whatever its status (fixed when it starts). Its
-   *   deletion follows its finishing commit, so an insert that starts while
-   *   that commit is in flight, and still reads the run as running, must
-   *   wait for it too;
-   * - a finished run, whose data can be deleted on demand.
-   *
-   * A running run that keeps its data takes no lock. Whether the chunks were
-   * written.
+   * run finished would otherwise write past the deletion. Lock the run even
+   * while it is running: it may finish and have its data deleted while this
+   * insert is in flight. A deletion in progress is waited for, and one that
+   * has not reached the run yet waits for this insert and clears it.
+   * Whether the chunks were written.
    */
   const insertDataChunks = async (
     runId: string,
@@ -379,13 +367,6 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       WHERE NOT COALESCE(
         (SELECT r.expired_at IS NOT NULL FROM ${Schema.runs} r
          WHERE r.id = ${runId}
-           AND (r.attributes ->> ${RETENTION_ATTRIBUTE} = ${RETENTION_ZERO}
-                OR r.status IN (${sql.join(
-                  TERMINAL_WORKFLOW_RUN_STATUSES.map(
-                    (status) => sql`${status}`
-                  ),
-                  sql`, `
-                )}))
          FOR SHARE),
         false
       )`);
