@@ -93,17 +93,26 @@ function RetryBadge({ retries }: { retries: number }) {
   );
 }
 
-/** Secondary text after a row's name: calls, hooks, writes, event types. */
+/**
+ * Secondary text after a row's name: calls, hooks, writes, event types. A
+ * count stays on one line; a list (the run's event types) wraps, so on a
+ * phone it does not push the table past the screen.
+ */
 function RowDetail({
   children,
   testId,
+  wrap = false,
 }: {
   children: ReactNode;
   testId: string;
+  wrap?: boolean;
 }) {
   return (
     <span
-      className="whitespace-nowrap font-sans text-label-12 text-gray-700"
+      className={cn(
+        'font-sans text-label-12 text-gray-700',
+        !wrap && 'whitespace-nowrap'
+      )}
       data-testid={testId}
     >
       {children}
@@ -438,7 +447,12 @@ function UsageGroup({
           {label}
         </span>
         {detail && (
-          <RowDetail testId="run-usage-group-detail">{detail}</RowDetail>
+          <RowDetail
+            testId="run-usage-group-detail"
+            wrap={group.type === 'run'}
+          >
+            {detail}
+          </RowDetail>
         )}
       </span>
     </>
