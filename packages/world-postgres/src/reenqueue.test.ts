@@ -4,6 +4,7 @@ import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
+import type { MessageData } from './message.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -225,6 +226,30 @@ describe('re-enqueue active runs on start', () => {
     );
 
     await world.close();
+  });
+
+  it('keys each recovery job by run, outside the message idempotency key', async () => {
+    mockRunsList({
+      running: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+    });
+
+    for (let boot = 0; boot < 2; boot++) {
+      const world = createWorld({ connectionString: 'postgres://test', pool });
+      await world.start();
+      await world.close();
+    }
+
+    const calls = vi.mocked(workerUtilsMock.addJob).mock.calls as unknown as [
+      string,
+      MessageData,
+      { jobKey?: string; jobKeyMode?: string },
+    ][];
+    expect(calls).toHaveLength(2);
+    for (const [, data, options] of calls) {
+      expect(data.idempotencyKey).toBeUndefined();
+      expect(options.jobKey).toBe('startup-recovery:wrun_AAA');
+      expect(options.jobKeyMode).toBe('preserve_run_at');
+    }
   });
 
   it('recovers through the jobPrefix-scoped listing, not the public runs.list', async () => {

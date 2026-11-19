@@ -24,6 +24,8 @@ import {
   parseQueueName,
   parseQueueRoute,
   type Queue,
+  type QueueOptions,
+  type QueuePayload,
   QueuePayloadSchema,
   QueuePrefix,
   resolveQueueNamespace,
@@ -261,7 +263,21 @@ function executorInput(message: unknown) {
 /**
  * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
-export type PostgresQueue = Queue & {
+export type PostgresQueue = Omit<Queue, 'queue'> & {
+  queue(
+    queueName: ValidQueueName,
+    message: QueuePayload,
+    opts?: QueueOptions & {
+      /**
+       * The Graphile `jobKey`, in place of the idempotency key or the
+       * message id. It is carried on the message for the jobs that continue
+       * it (see `MessageData.jobKey`), but unlike `idempotencyKey` the
+       * delivery is not deduplicated as a completed message. Startup
+       * recovery keys its job by run with it.
+       */
+      jobKey?: string;
+    }
+  ): ReturnType<Queue['queue']>;
   start(): Promise<void>;
   close(): Promise<void>;
   /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
@@ -583,6 +599,7 @@ export function createQueue(
     headers,
     delaySeconds,
     jobKey,
+    messageJobKey,
     executorRunId,
     attemptOffset,
     deliveryOffset,
@@ -604,6 +621,8 @@ export function createQueue(
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
+    /** Stored on the message as `MessageData.jobKey`. */
+    messageJobKey?: string;
     /** Run the job on the invoke executor task. */
     executorRunId?: string;
     attemptOffset?: number;
@@ -650,6 +669,7 @@ export function createQueue(
       messageId,
       ...(createdAt ? { createdAt } : {}),
       idempotencyKey,
+      ...(messageJobKey ? { jobKey: messageJobKey } : {}),
       headers,
     });
     if (handoffLease) {
@@ -697,6 +717,7 @@ export function createQueue(
       deliveryOffset: deliveryCount - 1,
       maxAttempts: remainingAttempts,
       idempotencyKey: message.idempotencyKey,
+      messageJobKey: message.jobKey,
       headers: message.headers,
       // A distinct key avoids replacing the legacy job that is still locked.
       jobKey: `${executorTask()}:transfer:${message.messageId}`,
@@ -1077,6 +1098,10 @@ export function createQueue(
    *   immediate replay of a delayed retry, and keeping the first job's
    *   `run_at` keeps that backoff.
    */
+  /** The Graphile key of a job that continues `message`'s own job. */
+  const followUpJobKey = (message: MessageData) =>
+    message.jobKey ?? message.idempotencyKey ?? message.messageId;
+
   const jobKeyModeFor = (
     message: unknown,
     idempotencyKey: string | undefined
@@ -1086,7 +1111,7 @@ export function createQueue(
       ? 'unsafe_dedupe'
       : 'preserve_run_at';
 
-  const queue: Queue['queue'] = async (queue, message, opts) => {
+  const queue: PostgresQueue['queue'] = async (queue, message, opts) => {
     await start();
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
@@ -1112,7 +1137,8 @@ export function createQueue(
       idempotencyKey: opts?.idempotencyKey,
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
-      jobKey: opts?.idempotencyKey ?? messageId,
+      jobKey: opts?.jobKey ?? opts?.idempotencyKey ?? messageId,
+      messageJobKey: opts?.jobKey,
       jobKeyMode: jobKeyModeFor(message, opts?.idempotencyKey),
       ...(input ? { executorRunId: input.runId } : {}),
     });
@@ -1344,6 +1370,7 @@ export function createQueue(
               attemptOffset: attempt - 1,
               deliveryOffset: deliveryCount - 1,
               idempotencyKey: messageData.idempotencyKey,
+              messageJobKey: messageData.jobKey,
               headers: messageData.headers,
               jobKey: `${getJobQueueName()}:stamped:${messageData.messageId}`,
             });
@@ -1395,7 +1422,7 @@ export function createQueue(
                 attemptOffset: attempt - 1,
                 deliveryOffset: deliveryCount - 1,
               }),
-              jobKey: messageData.idempotencyKey ?? messageData.messageId,
+              jobKey: followUpJobKey(messageData),
               maxAttempts: remainingAttempts,
               ...(orchestration ? { executor: true } : {}),
             },
@@ -1432,6 +1459,7 @@ export function createQueue(
               attemptOffset: attempt - 1,
               deliveryOffset: deliveryCount - 1,
               idempotencyKey: messageData.idempotencyKey,
+              messageJobKey: messageData.jobKey,
               headers: messageData.headers,
               delaySeconds: Number.isFinite(createdAtMs)
                 ? Math.min(
@@ -1439,7 +1467,7 @@ export function createQueue(
                     Math.max(1, Math.round((Date.now() - createdAtMs) / 2000))
                   )
                 : 5,
-              jobKey: messageData.idempotencyKey ?? messageData.messageId,
+              jobKey: followUpJobKey(messageData),
               maxAttempts: remainingAttempts,
               ...(orchestration ? { executorRunId: orchestration.runId } : {}),
             });
@@ -1497,6 +1525,37 @@ export function createQueue(
           }
 
           if (result.type === 'completed') {
+            // The run has consumed the wakes it had, and a wake stored while
+            // this delivery ran queued its own job or was left on the run's
+            // lease (re-added when the lease is released, or by orphan
+            // recovery), so startup recovery may treat the run as parked
+            // again (see `createRecoverableRunsList`). A step delivery or
+            // wait-timer hop is not an orchestrator delivery and leaves the
+            // flag set, and neither is a message on another queue prefix (a
+            // queue consumer of its own), whatever `runId` it carries.
+            // Cleared before the lease is released. Best effort: a flag left
+            // set costs the run one replay at the next start(), which is no
+            // reason to fail a delivery that completed.
+            const completedRunId =
+              prefix === queue ? orchestratorRunIdOf(body) : undefined;
+            if (completedRunId) {
+              await pool
+                .query(
+                  `UPDATE workflow.workflow_runs
+                   SET wake_pending = false
+                   WHERE id = $1 AND wake_pending IS TRUE`,
+                  [completedRunId]
+                )
+                .catch((error: { code?: unknown }) => {
+                  // No runs table (the queue used on its own) or no
+                  // migration 0032: nothing to clear.
+                  if (error?.code === '42P01' || error?.code === '42703')
+                    return;
+                  console.warn(
+                    `[world-postgres] Could not clear wake_pending for run ${completedRunId}: ${error}`
+                  );
+                });
+            }
             return 'completed';
           }
 
@@ -1551,10 +1610,11 @@ export function createQueue(
                   : messageData.attemptOffset,
               deliveryOffset: currentDeliveryCount,
               idempotencyKey: messageData.idempotencyKey,
+              messageJobKey: messageData.jobKey,
               headers: messageData.headers,
               delaySeconds: result.timeoutSeconds,
               ...(handoff ? { priority: HANDOFF_JOB_PRIORITY } : {}),
-              jobKey: messageData.idempotencyKey ?? messageData.messageId,
+              jobKey: followUpJobKey(messageData),
               ...(orchestration ? { executorRunId: orchestration.runId } : {}),
               // A handoff's continuation takes the run's lease over, with the
               // wakes left on it, so the run's other deliveries keep waiting
