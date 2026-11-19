@@ -150,6 +150,8 @@ async function invoke(options: {
   dictionary?: SnapshotDictionary;
   /** Suspend instead of completing, with this heap to snapshot. */
   suspendWithHeap?: Uint8Array;
+  /** The orchestrator to run: spec 9's (the default) or spec 8's. */
+  spec?: 'spec8' | 'spec9';
 }) {
   const getDictionary = vi
     .spyOn(quickjsBaselineStubs, 'getQuickJSBaselineDictionary')
@@ -235,9 +237,10 @@ async function invoke(options: {
     }
   );
 
-  const { runWorkflowWithQuickJS } = await import(
-    './spec9/quickjs-entrypoint.js'
-  );
+  const { runWorkflowWithQuickJS } =
+    options.spec === 'spec8'
+      ? await import('./spec8/quickjs-entrypoint.js')
+      : await import('./spec9/quickjs-entrypoint.js');
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',
@@ -505,6 +508,90 @@ describe('QuickJS snapshot lifecycle', () => {
           dictionary: makeDictionary(2),
         });
         expect(restoredFrom).toEqual([undefined]);
+      });
+
+      describe.each(['spec8', 'spec9'] as const)('%s', (spec) => {
+        it('does not build the baseline for a snapshot that does not decrypt', async () => {
+          // Metadata is not authenticated until the bytes decrypt: naming a
+          // digest must not make this instance build a baseline heap.
+          const dictionary = makeDictionary(1);
+          const otherKey = await deriveRunPayloadKeys(
+            new Uint8Array(32).fill(9)
+          );
+          const metadata = snapshotMetadata({
+            baselineDigest: dictionary.digest,
+          });
+          const { restoredFrom, getDictionary } = await invoke({
+            spec,
+            log: makeLog(3),
+            threshold: 1,
+            withKey: true,
+            stored: await sealed(metadata, otherKey, undefined, dictionary),
+            dictionary,
+          });
+          expect(restoredFrom).toEqual([undefined]);
+          expect(getDictionary).not.toHaveBeenCalled();
+        });
+
+        it('treats a dictionary snapshot as a miss with baseline snapshots turned off', async () => {
+          vi.stubEnv('WORKFLOW_QUICKJS_BASELINE_SNAPSHOT', '0');
+          try {
+            const dictionary = makeDictionary(1);
+            const metadata = snapshotMetadata({
+              baselineDigest: dictionary.digest,
+            });
+            const { restoredFrom, getDictionary } = await invoke({
+              spec,
+              log: makeLog(3),
+              threshold: 1,
+              withKey: true,
+              stored: await sealed(metadata, key, undefined, dictionary),
+              dictionary,
+            });
+            expect(restoredFrom).toEqual([undefined]);
+            expect(getDictionary).not.toHaveBeenCalled();
+          } finally {
+            vi.unstubAllEnvs();
+          }
+        });
+
+        it('saves without a dictionary, uncompressed, under WORKFLOW_DISABLE_COMPRESSION=1', async () => {
+          vi.stubEnv('WORKFLOW_DISABLE_COMPRESSION', '1');
+          try {
+            const dictionary = makeDictionary(3);
+            const heap = dictionary.bytes.slice();
+            const { save, getDictionary } = await invoke({
+              spec,
+              log: makeLog(3),
+              threshold: 1,
+              withKey: true,
+              stored: null,
+              dictionary,
+              suspendWithHeap: heap,
+            });
+            expect(save).toHaveBeenCalledTimes(1);
+            const [, data, metadata] = save.mock.calls[0] as unknown as [
+              string,
+              Uint8Array,
+              SnapshotMetadata,
+            ];
+            expect(metadata.baselineDigest).toBeUndefined();
+            expect(getDictionary).not.toHaveBeenCalled();
+            // Not compressed: the ciphertext is at least as long as the heap.
+            expect(data.byteLength).toBeGreaterThan(heap.byteLength);
+            await expect(
+              sealSnapshot({
+                runId,
+                heap,
+                metadata: { ...metadata, baselineDigest: dictionary.digest },
+                encryptionKey: key,
+                dictionary,
+              })
+            ).rejects.toThrow(/WORKFLOW_DISABLE_COMPRESSION/);
+          } finally {
+            vi.unstubAllEnvs();
+          }
+        });
       });
 
       it('rejects bytes compressed against another baseline than the digest names', async () => {

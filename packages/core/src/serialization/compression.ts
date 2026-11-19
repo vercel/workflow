@@ -86,7 +86,7 @@ export type CompressionMode = boolean | 'gzip';
  * write-side compression entirely. Reads are unaffected: payloads
  * that were already written compressed remain readable.
  */
-function isCompressionDisabledByEnv(): boolean {
+export function isCompressionDisabledByEnv(): boolean {
   try {
     return (
       typeof process !== 'undefined' &&

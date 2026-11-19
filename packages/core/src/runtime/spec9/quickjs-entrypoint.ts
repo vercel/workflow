@@ -883,21 +883,20 @@ export async function runWorkflowWithQuickJS(params: {
         } else {
           // A snapshot compressed against the baseline heap needs that
           // heap to decode. Every instance of the deployment derives the
-          // same one; openSnapshot rejects a digest that doesn't match.
-          const dictionary =
-            loaded.metadata.baselineDigest !== undefined
-              ? await getQuickJSBaselineDictionary(
-                  workflowCodeForVM,
-                  workflowId
-                ).catch(() => undefined)
-              : undefined;
+          // same one; openSnapshot rejects a digest that doesn't match, and
+          // asks for it only once the bytes decrypted. With baseline
+          // snapshots turned off there is no baseline to build, so such a
+          // snapshot is a miss.
           existingSnapshot = {
             data: await openSnapshot({
               runId,
               stored: loaded.data,
               metadata: loaded.metadata,
               encryptionKey,
-              dictionary,
+              getDictionary: async () =>
+                isQuickJSBaselineSnapshotEnabled()
+                  ? getQuickJSBaselineDictionary(workflowCodeForVM, workflowId)
+                  : undefined,
             }),
             metadata: loaded.metadata,
           };
