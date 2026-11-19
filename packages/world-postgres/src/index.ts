@@ -165,9 +165,11 @@ export function createWorld(
       // would otherwise re-enqueue every active run.
       if (config.skipWorkers) {
         // Its runs execute only on workers that share the database, the job
-        // prefix and the deployment ID: if none does, they stay pending.
+        // prefix and the deployment ID: if none does, they stay pending. The
+        // configured prefix, not `jobPrefix` (which has the deployment ID
+        // appended), so it compares with the workers' WORKFLOW_POSTGRES_JOB_PREFIX.
         console.info(
-          `[world-postgres] skipWorkers: this process runs no workers. Its runs execute on processes with workers on the same database, jobPrefix ${JSON.stringify(jobPrefix)} and deploymentId ${JSON.stringify(config.deploymentId ?? UNPINNED_DEPLOYMENT_ID)}.`
+          `[world-postgres] skipWorkers: this process runs no workers. Its runs execute on processes with workers on the same database, jobPrefix ${JSON.stringify(resolveJobPrefix({ jobPrefix: config.jobPrefix }))} and deploymentId ${JSON.stringify(config.deploymentId ?? UNPINNED_DEPLOYMENT_ID)}.`
         );
         return;
       }

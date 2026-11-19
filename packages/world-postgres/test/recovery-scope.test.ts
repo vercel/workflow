@@ -177,6 +177,26 @@ describe('startup recovery scope', () => {
     }
   });
 
+  test('a pinned World with skipWorkers logs the configured prefix, not the effective one', async () => {
+    const sender = createWorld({
+      pool,
+      jobPrefix: 'app_e_',
+      deploymentId: 'v1',
+      skipWorkers: true,
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await sender.start();
+      // Its jobs go to `app_e_v1_flows`, but the workers set `app_e_`.
+      expect(info).toHaveBeenCalledWith(
+        expect.stringContaining('jobPrefix "app_e_" and deploymentId "v1"')
+      );
+    } finally {
+      info.mockRestore();
+      await sender.close();
+    }
+  });
+
   test('both run creation paths stamp the effective jobPrefix of the World', async () => {
     const custom = createWorld({ pool, jobPrefix: 'app_c_' });
     const defaults = createWorld({ pool });
