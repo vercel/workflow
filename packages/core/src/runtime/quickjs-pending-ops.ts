@@ -35,6 +35,7 @@ import {
 } from '@workflow/world';
 
 import { runtimeLogger } from './../logger.js';
+import { publishLocalAbort } from '../serialization/abort-local.js';
 import { frameAbortStreamPayload } from '../serialization/abort-stream.js';
 
 import {
@@ -366,6 +367,11 @@ export async function dispatchPendingOps(params: {
       // (`abrt_{id}` → `strm_{id}_system_abort`).
       if (hook.token.startsWith('abrt_') && abortPayload) {
         const streamName = `strm_${hook.token.slice('abrt_'.length)}_system_abort`;
+        // An inline step running in this process gets the abort without
+        // the stream, which a zero-retention run clears when it finishes,
+        // possibly before the step reads it (see
+        // serialization/abort-local.ts).
+        publishLocalAbort(runId, streamName, abortPayload);
         try {
           await world.streams.write(
             runId,

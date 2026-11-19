@@ -41,6 +41,10 @@ import {
   decodeRunPublicKey,
 } from './sealed-box.js';
 import {
+  onLocalAbort,
+  publishLocalAbort,
+} from './serialization/abort-local.js';
+import {
   frameAbortStreamPayload,
   readAbortStreamPacket,
 } from './serialization/abort-stream.js';
@@ -2107,6 +2111,7 @@ function attachAbortListenerOnce(
               runId,
               key
             );
+            publishLocalAbort(runId, streamName, payload as Uint8Array);
             const writable = new WorkflowServerWritableStream(
               runId,
               streamName
@@ -2775,13 +2780,23 @@ function setupAbortStreamReader(
   cryptoKey: EncryptionKeyParam
 ): AbortController {
   const readerCancel = new AbortController();
+  // An abort published in this process (by the workflow, or by a sibling
+  // step) arrives without the stream, which a finished zero-retention run has
+  // already cleared (see abort-local.ts). Listen from the moment the signal
+  // is revived. Settled from the publisher's call, the promise resumes the
+  // abort below in this reader's own async context, not the publisher's.
+  let resolveLocal: ((packet: Uint8Array) => void) | undefined;
+  const localPacket = new Promise<Uint8Array>((resolve) => {
+    resolveLocal = resolve;
+  });
+  const stopLocal = onLocalAbort(runId, streamName, (packet) =>
+    resolveLocal?.(packet)
+  );
 
   ops.push(
     (async () => {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
-        const readable = new WorkflowServerReadableStream(runId, streamName);
-        reader = readable.getReader();
         let keyPromise: Promise<PayloadKey | undefined> | undefined;
         let decoded: { reason?: unknown } | undefined;
         const decodePacket = async (packet: Uint8Array) => {
@@ -2792,20 +2807,38 @@ function setupAbortStreamReader(
             await keyPromise
           )) as { reason?: unknown } | undefined;
         };
-        const result = await Promise.race([
-          readAbortStreamPacket(reader, decodePacket),
-          new Promise<undefined>((resolve) => {
-            if (readerCancel.signal.aborted) {
-              resolve(undefined);
-              return;
-            }
-            readerCancel.signal.addEventListener(
-              'abort',
-              () => resolve(undefined),
-              { once: true }
-            );
-          }),
+        const cancelled = new Promise<undefined>((resolve) => {
+          if (readerCancel.signal.aborted) {
+            resolve(undefined);
+            return;
+          }
+          readerCancel.signal.addEventListener(
+            'abort',
+            () => resolve(undefined),
+            { once: true }
+          );
+        });
+        // Without the stream, a packet published in this process still
+        // arrives.
+        let streamPacket: Promise<Uint8Array | undefined>;
+        try {
+          const readable = new WorkflowServerReadableStream(runId, streamName);
+          reader = readable.getReader();
+          streamPacket = readAbortStreamPacket(reader, decodePacket);
+        } catch {
+          streamPacket = new Promise<never>(() => {});
+        }
+        const winner = await Promise.race([
+          localPacket.then((packet) => ({ packet, local: true })),
+          streamPacket.then((packet) =>
+            packet ? { packet, local: false } : undefined
+          ),
+          cancelled,
         ]);
+        const result = winner?.packet;
+        // A legacy stream read decodes its candidate as it goes; a local
+        // packet is decoded below on its own.
+        if (winner?.local) decoded = undefined;
         if (result) {
           try {
             // Hydrate via the same machinery the writer used so the reason
@@ -2824,6 +2857,7 @@ function setupAbortStreamReader(
         // Stream read failed: signal won't propagate in real-time,
         // but hook-based propagation on next replay provides fallback
       } finally {
+        stopLocal();
         // Transport teardown may require a network round trip. Do not await
         // it before abort delivery or hold the finishing step open. Cancelling
         // also stops a pending partial-packet read when the step finishes.
@@ -2930,6 +2964,13 @@ function reviveAbortController(
               { aborted: true, reason },
               ctx.workflowMetadata.workflowRunId,
               ctx.encryptionKey
+            );
+            // A sibling step running in this process gets it at once (see
+            // abort-local.ts).
+            publishLocalAbort(
+              ctx.workflowMetadata.workflowRunId,
+              value.streamName,
+              payload as Uint8Array
             );
             const writable = new WorkflowServerWritableStream(
               ctx.workflowMetadata.workflowRunId,

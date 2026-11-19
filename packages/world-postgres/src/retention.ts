@@ -153,9 +153,15 @@ export async function purgeRunUserData(
  * run.returnValue` on a zero-retention run resolves to an expired-data
  * placeholder rather than the value.
  *
- * Never throws. A run must still finish if its purge fails; the failure is
- * logged, and the run keeps data it asked to have deleted, which is loud
- * enough to notice and safe enough to leave.
+ * Never throws. A run must still finish if its purge fails; a purge Postgres
+ * fails to break a deadlock or a serialization conflict runs again, and any
+ * other failure is logged, and the run keeps data it asked to have deleted,
+ * which is loud enough to notice and safe enough to leave.
+ *
+ * Never call this inside the transaction that writes the terminal event: the
+ * purge waits for the run's step rows, and a step outcome holding one may be
+ * waiting for that transaction's event slot (see `DeferredTerminal` in
+ * storage.ts).
  */
 export async function purgeRunUserDataIfZeroRetention(
   drizzle: DrizzleHandle,
@@ -177,14 +183,37 @@ export async function purgeRunUserDataIfZeroRetention(
   }
   if (retention.mode !== 'none') return;
 
-  try {
-    await purgeRunUserData(drizzle, runId, purgedAt);
-  } catch (cause) {
-    console.error(
-      `[workflow] failed to purge user data for zero-retention run "${runId}"`,
-      cause
-    );
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await purgeRunUserData(drizzle, runId, purgedAt);
+      return;
+    } catch (cause) {
+      // Postgres fails a transaction it picks to break a deadlock or a
+      // serialization conflict, and the purge is idempotent, so it runs again
+      // rather than leave the data in place.
+      if (attempt < PURGE_MAX_ATTEMPTS && isTransientLockFailure(cause)) {
+        continue;
+      }
+      console.error(
+        `[workflow] failed to purge user data for zero-retention run "${runId}"`,
+        cause
+      );
+      return;
+    }
   }
+}
+
+/** How many times a zero-retention purge runs before it gives up. */
+const PURGE_MAX_ATTEMPTS = 3;
+
+/** `deadlock_detected` and `serialization_failure`. */
+const TRANSIENT_LOCK_FAILURES = new Set(['40P01', '40001']);
+
+function isTransientLockFailure(err: unknown): boolean {
+  const code =
+    (err as { code?: unknown })?.code ??
+    (err as { cause?: { code?: unknown } })?.cause?.code;
+  return typeof code === 'string' && TRANSIENT_LOCK_FAILURES.has(code);
 }
 
 /**
