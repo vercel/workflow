@@ -110,6 +110,25 @@ describe('formatRunUsageText', () => {
     ]);
   });
 
+  it('tells apart steps of the same name in different files', () => {
+    const usage = usageOf({
+      stepGroups: [
+        { ...step('send', 3), stepName: 'step//./src/a//send' },
+        { ...step('send', 2), stepName: 'step//./src/b//send' },
+      ],
+    });
+    const rows = formatRunUsageText(usage)
+      .split('\n')
+      .filter((line) => /^(├─|└─)/.test(line))
+      .map((line) => line.split('  ')[0]);
+    expect(rows).toEqual([
+      '├─ send (./src/a)',
+      '├─ send (./src/b)',
+      '├─ Run start & finish',
+      '└─ Sleeps',
+    ]);
+  });
+
   it('says nothing of what a run would count as on Vercel', () => {
     for (const billed of [false, true]) {
       const text = formatRunUsageText(usageOf({ billed }));

@@ -1,4 +1,8 @@
-import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
+import {
+  formatStepName,
+  parseStepName,
+  parseWorkflowName,
+} from '@workflow/utils/parse-name';
 import { isSealedNoopEvent } from './event-metadata.js';
 import type { WorkflowRunStatus } from './runs.js';
 import { isTerminalWorkflowRunStatus } from './runs.js';
@@ -744,7 +748,7 @@ export function usageSpanTree(
         parseWorkflowName(usage.workflowName)?.shortName || usage.workflowName,
       events: usage.events,
     },
-    steps: shown.map((span) => rowOf(span, usageSpanLabel(span))),
+    steps: stepRowsOf(shown),
     otherSteps: other && {
       steps: other.spans,
       events: other.events,
@@ -755,6 +759,23 @@ export function usageSpanTree(
     builtIns,
     showBuiltInLabel: builtIns.some((row) => row.kind !== 'run'),
   };
+}
+
+/**
+ * The step rows, labelled by short name. Steps of the same name in
+ * different modules would read as the same row, so those carry their module
+ * too: `send (./src/a)` and `send (./src/b)`.
+ */
+function stepRowsOf(spans: RunUsageSpan[]): UsageSpanTreeRow[] {
+  const labels = spans.map((span) => usageSpanLabel(span));
+  const seen = new Map<string, number>();
+  for (const label of labels) seen.set(label, (seen.get(label) ?? 0) + 1);
+  return spans.map((span, i) =>
+    rowOf(
+      span,
+      (seen.get(labels[i]) ?? 0) > 1 ? formatStepName(span.name) : labels[i]
+    )
+  );
 }
 
 interface CollapsedUsageSpans {

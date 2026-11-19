@@ -754,6 +754,41 @@ describe('the span tree', () => {
   });
 });
 
+describe('step labels in the span tree', () => {
+  it('adds the module to steps whose short names collide, and only to them', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          stepGroup('step//./src/a//send', { steps: 3, started: 3 }),
+          stepGroup('step//./src/b//send', { steps: 2, started: 2 }),
+          stepGroup('step//./src/a//charge', { steps: 1, started: 1 }),
+        ],
+      })
+    );
+    expect(usageSpanTree(usage).steps.map((row) => row.label)).toEqual([
+      'send (./src/a)',
+      'send (./src/b)',
+      'charge',
+    ]);
+  });
+
+  it('keeps short labels when the colliding step is folded away', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        stepGroups: [
+          ...['a', 'b', 'c', 'd', 'e', 'f'].map((n, i) =>
+            stepGroup(`step//./src/a//${n}`, { steps: 1, started: 20 - i })
+          ),
+          stepGroup('step//./src/b//a', { steps: 1, started: 1 }),
+        ],
+      })
+    );
+    const t = usageSpanTree(usage);
+    expect(t.steps.map((row) => row.label)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(t.otherSteps?.steps).toBe(2);
+  });
+});
+
 describe('usageSpanLabel', () => {
   it.each([
     ['step', 'step//./src/workflows/order//chargeCard', 'chargeCard'],
