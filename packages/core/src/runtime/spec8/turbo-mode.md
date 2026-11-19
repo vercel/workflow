@@ -85,4 +85,4 @@ So turbo deliberately stops at forced-optimistic *start* and awaits each `step_c
 
 ## Spec 9 runs
 
-This document describes turbo on spec 8 runs. Spec 9 runs, the default on Worlds with the in-band fence, have their own turbo path, and runs ahead of durable writes within bounds that address the two reasons above. See [Turbo](../spec9/README.md#turbo) and [Run-ahead](../spec9/README.md#run-ahead) in the spec 9 reference.
+This document describes turbo on spec 8 runs, the default. The experimental spec 9 runtime has its own turbo path, and runs ahead of durable writes within bounds that address the two reasons above. See [Turbo](../spec9/README.md#turbo) and [Run-ahead](../spec9/README.md#run-ahead) in the spec 9 reference.

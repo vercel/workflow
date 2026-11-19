@@ -1,6 +1,6 @@
 # Spec 9: single orchestrator
 
-Spec 9 is a run format driven by a single orchestrator per run. New runs are spec 9 by default on a World that implements the in-band fence (the Vercel, Local and Postgres Worlds do), and [`WORKFLOW_SPEC_VERSION=8`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_spec_version) keeps them on spec 8. Nothing in this document applies to spec 8 runs.
+Spec 9 is an opt-in run format driven by a single orchestrator per run. New runs stay on spec 8 unless you set [`WORKFLOW_SPEC_VERSION=9`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_spec_version), on a World that implements the in-band fence (the Vercel, Local and Postgres Worlds do). Nothing in this document applies to spec 8 runs.
 
 This document is the reference for spec 9, kept next to the runtime that implements it (`packages/core/src/runtime/spec9/`). Update it in the same change when spec 9 behaviour, the World contract, or a decision recorded here changes. It is long, and its sections serve different readers:
 
@@ -14,7 +14,7 @@ This document is the reference for spec 9, kept next to the runtime that impleme
 
 Runs created at spec version 9 follow one rule: **only the run's orchestrator decides**. One orchestrator invocation at a time replays the run, runs the workflow code, writes every decision (`step_created`, `wait_created`, `wait_completed`, hook and attribute events, `run_completed` or `run_failed`), and runs inline steps. A step that runs from its own queue message only runs its body and reports its outcome. The World fences the orchestrator as the run's only in-band writer, and step and wait events are plain appends.
 
-The spec 8 orchestrator stays, side by side. A run keeps the orchestrator of the version it was created with, so in-flight runs are unaffected when a deployment upgrades, and spec 9 runs keep theirs when a deployment opts out.
+The spec 8 orchestrator stays, side by side. A run keeps the orchestrator of the version it was created with, so in-flight runs are unaffected when a deployment upgrades, and spec 9 runs keep theirs when a deployment unsets the variable.
 
 ### What changes for a spec 9 run
 
@@ -28,13 +28,13 @@ The spec 8 orchestrator stays, side by side. A run keeps the orchestrator of the
 
 On spec 8 runs the World refuses a second start or a second outcome by checking step and wait writes against the step's state. On a spec 9 run one decider writes those decisions, and the in-band fence refuses its writes once another invocation has superseded it, so the World no longer has to check step or wait writes against state. They are appends, the runtime folds step and wait state from the log, and the few duplicates that can still land are inert on replay (see [The event log](#the-event-log)).
 
-### Upgrading to spec 9
+### Opting in
 
-New runs are spec 9 by default on the Vercel, Local and Postgres Worlds, which implement the in-band fence spec 9 runs need; [`WORKFLOW_SPEC_VERSION=8`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_spec_version) keeps them on spec 8. A World that does not declare the fence (`capabilities.inBandFence`) keeps creating spec 8 runs, and logs a one-time warning if `WORKFLOW_SPEC_VERSION=9` asks it for spec 9.
+Set [`WORKFLOW_SPEC_VERSION=9`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_spec_version). The Vercel, Local and Postgres Worlds implement the in-band fence spec 9 runs need. A World that does not declare the fence (`capabilities.inBandFence`) keeps creating spec 8 runs, and logs a one-time warning if `WORKFLOW_SPEC_VERSION=9` asks it for spec 9.
 
-- **Upgrade the whole fleet together.** Every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release or later once any of them creates spec 9 runs. Until they all do, set `WORKFLOW_SPEC_VERSION=8` on the upgraded ones.
-- **Every caller of `start()` decides too.** A start that targets another deployment stamps the lower of the caller's and the target's versions, so `WORKFLOW_SPEC_VERSION=8` on either keeps the run on spec 8.
-- **To stop creating spec 9 runs**, set `WORKFLOW_SPEC_VERSION=8` on a deployment of this release or later (see [below](#runs-already-created-as-spec-9-after-opting-out)).
+- **Upgrade the whole fleet first.** Every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release or later before any of them sets `WORKFLOW_SPEC_VERSION=9`.
+- **Every caller of `start()` decides too.** A start that targets another deployment stamps the lower of the caller's and the target's versions, so a spec 9 run needs `WORKFLOW_SPEC_VERSION=9` on both.
+- **To stop creating spec 9 runs**, unset the variable (or set `8`) on a deployment of this release or later (see [below](#runs-already-created-as-spec-9-when-the-variable-is-unset)).
 
 ### The rollback floor
 
@@ -47,22 +47,21 @@ Spec 8 runs are unaffected: upgrading, rolling back, and mixing old and new proc
 
 ### How new runs get their version
 
-`WORKFLOW_SPEC_VERSION` gates minting only: the version a World stamps on a new run. Everything that reads, routes or writes to an existing run follows the run's stamped version, which is what makes opting out safe for runs already created as spec 9.
+`WORKFLOW_SPEC_VERSION` gates minting only: the version a World stamps on a new run. Everything that reads, routes or writes to an existing run follows the run's stamped version, which is what makes unsetting it safe for runs already created as spec 9.
 
 | `WORKFLOW_SPEC_VERSION` | World passes `inBandFence: true` | Minted |
 |---|---|---|
-| unset | yes | 9 |
-| unset | no | 8 |
+| unset | any | 8 |
 | `9` | yes | 9 |
 | `9` | no | 8, with a one-time warning |
 | `6` to `8` | any | that value |
-| any other value | any | 8, with a one-time warning naming it, so a typo in an opt-out never creates spec 9 runs |
+| any other value | any | 8 (the default), with a one-time warning naming it |
 
-`mintedSpecVersion(env, { inBandFence })` in `@workflow/world` implements the table. A call with no options never returns 9, so a custom World written to the earlier guide (`specVersion: mintedSpecVersion()`) keeps creating spec 8 runs. `SPEC_VERSION_CURRENT` stays 8, the version assumed for a run that reports none; `SPEC_VERSION_DEFAULT_MINTED_FENCED` (9) names the default with the fence, and `SPEC_VERSION_MAX_SUPPORTED` is 9.
+`mintedSpecVersion(env, { inBandFence })` in `@workflow/world` implements the table. A call with no options never returns 9, so a custom World written to the earlier guide (`specVersion: mintedSpecVersion()`) keeps creating spec 8 runs. `SPEC_VERSION_CURRENT` stays 8, the version assumed for a run that reports none; `SPEC_VERSION_DEFAULT_MINTED` (8) names the default, and `SPEC_VERSION_MAX_SUPPORTED` is 9.
 
-### Runs already created as spec 9 after opting out
+### Runs already created as spec 9 when the variable is unset
 
-On a deployment of this release or newer with `WORKFLOW_SPEC_VERSION=8`, runs already created as spec 9 keep the spec 9 orchestrator: routing follows the run's stamp (and on Vercel, skew protection keeps the run on its creating deployment anyway). Hook resumes, webhooks and `cancel()` stamp their events with the run's own version, not the minted one; `wakeUp()` works, best-effort as for any spec 9 run; and the world-local and world-postgres run gates serialize by the message's stamp. Opting out reduces exposure, not correctness: the [Known limitations](#known-limitations) still apply to those runs, and rolling back below this release is still unsafe.
+On a deployment of this release or newer with `WORKFLOW_SPEC_VERSION` unset (or `8`), runs already created as spec 9 keep the spec 9 orchestrator: routing follows the run's stamp (and on Vercel, skew protection keeps the run on its creating deployment anyway). Hook resumes, webhooks and `cancel()` stamp their events with the run's own version, not the minted one; `wakeUp()` works, best-effort as for any spec 9 run; and the world-local and world-postgres run gates serialize by the message's stamp. Unsetting the variable reduces exposure, not correctness: the [Known limitations](#known-limitations) still apply to those runs, and rolling back below this release is still unsafe.
 
 ### Costs
 
@@ -76,13 +75,13 @@ Lazy inline step start, batched step claims, optimistic inline start outside tur
 
 ### Status
 
-- Spec 9 is the default for new runs on the Vercel, Local and Postgres Worlds; spec 8 runs use the same events API and batch transport as earlier releases.
-- Every e2e lane runs spec 9 and asserts it. Required `e2e-vercel-spec8` and `e2e-local-spec8` lanes run the full suite with `WORKFLOW_SPEC_VERSION=8` on both engines (on a dedicated Vercel preview and on the Local World); the Event Log Race Repro has spec 8 cells, and `@workflow/world-testing` runs its embedded suite at spec 8 too.
+- Spec 9 is opt-in; spec 8 is the default for new runs, and spec 8 runs use the same events API and batch transport as earlier releases.
+- A required `e2e-vercel-spec9` lane deploys a preview with `WORKFLOW_SPEC_VERSION=9` (on the deployment and the test runner) and runs the full suite on both engines, asserting that its runs are spec 9 while the other lanes assert spec 8; the Event Log Race Repro has spec 9 cells, and `@workflow/world-testing` runs its embedded suite with `WORKFLOW_SPEC_VERSION=9` too.
 - Open work is listed under [Follow-ups](#follow-ups).
 
 ## Settings and behaviour on spec 9 runs
 
-The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9) lists the spec 9 settings briefly and links here.
+The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9-experimental) lists the spec 9 settings briefly and links here.
 
 ### Runtime settings
 
@@ -99,11 +98,11 @@ Settings that exist only for spec 9 runs:
 
 #### `WORKFLOW_SPEC_VERSION`
 
-- Default: unset. New runs are spec 9 on a World that declares the in-band fence (Vercel, Local, Postgres) and spec 8 on one that does not.
-- Values: an integer from `6` to `9`, whitespace trimmed; anything else is ignored with a one-time warning and new runs are spec 8. `8` keeps new runs on spec 8. See [How new runs get their version](#how-new-runs-get-their-version).
+- Default: unset. New runs are spec 8. `9` makes them spec 9 on a World that declares the in-band fence (Vercel, Local, Postgres), and spec 8 with a one-time warning on one that does not.
+- Values: an integer from `6` to `9`, whitespace trimmed; anything else is ignored with a one-time warning and new runs are spec 8. `6` to `8` select that version. See [How new runs get their version](#how-new-runs-get-their-version).
 - A run keeps its version. world-vercel may raise a running run's version only across versions that change no log format, never from 8 to 9.
 - On Vercel, a spec 9 run's events use a newer version of the events API; other runs stay on the one earlier releases use.
-- Read [Upgrading to spec 9](#upgrading-to-spec-9) and [The rollback floor](#the-rollback-floor) first.
+- Read [Opting in](#opting-in) and [The rollback floor](#the-rollback-floor) first.
 
 #### One orchestrator per run, and the in-band fence
 
@@ -723,7 +722,7 @@ An unstamped spec 9 step message, possible only from a producer outside this run
 
 ### A spec 8 run after an upgrade
 
-A run created as spec 8 keeps spec 8 after the app upgrades to a release whose new runs are spec 9 (the default on a World that passes `{ inBandFence: true }`, unless `WORKFLOW_SPEC_VERSION=8` is set). Its next delivery, say the timer of a `sleep("7d")` that spans the upgrade, resolves to 8 from its stamp or `runs.get`, the spec 8 orchestrator replays its log, and every event it writes carries the run's version. New runs of the same deployment are spec 9. `@workflow/world-testing` checks this with world-local: a run created at spec 8 and parked on a hook finishes after its World restarts at spec 9.
+A run created as spec 8 keeps spec 8 after the app upgrades and opts in to spec 9 (sets `WORKFLOW_SPEC_VERSION=9` on a World that passes `{ inBandFence: true }`); upgrading alone keeps new runs on spec 8. Its next delivery, say the timer of a `sleep("7d")` that spans the upgrade, resolves to 8 from its stamp or `runs.get`, the spec 8 orchestrator replays its log, and every event it writes carries the run's version. New runs of the same deployment are spec 9. `@workflow/world-testing` checks this with world-local: a run created at spec 8 and parked on a hook finishes after its World restarts at spec 9.
 
 On world-vercel, spec 9 adds no queue topic and no trigger: its messages go to the same `__wkf_workflow_*` topic and trigger spec 8 uses, distinguished only by the stamp and the concurrency key. That rule keeps the build and the World decoupled during a rollout: a deployment built with an older `@workflow/builders` still consumes every message world-vercel sends.
 
@@ -741,13 +740,13 @@ The world-vercel client picks the route of every run-scoped events call from the
 
 ## World contract changes
 
-A World written to the earlier "Building a World" guide (`specVersion: mintedSpecVersion()`, no fence) passes `createTestSuite()` and keeps creating spec 8 runs, on either engine, whatever `WORKFLOW_SPEC_VERSION` says. Everything below is required only of a World that creates spec 9 runs, and a World that declares the fence creates them by default. The step-by-step guide is [Implementing spec 9 in a World](#implementing-spec-9-in-a-world); conformance testing is at [Conformance](#conformance).
+A World written to the earlier "Building a World" guide (`specVersion: mintedSpecVersion()`, no fence) passes `createTestSuite()` and keeps creating spec 8 runs, on either engine, whatever `WORKFLOW_SPEC_VERSION` says. Everything below is required only of a World that creates spec 9 runs, and a World that declares the fence creates them only when `WORKFLOW_SPEC_VERSION=9` is set. The step-by-step guide is [Implementing spec 9 in a World](#implementing-spec-9-in-a-world); conformance testing is at [Conformance](#conformance).
 
 ### What changes, surface by surface
 
 | Surface | Change |
 |---|---|
-| `capabilities.inBandFence` | **Required** to create spec 9 runs, and the only new capability. The runtime refuses a spec 9 run without it, in `start()` and at the start of every spec 9 delivery. Passing it to `mintedSpecVersion` makes spec 9 the World's default. |
+| `capabilities.inBandFence` | **Required** to create spec 9 runs, and the only new capability. The runtime refuses a spec 9 run without it, in `start()` and at the start of every spec 9 delivery. Passing it to `mintedSpecVersion` lets the World's users opt in with `WORKFLOW_SPEC_VERSION=9`. |
 | `CreateEventParams.inBand`, `expectedSeqInBand`; list `snapshot`; `EventResult.allocated`, `hasMore` | The [in-band fence](#storage-the-in-band-fence) and its bookkeeping. |
 | List `maxEvents` | Optional. The run's event ceiling, the value `run_started` reports, so deliveries after the first enforce it (see [The event log](#the-event-log)). |
 | Step and wait events | Plain appends on spec 9 runs; see [event rules](#spec-9-event-rules). |
@@ -759,7 +758,7 @@ A World written to the earlier "Building a World" guide (`specVersion: mintedSpe
 | `meta.invocationStartedAt` | New, optional. When the invocation began (epoch ms), the same on every re-run; the inline deadline is measured from it. |
 | `recovery: true` | New, optional, set by `reenqueueActiveRuns(..., { queueLost: true })`. A spec 9 delivery of it re-sends every open step message and arms every open wait chain. Older handlers ignore it. |
 
-world-local and world-postgres declare the fence, mint spec 9 by default (`WORKFLOW_SPEC_VERSION=8` opts out), and serialize only spec 9 runs' orchestrator deliveries. Both coalesce the messages queued behind a running delivery into re-runs of it (at most 32; see [world-local and world-postgres](#world-local-and-world-postgres)).
+world-local and world-postgres declare the fence, mint spec 9 when `WORKFLOW_SPEC_VERSION=9` is set, and serialize only spec 9 runs' orchestrator deliveries. Both coalesce the messages queued behind a running delivery into re-runs of it (at most 32; see [world-local and world-postgres](#world-local-and-world-postgres)).
 
 ### The dedupe contract
 
@@ -787,11 +786,11 @@ Graphile's `preserve_run_at` job-key mode does not meet the contract: next to a 
 
 This is the guide for a World author; [Building a World](https://workflow-sdk.dev/worlds/building-a-world) describes the spec 8 contract.
 
-Spec 9 (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model) is opt-in for Worlds. A World that does nothing in this section keeps working and creates spec 8 runs. To create spec 9 runs:
+Spec 9 (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model) is opt-in, for users and for Worlds. A World that does nothing in this section keeps working and creates spec 8 runs. To let users opt in with `WORKFLOW_SPEC_VERSION=9`:
 
 1. Implement the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence) below: one orchestrator delivery per run at a time, and the in-band fence.
 2. Implement the spec 9 storage and queue rules: the [event rules](#spec-9-event-rules), [the spec 9 queue rules](#spec-9-queue-rules) and [the dedupe contract](#the-dedupe-contract).
-3. Declare `capabilities.inBandFence: true`, and pass it to `mintedSpecVersion`. That makes spec 9 the default for your World's users: new runs are spec 9 unless they set `WORKFLOW_SPEC_VERSION=8`, which is their opt-out.
+3. Declare `capabilities.inBandFence: true`, and pass it to `mintedSpecVersion`. That lets your World's users opt in: new runs stay on spec 8 unless they set `WORKFLOW_SPEC_VERSION=9`.
 
 ```typescript
 import { mintedSpecVersion } from '@workflow/world';
@@ -810,7 +809,7 @@ export function createWorld(): World {
 
 4. Keep serving the spec 8 runs the World already created: they keep running on the spec 8 orchestrator. Decide from each run's stored `specVersion`, as world-local, world-postgres and world-vercel do. A World that drops what spec 8 needs fails those runs.
 
-With `{ inBandFence: true }`, `mintedSpecVersion` returns 9 when `WORKFLOW_SPEC_VERSION` is unset (`SPEC_VERSION_DEFAULT_MINTED_FENCED`), the requested version for 6 to 9, and 8 with a one-time warning for an unrecognized non-empty value. Without it, it never returns 9 and defaults to 8 (`SPEC_VERSION_DEFAULT_MINTED`). The runtime refuses to create or drive a spec 9 run on a World that does not declare the fence: one that hard-codes `specVersion: 9` without it fails `start()` with an error naming `capabilities.inBandFence`.
+With `{ inBandFence: true }`, `mintedSpecVersion` returns 8 when `WORKFLOW_SPEC_VERSION` is unset (`SPEC_VERSION_DEFAULT_MINTED`, the default), the requested version for 6 to 9, and 8 with a one-time warning for an unrecognized non-empty value. Without it, it never returns 9: `9` also mints 8, with a one-time warning. The runtime refuses to create or drive a spec 9 run on a World that does not declare the fence: one that hard-codes `specVersion: 9` without it fails `start()` with an error naming `capabilities.inBandFence`.
 
 #### Spec 9 event rules
 
@@ -901,7 +900,7 @@ inBandFenceConformance({
 });
 ```
 
-`createTestSuite()` from `@workflow/world-testing` runs workflows end to end against your World at the version it mints, and checks a finished run's snapshot and a stale in-band write when the World declares the fence. A fenced World mints spec 9 by default but keeps serving spec 8 runs, so run the suite at both, as the first-party Worlds do: world-testing runs it on world-local at the default (spec 9) and in a second file pinned to spec 8 (`WORKFLOW_SPEC_VERSION=8`), and world-postgres runs it pinned to spec 8 and at spec 9. world-testing also checks that a spec 8 run finishes after its World restarts at spec 9.
+`createTestSuite()` from `@workflow/world-testing` runs workflows end to end against your World at the version it mints, and checks a finished run's snapshot and a stale in-band write when the World declares the fence. A fenced World mints spec 8 by default and spec 9 once its users opt in, and keeps serving spec 8 runs either way, so run the suite at both, as the first-party Worlds do: world-testing runs it on world-local at the default (spec 8) and in a second file with `WORKFLOW_SPEC_VERSION=9` (`test/embedded-spec9.test.ts`), and world-postgres runs it pinned to spec 8 (`test/spec.test.ts`) and at spec 9 (`test/spec9.test.ts`). world-testing also checks that a spec 8 run finishes after its World restarts at spec 9.
 
 ## Queue topology, handoffs and rotation
 
@@ -1111,7 +1110,7 @@ The redelivery costs one more invocation, after at least 5 seconds on Vercel (th
 
 ### world-local and world-postgres
 
-Both declare the fence, mint spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts out), and serialize a spec 9 run's orchestrator deliveries by `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. Both coalesce the orchestrator messages that queue behind a running delivery, and both resolve an unstamped orchestrator message's spec version from the run (see [An unstamped message](#an-unstamped-message)).
+Both declare the fence, mint spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set, and serialize a spec 9 run's orchestrator deliveries by `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. Both coalesce the orchestrator messages that queue behind a running delivery, and both resolve an unstamped orchestrator message's spec version from the run (see [An unstamped message](#an-unstamped-message)).
 
 | | world-local | world-postgres |
 |---|---|---|
@@ -1626,7 +1625,7 @@ On world-vercel a fractional `delaySeconds` is rounded up, so a timer can land u
 
 - **Precision.** A sleep completes when its final timer is delivered, or earlier when a live delivery reaches its deadline in process; expect up to a second of rounding on world-vercel plus queue latency, as on spec 8. Concurrent sleeps cost one timer per chain rather than one per suspension.
 - **The Vercel dashboard's wake-up action** writes `wait_completed` out-of-band, which world-vercel refuses on spec 9 runs, so it does not work on them until it moves to a release with spec 9.
-- **Opting out** with `WORKFLOW_SPEC_VERSION=8` does not change runs already created as spec 9: their timers keep spec 9's rules, because routing follows the run's stamped version.
+- **Unsetting `WORKFLOW_SPEC_VERSION`** (or setting `8`) does not change runs already created as spec 9: their timers keep spec 9's rules, because routing follows the run's stamped version.
 
 The two engines implement these timer rules separately, on top of shared creator rules and key builders; sharing the timer sender itself is still open.
 
@@ -1873,7 +1872,7 @@ The alternative was an event-format-only spec 9 (the creation-bearing `step_star
 
 ### Spec 8 keeps its code, side by side
 
-Spec 8 runs keep the previous orchestrator unchanged, at the cost of two orchestrators in one package until spec 8 is dropped. In return, runs in flight during an upgrade finish on the code that started them, and `WORKFLOW_SPEC_VERSION=8` is a working opt-out for new runs.
+Spec 8 runs keep the previous orchestrator unchanged, at the cost of two orchestrators in one package until spec 8 is dropped. In return, runs in flight during an upgrade finish on the code that started them, and unsetting `WORKFLOW_SPEC_VERSION` is a working opt-out for new runs.
 
 ### Spec 8 messages are not keyed
 
@@ -1962,7 +1961,7 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 
 ### Other decisions
 
-- **Spec 9 is the default on fenced Worlds.** Spec 9 shipped opt-in, and is now the default for new runs on Worlds that declare `capabilities.inBandFence` (Vercel, Local, Postgres). `WORKFLOW_SPEC_VERSION=8` opts out, and a World without the fence keeps minting 8. Minting only reads `WORKFLOW_SPEC_VERSION`, and events route by each run's own spec (see [How new runs get their version](#how-new-runs-get-their-version)). Every e2e lane runs spec 9, and spec 8 stays covered for backwards compatibility by required spec 8 lanes (`e2e-vercel-spec8`, `e2e-local-spec8`), spec 8 cells in the event-log race repro, and spec 8 world-testing suites.
+- **Spec 9 is opt-in.** Minting only reads `WORKFLOW_SPEC_VERSION`: new runs are spec 8 unless it is `9` on a World that declares `capabilities.inBandFence` (Vercel, Local, Postgres), and a World without the fence keeps minting 8. Events route by each run's own spec (see [How new runs get their version](#how-new-runs-get-their-version)), and one required e2e lane (`e2e-vercel-spec9`) runs spec 9, beside spec 9 cells in the event-log race repro and a spec 9 world-testing suite.
 - **A separate linger for hooks alone.** A run waiting only on open hooks lingers for `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`, one with an open background step for `WORKFLOW_ORCHESTRATOR_LINGER_MS` (both 5 s by default, the hook window never longer); each payload restarts the window, so a burst of resumes stays on one warm invocation. A burst-aware policy (linger on hooks only after a recent `hook_received`) was not needed (see [An open hook keeps every invocation lingering](#an-open-hook-keeps-every-invocation-lingering)).
 - **Linger only while the feed is live.** A delivery lingers only while its live feed is up, and feed trouble ends the linger at once; a World without `events.subscribe` never lingers.
 - **The engines treat a refused item in a creation batch differently, on purpose.** QuickJS sends a message for every step past the inline cap that no batch reported, since it cannot tell a refused creation from a single write's, so a refused step creation stops its pass. node sends messages only for creations it saw committed, so it leaves a non-transient refusal to the next replay. Transient refusals fail the delivery on both.
@@ -1974,7 +1973,7 @@ Keys make a duplicate harmless, not free: without ownership every delivery of a 
 
 On a spec 9 run, world-vercel's `steps.list` and `steps.get` are a view derived from the run's event log (see [Steps on world-vercel](#steps-on-world-vercel)), and they can trail it with no stated bound. CI has seen a finished run whose log held every step's terminal event while the listing still showed a step `running` or `pending`, or left it out, 30 to 60 seconds later. Spec 8 runs are not affected: their listing is current once the step's event is written.
 
-The runtime never reads the listing. Replay, the fence, retries and the re-send rule all fold step state from the log, so a run's behaviour and result do not depend on it. What trails is what reads steps through the World: `world.steps.list` / `world.steps.get` in user code, the observability API, `workflow inspect` and the web UI's step views. To read a step's settled state right after a run ends, read the run's events (`world.events.list`), which are current. The e2e suite does that on the spec 9 lanes and checks the listing on the spec 8 lanes. Bounding the lag is a world-vercel follow-up (see [Follow-ups](#follow-ups)).
+The runtime never reads the listing. Replay, the fence, retries and the re-send rule all fold step state from the log, so a run's behaviour and result do not depend on it. What trails is what reads steps through the World: `world.steps.list` / `world.steps.get` in user code, the observability API, `workflow inspect` and the web UI's step views. To read a step's settled state right after a run ends, read the run's events (`world.events.list`), which are current. The e2e suite does that on the spec 9 lanes and checks the listing on the others. Bounding the lag is a world-vercel follow-up (see [Follow-ups](#follow-ups)).
 
 ### `run.wakeUp()` is best-effort on Vercel and Postgres
 

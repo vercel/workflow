@@ -131,16 +131,13 @@ export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
  * compressed payloads, slot-numbered event ids, sealed-log sequencing, and
  * involuntary hook disposal.
  *
- * This is the version a World without the in-band writer fence stamps on the
- * runs it creates by default, and the version the runtime assumes for a run
- * or World that reports none (see {@link mintedSpecVersion}). The
- * single-orchestrator model, {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, sits
- * one version above it and is structural, so it is never assumed: a World
- * that declares the fence mints it by default instead. This stays below
- * {@link SPEC_VERSION_MAX_SUPPORTED}: the runtime reads and drives runs of
- * both. The lowest version this runtime accepts from a World is lower still:
- * see `assertWorldSupportsRuntimeProtocol` in `@workflow/core`, which floors
- * at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}.
+ * This is the version a World stamps on the runs it creates by default (see
+ * {@link mintedSpecVersion}). The single-orchestrator model,
+ * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, sits one version above it and is
+ * opt-in, so this stays below {@link SPEC_VERSION_MAX_SUPPORTED}: the runtime
+ * reads and drives runs of both. The lowest version this runtime accepts from
+ * a World is lower still: see `assertWorldSupportsRuntimeProtocol` in
+ * `@workflow/core`, which floors at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}.
  *
  * A World declares `mintedSpecVersion()` rather than this constant or a
  * literal, so a bump moves the declaration with the package. Pinning a
@@ -154,20 +151,12 @@ export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
 
 /**
- * The spec version {@link mintedSpecVersion} returns to a World without the
- * in-band writer fence when no setting changes it:
- * {@link SPEC_VERSION_CURRENT}. Such a World can never create spec 9 runs.
+ * The spec version {@link mintedSpecVersion} returns when no setting changes
+ * it: {@link SPEC_VERSION_CURRENT}. Spec 9 runs are created only on request
+ * (`WORKFLOW_SPEC_VERSION=9`), and only by a World that declares the in-band
+ * fence.
  */
 export const SPEC_VERSION_DEFAULT_MINTED = SPEC_VERSION_CURRENT as SpecVersion;
-
-/**
- * The spec version {@link mintedSpecVersion} returns to a World that declares
- * the in-band writer fence (`{ inBandFence: true }`) when no setting changes
- * it: {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}. `WORKFLOW_SPEC_VERSION=8`
- * keeps such a World on spec 8.
- */
-export const SPEC_VERSION_DEFAULT_MINTED_FENCED =
-  SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
 
 /**
  * Environment variable that selects the spec version new runs are created
@@ -199,24 +188,19 @@ export interface MintedSpecVersionOptions {
  *
  * | `WORKFLOW_SPEC_VERSION` | `inBandFence` | returns |
  * |---|---|---|
- * | unset | `true` | {@link SPEC_VERSION_DEFAULT_MINTED_FENCED} (9) |
- * | unset | not `true` | {@link SPEC_VERSION_DEFAULT_MINTED} (8) |
+ * | unset | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8) |
  * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
- * | `9` | not `true` | {@link SPEC_VERSION_DEFAULT_MINTED} (8), with a warning once per process |
+ * | `9` | not `true` | the default, with a warning once per process |
  * | `6` to `8` | any | that version |
- * | anything else | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8), with a warning once per process |
+ * | anything else | any | the default (8), with a warning once per process that names it |
  *
- * Values are trimmed. A value that is set but not understood falls back to
- * spec 8 even on a fenced World: the variable is most often set to keep new
- * runs on spec 8 during a rolling upgrade, and a typo there must not create
- * the spec 9 runs it was meant to prevent.
+ * Values are trimmed.
  *
  * A call with no options never returns 9. A World written to an earlier
  * "Building a World" guide, which declares `specVersion: mintedSpecVersion()`,
  * keeps creating spec 8 runs whatever the environment says, and only a World
  * that implements the fence and passes `{ inBandFence: true }` can create
- * spec 9 runs. Such a World creates them by default; `WORKFLOW_SPEC_VERSION=8`
- * keeps it on spec 8.
+ * spec 9 runs.
  *
  * The setting gates minting only. The runtime drives runs of every version
  * from {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to
@@ -237,10 +221,7 @@ export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env,
   options: MintedSpecVersionOptions = {}
 ): SpecVersion {
-  const fenced = options.inBandFence === true;
-  const fallback = fenced
-    ? SPEC_VERSION_DEFAULT_MINTED_FENCED
-    : SPEC_VERSION_DEFAULT_MINTED;
+  const fallback = SPEC_VERSION_DEFAULT_MINTED;
   const requested = env[SPEC_VERSION_ENV_VAR]?.trim();
   if (requested !== undefined && requested !== '') {
     const version = Number(requested);
@@ -249,7 +230,10 @@ export function mintedSpecVersion(
       version >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
       version <= SPEC_VERSION_MAX_SUPPORTED
     ) {
-      if (version >= SPEC_VERSION_SINGLE_ORCHESTRATOR && !fenced) {
+      if (
+        version >= SPEC_VERSION_SINGLE_ORCHESTRATOR &&
+        options.inBandFence !== true
+      ) {
         warnOnce(
           `${SPEC_VERSION_ENV_VAR}=${requested}:no-fence`,
           `Ignoring ${SPEC_VERSION_ENV_VAR}=${version}: the World does not declare the in-band writer fence (capabilities.inBandFence) that spec ${SPEC_VERSION_SINGLE_ORCHESTRATOR} runs need, so new runs use spec ${fallback}.`
@@ -260,9 +244,8 @@ export function mintedSpecVersion(
     }
     warnOnce(
       `${SPEC_VERSION_ENV_VAR}=${requested}`,
-      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}, so new runs use spec ${SPEC_VERSION_DEFAULT_MINTED}.`
+      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}, so new runs use spec ${fallback}.`
     );
-    return SPEC_VERSION_DEFAULT_MINTED;
   }
   return fallback;
 }
