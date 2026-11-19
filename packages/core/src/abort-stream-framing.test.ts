@@ -345,11 +345,9 @@ describe('real abort reducers and revivers', () => {
       undefined,
       ops
     )) as AbortSignal;
-    await vi.waitFor(() => expect(world.streams.get).toHaveBeenCalled());
-    // The step returns, and the executor stops its readers.
-    cancelAbortReaders(signal);
     await Promise.all(ops);
     expect(signal.aborted).toBe(false);
+    cancelAbortReaders(signal);
   });
 
   it('cancels a partial packet read when the step finishes without aborting the signal', async () => {
@@ -466,9 +464,10 @@ describe('in-process abort delivery', () => {
       undefined,
       ops
     )) as AbortSignal;
-    await vi.waitFor(() => expect(read).toHaveBeenCalled());
-    // Let the stream outcome settle before the abort is published.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The reader's op settles with the stream, so a signal the step's
+    // teardown cannot reach holds nothing open.
+    await Promise.all(ops);
+    expect(read).toHaveBeenCalled();
     expect(signal.aborted).toBe(false);
 
     publishLocalAbort(
@@ -480,9 +479,40 @@ describe('in-process abort delivery', () => {
         undefined
       )) as Uint8Array
     );
-    await Promise.all(ops);
-    expect(signal.aborted).toBe(true);
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
     expect(signal.reason.message).toBe(reason.message);
+  });
+
+  it("stops listening in-process once a step's reader is cancelled", async () => {
+    const stepRunId = `${runId}_cancelled_after_end`;
+    const input = await dehydrateWorkflowArguments(
+      new AbortController().signal,
+      stepRunId,
+      undefined
+    );
+    world.streams.get.mockImplementationOnce(async () => chunksStream([]));
+    const ops: Promise<void>[] = [];
+    const signal = (await hydrateStepArguments(
+      input,
+      stepRunId,
+      undefined,
+      ops
+    )) as AbortSignal;
+    await Promise.all(ops);
+    // The step returns.
+    cancelAbortReaders(signal);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    publishLocalAbort(
+      stepRunId,
+      (signal as unknown as Record<symbol, string>)[ABORT_STREAM_NAME],
+      (await dehydrateStepArguments(
+        { aborted: true, reason },
+        stepRunId,
+        undefined
+      )) as Uint8Array
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(signal.aborted).toBe(false);
   });
 
   it('stops an external reader with its empty stream', async () => {

@@ -2768,6 +2768,13 @@ export function cancelAbortReaders(...values: unknown[]): void {
 }
 
 /**
+ * How long a step's abort reader keeps listening for an abort published in
+ * this process once its stream ended without one, if the step's teardown
+ * never cancels it (see `setupAbortStreamReader`).
+ */
+const LOCAL_ABORT_LISTEN_AFTER_STREAM_END_MS = 60 * 60 * 1000;
+
+/**
  * Sets up a stream reader on the controller that listens for an abort packet.
  * Returns the readerCancel controller so it can be stored on both the
  * controller and signal for cleanup by cancelAbortReaders.
@@ -2775,7 +2782,9 @@ export function cancelAbortReaders(...values: unknown[]): void {
  * With `untilCancelled` (a step's arguments), a stream that ends or fails
  * without a packet leaves the reader listening for an abort published in
  * this process until `cancelAbortReaders` stops it, which the step executor
- * does when the step returns. Elsewhere nothing cancels the reader, so it
+ * does when the step returns, or for at most
+ * {@link LOCAL_ABORT_LISTEN_AFTER_STREAM_END_MS}. The op it pushes settles
+ * with the stream either way. Elsewhere nothing cancels the reader, so it
  * stops with the stream.
  */
 function setupAbortStreamReader(
@@ -2803,6 +2812,7 @@ function setupAbortStreamReader(
   ops.push(
     (async () => {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      let keepListening = false;
       try {
         let keyPromise: Promise<PayloadKey | undefined> | undefined;
         let decoded: { reason?: unknown } | undefined;
@@ -2813,6 +2823,24 @@ function setupAbortStreamReader(
             runId,
             await keyPromise
           )) as { reason?: unknown } | undefined;
+        };
+        // Hydrate via the same machinery the writer used so the reason
+        // round-trips with full type fidelity. The key comes from the
+        // reviver, not the step context: argument hydration runs before the
+        // step's contextStorage frame exists. Legacy packets were already
+        // hydrated to establish completeness (`already`); framed packets
+        // have a known length and hydrate once here.
+        const abortWith = async (
+          packet: Uint8Array,
+          already: { reason?: unknown } | undefined
+        ) => {
+          try {
+            decoded = already;
+            if (decoded === undefined) await decodePacket(packet);
+            controller.abort(decoded?.reason);
+          } catch {
+            controller.abort();
+          }
         };
         const cancelled = new Promise<undefined>((resolve) => {
           if (readerCancel.signal.aborted) {
@@ -2836,7 +2864,7 @@ function setupAbortStreamReader(
           streamPacket = new Promise<never>(() => {});
         }
         const local = localPacket.then((packet) => ({ packet, local: true }));
-        let winner = await Promise.race([
+        const winner = await Promise.race([
           local,
           untilCancelled
             ? // An empty or failed stream is not the end of the abort.
@@ -2849,35 +2877,35 @@ function setupAbortStreamReader(
               ),
           cancelled,
         ]);
-        // The stream ended (a finished zero-retention run's is cleared) or
-        // failed without a packet before an abort published in this process
-        // arrived: keep listening for that until the step returns.
-        if (!winner && untilCancelled && !readerCancel.signal.aborted) {
-          winner = await Promise.race([local, cancelled]);
-        }
-        const result = winner?.packet;
-        // A legacy stream read decodes its candidate as it goes; a local
-        // packet is decoded below on its own.
-        if (winner?.local) decoded = undefined;
-        if (result) {
-          try {
-            // Hydrate via the same machinery the writer used so the reason
-            // round-trips with full type fidelity. The key comes from the
-            // reviver, not the step context: argument hydration runs before
-            // the step's contextStorage frame exists.
-            // Legacy packets were already hydrated to establish completeness.
-            // Framed packets have a known length and can hydrate once here.
-            if (decoded === undefined) await decodePacket(result);
-            controller.abort(decoded?.reason);
-          } catch {
-            controller.abort();
-          }
+        if (winner) {
+          // A legacy stream read decodes its candidate as it goes; a local
+          // packet is decoded on its own.
+          await abortWith(winner.packet, winner.local ? undefined : decoded);
+        } else if (untilCancelled && !readerCancel.signal.aborted) {
+          // The stream ended (a finished zero-retention run's is cleared) or
+          // failed without a packet. An abort published in this process can
+          // still come, so keep listening for it until the step's teardown
+          // cancels the reader, but outside `ops`: this op settles with the
+          // stream, so a signal the teardown cannot reach holds nothing open.
+          keepListening = true;
+          const expiry = setTimeout(
+            stopLocal,
+            LOCAL_ABORT_LISTEN_AFTER_STREAM_END_MS
+          );
+          (expiry as { unref?: () => void }).unref?.();
+          void Promise.race([local, cancelled])
+            .then(async (late) => {
+              clearTimeout(expiry);
+              stopLocal();
+              if (late) await abortWith(late.packet, undefined);
+            })
+            .catch(() => {});
         }
       } catch {
         // Stream read failed: signal won't propagate in real-time,
         // but hook-based propagation on next replay provides fallback
       } finally {
-        stopLocal();
+        if (!keepListening) stopLocal();
         // Transport teardown may require a network round trip. Do not await
         // it before abort delivery or hold the finishing step open. Cancelling
         // also stops a pending partial-packet read when the step finishes.

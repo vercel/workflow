@@ -920,6 +920,8 @@ describe('postgres queue http execution', () => {
         taskList: {
           workflow_flows: expect.any(Function),
           workflow_flows_executor: expect.any(Function),
+          // The zero-retention purge backstop (see retention.ts).
+          workflow_purge: expect.any(Function),
         },
       })
     );
