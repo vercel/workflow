@@ -219,7 +219,7 @@ describe('workflow inspect run <id> --usage', () => {
     expect(JSON.parse(normalize(stdout, runId))).toMatchSnapshot();
   });
 
-  it("explains a spec 9 run's inline steps from its own counts", async () => {
+  it("counts a spec 9 run's inline steps from its own rows", async () => {
     const event = (
       runId: string | null,
       e: Record<string, unknown>
@@ -269,15 +269,10 @@ describe('workflow inspect run <id> --usage', () => {
       '--backend',
       'local',
     ]);
-    expect(stdout).toContain(
-      '3 steps wrote 7 events: 1 created, 3 started, 3 completed.'
-    );
-    // The CLI prints the two-line note: the breakdown, and what a retry
-    // would add (this run has none).
-    expect(stdout).toContain(
-      'A retry adds a retry marker, and the step starting again.'
-    );
-    expect(stdout).not.toContain('Each step writes 3 events');
+    // The step rows say it from the run's own counts: 3 calls, 7 events.
+    expect(stdout).toMatch(/^Steps +3 calls +7 /m);
+    expect(stdout).toMatch(/├─ sendEmail +2 calls +4 /);
+    expect(stdout).toMatch(/└─ chargeCard +1 call +3 /);
   });
 
   it('says when a run’s data was deleted, with the sizes it wrote', async () => {

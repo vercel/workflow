@@ -3,13 +3,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
-  formatEventCountingNote,
-  formatStepEventsBreakdown,
   RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   startHookId,
-  usageSpanTree,
+  usageRows,
 } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -467,9 +465,11 @@ describe('experimental_usage.getRun (world-local)', () => {
     expect(usage.eventsBySpan).toContainEqual(
       expect.objectContaining({ kind: 'step', name: EMAIL, events: 4 })
     );
-    expect(formatStepEventsBreakdown(usage)).toBe(
-      '3 steps wrote 7 events: 1 created, 3 started, 3 completed'
-    );
+    expect(usage.stepEvents).toMatchObject({
+      steps: 3,
+      events: 7,
+      byType: { created: 1, started: 3, completed: 3 },
+    });
     // The two inline steps have no created event.
     expect(usage.stepEvents.steps - usage.stepEvents.byType.created).toBe(2);
   });
@@ -565,12 +565,10 @@ describe('experimental_usage.getRun (world-local)', () => {
       events: 2,
       byType: { created: 1, started: 1 },
     });
-    expect(
-      usageSpanTree(usage).builtIns.map((row) => [row.label, row.events])
-    ).toEqual([
-      ['Run start & finish', 2],
-      ['Attributes', 2],
-      ['Sleeps', 2],
+    expect(usageRows(usage).map((row) => [row.type, row.events])).toEqual([
+      ['attributes', 2],
+      ['sleeps', 2],
+      ['run', 2],
     ]);
   });
 
@@ -604,9 +602,6 @@ describe('experimental_usage.getRun (world-local)', () => {
     const usage = await usageOf(runId);
     expect(usage.stepEvents.byType.started).toBe(4);
     expect(usage.retries).toEqual({ count: 1, events: 2 });
-    expect(formatEventCountingNote(usage)[1]).toBe(
-      '1 retry added 2 events: 1 retry marker, 1 step start.'
-    );
   });
 
   it('says what a run cancelled before it started wrote', async () => {
@@ -621,12 +616,13 @@ describe('experimental_usage.getRun (world-local)', () => {
       events: 2,
       byType: { created: 1, started: 0, completed: 0, failed: 0, cancelled: 1 },
     });
-    expect(formatEventCountingNote(usage)[0]).toBe(
-      'The run wrote 2 events: 1 created, 1 cancelled.'
-    );
-    expect(usageSpanTree(usage).builtIns[0].note).toBe(
-      'The run wrote 2 events: 1 created, 1 cancelled.'
-    );
+    expect(usageRows(usage)).toEqual([
+      expect.objectContaining({
+        type: 'run',
+        events: 2,
+        note: 'The run wrote 2 events: 1 created, 1 cancelled.',
+      }),
+    ]);
   });
 
   it('does not count placeholders in the log as events', async () => {

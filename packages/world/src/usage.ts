@@ -30,7 +30,11 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
 export const WORKFLOW_PRICING_DOCS_URL =
   'https://vercel.com/docs/workflows/pricing';
 
-/** How many step rows the span tree shows before folding the rest. */
+/** The docs section on what each event of a run is, and how it counts. */
+export const USAGE_COUNTING_DOCS_URL =
+  'https://workflow-sdk.dev/docs/observability#how-events-are-counted';
+
+/** How many children a group of rows shows before folding the rest. */
 const USAGE_SPANS_SHOWN = 5;
 
 /**
@@ -591,22 +595,9 @@ export function formatCount(count: number, one: string, many: string): string {
   return plural(count, one, many);
 }
 
-const formatRetries = (count: number) => plural(count, 'retry', 'retries');
-
 /** The row the steps past the shown ones fold into: `+ 3 other steps`. */
 export function formatOtherSteps(steps: number): string {
   return `+ ${steps.toLocaleString('en-US')} other ${steps === 1 ? 'step' : 'steps'}`;
-}
-
-/** The run's events and retries, for the CLI's summary block. */
-export function formatEventsWithRetries(usage: RunUsage): {
-  events: string;
-  retries: string;
-} {
-  return {
-    events: usage.events.toLocaleString('en-US'),
-    retries: formatRetries(usage.retries.count),
-  };
 }
 
 /** The storage table's heading: what the sizes measure. */
@@ -660,37 +651,6 @@ export function formatRunEventsLine(usage: RunUsage): string | null {
 }
 
 /**
- * What the retries added, from their counts: `2 retries added 4 events: 2
- * retry markers, 2 step starts.` With no retries, what one would add.
- */
-function retryLine(usage: RunUsage): string {
-  const { count, events } = usage.retries;
-  if (count <= 0) {
-    return 'A retry adds a retry marker, and the step starting again.';
-  }
-  const starts = Math.max(0, events - count);
-  const parts = [plural(count, 'retry marker', 'retry markers')];
-  if (starts > 0) parts.push(plural(starts, 'step start', 'step starts'));
-  return `${plural(count, 'retry', 'retries')} added ${formatUsageEvents(events)}: ${parts.join(', ')}.`;
-}
-
-/**
- * The two lines of "How events are counted" the CLI prints under its table:
- * how the run's step events add up (or, with no steps, what the run's own
- * events were), and what the retries added. The full explanation is in the
- * docs.
- */
-export function formatEventCountingNote(usage: RunUsage): [string, string] {
-  const breakdown = formatStepEventsBreakdown(usage);
-  return [
-    breakdown
-      ? `${breakdown}.`
-      : (formatRunEventsLine(usage) ?? 'The run wrote no events.'),
-    retryLine(usage),
-  ];
-}
-
-/**
  * For a run whose data was deleted (when it finished, or on demand): what
  * its sizes show.
  * `null` for a run whose data is kept.
@@ -702,147 +662,144 @@ export function formatDataPurgedNote(usage: RunUsage): string | null {
     : "This run's data was deleted before its sizes were kept; sizes show what is left.";
 }
 
-const STEP_EVENT_LABELS: Record<
-  RunUsageStepEventType | 'other',
-  [one: string, many: string]
-> = {
-  created: ['created', 'created'],
-  started: ['started', 'started'],
-  completed: ['completed', 'completed'],
-  failed: ['failed', 'failed'],
-  retrying: ['retry marker', 'retry markers'],
-  other: ['other', 'other'],
+/** What a group of rows holds, in the order the table lists them. */
+export type UsageRowType =
+  | 'steps'
+  | 'hooks'
+  | 'attributes'
+  | 'sleeps'
+  | 'run'
+  | 'other';
+
+const USAGE_ROW_TYPES: readonly UsageRowType[] = [
+  'steps',
+  'hooks',
+  'attributes',
+  'sleeps',
+  'run',
+  'other',
+];
+
+/** The Type column. */
+export const USAGE_ROW_TYPE_LABELS: Record<UsageRowType, string> = {
+  steps: 'Steps',
+  hooks: 'Hooks',
+  attributes: 'Attributes',
+  sleeps: 'Sleeps',
+  run: 'Run',
+  other: 'Other events',
 };
 
-/**
- * How the run's step events add up, from its own counts:
- * `5 steps wrote 14 events: 2 created, 7 started, 5 completed, 2 retry markers`.
- * `null` when no step ran.
- */
-export function formatStepEventsBreakdown(usage: RunUsage): string | null {
-  const { steps, events, byType } = usage.stepEvents;
-  if (events <= 0) return null;
-  const parts = ([...RUN_USAGE_STEP_EVENT_TYPES, 'other'] as const).flatMap(
-    (type) => {
-      const count = byType[type];
-      if (count <= 0) return [];
-      const [one, many] = STEP_EVENT_LABELS[type];
-      return [`${count.toLocaleString('en-US')} ${count === 1 ? one : many}`];
-    }
-  );
-  return `${plural(steps, 'step', 'steps')} wrote ${formatUsageEvents(events)}: ${parts.join(', ')}`;
-}
+const SPAN_KIND_OF_ROW_TYPE: Record<UsageRowType, RunUsageSpanKind> = {
+  steps: 'step',
+  hooks: 'hook',
+  attributes: 'attributes',
+  sleeps: 'wait',
+  run: 'run',
+  other: 'other',
+};
 
-export interface UsageSpanTreeRow {
-  kind: RunUsageSpanKind;
+export interface UsageRow {
+  /** A step function's short name, or a hook's token. */
   label: string;
   events: number;
+  /** Of the run's events, from 0 to 1. */
   share: number;
   retries: number;
+  /**
+   * Steps: calls of the step function. Hooks: 1. A group: its steps' calls,
+   * its hooks, attribute writes, sleeps, or 1 for the run.
+   */
   calls: number;
   /** A tooltip: what the row's events are. */
   note?: string;
 }
 
-/**
- * The span table the CLI draws (and a UI would): the workflow, its steps
- * (biggest first, the rest folded), then the built-in rows (the run's own
- * events, sleeps, hooks).
- */
-export interface UsageSpanTree {
-  workflow: { label: string; events: number };
-  steps: UsageSpanTreeRow[];
-  /** Steps past the limit, folded into "+ N other steps"; `null` if none. */
-  otherSteps: {
-    steps: number;
-    events: number;
-    share: number;
-    retries: number;
-    calls: number;
-  } | null;
-  builtIns: UsageSpanTreeRow[];
-  /** Label the built-in rows: only when sleeps or hooks are among them. */
-  showBuiltInLabel: boolean;
+export interface UsageRowGroup extends Omit<UsageRow, 'label'> {
+  type: UsageRowType;
+  /** Steps: each step function. Hooks: each hook. Biggest first. */
+  children: UsageRow[];
+  /** The children past the limit, folded into one row; `null` if none. */
+  otherChildren: (Omit<UsageRow, 'note'> & { count: number }) | null;
 }
 
-const BUILT_IN_LABELS: Record<Exclude<RunUsageSpanKind, 'step'>, string> = {
-  run: 'Run start & finish',
-  attributes: 'Attributes',
-  wait: 'Sleeps',
-  hook: 'Hooks',
-  other: 'Other events',
-};
-
-/** The built-in rows' order. */
-const BUILT_IN_KINDS = ['run', 'attributes', 'wait', 'hook', 'other'] as const;
-
-const rowOf = (span: RunUsageSpan, label: string): UsageSpanTreeRow => ({
-  kind: span.kind,
-  label,
-  events: span.events,
-  share: span.share,
-  retries: span.retries,
-  calls: span.calls,
-});
-
-export function usageSpanTree(
+/**
+ * The usage table, one flat list: Steps (each step function under it),
+ * Hooks (each hook, by token), then Attributes, Sleeps and Run, and Other
+ * events for types this build does not know. Only the types the run has.
+ */
+export function usageRows(
   usage: RunUsage,
   limit: number = USAGE_SPANS_SHOWN
-): UsageSpanTree {
-  const steps = usage.eventsBySpan.filter((span) => span.kind === 'step');
-  const { shown, other } = collapseUsageSpans(steps, limit);
+): UsageRowGroup[] {
   const runNote = formatRunEventsLine(usage) ?? undefined;
-  const builtIns = BUILT_IN_KINDS.flatMap((kind) => {
-    const of = usage.eventsBySpan.filter((s) => s.kind === kind);
-    if (of.length === 0) return [];
-    // Hooks are a span each; their built-in row adds them up.
-    const span = of.slice(1).reduce(
-      (sum, s) => ({
-        ...sum,
-        events: sum.events + s.events,
-        share: sum.share + s.share,
-        retries: sum.retries + s.retries,
-        calls: sum.calls + s.calls,
-      }),
-      of[0]
+  return USAGE_ROW_TYPES.flatMap((type): UsageRowGroup[] => {
+    const spans = usage.eventsBySpan.filter(
+      (span) => span.kind === SPAN_KIND_OF_ROW_TYPE[type]
     );
-    const row = rowOf(span, BUILT_IN_LABELS[kind]);
-    return [kind === 'run' && runNote ? { ...row, note: runNote } : row];
-  });
-  return {
-    workflow: {
+    if (spans.length === 0) return [];
+    const total = sumRows(spans);
+    const group: UsageRowGroup = {
+      type,
+      events: total.events,
+      share: total.share,
+      retries: total.retries,
+      calls: type === 'hooks' ? spans.length : total.calls,
+      children: [],
+      otherChildren: null,
+      ...(type === 'run' && runNote ? { note: runNote } : {}),
+    };
+    if (type !== 'steps' && type !== 'hooks') return [group];
+    const { shown, other } = collapseUsageSpans(spans, limit);
+    group.children = childRowsOf(shown);
+    group.otherChildren = other && {
+      count: other.spans,
       label:
-        parseWorkflowName(usage.workflowName)?.shortName || usage.workflowName,
-      events: usage.events,
-    },
-    steps: stepRowsOf(shown),
-    otherSteps: other && {
-      steps: other.spans,
+        type === 'steps'
+          ? formatOtherSteps(other.spans)
+          : `+ ${other.spans.toLocaleString('en-US')} other ${other.spans === 1 ? 'hook' : 'hooks'}`,
       events: other.events,
       share: other.share,
       retries: other.retries,
       calls: other.calls,
-    },
-    builtIns,
-    showBuiltInLabel: builtIns.some((row) => row.kind !== 'run'),
-  };
+    };
+    return [group];
+  });
+}
+
+function sumRows(spans: RunUsageSpan[]) {
+  return spans.reduce(
+    (sum, span) => ({
+      events: sum.events + span.events,
+      share: sum.share + span.share,
+      retries: sum.retries + span.retries,
+      calls: sum.calls + span.calls,
+    }),
+    { events: 0, share: 0, retries: 0, calls: 0 }
+  );
 }
 
 /**
- * The step rows, labelled by short name. Steps of the same name in
- * different modules would read as the same row, so those carry their module
- * too: `send (./src/a)` and `send (./src/b)`.
+ * Child rows, labelled by short name (a step) or token (a hook). Rows whose
+ * labels would read the same carry more: a step its module (`send
+ * (./src/a)` and `send (./src/b)`), a hook its id.
  */
-function stepRowsOf(spans: RunUsageSpan[]): UsageSpanTreeRow[] {
+function childRowsOf(spans: RunUsageSpan[]): UsageRow[] {
   const labels = spans.map((span) => usageSpanLabel(span));
   const seen = new Map<string, number>();
   for (const label of labels) seen.set(label, (seen.get(label) ?? 0) + 1);
-  return spans.map((span, i) =>
-    rowOf(
-      span,
-      (seen.get(labels[i]) ?? 0) > 1 ? formatStepName(span.name) : labels[i]
-    )
-  );
+  return spans.map((span, i) => ({
+    label:
+      (seen.get(labels[i]) ?? 0) > 1
+        ? span.kind === 'step'
+          ? formatStepName(span.name)
+          : `${labels[i]} (${span.id ?? span.name})`
+        : labels[i],
+    events: span.events,
+    share: span.share,
+    retries: span.retries,
+    calls: span.calls,
+  }));
 }
 
 interface CollapsedUsageSpans {

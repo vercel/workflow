@@ -188,7 +188,7 @@ per flag.
 
 - Command: `workflow inspect run <run-id>`
 - Default: disabled
-- Prints the run's usage instead of the run: its events and retries, a tree of the workflow's steps (calls, events, share, retries) and the run's own events, attributes, sleeps and hooks, and the size of its data in the local data directory by entity. With `--json`, prints the same numbers as one JSON object.
+- Prints the run's usage instead of the run: its events, listed by type (each step function with its calls, events, share and retries; each hook by its token; attributes, sleeps and the run's own events), and the size of its data in the local data directory by entity. With `--json`, prints the same numbers as one JSON object. See [how events are counted](/docs/observability#how-events-are-counted).
 - Prints in color only to a terminal; output is plain text when piped, with `NO_COLOR` set, or with `TERM=dumb`.
 - Only the Local World counts usage so far; on other backends the command fails rather than printing the run.
 - Cannot be combined with `--url`/`--web`, `--withData`, or `--decrypt`.

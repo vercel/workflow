@@ -1,4 +1,11 @@
-import { getStepMetadata, RetryableError } from 'workflow';
+import {
+  createHook,
+  getStepMetadata,
+  getWritable,
+  RetryableError,
+  setAttributes,
+  sleep,
+} from 'workflow';
 
 /** Fails its first two attempts, so it writes two retries. */
 export async function flakyCharge(orderId: string) {
@@ -27,4 +34,30 @@ export async function usageCountingWorkflow(orderId: string) {
     ['a', 'b', 'c', 'd', 'e', 'f'].map((to) => sendEmail(`${to}@example.com`))
   );
   return { charged, sent: sent.length };
+}
+
+/** Writes a receipt to the run's stream. */
+export async function writeReceipt(orderId: string) {
+  'use step';
+  const writer = getWritable<string>().getWriter();
+  await writer.write(`receipt for ${orderId}`);
+  writer.releaseLock();
+  return orderId;
+}
+
+/**
+ * Every kind of row the usage table has: an attribute write, a retried
+ * step, a sleep, a hook resumed once, and a stream.
+ */
+export async function usageEverythingWorkflow(orderId: string) {
+  'use workflow';
+  await setAttributes({ order: orderId });
+  const charged = await flakyCharge(orderId);
+  await sleep('1ms');
+  using hook = createHook<{ ok: boolean }>({
+    token: `usage-approve:${orderId}`,
+  });
+  const decision = await hook;
+  await writeReceipt(orderId);
+  return { charged, ok: decision.ok };
 }
