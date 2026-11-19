@@ -525,7 +525,7 @@ QuickJS runs ahead with the same writer, classification, depth and hazard rules,
 
 #### Replay divergence
 
-On the node engine, a replay that diverges from the log discards the VM, reloads the log and replays from cold in a fresh VM in the same delivery, up to [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_replay_divergence_max_retries) times (3 by default), then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence carries `replayDivergenceCount`. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no in-delivery divergence recovery.
+On the node engine, a replay that diverges from the log discards the VM, reloads the log and replays from cold in a fresh VM in the same delivery, up to [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](https://workflow-sdk.dev/docs/configuration/runtime-tuning#workflow_replay_divergence_max_retries) times (3 by default), then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence, and the `run_failed` of an exhausted budget, carry `replayDivergenceCount` and `replayDivergenceEventIds` (the newest 8 events the replays diverged at, ids only), so a divergence can be located even when the run's error payload is encrypted. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no in-delivery divergence recovery.
 
 ### Turbo
 
@@ -1107,7 +1107,7 @@ The redelivery costs one more invocation, after at least 5 seconds on Vercel (th
 
 **Run-ahead stop.** The delivery lets the outcomes the stop still allows commit, sends what its writes owe, takes a fresh writer, reloads the log and replays from cold in the same delivery with run-ahead off for the rest of it. `MAX_RUN_AHEAD_RESTARTS` (1) bounds the restarts, and a stop past it hands off. A hazard stop detects a classification gap rather than recovering from one (the check runs on a write that already committed), so it is logged at error level with `possibleLogCorruption: true`.
 
-**Replay divergence.** The delivery discards the VM, reloads the log and replays from cold in a fresh VM, up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` (3) times, then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence carries `replayDivergenceCount`. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no divergence recovery.
+**Replay divergence.** The delivery discards the VM, reloads the log and replays from cold in a fresh VM, up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` (3) times, then fails the run with `CORRUPTED_EVENT_LOG`. The first natural write after a recovered divergence, and the `run_failed` of an exhausted budget, carry `replayDivergenceCount` and `replayDivergenceEventIds` (the newest 8 events the replays diverged at, ids only), so a divergence can be located even when the run's error payload is encrypted. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine has no divergence recovery.
 
 ### world-local and world-postgres
 
