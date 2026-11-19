@@ -94,8 +94,13 @@ export const DEFAULT_ORCHESTRATOR_LINGER_MS = 5_000;
 /** Default of {@link getOrchestratorHookLingerMs}, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
 
-/** Default of {@link getOrchestratorRateWaitMs}. */
-export const DEFAULT_ORCHESTRATOR_RATE_WAIT_MS = 2_000;
+/**
+ * Default of {@link getOrchestratorRateWaitMs}: a call is woken about this
+ * long before its slot, which covers a queue delivery's latency (about 1.5 s
+ * at p99) and a cold start, and it waits the rest in process. It is what lets
+ * the World's grace stay near its 5-second floor.
+ */
+export const DEFAULT_ORCHESTRATOR_RATE_WAIT_MS = 5_000;
 
 /**
  * How far ahead an `experimental_rateLimit()` call's slot may be for the

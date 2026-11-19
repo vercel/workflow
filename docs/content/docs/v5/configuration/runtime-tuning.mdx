@@ -391,8 +391,8 @@ Everything above describes spec 8 runs, the default. The experimental spec 9 run
 
 ### `WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`
 
-- Default: `2000`
-- How far ahead of an [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) call's slot the orchestrator waits for it in the same invocation. A call whose slot is further out is woken this far before it and waits the rest the same way, so it goes ahead at its slot instead of a second or more after. A queued wake for the slot itself is still scheduled, in case the invocation ends first. `0` turns it off, and a waiting call is woken by the queue at its slot.
+- Default: `5000`
+- How far ahead of an [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) call's slot the orchestrator waits for it in the same invocation. A call whose slot is further out is woken this far before it and waits the rest the same way, so it goes ahead at its slot instead of a second or more after. A queued wake for the slot itself is still scheduled, in case the invocation ends first. Each wait can keep an invocation idle for up to this long. `0` turns it off, and a waiting call is woken by the queue at its slot.
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 
