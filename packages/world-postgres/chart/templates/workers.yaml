@@ -1,0 +1,67 @@
+{{- if .Values.versionPinning.enabled }}
+{{- $worker := include "workflow-postgres.workerName" . }}
+# This release's workers: they run only the workflows this release started.
+# `keep` makes `helm upgrade` leave the previous releases' workers running
+# their runs; the prune CronJob deletes them once those runs have finished.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $worker }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "workflow-postgres.workerLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $worker }}
+  template:
+    metadata:
+      labels:
+        # Not the Service's selector: workers get no traffic.
+        app.kubernetes.io/name: {{ $worker }}
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/version: {{ include "workflow-postgres.tag" . | quote }}
+        {{- include "workflow-postgres.workerLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "workflow-postgres.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "workflow-postgres.initContainers" . | nindent 6 }}
+      containers:
+        - name: worker
+          {{- include "workflow-postgres.container" . | nindent 10 }}
+          env:
+            - name: WORKFLOW_ROLE
+              value: worker
+            {{- include "workflow-postgres.baseEnv" . | nindent 12 }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $worker }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "workflow-postgres.workerLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ $worker }}
+  minReplicaCount: 0
+  maxReplicaCount: {{ .Values.versionPinning.workers.maxReplicas }}
+  pollingInterval: {{ .Values.versionPinning.workers.pollingInterval }}
+  cooldownPeriod: {{ .Values.versionPinning.workers.cooldownSeconds }}
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: "http://{{ include "workflow-postgres.name" . }}.{{ .Release.Namespace }}.svc.cluster.local{{ .Values.backlogPath }}/backlog/{{ include "workflow-postgres.tag" . }}"
+        format: json
+        valueLocation: wanted
+        targetValue: {{ .Values.versionPinning.workers.deliveriesPerWorker | quote }}
+{{- end }}
