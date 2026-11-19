@@ -4,11 +4,7 @@ import {
   frameAbortStreamPayload,
   readAbortStreamPacket,
 } from './serialization/abort-stream.js';
-import {
-  deriveRunPayloadKeys,
-  type PayloadKey,
-  sealTo,
-} from './serialization/encryption.js';
+import { deriveRunPayloadKeys, sealTo } from './serialization/encryption.js';
 import {
   cancelAbortReaders,
   dehydrateStepArguments,
@@ -46,7 +42,7 @@ function chunksStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
-function stepContext(key?: PayloadKey): StepContext {
+function stepContext(): StepContext {
   return {
     stepMetadata: {
       stepId: 'step_abort',
@@ -59,9 +55,8 @@ function stepContext(key?: PayloadKey): StepContext {
       workflowName: 'abort-test',
       workflowStartedAt: new Date(),
       url: 'http://localhost',
-      features: { encryption: Boolean(key) },
+      features: { encryption: false },
     },
-    encryptionKey: key,
     ops: [],
     preCompletionOps: [],
   };
@@ -214,12 +209,18 @@ describe('real abort reducers and revivers', () => {
   });
 
   it.each([
-    false,
-    true,
-  ])('propagates a split encrypted packet before stream close (framed=%s)', async (framed) => {
+    { kind: 'signal', framed: false },
+    { kind: 'signal', framed: true },
+    { kind: 'controller', framed: false },
+    { kind: 'controller', framed: true },
+  ] as const)('propagates a split encrypted packet to a $kind before stream close (framed=$framed)', async ({
+    kind,
+    framed,
+  }) => {
     const key = await deriveRunPayloadKeys(new Uint8Array(32).fill(8));
+    const source = new AbortController();
     const input = await dehydrateWorkflowArguments(
-      new AbortController().signal,
+      kind === 'signal' ? source.signal : source,
       runId,
       key
     );
@@ -238,18 +239,17 @@ describe('real abort reducers and revivers', () => {
           },
         })
     );
-    const ctx = stepContext(key);
-    await contextStorage.run(ctx, async () => {
-      const signal = (await hydrateStepArguments(
-        input,
-        runId,
-        key,
-        ctx.ops
-      )) as AbortSignal;
-      await Promise.all(ctx.ops);
-      expect(signal.aborted).toBe(true);
-      expect(signal.reason.message).toBe(reason.message);
-    });
+    // Like the step executor, hydrate outside any contextStorage frame: the
+    // reader can only get the key from the reviver.
+    const ops: Promise<void>[] = [];
+    const hydrated = await hydrateStepArguments(input, runId, key, ops);
+    const signal =
+      kind === 'signal'
+        ? (hydrated as AbortSignal)
+        : (hydrated as AbortController).signal;
+    await Promise.all(ops);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason.message).toBe(reason.message);
   });
 
   it('frames step-initiated aborts and keeps the durable hook payload unchanged', async () => {
