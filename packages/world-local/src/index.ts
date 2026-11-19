@@ -148,9 +148,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     rateLimits: true,
   } satisfies WorldCapabilities;
   return {
-    // Spec 9 or 10 runs only on request (`WORKFLOW_SPEC_VERSION`), which
-    // need the in-band fence and rate limits declared above; spec 8
-    // otherwise.
+    // Spec 9 runs by default, which need the in-band fence declared above;
+    // `WORKFLOW_SPEC_VERSION=8` keeps new runs on spec 8, and `10` creates
+    // spec 10 runs, which also need the rate limits declared above.
     specVersion: mintedSpecVersion(process.env, {
       inBandFence: capabilities.inBandFence,
       rateLimits: capabilities.rateLimits,

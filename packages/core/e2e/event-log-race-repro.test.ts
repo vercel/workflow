@@ -1717,11 +1717,11 @@ let lastCheckpointAt = 0;
 
 /**
  * The spec version this lane's runs must have: what the lane's World mints,
- * spec 8 by default and `WORKFLOW_SPEC_VERSION` when the lane sets one (set
+ * spec 9 by default and `WORKFLOW_SPEC_VERSION` when the lane pins one (set
  * on both the deployment and this runner: a cross-deployment `start()` stamps
  * the lower of the two). Every World this harness races declares the in-band
- * fence, so the spec 9 cells mint spec 9, and every cell fails if its runs
- * come back at another version.
+ * fence, so the default cells pin spec 9 too and fail if the default ever
+ * stops being spec 9.
  */
 const expectedSpecVersion: number = mintedSpecVersion(process.env, {
   inBandFence: true,

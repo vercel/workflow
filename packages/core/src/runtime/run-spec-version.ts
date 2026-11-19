@@ -13,13 +13,15 @@ import {
  * event stamped above what it supports. The Python SDK rejects the run's whole
  * event log over a single such event. Capped at the highest version this SDK
  * can drive, `SPEC_VERSION_MAX_SUPPORTED`, not at the version it mints: a
- * process that creates spec 8 runs still stamps 9 on the `hook_received`,
- * `run_cancelled` and wake events it writes to a spec 9 run, which may have
- * been created by a process with `WORKFLOW_SPEC_VERSION=9` set.
+ * process that creates spec 8 runs (`WORKFLOW_SPEC_VERSION=8`, or a World
+ * without the in-band fence) still stamps 9 on the `hook_received`,
+ * `run_cancelled` and wake events it writes to a spec 9 run, which another
+ * process may have created.
  *
- * `whenUnknown` is used for a run with no recorded version. It defaults to the
- * version this SDK mints by default (`SPEC_VERSION_CURRENT`); callers that
- * treat such a run as legacy pass `SPEC_VERSION_LEGACY`.
+ * `whenUnknown` is used for a run with no recorded version. It defaults to
+ * `SPEC_VERSION_CURRENT` (spec 8): spec 9 is structural, so it is never
+ * assumed for a run that does not say so. Callers that treat such a run as
+ * legacy pass `SPEC_VERSION_LEGACY`.
  */
 export function specVersionForRunWrite(
   runSpecVersion: number | undefined,
