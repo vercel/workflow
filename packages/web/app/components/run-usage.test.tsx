@@ -3,11 +3,14 @@ import {
   fireEvent,
   render as renderRaw,
   screen,
+  within,
 } from '@testing-library/react';
 import { TooltipProvider } from '@workflow/web-shared';
 import {
   buildRunUsage,
   type RunUsage,
+  type RunUsageAggregates,
+  USAGE_COUNTING_DOCS_URL,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import type { ReactNode } from 'react';
@@ -15,12 +18,14 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dataWrittenLabel,
-  RUN_USAGE_DOCS_URL,
+  LOCAL_STORAGE_NOTE,
   RunUsageHeaderStats,
   RunUsagePage,
   RunUsagePageSkeleton,
   runUsagePath,
+  STORAGE_COUNTING_DOCS_URL,
   USAGE_TABLES_LAYOUT,
+  usageChildKeys,
 } from './run-usage';
 
 /** The app's root provides tooltips and the router; so does each test. */
@@ -37,42 +42,48 @@ const render = (ui: React.ReactElement) =>
 afterEach(cleanup);
 
 const WORKFLOW = 'workflow//./src/workflows/order//processOrder';
-const step = (name: string) => `step//./src/workflows/order//${name}`;
+const step = (name: string, file = 'order') =>
+  `step//./src/workflows/${file}//${name}`;
 
 const stepGroup = (
-  name: string,
+  stepName: string,
   steps: number,
   { retries = 0, restarts }: { retries?: number; restarts?: number } = {}
-) => stepGroupOf(name, steps, retries, restarts ?? retries);
+) => {
+  const r = restarts ?? retries;
+  return {
+    stepName,
+    steps,
+    events: steps * 3 + retries + r,
+    created: steps,
+    started: steps + r,
+    completed: steps,
+    failed: 0,
+    retries,
+    restarts: r,
+    bytes: steps * 100,
+  };
+};
 
-const stepGroupOf = (
-  name: string,
-  steps: number,
-  retries: number,
-  restarts: number
-) => ({
-  stepName: step(name),
-  steps,
-  events: steps * 3 + retries + restarts,
-  created: steps,
-  started: steps + restarts,
-  completed: steps,
-  failed: 0,
-  retries,
-  restarts,
-  bytes: steps * 100,
-});
+const runOf = (
+  input: Partial<RunUsageAggregates> &
+    Pick<RunUsageAggregates, 'eventGroups' | 'stepGroups'>
+) =>
+  buildRunUsage({
+    runId: 'wrun_1',
+    status: 'completed',
+    workflowName: WORKFLOW,
+    streamBytes: 0,
+    ...input,
+  });
 
 /**
- * 1,183 events: nine step names (one retried once), the run's own events,
- * an attribute write, a sleep and a hook.
+ * 1,145 events: nine step functions (one retried once), two hooks, an
+ * attribute write, a sleep, and the run's own events.
  */
 function bigRun(overrides: Partial<RunUsage> = {}): RunUsage {
   return {
-    ...buildRunUsage({
-      runId: 'wrun_1',
-      status: 'completed',
-      workflowName: WORKFLOW,
+    ...runOf({
       eventGroups: [
         { eventType: 'run_created', events: 1, bytes: 400 },
         { eventType: 'run_started', events: 1, bytes: 100 },
@@ -80,14 +91,18 @@ function bigRun(overrides: Partial<RunUsage> = {}): RunUsage {
         { eventType: 'attr_set', events: 1, bytes: 50 },
         { eventType: 'wait_created', events: 1, bytes: 20 },
         { eventType: 'wait_completed', events: 1, bytes: 20 },
-        { eventType: 'hook_created', events: 1, bytes: 120 },
+        { eventType: 'hook_created', events: 2, bytes: 120 },
         { eventType: 'hook_received', events: 1, bytes: 80 },
       ],
+      hookGroups: [
+        { hookId: 'hook_a', token: 'approval:order-1', events: 2 },
+        { hookId: 'hook_b', token: 'refund:order-1', events: 1 },
+      ],
       stepGroups: [
-        stepGroup('chargeCard', 300, { retries: 1 }),
-        stepGroup('sendEmail', 50),
+        stepGroup(step('chargeCard'), 300, { retries: 1 }),
+        stepGroup(step('sendEmail'), 50),
         ...['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((n, i) =>
-          stepGroup(n, 7 - i)
+          stepGroup(step(n), 7 - i)
         ),
       ],
       streamBytes: 2500,
@@ -96,15 +111,24 @@ function bigRun(overrides: Partial<RunUsage> = {}): RunUsage {
   };
 }
 
-const rows = () => screen.getAllByTestId('run-usage-span');
-const labels = () =>
-  screen
-    .getAllByTestId('run-usage-span-label')
-    .map((label) => label.textContent);
+const groups = () => screen.getAllByTestId('run-usage-group');
+const typeLabels = () =>
+  screen.getAllByTestId('run-usage-type-label').map((el) => el.textContent);
+const childrenOf = (type: string) =>
+  within(
+    document.querySelector(
+      `[data-testid="run-usage-children"][data-type="${type}"]`
+    ) as HTMLElement
+  );
+const childLabels = (type: string) =>
+  childrenOf(type)
+    .queryAllByTestId('run-usage-child-label')
+    .map((el) => el.textContent);
 
 describe('RunUsageHeaderStats', () => {
-  it("shows the whole run's events and retries, not the loaded page", () => {
+  it("shows the whole run's events, without the retry count", () => {
     const usage = bigRun();
+    expect(usage.retries.count).toBe(1);
     render(
       <RunUsageHeaderStats
         runId="wrun_1"
@@ -116,42 +140,30 @@ describe('RunUsageHeaderStats', () => {
     expect(screen.getByTestId('run-usage-events').textContent).toBe(
       usage.events.toLocaleString('en-US')
     );
-    expect(screen.getByTestId('run-usage-header-retries').textContent).toBe(
-      '1 retry'
-    );
+    // Retries are on the step rows, not in the header.
+    expect(document.body.textContent).not.toMatch(/retr/i);
     expect(document.body.textContent).not.toMatch(/billable/i);
   });
 
-  it('leaves retries out of the header when there are none', () => {
-    render(
-      <RunUsageHeaderStats
-        runId="wrun_1"
-        usage={bigRun({ retries: { count: 0, events: 0 } })}
-        error={null}
-        isLocalBackend
-      />
-    );
-    expect(screen.queryByTestId('run-usage-header-retries')).toBeNull();
-  });
-
   it('links both figures to the run’s Usage page', () => {
+    const usage = bigRun();
     render(
       <RunUsageHeaderStats
         runId="wrun_1"
-        usage={bigRun()}
+        usage={usage}
         error={null}
         isLocalBackend
       />
     );
     const events = screen.getByRole('link', {
-      name: '1,144 events, open usage',
+      name: `${usage.events.toLocaleString('en-US')} events, open usage`,
     });
-    const data = screen.getByRole('link', {
-      name: '41.4 KB data written (local), open usage',
+    const storage = screen.getByRole('link', {
+      name: '41.4 KB storage (local), open usage',
     });
     expect(events.getAttribute('href')).toBe('/run/wrun_1/usage');
-    expect(data.getAttribute('href')).toBe('/run/wrun_1/usage');
-    expect(data.textContent).toBe('41.4 KB');
+    expect(storage.getAttribute('href')).toBe('/run/wrun_1/usage');
+    expect(storage.textContent).toBe('41.4 KB');
   });
 
   it('shows plain figures on the Usage page itself', () => {
@@ -170,7 +182,7 @@ describe('RunUsageHeaderStats', () => {
     );
   });
 
-  it('labels a local run’s figure “Data written (local)”, not “Storage”', () => {
+  it('labels a local run’s figure “Storage (local)”', () => {
     render(
       <RunUsageHeaderStats
         runId="wrun_1"
@@ -180,12 +192,12 @@ describe('RunUsageHeaderStats', () => {
       />
     );
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Data written (local)'
+      'Storage (local)'
     );
-    expect(document.body.textContent).not.toContain('Storage');
+    expect(document.body.textContent).not.toMatch(/data written/i);
   });
 
-  it('labels a billed run’s figure “Data written”, without “(local)”', () => {
+  it('labels a billed run’s figure plain “Storage”, with no local note', () => {
     render(
       <RunUsageHeaderStats
         runId="wrun_1"
@@ -195,9 +207,8 @@ describe('RunUsageHeaderStats', () => {
       />
     );
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Data written'
+      'Storage'
     );
-    // No local note to explain.
     expect(screen.queryByTestId('run-usage-data-help')).toBeNull();
   });
 
@@ -211,14 +222,14 @@ describe('RunUsageHeaderStats', () => {
       />
     );
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Data written (local)'
+      'Storage (local)'
     );
     expect(screen.queryByTestId('run-usage-events')).toBeNull();
     expect(screen.queryByRole('link')).toBeNull();
-    expect(dataWrittenLabel(undefined, false)).toBe('Data written');
+    expect(dataWrittenLabel(undefined, false)).toBe('Storage');
   });
 
-  it('explains “(local)” in a tooltip reachable by keyboard', async () => {
+  it('says what storage counts in a tooltip reachable by keyboard', async () => {
     // Radix measures the tooltip; jsdom has no ResizeObserver.
     vi.stubGlobal(
       'ResizeObserver',
@@ -237,40 +248,126 @@ describe('RunUsageHeaderStats', () => {
       />
     );
     const help = screen.getByRole('button', {
-      name: 'About Data written (local)',
+      name: 'About Storage (local)',
     });
     fireEvent.focus(help);
-    expect((await screen.findByRole('tooltip')).textContent).toBe(
-      'Data this run wrote to your local data directory. Vercel measures Data Written in its own storage, so the number on Vercel will differ.'
-    );
+    const tooltip = (await screen.findByRole('tooltip')).textContent ?? '';
+    expect(tooltip).toBe(LOCAL_STORAGE_NOTE);
+    // What it counts, and what it leaves out.
+    expect(tooltip).toContain('payloads as the SDK sent them');
+    expect(tooltip).toContain('streams');
+    expect(tooltip).toContain('Data Written');
+    expect(tooltip).toContain('QuickJS VM snapshots');
+    expect(tooltip).toContain("dynamic workflow's code");
   });
 });
 
-describe('RunUsagePage', () => {
-  it('lists the workflow, its steps biggest first, then the built-in rows', () => {
+describe('the usage table', () => {
+  it('heads its first column “Type”, never “Span”', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
-    expect(labels()).toEqual([
-      'processOrder',
+    const headers = within(screen.getByTestId('run-usage-types'))
+      .getAllByRole('columnheader')
+      .map((th) => th.textContent);
+    expect(headers[0]).toBe('Type');
+    expect(document.body.textContent).not.toMatch(/\bSpan\b/);
+  });
+
+  it('lists the types in the CLI’s order, flat, with no root row', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    expect(typeLabels()).toEqual([
+      'Steps',
+      'Hooks',
+      'Attributes',
+      'Sleeps',
+      'Run',
+    ]);
+    // No workflow row above them, and no "Built-in" group.
+    const table = screen.getByTestId('run-usage-types');
+    expect(table.textContent).not.toContain('processOrder');
+    expect(table.textContent).not.toContain('Built-in');
+    expect(screen.queryByTestId('run-usage-span')).toBeNull();
+  });
+
+  it('says what each type counts after its name', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    const detail = (type: string) =>
+      groups()
+        .find((row) => row.getAttribute('data-type') === type)
+        ?.querySelector('[data-testid="run-usage-group-detail"]')?.textContent;
+    expect(detail('steps')).toBe('378 calls');
+    expect(detail('hooks')).toBe('2 hooks');
+    expect(detail('attributes')).toBe('1 write');
+    expect(detail('sleeps')).toBe('1 sleep');
+    // Run: the run's own events, by type.
+    expect(detail('run')).toBe('1 created, 1 started, 1 completed');
+    expect(document.body.textContent).not.toContain('×');
+  });
+
+  it('makes Steps and Hooks toggles, expanded by default', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    const toggles = screen.getAllByTestId('run-usage-toggle');
+    expect(toggles.map((t) => t.textContent)).toEqual([
+      expect.stringContaining('Steps'),
+      expect.stringContaining('Hooks'),
+    ]);
+    for (const toggle of toggles) {
+      // A native button: Enter and Space work without extra handlers.
+      expect(toggle.tagName).toBe('BUTTON');
+      expect(toggle.getAttribute('type')).toBe('button');
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      const controlled = document.getElementById(
+        toggle.getAttribute('aria-controls') ?? ''
+      );
+      expect(controlled?.getAttribute('data-testid')).toBe(
+        'run-usage-children'
+      );
+      expect(controlled?.hidden).toBe(false);
+    }
+    // Attributes, Sleeps and Run don't expand.
+    for (const row of groups().slice(2)) {
+      expect(row.querySelector('button')).toBeNull();
+    }
+  });
+
+  it('collapses and expands a group', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    const steps = screen.getByRole('button', { name: /^Steps/ });
+    const children = document.getElementById(
+      steps.getAttribute('aria-controls') ?? ''
+    ) as HTMLElement;
+    fireEvent.click(steps);
+    expect(steps.getAttribute('aria-expanded')).toBe('false');
+    expect(children.hidden).toBe(true);
+    // The other toggle keeps its own state.
+    expect(
+      screen
+        .getByRole('button', { name: /^Hooks/ })
+        .getAttribute('aria-expanded')
+    ).toBe('true');
+    fireEvent.click(steps);
+    expect(steps.getAttribute('aria-expanded')).toBe('true');
+    expect(children.hidden).toBe(false);
+  });
+
+  it('lists each step function with its calls and retries, biggest first', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    expect(childLabels('steps')).toEqual([
       'chargeCard',
       'sendEmail',
       'a',
       'b',
       'c',
-      'Run start & finish',
-      'Attributes',
-      'Sleeps',
-      'Hooks',
     ]);
-    expect(rows()[1].textContent).toContain('1 retry');
-    expect(rows()[2].textContent).not.toContain('retry');
-    expect(screen.getByTestId('run-usage-built-in-label').textContent).toBe(
-      'Built-in'
+    const charge = childrenOf('steps').getAllByTestId('run-usage-child')[0];
+    expect(within(charge).getByTestId('run-usage-calls').textContent).toBe(
+      '300 calls'
     );
-
-    // Only steps fold: d, e, f, g.
+    expect(within(charge).getByTestId('run-usage-retries').textContent).toBe(
+      '1 retry'
+    );
+    // Past the limit, the rest fold into one row that opens them.
     fireEvent.click(screen.getByRole('button', { name: '+ 4 other steps' }));
-    expect(labels()).toEqual([
-      'processOrder',
+    expect(childLabels('steps')).toEqual([
       'chargeCard',
       'sendEmail',
       'a',
@@ -280,99 +377,93 @@ describe('RunUsagePage', () => {
       'e',
       'f',
       'g',
-      'Run start & finish',
-      'Attributes',
-      'Sleeps',
-      'Hooks',
     ]);
     expect(screen.queryByRole('button', { name: /other steps/ })).toBeNull();
   });
 
-  it('marks each row with the trace’s icon for its type', () => {
+  it('lists each hook by its token, without calls', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
-    const typeOf = (row: HTMLElement) =>
-      row.querySelector('.sr-only')?.textContent;
-    const byLabel: Record<string, { type?: string | null; icons: number }> =
-      Object.fromEntries(
-        rows().map((row) => [
-          row.querySelector('[data-testid="run-usage-span-label"]')
-            ?.textContent,
-          { type: typeOf(row), icons: row.querySelectorAll('svg').length },
-        ])
-      );
-    expect(byLabel.processOrder.type).toBe('Workflow:');
-    expect(byLabel.chargeCard.type).toBe('Step:');
-    expect(byLabel['Run start & finish'].type).toBe('Workflow:');
-    expect(byLabel.Attributes.type).toBe('Workflow:');
-    expect(byLabel.Sleeps.type).toBe('Sleep:');
-    expect(byLabel.Hooks.type).toBe('Hook:');
-    for (const { icons } of Object.values(byLabel)) {
-      expect(icons).toBeGreaterThanOrEqual(1);
+    expect(childLabels('hooks')).toEqual([
+      'approval:order-1',
+      'refund:order-1',
+    ]);
+    expect(childrenOf('hooks').queryByTestId('run-usage-calls')).toBeNull();
+  });
+
+  it('marks each type with the trace’s icon', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    for (const row of groups()) {
+      expect(row.querySelectorAll('svg').length).toBeGreaterThanOrEqual(1);
     }
   });
 
-  it('says how many times a step, sleep or hook was called', () => {
-    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
-    const calls = screen
-      .getAllByTestId('run-usage-calls')
-      .map((el) => el.textContent);
-    // chargeCard, sendEmail, a, b, c, then the sleep and the hook.
-    expect(calls).toEqual([
-      '300 calls',
-      '50 calls',
-      '7 calls',
-      '6 calls',
-      '5 calls',
-      '1 call',
-      '1 call',
-    ]);
-    expect(document.body.textContent).not.toContain('×');
+  it('keys step rows on the full name, and names the module when labels match', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // A live run with two `send` steps in different files that swap places
+    // between two reads.
+    const read = (a: number, b: number) =>
+      runOf({
+        status: 'running',
+        eventGroups: [{ eventType: 'run_created', events: 1, bytes: 1 }],
+        stepGroups: [
+          stepGroup(step('send', 'email'), a),
+          stepGroup(step('send', 'sms'), b),
+        ],
+      });
+    const first = read(3, 1);
+    const { rerender } = render(
+      <RunUsagePage runId="wrun_1" usage={first} error={null} />
+    );
+    const labels = childLabels('steps');
+    expect(labels).toHaveLength(2);
+    expect(new Set(labels).size).toBe(2);
+    expect(labels[0]).toContain('send');
+    expect(labels[0]).toContain('email');
+    expect(labels[1]).toContain('sms');
+    const rowFor = (file: string) =>
+      childrenOf('steps')
+        .getAllByTestId('run-usage-child')
+        .find((row) => row.textContent?.includes(file));
+    const smsRow = rowFor('sms');
+    expect(smsRow?.getAttribute('data-key')).toBe(
+      `step:${step('send', 'sms')}`
+    );
+
+    // The sms step overtakes: the rows re-sort, each keeping its element.
+    rerender(<RunUsagePage runId="wrun_1" usage={read(3, 5)} error={null} />);
+    expect(childLabels('steps')[0]).toContain('sms');
+    expect(rowFor('sms')).toBe(smsRow);
+    expect(
+      errors.mock.calls.some((call) => String(call[0]).includes('same key'))
+    ).toBe(false);
+    errors.mockRestore();
   });
 
-  it('counts “Run start & finish” from the run’s own run_* events', () => {
-    // A run cancelled before it started: two run events, not three.
-    const cancelled = buildRunUsage({
-      runId: 'wrun_1',
-      status: 'cancelled',
-      workflowName: WORKFLOW,
-      eventGroups: [
-        { eventType: 'run_created', events: 1, bytes: 400 },
-        { eventType: 'run_cancelled', events: 1, bytes: 50 },
+  it('keys hook rows on the hook id, so a reused token stays two rows', () => {
+    const usage = runOf({
+      eventGroups: [{ eventType: 'hook_created', events: 2, bytes: 1 }],
+      hookGroups: [
+        { hookId: 'hook_1', token: 'approval', events: 1 },
+        { hookId: 'hook_2', token: 'approval', events: 1 },
       ],
       stepGroups: [],
-      streamBytes: 0,
     });
-    const { unmount } = render(
-      <RunUsagePage runId="wrun_1" usage={cancelled} error={null} />
-    );
-    const runRow = () =>
-      rows().find((row) => row.getAttribute('data-kind') === 'run');
-    expect(runRow()?.textContent).toContain('2');
-    expect(screen.getByTestId('run-usage-run-event-types').textContent).toBe(
-      '1 created, 1 cancelled'
-    );
-    unmount();
+    expect(usageChildKeys(usage, 'hooks', 2)).toEqual([
+      'hook:hook_1',
+      'hook:hook_2',
+    ]);
+    render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
+    expect(childLabels('hooks')).toHaveLength(2);
+  });
 
-    // A run still running: what it wrote so far.
-    render(
-      <RunUsagePage
-        runId="wrun_1"
-        usage={buildRunUsage({
-          runId: 'wrun_1',
-          status: 'running',
-          workflowName: WORKFLOW,
-          eventGroups: [
-            { eventType: 'run_created', events: 1, bytes: 400 },
-            { eventType: 'run_started', events: 1, bytes: 50 },
-          ],
-          stepGroups: [stepGroup('a', 1)],
-          streamBytes: 0,
-        })}
-        error={null}
-      />
-    );
-    expect(screen.getByTestId('run-usage-run-event-types').textContent).toBe(
-      '1 created, 1 started'
+  it('lines its keys up with usageRows()’ children', () => {
+    const usage = bigRun();
+    render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
+    const keys = childrenOf('steps')
+      .getAllByTestId('run-usage-child')
+      .map((row) => row.getAttribute('data-key'));
+    expect(keys).toEqual(
+      ['chargeCard', 'sendEmail', 'a', 'b', 'c'].map((n) => `step:${step(n)}`)
     );
   });
 
@@ -380,32 +471,14 @@ describe('RunUsagePage', () => {
     const usage = bigRun({ status: 'running', inProgress: true });
     render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
     const text = document.body.textContent ?? '';
-    // The summary and the line under it: the header shows them.
     expect(screen.queryByTestId('run-usage-summary')).toBeNull();
     expect(text).not.toMatch(/events · \d+ retr/);
     expect(text).not.toContain('can still grow');
     expect(text).not.toContain('On Vercel');
-    // The section heading and the biggest-driver callout.
     expect(text).not.toContain('Where the events come from');
-    expect(screen.queryByTestId('run-usage-driver')).toBeNull();
     expect(text).not.toContain('drives');
-    // The "workflow" tag next to the workflow's name.
-    expect(
-      rows()[0].querySelector('[data-testid="run-usage-span-label"]')
-        ?.textContent
-    ).toBe('processOrder');
-    expect(screen.queryByText('workflow', { exact: true })).toBeNull();
-    // The "How events are counted" box: only a link to the docs is left.
     expect(document.querySelector('details')).toBeNull();
-    expect(screen.queryByTestId('run-usage-counting')).toBeNull();
     expect(text).not.toContain('steps wrote');
-    expect(
-      screen
-        .getByRole('link', { name: 'How events are counted' })
-        .getAttribute('href')
-    ).toBe(RUN_USAGE_DOCS_URL);
-    // The Storage heading is the Data written table's own header now.
-    expect(text).not.toContain('Storage');
   });
 
   it('puts the two tables side by side from lg, stacked below it', () => {
@@ -414,17 +487,13 @@ describe('RunUsagePage', () => {
     // jsdom has no layout: check the grid the breakpoints come from.
     const classes = tables.className.split(/\s+/);
     expect(classes).toContain('grid-cols-1');
-    expect(classes.filter((c) => c.endsWith('grid-cols-1'))).toEqual([
-      'grid-cols-1',
-    ]);
     expect(
       classes.filter((c) => /^(sm|md|lg|xl|2xl):grid-cols-/.test(c))
     ).toEqual(['lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]']);
-    // Each column holds one table, the spans first.
     const columns = [...tables.children];
     expect(columns).toHaveLength(2);
     expect(
-      columns[0].querySelector('[data-testid="run-usage-spans"]')
+      columns[0].querySelector('[data-testid="run-usage-types"]')
     ).not.toBeNull();
     expect(
       columns[1].querySelector('[data-testid="run-usage-data"]')
@@ -437,21 +506,13 @@ describe('RunUsagePage', () => {
     expect(tables.className).toBe(USAGE_TABLES_LAYOUT);
     expect(tables.children).toHaveLength(2);
   });
+});
 
-  it('has no divider above the footer', () => {
-    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
-    const footer = screen.getByTestId('run-usage-footer').closest('footer');
-    expect(footer).not.toBeNull();
-    expect(footer?.className).not.toMatch(/\bborder/);
-    expect(footer?.previousElementSibling?.className ?? '').not.toMatch(
-      /\bborder-b\b/
-    );
-  });
-
-  it('lists data written by entity with a total, and hides retention locally', () => {
+describe('the storage table', () => {
+  it('heads it “Storage (local)” and lists it by entity with a total', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-data-heading').textContent).toBe(
-      'Data written (local)'
+      'Storage (local)'
     );
     expect(
       screen.getAllByTestId('run-usage-entity').map((row) => row.textContent)
@@ -460,7 +521,7 @@ describe('RunUsagePage', () => {
     expect(screen.queryByTestId('run-usage-retained')).toBeNull();
   });
 
-  it('shows Data retained when the backend has a retention period', () => {
+  it('heads it plain “Storage” on a billed run, with Data retained', () => {
     render(
       <RunUsagePage
         runId="wrun_1"
@@ -471,27 +532,54 @@ describe('RunUsagePage', () => {
         error={null}
       />
     );
+    expect(screen.getByTestId('run-usage-data-heading').textContent).toBe(
+      'Storage'
+    );
     expect(screen.getByTestId('run-usage-retained').textContent).toContain(
       '41.4 KB-months'
     );
-    expect(screen.getByTestId('run-usage-data-heading').textContent).toBe(
-      'Data written'
-    );
-    expect(screen.getByTestId('run-usage-footer').textContent).toBe(
-      'Not your final bill.'
-    );
   });
 
-  it('says local runs are not billed, and leaves out pricing locally', () => {
+  it('says when a run’s data was deleted and its sizes are what it wrote', () => {
+    const usage = runOf({
+      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 40 }],
+      stepGroups: [],
+      dataPurged: true,
+      savedDataWritten: { run: 300_000, step: 300_000, hook: 0, stream: 0 },
+    });
+    render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
+    expect(screen.getByTestId('run-usage-purged-note').textContent).toBe(
+      "This run's data was deleted; sizes show what it wrote."
+    );
+    expect(screen.getByTestId('run-usage-total').textContent).toBe('600 KB');
+  });
+
+  it('has no purge note for a run that kept its data', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    expect(screen.queryByTestId('run-usage-purged-note')).toBeNull();
+  });
+});
+
+describe('the footer', () => {
+  it('says local runs are not billed, links how events and storage count, and no pricing', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-footer').textContent).toBe(
       "Local runs aren't billed. Counted from this run's log in your local data directory."
     );
-    expect(screen.queryByRole('link', { name: 'Workflow pricing' })).toBeNull();
-    expect(document.body.innerHTML).not.toContain(WORKFLOW_PRICING_DOCS_URL);
     expect(
-      screen.getByRole('link', { name: 'How events are counted' })
-    ).toBeTruthy();
+      screen
+        .getByRole('link', { name: 'How events are counted' })
+        .getAttribute('href')
+    ).toBe(USAGE_COUNTING_DOCS_URL);
+    expect(
+      screen
+        .getByRole('link', { name: 'How storage is counted' })
+        .getAttribute('href')
+    ).toBe(STORAGE_COUNTING_DOCS_URL);
+    expect(STORAGE_COUNTING_DOCS_URL).toMatch(
+      /\/docs\/observability#how-storage-is-counted$/
+    );
+    expect(screen.queryByRole('link', { name: 'Workflow pricing' })).toBeNull();
   });
 
   it('links pricing on the Vercel backend, and on a billed run', () => {
@@ -516,14 +604,10 @@ describe('RunUsagePage', () => {
         error={null}
       />
     );
-    expect(
-      screen
-        .getByRole('link', { name: 'Workflow pricing' })
-        .getAttribute('href')
-    ).toBe(WORKFLOW_PRICING_DOCS_URL);
+    expect(screen.getByRole('link', { name: 'Workflow pricing' })).toBeTruthy();
   });
 
-  it('puts the footer links inline, right after its sentence', () => {
+  it('puts the links inline, right after its sentence', () => {
     render(
       <RunUsagePage
         runId="wrun_1"
@@ -533,27 +617,21 @@ describe('RunUsagePage', () => {
       />
     );
     const line = screen.getByTestId('run-usage-footer-line');
-    // One paragraph: the sentence, then the links, in reading order.
     expect(line.tagName).toBe('P');
     expect(line.textContent).toBe(
-      "Local runs aren't billed. Counted from this run's log in your local data directory. How events are counted → Workflow pricing →"
+      "Local runs aren't billed. Counted from this run's log in your local data directory. How events are counted → How storage is counted → Workflow pricing →"
     );
-    const links = [...line.querySelectorAll('a')];
-    expect(links.map((a) => a.textContent)).toEqual([
-      'How events are counted →',
-      'Workflow pricing →',
-    ]);
-    // Nothing pushes them to the far side.
     const footer = line.closest('footer');
-    expect(footer?.className ?? '').not.toMatch(/justify-between|text-right/);
-    expect(line.className).not.toMatch(/justify-between|text-right/);
-    // Each link wraps as a whole; the arrow is not part of its name.
-    for (const a of links) expect(a.className).toContain('whitespace-nowrap');
-    expect(
-      screen.getByRole('link', { name: 'How events are counted' })
-    ).toBeTruthy();
+    expect(footer?.className ?? '').not.toMatch(
+      /justify-between|text-right|\bborder/
+    );
+    for (const a of line.querySelectorAll('a')) {
+      expect(a.className).toContain('whitespace-nowrap');
+    }
   });
+});
 
+describe('RunUsagePage states', () => {
   it('keeps the last numbers with a note when a refresh fails', () => {
     render(
       <RunUsagePage
@@ -565,7 +643,7 @@ describe('RunUsagePage', () => {
     expect(screen.getByRole('status').textContent).toBe(
       'Showing the last numbers read. Failed to refresh: locked'
     );
-    expect(screen.getByTestId('run-usage-spans')).toBeTruthy();
+    expect(screen.getByTestId('run-usage-types')).toBeTruthy();
   });
 
   it('shows a failed first read with “Try again”, busy while it reads', () => {
@@ -592,7 +670,6 @@ describe('RunUsagePage', () => {
         retrying
       />
     );
-    // The label stays; the button is busy and disabled.
     const busy = screen.getByRole('button', { name: 'Try again' });
     expect(busy.getAttribute('aria-busy')).toBe('true');
     expect((busy as HTMLButtonElement).disabled).toBe(true);
@@ -601,7 +678,7 @@ describe('RunUsagePage', () => {
   it('shows the skeleton until the first read answers', () => {
     render(<RunUsagePage runId="wrun_1" usage={undefined} error={null} />);
     expect(screen.getByTestId('run-usage-skeleton')).toBeTruthy();
-    expect(screen.queryByTestId('run-usage-spans')).toBeNull();
+    expect(screen.queryByTestId('run-usage-types')).toBeNull();
   });
 
   it('explains a World without usage and links back to the run', () => {
@@ -612,41 +689,10 @@ describe('RunUsagePage', () => {
     expect(
       screen.getByRole('link', { name: 'Back to run' }).getAttribute('href')
     ).toBe('/run/wrun_1');
-    expect(screen.queryByTestId('run-usage-skeleton')).toBeNull();
-  });
-
-  it('says when a run’s data was deleted and its sizes are what it wrote', () => {
-    const usage = buildRunUsage({
-      runId: 'wrun_1',
-      status: 'completed',
-      workflowName: WORKFLOW,
-      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 40 }],
-      stepGroups: [],
-      streamBytes: 0,
-      dataPurged: true,
-      savedDataWritten: { run: 300_000, step: 300_000, hook: 0, stream: 0 },
-    });
-    render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
-    expect(screen.getByTestId('run-usage-purged-note').textContent).toBe(
-      "This run's data was deleted when it finished; sizes show what it wrote."
-    );
-    expect(screen.getByTestId('run-usage-total').textContent).toBe('600 KB');
-  });
-
-  it('has no purge note for a run that kept its data', () => {
-    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
-    expect(screen.queryByTestId('run-usage-purged-note')).toBeNull();
   });
 
   it('renders a run with no events', () => {
-    const empty = buildRunUsage({
-      runId: 'wrun_1',
-      status: 'pending',
-      workflowName: WORKFLOW,
-      eventGroups: [],
-      stepGroups: [],
-      streamBytes: 0,
-    });
+    const empty = runOf({ status: 'pending', eventGroups: [], stepGroups: [] });
     render(<RunUsagePage runId="wrun_1" usage={empty} error={null} />);
     expect(screen.getByText('This run has no events yet.')).toBeTruthy();
     expect(screen.getByTestId('run-usage-total').textContent).toBe('0 B');

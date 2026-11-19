@@ -10,8 +10,6 @@ import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
-  formatLocalDataWrittenNote,
-  formatOtherSteps,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
@@ -19,19 +17,29 @@ import {
   RUN_USAGE_RUN_EVENT_TYPES,
   type RunUsage,
   type RunUsageEntity,
-  type RunUsageSpanKind,
-  type UsageSpanTreeRow,
-  usageSpanTree,
+  USAGE_COUNTING_DOCS_URL,
+  USAGE_ROW_TYPE_LABELS,
+  type UsageRow,
+  type UsageRowGroup,
+  type UsageRowType,
+  usageRows,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
-import { AlertCircle, HelpCircle, RotateCw } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { AlertCircle, ChevronRight, HelpCircle, RotateCw } from 'lucide-react';
+import { type ReactNode, useId, useState } from 'react';
 import { Link } from 'react-router';
 import { Skeleton } from './ui/skeleton';
 
-/** The docs section that explains how a run's usage is counted. */
-export const RUN_USAGE_DOCS_URL =
-  'https://workflow-sdk.dev/docs/observability#run-usage';
+/** The docs section on what a run's storage counts. */
+export const STORAGE_COUNTING_DOCS_URL =
+  'https://workflow-sdk.dev/docs/observability#how-storage-is-counted';
+
+/**
+ * What a local run's storage counts, for the header's tooltip. The docs
+ * section ({@link STORAGE_COUNTING_DOCS_URL}) has the detail.
+ */
+export const LOCAL_STORAGE_NOTE =
+  "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code.";
 
 /** The run's Usage page. */
 export function runUsagePath(runId: string): string {
@@ -51,42 +59,25 @@ const ENTITY_LABELS: Record<RunUsageEntity, string> = {
 };
 
 /**
- * The trace's icon for each kind of row, mapped the way the Events tab maps
+ * The trace's icon for each row type, mapped the way the Events tab maps
  * event types: `run_*` and `attr_set` are the run's own (workflow icon),
  * sleeps are `sleep`, unknown event types get the generic icon.
  */
-const ROW_RESOURCE: Record<RunUsageSpanKind, string> = {
-  run: 'run',
+const ROW_RESOURCE: Record<UsageRowType, string> = {
+  steps: 'step',
+  hooks: 'hook',
   attributes: 'run',
-  step: 'step',
-  wait: 'sleep',
-  hook: 'hook',
+  sleeps: 'sleep',
+  run: 'run',
   other: 'event',
 };
 
-const ROW_TYPE_NAME: Record<RunUsageSpanKind, string> = {
-  run: 'Workflow',
-  attributes: 'Workflow',
-  step: 'Step',
-  wait: 'Sleep',
-  hook: 'Hook',
-  other: 'Event',
-};
-
-/** Rows whose `calls` is a count worth showing: step, sleep and hook calls. */
-const SHOWS_CALLS: ReadonlySet<RunUsageSpanKind> = new Set([
-  'step',
-  'wait',
-  'hook',
-]);
-
-/** The trace's type icon, with the type named for screen readers. */
-function RowIcon({ kind }: { kind: RunUsageSpanKind }) {
+/** The trace's type icon. The row's visible type names it. */
+function RowIcon({ type }: { type: UsageRowType }) {
   return (
-    <>
-      <ResourceIcon resource={ROW_RESOURCE[kind]} />
-      <span className="sr-only">{ROW_TYPE_NAME[kind]}:</span>
-    </>
+    <span className="flex h-[18px] shrink-0 items-center" aria-hidden="true">
+      <ResourceIcon resource={ROW_RESOURCE[type]} />
+    </span>
   );
 }
 
@@ -102,14 +93,20 @@ function RetryBadge({ retries }: { retries: number }) {
   );
 }
 
-function CallsCount({ calls }: { calls: number }) {
-  if (calls <= 0) return null;
+/** Secondary text after a row's name: calls, hooks, writes, event types. */
+function RowDetail({
+  children,
+  testId,
+}: {
+  children: ReactNode;
+  testId: string;
+}) {
   return (
     <span
       className="whitespace-nowrap font-sans text-label-12 text-gray-700"
-      data-testid="run-usage-calls"
+      data-testid={testId}
     >
-      {formatCount(calls, 'call', 'calls')}
+      {children}
     </span>
   );
 }
@@ -154,15 +151,16 @@ export function usageVisible(
 const UNAVAILABLE = '—';
 
 /**
- * `Data written (local)` on a run that is not billed. Before the first read
- * answers, the backend decides: only the Local World shows the field then.
+ * `Storage (local)` on a run that is not billed, `Storage` on one that is.
+ * Before the first read answers, the backend decides: only the Local World
+ * shows the field then.
  */
 export function dataWrittenLabel(
   usage: RunUsage | undefined,
   isLocalBackend: boolean
 ): string {
   if (usage) return formatDataWrittenHeading(usage);
-  return isLocalBackend ? 'Data written (local)' : 'Data written';
+  return isLocalBackend ? 'Storage (local)' : 'Storage';
 }
 
 const failedMessage = (error: Error) =>
@@ -208,7 +206,7 @@ function HeaderFigure({
 }
 
 /**
- * The run header's Events and Data written figures, from the World's count
+ * The run header's Events and Storage figures, from the World's count
  * of the whole run (not the events this page has loaded). Both open the
  * run's Usage page. Until the first read answers they are placeholders; if
  * it failed, they say so (the error is in the tooltip and, in full, on the
@@ -230,7 +228,7 @@ export function RunUsageHeaderStats({
 }) {
   const failed = !usage && error !== null;
   const failedTitle = failed ? failedMessage(error) : undefined;
-  const localNote = usage ? formatLocalDataWrittenNote(usage) : null;
+  const localNote = usage && !usage.billed ? LOCAL_STORAGE_NOTE : null;
   const to = runUsagePath(runId);
   const label = dataWrittenLabel(usage, isLocalBackend);
   const events = usage ? usage.events.toLocaleString('en-US') : UNAVAILABLE;
@@ -240,29 +238,19 @@ export function RunUsageHeaderStats({
       <div className="flex flex-col gap-1">
         <div className="text-xs text-muted-foreground">Events</div>
         {usage || failed ? (
-          <div className="flex items-baseline gap-1.5">
-            <HeaderFigure
-              to={to}
-              onUsagePage={onUsagePage}
-              label={
-                usage
-                  ? `${formatCount(usage.events, 'event', 'events')}, open usage`
-                  : 'Events unavailable, open usage'
-              }
-              title={failedTitle}
-              testId="run-usage-events"
-            >
-              {events}
-            </HeaderFigure>
-            {usage && usage.retries.count > 0 && (
-              <span
-                className="text-xs text-gray-900"
-                data-testid="run-usage-header-retries"
-              >
-                {formatCount(usage.retries.count, 'retry', 'retries')}
-              </span>
-            )}
-          </div>
+          <HeaderFigure
+            to={to}
+            onUsagePage={onUsagePage}
+            label={
+              usage
+                ? `${formatCount(usage.events, 'event', 'events')}, open usage`
+                : 'Events unavailable, open usage'
+            }
+            title={failedTitle}
+            testId="run-usage-events"
+          >
+            {events}
+          </HeaderFigure>
         ) : (
           <Skeleton className="w-[40px] h-[20px]" />
         )}
@@ -329,58 +317,69 @@ export function formatRunEventTypes(usage: RunUsage): string | null {
 
 const CELL = 'py-2 pr-4';
 
-function SpanRow({
-  kind,
-  label,
-  detail,
+const TABLE_HEAD_ROW =
+  'text-label-12 text-gray-900 border-b border-gray-alpha-400';
+
+/** What a group row says after its type: `9 calls`, `3 hooks`, `1 write`. */
+function groupDetail(group: UsageRowGroup, usage: RunUsage): string | null {
+  switch (group.type) {
+    case 'steps':
+      return formatCount(group.calls, 'call', 'calls');
+    case 'hooks':
+      return formatCount(group.calls, 'hook', 'hooks');
+    case 'attributes':
+      return formatCount(group.calls, 'write', 'writes');
+    case 'sleeps':
+      return formatCount(group.calls, 'sleep', 'sleeps');
+    case 'run':
+      return formatRunEventTypes(usage);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Stable keys for a group's child rows: the step's full name, or the hook's
+ * id (a token can be reused by a later hook), never the short label, which
+ * two step functions in different files can share. `usageRows()` lists a
+ * group's children in the order of `usage.eventsBySpan`, filtered to the
+ * group's kind, so the i-th child is the i-th span of that kind.
+ */
+export function usageChildKeys(
+  usage: RunUsage,
+  type: 'steps' | 'hooks',
+  count: number
+): string[] {
+  const kind = type === 'steps' ? 'step' : 'hook';
+  return usage.eventsBySpan
+    .filter((span) => span.kind === kind)
+    .slice(0, count)
+    .map((span) =>
+      kind === 'hook' ? `hook:${span.id ?? span.name}` : `step:${span.name}`
+    );
+}
+
+/** The Events, share and retries cells every row has. */
+function CountCells({
   row,
-  indent = true,
-  muted = false,
+  emphasis = false,
 }: {
-  kind: RunUsageSpanKind;
-  label: ReactNode;
-  /** Secondary text after the label: calls, or the run's event types. */
-  detail?: ReactNode;
-  row: Pick<UsageSpanTreeRow, 'events' | 'share' | 'retries'>;
-  indent?: boolean;
-  muted?: boolean;
+  row: Pick<UsageRow, 'events' | 'share' | 'retries'>;
+  emphasis?: boolean;
 }) {
   return (
-    <tr
-      className="border-b border-gray-alpha-200"
-      data-testid="run-usage-span"
-      data-kind={kind}
-    >
-      <td className={cn(CELL, indent && 'pl-6')}>
-        <div className="flex min-w-0 items-start gap-2">
-          <span className="flex h-[18px] shrink-0 items-center">
-            <RowIcon kind={kind} />
-          </span>
-          <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-            <span
-              className={cn(
-                'min-w-0 [overflow-wrap:anywhere]',
-                muted ? 'text-gray-900' : 'font-mono text-gray-1000'
-              )}
-              data-testid="run-usage-span-label"
-            >
-              {label}
-            </span>
-            {detail}
-          </span>
-        </div>
-      </td>
+    <>
       <td
         className={cn(
           CELL,
           'text-right tabular-nums',
-          muted && 'text-gray-900'
+          emphasis && 'font-medium'
         )}
       >
         {row.events.toLocaleString('en-US')}
       </td>
       <td className={cn(CELL, 'hidden sm:table-cell')}>
-        <ShareBar share={row.share} muted={muted} />
+        <ShareBar share={row.share} />
       </td>
       <td className={cn(CELL, 'text-right tabular-nums text-gray-900')}>
         {formatUsageShare(row.share)}
@@ -388,31 +387,164 @@ function SpanRow({
       <td className="py-2">
         <RetryBadge retries={row.retries} />
       </td>
-    </tr>
+    </>
   );
 }
 
-const TABLE_HEAD_ROW =
-  'text-label-12 text-gray-900 border-b border-gray-alpha-400';
+const TOGGLE =
+  '-my-[3px] -ml-1 flex min-w-0 items-start gap-2 rounded-sm py-[3px] pl-1 pr-1 text-left focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]';
 
 /**
- * The workflow, its steps (biggest first, the rest folded into "+ N other
- * steps"), then the built-in rows: the run's own events, attributes,
- * sleeps, hooks and unknown events.
+ * One type of the table: its row, and for Steps and Hooks the rows under it
+ * (each step function, each hook), behind a toggle that starts expanded.
  */
-function SpansTable({ usage }: { usage: RunUsage }) {
-  const [expanded, setExpanded] = useState(false);
-  const tree = usageSpanTree(
-    usage,
-    expanded ? Number.POSITIVE_INFINITY : undefined
+function UsageGroup({
+  group,
+  usage,
+  idPrefix,
+}: {
+  group: UsageRowGroup;
+  usage: RunUsage;
+  idPrefix: string;
+}) {
+  const expandable = group.type === 'steps' || group.type === 'hooks';
+  const [expanded, setExpanded] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+  const label = USAGE_ROW_TYPE_LABELS[group.type];
+  const detail = groupDetail(group, usage);
+  const childrenId = `${idPrefix}-${group.type}`;
+  // "+ N other steps" opens the rest: read the group again without a limit.
+  const shown =
+    expandable && showAll
+      ? (usageRows(usage, Number.POSITIVE_INFINITY).find(
+          (g) => g.type === group.type
+        ) ?? group)
+      : group;
+  const keys = expandable
+    ? usageChildKeys(
+        usage,
+        group.type as 'steps' | 'hooks',
+        shown.children.length
+      )
+    : [];
+  const name = (
+    <>
+      <RowIcon type={group.type} />
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+        <span
+          className="font-medium text-gray-1000"
+          data-testid="run-usage-type-label"
+        >
+          {label}
+        </span>
+        {detail && (
+          <RowDetail testId="run-usage-group-detail">{detail}</RowDetail>
+        )}
+      </span>
+    </>
   );
-  const runEventTypes = formatRunEventTypes(usage);
+  return (
+    <>
+      <tbody>
+        <tr
+          className="border-b border-gray-alpha-200"
+          data-testid="run-usage-group"
+          data-type={group.type}
+        >
+          <td className={CELL}>
+            {expandable ? (
+              <button
+                type="button"
+                className={TOGGLE}
+                aria-expanded={expanded}
+                aria-controls={childrenId}
+                onClick={() => setExpanded((value) => !value)}
+                data-testid="run-usage-toggle"
+              >
+                <span className="flex h-[18px] shrink-0 items-center">
+                  <ChevronRight
+                    className={cn(
+                      'h-4 w-4 text-gray-900 motion-safe:transition-transform',
+                      expanded && 'rotate-90'
+                    )}
+                    aria-hidden="true"
+                  />
+                </span>
+                {name}
+              </button>
+            ) : (
+              // Lines up with the toggles' labels: a chevron's width in.
+              <div className="flex min-w-0 items-start gap-2 pl-6">{name}</div>
+            )}
+          </td>
+          <CountCells row={group} emphasis />
+        </tr>
+      </tbody>
+      {expandable && (
+        <tbody
+          id={childrenId}
+          hidden={!expanded}
+          data-testid="run-usage-children"
+          data-type={group.type}
+        >
+          {shown.children.map((child, i) => (
+            <tr
+              key={keys[i] ?? `${group.type}:${i}`}
+              className="border-b border-gray-alpha-200"
+              data-testid="run-usage-child"
+              data-key={keys[i]}
+            >
+              <td className={cn(CELL, 'pl-12')}>
+                <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+                  <span
+                    className="min-w-0 font-mono text-gray-1000 [overflow-wrap:anywhere]"
+                    data-testid="run-usage-child-label"
+                  >
+                    {child.label}
+                  </span>
+                  {group.type === 'steps' && (
+                    <RowDetail testId="run-usage-calls">
+                      {formatCount(child.calls, 'call', 'calls')}
+                    </RowDetail>
+                  )}
+                </span>
+              </td>
+              <CountCells row={child} />
+            </tr>
+          ))}
+          {shown.otherChildren && (
+            <tr className="border-b border-gray-alpha-200">
+              <td className={cn(CELL, 'pl-12')}>
+                <button
+                  type="button"
+                  className="-my-[3px] rounded-sm py-[3px] text-gray-900 hover:text-gray-1000 underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
+                  onClick={() => setShowAll(true)}
+                >
+                  {shown.otherChildren.label}
+                </button>
+              </td>
+              <CountCells row={shown.otherChildren} />
+            </tr>
+          )}
+        </tbody>
+      )}
+    </>
+  );
+}
+
+/**
+ * The run's events by type, the table `workflow inspect run --usage` prints:
+ * Steps (each step function under it), Hooks (each hook, by token), then
+ * Attributes, Sleeps and Run. Only the types the run has.
+ */
+function UsageTable({ usage }: { usage: RunUsage }) {
+  const idPrefix = useId();
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-copy-13" data-testid="run-usage-spans">
+      <table className="w-full text-copy-13" data-testid="run-usage-types">
         <thead>
           <tr className={TABLE_HEAD_ROW}>
-            <th className={cn(CELL, 'text-left font-medium')}>Span</th>
+            <th className={cn(CELL, 'text-left font-medium')}>Type</th>
             <th className={cn(CELL, 'text-right font-medium')}>Events</th>
             <th className={cn(CELL, 'hidden w-1/4 sm:table-cell')}>
               <span className="sr-only">Share of Events</span>
@@ -423,102 +555,20 @@ function SpansTable({ usage }: { usage: RunUsage }) {
             </th>
           </tr>
         </thead>
-        <tbody>
-          <tr
-            className="border-b border-gray-alpha-200"
-            data-testid="run-usage-span"
-            data-kind="workflow"
-          >
-            <td className={CELL}>
-              <div className="flex min-w-0 items-center gap-2">
-                <RowIcon kind="run" />
-                <span
-                  className="min-w-0 font-mono font-medium text-gray-1000 [overflow-wrap:anywhere]"
-                  data-testid="run-usage-span-label"
-                >
-                  {tree.workflow.label}
-                </span>
-              </div>
-            </td>
-            <td className={cn(CELL, 'text-right tabular-nums font-medium')}>
-              {tree.workflow.events.toLocaleString('en-US')}
-            </td>
-            <td className="hidden sm:table-cell" />
-            <td colSpan={2} />
-          </tr>
-          {tree.steps.map((row) => (
-            <SpanRow
-              key={`step:${row.label}`}
-              kind="step"
-              label={row.label}
-              detail={<CallsCount calls={row.calls} />}
-              row={row}
-            />
-          ))}
-          {tree.otherSteps && (
-            <tr className="border-b border-gray-alpha-200">
-              <td className={cn(CELL, 'pl-6')}>
-                <button
-                  type="button"
-                  className="-my-[3px] rounded-sm py-[3px] text-gray-900 hover:text-gray-1000 underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
-                  onClick={() => setExpanded(true)}
-                >
-                  {formatOtherSteps(tree.otherSteps.steps)}
-                </button>
-              </td>
-              <td className={cn(CELL, 'text-right tabular-nums')}>
-                {tree.otherSteps.events.toLocaleString('en-US')}
-              </td>
-              <td className={cn(CELL, 'hidden sm:table-cell')}>
-                <ShareBar share={tree.otherSteps.share} />
-              </td>
-              <td className={cn(CELL, 'text-right tabular-nums text-gray-900')}>
-                {formatUsageShare(tree.otherSteps.share)}
-              </td>
-              <td className="py-2">
-                <RetryBadge retries={tree.otherSteps.retries} />
-              </td>
-            </tr>
-          )}
-          {tree.showBuiltInLabel && (
-            <tr>
-              <td
-                colSpan={5}
-                className="pt-3 pb-1 pl-6 text-label-12 text-gray-700"
-                data-testid="run-usage-built-in-label"
-              >
-                Built-in
-              </td>
-            </tr>
-          )}
-          {tree.builtIns.map((row) => (
-            <SpanRow
-              key={`${row.kind}:${row.label}`}
-              kind={row.kind}
-              label={row.label}
-              row={row}
-              muted
-              detail={
-                row.kind === 'run' && runEventTypes ? (
-                  <span
-                    className="font-sans text-label-12 text-gray-700"
-                    data-testid="run-usage-run-event-types"
-                  >
-                    {runEventTypes}
-                  </span>
-                ) : SHOWS_CALLS.has(row.kind) ? (
-                  <CallsCount calls={row.calls} />
-                ) : undefined
-              }
-            />
-          ))}
-        </tbody>
+        {usageRows(usage).map((group) => (
+          <UsageGroup
+            key={group.type}
+            group={group}
+            usage={usage}
+            idPrefix={idPrefix}
+          />
+        ))}
       </table>
     </div>
   );
 }
 
-/** The run's data written, by entity, with the total. */
+/** The run's storage, by entity, with the total. */
 function DataWrittenTable({ usage }: { usage: RunUsage }) {
   const purgedNote = formatDataPurgedNote(usage);
   return (
@@ -576,7 +626,7 @@ function DataWrittenTable({ usage }: { usage: RunUsage }) {
             {formatUsageBytes(usage.dataRetained.byteMonths)}-months
           </div>
           <div className="text-copy-13 text-gray-900">
-            Data written × {usage.dataRetained.retentionMonths} month retention
+            Storage × {usage.dataRetained.retentionMonths} month retention
           </div>
         </div>
       )}
@@ -596,13 +646,13 @@ function UsageTables({ spans, data }: { spans: ReactNode; data: ReactNode }) {
     <div className={USAGE_TABLES_LAYOUT} data-testid="run-usage-tables">
       <section aria-labelledby="run-usage-spans-heading" className="min-w-0">
         <h2 id="run-usage-spans-heading" className="sr-only">
-          Events by span
+          Events by type
         </h2>
         {spans}
       </section>
       <section aria-labelledby="run-usage-data-section" className="min-w-0">
         <h2 id="run-usage-data-section" className="sr-only">
-          Data written
+          Storage
         </h2>
         {data}
       </section>
@@ -630,9 +680,11 @@ export function RunUsagePageSkeleton() {
             <div className="flex h-[33px] items-center border-b border-gray-alpha-400">
               <Skeleton className="h-3 w-12" />
             </div>
-            {skeletonRow(0, ['w-48', 'w-10'])}
-            {[1, 2, 3, 4].map((i) => skeletonRow(i, ['w-40 ml-6', 'w-10']))}
-            {skeletonRow(5, ['w-36 ml-6', 'w-10'])}
+            {skeletonRow(0, ['w-28 ml-6', 'w-10'])}
+            {[1, 2, 3].map((i) => skeletonRow(i, ['w-40 ml-12', 'w-10']))}
+            {skeletonRow(4, ['w-28 ml-6', 'w-10'])}
+            {skeletonRow(5, ['w-40 ml-12', 'w-10'])}
+            {[6, 7, 8].map((i) => skeletonRow(i, ['w-24 ml-6', 'w-10']))}
           </div>
         }
         data={
@@ -677,12 +729,20 @@ function UsageFooter({
           )}
         </span>{' '}
         <a
-          href={RUN_USAGE_DOCS_URL}
+          href={USAGE_COUNTING_DOCS_URL}
           target="_blank"
           rel="noopener noreferrer"
           className={FOOTER_LINK}
         >
           How events are counted<span aria-hidden="true"> →</span>
+        </a>{' '}
+        <a
+          href={STORAGE_COUNTING_DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={FOOTER_LINK}
+        >
+          How storage is counted<span aria-hidden="true"> →</span>
         </a>
         {showPricing && (
           <>
@@ -734,7 +794,7 @@ export function RunUsagePage({
           This World doesn’t count run usage.
         </p>
         <p className="text-copy-13 text-gray-900">
-          A run’s events and data written are counted on the Local World.
+          A run’s events and storage are counted on the Local World.
         </p>
         <Link
           to={runPath(runId)}
@@ -781,7 +841,7 @@ export function RunUsagePage({
       <UsageTables
         spans={
           usage.eventsBySpan.length > 0 ? (
-            <SpansTable usage={usage} />
+            <UsageTable usage={usage} />
           ) : (
             <p className="text-copy-13 text-gray-900">
               This run has no events yet.

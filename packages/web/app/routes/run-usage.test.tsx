@@ -226,10 +226,10 @@ describe('the Usage route', () => {
     expect(fetchRunUsage).toHaveBeenCalledTimes(1);
   });
 
-  it('opens from Data written (local) too', async () => {
+  it('opens from Storage (local) too', async () => {
     const router = renderAt('/run/wrun_1');
     const data = await screen.findByRole('link', {
-      name: /data written \(local\), open usage$/,
+      name: /storage \(local\), open usage$/,
     });
     await act(async () => {
       fireEvent.click(data);
@@ -246,7 +246,7 @@ describe('the Usage route', () => {
         .getAttribute('aria-current')
     ).toBe('page');
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Data written (local)'
+      'Storage (local)'
     );
   });
 

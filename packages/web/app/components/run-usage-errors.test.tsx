@@ -175,7 +175,7 @@ describe('a failed first usage read on a finished run', () => {
     expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
       '2 KB'
     );
-    expect(screen.getByTestId('run-usage-spans')).toBeTruthy();
+    expect(screen.getByTestId('run-usage-types')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(fetchRunUsage).toHaveBeenCalledTimes(2);
   });
