@@ -78,6 +78,8 @@ export interface UsageStorageOptions {
   maxBatchRows?: number;
   /** Called between batches (tests write to the run there). */
   onBatch?: (runId: string, countedSeq: number) => void | Promise<void>;
+  /** Called when a read recounts a run whose data was deleted (tests). */
+  onRecount?: (runId: string) => void;
 }
 
 /** A step event: `step_created`, `step_started`, ... */
@@ -433,6 +435,14 @@ export function createUsageStorage(
     let counts = cache.get(runId) ?? newCounts();
     // A database replaced underneath (positions went back): count afresh.
     if (Number(first.seq) < counts.countedSeq) counts = newCounts();
+    // Whether any row counted here may have been read before the run
+    // finished, and so before a zero-retention purge rewrote it: rows
+    // cached from a read of the running run, or rows this read's batches
+    // count while it is still running. A run that had finished when this
+    // read began was already purged, so its rows are read as they are.
+    let readBeforeFinish =
+      !isTerminalWorkflowRunStatus(first.status as WorkflowRunStatus) ||
+      (counts.countedSeq > 0 && !counts.finished);
     await countInBatches(runId, counts, Number(first.seq));
 
     // The rest in one read transaction: the run's status, the rows written
@@ -444,7 +454,11 @@ export function createUsageStorage(
       const finished = isTerminalWorkflowRunStatus(
         run.status as WorkflowRunStatus
       );
-      if (seq < counts.countedSeq) counts = newCounts();
+      if (seq < counts.countedSeq) {
+        counts = newCounts();
+        // Counted below, inside this read of the finished run.
+        readBeforeFinish = !finished;
+      }
       countRange(db, runId, counts, counts.countedSeq, seq);
       const savedDataWritten = purgedDataWritten(db, runId) ?? undefined;
       const dataPurged =
@@ -453,8 +467,11 @@ export function createUsageStorage(
           Number(db.get<{ purged: number }>(PURGED_RUN_SQL, runId)?.purged) ===
             1);
       // Counted (in part) before the purge rewrote the rows: count the
-      // finished run again so the bytes are its rows as they are now.
-      if (dataPurged && !counts.finished && counts.countedSeq > 0) {
+      // finished run again so the bytes are its rows as they are now. Not on
+      // a first read of a run that had already finished: every row was read
+      // after its purge, and this recount is one unbatched block.
+      if (dataPurged && readBeforeFinish && counts.countedSeq > 0) {
+        options.onRecount?.(runId);
         counts = newCounts();
         countRange(db, runId, counts, 0, seq);
       }

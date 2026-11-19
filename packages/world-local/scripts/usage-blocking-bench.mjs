@@ -18,6 +18,9 @@
  *                         (default 262144: about 210 MB of events)
  *   --small-events <n>    events in the small-row run read first (default
  *                         12000: trains the batch size on small rows)
+ *   --finished-steps <n>  small steps in the finished zero-retention run
+ *                         and its twin that keeps its data (default 15000:
+ *                         45,003 events)
  *   --json                print the results as JSON
  */
 
@@ -35,12 +38,14 @@ const { values } = parseArgs({
     'large-steps': { type: 'string', default: '300' },
     payload: { type: 'string', default: String(256 * 1024) },
     'small-events': { type: 'string', default: '12000' },
+    'finished-steps': { type: 'string', default: '15000' },
     json: { type: 'boolean', default: false },
   },
 });
 const LARGE_STEPS = Number(values['large-steps']);
 const PAYLOAD = Number(values.payload);
 const SMALL_EVENTS = Number(values['small-events']);
+const FINISHED_STEPS = Number(values['finished-steps']);
 
 const { createStorage } = await import(path.join(dist, 'storage.js'));
 const { databaseFor } = await import(path.join(dist, 'db/index.js'));
@@ -55,11 +60,12 @@ const seed = createStorage(dataDir);
 // is what the runtime writes.
 const bytes = (n) => new Uint8Array(randomBytes(n));
 
-async function seedRun(steps, payload, name) {
+async function seedRun(steps, payload, name, { finish, attributes } = {}) {
   const run = await createRun(seed, {
     deploymentId: 'dpl_bench',
     workflowName: `workflow//./src/workflows/bench//${name}`,
     input: bytes(payload),
+    ...(attributes && { attributes, allowReservedAttributes: true }),
   });
   await updateRun(seed, run.runId, 'run_started');
   for (let i = 0; i < steps; i++) {
@@ -72,6 +78,11 @@ async function seedRun(steps, payload, name) {
     await updateStep(seed, run.runId, stepId, 'step_started');
     await updateStep(seed, run.runId, stepId, 'step_completed', {
       result: bytes(payload),
+    });
+  }
+  if (finish) {
+    await updateRun(seed, run.runId, 'run_completed', {
+      output: bytes(payload),
     });
   }
   return run.runId;
@@ -110,6 +121,15 @@ try {
     'small'
   );
   const largeRun = await seedRun(LARGE_STEPS, PAYLOAD, 'large');
+  // Finished before it is read: one deletes its data when it finishes.
+  const purgedRun = await seedRun(FINISHED_STEPS, 16, 'purged', {
+    finish: true,
+    attributes: { $retention: '0' },
+  });
+  const keptRun = await seedRun(FINISHED_STEPS, 16, 'kept', {
+    finish: true,
+    attributes: { zretention: '0' },
+  });
   const stored = (runId) =>
     Number(
       databaseFor(dataDir).get(
@@ -128,6 +148,8 @@ try {
       const large = await measure(storage, largeRun);
       return { small, large };
     })(),
+    finishedPurged: await measure(createStorage(dataDir), purgedRun),
+    finishedKept: await measure(createStorage(dataDir), keptRun),
     repeatRead: await (async () => {
       const storage = createStorage(dataDir);
       await storage.experimental_usage.getRun(largeRun);
@@ -156,5 +178,11 @@ if (values.json) {
   );
   console.log(
     `large run, repeat read (cached):     ${fmt(results.repeatRead)}`
+  );
+  console.log(
+    `finished zero-retention run, first:  ${fmt(results.finishedPurged)}`
+  );
+  console.log(
+    `finished kept twin, first read:      ${fmt(results.finishedKept)}`
   );
 }
