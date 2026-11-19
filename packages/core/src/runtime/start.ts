@@ -175,8 +175,9 @@ export type SpecVersionSource =
  * `WORKFLOW_SPEC_VERSION` setting), so that is the
  * answer, capped at what this caller's World mints: the caller writes
  * `run_created` and the arguments, and must never stamp a version it could
- * not have written itself. A spec 9 run therefore needs
- * `WORKFLOW_SPEC_VERSION=9` on both the caller and the target.
+ * not have written itself. A spec 9 run therefore needs both the caller and
+ * the target to mint spec 9 (the default on a World with the in-band fence),
+ * and `WORKFLOW_SPEC_VERSION=8` on either side makes the run spec 8.
  *
  * When the target does not report a usable version:
  *

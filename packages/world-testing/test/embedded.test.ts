@@ -5,8 +5,8 @@ import { createFetcher, startServer } from '../src/util.mjs';
 
 createTestSuite('local');
 
-// Spec 8 unless the environment opts in with `WORKFLOW_SPEC_VERSION=9`;
-// `embedded-spec9.test.ts` always opts in.
+// Spec 9 unless the environment pins another version with
+// `WORKFLOW_SPEC_VERSION`; `embedded-spec8.test.ts` always pins spec 8.
 test(
   'stamps the version the Local World mints',
   { timeout: 30_000 },
