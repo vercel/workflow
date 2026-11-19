@@ -164,9 +164,19 @@ describe('QuickJS baseline heap', () => {
 
     it.each([
       ['built by different engine code', { engineId: 'other' }, false],
-      ['corrupt', { digest: '0'.repeat(64) }, true],
+      [
+        'its asset does not match the header',
+        { assetDigest: '0'.repeat(64) },
+        true,
+      ],
+      [
+        'it has no asset digest and the heap does not match the header',
+        { assetDigest: undefined, digest: '0'.repeat(64) },
+        true,
+      ],
     ])('is ignored when %s', async (_name, override, reads) => {
       const { header, loadAsset, reads: read } = await prebuild();
+      expect(header.assetDigest).toMatch(/^[0-9a-f]{64}$/);
       registerPrebuiltQuickJSBaseline({ ...header, ...override }, loadAsset);
       expect(await run()).toBe(2005);
       // An engine mismatch is decided from the header alone.
