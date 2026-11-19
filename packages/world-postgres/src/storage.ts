@@ -88,6 +88,7 @@ import {
   isNull,
   lt,
   lte,
+  not,
   notExists,
   notInArray,
   or,
@@ -465,6 +466,25 @@ async function fencedInsertAttempt(
   }
 }
 
+/**
+ * Records that `runId` is owed an orchestrator delivery
+ * (`workflow_runs.wake_pending`, cleared in queue.ts when one completes), in
+ * the transaction of the event that wakes it: `hook_received`,
+ * `hook_disposed`, `wait_completed`, `step_completed` or `step_failed`.
+ * (`run_started` sets it in its own run update, for a first delivery that
+ * dies after creating its hook or wait.) Called once the run row is locked,
+ * or before the hook, wait or step row is, so the run row is always locked
+ * first, as every other writer of both does.
+ */
+async function markWakePending(db: DrizzleLike, runId: string): Promise<void> {
+  await db
+    .update(Schema.runs)
+    .set({ wakePending: true })
+    .where(
+      and(eq(Schema.runs.runId, runId), eq(Schema.runs.wakePending, false))
+    );
+}
+
 /** Puts back the count a fenced attempt advanced before losing its slot. */
 async function revertFenceAdvance(
   db: DrizzleLike,
@@ -720,6 +740,7 @@ async function createHookResume(
     ) {
       throw new HookNotFoundError(data.correlationId);
     }
+    await markWakePending(tx, runId);
     const created = await insertEventRow(tx, {
       runId,
       eventId: await allocateEventId(tx, runId),
@@ -813,8 +834,14 @@ function parseErrorJson(_errorJson: string | null): SerializedData | null {
  */
 function deserializeRunError(run: any): WorkflowRun {
   // Drop any stale legacy-only fields we might still encounter on read, and
-  // the internal `jobPrefix` routing column, which is not part of a run.
-  const { errorStack: _errorStack, jobPrefix: _jobPrefix, ...rest } = run;
+  // the internal `jobPrefix` / `wakePending` columns, which are not part of
+  // a run.
+  const {
+    errorStack: _errorStack,
+    jobPrefix: _jobPrefix,
+    wakePending: _wakePending,
+    ...rest
+  } = run;
   return rest as WorkflowRun;
 }
 
@@ -893,15 +920,67 @@ function createRunsList(
  * and this World's runner then drives it. Listing every active run in a
  * shared database would hand other apps' runs to this runner on every boot,
  * whatever their `jobPrefix`. The public `runs.list` stays unscoped.
+ *
+ * It also leaves out a running run that is parked: one with an open hook or
+ * a wait that is not yet due, no unfinished step, and no wake stored since
+ * its last completed orchestrator delivery (`wake_pending`). Its next wake is
+ * a hook delivery or wait timer that writes its own event and queues its own
+ * job, so replaying it on every boot only adds load. Every other active run
+ * is listed, including a legacy one, which never sets `wake_pending`.
+ *
+ * A parked run in `inFlightRunIds` is listed too: it has an orchestrator job
+ * a worker holds locked, a delivery that may have been cut off. On a spec 8
+ * run, whose deliveries are not serialized, another delivery of the run that
+ * completed meanwhile cleared `wake_pending` (as does a first delivery that
+ * hands the run to a continuation), so the flag alone would skip the run,
+ * and a dead worker's lock is otherwise released only after Graphile
+ * Worker's 4 hours. `undefined` (the jobs could not be read) skips no run.
  */
 export function createRecoverableRunsList(
   drizzle: Drizzle,
-  jobPrefix: string
+  jobPrefix: string,
+  inFlightRunIds: readonly string[] | undefined
 ): Storage['runs']['list'] {
-  const { runs } = Schema;
+  const { runs, steps, waits, hooks } = Schema;
+  const rowsOf = (table: typeof steps | typeof waits | typeof hooks) =>
+    drizzle.select({ runId: table.runId }).from(table);
+  const openWaits = and(
+    eq(waits.runId, runs.runId),
+    eq(waits.status, 'waiting')
+  );
+  // `and` is typed `SQL | undefined` only because it accepts undefined
+  // arguments; its first argument here is always defined.
+  const parked = and(
+    eq(runs.status, 'running'),
+    inFlightRunIds?.length
+      ? notInArray(runs.runId, [...inFlightRunIds])
+      : undefined,
+    eq(runs.wakePending, false),
+    gt(runs.specVersion, SPEC_VERSION_LEGACY),
+    or(
+      exists(rowsOf(hooks).where(eq(hooks.runId, runs.runId))),
+      exists(rowsOf(waits).where(openWaits))
+    ),
+    notExists(
+      rowsOf(steps).where(
+        and(
+          eq(steps.runId, runs.runId),
+          inArray(steps.status, ['pending', 'running'])
+        )
+      )
+    ),
+    notExists(
+      rowsOf(waits).where(and(openWaits, lte(waits.resumeAt, sql`now()`)))
+    )
+  ) as SQL;
   return createRunsList(
     drizzle,
-    or(eq(runs.jobPrefix, jobPrefix), isNull(runs.jobPrefix))
+    and(
+      or(eq(runs.jobPrefix, jobPrefix), isNull(runs.jobPrefix)),
+      inFlightRunIds === undefined
+        ? undefined
+        : or(isNull(runs.specVersion), not(parked))
+    )
   );
 }
 
@@ -2382,6 +2461,7 @@ function createUnfencedEventsStorage(
               status: 'running',
               startedAt: now,
               updatedAt: now,
+              wakePending: true,
             })
             .where(
               and(
@@ -2756,6 +2836,7 @@ function createUnfencedEventsStorage(
               };
         let runFinished = false;
         value = await drizzle.transaction(async (tx) => {
+          await markWakePending(tx, effectiveRunId);
           const [stepValue] = await tx
             .update(Schema.steps)
             .set(terminalSet)
@@ -3226,6 +3307,7 @@ function createUnfencedEventsStorage(
                   };
                 }
                 if (victimRunning) {
+                  await markWakePending(tx, victim.runId);
                   const disposed = await insertEventRow(tx, {
                     runId: victim.runId,
                     eventId: await allocateEventId(tx, victim.runId),
@@ -3431,6 +3513,7 @@ function createUnfencedEventsStorage(
       if (data.eventType === 'hook_disposed' && data.correlationId) {
         const disposedHookId = data.correlationId;
         value = await drizzle.transaction(async (tx) => {
+          await markWakePending(tx, effectiveRunId);
           const [deleted] = await tx
             .delete(Schema.hooks)
             .where(eq(Schema.hooks.hookId, disposedHookId))
@@ -3528,6 +3611,7 @@ function createUnfencedEventsStorage(
               throw new HookNotFoundError(data.correlationId);
             }
           }
+          await markWakePending(tx, effectiveRunId);
 
           // Allocate the position only after the row locks are acquired,
           // matching step_started's ordering guarantee: a writer blocked
@@ -3638,6 +3722,7 @@ function createUnfencedEventsStorage(
       if (data.eventType === 'wait_completed') {
         const waitId = `${effectiveRunId}-${data.correlationId}`;
         value = await drizzle.transaction(async (tx) => {
+          await markWakePending(tx, effectiveRunId);
           let [waitValue] = await tx
             .update(Schema.waits)
             .set({

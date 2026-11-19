@@ -423,6 +423,6 @@ export function createRunLeases(
 }
 
 /** Quote an SQL identifier, as `pg`'s `escapeIdentifier` does. */
-function escapeIdentifier(identifier: string): string {
+export function escapeIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
 }
