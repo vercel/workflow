@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -893,6 +894,118 @@ export const client = { provider: providerName };`
     const output = result.outputFiles[0].text;
     expect(output).toContain('from-serde');
     expect(output).not.toMatch(/from\s+["']workflow-pkg["']/);
+  });
+
+  function writeJose(dir: string, major: number): void {
+    writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'jose',
+        version: `${major}.0.0`,
+        main: 'index.js',
+      })
+    );
+    writeFile(join(dir, 'index.js'), `exports.version = 'jose-${major}';`);
+  }
+
+  function writeOidc(dir: string): string {
+    const index = join(dir, 'index.js');
+    writeFile(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'oidc', main: 'index.js' })
+    );
+    writeFile(index, `exports.version = require('jose').version;`);
+    return index;
+  }
+
+  function link(target: string, path: string): void {
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path, 'dir');
+  }
+
+  function npmLayout(root: string, nestedMajor: number): string {
+    const modules = join(root, 'node_modules');
+    writeJose(join(modules, 'jose'), 6);
+    if (nestedMajor !== 6) {
+      writeJose(join(modules, 'oidc', 'node_modules', 'jose'), nestedMajor);
+    }
+    return writeOidc(join(modules, 'oidc'));
+  }
+
+  function pnpmLayout(root: string, nestedMajor: number): string {
+    const modules = join(root, 'node_modules');
+    const store = join(modules, '.pnpm');
+    const oidcModules = join(store, 'oidc@1.0.0', 'node_modules');
+    for (const major of new Set([6, nestedMajor])) {
+      writeJose(
+        join(store, `jose@${major}.0.0`, 'node_modules', 'jose'),
+        major
+      );
+    }
+    link(
+      join(store, `jose@${nestedMajor}.0.0`, 'node_modules', 'jose'),
+      join(oidcModules, 'jose')
+    );
+    link(
+      join(store, 'jose@6.0.0', 'node_modules', 'jose'),
+      join(modules, 'jose')
+    );
+    link(join(oidcModules, 'oidc'), join(modules, 'oidc'));
+    return writeOidc(join(oidcModules, 'oidc'));
+  }
+
+  async function buildStepImportingOidc(
+    layout: (root: string, nestedMajor: number) => string,
+    nestedMajor: number
+  ): Promise<string> {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'src', 'step.ts');
+    const oidcIndex = layout(testRoot, nestedMajor);
+    writeFile(
+      stepFile,
+      `import { version } from 'oidc';\nconsole.log(version);`
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile, realpathSync(oidcIndex)],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    return result.outputFiles[0].text;
+  }
+
+  it.each([
+    ['npm', npmLayout],
+    ['pnpm', pnpmLayout],
+  ])('bundles the copy a dependency declares when the project root has another major (%s layout)', async (_name, layout) => {
+    const output = await buildStepImportingOidc(layout, 5);
+
+    expect(output).toContain('jose-5');
+    expect(output).not.toContain('jose-6');
+    expect(output).not.toMatch(/["']jose["']/);
+  });
+
+  it.each([
+    ['npm', npmLayout],
+    ['pnpm', pnpmLayout],
+  ])('keeps a dependency import external when it shares the project root copy (%s layout)', async (_name, layout) => {
+    const output = await buildStepImportingOidc(layout, 6);
+
+    expect(output).toMatch(/["']jose["']/);
+    expect(output).not.toContain('jose-6');
   });
 });
 
