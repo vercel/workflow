@@ -226,7 +226,7 @@ describe('wire parity: guest serialize matches the reference codec', () => {
     ],
     [
       'RateLimitTimeoutError',
-      '(() => { const e = new Error(\'Rate limit "openai" has no slot before the call\\\'s timeout (next slot at 2026-01-01T00:05:00.000Z)\\n\u2570\u25b6 docs: https://workflow-sdk.dev/err/rate-limit-timeout\', { cause: undefined }); e.name = "RateLimitTimeoutError"; e.stack = "rate-stack"; e.key = "openai"; e.wouldAcquireAt = new Date("2026-01-01T00:05:00.000Z"); return e; })()',
+      '(() => { const e = new Error(\'Rate limit "openai" has no slot within the call\\\'s maxWait (next slot at 2026-01-01T00:05:00.000Z)\\n\u2570\u25b6 docs: https://workflow-sdk.dev/err/rate-limit-timeout\', { cause: undefined }); e.name = "RateLimitTimeoutError"; e.stack = "rate-stack"; e.key = "openai"; e.wouldAcquireAt = new Date("2026-01-01T00:05:00.000Z"); return e; })()',
       () => {
         const error = new RateLimitTimeoutError(
           'openai',

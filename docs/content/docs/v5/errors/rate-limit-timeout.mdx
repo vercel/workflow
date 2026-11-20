@@ -1,28 +1,28 @@
 ---
 title: rate-limit-timeout
-description: An experimental_rateLimit() call could not get a slot before its timeout.
+description: An experimental_rateLimit() call could not get a slot within its maxWait.
 type: troubleshooting
-summary: Handle RateLimitTimeoutError when a rate-limited call's next slot is later than its timeout.
+summary: Handle RateLimitTimeoutError when a rate-limited call's next slot is later than its maxWait.
 prerequisites:
   - /docs/api-reference/workflow/rate-limit
 related:
   - /docs/api-reference/workflow/rate-limit
 ---
 
-This error is thrown by [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) when the key's next free slot is later than the call's `timeout`. The call reserved nothing, so it used up none of the key's capacity.
+This error is thrown by [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) when the key's next free slot is later than the call's `maxWait`. The call reserved nothing, so it used up none of the key's capacity.
 
 ## Error message
 
 ```text
-Rate limit "<key>" has no slot before the call's timeout (next slot at <time>)
+Rate limit "<key>" has no slot within the call's maxWait (next slot at <time>)
 ```
 
 ## Why this happens
 
-Every call on a key takes the next slot, `period / limit` after the one before. When more calls arrive than the limit admits, slots move into the future, and a call whose slot would be past its `timeout` fails at once instead of waiting.
+Every call on a key takes the next slot, `period / limit` after the one before. When more calls arrive than the limit admits, slots move into the future, and a call whose slot would be past its `maxWait` fails at once instead of waiting.
 
 ## How to fix it
 
 - Catch it with `RateLimitTimeoutError.is(error)` from `workflow/errors` and skip, defer or report the work. `error.wouldAcquireAt` is when the call would have gone ahead.
-- Raise the `timeout`, or leave it out to wait as long as it takes (up to 30 days).
+- Raise the `maxWait`, or leave it out to wait as long as it takes (up to 30 days).
 - Spread the work across keys that the upstream limits separately.

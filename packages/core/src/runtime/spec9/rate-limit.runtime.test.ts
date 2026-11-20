@@ -2,7 +2,7 @@
  * `experimental_rateLimit()` driven end to end by the single orchestrator on
  * a World that reserves slots: a call whose slot is now goes ahead in the
  * same delivery, a call that has to wait sleeps on a timer until its slot and
- * records `rate_acquired`, and a call past its timeout rejects.
+ * records `rate_acquired`, and a call past its maxWait rejects.
  */
 import { rateGraceMs, SPEC_VERSION_RATE_LIMITS } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -59,7 +59,7 @@ const timedOut = `${header}
   async function workflow() {
     await rateLimit({ key: "slow", limit: 1, period: "1m" });
     try {
-      await rateLimit({ key: "slow", limit: 1, period: "1m", timeout: "1s" });
+      await rateLimit({ key: "slow", limit: 1, period: "1m", maxWait: "1s" });
       return "acquired";
     } catch (error) {
       return error.name + ":" + error.key;
@@ -162,7 +162,7 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     ).toBeGreaterThan(rateGraceMs(1_000));
   }, 60_000);
 
-  it('rejects a call whose slot is past its timeout, reserving nothing', async () => {
+  it('rejects a call whose slot is past its maxWait, reserving nothing', async () => {
     const { world } = await setupOrchestratorRun(timedOut, [], {
       runSpecVersion: SPEC_VERSION_RATE_LIMITS,
     });

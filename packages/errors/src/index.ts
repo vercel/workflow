@@ -1006,7 +1006,7 @@ export class HookForceClaimedError extends WorkflowError {
 
 /**
  * Thrown by `experimental_rateLimit()` in a workflow when the call's earliest
- * slot on its key is past its `timeout`. Nothing was reserved, so the call
+ * slot on its key is past its `maxWait`. Nothing was reserved, so the call
  * used up none of the key's capacity.
  *
  * Use the static `RateLimitTimeoutError.is()` method for type-safe checking
@@ -1020,7 +1020,7 @@ export class RateLimitTimeoutError extends WorkflowError {
 
   constructor(key: string, wouldAcquireAt?: Date) {
     super(
-      `Rate limit "${key}" has no slot before the call's timeout` +
+      `Rate limit "${key}" has no slot within the call's maxWait` +
         (wouldAcquireAt
           ? ` (next slot at ${wouldAcquireAt.toISOString()})`
           : ''),

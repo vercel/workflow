@@ -53,11 +53,11 @@ export function resolveRateLimitCall(
       `experimental_rateLimit(): ${(error as Error).message}`
     );
   }
-  // Without a timeout, or with a longer one, a call waits up to 30 days, the
+  // Without a maxWait, or with a longer one, a call waits up to 30 days, the
   // most a World lets it.
   const waitMs =
-    options.timeout === undefined
+    options.maxWait === undefined
       ? MAX_RATE_WAIT_MS
-      : Math.min(durationMs(options.timeout, 'timeout'), MAX_RATE_WAIT_MS);
+      : Math.min(durationMs(options.maxWait, 'maxWait'), MAX_RATE_WAIT_MS);
   return { ...call, expiresAt: new Date(nowMs + waitMs) };
 }

@@ -123,7 +123,7 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
   RateLimitTimeoutError: [
     ['RateLimitTimeoutError', 1],
     { message: 2, key: 3, wouldAcquireAt: 4 },
-    'Rate limit "openai" has no slot before the call\'s timeout',
+    'Rate limit "openai" has no slot within the call\'s maxWait',
     'openai',
     ['Date', 5],
     '2026-01-01T00:05:00.000Z',

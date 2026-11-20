@@ -47,7 +47,7 @@ showSections={['parameters']}
 - Keys are stored as-is in the run's event log. Don't put personal data in them.
 - A `period` can be at most 24 hours.
 - With `burst: true`, an idle key admits up to `limit` calls at once, then refills one every `period / limit`. A rolling `period` can then see up to `2 * limit - 1` calls, which suits an upstream that is itself a token bucket or counts fixed windows, but not one that strictly enforces `limit` in any rolling window. Use one setting per key: a bursting call can go ahead of calls on the key that are already waiting without one.
-- A call that cannot get a slot before its `timeout` rejects with [`RateLimitTimeoutError`](/docs/errors/rate-limit-timeout) and uses up none of the key's capacity. Without a `timeout`, a call waits up to 30 days, which is also the longest a `timeout` can be.
+- A call that cannot get a slot within its `maxWait` rejects with [`RateLimitTimeoutError`](/docs/errors/rate-limit-timeout) and uses up none of the key's capacity. Without a `maxWait`, a call waits up to 30 days, which is also the longest a `maxWait` can be.
 
 ## Examples
 
@@ -61,7 +61,7 @@ declare function sendSms(userId: string): Promise<void>; // @setup
 export async function notify(userId: string) {
   "use workflow"
   try {
-    await experimental_rateLimit({ key: "sms", limit: 10, period: "1s", timeout: "30s" }) // [!code highlight]
+    await experimental_rateLimit({ key: "sms", limit: 10, period: "1s", maxWait: "30s" }) // [!code highlight]
   } catch (error) {
     if (RateLimitTimeoutError.is(error)) return "skipped"
     throw error
