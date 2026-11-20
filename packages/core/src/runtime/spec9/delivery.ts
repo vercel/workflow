@@ -3572,11 +3572,28 @@ async function runDelivery(
               }
             }
           }
-          for (const wait of due) {
+          // Consecutive due rate calls write their `rate_acquired` at once,
+          // so the writer sends them in one batch (see
+          // `InBandWriter.create`); each is still consumed in order.
+          const acquiring = new Map<
+            OpenWait,
+            Promise<EventResult | undefined>
+          >();
+          for (const [index, wait] of due.entries()) {
+            if (wait.kind === 'rate' && !acquiring.has(wait)) {
+              for (const next of due.slice(index)) {
+                if (next.kind !== 'rate') break;
+                wakeUpWaits.delete(next.correlationId);
+                const acquired = acquireRate(next);
+                // Awaited in order below; a later one may settle first.
+                acquired.catch(() => {});
+                acquiring.set(next, acquired);
+              }
+            }
             wakeUpWaits.delete(wait.correlationId);
             const completed =
               wait.kind === 'rate'
-                ? await acquireRate(wait)
+                ? await acquiring.get(wait)
                 : await createEvent(
                     {
                       eventType: 'wait_completed' as const,

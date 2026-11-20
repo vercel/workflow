@@ -1434,13 +1434,18 @@ async function runQuickJSDelivery(
     }
   }
   // Rate limit calls whose slot has come (never by `run.wakeUp()`): the
-  // `rate_acquired` naming each one's newest `rate_created`.
+  // `rate_acquired` naming each one's newest `rate_created`, written at once
+  // so the writer sends them in one batch (see `InBandWriter.create`).
+  const dueRateAcquires: Promise<void>[] = [];
   for (const wait of openWaits(events)) {
     if (wait.kind !== 'rate' || wait.resumeAtMs > Date.now()) continue;
     const createdSlot = eventIdToSlot(wait.event.eventId);
     if (createdSlot === null) continue;
-    await acquireRateSlot(wait.correlationId, createdSlot, wait.resumeAtMs);
+    dueRateAcquires.push(
+      acquireRateSlot(wait.correlationId, createdSlot, wait.resumeAtMs)
+    );
   }
+  await Promise.all(dueRateAcquires);
   // The VM has not started, so whatever those writes handed back (each
   // wait_completed, plus anything another writer appended that they skipped
   // over) joins the initial log instead of waiting for a feed.
@@ -3383,6 +3388,8 @@ async function runQuickJSDelivery(
       }
       // Rate limit calls whose slot has come (never by `run.wakeUp()`):
       // what each `rate_acquired` commits reaches the VM off its response.
+      // Written at once, so the writer sends them in one batch.
+      const dueRateAcquires: Promise<void>[] = [];
       for (const op of pendingOperations) {
         const timer = timerOf(op);
         if (
@@ -3392,12 +3399,15 @@ async function runQuickJSDelivery(
         ) {
           continue;
         }
-        await acquireRateSlot(
-          timer.correlationId,
-          timer.createdSlot,
-          timer.resumeAtMs
+        dueRateAcquires.push(
+          acquireRateSlot(
+            timer.correlationId,
+            timer.createdSlot,
+            timer.resumeAtMs
+          )
         );
       }
+      await Promise.all(dueRateAcquires);
 
       // 2. Cheap progress first: feed newly recorded events into the live
       // VM before blocking on step bodies. What the writes above handed back
