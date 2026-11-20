@@ -468,13 +468,22 @@ flowchart TD
 
 A hook the workflow created but does not await is inert on node:vm: its payload is buffered and moves neither step results nor the clock (on QuickJS it moves the clock; see the clock gate below). A wait is classified by time, since whether anything still awaits a sleep cannot be told; only the orchestrator writes `wait_completed` on spec 9, so a far-future wait is inert. At an inert boundary the outcome is placed at the slot the writer predicts and handed to the VM while the write is in flight, with `occurredAt` set to the time the workflow used.
 
+#### Where a speculative event is placed
+
+A speculative event sits in the delivery's log at the slot its write is expected to take: one past every position the writer knows is allocated, its own queued writes included. The workflow consumes that log in slot order, and every later replay consumes the committed log in slot order, so the two must agree on the order of step outcomes. Four rules keep them agreeing:
+
+- **Each position is counted once.** The live feed can push this delivery's own write before the write's answer arrives (world-vercel's can). That position is then both seen and still queued. The writer counts it as seen only (`InBandWriter.observeEvent`), as it does for a write whose answer came in a moment before it left the queue. Counted twice, every later speculative event would be placed past the slot it takes.
+- **No two events share a slot.** A speculative event is never placed at or below a slot the log already holds, or one an unconfirmed speculative write was placed at (`nextSpeculativeSlot`). The log keeps one event per id, so a second event at a held id would be dropped and the workflow would never consume it.
+- **An outcome on the awaited path comes first.** A step started at a boundary that was not inert writes its outcome on the awaited path, and the workflow consumes it only once it committed. While such a write is in flight, no pass runs over the speculative events placed since it was sent: the delivery first lets it and those writes commit. Otherwise another writer's event taking the slot the awaited outcome was expected at makes the log look dense, the workflow takes a later speculative outcome first, and its branches draw correlation ids in an order no replay of the committed log reproduces.
+- **A committed event never yields to a speculative one.** When an answer, or its report, carries an event at a slot the log holds another event's speculative copy at, that copy was placed wrongly, and the delivery repairs (below) instead of dropping the committed event. A speculative copy of an outcome whose write has since settled is not folded in at all: the committed event is already in the log.
+
 #### Checking speculative writes
 
 Each speculative write is checked when it commits:
 
 - every event in its skipped-slot report is tested for a hazard (below);
 - its stored `createdAt` must equal the `occurredAt` the workflow used, or the delivery stops and run-ahead is off for that World for the rest of the process;
-- a slot other than the predicted one is a repair, not a stop: another writer appended first, and the delivery rebuilds its log from the write responses, without a read, and replays.
+- a slot other than the predicted one is a repair, not a stop: another writer appended first, and the delivery rebuilds its log from the write responses, without a read, and replays. A write that committed below its predicted slot was placed past the position it took; the retained session is then dropped and the rebuilt log replays from cold.
 
 A displaced write commits above its predicted slot, and that slot's event id then belongs to another event. Replay's payload cache, which lives for the whole delivery, is therefore keyed on event id and correlation id together, so a payload prepared at the predicted id is never served to another step's event there.
 
