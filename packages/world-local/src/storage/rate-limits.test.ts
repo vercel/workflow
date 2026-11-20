@@ -461,4 +461,77 @@ describe('rate limits on the Local World', () => {
     // The opt-in is the request's, not part of the committed call.
     expect(allowed.eventData).not.toHaveProperty('allowReservedKey');
   });
+  describe('one key used with different settings', () => {
+    const slotOf = (event: Event) => {
+      if (event.eventType === 'rate_failed') throw new Error('failed');
+      return (event.eventData as { acquireAt: Date }).acquireAt.getTime();
+    };
+
+    it('a new limit applies after the slots already reserved at the old one', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const runId = await createRun();
+      // The old deployment: one per minute. Two calls hold the next minute.
+      const a = committed(await inBand(runId, rateCreated({ key: 'changed' })));
+      const b = committed(await inBand(runId, rateCreated({ key: 'changed' })));
+      expect(slotOf(b) - slotOf(a)).toBe(60_000);
+      // The new deployment raises it to one per second. Its first call still
+      // waits behind the old call's interval; after that, one per second.
+      const c = committed(
+        await inBand(runId, rateCreated({ key: 'changed', limit: 60 }))
+      );
+      const d = committed(
+        await inBand(runId, rateCreated({ key: 'changed', limit: 60 }))
+      );
+      expect(slotOf(c) - slotOf(a)).toBe(120_000);
+      expect(slotOf(d) - slotOf(c)).toBe(1_000);
+    });
+
+    it('a call with a longer interval holds the key for every call after it', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const runId = await createRun();
+      // Two call sites share a key: one at 60 per minute, one at 1 per day.
+      const fast = { key: 'shared', limit: 60, periodMs: 60_000 };
+      const daily = { key: 'shared', limit: 1, periodMs: 24 * 60 * 60_000 };
+      const x = committed(await inBand(runId, rateCreated(fast)));
+      // The daily call only waits out the fast call's 1-second interval...
+      const y = committed(await inBand(runId, rateCreated(daily)));
+      expect(slotOf(y) - slotOf(x)).toBe(1_000);
+      // ...but takes a whole day of the key: the next fast call waits a day.
+      const z = committed(
+        await inBand(
+          runId,
+          rateCreated({
+            ...fast,
+            expiresAt: new Date(Date.now() + 2 * 86_400_000),
+          })
+        )
+      );
+      expect(slotOf(z) - slotOf(y)).toBe(24 * 60 * 60_000);
+      // With a maxWait shorter than that, it fails instead, reserving nothing.
+      const impatient = committed(
+        await inBand(
+          runId,
+          rateCreated({ ...fast, expiresAt: new Date(Date.now() + 60_000) })
+        )
+      );
+      expect(impatient.eventType).toBe('rate_failed');
+    });
+
+    it('a bursting call can go ahead of calls already waiting without one', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const runId = await createRun();
+      const plain = { key: 'mixed', limit: 10, periodMs: 1_000 };
+      // Five calls without a burst: one now, four waiting 100 ms apart.
+      const queued = [];
+      for (let i = 0; i < 5; i++)
+        queued.push(committed(await inBand(runId, rateCreated(plain))));
+      expect(queued[4]!.eventType).toBe('rate_created');
+      // A call with a burst of 10 on the same key goes ahead at once.
+      const bursting = committed(
+        await inBand(runId, rateCreated({ ...plain, burst: 10 }))
+      );
+      expect(bursting.eventType).toBe('rate_acquired');
+      expect(slotOf(bursting)).toBeLessThan(slotOf(queued[4]!));
+    });
+  });
 });

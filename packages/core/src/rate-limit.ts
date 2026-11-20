@@ -12,7 +12,12 @@ export interface RateLimitOptions {
    * in the run's events, so don't put personal data in them.
    */
   key: string;
-  /** How many calls the key admits per `period`. */
+  /**
+   * How many calls the key admits per `period`. Use the same `limit`,
+   * `period` and `burst` wherever a key is used: each call applies its own,
+   * so a call with a longer interval holds up every call after it on the key,
+   * and a changed limit applies after the slots already reserved.
+   */
   limit: number;
   /**
    * The period `limit` applies to: a duration string like `"1s"`, `"1m"` or
@@ -27,14 +32,16 @@ export interface RateLimitOptions {
    */
   maxWait?: StringValue | number;
   /**
-   * Let an idle key admit up to `limit` calls at once, then refill one every
-   * `period / limit`, like a token bucket. Without it (the default), calls are
-   * always at least `period / limit` apart. With it, a rolling `period` can
-   * see up to `2 * limit - 1` calls, which suits an upstream that is itself a
-   * token bucket or counts fixed windows. Use one setting per key: a bursting
-   * call can go ahead of calls already waiting without one.
+   * How many calls may go ahead at once on an idle key, from 1 (the default,
+   * no burst) to `limit`. The key then refills one call every
+   * `period / limit`, like a token bucket of size `burst`: the long-run rate
+   * is still `limit` per `period`, but a rolling `period` can see up to
+   * `limit + burst - 1` calls. Match an upstream that publishes a burst size,
+   * or pick the largest burst that keeps `limit + burst - 1` under the
+   * upstream's cap per window. Use one setting per key: a bursting call can
+   * go ahead of calls already waiting with a smaller burst.
    */
-  burst?: boolean;
+  burst?: number;
   /**
    * Allow a `key` that starts with `$`.
    *

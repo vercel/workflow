@@ -42,14 +42,23 @@ showSections={['parameters']}
 
 ## Behavior
 
-- Calls on one key share it across runs, so they are admitted in the order the World receives them. Calls that ask for different rates on one key each use up their own share of its time.
+- Calls on one key share it across runs, so they are admitted in the order the World receives them. Use the same `limit`, `period` and `burst` everywhere you use a key (see [One key with different settings](#one-key-with-different-settings)).
 - The rate is per project and environment: preview and production deployments have separate budgets for the same key.
 - A `key` is 1 character to 512 bytes (UTF-8). Keys are stored as-is in the run's event log. Don't put personal data in them.
 - Keys that start with `$` are reserved for Workflow SDK libraries, and a call with one throws. Don't use them in your own code: the `allowReservedKey` option that permits them exists only for those libraries, and a workflow that shares their keys can starve them or be starved by them.
 - A `period` can be at most 24 hours.
-- With `burst: true`, an idle key admits up to `limit` calls at once, then refills one every `period / limit`. A rolling `period` can then see up to `2 * limit - 1` calls, which suits an upstream that is itself a token bucket or counts fixed windows, but not one that strictly enforces `limit` in any rolling window. Use one setting per key: a bursting call can go ahead of calls on the key that are already waiting without one.
+- `burst` lets an idle key admit up to that many calls at once, from 1 (the default, no burst) to `limit`, and then refill one every `period / limit`, like a token bucket of that size. The long-run rate is still `limit` per `period`, but a rolling `period` can see up to `limit + burst - 1` calls. Set it to an upstream's published burst size, or keep `limit + burst - 1` under the most it allows in a window.
 - A call that cannot get a slot within its `maxWait` rejects at once with [`RateLimitMaxWaitError`](/docs/errors/rate-limit-max-wait) and uses up none of the key's capacity. Without a `maxWait`, a call waits up to 30 days, which is also the longest a `maxWait` can be.
 - A run that is cancelled or fails while a call waits keeps that call's slot: the next calls on the key still go after it.
+
+## One key with different settings
+
+A key keeps only its next free slot, and each call moves that slot on by its own `period / limit`. Nothing records a limit for the key, so the settings of each call apply to that call alone:
+
+- **Changing a limit in a new deployment** takes effect after the slots that calls at the old limit already reserved. If you raise one per minute to one per second while calls are queued, the first call at the new limit waits behind them, and calls after it go one per second.
+- **Using one key with different settings in different call sites** mixes them. A call at `limit: 1, period: "24h"` waits its turn like any other, but then takes a whole day of the key, so every call after it on that key waits a day or fails its `maxWait`. A call with a larger `burst` can go ahead of calls already waiting with a smaller one.
+
+There is rarely a reason to do either. Give each upstream limit one key, set it in one place, and use a new key when the limit changes.
 
 ## Calls that wake late
 
@@ -89,7 +98,7 @@ export async function crawl(urls: string[]) {
   "use workflow"
   for (const url of urls) {
     // The first 100 go at once; after that, one every 600 ms.
-    await experimental_rateLimit({ key: "crawler", limit: 100, period: "1m", burst: true }) // [!code highlight]
+    await experimental_rateLimit({ key: "crawler", limit: 100, period: "1m", burst: 100 }) // [!code highlight]
     await fetchPage(url)
   }
 }

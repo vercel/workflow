@@ -105,7 +105,11 @@ describe('createRateLimit', () => {
     [{ ...CALL, period: 'soon' }, /invalid period/],
     [{ ...CALL, period: '2d' }, /24 hours/],
     [{ ...CALL, maxWait: -1 }, /invalid maxWait/],
-    [{ ...CALL, burst: 'yes' }, /burst must be true or false/],
+    [{ ...CALL, burst: 'yes' }, /burst must be a whole number/],
+    [{ ...CALL, burst: true }, /burst must be a whole number/],
+    [{ ...CALL, burst: 0 }, /burst must be a whole number/],
+    [{ ...CALL, burst: 2.5 }, /burst must be a whole number/],
+    [{ ...CALL, burst: 61 }, /burst must be an integer from 1 to the limit/],
     [{ ...CALL, key: 'k'.repeat(513) }, /513 bytes/],
     [{ ...CALL, key: '$sdk.internal' }, /reserved prefix/],
     [
@@ -164,20 +168,16 @@ describe('createRateLimit', () => {
     );
   });
 
-  it('asks for a full window with burst: true, and nothing without it', async () => {
-    const bursting = rateLimitFor([]);
-    void bursting.rateLimit({ ...CALL, burst: true });
-    await bursting.errorReceived.promise;
-    expect(bursting.ctx.invocationsQueue.get(CID)).toMatchObject({
-      burst: 60,
-    });
+  it('sends the burst it asks for, and nothing for no burst', async () => {
+    for (const burst of [60, 20, 2]) {
+      const bursting = rateLimitFor([]);
+      void bursting.rateLimit({ ...CALL, burst });
+      await bursting.errorReceived.promise;
+      expect(bursting.ctx.invocationsQueue.get(CID)).toMatchObject({ burst });
+    }
 
-    for (const options of [
-      CALL,
-      { ...CALL, burst: false },
-      // A burst of one is no burst.
-      { ...CALL, limit: 1, burst: true },
-    ]) {
+    // Absent, and a burst of one, are both no burst.
+    for (const options of [CALL, { ...CALL, burst: 1 }]) {
       const plain = rateLimitFor([]);
       void plain.rateLimit(options);
       await plain.errorReceived.promise;

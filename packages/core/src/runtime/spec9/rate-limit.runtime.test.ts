@@ -40,7 +40,7 @@ const sequential = `${header}
 const bursting = `${header}
   async function workflow(n) {
     for (let i = 0; i < n; i++) {
-      await rateLimit({ key: "bursty", limit: 3, period: "1s", burst: true });
+      await rateLimit({ key: "bursty", limit: 3, period: "1s", burst: 3 });
     }
     return n;
   }${registerWorkflow()}`;
