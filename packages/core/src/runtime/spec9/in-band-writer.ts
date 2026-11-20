@@ -18,6 +18,7 @@ import type {
   World,
 } from '@workflow/world';
 import { eventIdToSlot, IN_BAND_SEQ_AT_RUN_CREATION } from '@workflow/world';
+import { runtimeLogger } from '../../logger.js';
 import {
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
@@ -846,10 +847,20 @@ export class InBandWriter {
               // one: that costs it no resend. Each group's first item gets
               // an answer of its own, so these resends end.
               const behindRefusal = item.error === EARLIER_POSITION_FAILED;
-              if (
-                RATE_RESEND_ERRORS.has(item.error) &&
-                (behindRefusal || resends < MAX_RATE_RESENDS)
-              ) {
+              const resendable = RATE_RESEND_ERRORS.has(item.error);
+              const rateLog = {
+                workflowRunId: this.runId,
+                eventType: write.events[0]?.event.eventType,
+                correlationId: write.events[0]?.event.correlationId,
+                status: item.status,
+                error: item.error,
+                resends,
+              };
+              if (resendable && (behindRefusal || resends < MAX_RATE_RESENDS)) {
+                runtimeLogger.debug(
+                  'Rate limit write refused before it was decided, sending it again',
+                  rateLog
+                );
                 // Nothing was reserved or committed for it: sent again, in
                 // the next group, with the others sent again beside it.
                 this.writeRate(
@@ -858,6 +869,12 @@ export class InBandWriter {
                   behindRefusal ? resends : resends + 1
                 ).then(write.resolve, write.reject);
                 continue;
+              }
+              if (resendable) {
+                runtimeLogger.debug(
+                  'Rate limit write refused before it was decided, out of resends',
+                  rateLog
+                );
               }
               // Its own refusal, as a single write's: the writer goes on.
               write.reject(refusalOf(item, write.events[0]?.event.eventType));

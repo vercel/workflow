@@ -269,10 +269,12 @@ export class AppendOnlyWorld {
       /**
        * Refuses a rate event in a batch before deciding it, reserving
        * nothing, when this returns a refusal: as the backend answers one it
-       * had no time to decide (503 `rate-batch-deferred`).
+       * had no time to decide (503 `rate-batch-deferred`), or one too early
+       * by its clock (425). `index` is the item's position in the batch.
        */
       refuseBatchedRate?: (
-        event: CreateEventRequest
+        event: CreateEventRequest,
+        index: number
       ) => { status: number; error: string } | undefined;
       /**
        * Honor `resolveData: 'skip-step-inputs'` on replay pages (list pages
@@ -1110,10 +1112,26 @@ export class AppendOnlyWorld {
         : undefined;
     };
     const refusedEntities = new Set<string>();
+    // An in-band batch's barrier, as the backend keeps it: once a
+    // `rate_acquired` is refused, every later item is refused unput.
+    let refusedOutcome = false;
+    const inBand = (params as CreateEventParams | undefined)?.inBand === true;
+    const refuseOutcome = <R>(eventType: string, result: R): R => {
+      if (inBand && eventType === 'rate_acquired') refusedOutcome = true;
+      return result;
+    };
     return {
       ...this.report(params as CreateEventParams, firstSlot),
       results: batch.map(({ event: data }, index) => {
         const entity = (data as { correlationId?: string }).correlationId;
+        if (refusedOutcome) {
+          this.append({ eventType: 'noop' } as Partial<Event>);
+          return {
+            status: 409,
+            error: 'batch-earlier-position-failed',
+            message: 'An earlier outcome in this batch was refused',
+          };
+        }
         if (entity !== undefined && refusedEntities.has(entity)) {
           this.append({ eventType: 'noop' } as Partial<Event>);
           return {
@@ -1141,10 +1159,13 @@ export class AppendOnlyWorld {
           data.eventType === 'rate_created' ||
           data.eventType === 'rate_acquired'
         ) {
-          const refusal = this.options.refuseBatchedRate?.(data);
+          const refusal = this.options.refuseBatchedRate?.(data, index);
           if (refusal) {
             this.append({ eventType: 'noop' } as Partial<Event>);
-            return { ...refusal, message: 'refused before it was decided' };
+            return refuseOutcome(data.eventType, {
+              ...refusal,
+              message: 'refused before it was decided',
+            });
           }
           try {
             const rate = this.committedRate(data as Partial<Event>);
@@ -1158,11 +1179,11 @@ export class AppendOnlyWorld {
               : TooEarlyError.is(error)
                 ? 425
                 : ((error as { status?: number }).status ?? 400);
-            return {
+            return refuseOutcome(data.eventType, {
               status,
               error: (error as Error).name,
               message: (error as Error).message,
-            };
+            });
           }
         }
         const event = this.append(committed, undefined, occurredAt(index));
