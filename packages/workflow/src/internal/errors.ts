@@ -1,4 +1,5 @@
 export {
+  DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   HookConflictError,
   HookForceClaimedError,

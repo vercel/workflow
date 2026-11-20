@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  DynamicWorkflowsNotEnabledError,
   EncryptionKeyLookupError,
   MaxEventsExceededError,
   ReplayDivergenceError,
@@ -119,6 +120,16 @@ export function isRetryableWorldError(err: unknown): boolean {
 }
 
 export function classifyRunError(err: unknown): RunErrorCode {
+  // A dynamic workflow started or delivered where the project has not opted
+  // in. It is not a WorkflowRuntimeError, so it would land on USER_ERROR
+  // anyway; checked explicitly (by name, so it holds after the error crosses
+  // a step boundary or VM realm) so a future change to the hierarchy or the
+  // checks below cannot turn a project's configuration back into an SDK
+  // RUNTIME_ERROR.
+  if (DynamicWorkflowsNotEnabledError.is(err)) {
+    return RUN_ERROR_CODES.USER_ERROR;
+  }
+
   if (ReplayDivergenceError.is(err)) {
     return RUN_ERROR_CODES.REPLAY_DIVERGENCE;
   }
