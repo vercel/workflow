@@ -94,6 +94,7 @@ import {
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_RUN_AHEAD_RESTARTS,
+  WAIT_TIMER_SEND_CONCURRENCY,
 } from '../constants.js';
 import {
   clampMaxEvents,
@@ -140,6 +141,7 @@ import {
 } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import { runBounded } from '../settle-all.js';
 import { resolveRunStartHook } from '../start-hook-binding.js';
 import {
   ackRefusedStartHookCandidate,
@@ -5228,28 +5230,31 @@ async function runDelivery(
     }
 
     /**
-     * Sends the timers of `waits` at once rather than one after another: a
-     * run with many open waits (rate limit calls made at once each have one)
-     * otherwise held the delivery a queue round trip per wait before it could
-     * wait in process or hand off. Resolves once every send has settled, so
-     * each timer is out before the caller goes on, and throws the first
-     * failure, as the sends one after another did.
+     * Sends the timers of `waits` at once rather than one after another, at
+     * most {@link WAIT_TIMER_SEND_CONCURRENCY} in flight: a run with many open
+     * waits (rate limit calls made at once each have one) otherwise held the
+     * delivery a queue round trip per wait before it could wait in process or
+     * hand off. Every wait is marked timed before any send starts, so no
+     * other arming path sends a second timer for one still queued here.
+     * Resolves once every send has settled, so each timer is out before the
+     * caller goes on, and throws the first failure in list order.
      */
     async function sendWaitTimers(
       waits: readonly Parameters<typeof sendWaitTimer>[0][],
       options?: Parameters<typeof sendWaitTimer>[1]
     ): Promise<void> {
-      // Nothing to send costs no turn of the event loop, as the loops did.
-      if (waits.length === 0) return;
-      const unique = new Map(waits.map((wait) => [wait.correlationId, wait]));
-      const settled = await Promise.allSettled(
-        [...unique.values()].map((wait) => sendWaitTimer(wait, options))
+      // The first of a repeated wait, as the loops kept it.
+      const unique = new Map<string, (typeof waits)[number]>();
+      for (const wait of waits) {
+        if (!unique.has(wait.correlationId)) {
+          unique.set(wait.correlationId, wait);
+        }
+      }
+      for (const id of unique.keys()) timedWaits.add(id);
+      await runBounded(
+        [...unique.values()].map((wait) => () => sendWaitTimer(wait, options)),
+        WAIT_TIMER_SEND_CONCURRENCY
       );
-      const failed = settled.find(
-        (outcome): outcome is PromiseRejectedResult =>
-          outcome.status === 'rejected'
-      );
-      if (failed) throw failed.reason;
     }
 
     /**

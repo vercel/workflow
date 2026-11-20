@@ -71,6 +71,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
+  WAIT_TIMER_SEND_CONCURRENCY,
 } from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
@@ -117,6 +118,7 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
+import { runBounded } from '../settle-all.js';
 import { getSnapshotThresholdForHandler } from '../vm-mode.js';
 import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
@@ -652,25 +654,6 @@ async function runQuickJSDelivery(
    * open wait of each chain, and the wait a timer delivery is for) that
    * this delivery has not armed yet.
    */
-  /**
-   * Waits for timer sends started at once rather than one after another: a
-   * run with many open waits (rate limit calls made at once each have one)
-   * otherwise held the delivery a queue round trip per wait. Resolves once
-   * every send has settled, so each timer is out before the caller goes on,
-   * and throws the first failure.
-   */
-  const settleTimerSends = async (
-    sends: readonly Promise<void>[]
-  ): Promise<void> => {
-    // Nothing to send costs no turn of the event loop, as the loops did.
-    if (sends.length === 0) return;
-    const settled = await Promise.allSettled(sends);
-    const failed = settled.find(
-      (outcome): outcome is PromiseRejectedResult =>
-        outcome.status === 'rejected'
-    );
-    if (failed) throw failed.reason;
-  };
   const armWaitTimers = async (
     candidates: readonly {
       correlationId: string;
@@ -688,7 +671,8 @@ async function runQuickJSDelivery(
           armsWaitTimer(wait.correlationId)
       )
       .map((wait) => ({ ...wait, event: waitChainEvent(wait.correlationId) }));
-    const sends: Promise<void>[] = [];
+    // Each wait is claimed above, before its send is queued.
+    const sends: (() => Promise<void>)[] = [];
     for (const wait of waitTimersToArm(
       owned,
       ownerMessageId ?? '',
@@ -696,21 +680,15 @@ async function runQuickJSDelivery(
     )) {
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
-      sends.push(
-        (async () => {
-          await queueWaitTimer(
-            wait.correlationId,
-            wait.seconds,
-            wait.resumeAtMs
-          );
-          wfdiag('wait_continuation_scheduled', {
-            correlationId: wait.correlationId,
-            delaySeconds: wait.seconds,
-          });
-        })()
-      );
+      sends.push(async () => {
+        await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs);
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: wait.correlationId,
+          delaySeconds: wait.seconds,
+        });
+      });
     }
-    await settleTimerSends(sends);
+    await runBounded(sends, WAIT_TIMER_SEND_CONCURRENCY);
   };
   /**
    * Arms the next timer of each wait chain of another message whose wait
@@ -755,7 +733,8 @@ async function runQuickJSDelivery(
   ): Promise<void> => {
     if (completing.length === 0) return;
     const now = Date.now();
-    const sends: Promise<void>[] = [];
+    // Each wait is claimed above, before its send is queued.
+    const sends: (() => Promise<void>)[] = [];
     for (const wait of chainTimersBeforeCompletion({
       openWaits: openWaits(log),
       completing,
@@ -763,23 +742,21 @@ async function runQuickJSDelivery(
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
       const seconds = Math.max(1, Math.ceil((wait.resumeAtMs - now) / 1000));
-      sends.push(
-        (async () => {
-          try {
-            await queueWaitTimer(wait.correlationId, seconds, wait.resumeAtMs);
-          } catch (err) {
-            scheduledWaitContinuations.delete(wait.correlationId);
-            throw err;
-          }
-          wfdiag('wait_continuation_scheduled', {
-            correlationId: wait.correlationId,
-            delaySeconds: seconds,
-            beforeCompletion: true,
-          });
-        })()
-      );
+      sends.push(async () => {
+        try {
+          await queueWaitTimer(wait.correlationId, seconds, wait.resumeAtMs);
+        } catch (err) {
+          scheduledWaitContinuations.delete(wait.correlationId);
+          throw err;
+        }
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: wait.correlationId,
+          delaySeconds: seconds,
+          beforeCompletion: true,
+        });
+      });
     }
-    await settleTimerSends(sends);
+    await runBounded(sends, WAIT_TIMER_SEND_CONCURRENCY);
   };
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
@@ -2903,28 +2880,27 @@ async function runQuickJSDelivery(
   ): Promise<void> => {
     if (!armsNearDueWaits) return;
     const nearDueHorizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
-    const sends: Promise<void>[] = [];
+    // Each wait is claimed above, before its send is queued.
+    const sends: (() => Promise<void>)[] = [];
     for (const wait of waits) {
       if (wait.resumeAtMs > nearDueHorizonMs) continue;
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
-      sends.push(
-        (async () => {
-          await queueWaitTimer(
-            wait.correlationId,
-            wait.seconds,
-            wait.resumeAtMs,
-            { nearDue: true }
-          );
-          wfdiag('wait_continuation_scheduled', {
-            correlationId: wait.correlationId,
-            delaySeconds: wait.seconds,
-            nearDue: true,
-          });
-        })()
-      );
+      sends.push(async () => {
+        await queueWaitTimer(
+          wait.correlationId,
+          wait.seconds,
+          wait.resumeAtMs,
+          { nearDue: true }
+        );
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: wait.correlationId,
+          delaySeconds: wait.seconds,
+          nearDue: true,
+        });
+      });
     }
-    await settleTimerSends(sends);
+    await runBounded(sends, WAIT_TIMER_SEND_CONCURRENCY);
   };
 
   /**
