@@ -255,14 +255,7 @@ function isNodeModulesPath(filePath: string): boolean {
 }
 
 function addImportParent(parent: string, child: string): void {
-  const normalizedParent = normalizePath(parent);
-  const normalizedChild = normalizePath(child);
-  let children = importParents.get(normalizedParent);
-  if (!children) {
-    children = new Set<string>();
-    importParents.set(normalizedParent, children);
-  }
-  children.add(normalizedChild);
+  importParents.addEdge(normalizePath(parent), normalizePath(child));
 }
 
 function extractImportSpecifiers(source: string): string[] {
