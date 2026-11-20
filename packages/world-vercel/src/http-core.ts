@@ -39,6 +39,7 @@ import {
 import { envNumber, START_HOOK_WIRE_CODES } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { createThrottleWaiter, sleep } from './event-retry.js';
+import { fetchResponse, withFirewallDenyRetry } from './firewall-deny-retry.js';
 import {
   getNodeHttpAgents,
   NODE_HTTP_BODY_TIMEOUT_MS,
@@ -953,7 +954,8 @@ export async function instrumentedFetch(
 
       const start = Date.now();
       let response: Response;
-      const request = (retry = 0) => {
+      let dispatched = false;
+      const request = () => {
         signal?.throwIfAborted();
         // Unique header per attempt to bypass RSC/Next fetch memoization (and to
         // avoid replaying a memoized truncated body). See:
@@ -988,13 +990,23 @@ export async function instrumentedFetch(
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
               dispatcher,
             } as any);
-        if (retry === 0) onRequestDispatched?.();
+        // Once per request, however many times it is sent.
+        if (!dispatched) {
+          dispatched = true;
+          onRequestDispatched?.();
+        }
         return pending;
       };
       try {
-        response = await (retryAppend
-          ? fetchStreamAppend(request, signal)
-          : request());
+        const send = () =>
+          retryAppend ? fetchStreamAppend(request, signal) : request();
+        // `body` is bytes or a string, which fetch wraps in a new stream per
+        // call, so a re-send carries it again.
+        response = await withFirewallDenyRetry(send, {
+          ...fetchResponse,
+          label: `${method} ${label}`,
+          signal,
+        });
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the

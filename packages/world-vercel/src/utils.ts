@@ -6,6 +6,7 @@ import type { SerializedData } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
+import { fetchResponse, withFirewallDenyRetry } from './firewall-deny-retry.js';
 import {
   getDispatcher,
   getNodeHttpAgents,
@@ -417,21 +418,21 @@ export async function makeRequest<T>({
         // reads everything it sees as a failure of the request on the wire,
         // and these run before there is one.
         const nodeAgents = getNodeHttpAgents(config);
-        const undiciRequest = nodeAgents
-          ? undefined
-          : new Request(url, {
-              ...options,
-              body,
-              headers,
-              signal,
-              // The workflow API answers directly, so a 3xx is a misdirected
-              // request rather than a hop to take. Following it would re-send
-              // `x-vercel-trusted-oidc-idp-token` to whatever host the
-              // `Location` names — fetch only strips `Authorization` across
-              // origins, not other credential headers. Matches the node:http
-              // transport, which never follows redirects.
-              redirect: 'manual',
-            });
+        const buildRequest = () =>
+          new Request(url, {
+            ...options,
+            body,
+            headers,
+            signal,
+            // The workflow API answers directly, so a 3xx is a misdirected
+            // request rather than a hop to take. Following it would re-send
+            // `x-vercel-trusted-oidc-idp-token` to whatever host the
+            // `Location` names — fetch only strips `Authorization` across
+            // origins, not other credential headers. Matches the node:http
+            // transport, which never follows redirects.
+            redirect: 'manual',
+          });
+        let undiciRequest = nodeAgents ? undefined : buildRequest();
         const undiciDispatcher = nodeAgents ? undefined : getDispatcher(config);
         // Both transports issue the same span against the same URL, so this
         // is the only thing that tells them apart in a trace.
@@ -440,27 +441,38 @@ export async function makeRequest<T>({
         });
         const fetchStart = Date.now();
         let response: Response;
+        const send = () => {
+          if (nodeAgents) {
+            return nodeHttpFetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              agents: nodeAgents,
+              // Match undici's per-phase defaults (which the undici agents
+              // inherit implicitly): without these the node:http path arms
+              // no stalled-socket deadline.
+              headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+              bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
+            });
+          }
+          // A Request's body can be read once: a re-send needs a new one.
+          if (!undiciRequest) {
+            headers.set('X-Request-Time', Date.now().toString());
+          }
+          const request = undiciRequest ?? buildRequest();
+          undiciRequest = undefined;
+          return fetch(request, {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+            dispatcher: undiciDispatcher,
+          } as any);
+        };
         try {
-          response = nodeAgents
-            ? await nodeHttpFetch(url, {
-                method,
-                headers,
-                body,
-                signal,
-                agents: nodeAgents,
-                // Match undici's per-phase defaults (which the undici agents
-                // inherit implicitly): without these the node:http path arms
-                // no stalled-socket deadline.
-                headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
-                bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
-              })
-            : await fetch(
-                undiciRequest as Request,
-                {
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-                  dispatcher: undiciDispatcher,
-                } as any
-              );
+          response = await withFirewallDenyRetry(send, {
+            ...fetchResponse,
+            label: `${method} ${endpoint}`,
+            signal,
+          });
         } catch (error) {
           const elapsed = Date.now() - fetchStart;
           // AbortSignal.timeout() surfaces as a DOMException with name
