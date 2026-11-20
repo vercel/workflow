@@ -529,6 +529,7 @@ export const WorkflowInlineSkipReason = SemanticConvention<
   | 'no_handler'
   | 'other_deployment'
   | 'other_region'
+  | 'unknown_region'
   | 'in_step'
   | 'unsupported_start'
   | 'missing_steps'

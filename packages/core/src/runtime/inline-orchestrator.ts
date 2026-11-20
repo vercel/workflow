@@ -63,6 +63,11 @@ export type InlineSkipReason =
   | 'other_deployment'
   /** The run's data lives in a region other than this function's. */
   | 'other_region'
+  /**
+   * The World places runs in regions, but the run's region or this
+   * function's (`VERCEL_REGION`) is unknown, so locality can't be proven.
+   */
+  | 'unknown_region'
   /** Called from inside a step (a child run started by a workflow). */
   | 'in_step'
   /** A start shape this proposal does not inline (start Hook, dynamic). */
@@ -399,13 +404,21 @@ export function decideInline(request: InlineRequest): InlineDecision {
   if (!request.sameDeployment) {
     return { inline: false, reason: 'other_deployment' };
   }
-  // A run's data lives in the region its ID is tagged with. Running its
-  // orchestrator from another region would make every event write a
-  // cross-region round trip, which defeats the point; the queue routes it.
-  const runRegion = request.world.regionForRunId?.(request.runId) ?? undefined;
-  const hereRegion = process.env.VERCEL_REGION;
-  if (runRegion && hereRegion && runRegion !== hereRegion) {
-    return { inline: false, reason: 'other_region' };
+  // A run is locked to the region its ID is tagged with: its data lives
+  // there and the queue delivers it only there. Inline delivery must keep
+  // that lock, so it runs only when this function is provably in the run's
+  // region. On a World that places runs in regions, an unknown run region
+  // (an ID that does not decode) or an unknown region for this process
+  // (`VERCEL_REGION` unset) fails closed: the queue routes the run.
+  if (request.world.regionForRunId) {
+    const runRegion = request.world.regionForRunId(request.runId);
+    const hereRegion = process.env.VERCEL_REGION;
+    if (!runRegion || !hereRegion) {
+      return { inline: false, reason: 'unknown_region' };
+    }
+    if (runRegion !== hereRegion) {
+      return { inline: false, reason: 'other_region' };
+    }
   }
   const entry = entryFor(request.queueName);
   if (!entry) {

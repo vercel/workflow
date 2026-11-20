@@ -364,6 +364,45 @@ describe('start() inline delivery (default on a World that can hold)', () => {
     expect(spanAttributes['workflow.inline.skip_reason']).toBe('other_region');
   });
 
+  it('inlines a run whose region is this function\'s region', async () => {
+    vi.stubEnv('VERCEL_REGION', 'fra1');
+    const { world, queue } = fakeWorld({ regionForRunId: () => 'fra1' });
+    setWorld(world);
+    registerHandler();
+
+    await start(WORKFLOW, []);
+
+    expect(queue.mock.calls[0][2]).toHaveProperty('experimental_hold');
+  });
+
+  it('does not inline when this function\'s region is unknown', async () => {
+    vi.stubEnv('VERCEL_REGION', '');
+    const { world, queue } = fakeWorld({ regionForRunId: () => 'iad1' });
+    setWorld(world);
+    registerHandler();
+
+    await start(WORKFLOW, []);
+
+    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+    expect(spanAttributes['workflow.inline.skip_reason']).toBe(
+      'unknown_region'
+    );
+  });
+
+  it('does not inline when the run\'s region cannot be decoded', async () => {
+    vi.stubEnv('VERCEL_REGION', 'iad1');
+    const { world, queue } = fakeWorld({ regionForRunId: () => null });
+    setWorld(world);
+    registerHandler();
+
+    await start(WORKFLOW, []);
+
+    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+    expect(spanAttributes['workflow.inline.skip_reason']).toBe(
+      'unknown_region'
+    );
+  });
+
   it('does not inline a child run started from inside a step', async () => {
     const { world, queue } = fakeWorld();
     setWorld(world);
