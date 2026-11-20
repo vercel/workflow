@@ -538,6 +538,9 @@ export class AppendOnlyWorld {
       'step_started',
       'step_retrying',
       'wait_created',
+      // A rate limit write reserves a slot of a key every run shares.
+      'rate_created',
+      'rate_acquired',
     ];
     if (
       this.run &&
@@ -635,6 +638,16 @@ export class AppendOnlyWorld {
     const eventData = (data as { eventData?: Record<string, unknown> })
       .eventData;
     if (data.eventType === 'rate_created' && eventData) {
+      // One request per call, as world-local refuses a second (a call
+      // reserved again is decided here from its rate_acquired instead).
+      if (
+        lateWakes === 0 &&
+        this.events.some((event) => event.correlationId === data.correlationId)
+      ) {
+        throw new EntityConflictError(
+          `Rate limit call "${data.correlationId}" already exists`
+        );
+      }
       const call = {
         key: eventData.key as string,
         limit: eventData.limit as number,

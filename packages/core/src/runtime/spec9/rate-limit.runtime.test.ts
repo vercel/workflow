@@ -4,7 +4,12 @@
  * same delivery, a call that has to wait sleeps on a timer until its slot and
  * records `rate_acquired`, and a call past its maxWait rejects.
  */
-import { rateGraceMs, SPEC_VERSION_RATE_LIMITS } from '@workflow/world';
+import { TooEarlyError } from '@workflow/errors';
+import {
+  rateGraceMs,
+  SPEC_VERSION_RATE_LIMITS,
+  slotToEventId,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HeldMessage } from '../../test-support/append-only-world.js';
 import {
@@ -52,6 +57,14 @@ const racedAgainstSleep = `${header}
       rateLimit({ key: "raced", limit: 1, period: "2s" }).then(() => "rate limit"),
       sleep("500ms").then(() => "sleep"),
     ]);
+  }${registerWorkflow()}`;
+
+/** Two calls in a row on a key at one per minute. */
+const twoPerMinute = `${header}
+  async function workflow() {
+    await rateLimit({ key: "shared", limit: 1, period: "1m" });
+    await rateLimit({ key: "shared", limit: 1, period: "1m" });
+    return "done";
   }${registerWorkflow()}`;
 
 /** Two calls on a key at one per minute, the second willing to wait 1s. */
@@ -162,6 +175,38 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     ).toBeGreaterThan(rateGraceMs(1_000));
   }, 60_000);
 
+  it('waits again for a call reserved behind other runs after a late wake', async () => {
+    const { world } = await setupOrchestratorRun(twoPerMinute, [], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+    });
+    let delayed = false;
+    await world.runOnClock({
+      deliverAs: (held: HeldMessage) => {
+        const timer = (held.message as { waitContinuation?: unknown })
+          .waitContinuation;
+        if (timer !== undefined && !delayed) {
+          delayed = true;
+          // The only waiting call's timer arrives past its grace, while
+          // other runs hold the key's next slots: it is reserved again
+          // behind them, as a new rate_created, and nothing else of this
+          // run is pending to wake it.
+          vi.setSystemTime(Date.now() + rateGraceMs(60_000) + 2_000);
+          world.rateTats.set('shared', (Date.now() + 5 * 60_000) * 1000);
+        }
+        return held;
+      },
+    });
+
+    expect(delayed).toBe(true);
+    expect(await runResult(world)).toBe('done');
+    const created = eventsOf(world, 'rate_created');
+    expect(created).toHaveLength(2);
+    expect(dataOf(created[1])?.lateWakes).toBe(1);
+    // Granted at the new slot, behind the other runs.
+    const last = eventsOf(world, 'rate_acquired').at(-1);
+    expect(dataOf(last)?.createdSlot).toEqual(expect.any(Number));
+  }, 60_000);
+
   it('rejects a call whose slot is past its maxWait, reserving nothing', async () => {
     const { world } = await setupOrchestratorRun(timedOut, [], {
       runSpecVersion: SPEC_VERSION_RATE_LIMITS,
@@ -231,6 +276,53 @@ describe('waiting in process for a near rate limit slot', () => {
     // The safety net: had the delivery died while it waited, the queue
     // would still have woken the run.
     expect(timerBeforeAcquired).toEqual([true, true]);
+  }, 60_000);
+
+  it('retries in process when the World clock is a little behind', async () => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    const halfSecond = sequential.replace(
+      'limit: 1, period: "1s"',
+      'limit: 2, period: "1s"'
+    );
+    // The World's clock is 60 ms behind this one: past the in-process
+    // wait's margin, so the first rate_acquired at the slot is too early.
+    const skewMs = 60;
+    let refused = 0;
+    let held: AppendOnlyWorld | undefined;
+    const { world } = await setupOrchestratorRun(halfSecond, [3], {
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      beforeCreate: (data: {
+        eventType: string;
+        eventData?: { createdSlot?: number };
+      }) => {
+        const slot = data.eventData?.createdSlot;
+        if (data.eventType !== 'rate_acquired' || slot === undefined) return;
+        const created = held?.events.find(
+          (event) => event.eventId === slotToEventId(slot)
+        );
+        const acquireAt = new Date(
+          dataOf(created)?.acquireAt as Date
+        ).getTime();
+        if (Date.now() - skewMs < acquireAt) {
+          refused++;
+          throw new TooEarlyError('not due by the World clock', {
+            retryAfter: 1,
+          });
+        }
+      },
+    });
+    held = world;
+    await world.runOnClock();
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(refused).toBeGreaterThan(0);
+    for (const event of eventsOf(world, 'rate_acquired').slice(1)) {
+      const slot = new Date(dataOf(event)?.acquireAt as Date).getTime();
+      const lateMs = event.createdAt.getTime() - slot;
+      // Retried in process, not a whole-second queue timer later.
+      expect(lateMs).toBeGreaterThanOrEqual(skewMs);
+      expect(lateMs).toBeLessThan(400);
+    }
   }, 60_000);
 
   it('wakes early for a slot further out, and finishes the wait in process', async () => {

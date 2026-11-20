@@ -235,6 +235,9 @@ interface SplitEventData {
     rateExpiresAt?: Date;
     /** rate_acquired after a wait: the log slot of the call's rate_created. */
     rateCreatedSlot?: number;
+    /** rate_created: the call opted in to a key in the reserved `$`
+     *  namespace. */
+    rateAllowReservedKey?: boolean;
   };
 }
 
@@ -289,13 +292,14 @@ type MetaSourceField =
   // Rate limit calls (spec >= 10), renamed on the wire: `key` → `rateKey`,
   // `limit` → `rateLimit`, `periodMs` → `ratePeriodMs`, `burst` →
   // `rateBurst`, `expiresAt` → `rateExpiresAt`, `createdSlot` →
-  // `rateCreatedSlot`.
+  // `rateCreatedSlot`, `allowReservedKey` → `rateAllowReservedKey`.
   | 'key'
   | 'limit'
   | 'periodMs'
   | 'burst'
   | 'expiresAt'
   | 'createdSlot'
+  | 'allowReservedKey'
   // World-written on the committed rate event (never sent by the SDK): the
   // reserved slot, and the late wakes of a call reserved again. Listed so the
   // exhaustiveness guard knows they are accounted for; `splitEventDataForV4`
@@ -548,6 +552,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     meta.ratePeriodMs = eventData.periodMs as number;
     if (typeof eventData.burst === 'number') {
       meta.rateBurst = eventData.burst;
+    }
+    if (eventData.allowReservedKey === true) {
+      meta.rateAllowReservedKey = true;
     }
     const expiresAt = eventData.expiresAt;
     meta.rateExpiresAt =

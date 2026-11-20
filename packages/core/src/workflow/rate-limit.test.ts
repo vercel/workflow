@@ -106,6 +106,13 @@ describe('createRateLimit', () => {
     [{ ...CALL, period: '2d' }, /24 hours/],
     [{ ...CALL, maxWait: -1 }, /invalid maxWait/],
     [{ ...CALL, burst: 'yes' }, /burst must be true or false/],
+    [{ ...CALL, key: 'k'.repeat(513) }, /513 bytes/],
+    [{ ...CALL, key: '$sdk.internal' }, /reserved prefix/],
+    [
+      { ...CALL, key: '$sdk.internal', allowReservedKey: false },
+      /reserved prefix/,
+    ],
+    [{ ...CALL, allowReservedKey: 'yes' }, /allowReservedKey must be/],
   ])('refuses %o', async (options, message) => {
     const { rateLimit, ctx } = rateLimitFor([]);
     await expect(rateLimit(options as never)).rejects.toThrow(message);
@@ -127,6 +134,34 @@ describe('createRateLimit', () => {
     if (item?.type !== 'rate') throw new Error('not a rate item');
     expect(item.expiresAt.getTime()).toBe(ctx.globalThis.Date.now() + 30_000);
     expect(item.hasCreatedEvent).toBeUndefined();
+  });
+
+  it('sends the opt-in for a reserved key, and nothing without it', async () => {
+    const reserved = rateLimitFor([]);
+    void reserved.rateLimit({
+      ...CALL,
+      key: '$sdk.internal',
+      allowReservedKey: true,
+    });
+    await reserved.errorReceived.promise;
+    expect(reserved.ctx.invocationsQueue.get(CID)).toMatchObject({
+      key: '$sdk.internal',
+      allowReservedKey: true,
+    });
+
+    const plain = rateLimitFor([]);
+    void plain.rateLimit({ ...CALL, allowReservedKey: true });
+    await plain.errorReceived.promise;
+    // Allowed for any key, sent whenever it is set.
+    expect(plain.ctx.invocationsQueue.get(CID)).toMatchObject({
+      allowReservedKey: true,
+    });
+    const none = rateLimitFor([]);
+    void none.rateLimit(CALL);
+    await none.errorReceived.promise;
+    expect(none.ctx.invocationsQueue.get(CID)).not.toHaveProperty(
+      'allowReservedKey'
+    );
   });
 
   it('asks for a full window with burst: true, and nothing without it', async () => {

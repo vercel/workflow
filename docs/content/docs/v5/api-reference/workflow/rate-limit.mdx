@@ -10,7 +10,7 @@ related:
   - /docs/errors/rate-limit-max-wait
 ---
 
-Waits for a slot under a rate limit that every run of the project shares. At most `limit` calls with the same `key` go ahead per `period`, each at least `period / limit` after the one before. A call whose slot is now resolves at once; otherwise the run sleeps until its slot, like [`sleep()`](/docs/api-reference/workflow/sleep), and resolves then.
+Waits for a slot under a rate limit that every run of the project shares. Calls with the same `key` get slots at most `limit` per `period`, each at least `period / limit` after the one before. A call whose slot is now resolves at once; otherwise the run sleeps until its slot, like [`sleep()`](/docs/api-reference/workflow/sleep), and resolves then. A call that wakes late can go ahead a little after its slot (see [Calls that wake late](#calls-that-wake-late)), so keep handling the upstream's own rate limit errors.
 
 <Callout type="warn">
 Experimental. Runs must be created at spec version 10 ([`WORKFLOW_SPEC_VERSION=10`](/docs/configuration/runtime-tuning#workflow_spec_version)) on the Vercel or Local World, with the default `node` workflow VM. Elsewhere the call throws.
@@ -44,10 +44,18 @@ showSections={['parameters']}
 
 - Calls on one key share it across runs, so they are admitted in the order the World receives them. Calls that ask for different rates on one key each use up their own share of its time.
 - The rate is per project and environment: preview and production deployments have separate budgets for the same key.
-- Keys are stored as-is in the run's event log. Don't put personal data in them.
+- A `key` is 1 character to 512 bytes (UTF-8). Keys are stored as-is in the run's event log. Don't put personal data in them.
+- Keys that start with `$` are reserved for Workflow SDK libraries, and a call with one throws. Don't use them in your own code: the `allowReservedKey` option that permits them exists only for those libraries, and a workflow that shares their keys can starve them or be starved by them.
 - A `period` can be at most 24 hours.
 - With `burst: true`, an idle key admits up to `limit` calls at once, then refills one every `period / limit`. A rolling `period` can then see up to `2 * limit - 1` calls, which suits an upstream that is itself a token bucket or counts fixed windows, but not one that strictly enforces `limit` in any rolling window. Use one setting per key: a bursting call can go ahead of calls on the key that are already waiting without one.
-- A call that cannot get a slot within its `maxWait` rejects with [`RateLimitMaxWaitError`](/docs/errors/rate-limit-max-wait) and uses up none of the key's capacity. Without a `maxWait`, a call waits up to 30 days, which is also the longest a `maxWait` can be.
+- A call that cannot get a slot within its `maxWait` rejects at once with [`RateLimitMaxWaitError`](/docs/errors/rate-limit-max-wait) and uses up none of the key's capacity. Without a `maxWait`, a call waits up to 30 days, which is also the longest a `maxWait` can be.
+- A run that is cancelled or fails while a call waits keeps that call's slot: the next calls on the key still go after it.
+
+## Calls that wake late
+
+A waiting call goes ahead when its run wakes, which is normally at its slot. When the run wakes late (a queue delay, a cold start), the call still goes ahead if it is within a grace of its slot: 10% of the `period`, at least 5 seconds and at most 60 seconds. So in any window of length `W`, up to `(W + grace) / (period / limit) + 1` calls can go ahead: for `limit: 10, period: "1s"`, a 5-second stall can let about 50 waiting calls through at once.
+
+A call that wakes later than its grace is given a new slot behind the calls already queued, and each time that happens its grace doubles, up to 4 times the first. A call that has been given a new slot twice goes ahead if it is at most its largest grace plus one `period` late. If it is that late and also past its `maxWait`, it rejects with `RateLimitMaxWaitError`. Its slot was reserved, so that call does use up capacity.
 
 ## Examples
 

@@ -5047,7 +5047,10 @@ async function runDelivery(
      * written:
      *
      * - too early by the World's clock (`TooEarlyError`, a clock a little
-     *   behind this one): the call's timer is sent again for what is left;
+     *   behind this one): retried in process a few times over about 150 ms
+     *   ({@link RATE_TOO_EARLY_RETRY_MS}), since a whole-second queue timer
+     *   would cost far more than the skew; then the call's timer is sent
+     *   again for what is left;
      * - already acquired, or no such `rate_created` (`EntityConflictError`):
      *   another delivery wrote it, so the log is read again.
      */
@@ -5056,32 +5059,63 @@ async function runDelivery(
     ): Promise<EventResult | undefined> {
       const createdSlot = eventIdToSlot(wait.event.eventId);
       assert(createdSlot !== null, 'A rate_created has a slot id');
-      try {
-        return await createEvent(
-          {
-            eventType: 'rate_acquired' as const,
-            specVersion: SPEC_VERSION_RATE_LIMITS,
-            correlationId: wait.correlationId,
-            eventData: { createdSlot },
-          },
-          { requestId }
-        );
-      } catch (error) {
-        if (TooEarlyError.is(error)) {
-          const retryAfterMs = Math.max(1, error.retryAfter ?? 1) * 1000;
-          await sendWaitTimer({
-            correlationId: wait.correlationId,
-            resumeAtMs: Math.max(wait.resumeAtMs, Date.now() + retryAfterMs),
-          });
-          return undefined;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await createEvent(
+            {
+              eventType: 'rate_acquired' as const,
+              specVersion: SPEC_VERSION_RATE_LIMITS,
+              correlationId: wait.correlationId,
+              eventData: { createdSlot },
+            },
+            { requestId }
+          );
+        } catch (error) {
+          const backoffMs = RATE_TOO_EARLY_RETRY_MS[attempt];
+          if (
+            TooEarlyError.is(error) &&
+            backoffMs !== undefined &&
+            getOrchestratorRateWaitMs() > 0 &&
+            Date.now() + backoffMs <= inlineDeadlineMs - inlineMarginMs
+          ) {
+            runtimeLogger.debug(
+              'Rate limit slot not due yet by the World clock, retrying',
+              {
+                workflowRunId: runId,
+                correlationId: wait.correlationId,
+                attempt: attempt + 1,
+                backoffMs,
+              }
+            );
+            await new Promise<void>((resolve) =>
+              setTimeout(resolve, backoffMs)
+            );
+            continue;
+          }
+          return await settleRateRefusal(wait, error);
         }
-        if (EntityConflictError.is(error)) {
-          session = null;
-          await fullLoad();
-          return undefined;
-        }
-        throw error;
       }
+    }
+
+    /** What {@link acquireRate} does for a refused `rate_acquired`. */
+    async function settleRateRefusal(
+      wait: OpenWait,
+      error: unknown
+    ): Promise<undefined> {
+      if (TooEarlyError.is(error)) {
+        const retryAfterMs = Math.max(1, error.retryAfter ?? 1) * 1000;
+        await sendWaitTimer({
+          correlationId: wait.correlationId,
+          resumeAtMs: Math.max(wait.resumeAtMs, Date.now() + retryAfterMs),
+        });
+        return undefined;
+      }
+      if (EntityConflictError.is(error)) {
+        session = null;
+        await fullLoad();
+        return undefined;
+      }
+      throw error;
     }
 
     /** Sends the timer message of one wait (see `waitTimerMessage`). */
@@ -5392,15 +5426,24 @@ async function runDelivery(
   }
 }
 
-/** The spec 9 orchestrator, for the shared entrypoint. */
 /**
  * How long past a rate limit call's slot an in-process wait ends
  * (`waitForNearRateSlot`): a World whose clock is a few milliseconds behind
  * this one refuses a `rate_acquired` at the slot itself as too early, and
  * that costs a whole-second queue timer.
  */
-const RATE_SLOT_MARGIN_MS = 50;
+const RATE_SLOT_MARGIN_MS = 15;
 
+/**
+ * The in-process backoffs (ms) of a `rate_acquired` the World refuses as too
+ * early (`acquireRate`): its clock is behind this one by more than
+ * {@link RATE_SLOT_MARGIN_MS}. About 150 ms in all, after which the call's
+ * queue timer takes over. The World never grants a slot early, so these only
+ * trade latency, never correctness.
+ */
+const RATE_TOO_EARLY_RETRY_MS = [10, 20, 40, 80] as const;
+
+/** The spec 9 orchestrator, for the shared entrypoint. */
 export const spec9Orchestrator: Orchestrator = {
   // A step message is exempt from failing the run: it is retried in place
   // for its whole life (each userland retry is a redelivery), so its
