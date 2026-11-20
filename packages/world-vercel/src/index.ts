@@ -106,12 +106,17 @@ export function createWorld(config?: APIConfig): World {
       // carry the counters. Single-orchestrator runs (spec >= 9) always list
       // one, which the runtime requires.
       inBandFence: true,
-      // `experimental_rateLimit()`: the backend reserves each call's slot on
-      // its own store, in the project's hooks home region, when the call's
-      // in-band `rate_created` is written, and commits the decision in its
-      // place. It refuses rate events on runs below spec 10, and any it
-      // cannot decide, so no call is recorded without a reservation.
+      // `experimental_rateLimit()`: the backend reserves each call's slot
+      // when the call's in-band `rate_created` is written, and commits the
+      // decision in its place. It refuses rate events on runs below spec 10,
+      // and any it cannot decide, so no call is recorded without a
+      // reservation.
       rateLimits: true,
+      // Not `rateEventsInBatch` yet: the backend refuses a rate event in a
+      // batch until it decides one the way a single write does. Declaring it
+      // before then would get every batch that carries a rate limit call
+      // refused whole, speculative step outcomes included.
+
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })`. Static rather than
       // attested per lookup,

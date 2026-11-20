@@ -243,6 +243,12 @@ export class AppendOnlyWorld {
       /** The spec version the seeded run is stamped with (default 9). */
       runSpecVersion?: number;
       /**
+       * Declare `capabilities.rateEventsInBatch` and decide rate events in a
+       * batch as a single write does. Without it a batch carrying one is
+       * refused whole, as a World without the capability refuses it.
+       */
+      rateEventsInBatch?: boolean;
+      /**
        * Honor `resolveData: 'skip-step-inputs'` on replay pages (list pages
        * and skipped-slot reports): `step_created` and `step_started` are
        * served without `input`. The log and the created event keep it.
@@ -1087,11 +1093,31 @@ export class AppendOnlyWorld {
             message: (error as Error).message,
           };
         }
-        const event = this.append(
-          this.committedHook(data as Partial<Event>),
-          undefined,
-          occurredAt(index)
-        );
+        let committed = this.committedHook(data as Partial<Event>);
+        if (
+          data.eventType === 'rate_created' ||
+          data.eventType === 'rate_acquired'
+        ) {
+          try {
+            const rate = this.committedRate(data as Partial<Event>);
+            rate.reserve?.();
+            committed = rate.event;
+          } catch (error) {
+            // Refused as the single write would be, its position sealed.
+            this.append({ eventType: 'noop' } as Partial<Event>);
+            const status = EntityConflictError.is(error)
+              ? 409
+              : TooEarlyError.is(error)
+                ? 425
+                : ((error as { status?: number }).status ?? 400);
+            return {
+              status,
+              error: (error as Error).name,
+              message: (error as Error).message,
+            };
+          }
+        }
+        const event = this.append(committed, undefined, occurredAt(index));
         this.creates.push({ event, params: params as CreateEventParams });
         return { status: 200 as const, event: this.responseEvent(event) };
       }),
@@ -1186,6 +1212,15 @@ export class AppendOnlyWorld {
         ) {
           throw new WorkflowWorldError(
             `An event batch may carry at most ${WORLD_EVENT_BATCH_LIMITS.maxBytes} bytes`,
+            { status: 400 }
+          );
+        }
+        if (
+          !self.options.rateEventsInBatch &&
+          batch.some(({ event }) => event.eventType.startsWith('rate_'))
+        ) {
+          throw new WorkflowWorldError(
+            'A rate event cannot be batched on this World',
             { status: 400 }
           );
         }
@@ -1342,6 +1377,7 @@ export class AppendOnlyWorld {
       },
       capabilities: {
         inBandFence: true,
+        ...(self.options.rateEventsInBatch ? { rateEventsInBatch: true } : {}),
       },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';

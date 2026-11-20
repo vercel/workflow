@@ -1,6 +1,8 @@
 import {
+  EntityConflictError,
   InBandSupersededError,
   RUN_ERROR_CODES,
+  TooEarlyError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -319,7 +321,74 @@ export class InBandWriter {
     data: T,
     params?: CreateEventParams
   ): Promise<EventResult<T['eventType']>> {
+    if (this.mayJoinOpenGroup(data)) {
+      return this.joinOpenGroup(data, params ?? {}) as Promise<
+        EventResult<T['eventType']>
+      >;
+    }
     return this.write(data, params, false);
+  }
+
+  /**
+   * Whether `data` may ride in the run-ahead group waiting for its turn, as
+   * its last write, instead of waiting behind it for a turn of its own. A
+   * rate limit call's write (`rate_created`, or `rate_acquired` after a
+   * wait) comes right after the speculative outcome of the step before it,
+   * so this saves the call a whole round trip. Only on a World whose batch
+   * decides a rate event the way a single write does
+   * (`WorldCapabilities.rateEventsInBatch`).
+   */
+  private mayJoinOpenGroup(data: CreateEventRequest): boolean {
+    const group = this.openGroup;
+    return (
+      (data.eventType === 'rate_created' ||
+        data.eventType === 'rate_acquired') &&
+      this.world.capabilities?.rateEventsInBatch === true &&
+      this.supportsBatch &&
+      group !== undefined &&
+      groupSize(group) + 1 <= MAX_BATCH_EVENTS &&
+      groupBytes(group) + creationBatchBytes(data) <=
+        MAX_IN_BAND_CREATION_BATCH_BYTES
+    );
+  }
+
+  /**
+   * Adds `data` to the open run-ahead group as its last write and closes the
+   * group, so nothing is sent after it in the batch. It keeps the outcome of
+   * a write of its own: a refusal of it rejects this call with the World's
+   * error and leaves the writer as it was (see {@link sendGroup}), as a
+   * refused {@link create} does. Positions are counted as for any batch: the
+   * World seals a refused item's position, or reports `allocated`.
+   */
+  private joinOpenGroup(
+    data: CreateEventRequest,
+    params: CreateEventParams
+  ): Promise<EventResult> {
+    const group = this.openGroup;
+    if (!group) return this.write(data, params, false);
+    return new Promise((resolve, reject) => {
+      this.pendingPositions += 1;
+      group.push({
+        kind: 'single',
+        events: [
+          {
+            event: data,
+            ...(params.occurredAt !== undefined
+              ? { occurredAt: new Date(params.occurredAt) }
+              : {}),
+            ...(params.computeInstanceId !== undefined
+              ? { computeInstanceId: params.computeInstanceId }
+              : {}),
+          },
+        ],
+        params,
+        verify: () => {},
+        own: true,
+        resolve: resolve as (result: EventResult | EventBatchResult) => void,
+        reject,
+      });
+      this.openGroup = undefined;
+    });
   }
 
   /**
@@ -558,7 +627,7 @@ export class InBandWriter {
             await this.sendSingle(
               first.events[0]!.event,
               first.params as CreateEventParams,
-              true,
+              first.own !== true,
               first.verify
             )
           );
@@ -667,6 +736,11 @@ export class InBandWriter {
           let answer: EventResult | EventBatchResult;
           if (write.kind === 'single') {
             const item = slice[0];
+            if (write.own === true && item && item.error !== undefined) {
+              // Its own refusal, as a single write's: the writer goes on.
+              write.reject(refusalOf(item, write.events[0]?.event.eventType));
+              continue;
+            }
             if (!item || item.error !== undefined) {
               throw new WorkflowWorldError(
                 `A run-ahead ${write.events[0]?.event.eventType} was refused` +
@@ -997,6 +1071,11 @@ function groupBytes(group: AheadWrite[]): number {
 /** A run-ahead write waiting in an open group (see {@link InBandWriter}). */
 interface AheadWrite {
   kind: 'single' | 'batch';
+  /**
+   * A write with an outcome of its own that joined the group as its last
+   * write ({@link InBandWriter.joinOpenGroup}): its refusal rejects it alone.
+   */
+  own?: boolean;
   events: BatchEventRequest[];
   params: CreateEventParams | Omit<CreateEventBatchParams, 'inBand'>;
   verify: (result: EventResult | EventBatchResult) => void;
@@ -1023,4 +1102,18 @@ export function withWrittenEventData<E extends Event>(
     ...event,
     eventData: fresh ? { ...stored, ...sent } : { ...sent, ...stored },
   };
+}
+
+/**
+ * The error a refused batch item stands for, as the single-event write would
+ * have thrown it: what the delivery's handlers of a rate limit write look for.
+ */
+function refusalOf(
+  item: { status: number; error: string; message: string },
+  eventType: string | undefined
+): Error {
+  const message = `${eventType ?? 'Event'} refused in a batch (${item.status} ${item.error}): ${item.message}`;
+  if (item.status === 409) return new EntityConflictError(message);
+  if (item.status === 425) return new TooEarlyError(message, { retryAfter: 1 });
+  return new WorkflowWorldError(message, { status: item.status });
 }

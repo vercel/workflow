@@ -32,6 +32,7 @@ export const WorldCapabilitiesSchema = z
     experimental_queueHold: flag,
     inBandFence: flag,
     rateLimits: flag,
+    rateEventsInBatch: flag,
     hookResumeDedup: flag,
     resolvedHookResume: flag,
     hookForceClaim: flag,

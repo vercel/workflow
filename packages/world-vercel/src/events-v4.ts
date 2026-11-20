@@ -1323,24 +1323,35 @@ const createEventResponseSchemas = new Map<
   z.ZodType<EventResult & { event: Event }>
 >();
 
+/**
+ * Whether a write of `requested` may commit `committed` in its place: the
+ * event type itself, or what the World decides instead of the request.
+ * Shared by the single write and the batch, so both accept the same answers.
+ */
+export function commitsInPlaceOf(
+  requested: EventType,
+  committed: string
+): boolean {
+  return (
+    committed === requested ||
+    (requested === 'hook_created' && committed === 'hook_conflict') ||
+    // The World commits what a rate_created's reservation decided in its
+    // place (see the rate events in @workflow/world).
+    (requested === 'rate_created' &&
+      (committed === 'rate_acquired' || committed === 'rate_failed')) ||
+    // A rate_acquired woken past its grace window is reserved again, and
+    // what that decided is committed in its place: a new rate_created (the
+    // call waits again) or rate_failed (past its deadline).
+    (requested === 'rate_acquired' &&
+      (committed === 'rate_created' || committed === 'rate_failed'))
+  );
+}
+
 export function createEventResponseSchema<T extends EventType>(
   eventType: T
 ): z.ZodType<EventResult<T> & { event: Event }> {
   return CreateEventV4BodySchemas[eventType].refine(
-    ({ event }) =>
-      event.eventType === eventType ||
-      (eventType === 'hook_created' && event.eventType === 'hook_conflict') ||
-      // The World commits what a rate_created's reservation decided in its
-      // place (see the rate events in @workflow/world).
-      (eventType === 'rate_created' &&
-        (event.eventType === 'rate_acquired' ||
-          event.eventType === 'rate_failed')) ||
-      // A rate_acquired woken past its grace window is reserved again, and
-      // what that decided is committed in its place: a new rate_created (the
-      // call waits again) or rate_failed (past its deadline).
-      (eventType === 'rate_acquired' &&
-        (event.eventType === 'rate_created' ||
-          event.eventType === 'rate_failed')),
+    ({ event }) => commitsInPlaceOf(eventType, event.eventType),
     { path: ['event', 'eventType'] }
   );
 }
@@ -1678,8 +1689,9 @@ export async function createWorkflowRunEventsBatchV4(
       }
       // Results are consumed positionally; an item whose committed event is
       // of a different type than the frame submitted at this index is a
-      // server protocol violation, same as a wrong-length results array.
-      if (parsed.data.event.eventType !== eventType) {
+      // server protocol violation, same as a wrong-length results array,
+      // unless the World commits it in the request's place (a rate event).
+      if (!commitsInPlaceOf(eventType, parsed.data.event.eventType)) {
         throw new WorkflowWorldError(
           `v4 createEventBatch: result at index ${index} carries a ` +
             `${parsed.data.event.eventType} event, expected ${eventType}`,

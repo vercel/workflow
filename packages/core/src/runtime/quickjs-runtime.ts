@@ -758,7 +758,10 @@ globalThis.__resolveRateLimitCall = function() {
 };
 var __rateJsonParse = JSON.parse;
 globalThis[Symbol.for("WORKFLOW_RATE_LIMIT")] = function(options) {
-  var call = __rateJsonParse(globalThis.__resolveRateLimitCall(options, Date.now()));
+  // The host reads the workflow clock for the deadline itself, so the call
+  // is not a clock read of workflow code: the deadline is written once, on
+  // the call's rate_created, and nothing the workflow decides depends on it.
+  var call = __rateJsonParse(globalThis.__resolveRateLimitCall(options));
   if (call.error) {
     var Ctor = call.error.name === "TypeError" ? TypeError : call.error.name === "RangeError" ? RangeError : Error;
     return Promise.reject(new Ctor(call.error.message));
@@ -2070,7 +2073,7 @@ export async function startQuickJSWorkflow(
       // the single orchestrator drives rate limit calls; whether the run is
       // at spec 10 is the World's to say (see `createRateLimit`).
       name: '__resolveRateLimitCall',
-      fn: (vm) => (optionsHandle, nowHandle) => {
+      fn: (vm) => (optionsHandle) => {
         const answer = (value: unknown) =>
           vm.newString(JSON.stringify(value)) as never;
         const runSpecVersion = options.workflowRun.specVersion;
@@ -2083,9 +2086,14 @@ export async function startQuickJSWorkflow(
           });
         }
         try {
+          // `vmNowMs`, not `readClock()`: the deadline is written once, on
+          // the call's `rate_created`, and settles nothing (the World decides
+          // from it, and a replay settles the call from the committed
+          // event), so it does not gate run-ahead as a clock read of
+          // workflow code does (`clockReadOnSpeculation`).
           const call = resolveRateLimitCall(
             vm.dump(optionsHandle) as RateLimitOptions,
-            nowHandle.toNumber()
+            vmNowMs
           );
           return answer({ ...call, expiresAt: call.expiresAt.toISOString() });
         } catch (err) {

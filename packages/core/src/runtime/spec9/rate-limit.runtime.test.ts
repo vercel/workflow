@@ -12,6 +12,7 @@ import {
   slotToEventId,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { registerStepFunction } from '../../private.js';
 import type { HeldMessage } from '../../test-support/append-only-world.js';
 import {
   dataOf,
@@ -529,5 +530,67 @@ describe.each(
             .waitContinuation !== undefined
       )
     ).toBe(true);
+  }, 60_000);
+});
+
+registerStepFunction('rl_batch_step', async (n: number) => n + 1);
+
+/** A step, a call on an idle key, then another step. */
+const stepThenFreeCall = `${header}
+  const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("rl_batch_step");
+  async function workflow() {
+    const one = await step(0);
+    await rateLimit({ key: "idle", limit: 1000, period: "1s" });
+    return await step(one);
+  }${registerWorkflow()}`;
+
+describe.each(
+  ENGINES
+)('a rate limit call beside run-ahead writes (%s)', (engine) => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setWorld(undefined);
+  });
+
+  it('goes out in one batch with the step outcome before it', async () => {
+    const { world } = await setupOrchestratorRun(
+      stepThenFreeCall,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+        rateEventsInBatch: true,
+        // Each write in flight long enough for the next ones to queue.
+        createDelayMs: 20,
+      },
+      engine
+    );
+    await world.runOnClock();
+
+    expect(await runResult(world)).toBe(2);
+    expect(
+      world.batches.some(
+        (batch) =>
+          batch.at(-1) === 'rate_created' && batch.includes('step_completed')
+      )
+    ).toBe(true);
+    expect(eventsOf(world, 'rate_acquired')).toHaveLength(1);
+  }, 60_000);
+
+  it('still fails a run below spec 10 clearly when the call was batched', async () => {
+    const { world } = await setupOrchestratorRun(
+      stepThenFreeCall,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        rateEventsInBatch: true,
+        createDelayMs: 20,
+      },
+      engine
+    );
+    await world.runOnClock();
+
+    const failed = eventsOf(world, 'run_failed');
+    expect(failed).toHaveLength(1);
+    expect(eventsOf(world, 'rate_created')).toHaveLength(0);
   }, 60_000);
 });

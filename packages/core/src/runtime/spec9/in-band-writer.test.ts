@@ -1,5 +1,10 @@
-import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
 import {
+  EntityConflictError,
+  RUN_ERROR_CODES,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import {
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
@@ -481,5 +486,114 @@ describe('InBandWriter', () => {
       );
       expect(world.events.some((e) => e.correlationId === 'after')).toBe(false);
     });
+  });
+});
+
+describe('a rate limit write beside run-ahead writes', () => {
+  const rateCreated = (cid: string) =>
+    ({
+      eventType: 'rate_created',
+      specVersion: SPEC_VERSION_RATE_LIMITS,
+      correlationId: cid,
+      eventData: {
+        key: 'k',
+        limit: 1000,
+        periodMs: 1000,
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    }) as const;
+
+  async function ready(
+    options: ConstructorParameters<typeof AppendOnlyWorld>[0]
+  ) {
+    const gates: (() => void)[] = [];
+    let held = false;
+    const world = seeded({
+      ...options,
+      async beforeCreate() {
+        // Hold only the first write, so the writes after it queue up.
+        if (held) return;
+        held = true;
+        await new Promise<void>((resolve) => gates.push(resolve));
+      },
+    });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    const release = async () => {
+      while (gates.length === 0) await new Promise((r) => setTimeout(r, 0));
+      gates.shift()?.();
+    };
+    return { world, writer, release };
+  }
+
+  it('rides in the open run-ahead group as its last write, and closes it', async () => {
+    const { world, writer, release } = await ready({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+    });
+    const inFlight = writer.create(waitCreated('first'));
+    const ahead = writer.createAhead(waitCreated('ahead'), {}, () => {});
+    const rate = writer.create(rateCreated('rate_1'));
+    // After the rate write: a group of its own, behind the batch.
+    const after = writer.createAhead(waitCreated('after'), {}, () => {});
+    await release();
+    await Promise.all([inFlight, ahead, after]);
+    const result = await rate;
+
+    expect(world.batches).toEqual([['wait_created', 'rate_created']]);
+    // What the World committed in its place comes back as the write's own.
+    expect(result.event?.eventType).toBe('rate_acquired');
+    expect(world.events.slice(1).map((e) => e.correlationId)).toEqual([
+      'first',
+      'ahead',
+      'rate_1',
+      'after',
+    ]);
+    expect(writer.expectedSeqInBand).toBe(5);
+  });
+
+  it('waits its own turn on a World without the capability', async () => {
+    const { world, writer, release } = await ready({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+    });
+    const inFlight = writer.create(waitCreated('first'));
+    const ahead = writer.createAhead(waitCreated('ahead'), {}, () => {});
+    const rate = writer.create(rateCreated('rate_1'));
+    await release();
+    await Promise.all([inFlight, ahead, rate]);
+    // Nothing batched a rate event.
+    expect(world.batches.flat()).not.toContain('rate_created');
+    expect(world.events.slice(1).map((e) => e.correlationId)).toEqual([
+      'first',
+      'ahead',
+      'rate_1',
+    ]);
+  });
+
+  it('fails a refused rate write alone, and the writer goes on', async () => {
+    // A run below spec 10: the World refuses the rate event (400).
+    const { world, writer, release } = await ready({ rateEventsInBatch: true });
+    const inFlight = writer.create(waitCreated('first'));
+    const ahead = writer.createAhead(waitCreated('ahead'), {}, () => {});
+    const rate = writer.create(rateCreated('rate_1'));
+    const rateError = rate.catch((error: unknown) => error);
+    await release();
+    await Promise.all([inFlight, ahead]);
+    const error = await rateError;
+
+    expect(world.batches).toEqual([['wait_created', 'rate_created']]);
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect((error as WorkflowWorldError).status).toBe(400);
+    expect(EntityConflictError.is(error)).toBe(false);
+    // The refused item's position was sealed and counted; the next write
+    // carries the right expected count and lands.
+    await writer.create(waitCreated('next'));
+    expect(world.events.at(-1)?.correlationId).toBe('next');
+    expect(writer.isSuperseded).toBe(false);
   });
 });

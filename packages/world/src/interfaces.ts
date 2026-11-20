@@ -839,6 +839,22 @@ export interface WorldCapabilities {
   rateLimits?: boolean;
 
   /**
+   * The World's `events.createBatch` takes in-band `rate_created` and
+   * `rate_acquired` items, as the last item of a batch, and decides each one
+   * exactly as the single-event write does (see {@link rateLimits}): it
+   * reserves only once the fence and every earlier item of the batch were
+   * accepted, and the item's result carries the event committed in its place
+   * (`rate_acquired`, `rate_created` with `acquireAt`, or `rate_failed`). A
+   * refused item is answered with the status the single write would have had
+   * (400, 409, 425) and its position is sealed like any refused item's, or
+   * the batch reports `allocated`. The runtime then sends a rate limit
+   * call's write in the same batch as the speculative step outcomes queued
+   * before it, which saves the call a round trip. Requires
+   * {@link rateLimits}.
+   */
+  rateEventsInBatch?: boolean;
+
+  /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
    * that carry the same `(runId, resumeId)`, collapsing them onto a single
    * committed event and returning the canonical one to every caller. Two
