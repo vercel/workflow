@@ -18,7 +18,6 @@ export interface WorkflowPluginOptions {
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
 }
 
-const resolvingConfig = new Set<string>();
 const builders = new Map<string, Promise<SvelteKitBuilder>>();
 // SvelteKit starts secondary Vite builds in worker threads. Those workers
 // reevaluate vite.config with a fresh module cache, so they cannot see the
@@ -26,21 +25,34 @@ const builders = new Map<string, Promise<SvelteKitBuilder>>();
 // to avoid loading the config and rebuilding routes again.
 const BUILD_CACHE_PATH = 'node_modules/.cache/workflow/sveltekit-build.json';
 
+type KitOptions = { files?: { routes?: unknown } };
+type SvelteConfig = KitOptions & { kit?: KitOptions };
+
 export function workflowPlugin(
   options: WorkflowPluginOptions = {}
 ): PluginOption[] {
   const workingDir = process.cwd();
+  let builder: SvelteKitBuilder | undefined;
 
-  // loadConfig() resolves vite.config when SvelteKit options live there. That
-  // recursively evaluates this plugin, which must not wait on its own setup.
-  if (resolvingConfig.has(workingDir)) {
-    return [];
-  }
-
-  return [getBuilder(workingDir, options).then(createWorkflowPlugins)];
+  return [
+    {
+      name: 'workflow:sveltekit-routes',
+      // SvelteKit scans routes in its own config hook, so ours must run first.
+      enforce: 'pre',
+      config: {
+        order: 'pre',
+        async handler(config) {
+          builder = await getBuilder(workingDir, options, config.plugins);
+        },
+      },
+    },
+    ...createWorkflowPlugins(() => builder),
+  ];
 }
 
-function createWorkflowPlugins(builder: SvelteKitBuilder): Plugin[] {
+function createWorkflowPlugins(
+  builder: () => SvelteKitBuilder | undefined
+): Plugin[] {
   const enqueue = createBuildQueue();
 
   return [
@@ -106,14 +118,15 @@ function createWorkflowPlugins(builder: SvelteKitBuilder): Plugin[] {
 
 function getBuilder(
   workingDir: string,
-  options: WorkflowPluginOptions
+  options: WorkflowPluginOptions,
+  plugins: PluginOption
 ): Promise<SvelteKitBuilder> {
   const existing = builders.get(workingDir);
   if (existing) {
     return existing;
   }
 
-  const builder = loadBuilder(workingDir, options).catch((error) => {
+  const builder = loadBuilder(workingDir, options, plugins).catch((error) => {
     builders.delete(workingDir);
     throw error;
   });
@@ -123,7 +136,8 @@ function getBuilder(
 
 async function loadBuilder(
   workingDir: string,
-  options: WorkflowPluginOptions
+  options: WorkflowPluginOptions,
+  plugins: PluginOption
 ): Promise<SvelteKitBuilder> {
   const cachedRoutesDir = await readCachedRoutesDir(workingDir);
   if (cachedRoutesDir) {
@@ -134,34 +148,9 @@ async function loadBuilder(
     });
   }
 
-  const svelteConfigPath = join(workingDir, 'svelte.config.js');
-  resolvingConfig.add(workingDir);
-
-  let result: Awaited<ReturnType<typeof loadConfig>>;
-  try {
-    result = await loadConfig(
-      existsSync(svelteConfigPath) ? svelteConfigPath : workingDir,
-      { traverse: false }
-    );
-  } finally {
-    resolvingConfig.delete(workingDir);
-  }
-
-  if (result == null) {
-    throw new Error(`Could not find a Svelte config in ${workingDir}.`);
-  }
-  if ('error' in result) {
-    throw new Error(
-      `Failed to load Svelte config from ${result.configFilePath}.`,
-      {
-        cause: result.error,
-      }
-    );
-  }
-
-  const routesDir = (
-    result.config as { kit?: { files?: { routes?: unknown } } }
-  ).kit?.files?.routes;
+  const config =
+    (await findKitOptions(plugins)) ?? (await loadSvelteConfig(workingDir));
+  const routesDir = (config.kit ?? config).files?.routes;
   if (routesDir !== undefined && typeof routesDir !== 'string') {
     throw new Error('Expected kit.files.routes to be a string.');
   }
@@ -175,6 +164,47 @@ async function loadBuilder(
   await builder.build();
   await writeBuildCache(workingDir, resolvedRoutesDir);
   return builder;
+}
+
+async function findKitOptions(
+  option: PluginOption
+): Promise<SvelteConfig | undefined> {
+  const value = await option;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const kitOptions = await findKitOptions(item);
+      if (kitOptions) {
+        return kitOptions;
+      }
+    }
+    return;
+  }
+  if (value && value.name === 'vite-plugin-sveltekit-setup') {
+    return value.api?.options;
+  }
+}
+
+async function loadSvelteConfig(workingDir: string): Promise<SvelteConfig> {
+  const configPath = ['svelte.config.js', 'svelte.config.ts']
+    .map((file) => join(workingDir, file))
+    .find((path) => existsSync(path));
+  if (!configPath) {
+    return {};
+  }
+
+  const result = await loadConfig(configPath, { traverse: false });
+  if (result == null) {
+    throw new Error(`Could not find a Svelte config in ${workingDir}.`);
+  }
+  if ('error' in result) {
+    throw new Error(
+      `Failed to load Svelte config from ${result.configFilePath}.`,
+      {
+        cause: result.error,
+      }
+    );
+  }
+  return result.config as SvelteConfig;
 }
 
 async function readCachedRoutesDir(
