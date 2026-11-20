@@ -7,7 +7,11 @@ import {
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { formatRunUsageText, usageTextColor } from './usage.js';
+import {
+  escapeControlChars,
+  formatRunUsageText,
+  usageTextColor,
+} from './usage.js';
 
 const step = (name: string, steps: number, retries = 0) => ({
   stepName: `step//./src/workflows/order//${name}`,
@@ -184,6 +188,73 @@ describe('formatRunUsageText', () => {
     const pricing = `See pricing: ${WORKFLOW_PRICING_DOCS_URL}`;
     expect(formatRunUsageText(usageOf())).not.toContain(pricing);
     expect(formatRunUsageText(usageOf(), { pricing: true })).toContain(pricing);
+  });
+
+  it('escapes control characters in names from the run, and keeps the table lined up', () => {
+    // A token that would clear the screen and break the table, a workflow
+    // name that would retitle the terminal, and a step name with a tab and
+    // the one-character escape (CSI, U+009B).
+    const token = 'evil\u001b[2J\ntoken';
+    const usage = usageOf({
+      workflowName:
+        'workflow//./src/workflows/order//order\u001b]0;pwned\u0007',
+      eventGroups: [
+        { eventType: 'run_created', events: 1, bytes: 1 },
+        { eventType: 'hook_created', events: 2, bytes: 1 },
+      ],
+      hookGroups: [{ hookId: 'hook_1', token, events: 2 }],
+      stepGroups: [
+        step('chargeCard', 2, 1),
+        { ...step('x', 1), stepName: 'step//./src/a//send\tnow\u009b31m' },
+      ],
+    });
+    const text = formatRunUsageText(usage);
+    // Shown, not dropped, in a form you can read.
+    expect(text).toContain('evil\\x1b[2J\\ntoken');
+    expect(text).toContain('order\\x1b]0;pwned\\x07');
+    expect(text).toContain('send\\tnow\\x9b31m');
+    // No control character reaches the terminal: only the line breaks.
+    for (const line of text.split('\n')) {
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: what must not be printed
+      expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    }
+    // Every row's Events column ends where the header's does.
+    const lines = text.split('\n');
+    const header = lines.findIndex((line) => line.startsWith('TYPE'));
+    const eventsEnd = lines[header].indexOf('EVENTS') + 'EVENTS'.length;
+    const rows = lines.slice(
+      header + 1,
+      lines.findIndex((l) => l.startsWith('TOTAL')) + 1
+    );
+    expect(rows.length).toBeGreaterThan(4);
+    for (const row of rows) {
+      expect(row.slice(0, eventsEnd), row).toMatch(/\d$/);
+      expect(row.charAt(eventsEnd), row).toBe(' ');
+    }
+    expect(rows.some((row) => row.includes('evil\\x1b[2J\\ntoken'))).toBe(true);
+  });
+
+  it('writes each control character as an escape, and leaves other text alone', () => {
+    expect(escapeControlChars('a\u0000b\u001bc\u007fd\u009fe')).toBe(
+      'a\\x00b\\x1bc\\x7fd\\x9fe'
+    );
+    expect(escapeControlChars('line\r\nnext\ttab')).toBe(
+      'line\\r\\nnext\\ttab'
+    );
+    // Printable text, Unicode and backslashes are as they were.
+    expect(escapeControlChars('approval:order-1042 ✓ é \\x1b')).toBe(
+      'approval:order-1042 ✓ é \\x1b'
+    );
+  });
+
+  it('escapes names in colored output too, and keeps only its own colors', () => {
+    const usage = usageOf({
+      hookGroups: [{ hookId: 'hook_1', token: 'a\u001b[2Jb', events: 1 }],
+      eventGroups: [{ eventType: 'hook_created', events: 1, bytes: 1 }],
+    });
+    const text = formatRunUsageText(usage, { color: true });
+    expect(text).toContain('a\\x1b[2Jb');
+    expect(text).not.toContain('\u001b[2J');
   });
 
   it('is plain text unless asked for color', () => {

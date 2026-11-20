@@ -90,6 +90,35 @@ function groupName(group: UsageRowGroup): string {
 const joinParts = (...parts: string[]) => parts.filter(Boolean).join('  ');
 
 /**
+ * Control characters (C0, DEL and C1), the ones a terminal acts on: `\x1b`
+ * starts an escape sequence, `\x9b` is its one-character form, a newline
+ * breaks the table. Names in a run's data (a hook token, a step or workflow
+ * name) come from the app and are printed through this.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the characters to escape
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+const NAMED_ESCAPES: Record<string, string> = {
+  '\n': '\\n',
+  '\r': '\\r',
+  '\t': '\\t',
+};
+
+/**
+ * `text` with each control character written out (`\x1b`, `\n`) instead
+ * of sent to the terminal. Nothing is dropped, and the escaped form is what
+ * the columns are padded by, so the table still lines up.
+ */
+export function escapeControlChars(text: string): string {
+  return text.replace(
+    CONTROL_CHARS,
+    (char) =>
+      NAMED_ESCAPES[char] ??
+      `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`
+  );
+}
+
+/**
  * `inspect run <id> --usage`, as text, from `RunUsage` and the shared
  * `@workflow/world` formatters.
  */
@@ -106,11 +135,13 @@ export function formatRunUsageText(
 ): string {
   const c = new Chalk({ level: color ? 1 : 0 });
   const lines: string[] = [];
-  const workflow =
-    parseWorkflowName(usage.workflowName)?.shortName || usage.workflowName;
+  // Everything from the run's data is escaped before it is printed.
+  const workflow = escapeControlChars(
+    parseWorkflowName(usage.workflowName)?.shortName || usage.workflowName
+  );
 
   lines.push(
-    `${c.bold(workflow)}  ${usage.runId}  ${statusColor(c, usage.status)('●')} ${usage.status}`
+    `${c.bold(workflow)}  ${escapeControlChars(usage.runId)}  ${statusColor(c, usage.status)('●')} ${escapeControlChars(usage.status)}`
   );
   if (usage.inProgress) {
     lines.push(c.dim('This run has not finished; its usage can still grow.'));
@@ -146,7 +177,8 @@ export function formatRunUsageText(
         (child): Row => ({
           type: '',
           name: joinParts(
-            child.label,
+            // A step function's name or a hook's token, from the run.
+            escapeControlChars(child.label),
             // A hook is one hook: only a step function has calls to count.
             group.type === 'steps'
               ? formatCount(child.calls, 'call', 'calls')

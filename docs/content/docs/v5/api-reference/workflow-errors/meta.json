@@ -13,6 +13,7 @@
     "workflow-run-not-completed-error",
     "workflow-runtime-error",
     "workflow-start-error",
+    "dynamic-workflows-not-enabled-error",
     "workflow-world-error",
     "throttle-error",
     "entity-conflict-error",

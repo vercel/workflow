@@ -62,6 +62,8 @@ Every event in the run's log counts once. [Event sourcing](/docs/how-it-works/ev
 
 **Storage (local)** counts the bytes of the run's payloads as the SDK sent them (compressed when that saves space, and encrypted when encryption is on): run inputs and outputs, step inputs and results, errors, and hook metadata and payloads. It adds the bytes the run wrote to its streams. Event metadata, such as ids and timestamps, isn't counted. A run started with `experimental_retention: 0` reports what it wrote before its data was deleted.
 
+When a run's data is deleted, its sizes stay in the local data directory, so usage can still report them.
+
 Two kinds of data aren't counted locally:
 
 - **QuickJS VM snapshots.**

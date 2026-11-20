@@ -1,5 +1,14 @@
 # @workflow/sveltekit
 
+## 5.0.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.4
+  - @workflow/rollup@5.0.13
+  - @workflow/vite@5.0.13
+
 ## 5.0.12
 
 ### Patch Changes

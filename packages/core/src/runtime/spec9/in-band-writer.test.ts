@@ -33,6 +33,13 @@ function seeded(options: ConstructorParameters<typeof AppendOnlyWorld>[0]) {
   return world;
 }
 
+/** The committed event at `index` of the World's log. */
+function eventAt(world: AppendOnlyWorld, index: number) {
+  const event = world.events[index];
+  if (!event) throw new Error(`no event at index ${index}`);
+  return event;
+}
+
 const waitCreated = (cid: string) =>
   ({
     eventType: 'wait_created',
@@ -309,6 +316,143 @@ describe('InBandWriter', () => {
     expect(writer.isStopped).toBe(false);
     // No new step body starts.
     expect(() => writer.assertActive()).toThrow(stop);
+  });
+
+  describe('slot prediction', () => {
+    /** A writer on a World that commits a write and holds its answer. */
+    async function answersHeld() {
+      const answers: (() => void)[] = [];
+      const world = seeded({
+        async afterCommit() {
+          await new Promise<void>((resolve) => answers.push(resolve));
+        },
+      });
+      const writer = new InBandWriter(world.asWorld(), RUN);
+      writer.adoptSnapshot(
+        requireLoadSnapshot(
+          RUN,
+          await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+        )
+      );
+      const committed = async (events: number) => {
+        for (let i = 0; i < 200 && world.events.length < events; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        expect(world.events).toHaveLength(events);
+      };
+      return { world, writer, answers, committed };
+    }
+
+    it('counts a write the live feed echoed before its answer once', async () => {
+      const { world, writer, answers, committed } = await answersHeld();
+      const write = writer.createAhead(waitCreated('w1'), {}, () => {});
+      // Committed at slot 2; the answer is held.
+      await committed(2);
+      expect(writer.predictNextSlot()).toBe(3);
+
+      // The feed's echo of the write. Its position is in `knownMaxSlot`
+      // now, and must not be counted again as a pending one.
+      writer.observeEvent(eventAt(world, 1));
+      expect(writer.predictNextSlot()).toBe(3);
+      // The same echo again (a poll after the push) changes nothing.
+      writer.observeEvent(eventAt(world, 1));
+      expect(writer.predictNextSlot()).toBe(3);
+
+      // Another writer's event above it is a position of its own.
+      const foreign = world.appendOutOfBand({
+        eventType: 'hook_received',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        correlationId: 'hook_other',
+        eventData: { payload: new Uint8Array() },
+      } as never);
+      writer.observeEvent(foreign);
+      expect(writer.predictNextSlot()).toBe(4);
+
+      answers.shift()?.();
+      await write;
+      expect(writer.predictNextSlot()).toBe(4);
+    });
+
+    it('counts the echoed part of a batch once, and the rest as pending', async () => {
+      const { world, writer, answers, committed } = await answersHeld();
+      // One group: the three events go out as one batch.
+      const batch = writer.createBatchAhead(
+        [{ event: waitCreated('w1') }, { event: waitCreated('w2') }],
+        {},
+        () => {}
+      );
+      const single = writer.createAhead(waitCreated('w3'), {}, () => {});
+      await committed(4);
+      expect(world.batches).toHaveLength(1);
+      expect(writer.predictNextSlot()).toBe(5);
+
+      // The feed echoes two of the three before the answer.
+      writer.observeEvent(eventAt(world, 1));
+      expect(writer.predictNextSlot()).toBe(5);
+      writer.observeEvent(eventAt(world, 2));
+      expect(writer.predictNextSlot()).toBe(5);
+
+      answers.shift()?.();
+      await Promise.all([batch, single]);
+      expect(writer.predictNextSlot()).toBe(5);
+      // The third echo, after the answer.
+      writer.observeEvent(eventAt(world, 3));
+      expect(writer.predictNextSlot()).toBe(5);
+    });
+
+    it("counts another writer's event below a write in flight as its own position", async () => {
+      const { world, writer, answers, committed } = await answersHeld();
+      // Another writer takes slot 2 before this writer's write is sent.
+      const foreign = world.appendOutOfBand({
+        eventType: 'hook_received',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        correlationId: 'hook_other',
+        eventData: { payload: new Uint8Array() },
+      } as never);
+      const write = writer.createAhead(waitCreated('w1'), {}, () => {});
+      await committed(3);
+      // Unaware of the other event, the next write is expected at 3.
+      expect(writer.predictNextSlot()).toBe(3);
+      // The feed delivers both: the other writer's, then the echo.
+      writer.observeEvent(foreign);
+      expect(writer.predictNextSlot()).toBe(4);
+      writer.observeEvent(eventAt(world, 2));
+      expect(writer.predictNextSlot()).toBe(4);
+      answers.shift()?.();
+      await write;
+      expect(writer.predictNextSlot()).toBe(4);
+    });
+
+    it('counts an answered write once before it settles', async () => {
+      const world = seeded({});
+      const writer = new InBandWriter(world.asWorld(), RUN);
+      writer.adoptSnapshot(
+        requireLoadSnapshot(
+          RUN,
+          await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+        )
+      );
+      // `verify` runs once the answer is taken in, before the write leaves
+      // the queue: a prediction made there (a step body resuming in the
+      // same turn) must not count the answered write twice.
+      let predictedInVerify: number | undefined;
+      await writer.createRequired(waitCreated('w1'), {}, () => {
+        predictedInVerify = writer.predictNextSlot();
+      });
+      expect(predictedInVerify).toBe(3);
+      expect(writer.predictNextSlot()).toBe(3);
+
+      let predictedInBatchVerify: number | undefined;
+      await writer.createBatchRequired(
+        [{ event: waitCreated('w2') }, { event: waitCreated('w3') }],
+        {},
+        () => {
+          predictedInBatchVerify = writer.predictNextSlot();
+        }
+      );
+      expect(predictedInBatchVerify).toBe(5);
+      expect(writer.predictNextSlot()).toBe(5);
+    });
   });
 
   describe('run-ahead writes', () => {

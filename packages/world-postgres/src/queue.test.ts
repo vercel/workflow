@@ -389,6 +389,30 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('with skipWorkers, enqueues jobs but never runs a worker', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', skipWorkers: true },
+      pool
+    );
+    await queue.start();
+    // Started twice, as an application restarting the World would.
+    await queue.start();
+
+    // No executor port is detected, so without the option the worker would
+    // already have started (see startQueue).
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(run).not.toHaveBeenCalled();
+    expect(workerUtilsMock.migrate).toHaveBeenCalled();
+
+    await queue.queue('__wkf_workflow_test-workflow' as ValidQueueName, {
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    expect(
+      vi.mocked(workerUtilsMock.addJob).mock.calls.map((call) => call[0])
+    ).toEqual(['workflow_flows']);
+  });
+
   it.each([
     undefined,
     'custom',
