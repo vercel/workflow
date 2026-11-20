@@ -20,6 +20,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { errorSignalFields } from '../../error-signal.js';
 
 import type {
   AttributeInvocationQueueItem,
@@ -758,6 +759,7 @@ export async function handleSuspension({
               suspension.globalThis,
               compression
             ),
+            ...errorSignalFields(error),
           },
         },
         { requestId }

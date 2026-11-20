@@ -24,6 +24,7 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
+import { errorSignalFields } from '../../error-signal.js';
 import type { FlushableStreamState } from '../../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -328,6 +329,7 @@ export async function failStepForExhaustedRetries(params: {
           globalThis,
           (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
         ),
+        ...errorSignalFields(new FatalError(message)),
       },
     });
     return { type: 'failed', result };
@@ -388,6 +390,7 @@ export async function failStepForExhaustedDeliveries(params: {
           globalThis,
           (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
         ),
+        ...errorSignalFields(new FatalError(message)),
       },
     });
     return { type: 'failed', result };
@@ -508,6 +511,7 @@ export async function executeStep(
                 globalThis,
                 compression
               ),
+              ...errorSignalFields(new FatalError(errorMessage)),
             },
           },
           params.terminalEventParams
@@ -1062,6 +1066,7 @@ export async function executeStep(
                   globalThis,
                   compression
                 ),
+                ...errorSignalFields(error),
                 ...latencyEventData,
               },
             },
@@ -1173,6 +1178,7 @@ export async function executeStep(
               globalThis,
               compression
             ),
+            ...errorSignalFields(err),
             retryAfter: retryAt,
           },
         });

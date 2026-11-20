@@ -170,7 +170,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `run_created` | Creates a new workflow run in `pending` state. Contains the deployment ID, workflow name, input arguments, and optional execution context. |
 | `run_started` | Transitions the run to `running` state when execution begins. |
 | `run_completed` | Transitions the run to `completed` state with the workflow's return value. |
-| `run_failed` | Transitions the run to `failed` state with error details and optional error code. |
+| `run_failed` | Transitions the run to `failed` state with error details and optional error code. See [Error class name and status](#error-class-name-and-status). |
 | `run_cancelled` | Transitions the run to `cancelled` state. Can be triggered from `pending` or `running` states. |
 | `attr_set` | Records attribute changes on the run, one event per [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call. Contains the changes and their writer. A write from the workflow body carries a correlation ID; a write from a step body does not. Does not change the run's state. |
 
@@ -181,8 +181,17 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `step_created` | Creates a new step in `pending` state. Contains the step name and serialized input arguments. |
 | `step_started` | Transitions the step to `running` state. Includes the current attempt number for retries. |
 | `step_completed` | Transitions the step to `completed` state with the step's return value. |
-| `step_failed` | Transitions the step to `failed` state with error details. The step will not be retried. |
-| `step_retrying` | (Optional) Transitions the step back to `pending` state for retry. Contains the error that caused the retry and optional delay before the next attempt. When not emitted, retries appear as consecutive `step_started` events. |
+| `step_failed` | Transitions the step to `failed` state with error details. The step will not be retried. See [Error class name and status](#error-class-name-and-status). |
+| `step_retrying` | (Optional) Transitions the step back to `pending` state for retry. Contains the error that caused the retry and optional delay before the next attempt. When not emitted, retries appear as consecutive `step_started` events. See [Error class name and status](#error-class-name-and-status). |
+
+### Error class name and status
+
+The serialized error on `run_failed`, `step_failed` and `step_retrying` is encrypted when the run is. Beside it, these events carry two optional plaintext fields that say what kind of error it was without decrypting it:
+
+- `errorName`: the error's class name (its `name`), such as `StripeAuthenticationError`. Recorded only when it is an identifier of at most 128 characters.
+- `errorStatus`: the error's HTTP status (its `statusCode`, else its `status`), such as `401`. Recorded only when it is an integer from 100 to 599.
+
+When the error is a `FatalError` with a `cause`, such as the one that wraps a step's last error when it runs out of retries, both describe the cause. The message and stack are never recorded in plaintext.
 
 ### Hook events
 

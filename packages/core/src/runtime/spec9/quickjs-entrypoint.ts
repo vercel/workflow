@@ -45,6 +45,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { classifyRunError } from '../../classify-error.js';
+import { errorSignalFields } from '../../error-signal.js';
 import type { QueueItem } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -3969,6 +3970,9 @@ async function runQuickJSDelivery(
     //     `dehydrateRunError`. Used when valueBytes is absent (e.g.
     //     extractError pseudo-failures from VM bootstrap).
     let dehydratedError: Uint8Array;
+    // The plaintext class name and status beside the payload: the original
+    // thrown value's when the VM serialized it, else the reconstructed one's.
+    let errorSignal = errorSignalFields(reconstructed);
     if (result.failed.valueBytes) {
       // Hydrate the VM-side bytes, remap the error stack with the
       // host-side source map (the VM can't do this: it lacks both the
@@ -3981,6 +3985,7 @@ async function runQuickJSDelivery(
           runId,
           undefined // VM bytes are unencrypted
         );
+        errorSignal = errorSignalFields(hydrated);
         if (
           hydrated &&
           typeof hydrated === 'object' &&
@@ -4073,6 +4078,7 @@ async function runQuickJSDelivery(
         eventData: {
           error: dehydratedError,
           errorCode,
+          ...errorSignal,
         },
       });
       scheduleSnapshotDelete();

@@ -24,6 +24,7 @@ import {
 } from '@workflow/world';
 import { isRetryableWorldError } from './classify-error.js';
 import { describeError } from './describe-error.js';
+import { errorSignalFields } from './error-signal.js';
 import { type Logger, runtimeLogger } from './logger.js';
 import { afterRunFailed } from './runtime/after-terminal-write.js';
 import { getComputeInstanceId } from './runtime/compute-instance.js';
@@ -465,6 +466,7 @@ export function workflowEntrypoint(
               {
                 error: dehydratedError,
                 errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+                ...errorSignalFields(err),
               },
               requestId
             );

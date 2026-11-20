@@ -2107,6 +2107,25 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
     expect(wireMeta.encryptionPublicKey).toBe(key);
   });
 
+  it('carries errorName and errorStatus on step_failed', async () => {
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'step_failed',
+      specVersion: 5,
+      correlationId: 'step_1',
+      eventData: {
+        stepName: 'charge',
+        error: new TextEncoder().encode('encr-opaque-error-bytes'),
+        errorName: 'StripeAuthenticationError',
+        errorStatus: 401,
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    expect(meta.errorName).toBe('StripeAuthenticationError');
+    expect(wireMeta.errorName).toBe('StripeAuthenticationError');
+    expect(meta.errorStatus).toBe(401);
+    expect(wireMeta.errorStatus).toBe(401);
+  });
+
   // Generic guard: whatever the splitter decides belongs in the frame meta must
   // actually reach the wire. This fails for ANY field a future change adds to
   // the splitter but forgets in buildPostFrameMeta, not just this one.

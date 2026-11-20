@@ -51,6 +51,7 @@ import {
   isRetryableWorldError,
   isWorldContractError,
 } from '../../classify-error.js';
+import { errorSignalFields } from '../../error-signal.js';
 
 import {
   type StepInvocationQueueItem,
@@ -3279,6 +3280,7 @@ async function runDelivery(
                 eventData: {
                   error: dehydratedError,
                   errorCode,
+                  ...errorSignalFields(suspensionError),
                 },
               },
               { requestId }
@@ -5027,6 +5029,7 @@ async function runDelivery(
               eventData: {
                 error: dehydratedError,
                 errorCode,
+                ...errorSignalFields(terminalError),
               },
             },
             {
