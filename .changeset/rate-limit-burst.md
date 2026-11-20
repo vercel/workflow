@@ -5,4 +5,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Add `burst: true` to `experimental_rateLimit()`: an idle key admits up to `limit` calls at once, then refills one per interval, like a token bucket.
+Add `burst` to `experimental_rateLimit()`: an idle key admits up to `burst` calls at once (1 to `limit`, default 1), then refills one per interval, like a token bucket.
