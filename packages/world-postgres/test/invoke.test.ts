@@ -34,6 +34,7 @@ import {
 import { createWorld } from '../src/index.js';
 import {
   createInvocationNotifications,
+  INVOCATION_FALLBACK_MS,
   INVOCATION_INPUT_TOPIC,
   INVOCATION_RESULT_TOPIC,
   invocationNotificationKey,
@@ -1115,6 +1116,194 @@ describe.skipIf(process.platform === 'win32')(
         overrides.delete(runId);
       }
     }, 30_000);
+
+    it('leaves a wake for an invocation that reaches the mailbox once the delivery has stopped reading it', async () => {
+      // An executor delivery reads the mailbox while it runs. Once it has
+      // stopped, an invocation it did not deliver may have no wake left (the
+      // case here: one submitted without a wake job of its own), so the
+      // delivery looks at the mailbox once more and leaves a wake. That wake
+      // must start a delivery on the run's own queue that answers it.
+      //
+      // The invocation is submitted at exactly that last look, which is told
+      // from the delivery's earlier reads by time alone. While it runs, the
+      // delivery reads the mailbox when something changes (an invocation is
+      // submitted, its listener connects) and otherwise every
+      // `INVOCATION_FALLBACK_MS`. The test lets the delivery's execution
+      // return right after one of those timed reads, when nothing else is
+      // going on. The next timed read is then a whole interval away, and the
+      // delivery stops reading well before it, so a read sooner than that is
+      // the last look. A machine that stalls for that long, or a listener
+      // that reconnects just then, makes an attempt inconclusive, and the
+      // test tries again with a new run rather than guess.
+      const TIMED_READ_MS = INVOCATION_FALLBACK_MS - 100;
+      type Attempt = {
+        runId: string;
+        phase: 'running' | 'idle' | 'submitted' | 'inconclusive';
+        entered: boolean;
+        /** When the delivery's latest read of the mailbox returned. */
+        readAt: number | undefined;
+        finish: () => void;
+        submit: () => Promise<void>;
+      };
+      let attempt: Attempt | undefined;
+      const query = pool.query.bind(pool) as (
+        ...args: unknown[]
+      ) => Promise<{ rows: unknown[] }>;
+      const mailboxRead = async (current: Attempt, args: unknown[]) => {
+        const sinceLastRead =
+          current.readAt === undefined
+            ? undefined
+            : performance.now() - current.readAt;
+        if (current.phase === 'idle') {
+          if (sinceLastRead !== undefined && sinceLastRead < TIMED_READ_MS) {
+            current.phase = 'submitted';
+            await current.submit();
+          } else {
+            current.phase = 'inconclusive';
+          }
+          return query(...args);
+        }
+        const result = await query(...args);
+        current.readAt = performance.now();
+        if (
+          current.phase === 'running' &&
+          current.entered &&
+          result.rows.length === 0 &&
+          sinceLastRead !== undefined &&
+          sinceLastRead >= TIMED_READ_MS
+        ) {
+          // A timed read of an empty mailbox: let the delivery's execution
+          // return, so that it goes idle and stops reading.
+          current.phase = 'idle';
+          current.finish();
+        }
+        return result;
+      };
+      const reads = vi.spyOn(pool, 'query').mockImplementation(((
+        ...args: unknown[]
+      ) => {
+        const [text, values] = args as [unknown, unknown[] | undefined];
+        const current = attempt;
+        return current &&
+          typeof text === 'string' &&
+          text.startsWith(
+            'SELECT request_id, payload FROM workflow.workflow_invocations'
+          ) &&
+          values?.[0] === current.runId
+          ? mailboxRead(current, args)
+          : query(...args);
+      }) as never);
+      try {
+        if (!world.invoke) throw new Error('Invocation unavailable');
+        let conclusive = false;
+        for (let tries = 0; tries < 5 && !conclusive; tries++) {
+          const runId = `wrun_${ulid()}`;
+          await seedTransportRun(runId);
+          const requestId = randomUUID();
+          const executing = Promise.withResolvers<void>();
+          const firstFinished = Promise.withResolvers<void>();
+          let deliveries = 0;
+          let result: Promise<unknown> | undefined;
+          const executed: string[] = [];
+          const answered: { delivery: number; queueName: string }[] = [];
+          const current: Attempt = {
+            runId,
+            phase: 'running',
+            entered: false,
+            readAt: undefined,
+            finish: executing.resolve,
+            async submit() {
+              // No wake job: the delivery's own wake is the only one.
+              result = transport.invoke(
+                runId,
+                {},
+                { idempotencyKey: requestId, timeoutMs: 15_000 },
+                async () => {}
+              );
+              result.catch(() => {});
+              await until(
+                async () =>
+                  (
+                    await query(
+                      'SELECT 1 FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
+                      [runId, requestId]
+                    )
+                  ).rows.length,
+                (rows) => rows === 1
+              );
+            },
+          };
+          const handler = world.createQueueHandler(
+            '__wkf_workflow_',
+            async (message, metadata) => {
+              const invocation = message as {
+                invoke?: boolean;
+                requestId?: string;
+              };
+              if (invocation.invoke) {
+                if (invocation.requestId === requestId) {
+                  answered.push({
+                    delivery: deliveries,
+                    queueName: metadata.queueName,
+                  });
+                }
+                return { status: 'accepted' };
+              }
+              executed.push(metadata.queueName);
+              if (!current.entered) {
+                current.entered = true;
+                await executing.promise;
+              }
+            }
+          );
+          overrides.set(runId, async (req) => {
+            const delivery = ++deliveries;
+            try {
+              return await handler(req);
+            } finally {
+              if (delivery === 1) firstFinished.resolve();
+            }
+          });
+          attempt = current;
+          try {
+            await world.queue('__wkf_workflow_transport_test', { runId });
+            await firstFinished.promise;
+            expect(
+              current.phase,
+              'the delivery read the mailbox again once it had stopped reading it'
+            ).not.toBe('idle');
+            if (current.phase === 'submitted') {
+              await expect(result).resolves.toEqual({ status: 'accepted' });
+              // Answered by the delivery the wake started, on the run's own
+              // queue. (Answered by the first delivery, it was read while
+              // that delivery still ran: inconclusive too.)
+              if (answered[0]?.delivery !== 1) {
+                expect(answered).toEqual([
+                  { delivery: 2, queueName: executed[0] },
+                ]);
+                expect(executed[0]).toBe('__wkf_workflow_transport_test');
+                conclusive = true;
+              }
+            }
+            await until(
+              async () => (await executorJobs(runId)).length,
+              (count) => count === 0
+            );
+            expect(await leaseOwner(runId)).toBeUndefined();
+          } finally {
+            attempt = undefined;
+            executing.resolve();
+            overrides.delete(runId);
+          }
+        }
+        expect(
+          conclusive,
+          'an invocation was submitted at the last look of some attempt'
+        ).toBe(true);
+      } finally {
+        reads.mockRestore();
+      }
+    }, 60_000);
 
     it('bounds listener connections and mailbox growth under concurrent invokes', async () => {
       const name = `soak-${randomUUID()}`;
