@@ -6,7 +6,7 @@ import {
   type Event,
   type RunUsage,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
-  USAGE_COUNTING_DOCS_URL,
+  USAGE_DOCS_URL,
   usageEntityOfEventType,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
@@ -165,7 +165,7 @@ function checkPrinted(text: string, events: Event[]) {
   }
 
   // No counting explanation: a pointer to the docs instead.
-  expect(text).toContain(`How events are counted: ${USAGE_COUNTING_DOCS_URL}`);
+  expect(text).toContain(`How usage is counted: ${USAGE_DOCS_URL}`);
   expect(text).not.toMatch(/steps? wrote|retr(y|ies) added|×\d/);
   expect(text).not.toMatch(/On Vercel|would count as|See pricing/);
   // The summary's events have no retries; the retries are on step rows.
