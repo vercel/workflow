@@ -84,30 +84,40 @@ describe('foldReadEvents', () => {
     expect(foldReadEvents(events, speculative())).toEqual({
       fold: events,
       displaced: false,
+      complete: true,
     });
   });
 
-  it('leaves out the commit of a speculative write read before its answer', () => {
+  it('leaves out the commit of a speculative write read before its answer, and says the read is incomplete', () => {
+    // No repair is due: the speculative copy stands for the event. But the
+    // event is not in the log by this read, so a reader must not move its
+    // position past it (the write's answer may not bring it either).
     const below = at(4, 'hook_received', 'hook_x');
+    const above = at(6, 'hook_received', 'hook_x');
     expect(
       foldReadEvents(
-        [below, at(5, 'step_started', 'step_b')],
+        [below, at(5, 'step_started', 'step_b'), above],
         speculative(started)
       )
-    ).toEqual({ fold: [below], displaced: false });
+    ).toEqual({ fold: [below, above], displaced: false, complete: false });
   });
 
-  it('reports an event committed where another event sits speculatively, and does not fold it', () => {
+  it('reports an event committed where another event sits speculatively, and folds nothing from it on', () => {
     // The case an incremental load used to drop silently: a step's outcome
     // committed at the slot another step's speculative start was placed at.
+    // The log's order is wrong from that slot on, so what follows waits for
+    // the repair too.
     const below = at(4, 'hook_received', 'hook_x');
-    const above = at(6, 'step_started', 'step_c');
     expect(
       foldReadEvents(
-        [below, at(5, 'step_completed', 'step_a'), above],
+        [
+          below,
+          at(5, 'step_completed', 'step_a'),
+          at(6, 'step_started', 'step_c'),
+        ],
         speculative(started)
       )
-    ).toEqual({ fold: [below, above], displaced: true });
+    ).toEqual({ fold: [below], displaced: true, complete: false });
   });
 
   it('tells two events of one step apart by type', () => {
@@ -115,6 +125,14 @@ describe('foldReadEvents', () => {
       foldReadEvents([at(5, 'step_completed', 'step_b')], speculative(started))
         .displaced
     ).toBe(true);
+  });
+
+  it('is complete for an empty read', () => {
+    expect(foldReadEvents([], speculative(started))).toEqual({
+      fold: [],
+      displaced: false,
+      complete: true,
+    });
   });
 });
 

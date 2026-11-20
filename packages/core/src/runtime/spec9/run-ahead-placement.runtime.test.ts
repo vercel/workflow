@@ -2,7 +2,10 @@
  * Where run-ahead's speculative events sit when something else commits at
  * their slots, as whole deliveries (the rules themselves are unit-tested in
  * `speculative-placement.test.ts`). Each sequence is fixed with gates rather
- * than timers, so a rule that is switched off fails its test on any machine.
+ * than timers, so the tests pass however slow the machine is. Where a test
+ * checks that something did not happen yet, it waits a fixed time for it
+ * (`NOT_YET_MS`): with the rule switched off, a machine too slow to get
+ * there in that time is caught by the test's other assertions or not at all.
  */
 import { withResolvers } from '@workflow/utils';
 import { type Event, eventIdToSlot } from '@workflow/world';
@@ -25,6 +28,15 @@ import { setWorld } from '../world.js';
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
 const TOKEN = 'ao-unobserved';
+
+/**
+ * Longest a test holds a write for a step the delivery is expected to reach.
+ * It never ends a hold in a passing run, however slow: it is there so that a
+ * delivery which does not get there fails on an assertion instead of hanging.
+ */
+const GATE_TIMEOUT_MS = 10_000;
+/** How long a test waits for something that must not happen yet. */
+const NOT_YET_MS = 250;
 
 let a1Entered = withResolvers<void>();
 let a1Release = withResolvers<void>();
@@ -289,6 +301,9 @@ describe('run-ahead beside an outcome on the awaited path (node engine)', () => 
     a1Release.resolve();
     await a1WriteSent.promise;
     // 2. `b1` returns. Its outcome is written ahead, one slot above.
+    //    Nothing outside the delivery shows when that outcome is placed, so
+    //    this wait is not a gate. It does not have to be: the assertions
+    //    below hold whichever of steps 2 and 3 comes first.
     b1Release.resolve();
     await new Promise((resolve) => setTimeout(resolve, 20));
     // 3. Another writer takes the slot `a1`'s outcome was expected at.
@@ -299,7 +314,7 @@ describe('run-ahead beside an outcome on the awaited path (node engine)', () => 
     // that outcome committed. (A loop that ran the pass starts `b2` at
     // once; either way the held write is then let through.)
     readRelease.resolve();
-    const b2StartedEarly = await enteredWithin(b2Entered.promise, 250);
+    const b2StartedEarly = await enteredWithin(b2Entered.promise, NOT_YET_MS);
     a1WriteRelease.resolve();
     await delivery;
     await world.runUntilIdle();
@@ -388,7 +403,7 @@ describe.each([
         // `s1`'s outcome is answered only once `s2` was placed and its body
         // runs, so the answer is taken in by the pass after `s2` returns.
         if (committed.some((event) => isOutcomeOf(world, event, 'ao_s1'))) {
-          await enteredWithin(s2Entered.promise, 2000);
+          await enteredWithin(s2Entered.promise, GATE_TIMEOUT_MS);
         }
       },
     });
@@ -421,7 +436,7 @@ describe.each([
     // that dropped the event runs the pass and starts `s3` at once; either
     // way the held write is then let through.)
     s2Release.resolve();
-    const s3StartedEarly = await enteredWithin(s3Entered.promise, 250);
+    const s3StartedEarly = await enteredWithin(s3Entered.promise, NOT_YET_MS);
     const passesMeanwhile = passes() - passesBefore;
     s2StartRelease.resolve();
     await delivery;
@@ -451,19 +466,117 @@ describe.each([
   }, 30_000);
 });
 
+/**
+ * A read can return one of this delivery's own speculative writes before the
+ * write's answer does. The read leaves that event out: the speculative copy
+ * stands for it until the answer confirms where it committed. But an answer
+ * can come back with an incomplete report, and such an answer is not merged
+ * either: the log is marked behind and read again. So the read must not move
+ * its cursor past the event it left out, or no later read returns it.
+ */
+describe('an incremental read that returns a speculative write before its answer (node engine)', () => {
+  it('starts the next read where that one did', async () => {
+    const code = chain(3);
+    const readHeld = withResolvers<void>();
+    const readRelease = withResolvers<void>();
+    const outcomeCommitted = withResolvers<void>();
+    const answerRelease = withResolvers<void>();
+    let holdNextRead = false;
+    const isOutcomeOfS2 = (event: Event) =>
+      event.eventType === 'step_completed' &&
+      event.correlationId ===
+        eventsOf(world, 'step_started').find(
+          (started) => dataOf(started)?.stepName === 'ao_s2'
+        )?.correlationId;
+
+    const { world, runId, start } = await setupOrchestratorRun(code, [], {
+      subscribe: true,
+      async beforeList(params) {
+        // An incremental read (a full load has no cursor).
+        if (!holdNextRead || !params.pagination?.cursor) return;
+        holdNextRead = false;
+        readHeld.resolve();
+        await readRelease.promise;
+      },
+      async afterCommit(committed) {
+        // `s2`'s outcome commits, and its answer is held.
+        if (committed.some(isOutcomeOfS2)) {
+          outcomeCommitted.resolve();
+          await answerRelease.promise;
+        }
+      },
+    });
+    // The write that starts `s2` is answered with an incomplete report, so
+    // the next pass reads the log first: that read is where the test parks
+    // the loop. The answer of `s2`'s outcome is incomplete too.
+    await answerIncomplete(
+      world,
+      code,
+      (event) =>
+        isOutcomeOfS2(event) ||
+        (event.eventType === 'step_started' &&
+          dataOf(event)?.stepName === 'ao_s2')
+    );
+
+    const delivery = world.deliver(start);
+    await s2Entered.promise;
+    // Park the loop in a read: a payload for the hook nothing awaits wakes
+    // it for a pass, which reads the log first.
+    holdNextRead = true;
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      runId,
+      correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+      eventData: {
+        token: TOKEN,
+        payload: await dehydrateStepReturnValue('late', runId, undefined),
+      },
+    } as unknown as Partial<Event>);
+    await readHeld.promise;
+
+    // `s2` returns while the loop is in that read. Its outcome is written
+    // ahead and commits, with its answer held.
+    s2Release.resolve();
+    await outcomeCommitted.promise;
+    const outcome = stepEvent(world, 'step_completed', 'ao_s2');
+
+    // The read returns the outcome before its answer. The workflow goes on
+    // from the speculative copy: once `s3` runs, the read was taken in.
+    // Only then does the answer arrive, and it brings nothing.
+    readRelease.resolve();
+    await s3Entered.promise;
+    answerRelease.resolve();
+    await delivery;
+    await world.runUntilIdle();
+
+    expect(eventsOf(world, 'run_failed')).toEqual([]);
+    expect(await runResult(world)).toEqual(['s1', 's2', 's3']);
+    expect(world.deliveries).toHaveLength(1);
+    // The read that left the outcome out started below it, and so does the
+    // read the incomplete answer calls for: the outcome is offered again.
+    const cursors = world.listCalls.flatMap((call) =>
+      call.pagination?.cursor ? [call.pagination.cursor] : []
+    );
+    expect(cursors.length).toBeGreaterThanOrEqual(2);
+    expect(eventIdToSlot(cursors[0] ?? '')).toBeLessThan(slotOf(outcome));
+    expect(cursors[1]).toBe(cursors[0]);
+  }, 30_000);
+});
+
 describe('the live feed of a delivery that runs ahead (node engine)', () => {
   it('starts after the highest confirmed slot, below a speculative start', async () => {
     // The first step's start is written ahead and its answer held, so the
     // feed starts while the log holds that start only speculatively.
     // Started after it, the feed would never offer an event another writer
-    // committed at that slot.
+    // committed at that slot. This checks the position the feed is opened
+    // at, not what the World then delivers from it.
     const afterSlots: number[] = [];
     const code = chain(1);
     const { world, start } = await setupOrchestratorRun(code, [], {
       subscribe: true,
       async afterCommit(committed) {
         if (committed.some((event) => event.eventType === 'step_started')) {
-          const deadline = Date.now() + 2000;
+          const deadline = Date.now() + GATE_TIMEOUT_MS;
           while (afterSlots.length === 0 && Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, 1));
           }

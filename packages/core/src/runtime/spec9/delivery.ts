@@ -899,21 +899,24 @@ async function runDelivery(
    * (the live feed, an incremental load) into the log, by
    * the one rule for a log that holds speculative events
    * (`foldReadEvents`): a committed event is never dropped
-   * because a speculative copy holds its id. Returns whether
-   * every event was taken in. When one was displaced, a
-   * repair is due, and the caller must not move its read
-   * position past these events.
+   * because a speculative copy holds its id. When one was
+   * displaced, a repair is due. Returns whether every event
+   * was folded: when one was left out, the caller must not
+   * move its read position past these events.
    */
   const foldReadIntoLog = (
     events: readonly Event[],
     cause: 'feed' | 'read'
   ): boolean => {
     assert(log, 'The event log is loaded to fold read events');
-    const { fold, displaced } = foldReadEvents(events, speculativeEventAt);
+    const { fold, displaced, complete } = foldReadEvents(
+      events,
+      speculativeEventAt
+    );
     if (displaced) noteDisplacedSpeculation(cause);
     for (const event of fold) prepareReplayEvent(event);
     indexOf(log.events).merge(fold);
-    return !displaced;
+    return complete;
   };
   // Set when an accepted write could not be folded into the
   // log without leaving a hole; the next pass reads first.
@@ -1099,12 +1102,16 @@ async function runDelivery(
     // The writer predicts speculative slots from the
     // positions it knows are taken.
     for (const event of page.events) writer.observeEvent(event);
-    // A page can bring an event that committed at a slot a
-    // speculative event was placed at. It is not folded
-    // (the log would drop it), a repair is due, and the
-    // cursor stays put: once the repair has removed the
-    // speculative copy, the event is read again unless a
-    // write's report already brought it.
+    // A page can bring an event to a slot the log holds a
+    // speculative event at, and that event is not folded:
+    // another writer's (the log would drop it, and a repair
+    // is due), or the speculative write's own commit, ahead
+    // of its answer. Either way the cursor stays put. The
+    // event reaches the log with the repair or the answer,
+    // but an answer whose report is incomplete is not
+    // merged, and then only a read from this cursor brings
+    // it. Reading the page again is harmless: the log
+    // keeps one event per id.
     if (foldReadIntoLog(page.events, 'read')) {
       log.cursor = page.cursor ?? log.cursor;
     }
