@@ -14,7 +14,7 @@ related:
 Waits for a slot under a rate limit that every run of the project shares. Calls with the same `key` get slots at most `limit` per `period`, each at least `period / limit` after the one before. A call whose slot is now resolves at once; otherwise the run sleeps until its slot, like [`sleep()`](/docs/api-reference/workflow/sleep), and resolves then. A call that wakes late can go ahead a little after its slot (see [Calls that wake late](#calls-that-wake-late)), so keep handling the upstream's own rate limit errors. For when and how to use rate limits, see [Rate Limits](/docs/foundations/rate-limits).
 
 <Callout type="warn">
-Experimental, and available in `workflow` 5.8.0 and later on the Vercel and Local Worlds. On a World without rate limits, such as the Postgres World, a run that calls it fails.
+Experimental, and available in `workflow` 5.8.0 and later on the Vercel, Local and Postgres Worlds. On a custom World that does not declare rate limits (`capabilities.rateLimits`), a run that calls it fails.
 </Callout>
 
 ```typescript lineNumbers

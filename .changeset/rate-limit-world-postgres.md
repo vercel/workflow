@@ -1,5 +1,5 @@
 ---
-'@workflow/world-postgres': patch
+'@workflow/world-postgres': minor
 ---
 
-Refuse rate limit events, which this World does not reserve slots for.
+Reserve rate limit slots for `experimental_rateLimit()` in a `workflow_rate_limits` table, scoped to the World's `jobPrefix`, and create spec 10 runs with `WORKFLOW_SPEC_VERSION=10`.
