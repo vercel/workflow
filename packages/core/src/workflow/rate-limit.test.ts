@@ -92,11 +92,25 @@ function rateLimitFor(events: Event[]) {
 }
 
 describe('createRateLimit', () => {
-  it('refuses a run below spec 10, before drawing an id', async () => {
+  it('refuses a run below the single orchestrator, before drawing an id', async () => {
     const ctx = setupWorkflowContext([]);
-    const rateLimit = createRateLimit(ctx, SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    const rateLimit = createRateLimit(
+      ctx,
+      SPEC_VERSION_SINGLE_ORCHESTRATOR - 1
+    );
     await expect(rateLimit(CALL)).rejects.toThrow(/spec version 10/);
     expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
+  it('queues the call on a spec 9 run, for the World to refuse or allow', async () => {
+    // The World may raise the run to spec 10 when its run_started is written,
+    // which this delivery may not have seen yet; it refuses a rate event on a
+    // run stamped below 10.
+    const ctx = setupWorkflowContext([]);
+    const rateLimit = createRateLimit(ctx, SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    void rateLimit(CALL);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ctx.invocationsQueue.get(CID)).toMatchObject({ type: 'rate' });
   });
 
   it.each([

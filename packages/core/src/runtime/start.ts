@@ -31,6 +31,7 @@ import {
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -97,6 +98,7 @@ import {
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import {
   assertWorldSupportsInBandFence,
+  assertWorldSupportsRateLimits,
   assertWorldSupportsRuntimeProtocol,
 } from './world-compatibility.js';
 
@@ -932,6 +934,11 @@ export async function start<TArgs extends unknown[], TResult>(
       if (world.specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
         assertWorldSupportsInBandFence(world);
       }
+      // Likewise for spec 10: `mintedSpecVersion()` returns it only to a
+      // World that passes `rateLimits: true`.
+      if (world.specVersion >= SPEC_VERSION_RATE_LIMITS) {
+        assertWorldSupportsRateLimits(world);
+      }
       if (startHook) {
         span?.setAttributes(Attribute.WorkflowStartHook(true));
         // The calling World writes `run_created`, so it must admit too. A
@@ -1191,6 +1198,11 @@ export async function start<TArgs extends unknown[], TResult>(
       // explicit `specVersion` above what the World declares.
       if (specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
         assertWorldSupportsInBandFence(world);
+      }
+      // An explicit spec 10 on a World that doesn't decide rate events would
+      // record a run that may write them.
+      if (specVersion >= SPEC_VERSION_RATE_LIMITS) {
+        assertWorldSupportsRateLimits(world);
       }
       span?.setAttributes({
         ...Attribute.WorkflowRunSpecVersion(specVersion),

@@ -13,7 +13,6 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
@@ -23,8 +22,8 @@ import type {
   WorkflowSuspension,
 } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
-
 import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { rateLimitSpecVersionMessage } from '../../workflow/rate-limit-call.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
@@ -534,11 +533,13 @@ export async function handleSuspension({
             });
           } else if (isWorldValidationFailure(err)) {
             // The call is checked before it is written, so this is a limit
-            // only the World knows. Every replay writes the same request.
+            // only the World knows, such as a run stamped below spec 10 (see
+            // `createRateLimit`). Every replay writes the same request.
+            const message = err instanceof Error ? err.message : String(err);
             const fatal = new FatalError(
-              `experimental_rateLimit() failed World validation: ${
-                err instanceof Error ? err.message : String(err)
-              }`
+              /spec[ -]?(version )?10/i.test(message)
+                ? `${rateLimitSpecVersionMessage(run.specVersion)} (The World refused it: ${message})`
+                : `experimental_rateLimit() failed World validation: ${message}`
             );
             fatal.cause = err;
             throw fatal;
