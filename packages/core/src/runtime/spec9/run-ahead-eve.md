@@ -1,6 +1,4 @@
-# eve turns never qualify for spec 9 run-ahead
-
-**Status:** research note, not a decision. **From:** eve latency burndown (Ben Pankow). **Measured:** 2026-11-20, eve main `7105649595` on Workflow 5.7.0 (which eve vendors), spec 9, Vercel (iad1). The code references were checked against `@workflow/core@5.7.0` and `main` at `3e799a40d`.
+# Enabling eve turns to benefit from spec 9 run-ahead
 
 ## Summary
 
