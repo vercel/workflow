@@ -311,12 +311,19 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
   };
 
-  const loadPersistedChunks = (name: string): Promise<StreamChunkEvent[]> =>
+  const loadPersistedChunks = (
+    name: string,
+    skip = 0
+  ): Promise<StreamChunkEvent[]> =>
     drizzle
       .select({
         id: streams.chunkId,
         eof: streams.eof,
-        data: streams.chunkData,
+        // landmine: blank only the rows enqueue's offset skips (data rows, id order)
+        data:
+          skip > 0
+            ? sql<Buffer>`CASE WHEN ${streams.eof} OR count(*) FILTER (WHERE NOT ${streams.eof}) OVER (ORDER BY ${streams.chunkId} ROWS UNBOUNDED PRECEDING) > ${skip}::float8 THEN ${streams.chunkData} ELSE ''::bytea END`
+            : streams.chunkData,
       })
       .from(streams)
       .where(and(eq(streams.streamId, name)))
@@ -729,10 +736,12 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
             // A rejection here fails the stream; detach the listener that was
             // registered above so a failing stream does not leak on each read.
-            const chunks = await loadPersistedChunks(name).catch((err) => {
-              cleanup();
-              throw err;
-            });
+            const chunks = await loadPersistedChunks(name, offset).catch(
+              (err) => {
+                cleanup();
+                throw err;
+              }
+            );
 
             // Resolve negative offset relative to the data chunk count: the
             // rows before the first EOF marker. Rows after it (a retried
