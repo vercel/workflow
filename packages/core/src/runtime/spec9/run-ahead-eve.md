@@ -64,9 +64,9 @@ Either:
 
 Each proposal has a stacked draft PR. They show one way to implement it, so the trade-offs are concrete. They are not proposals for the final design: the actual choices are for the Workflow team.
 
-- Proposal 1, in-band-only `AbortController` (opt-in): #5658
-- Proposal 3 (b), the wait counts as due only within the skew allowance: #5659
-- Proposal 2, strict speculative writes past an awaited hook, behind a new `strictEventCount` World capability (test World only): #5660
+- Proposal 1, in-band-only `AbortController` (opt-in): [vercel/workflow#5658](https://github.com/vercel/workflow/pull/5658)
+- Proposal 3 (b), the wait counts as due only within the skew allowance: [vercel/workflow#5659](https://github.com/vercel/workflow/pull/5659)
+- Proposal 2, strict speculative writes past an awaited hook, behind a new `strictEventCount` World capability (test World only): [vercel/workflow#5660](https://github.com/vercel/workflow/pull/5660)
 
 Proposal 3 (a), a cancellable `sleep()`, is not prototyped: it needs a new event type in every World and in workflow-server.
 
