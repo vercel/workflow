@@ -532,6 +532,63 @@ describe('withWorkflow builder config', () => {
     }
   });
 
+  it('removes a package whose only step has "use step" on the same line as its body', async () => {
+    const projectDir = mkdtempSync(
+      join(realTmpDir, 'workflow-next-server-external-')
+    );
+    process.chdir(projectDir);
+
+    writeFile(join(projectDir, 'index.ts'), 'export const x = 1;');
+    for (const [name, source] of [
+      [
+        'workflow-inline-step',
+        'export async function runJob(i) { "use step"; return i * 2; }',
+      ],
+      [
+        'workflow-step-lookalike',
+        `// export async function runJob(i) { "use step"; return i * 2; }
+export const sample = 'async function runJob() { "use step"; }';
+export const template = \`function runJob() { 'use step'; }\`;`,
+      ],
+    ]) {
+      writeFile(
+        join(projectDir, 'node_modules', name, 'package.json'),
+        JSON.stringify({ name, version: '1.0.0', main: 'index.js' })
+      );
+      writeFile(join(projectDir, 'node_modules', name, 'index.js'), source);
+    }
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const config = withWorkflow({
+        serverExternalPackages: [
+          'workflow-inline-step',
+          'workflow-step-lookalike',
+        ],
+      });
+
+      const resolvedConfig = await config('phase-production-build', {
+        defaultConfig: {},
+      });
+
+      expect(resolvedConfig.serverExternalPackages).toContain(
+        'workflow-step-lookalike'
+      );
+      expect(resolvedConfig.serverExternalPackages).not.toContain(
+        'workflow-inline-step'
+      );
+      expect(warnSpy).toHaveBeenCalledOnce();
+      const warning = warnSpy.mock.calls[0]?.[0] as string;
+      expect(warning).toContain('workflow-inline-step');
+      expect(warning).toContain('"use step" functions');
+      expect(warning).not.toContain('workflow-step-lookalike');
+    } finally {
+      warnSpy.mockRestore();
+      process.chdir(originalCwd);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps plain serverExternalPackages unchanged', async () => {
     const projectDir = mkdtempSync(
       join(realTmpDir, 'workflow-next-server-external-')

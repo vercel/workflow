@@ -45,6 +45,7 @@ import {
 } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
+import { assertWorkflowStepsAreRegistered } from './step-registration-check.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
@@ -548,10 +549,8 @@ export abstract class BaseBuilder {
     // `inputs` array reference is preserved for WeakMap caching: callers
     // like createWorkflowsBundle and createStepsBundle can share the same
     // cache entry when they pass the same inputFiles array.
-    const resolvedWorkflowRuntime = await enhancedResolve(
-      outdir,
-      '@workflow/core/runtime/run'
-    ).catch(() => undefined);
+    const resolvedWorkflowRuntime =
+      await this.resolveWorkflowRuntimeEntry(outdir);
     const entryPoints = resolvedWorkflowRuntime
       ? [...inputs, resolvedWorkflowRuntime]
       : inputs;
@@ -578,6 +577,40 @@ export abstract class BaseBuilder {
 
     this.discoveredEntries.set(inputs, state);
     return state;
+  }
+
+  /**
+   * Resolves `@workflow/core/runtime/run`, the SDK file that defines `Run`
+   * and its steps, so discovery can seed it.
+   *
+   * It is resolved through the `workflow` package first. That is the copy the
+   * workflow bundle reaches, through `workflow`'s `workflow` export condition
+   * (which discovery does not use), and it is the only copy a project that
+   * depends on `workflow` alone can reach under a layout that does not hoist
+   * `@workflow/core`, such as pnpm's. Resolving from the output directory
+   * alone failed there, so `Run`'s steps were left out of the steps bundle
+   * while the workflow bundle still had a proxy for each.
+   */
+  private async resolveWorkflowRuntimeEntry(
+    outdir: string
+  ): Promise<string | undefined> {
+    const throughWorkflowPackage = await enhancedResolve(
+      outdir,
+      'workflow/internal/builtins'
+    )
+      .then((builtins) =>
+        enhancedResolve(
+          dirname(builtins as string),
+          '@workflow/core/runtime/run'
+        )
+      )
+      .catch(() => undefined);
+    if (throughWorkflowPackage) {
+      return throughWorkflowPackage as string;
+    }
+    return (await enhancedResolve(outdir, '@workflow/core/runtime/run').catch(
+      () => undefined
+    )) as string | undefined;
   }
 
   /**
@@ -1780,6 +1813,26 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       await unlink(tempWorkflowOutfile);
     } catch {
       // Ignore cleanup errors
+    }
+
+    // Every step the workflow bundle can call has to be registered by the
+    // steps bundle, or each call fails at runtime with "Step ... is not
+    // registered in the current deployment". A step file that discovery
+    // missed builds without a warning otherwise, and on Vercel it only
+    // shows up when a run calls the step.
+    try {
+      assertWorkflowStepsAreRegistered({
+        workflowsManifest: workflowsResult.manifest,
+        stepsManifest,
+        warn: (message) => console.warn(chalk.yellow(message)),
+      });
+    } catch (error) {
+      // allSettled so a failing dispose cannot replace the check's error.
+      await Promise.allSettled([
+        stepsContext?.dispose(),
+        workflowsResult.interimBundleCtx?.dispose(),
+      ]);
+      throw error;
     }
 
     // 3. Generate combined route file

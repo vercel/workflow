@@ -2,16 +2,12 @@ import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  detectWorkflowPatterns,
   generatedWorkflowPathPattern,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
   turbopackContentPattern,
-  useStepPattern,
-  useWorkflowPattern,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
-  workflowSerdeComputedPropertyPattern,
-  workflowSerdeImportPattern,
-  workflowSerdeSymbolPattern,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
@@ -90,12 +86,6 @@ function setWorkflowBasePath(basePath: string | undefined): void {
   globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
 }
 
-interface WorkflowPatternMatch {
-  hasUseWorkflow: boolean;
-  hasUseStep: boolean;
-  hasSerde: boolean;
-}
-
 interface DetectedServerExternalPackage {
   packageName: string;
   hasUseWorkflow: boolean;
@@ -119,21 +109,6 @@ function isResolvablePackageSpecifier(specifier: string): boolean {
   }
 
   return true;
-}
-
-function detectWorkflowPatterns(source: string): WorkflowPatternMatch {
-  const hasUseWorkflow = useWorkflowPattern.test(source);
-  const hasUseStep = useStepPattern.test(source);
-  const hasSerdeImport = workflowSerdeImportPattern.test(source);
-  const hasSerdeSymbol = workflowSerdeSymbolPattern.test(source);
-  const hasSerdeComputedProperty =
-    workflowSerdeComputedPropertyPattern.test(source);
-
-  return {
-    hasUseWorkflow,
-    hasUseStep,
-    hasSerde: hasSerdeImport || hasSerdeSymbol || hasSerdeComputedProperty,
-  };
 }
 
 function getIssueLabels(detected: DetectedServerExternalPackage): string[] {

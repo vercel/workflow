@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DiscoveredEntries } from './base-builder.js';
+import { ALLOW_UNREGISTERED_STEPS_ENV } from './step-registration-check.js';
 import type { VercelBuildOutputConfig } from './types.js';
 import { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 
@@ -22,8 +24,8 @@ function getFlowFuncDir(workingDir: string): string {
   );
 }
 
-function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
-  const config: VercelBuildOutputConfig = {
+function createConfig(workingDir: string): VercelBuildOutputConfig {
+  return {
     buildTarget: 'vercel-build-output-api',
     workingDir,
     dirs: ['src'],
@@ -32,7 +34,93 @@ function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
     webhookBundlePath: join(workingDir, 'unused-webhook.mjs'),
     suppressCreateManifestLogs: true,
   };
-  return new VercelBuildOutputAPIBuilder(config);
+}
+
+function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
+  return new VercelBuildOutputAPIBuilder(createConfig(workingDir));
+}
+
+/**
+ * Stands in for a discovery miss: the builder behaves normally except that
+ * the step file ending in `skippedStepFile` (a path relative to the project,
+ * with forward slashes) is never reported as a step file, which is what
+ * happened to a step whose `"use step"` shared a line with its body.
+ */
+class StepDiscoveryMissBuilder extends VercelBuildOutputAPIBuilder {
+  /** Contexts handed back by the two bundles, to check they get disposed. */
+  readonly contexts: { dispose: ReturnType<typeof vi.fn> }[] = [];
+
+  constructor(
+    workingDir: string,
+    private readonly skippedStepFile: string,
+    private readonly options: { watch?: boolean; rejectDispose?: boolean } = {}
+  ) {
+    super({ ...createConfig(workingDir), watch: options.watch });
+  }
+
+  protected override async discoverEntries(
+    inputs: string[],
+    outdir: string,
+    tsconfigPath?: string
+  ): Promise<DiscoveredEntries> {
+    const discovered = await super.discoverEntries(
+      inputs,
+      outdir,
+      tsconfigPath
+    );
+    const skipped = [...discovered.discoveredSteps].filter((file) =>
+      file.replace(/\\/g, '/').endsWith(`/${this.skippedStepFile}`)
+    );
+    // Without this, a path that does not match (backslashes on Windows, for
+    // one) turns the miss into a normal build and the test into a no-op.
+    if (skipped.length !== 1) {
+      throw new Error(
+        `Expected to skip one step file ending in ${this.skippedStepFile}, found ${JSON.stringify([...discovered.discoveredSteps])}`
+      );
+    }
+    discovered.discoveredSteps.delete(skipped[0]);
+    return discovered;
+  }
+
+  /** Calls createCombinedBundle() directly, the way watch-mode builders do. */
+  async combine() {
+    return this.createCombinedBundle({
+      inputFiles: await this.getInputFiles(),
+      stepsOutfile: join(this.config.workingDir, '.out/steps.mjs'),
+      flowOutfile: join(this.config.workingDir, '.out/flow.mjs'),
+      bundleFinalOutput: false,
+    });
+  }
+
+  private track<T extends { dispose: () => Promise<void> } | undefined>(
+    context: T
+  ): T {
+    if (!context) return context;
+    const dispose = context.dispose.bind(context);
+    const spy = vi.fn(async () => {
+      await dispose();
+      if (this.options.rejectDispose) throw new Error('dispose failed');
+    });
+    context.dispose = spy;
+    this.contexts.push({ dispose: spy });
+    return context;
+  }
+
+  protected override async createStepsBundle(
+    args: Parameters<VercelBuildOutputAPIBuilder['createStepsBundle']>[0]
+  ) {
+    const result = await super.createStepsBundle(args);
+    this.track(result.context);
+    return result;
+  }
+
+  protected override async createWorkflowsBundle(
+    args: Parameters<VercelBuildOutputAPIBuilder['createWorkflowsBundle']>[0]
+  ) {
+    const result = await super.createWorkflowsBundle(args);
+    this.track(result.interimBundleCtx);
+    return result;
+  }
 }
 
 function executeStep(workingDir: string, stepName: string): string {
@@ -46,11 +134,13 @@ function executeStep(workingDir: string, stepName: string): string {
       '-e',
       `await import(${JSON.stringify(bundleUrl)});
 const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
-const step = [...steps].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
+const step = [...(steps ?? [])].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
 if (!step) throw new Error(${JSON.stringify(`${stepName} step was not registered`)});
 process.stdout.write(JSON.stringify(await step()));`,
     ],
-    { encoding: 'utf8' }
+    // Piped so a failing step's stderr lands in the thrown error's message
+    // instead of the test log.
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
   );
   return JSON.parse(output);
 }
@@ -187,6 +277,261 @@ export async function gaxWorkflow(): Promise<string> {
       expect(
         webhookBundle.match(/var __dirname = __pathDirname\(__filename\);/g)
       ).toHaveLength(1);
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder step discovery', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    'registers steps whose "use step" shares a line with other code',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      // A step in the workflow's own file, and one in a file that only has
+      // one-line steps, so discovery has to find it from the directive alone.
+      await write(
+        join(workingDir, 'src/workflows/inline.ts'),
+        `import { fromOtherFile } from '../lib/helpers';
+
+export async function doWork() { "use step"; return 'same-file'; }
+
+export async function inlineWorkflow() {
+  'use workflow';
+  return [await doWork(), await fromOtherFile()];
+}
+`
+      );
+      await write(
+        join(workingDir, 'src/lib/helpers.ts'),
+        `export const fromOtherFile = async () => { 'use step'; return 'other-file'; };
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      expect(executeStep(workingDir, 'doWork')).toBe('same-file');
+      expect(executeStep(workingDir, 'fromOtherFile')).toBe('other-file');
+
+      const manifest = JSON.parse(
+        await readFile(
+          join(
+            workingDir,
+            '.vercel/output/diagnostics/workflows-manifest.json'
+          ),
+          'utf8'
+        )
+      );
+      expect(Object.keys(manifest.steps).sort()).toEqual([
+        'src/lib/helpers.ts',
+        'src/workflows/inline.ts',
+      ]);
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder SDK steps', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    "registers Run's steps when the project can resolve workflow but not @workflow/core",
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // The project depends on `workflow` alone, the way pnpm installs it:
+      // `@workflow/core` is reachable from `workflow`, not from the project.
+      // The workflow bundle reaches `Run`'s steps through `workflow`'s
+      // `workflow` export condition, so the steps bundle has to as well.
+      const workflowPackage = realpathSync(
+        join(import.meta.dirname, '../../workflow')
+      );
+      await mkdir(join(workingDir, 'node_modules'), { recursive: true });
+      symlinkSync(
+        workflowPackage,
+        join(workingDir, 'node_modules/workflow'),
+        'junction'
+      );
+      await write(
+        join(workingDir, 'src/workflows/hello.ts'),
+        `import { sleep } from 'workflow';
+
+export async function helloWorkflow() {
+  'use workflow';
+  await sleep('1s');
+  return 'done';
+}
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      const registered = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `await import(${JSON.stringify(
+              pathToFileURL(join(getFlowFuncDir(workingDir), 'index.mjs')).href
+            )});
+const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
+process.stdout.write(JSON.stringify([...(steps?.keys() ?? [])]));`,
+          ],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+        )
+      ) as string[];
+      expect(registered.some((id) => id.endsWith('//Run#status'))).toBe(true);
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder unregistered steps', () => {
+  let workingDir: string;
+
+  beforeEach(async () => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+    await writeWorkflowRuntimeStub(workingDir);
+    await write(
+      join(workingDir, 'src/workflows/order.ts'),
+      `import { chargeCard } from '../lib/payments';
+
+export async function orderWorkflow() {
+  'use workflow';
+  return chargeCard();
+}
+`
+    );
+    await write(
+      join(workingDir, 'src/lib/payments.ts'),
+      `export async function chargeCard() {
+  'use step';
+  return 'charged';
+}
+`
+    );
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+    delete process.env[ALLOW_UNREGISTERED_STEPS_ENV];
+  });
+
+  it(
+    'fails the build when a workflow can call a step the steps bundle does not register',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      const builder = new StepDiscoveryMissBuilder(
+        workingDir,
+        'src/lib/payments.ts'
+      );
+
+      const error = await builder.build().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain(
+        'Workflow code can call 1 step that is not registered in the steps bundle.'
+      );
+      expect(message).toContain(
+        'chargeCard in src/lib/payments.ts (step//./src/lib/payments//chargeCard)'
+      );
+      expect(message).toContain('"use step" is the first statement');
+      expect(message).toContain(`${ALLOW_UNREGISTERED_STEPS_ENV}=1`);
+    }
+  );
+
+  it.each([
+    ['', false],
+    [' when disposing a context fails', true],
+  ])(
+    'disposes both watch-mode contexts when the check fails%s',
+    { timeout: BUILD_TIMEOUT },
+    async (_, rejectDispose) => {
+      const builder = new StepDiscoveryMissBuilder(
+        workingDir,
+        'src/lib/payments.ts',
+        { watch: true, rejectDispose }
+      );
+
+      const error = await builder.combine().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+
+      // The check's error wins over a failed dispose.
+      expect((error as Error).message).toContain(
+        'Workflow code can call 1 step that is not registered'
+      );
+      expect(builder.contexts).toHaveLength(2);
+      for (const context of builder.contexts) {
+        expect(context.dispose).toHaveBeenCalledOnce();
+      }
+    }
+  );
+
+  it(
+    'builds with a warning behind the escape hatch',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      process.env[ALLOW_UNREGISTERED_STEPS_ENV] = '1';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await new StepDiscoveryMissBuilder(
+          workingDir,
+          'src/lib/payments.ts'
+        ).build();
+
+        const warnings = warnSpy.mock.calls.map(([message]) => String(message));
+        expect(
+          warnings.some((message) =>
+            message.includes('chargeCard in src/lib/payments.ts')
+          )
+        ).toBe(true);
+        // The warning is accurate: the deployment really lacks the step.
+        expect(() => executeStep(workingDir, 'chargeCard')).toThrow(
+          /chargeCard step was not registered/
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    }
+  );
+
+  it(
+    'builds without a warning when discovery finds the step',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await createBuilder(workingDir).build();
+        expect(
+          warnSpy.mock.calls.some(([message]) =>
+            String(message).includes('not registered')
+          )
+        ).toBe(false);
+        expect(executeStep(workingDir, 'chargeCard')).toBe('charged');
+      } finally {
+        warnSpy.mockRestore();
+      }
     }
   );
 });
