@@ -457,6 +457,9 @@ export async function makeRequest<T>({
             });
           }
           // A Request's body can be read once: a re-send needs a new one.
+          if (!undiciRequest) {
+            headers.set('X-Request-Time', Date.now().toString());
+          }
           const request = undiciRequest ?? buildRequest();
           undiciRequest = undefined;
           return fetch(request, {
