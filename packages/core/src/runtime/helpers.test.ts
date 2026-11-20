@@ -1,7 +1,12 @@
-import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
+import {
+  PreconditionFailedError,
+  StreamError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
   decrypt,
@@ -1276,6 +1281,64 @@ describe('health check run public key', () => {
     expect(response.healthy).toBe(true);
     expect(response.encryptionPublicKey).toBeUndefined();
     expect(response.workflowCoreVersion).toBeDefined();
+  });
+});
+
+describe('health check response the World refuses', () => {
+  const PROBE = { __healthCheck: true as const, correlationId: 'corr_refused' };
+
+  async function respondWith(writeError: unknown) {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const close = vi.fn().mockResolvedValue(undefined);
+    const world = {
+      streams: { write: vi.fn().mockRejectedValue(writeError), close },
+    } as unknown as World;
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+    return { result: handleHealthCheckMessage(PROBE), close };
+  }
+
+  beforeEach(() => {
+    vi.mocked(runtimeLogger.warn).mockClear();
+  });
+
+  it.each([
+    [
+      'a 400 stream error',
+      new StreamError('Stream write failed', { status: 400 }),
+    ],
+    ['a 403 world error', new WorkflowWorldError('Forbidden', { status: 403 })],
+    ['a 404 world error', new WorkflowWorldError('Not found', { status: 404 })],
+  ])('acks the probe on %s instead of rethrowing', async (_, error) => {
+    const { result, close } = await respondWith(error);
+
+    await expect(result).resolves.toBeUndefined();
+    expect(close).not.toHaveBeenCalled();
+    expect(runtimeLogger.warn).toHaveBeenCalledWith(
+      'Health check response was refused by the World; not retrying the probe',
+      expect.objectContaining({ correlationId: 'corr_refused' })
+    );
+  });
+
+  it.each([
+    [
+      'a 500 stream error',
+      new StreamError('Stream write failed', { status: 500 }),
+    ],
+    [
+      'a 429 throttle',
+      new WorkflowWorldError('Too many requests', { status: 429 }),
+    ],
+    ['a 425 too early', new WorkflowWorldError('Too early', { status: 425 })],
+    [
+      'a 408 timeout',
+      new WorkflowWorldError('Request timeout', { status: 408 }),
+    ],
+    ['a stream error with no status', new StreamError('socket hang up')],
+    ['a network error', new TypeError('fetch failed')],
+  ])('rethrows %s so the queue can retry', async (_, error) => {
+    const { result } = await respondWith(error);
+
+    await expect(result).rejects.toBe(error);
   });
 });
 
