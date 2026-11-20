@@ -36,7 +36,7 @@ describe('open rate limit calls', () => {
     expect(
       openWaits([
         waiting,
-        ev('rate_failed', 'rate_a', { ...call, reason: 'timeout' }),
+        ev('rate_failed', 'rate_a', { ...call, reason: 'max_wait' }),
       ])
     ).toEqual([]);
   });

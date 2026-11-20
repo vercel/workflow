@@ -14,7 +14,7 @@ import {
   FatalError,
   HookConflictError,
   HookForceClaimedError,
-  RateLimitTimeoutError,
+  RateLimitMaxWaitError,
   RetryableError,
   RuntimeDecryptionError,
   StreamError,
@@ -329,17 +329,17 @@ export function getCommonReducers(
       }
       return reduced;
     },
-    // RateLimitTimeoutError carries the key and the slot it would have had;
+    // RateLimitMaxWaitError carries the key and the slot it would have had;
     // a workflow may pass a caught one to a step.
-    RateLimitTimeoutError: (value) => {
-      const base = reduceNamedErrorSubclassBase('RateLimitTimeoutError', value);
+    RateLimitMaxWaitError: (value) => {
+      const base = reduceNamedErrorSubclassBase('RateLimitMaxWaitError', value);
       if (!base) return false;
-      const reduced: SerializableSpecial['RateLimitTimeoutError'] = {
+      const reduced: SerializableSpecial['RateLimitMaxWaitError'] = {
         ...base,
-        key: readProperty(value, 'key') as RateLimitTimeoutError['key'],
+        key: readProperty(value, 'key') as RateLimitMaxWaitError['key'],
       };
       const wouldAcquireAt = readProperty(value, 'wouldAcquireAt') as
-        | RateLimitTimeoutError['wouldAcquireAt']
+        | RateLimitMaxWaitError['wouldAcquireAt']
         | undefined;
       if (wouldAcquireAt !== undefined) reduced.wouldAcquireAt = wouldAcquireAt;
       return reduced;
@@ -585,11 +585,11 @@ export function getCommonRevivers(
       }
       return error;
     },
-    RateLimitTimeoutError: (value) => {
+    RateLimitMaxWaitError: (value) => {
       const Ctor =
         ((global as Record<symbol, unknown>)[
-          Symbol.for('@workflow/errors//RateLimitTimeoutError')
-        ] as typeof RateLimitTimeoutError | undefined) ?? RateLimitTimeoutError;
+          Symbol.for('@workflow/errors//RateLimitMaxWaitError')
+        ] as typeof RateLimitMaxWaitError | undefined) ?? RateLimitMaxWaitError;
       const error = new Ctor(value.key, value.wouldAcquireAt);
       error.message = value.message;
       if (value.stack !== undefined) error.stack = value.stack;

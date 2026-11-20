@@ -19,7 +19,7 @@ export interface RateLimitOptions {
   period: StringValue | number;
   /**
    * The longest the call waits for its slot. When the key's next slot is
-   * later than that, the call rejects with `RateLimitTimeoutError` at once
+   * later than that, the call rejects with `RateLimitMaxWaitError` at once
    * and uses up none of the key's capacity. Without one, the call waits up
    * to 30 days, which is also the longest `maxWait` can be.
    */
@@ -43,7 +43,7 @@ export interface RateLimitOptions {
  * after the one before. A call whose slot is now resolves at once; otherwise
  * the run sleeps until its slot, like `sleep()`, and resolves then. When the
  * slot would be later than `maxWait`, the call rejects with
- * `RateLimitTimeoutError` instead, without using up a slot.
+ * `RateLimitMaxWaitError` instead, without using up a slot.
  *
  * Experimental: needs runs created at spec version 10
  * (`WORKFLOW_SPEC_VERSION=10`) on a World that supports rate limits.

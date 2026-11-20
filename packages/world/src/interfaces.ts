@@ -813,7 +813,7 @@ export interface WorldCapabilities {
    *   the call's slot on its key, scoped to the project, then commit what the
    *   reservation decided IN PLACE of the request: `rate_acquired` with
    *   `acquireAt` when the slot is now, `rate_created` with `acquireAt` when
-   *   it is later, `rate_failed` (`reason: 'timeout'`) when it is past
+   *   it is later, `rate_failed` (`reason: 'max_wait'`) when it is past
    *   `expiresAt`. Reserve nothing for a write the fence or the run's state
    *   would refuse. `rateLimitIntervalUs` and `decideRateLimit` in
    *   `@workflow/world` are the algorithm.

@@ -172,12 +172,12 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
-    // RateLimitTimeoutError carries the key and the slot it would have had;
+    // RateLimitMaxWaitError carries the key and the slot it would have had;
     // mirror the host-side common.ts reducer.
-    RateLimitTimeoutError: (value) => {
-      if (!(value instanceof Error) || value.name !== 'RateLimitTimeoutError')
+    RateLimitMaxWaitError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'RateLimitMaxWaitError')
         return false;
-      const reduced: SerializableSpecial['RateLimitTimeoutError'] = {
+      const reduced: SerializableSpecial['RateLimitMaxWaitError'] = {
         message: value.message,
         stack: value.stack,
         key: (value as any).key,
@@ -509,9 +509,9 @@ export function getCommonRevivers(): Partial<Revivers> {
       if ('cause' in value) (error as any).cause = (value as any).cause;
       return error;
     },
-    RateLimitTimeoutError: (value) => {
+    RateLimitMaxWaitError: (value) => {
       const Cls = (globalThis as any)[
-        Symbol.for('@workflow/errors//RateLimitTimeoutError')
+        Symbol.for('@workflow/errors//RateLimitMaxWaitError')
       ];
       let error: Error;
       if (typeof Cls === 'function') {
@@ -519,7 +519,7 @@ export function getCommonRevivers(): Partial<Revivers> {
         error.message = value.message;
       } else {
         error = new Error(value.message);
-        error.name = 'RateLimitTimeoutError';
+        error.name = 'RateLimitMaxWaitError';
         (error as any).key = value.key;
         if (value.wouldAcquireAt !== undefined) {
           (error as any).wouldAcquireAt = value.wouldAcquireAt;

@@ -264,7 +264,7 @@ const SYMBOL_NAMES = [
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
   '@workflow/errors//HookForceClaimedError',
-  '@workflow/errors//RateLimitTimeoutError',
+  '@workflow/errors//RateLimitMaxWaitError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
@@ -1235,9 +1235,9 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
-    RateLimitTimeoutError: (value) => {
+    RateLimitMaxWaitError: (value) => {
       if (!isHandle(value) || !value.isError) return false;
-      if (chainedString(value, 'name') !== 'RateLimitTimeoutError')
+      if (chainedString(value, 'name') !== 'RateLimitMaxWaitError')
         return false;
       const shape = reduceErrorShape(value) as Record<string, unknown>;
       const reduced: Record<string, unknown> = {
@@ -1987,9 +1987,9 @@ export function createQuickJSSerde(
       }
       return error;
     },
-    RateLimitTimeoutError: (value: JSValueHandle) => {
+    RateLimitMaxWaitError: (value: JSValueHandle) => {
       const cls = registeredErrorClass(
-        '@workflow/errors//RateLimitTimeoutError'
+        '@workflow/errors//RateLimitMaxWaitError'
       );
       let error: JSValueHandle;
       if (cls) {
@@ -2012,7 +2012,7 @@ export function createQuickJSSerde(
         }
         cls.dispose();
       } else {
-        error = buildError(i.Error, value, { name: 'RateLimitTimeoutError' });
+        error = buildError(i.Error, value, { name: 'RateLimitMaxWaitError' });
         for (const field of ['key', 'wouldAcquireAt']) {
           const handle = own(value, field);
           if (handle && !handle.isUndefined) define(error, field, handle);

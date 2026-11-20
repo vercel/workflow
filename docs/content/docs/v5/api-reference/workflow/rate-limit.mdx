@@ -7,7 +7,7 @@ prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/api-reference/workflow/sleep
-  - /docs/errors/rate-limit-timeout
+  - /docs/errors/rate-limit-max-wait
 ---
 
 Waits for a slot under a rate limit that every run of the project shares. At most `limit` calls with the same `key` go ahead per `period`, each at least `period / limit` after the one before. A call whose slot is now resolves at once; otherwise the run sleeps until its slot, like [`sleep()`](/docs/api-reference/workflow/sleep), and resolves then.
@@ -47,7 +47,7 @@ showSections={['parameters']}
 - Keys are stored as-is in the run's event log. Don't put personal data in them.
 - A `period` can be at most 24 hours.
 - With `burst: true`, an idle key admits up to `limit` calls at once, then refills one every `period / limit`. A rolling `period` can then see up to `2 * limit - 1` calls, which suits an upstream that is itself a token bucket or counts fixed windows, but not one that strictly enforces `limit` in any rolling window. Use one setting per key: a bursting call can go ahead of calls on the key that are already waiting without one.
-- A call that cannot get a slot within its `maxWait` rejects with [`RateLimitTimeoutError`](/docs/errors/rate-limit-timeout) and uses up none of the key's capacity. Without a `maxWait`, a call waits up to 30 days, which is also the longest a `maxWait` can be.
+- A call that cannot get a slot within its `maxWait` rejects with [`RateLimitMaxWaitError`](/docs/errors/rate-limit-max-wait) and uses up none of the key's capacity. Without a `maxWait`, a call waits up to 30 days, which is also the longest a `maxWait` can be.
 
 ## Examples
 
@@ -55,7 +55,7 @@ showSections={['parameters']}
 
 ```typescript lineNumbers
 import { experimental_rateLimit } from "workflow"
-import { RateLimitTimeoutError } from "workflow/errors"
+import { RateLimitMaxWaitError } from "workflow/errors"
 declare function sendSms(userId: string): Promise<void>; // @setup
 
 export async function notify(userId: string) {
@@ -63,7 +63,7 @@ export async function notify(userId: string) {
   try {
     await experimental_rateLimit({ key: "sms", limit: 10, period: "1s", maxWait: "30s" }) // [!code highlight]
   } catch (error) {
-    if (RateLimitTimeoutError.is(error)) return "skipped"
+    if (RateLimitMaxWaitError.is(error)) return "skipped"
     throw error
   }
   await sendSms(userId)

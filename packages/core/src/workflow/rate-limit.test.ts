@@ -1,4 +1,4 @@
-import { RateLimitTimeoutError, ReplayDivergenceError } from '@workflow/errors';
+import { RateLimitMaxWaitError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import {
   type Event,
@@ -197,17 +197,17 @@ describe('createRateLimit', () => {
     expect(item?.type === 'rate' && item.hasCreatedEvent).toBe(true);
   });
 
-  it('rejects with RateLimitTimeoutError on rate_failed', async () => {
+  it('rejects with RateLimitMaxWaitError on rate_failed', async () => {
     const wouldAcquireAt = new Date('2026-01-01T00:05:00.000Z');
     const { rateLimit, ctx } = rateLimitFor([
       event('rate_failed', {
         ...EVENT_DATA,
-        reason: 'timeout',
+        reason: 'max_wait',
         acquireAt: wouldAcquireAt,
       }),
     ]);
     const error = await rateLimit(CALL).catch((e: unknown) => e);
-    expect(RateLimitTimeoutError.is(error)).toBe(true);
+    expect(RateLimitMaxWaitError.is(error)).toBe(true);
     expect(error).toMatchObject({ key: 'openai', wouldAcquireAt });
     expect(ctx.invocationsQueue.has(CID)).toBe(false);
   });

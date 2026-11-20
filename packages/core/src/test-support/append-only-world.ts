@@ -667,7 +667,7 @@ export class AppendOnlyWorld {
           eventType: 'rate_failed',
           eventData: {
             ...request,
-            reason: 'timeout',
+            reason: 'max_wait',
             acquireAt: new Date(Math.ceil(decision.wouldAcquireAtUs / 1000)),
           },
         } as Partial<Event>;
@@ -757,7 +757,7 @@ export class AppendOnlyWorld {
           eventData: {
             ...recorded,
             ...(lateWakes > 0 && { lateWakes }),
-            reason: 'timeout',
+            reason: 'max_wait',
             acquireAt,
           },
         } as Partial<Event>;

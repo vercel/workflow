@@ -110,7 +110,7 @@ export interface SerializableSpecial {
     claimedByRunId: string;
     claimedByHookId?: string;
   };
-  RateLimitTimeoutError: {
+  RateLimitMaxWaitError: {
     message: string;
     stack?: string;
     cause?: unknown;

@@ -1638,7 +1638,7 @@ One call is one `rate_<ulid>` correlation id. The workflow queues it (`RateInvoc
 | Committed | Meaning | What the orchestrator does |
 |---|---|---|
 | `rate_acquired` | the slot is now | continues the pass (`resolvedRateCorrelationIds`), as after a hook conflict |
-| `rate_failed` | the slot is past `expiresAt`; nothing reserved | continues the pass; the call rejects with `RateLimitTimeoutError` |
+| `rate_failed` | the slot is past `expiresAt`; nothing reserved | continues the pass; the call rejects with `RateLimitMaxWaitError` |
 | `rate_created` with `acquireAt` | the slot is later | treats the call as an open wait |
 
 A waiting call is an open wait in `openWaits` (`kind: 'rate'`, `resumeAt` = `acquireAt`) until its `rate_acquired`, so it gets most of what a sleep does: near-due re-arms, linger, and the redelivery rules. Its timer is armed differently. A sleep's timer goes out before its `wait_created` commits (`armWaitsBeforeCreation`), but a rate call's slot is known only once its `rate_created` commits, so a creating delivery that lost the response, and whose redelivery the queue coalesced into another message's delivery, would leave the call with no owner to arm it. So every delivery that sees an open rate call may arm its timer (`schedulesWaitTimer`), each call its own chain; the hop's key depends only on the call and its slot, so the queue keeps one timer however many deliveries send it. The World keeps `creatorMessageId` on the committed event all the same.

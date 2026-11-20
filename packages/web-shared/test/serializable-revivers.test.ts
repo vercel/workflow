@@ -120,8 +120,8 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
   Int32Array: [['Int32Array', 1], '.'],
   Map: [['Map', 1], [2], [3, 4], 'key', 'value'],
   RangeError: [['RangeError', 1], { message: 2 }, 'boom'],
-  RateLimitTimeoutError: [
-    ['RateLimitTimeoutError', 1],
+  RateLimitMaxWaitError: [
+    ['RateLimitMaxWaitError', 1],
     { message: 2, key: 3, wouldAcquireAt: 4 },
     'Rate limit "openai" has no slot within the call\'s maxWait',
     'openai',
