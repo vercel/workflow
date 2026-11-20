@@ -3,6 +3,10 @@
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
+import {
+  getEffectiveEventDate,
+  parseEventDate,
+} from '../../lib/event-list-model';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import {
   isSealedNoopEvent,
@@ -22,17 +26,6 @@ import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-
-const parseDateValue = (value: unknown): Date | null => {
-  if (value == null) return null;
-
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-
-const getEffectiveEventDate = (
-  event: Pick<Event, 'createdAt' | 'occurredAt'>
-): Date => parseDateValue(event.occurredAt) ?? new Date(event.createdAt);
 
 const formatEventTimestamp = (date: Date): string =>
   date.toLocaleString(undefined, {
@@ -123,7 +116,7 @@ function EventItem({
       ? SEALED_EVENT_MESSAGE
       : undefined;
   const createdAt = new Date(event.createdAt);
-  const occurredAt = parseDateValue(event.occurredAt);
+  const occurredAt = parseEventDate(event.occurredAt);
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
     : getEffectiveEventDate(event);
