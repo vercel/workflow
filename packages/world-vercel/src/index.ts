@@ -112,11 +112,11 @@ export function createWorld(config?: APIConfig): World {
       // and any it cannot decide, so no call is recorded without a
       // reservation.
       rateLimits: true,
-      // Not `rateEventsInBatch` yet: the backend refuses a rate event in a
-      // batch until it decides one the way a single write does. Declaring it
-      // before then would get every batch that carries a rate limit call
-      // refused whole, speculative step outcomes included.
-
+      // world-vercel's batch decides a rate event on a spec 10 run as the
+      // single write does, so the in-band writer sends rate limit calls made
+      // at once in one batch, and a call's write beside the step outcome
+      // before it.
+      rateEventsInBatch: true,
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })`. Static rather than
       // attested per lookup,
