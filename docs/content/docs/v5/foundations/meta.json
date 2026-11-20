@@ -5,6 +5,7 @@
     "starting-workflows",
     "errors-and-retries",
     "hooks",
+    "rate-limits",
     "streaming",
     "cancellation",
     "serialization",

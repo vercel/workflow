@@ -6,11 +6,12 @@ summary: Use experimental_rateLimit to keep calls to a shared upstream under its
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
+  - /docs/foundations/rate-limits
   - /docs/api-reference/workflow/sleep
   - /docs/errors/rate-limit-max-wait
 ---
 
-Waits for a slot under a rate limit that every run of the project shares. Calls with the same `key` get slots at most `limit` per `period`, each at least `period / limit` after the one before. A call whose slot is now resolves at once; otherwise the run sleeps until its slot, like [`sleep()`](/docs/api-reference/workflow/sleep), and resolves then. A call that wakes late can go ahead a little after its slot (see [Calls that wake late](#calls-that-wake-late)), so keep handling the upstream's own rate limit errors.
+Waits for a slot under a rate limit that every run of the project shares. Calls with the same `key` get slots at most `limit` per `period`, each at least `period / limit` after the one before. A call whose slot is now resolves at once; otherwise the run sleeps until its slot, like [`sleep()`](/docs/api-reference/workflow/sleep), and resolves then. A call that wakes late can go ahead a little after its slot (see [Calls that wake late](#calls-that-wake-late)), so keep handling the upstream's own rate limit errors. For when and how to use rate limits, see [Rate Limits](/docs/foundations/rate-limits).
 
 <Callout type="warn">
 Experimental. Runs must be created at spec version 10 ([`WORKFLOW_SPEC_VERSION=10`](/docs/configuration/runtime-tuning#workflow_spec_version)) on the Vercel or Local World, with the default `node` workflow VM. Elsewhere the call throws.
