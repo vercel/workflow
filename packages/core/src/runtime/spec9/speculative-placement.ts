@@ -65,30 +65,39 @@ export function displacesSpeculation(
 
 /**
  * What events read outside this delivery's own answers (the live feed, an
- * incremental load) mean for a log that holds speculative events:
+ * incremental load) mean for a log that holds speculative events. In slot
+ * order:
  *
  * - an event at a slot with no speculative copy is folded in;
  * - a speculative write's own commit, read before its answer, is left out:
  *   the speculative copy stands until the answer confirms or repairs it;
  * - an event at a slot another event's speculative copy holds was displaced
  *   by a wrong placement. It is left out too (the log would drop it), and a
- *   repair is due, which rebuilds the log from what committed.
+ *   repair is due, which rebuilds the log from what committed. Nothing after
+ *   it is folded either: the log's order is wrong from that slot on.
+ *
+ * `complete` is whether every event was folded. A reader that keeps a
+ * position (an incremental load's cursor) must not move it past these
+ * events otherwise. An event left out here reaches the log another way only
+ * if all goes well: with the write's answer, or from the repair. An answer
+ * whose report is incomplete is not merged, and the event then has to be
+ * read again.
  */
 export function foldReadEvents(
   events: readonly Event[],
   speculativeAt: SpeculativeEventAt
-): { fold: Event[]; displaced: boolean } {
+): { fold: Event[]; displaced: boolean; complete: boolean } {
   const fold: Event[] = [];
   let displaced = false;
   for (const event of events) {
     const speculative = speculativeAt(event.eventId);
-    if (speculative === undefined) {
+    if (speculative !== undefined) {
+      if (!isSameWrite(speculative, event)) displaced = true;
+    } else if (!displaced) {
       fold.push(event);
-    } else if (!isSameWrite(speculative, event)) {
-      displaced = true;
     }
   }
-  return { fold, displaced };
+  return { fold, displaced, complete: fold.length === events.length };
 }
 
 /**
@@ -97,8 +106,10 @@ export function foldReadEvents(
  * - `fold`: an outcome on the awaited path, or one written ahead whose write
  *   is still unconfirmed and whose slot is free. It is merged.
  * - `committed`: written ahead, and its write settled before the body did.
- *   The committed event reached the log with the write's answer, or a repair
- *   rebuilt the log from it. The speculative copy still carries the slot it
+ *   The committed event reaches the log without this copy: with the write's
+ *   answer, from a repair, or (when the answer's report was incomplete) from
+ *   the read that follows, which starts no later than the event (see
+ *   {@link foldReadEvents}). The speculative copy still carries the slot it
  *   was predicted at, which may be another event's by now, so it is not
  *   merged.
  * - `displaced`: written ahead and unconfirmed, but its slot is taken. Its

@@ -440,6 +440,7 @@ describe.each([
       .mockImplementation(() => undefined);
     let starts = 0;
     let held = false;
+    let heldUntilThirdBody = false;
     const { world } = await run(sequential, [STEPS], {
       subscribe: true,
       async afterCommit(committed) {
@@ -449,16 +450,20 @@ describe.each([
         if (held || starts < 2) return;
         held = true;
         // Bounded, so an engine that waits for the answer before it starts
-        // the next body fails the assertions below instead of hanging.
-        const deadline = Date.now() + 2000;
+        // the next body fails the assertions below instead of hanging. The
+        // bound never ends the hold in a passing run, however slow.
+        const deadline = Date.now() + 10_000;
         while (bodiesStarted < 3 && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 1));
         }
+        heldUntilThirdBody = bodiesStarted >= 3;
       },
     });
     await world.runUntilIdle();
 
     expect(held).toBe(true);
+    // The third body started with that answer still held.
+    expect(heldUntilThirdBody).toBe(true);
     expect(await runResult(world)).toBe(STEPS);
     expect(world.deliveries).toHaveLength(1);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);

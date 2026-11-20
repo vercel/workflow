@@ -16,9 +16,14 @@ on:
         required: false
         default: ""
 
+# A manual run must not cancel the nightly one: its ranges come from the date
+# and would never be run again.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   fuzz:
@@ -40,6 +45,12 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: |
           if [ -n "$REQUESTED" ]; then
+            # The test falls back to its default seeds on anything else, and
+            # the run would pass without running what was asked for.
+            if ! [[ "$REQUESTED" =~ ^[0-9]+-[0-9]+$ ]]; then
+              echo "::error::seeds must be a range like 1-400, got '$REQUESTED'"
+              exit 1
+            fi
             # A requested range runs once, on the first shard.
             if [ "$SHARD" = "0" ]; then
               echo "range=$REQUESTED" >> "$GITHUB_OUTPUT"

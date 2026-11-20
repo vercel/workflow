@@ -50,9 +50,11 @@ function hash(...parts: unknown[]): number {
 
 /** A deterministic generator: `next(n)` is in `[0, n)`. */
 function seeded(seed: number): (n: number) => number {
-  // `Math.imul` keeps the product exact for any seed (the nightly ranges
-  // run into the tens of millions).
-  let s = Math.imul(seed, 2654435761) >>> 0 || 1;
+  // The product is a float, so it is inexact above 2^53 (seeds past a few
+  // million, and every configuration seed). It is still the same on every
+  // machine, which is all a seed has to be: do not "fix" it, or every seed
+  // generates a different run than it did.
+  let s = (seed * 2654435761) >>> 0 || 1;
   return (n) => {
     s ^= s << 13;
     s >>>= 0;

@@ -141,7 +141,7 @@ describe.skipIf(process.platform === 'win32')(
           'SELECT owner_job_id, claimed_at, wake IS NOT NULL AS has_wake FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
           [runId]
         ),
-        pool.query<{ payload: { data: string } }>(
+        pool.query<{ payload: unknown }>(
           `SELECT jobs.id::text AS id, tasks.identifier AS task, jobs.locked_by,
                   jobs.locked_at, jobs.run_at, jobs.attempts, jobs.last_error,
                   jobs.payload
@@ -155,13 +155,28 @@ describe.skipIf(process.platform === 'win32')(
         invocations: invocations.rows,
         lease: lease.rows[0],
         jobs: jobs.rows
-          .filter(
-            (row) =>
-              JSON.parse(Buffer.from(row.payload.data, 'base64').toString())
-                .runId === runId
-          )
+          .filter((row) => jobRunId(row.payload) === runId)
           .map(({ payload: _payload, ...job }) => job),
       };
+    }
+
+    /**
+     * The run a Graphile job is for. A queue message carries it inside a
+     * base64 `data` field; other tasks (a purge) carry it in the payload
+     * itself, and some jobs name no run.
+     */
+    function jobRunId(payload: unknown): string | undefined {
+      const data = (payload as { data?: unknown } | null)?.data;
+      try {
+        const body: unknown =
+          typeof data === 'string'
+            ? JSON.parse(Buffer.from(data, 'base64').toString())
+            : payload;
+        const id = (body as { runId?: unknown } | null)?.runId;
+        return typeof id === 'string' ? id : undefined;
+      } catch {
+        return undefined;
+      }
     }
 
     beforeAll(async () => {
@@ -1017,6 +1032,89 @@ describe.skipIf(process.platform === 'win32')(
         },
       ]);
     });
+
+    it('answers every invocation whose wakes collapsed into one, however slow each is to deliver', async () => {
+      // Two invocations are submitted while a delivery still holds the run's
+      // lease. Their wakes are left on the lease, which keeps one for both,
+      // so the delivery that wake starts is the only one either has. It
+      // finds both in the mailbox, and delivering the first takes longer
+      // than the executor's idle window: it must still deliver the second.
+      const runId = `wrun_${ulid()}`;
+      await seedTransportRun(runId);
+      const firstDone = Promise.withResolvers<void>();
+      const releaseFirst = Promise.withResolvers<void>();
+      const deliveredBy = new Map<string, number>();
+      let deliveries = 0;
+      const handler = world.createQueueHandler(
+        '__wkf_workflow_',
+        async (message) => {
+          const invocation = message as { invoke?: boolean; requestId: string };
+          if (!invocation.invoke) return;
+          // Longer than the idle window (100 ms).
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          deliveredBy.set(invocation.requestId, deliveries);
+          return { status: 'accepted' };
+        }
+      );
+      overrides.set(runId, async (req) => {
+        const delivery = ++deliveries;
+        const response = await handler(req);
+        if (delivery === 1) {
+          // The first delivery has finished, mailbox intake included. Its
+          // answer is held, so its job keeps the run's lease.
+          firstDone.resolve();
+          await releaseFirst.promise;
+        }
+        return response;
+      });
+      try {
+        if (!world.invoke) throw new Error('Invocation unavailable');
+        await world.queue('__wkf_workflow_transport_test', { runId });
+        await firstDone.promise;
+        const ids = [randomUUID(), randomUUID()];
+        const results = ids.map((idempotencyKey) =>
+          world.invoke!(runId, {}, { idempotencyKey, timeoutMs: 15_000 })
+        );
+        // Both wake jobs found the lease held and left: one wake is on it,
+        // and the job that owns it is the run's only job.
+        await until(
+          async () => ({
+            jobs: (await executorJobs(runId)).length,
+            wake: (
+              await pool.query<{ has_wake: boolean }>(
+                'SELECT wake IS NOT NULL AS has_wake FROM workflow.workflow_run_delivery_leases WHERE run_id = $1',
+                [runId]
+              )
+            ).rows[0]?.has_wake,
+            submitted: (
+              await pool.query(
+                'SELECT 1 FROM workflow.workflow_invocations WHERE run_id = $1',
+                [runId]
+              )
+            ).rowCount,
+          }),
+          (state) =>
+            state.jobs === 1 && state.wake === true && state.submitted === 2
+        );
+        releaseFirst.resolve();
+
+        await expect(Promise.all(results)).resolves.toEqual([
+          { status: 'accepted' },
+          { status: 'accepted' },
+        ]);
+        expect([...deliveredBy.keys()].sort()).toEqual([...ids].sort());
+        // One delivery took both: the second did not need a wake of its own.
+        expect(new Set(deliveredBy.values()).size).toBe(1);
+        await until(
+          async () => (await executorJobs(runId)).length,
+          (count) => count === 0
+        );
+        expect(await leaseOwner(runId)).toBeUndefined();
+      } finally {
+        releaseFirst.resolve();
+        overrides.delete(runId);
+      }
+    }, 30_000);
 
     it('bounds listener connections and mailbox growth under concurrent invokes', async () => {
       const name = `soak-${randomUUID()}`;
