@@ -11,8 +11,9 @@
  * late the live feed's push is, how many steps run inline, how deep
  * run-ahead goes, whether deliveries coalesce.
  *
- * The default seeds are a small fixed set. `WORKFLOW_FUZZ_SEEDS=1-400` runs
- * a range (about a second a seed).
+ * The default seeds are a small fixed smoke set (see `DEFAULT_SEEDS`).
+ * `WORKFLOW_FUZZ_SEEDS=1-400` runs a range, about a second a seed, and a
+ * scheduled workflow runs a new range every night.
  */
 import type { Event } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,7 +50,9 @@ function hash(...parts: unknown[]): number {
 
 /** A deterministic generator: `next(n)` is in `[0, n)`. */
 function seeded(seed: number): (n: number) => number {
-  let s = (seed * 2654435761) >>> 0 || 1;
+  // `Math.imul` keeps the product exact for any seed (the nightly ranges
+  // run into the tens of millions).
+  let s = Math.imul(seed, 2654435761) >>> 0 || 1;
   return (n) => {
     s ^= s << 13;
     s >>>= 0;
@@ -210,9 +213,18 @@ async function pump(world: AppendOnlyWorld, seed: number, budgetMs: number) {
 }
 
 /**
- * Seeds that failed before the fixes this suite pins: a replay divergence,
- * a log reported as holding a hole, and a run that never completed, each
- * from a speculative event placed at the wrong slot.
+ * A smoke set, not the regression guard. These seeds failed without the
+ * placement fixes on the machine that found them (a replay divergence, a
+ * log reported as holding a hole, a run that never completed). But a seed
+ * fixes only the workflow and its delays, and the delays run on real timers:
+ * which interleaving a seed produces depends on the machine, and elsewhere
+ * most of them pass with or without the fixes.
+ *
+ * The rules are pinned by tests whose order is fixed
+ * (`in-band-writer.test.ts`, `speculative-placement.test.ts`,
+ * `run-ahead-placement.runtime.test.ts`). What this suite checks is a
+ * range: the "Spec 9 Generated Workflows Fuzz" workflow runs a new one every
+ * night, and `WORKFLOW_FUZZ_SEEDS` runs one locally.
  */
 const DEFAULT_SEEDS = [251, 370, 393, 602, 713, 789, 977, 1036];
 
