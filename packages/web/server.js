@@ -8,6 +8,7 @@
  *   import { startServer } from "@workflow/web/server"
  */
 
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { serve } from 'srvx';
@@ -35,9 +36,11 @@ export async function startServer(port) {
   // over a real network, where trading CPU for bytes is worth it.
   const serveStatic = createStaticHandler({ dir: clientDir });
   const ssr = createFetchHandler('/');
+  const hostname = process.env.HOST || '127.0.0.1';
 
   const server = serve({
     port: port ?? parseInt(process.env.PORT || '3000', 10),
+    hostname,
     async fetch(request) {
       return (await serveStatic(request)) ?? ssr(request);
     },
@@ -52,6 +55,15 @@ export async function startServer(port) {
   });
 
   await server.ready();
+  if (
+    hostname.toLowerCase() !== 'localhost' &&
+    hostname !== '::1' &&
+    !(isIP(hostname) === 4 && hostname.startsWith('127.'))
+  ) {
+    console.warn(
+      '@workflow/web has no built-in authentication. When listening beyond loopback, place it behind your own authentication layer.'
+    );
+  }
   console.log(`@workflow/web server listening on ${server.url}`);
   return server;
 }

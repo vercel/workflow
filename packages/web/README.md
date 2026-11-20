@@ -19,6 +19,12 @@ There are multiple approaches:
 
 All options require the environment to be configured with the right environment variables for the World you're using.
 
+The production server (`node server.js`, including when started by the CLI) binds
+to `127.0.0.1` by default. Set `HOST` to opt into another listening address, for
+example `HOST=0.0.0.0 node server.js` to listen on all IPv4 interfaces. `PORT`
+sets the standalone server's port (default: `3000`). When listening beyond
+loopback, place the UI behind your own authentication layer as described above.
+
 ### Option 1: Run with the CLI
 
 ```bash
