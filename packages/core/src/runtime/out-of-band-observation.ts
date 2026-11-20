@@ -58,11 +58,13 @@ import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
  * ## Waits
  *
  * Sleep promises are native, so whether anything still awaits a wait cannot be
- * told. A wait is instead classified by time: one whose `resumeAt` falls within
- * the clock-skew allowance (`OPEN_WAIT_CLOCK_SKEW_MS`) of now, capped at the
- * invocation's inline deadline, can come due before the writes in flight
- * commit, and counts as path-changing; one due later is completed at a later
- * pass, after those writes, like any wait. The
+ * told. A wait is instead classified by time: one whose `resumeAt` falls
+ * within run-ahead's wait window (`getRunAheadWaitWindowEndMs`: now plus the
+ * clock-skew allowance, at least `MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS`, capped at
+ * the inline deadline plus that allowance) counts as path-changing. One due
+ * later is completed by the orchestrator in-band at the top of a later pass,
+ * after the writes in flight; a boundary classified once it comes due drains
+ * first (proof of concept). The
  * caller computes this from both the log and the suspension's own queue,
  * because either can hold a wait the other lacks.
  *
@@ -160,7 +162,7 @@ export interface OutOfBandObservation {
    * any of them is counted as path-changing.
    */
   externalStepCount: number;
-  /** An open wait can fire before this invocation's inline window ends. */
+  /** An open wait is due within run-ahead's wait window (`getRunAheadWaitWindowEndMs`). */
   waitDue: boolean;
   /**
    * No writer this classification can see is able to append an event that
@@ -201,7 +203,7 @@ export function observeOutOfBandWriters(input: {
   observedHookIds: ReadonlySet<string> | undefined;
   /** Steps this invocation executes itself (inline or as owner recovery). */
   selfExecutedStepIds: ReadonlySet<string>;
-  /** Whether an open wait is due within the invocation's inline window. */
+  /** Whether an open wait is due within run-ahead's wait window (`getRunAheadWaitWindowEndMs`). */
   waitDue: boolean;
 }): OutOfBandObservation {
   let observedHookCount = 0;
