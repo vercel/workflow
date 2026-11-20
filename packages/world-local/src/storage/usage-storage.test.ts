@@ -27,6 +27,7 @@ import {
   updateStep,
 } from '../test-helpers.js';
 import { PAYLOAD_EVENT_TYPES } from './purged-usage.js';
+import { HOOK_TOKEN_SQL } from './usage-storage.js';
 
 let dataDir: string;
 let storage: LocalStorage;
@@ -316,6 +317,49 @@ describe('experimental_usage.getRun (world-local)', () => {
       usage.events
     );
   });
+
+  it('looks up each hook’s token through events_by_correlation', async () => {
+    // Enough hooks that a per-hook scan of the run's log would show: the
+    // lookup walked the log up to each hook's first event (quadratic).
+    const HOOKS = 3000;
+    const runId = await startRun();
+    for (let i = 0; i < HOOKS; i++) {
+      await createHook(storage, runId, {
+        hookId: `hook_${i}`,
+        token: `tok-${i}`,
+      });
+      await storage.events.create(runId, {
+        eventType: 'hook_received',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `hook_${i}`,
+        eventData: { payload: bytes(4) },
+      });
+    }
+    const db = databaseFor(dataDir);
+    const plan = db
+      .all<{ detail: string }>(
+        `EXPLAIN QUERY PLAN ${HOOK_TOKEN_SQL}`,
+        runId,
+        'hook_0'
+      )
+      .map((row) => row.detail);
+    expect(plan).toEqual([
+      'SEARCH events USING INDEX events_by_correlation (run_id=? AND correlation_id=?)',
+    ]);
+
+    const usage = await usageOf(runId);
+    const hooks = usage.eventsBySpan.filter((span) => span.kind === 'hook');
+    expect(hooks).toHaveLength(HOOKS);
+    // Every hook keeps its own token and its two events.
+    for (const span of hooks) {
+      expect(span).toMatchObject({
+        name: `tok-${span.id?.slice('hook_'.length)}`,
+        events: 2,
+        calls: 1,
+      });
+    }
+    expect(usage.events).toBe(2 + 2 * HOOKS);
+  }, 60_000);
 
   it('keeps a hook’s token through a zero-retention purge', async () => {
     const run = await createRun(storage, {

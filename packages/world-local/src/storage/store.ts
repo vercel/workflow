@@ -23,7 +23,7 @@ import type { Database } from '../db/index.js';
 const EVENT_READ_BATCH = 64;
 
 /** Pins correlation lookups to `events_by_correlation`: world-local collects no planner stats, so SQLite would scan the run by primary key. */
-const EVENTS_BY_CORRELATION = 'events INDEXED BY events_by_correlation';
+export const EVENTS_BY_CORRELATION = 'events INDEXED BY events_by_correlation';
 
 export interface RunRow {
   run: WorkflowRun;
