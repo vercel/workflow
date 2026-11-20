@@ -1,6 +1,9 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   Button,
+  Menu,
+  MenuContent,
+  MenuTrigger,
   Spinner,
   Tooltip,
   TooltipContent,
@@ -26,11 +29,6 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
 import { Card, CardContent } from '~/components/ui/card';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from '~/components/ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -132,14 +130,13 @@ function RunActionsDropdownContentInner({
       events={events}
       eventsLoading={eventsLoading}
       replayDisabledReason={getRunReplayDisabledReason(run, runIdentityLoading)}
-      stopPropagation
       callbacks={{ onSuccess }}
     />
   );
 }
 
-// Wrapper that only renders content when dropdown is open (lazy loading)
-function LazyDropdownMenu({
+// The content, and the event fetch inside it, only mounts while the menu is open.
+function RunActionsMenu({
   env,
   runId,
   runStatus,
@@ -150,32 +147,23 @@ function LazyDropdownMenu({
   runStatus: WorkflowRunStatus | undefined;
   onSuccess: () => void;
 }) {
-  const [isOpen, setIsOpen] = useState(false);
-
   return (
-    <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="tertiary"
-          size="small"
-          shape="square"
-          aria-label="Run actions"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      {isOpen && (
-        <DropdownMenuContent align="end">
-          <RunActionsDropdownContentInner
-            env={env}
-            runId={runId}
-            runStatus={runStatus}
-            onSuccess={onSuccess}
-          />
-        </DropdownMenuContent>
-      )}
-    </DropdownMenu>
+    <Menu>
+      <MenuTrigger
+        aria-label="Run actions"
+        render={<Button variant="tertiary" size="small" shape="square" />}
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </MenuTrigger>
+      <MenuContent align="end">
+        <RunActionsDropdownContentInner
+          env={env}
+          runId={runId}
+          runStatus={runStatus}
+          onSuccess={onSuccess}
+        />
+      </MenuContent>
+    </Menu>
   );
 }
 
@@ -927,8 +915,12 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                         '-'
                       )}
                     </TableCell>
-                    <TableCell className="py-2">
-                      <LazyDropdownMenu
+                    {/* The menu renders in place, so its clicks would reach the row. */}
+                    <TableCell
+                      className="py-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <RunActionsMenu
                         env={env}
                         runId={run.runId}
                         runStatus={run.status}

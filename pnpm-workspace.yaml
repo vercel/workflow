@@ -93,6 +93,9 @@ minimumReleaseAgeExclude:
   - '@sveltejs/load-config'
   - 'quickjs-wasi'
   - 'devalue'
+  # UI SDK (vercel-labs/ui) is Vercel-published and ships betas faster than
+  # the 48h gate; @workflow/web-shared builds its menus on it.
+  - '@ui-sdk/*'
   # The CI canary lanes pin `next` to a fresh canary at install time
   # (see "Setup canary" in .github/workflows/tests.yml); canaries are
   # usually younger than the 48h gate, and next and its @next/* companion

@@ -27,6 +27,18 @@ export { Button, type ButtonProps, buttonVariants } from './ui/button';
 export { CopyButton, type CopyButtonProps } from './ui/copy-button';
 export { DataInspector, type DataInspectorProps } from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
+export {
+  Menu,
+  MenuContent,
+  type MenuContentProps,
+  MenuItem,
+  MenuItemIcon,
+  type MenuItemIconProps,
+  type MenuItemProps,
+  MenuSeparator,
+  type MenuSeparatorProps,
+  MenuTrigger,
+} from './ui/menu';
 export { Spinner } from './ui/spinner';
 export {
   Tooltip,

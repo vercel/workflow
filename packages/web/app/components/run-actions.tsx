@@ -1,6 +1,11 @@
 import {
   analyzeEvents,
   Button,
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuItemIcon,
+  MenuTrigger,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -15,12 +20,6 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '~/components/ui/dropdown-menu';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
@@ -215,10 +214,7 @@ function ReenqueueTooltipContent() {
 // Dropdown Menu Items (for runs-table)
 // ============================================================================
 
-export interface RunActionsDropdownItemsProps extends RunActionsBaseProps {
-  /** Stop click event propagation (useful in table rows) */
-  stopPropagation?: boolean;
-}
+export type RunActionsDropdownItemsProps = RunActionsBaseProps;
 
 export function RunActionsDropdownItems({
   env,
@@ -228,7 +224,6 @@ export function RunActionsDropdownItems({
   eventsLoading,
   callbacks,
   replayDisabledReason,
-  stopPropagation = false,
 }: RunActionsDropdownItemsProps) {
   const {
     rerunning,
@@ -249,42 +244,25 @@ export function RunActionsDropdownItems({
     callbacks,
   });
 
-  const onReplay = (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
-    handleReplay();
-  };
-
-  const onReenqueue = (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
-    handleReenqueue();
-  };
-
-  const onCancelSleeps = (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
-    handleWakeUp();
-  };
-
-  const onCancel = (e: React.MouseEvent) => {
-    if (stopPropagation) e.stopPropagation();
-    handleCancel();
-  };
-
   const isRunActive = runStatus === 'pending' || runStatus === 'running';
 
   return (
     <>
       <Tooltip>
         <TooltipTrigger asChild>
-          <DropdownMenuItem
-            onClick={onReplay}
+          <MenuItem
+            value="replay"
+            onSelect={handleReplay}
             disabled={rerunning || Boolean(replayDisabledReason)}
           >
-            <RotateCw className="h-4 w-4 mr-2" />
+            <MenuItemIcon>
+              <RotateCw />
+            </MenuItemIcon>
             {rerunning ? 'Replaying...' : 'Replay Run'}
-          </DropdownMenuItem>
+          </MenuItem>
         </TooltipTrigger>
         {replayDisabledReason ? (
-          <TooltipContent side="left" className="max-w-xs">
+          <TooltipContent side="left" className="max-w-xs" portal={false}>
             {replayDisabledReason}
           </TooltipContent>
         ) : null}
@@ -293,15 +271,18 @@ export function RunActionsDropdownItems({
       {/* Re-enqueue - always shown */}
       <Tooltip>
         <TooltipTrigger asChild>
-          <DropdownMenuItem
-            onClick={onReenqueue}
+          <MenuItem
+            value="reenqueue"
+            onSelect={handleReenqueue}
             disabled={eventsLoading || reenqueuing}
           >
-            <Zap className="h-4 w-4 mr-2" />
+            <MenuItemIcon>
+              <Zap />
+            </MenuItemIcon>
             {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
-          </DropdownMenuItem>
+          </MenuItem>
         </TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs">
+        <TooltipContent side="left" className="max-w-xs" portal={false}>
           <ReenqueueTooltipContent />
         </TooltipContent>
       </Tooltip>
@@ -309,26 +290,32 @@ export function RunActionsDropdownItems({
       {/* Cancel Active Sleeps - disabled if no active sleeps */}
       <Tooltip>
         <TooltipTrigger asChild>
-          <DropdownMenuItem
-            onClick={onCancelSleeps}
+          <MenuItem
+            value="cancel-sleeps"
+            onSelect={handleWakeUp}
             disabled={eventsLoading || !hasPendingSleeps || wakingUp}
           >
-            <AlarmClockOff className="h-4 w-4 mr-2" />
+            <MenuItemIcon>
+              <AlarmClockOff />
+            </MenuItemIcon>
             {wakingUp ? 'Cancelling sleeps...' : 'Cancel Active Sleeps'}
-          </DropdownMenuItem>
+          </MenuItem>
         </TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs">
+        <TooltipContent side="left" className="max-w-xs" portal={false}>
           <CancelSleepsTooltipContent hasPendingSleeps={hasPendingSleeps} />
         </TooltipContent>
       </Tooltip>
 
-      <DropdownMenuItem
-        onClick={onCancel}
+      <MenuItem
+        value="cancel"
+        onSelect={handleCancel}
         disabled={!isRunActive || cancelling}
       >
-        <XCircle className="h-4 w-4 mr-2" />
+        <MenuItemIcon>
+          <XCircle />
+        </MenuItemIcon>
         {cancelling ? 'Cancelling...' : 'Cancel'}
-      </DropdownMenuItem>
+      </MenuItem>
     </>
   );
 }
@@ -443,35 +430,36 @@ export function RunActionsButtons({
       </Tooltip>
 
       {/* More Actions Menu */}
-      <DropdownMenu>
+      <Menu>
         <Tooltip>
           <TooltipTrigger asChild>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="secondary"
-                size="small"
-                shape="square"
-                aria-label="More actions"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
+            <MenuTrigger
+              aria-label="More actions"
+              render={
+                <Button variant="secondary" size="small" shape="square" />
+              }
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </MenuTrigger>
           </TooltipTrigger>
           <TooltipContent>More actions</TooltipContent>
         </Tooltip>
-        <DropdownMenuContent align="end">
+        <MenuContent align="end">
           {/* Re-enqueue - always shown */}
           <Tooltip>
             <TooltipTrigger asChild>
-              <DropdownMenuItem
-                onClick={handleReenqueue}
+              <MenuItem
+                value="reenqueue"
+                onSelect={handleReenqueue}
                 disabled={loading || eventsLoading || reenqueuing}
               >
-                <Zap className="h-4 w-4 mr-2" />
+                <MenuItemIcon>
+                  <Zap />
+                </MenuItemIcon>
                 {reenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
-              </DropdownMenuItem>
+              </MenuItem>
             </TooltipTrigger>
-            <TooltipContent side="left" className="max-w-xs">
+            <TooltipContent side="left" className="max-w-xs" portal={false}>
               <ReenqueueTooltipContent />
             </TooltipContent>
           </Tooltip>
@@ -479,22 +467,25 @@ export function RunActionsButtons({
           {/* Cancel Active Sleeps - disabled if no active sleeps */}
           <Tooltip>
             <TooltipTrigger asChild>
-              <DropdownMenuItem
-                onClick={handleWakeUp}
+              <MenuItem
+                value="cancel-sleeps"
+                onSelect={handleWakeUp}
                 disabled={
                   loading || eventsLoading || !hasPendingSleeps || wakingUp
                 }
               >
-                <AlarmClockOff className="h-4 w-4 mr-2" />
+                <MenuItemIcon>
+                  <AlarmClockOff />
+                </MenuItemIcon>
                 {wakingUp ? 'Cancelling sleeps...' : 'Cancel Active Sleeps'}
-              </DropdownMenuItem>
+              </MenuItem>
             </TooltipTrigger>
-            <TooltipContent side="left" className="max-w-xs">
+            <TooltipContent side="left" className="max-w-xs" portal={false}>
               <CancelSleepsTooltipContent hasPendingSleeps={hasPendingSleeps} />
             </TooltipContent>
           </Tooltip>
-        </DropdownMenuContent>
-      </DropdownMenu>
+        </MenuContent>
+      </Menu>
     </>
   );
 }

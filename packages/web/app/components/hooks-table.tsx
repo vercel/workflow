@@ -1,6 +1,9 @@
 import {
   Button,
   HookResolveModalWrapper,
+  Menu,
+  MenuContent,
+  MenuTrigger,
   ResolveHookDropdownItem,
   Tooltip,
   TooltipContent,
@@ -19,12 +22,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
 import { Card, CardContent } from '~/components/ui/card';
 import { DocsLink } from '~/components/ui/docs-link';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '~/components/ui/dropdown-menu';
 import {
   Table,
   TableBody,
@@ -348,32 +345,35 @@ export function HooksTable({
                       <TableCell className="py-2">
                         {renderInvocationCount(hook)}
                       </TableCell>
-                      <TableCell className="py-2">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="tertiary"
-                              size="small"
-                              shape="square"
-                              aria-label="Hook actions"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                      {/* The menu renders in place, so its clicks would reach the row. */}
+                      <TableCell
+                        className="py-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Menu>
+                          <MenuTrigger
+                            aria-label="Hook actions"
+                            render={
+                              <Button
+                                variant="tertiary"
+                                size="small"
+                                shape="square"
+                              />
+                            }
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </MenuTrigger>
+                          <MenuContent align="end">
                             <ResolveHookDropdownItem
                               // List rows omit the secret token; the resolve
                               // flow fetches it on demand. The shared component
                               // only forwards the hook back to onResolve, which
                               // reads its run/hook id, so this cast is safe.
                               hook={hook as Hook}
-                              stopPropagation
                               onResolveClick={hookActions.openResolveModal}
-                              DropdownMenuItem={DropdownMenuItem}
                             />
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                          </MenuContent>
+                        </Menu>
                       </TableCell>
                     </TableRow>
                   ))}
