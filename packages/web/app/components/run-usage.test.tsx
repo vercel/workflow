@@ -333,28 +333,43 @@ describe('the usage table', () => {
     );
   });
 
-  it('puts the retries badge under the name below sm, and hides its column', () => {
+  it('puts the retries badge under the name until the table has room for the bars and its column', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    // The table's own width decides, not the viewport's: its wrapper is a
+    // size container, and the bars and the Retries column share one size.
+    const wrapper = screen.getByTestId('run-usage-types')
+      .parentElement as HTMLElement;
+    expect(wrapper.className.split(/\s+/)).toContain('@container');
+    const WIDE = '@min-[520px]:table-cell';
     const charge = childrenOf('steps').getAllByTestId('run-usage-child')[0];
     const [nameCell, ...cells] = within(charge).getAllByRole('cell');
-    // jsdom has no layout: check the breakpoint classes each copy sits in.
+    // jsdom has no layout: check the container classes each copy sits in.
     const inline = within(nameCell).getByTestId('run-usage-retries-inline');
     expect(inline.textContent).toBe('1 retry');
-    expect(inline.parentElement?.className.split(/\s+/)).toContain('sm:hidden');
+    expect(inline.parentElement?.className.split(/\s+/)).toContain(
+      '@min-[520px]:hidden'
+    );
+    // The share bar's cell appears at the same size as the Retries column.
+    const bar = cells.at(1) as HTMLElement;
+    expect(bar.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(['hidden', WIDE])
+    );
     const column = cells.at(-1) as HTMLElement;
     expect(within(column).getByTestId('run-usage-retries').textContent).toBe(
       '1 retry'
     );
     expect(column.className.split(/\s+/)).toEqual(
-      expect.arrayContaining(['hidden', 'sm:table-cell'])
+      expect.arrayContaining(['hidden', WIDE])
     );
-    // The header's Retries column hides with it.
+    // The header's bar and Retries columns hide with them.
     const headers = within(screen.getByTestId('run-usage-types')).getAllByRole(
       'columnheader'
     );
-    expect((headers.at(-1) as HTMLElement).className.split(/\s+/)).toEqual(
-      expect.arrayContaining(['hidden', 'sm:table-cell'])
-    );
+    for (const header of [headers.at(2), headers.at(-1)]) {
+      expect((header as HTMLElement).className.split(/\s+/)).toEqual(
+        expect.arrayContaining(['hidden', WIDE])
+      );
+    }
     // The Steps row carries its retries too.
     const steps = groups().find(
       (row) => row.getAttribute('data-type') === 'steps'

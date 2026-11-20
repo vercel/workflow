@@ -165,8 +165,9 @@ function RowDetail({
 }
 
 /**
- * Below `sm` the retries column is hidden (a 320px screen has no room for
- * it), and the row's badge sits here, under its name.
+ * Until the table is wide enough for the share bars and the retries
+ * column (`@min-[520px]`, on the table's own width), both are hidden and
+ * the row's badge sits here, under its name.
  */
 function InlineRetryBadge({
   retries,
@@ -178,7 +179,7 @@ function InlineRetryBadge({
 }) {
   if (retries <= 0) return null;
   return (
-    <span className={cn('mt-1 block sm:hidden', className)}>
+    <span className={cn('mt-1 block @min-[520px]:hidden', className)}>
       <RetryBadge retries={retries} testId="run-usage-retries-inline" />
     </span>
   );
@@ -391,8 +392,11 @@ export function formatRunEventTypes(usage: RunUsage): string | null {
 // Tighter below sm, so a 320px screen fits the columns: names wrap only at
 // their separators, so they can't shrink to make room.
 const CELL = 'py-2 pr-2 sm:pr-4';
-/** Share is the last column below sm (Retries is hidden): no gap after it. */
-const SHARE_CELL = 'py-2 pr-0 sm:pr-4';
+/**
+ * Share is the last column until the table has room for Retries: no gap
+ * after it then.
+ */
+const SHARE_CELL = 'py-2 pr-0 @min-[520px]:pr-4';
 
 const TABLE_HEAD_ROW =
   'text-label-12 text-gray-900 border-b border-gray-alpha-400';
@@ -457,13 +461,13 @@ function CountCells({
       >
         {row.events.toLocaleString('en-US')}
       </td>
-      <td className={cn(CELL, 'hidden sm:table-cell')}>
+      <td className={cn(CELL, 'hidden @min-[520px]:table-cell')}>
         <ShareBar share={row.share} />
       </td>
       <td className={cn(SHARE_CELL, 'text-right tabular-nums text-gray-900')}>
         {formatUsageShare(row.share)}
       </td>
-      <td className="hidden py-2 sm:table-cell">
+      <td className="hidden py-2 @min-[520px]:table-cell">
         <RetryBadge retries={row.retries} />
       </td>
     </>
@@ -638,17 +642,20 @@ function UsageGroup({
 function UsageTable({ usage }: { usage: RunUsage }) {
   const idPrefix = useId();
   return (
-    <div className="overflow-x-auto">
+    // A size container: its width, not the viewport's, decides whether the
+    // bars and the retries column fit (side by side with the storage table
+    // from lg, the table is narrower than the screen).
+    <div className="@container overflow-x-auto">
       <table className="w-full text-copy-13" data-testid="run-usage-types">
         <thead>
           <tr className={TABLE_HEAD_ROW}>
             <th className={cn(CELL, 'text-left font-medium')}>Type</th>
             <th className={cn(CELL, 'text-right font-medium')}>Events</th>
-            <th className={cn(CELL, 'hidden w-1/4 sm:table-cell')}>
+            <th className={cn(CELL, 'hidden w-1/4 @min-[520px]:table-cell')}>
               <span className="sr-only">Share of Events</span>
             </th>
             <th className={cn(SHARE_CELL, 'text-right font-medium')}>Share</th>
-            <th className="hidden py-2 text-left font-medium sm:table-cell">
+            <th className="hidden py-2 text-left font-medium @min-[520px]:table-cell">
               <span className="sr-only">Retries</span>
             </th>
           </tr>
