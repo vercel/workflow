@@ -47,8 +47,13 @@ export function createWorld(config?: APIConfig): World {
   // Read once: the runtime validates this declaration, and `run_started`
   // attests the same value (see `APIConfig.mintedSpecVersion`). The backend
   // fences in-band writes (`capabilities.inBandFence` below), so
-  // `WORKFLOW_SPEC_VERSION=9` creates spec 9 runs; spec 8 otherwise.
-  const specVersion = mintedSpecVersion(process.env, { inBandFence: true });
+  // `WORKFLOW_SPEC_VERSION=9` creates spec 9 runs, and it reserves rate limit
+  // slots (`capabilities.rateLimits`), so `WORKFLOW_SPEC_VERSION=10` creates
+  // spec 10 runs; spec 8 otherwise.
+  const specVersion = mintedSpecVersion(process.env, {
+    inBandFence: true,
+    rateLimits: true,
+  });
   config = { ...config, mintedSpecVersion: specVersion };
 
   return {
@@ -101,6 +106,17 @@ export function createWorld(config?: APIConfig): World {
       // carry the counters. Single-orchestrator runs (spec >= 9) always list
       // one, which the runtime requires.
       inBandFence: true,
+      // `experimental_rateLimit()`: the backend reserves each call's slot
+      // when the call's in-band `rate_created` is written, and commits the
+      // decision in its place. It refuses rate events on runs below spec 10,
+      // and any it cannot decide, so no call is recorded without a
+      // reservation.
+      rateLimits: true,
+      // Not `rateEventsInBatch` yet: the backend refuses a rate event in a
+      // batch until it decides one the way a single write does. Declaring it
+      // before then would get every batch that carries a rate limit call
+      // refused whole, speculative step outcomes included.
+
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })`. Static rather than
       // attested per lookup,

@@ -324,6 +324,39 @@ describe('wait timer ownership', () => {
     ).toBe(true);
   });
 
+  it('lets any delivery arm an open rate limit call, each on its own', () => {
+    const rate = (correlationId: string, at: number) =>
+      ev('rate_created', correlationId, {
+        key: 'k',
+        acquireAt: new Date(at),
+        creatorMessageId: MSG,
+      });
+    const events = [rate('rate_a', 10), rate('rate_b', 20)];
+    // Another message's delivery, owning no chain: a coalesced redelivery
+    // of the creator that lost its response must still arm the call.
+    expect(
+      schedulesWaitTimer({
+        wait: events[0],
+        correlationId: 'rate_a',
+        timerFor: undefined,
+        ownedChains: owns({ events }),
+      })
+    ).toBe(true);
+    // Two calls of one message are not one chain: both are armed.
+    expect(
+      waitTimersToArm(
+        [
+          { correlationId: 'rate_a', resumeAtMs: 10, event: events[0] },
+          { correlationId: 'rate_b', resumeAtMs: 20, event: events[1] },
+        ],
+        'msg_wake',
+        undefined
+      )
+        .map((wait) => wait.correlationId)
+        .sort()
+    ).toEqual(['rate_a', 'rate_b']);
+  });
+
   it('arms the earliest wait of each chain, and the timer delivery its own wait', () => {
     const open = [
       { correlationId: 'a1', resumeAtMs: 10, event: wait('a1', 'msg_a') },

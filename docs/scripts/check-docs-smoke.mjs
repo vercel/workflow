@@ -239,6 +239,26 @@ const assertChangelogData = async () => {
   }
 };
 
+/**
+ * `// @setup` lines are type-check-only declarations in code samples, stripped
+ * at build time (lib/remark-strip-setup-lines.ts). A page whose source has
+ * them must show none, in its HTML or its markdown export.
+ */
+const assertNoSetupLines = async (path) => {
+  for (const url of [path, `${path}.md`]) {
+    const res = await fetchWithTrustedSources(`${BASE_URL}${url}`);
+    if (!res.ok) {
+      throw new Error(`${url} returned ${res.status}`);
+    }
+    const body = await res.text();
+    if (body.includes('@setup')) {
+      throw new Error(
+        `${url} renders a // @setup line, which should be stripped at build time`
+      );
+    }
+  }
+};
+
 const checks = [
   {
     name: 'Deployment protection',
@@ -275,6 +295,14 @@ const checks = [
         '/docs/api-reference/workflow/get-writable',
         '/og/api-reference/workflow/get-writable/image.png'
       ),
+  },
+  {
+    name: 'No @setup lines - foundations rate limits',
+    run: () => assertNoSetupLines('/docs/foundations/rate-limits'),
+  },
+  {
+    name: 'No @setup lines - cookbook rate limiting',
+    run: () => assertNoSetupLines('/cookbook/common-patterns/rate-limiting'),
   },
   {
     name: 'HTML meta - worlds index',

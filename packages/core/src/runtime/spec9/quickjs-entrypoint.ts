@@ -21,6 +21,7 @@ import {
   EntityConflictError,
   MaxEventsExceededError,
   RunExpiredError,
+  TooEarlyError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -39,6 +40,7 @@ import {
   type SerializedData,
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   slotToEventId,
@@ -101,6 +103,7 @@ import {
   BASELINE_BUNDLE_FILENAME,
   type PendingHook,
   type PendingOperation,
+  type PendingRate,
   type PendingStep,
   type PendingWait,
   type QuickJSOpenHook,
@@ -138,10 +141,13 @@ import {
 import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
+  getOrchestratorRateWaitMs,
   LingerTimes,
   LiveLogFeed,
   lingerKindOf,
   orchestratorLingerUntil,
+  RATE_SLOT_MARGIN_MS,
+  RATE_TOO_EARLY_RETRY_MS,
 } from './live-feed.js';
 import {
   analyzeLogSteps,
@@ -184,6 +190,7 @@ import {
   nearDueTimerIdempotencyKey,
   rearmsCoalescableTimer,
   sendNearDueTimerOnce,
+  waitTimerDelaySeconds,
   waitTimerMessage,
 } from './wait-timer.js';
 
@@ -693,7 +700,17 @@ async function runQuickJSDelivery(
         .map((wait) => ({
           correlationId: wait.correlationId,
           resumeAtMs: wait.resumeAtMs,
-          seconds: Math.max(1, Math.ceil((wait.resumeAtMs - now) / 1000)),
+          seconds:
+            wait.kind === 'rate'
+              ? Math.max(
+                  1,
+                  waitTimerDelaySeconds({
+                    kind: 'rate',
+                    remainingMs: wait.resumeAtMs - now,
+                    windowMs: getOrchestratorRateWaitMs(),
+                  })
+                )
+              : Math.max(1, Math.ceil((wait.resumeAtMs - now) / 1000)),
         }))
     );
   };
@@ -1017,12 +1034,17 @@ async function runQuickJSDelivery(
    * as on the node engine.
    */
   let turboOptimistic = turbo?.optimistic === true;
-  waitChainEvent = (correlationId) =>
-    events.find(
-      (event) =>
-        event.eventType === 'wait_created' &&
-        event.correlationId === correlationId
-    );
+  // As `openWaits` does: a sleep's first `wait_created`, and a rate limit
+  // call's newest `rate_created` (a call reserved again follows it).
+  waitChainEvent = (correlationId) => {
+    let rate: Event | undefined;
+    for (const event of events) {
+      if (event.correlationId !== correlationId) continue;
+      if (event.eventType === 'wait_created') return event;
+      if (event.eventType === 'rate_created') rate = event;
+    }
+    return rate;
+  };
   armsWaitTimer = (correlationId) =>
     ownerMessageId === undefined ||
     params.recovery === true ||
@@ -1075,6 +1097,9 @@ async function runQuickJSDelivery(
    */
   const deliversOwnEvent = (eventType: string): boolean =>
     eventType === 'wait_completed' ||
+    // A rate limit call's events carry nothing encrypted: what the World
+    // committed for a `rate_created` or `rate_acquired` settles the call.
+    eventType.startsWith('rate_') ||
     (params.writer !== undefined &&
       (eventType === 'run_started' ||
         eventType.startsWith('step_') ||
@@ -1240,6 +1265,126 @@ async function runQuickJSDelivery(
     }, {}),
   });
 
+  /**
+   * `experimental_rateLimit()` slots this invocation wrote the
+   * `rate_acquired` of, as `correlationId@createdSlot`. A call the World
+   * reserved again past its grace gets a new `rate_created`, and so a new
+   * key.
+   */
+  const acquiredRateSlots = new Set<string>();
+  const rateSlotKey = (correlationId: string, createdSlot: number) =>
+    `${correlationId}@${createdSlot}`;
+  /**
+   * A pending op's timer, or undefined: an open `sleep()` this invocation
+   * has not completed, or a rate limit call waiting for the slot its
+   * `rate_created` recorded (see `PendingRate.resumeAt`).
+   */
+  const timerOf = (
+    op: PendingOperation
+  ):
+    | {
+        kind: 'wait' | 'rate';
+        correlationId: string;
+        resumeAtMs: number;
+        createdSlot?: number;
+      }
+    | undefined => {
+    if (op.type === 'wait') {
+      if (completedWaitIds2.has(op.correlationId)) return undefined;
+      return {
+        kind: 'wait',
+        correlationId: op.correlationId,
+        resumeAtMs: new Date((op as PendingWait).resumeAt).getTime(),
+      };
+    }
+    if (op.type === 'rate') {
+      const rate = op as PendingRate;
+      if (rate.resumeAt === undefined || rate.createdSlot === undefined) {
+        return undefined;
+      }
+      if (
+        acquiredRateSlots.has(rateSlotKey(rate.correlationId, rate.createdSlot))
+      )
+        return undefined;
+      return {
+        kind: 'rate',
+        correlationId: rate.correlationId,
+        resumeAtMs: new Date(rate.resumeAt).getTime(),
+        createdSlot: rate.createdSlot,
+      };
+    }
+    return undefined;
+  };
+  /**
+   * A timer's last-hop delay: a sleep's rounds up to its deadline; a rate
+   * limit call further out than the in-process window wakes that much early
+   * and waits the rest in this process (`waitTimerDelaySeconds`). Never 0:
+   * an elapsed one still gets a continuation.
+   */
+  const timerSeconds = (kind: 'wait' | 'rate', resumeAtMs: number): number =>
+    Math.max(
+      1,
+      waitTimerDelaySeconds({
+        kind,
+        remainingMs: resumeAtMs - Date.now(),
+        windowMs: getOrchestratorRateWaitMs(),
+      })
+    );
+  /**
+   * Records the end of a rate limit call's wait: the `rate_acquired` naming
+   * its `rate_created`'s slot. A World whose clock is a little behind this
+   * one refuses it as too early; it is retried in process for a moment
+   * (`RATE_TOO_EARLY_RETRY_MS`), then the call's timer is sent again for
+   * what is left. A conflict (another invocation acquired it, or the call
+   * was settled) leaves it to the log. What the World commits (the
+   * `rate_acquired`, or a new `rate_created` or `rate_failed` after a late
+   * wake) reaches the VM off the response.
+   */
+  const acquireRateSlot = async (
+    correlationId: string,
+    createdSlot: number,
+    resumeAtMs: number
+  ): Promise<void> => {
+    acquiredRateSlots.add(rateSlotKey(correlationId, createdSlot));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await createEvent({
+          eventType: 'rate_acquired',
+          specVersion: SPEC_VERSION_RATE_LIMITS,
+          correlationId,
+          eventData: { createdSlot },
+        });
+        return;
+      } catch (err) {
+        const backoffMs = RATE_TOO_EARLY_RETRY_MS[attempt];
+        if (
+          TooEarlyError.is(err) &&
+          backoffMs !== undefined &&
+          getOrchestratorRateWaitMs() > 0 &&
+          (params.inlineDeadlineMs === undefined ||
+            Date.now() + backoffMs <=
+              params.inlineDeadlineMs - getInlineStepDeadlineMarginMs())
+        ) {
+          await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+        if (TooEarlyError.is(err)) {
+          const retryAfterMs = Math.max(1, err.retryAfter ?? 1) * 1000;
+          const atMs = Math.max(resumeAtMs, Date.now() + retryAfterMs);
+          scheduledWaitContinuations.add(correlationId);
+          await queueWaitTimer(
+            correlationId,
+            Math.max(1, Math.ceil((atMs - Date.now()) / 1000)),
+            atMs
+          );
+          return;
+        }
+        if (EntityConflictError.is(err)) return;
+        throw err;
+      }
+    }
+  };
+
   // Check for elapsed waits
   const now = Date.now();
   const completedWaitIds = new Set(
@@ -1287,6 +1432,14 @@ async function runQuickJSDelivery(
       if (EntityConflictError.is(err)) continue;
       throw err;
     }
+  }
+  // Rate limit calls whose slot has come (never by `run.wakeUp()`): the
+  // `rate_acquired` naming each one's newest `rate_created`.
+  for (const wait of openWaits(events)) {
+    if (wait.kind !== 'rate' || wait.resumeAtMs > Date.now()) continue;
+    const createdSlot = eventIdToSlot(wait.event.eventId);
+    if (createdSlot === null) continue;
+    await acquireRateSlot(wait.correlationId, createdSlot, wait.resumeAtMs);
   }
   // The VM has not started, so whatever those writes handed back (each
   // wait_completed, plus anything another writer appended that they skipped
@@ -2612,10 +2765,14 @@ async function runQuickJSDelivery(
     }
     let dueMs: number | undefined;
     for (const op of pendingOperations) {
-      if (op.type !== 'wait') continue;
-      const wait = op as PendingWait;
-      if (completedWaitIds2.has(wait.correlationId)) continue;
-      const at = new Date(wait.resumeAt).getTime();
+      const timer = timerOf(op);
+      if (timer === undefined) continue;
+      // A rate limit call's slot a moment later, so a World clock a few
+      // milliseconds behind this one does not refuse it as too early.
+      const at =
+        timer.kind === 'rate'
+          ? timer.resumeAtMs + RATE_SLOT_MARGIN_MS
+          : timer.resumeAtMs;
       if (dueMs === undefined || at < dueMs) dueMs = at;
     }
     let handle: ReturnType<typeof setTimeout> | undefined;
@@ -2675,14 +2832,15 @@ async function runQuickJSDelivery(
       seconds: number;
     }[] = [];
     for (const op of pendingOperations) {
-      if (op.type !== 'wait') continue;
-      const wait = op as PendingWait;
-      if (completedWaitIds2.has(wait.correlationId)) continue;
-      const resumeAtMs = new Date(wait.resumeAt).getTime();
+      const timer = timerOf(op);
+      if (timer === undefined) continue;
       timers.push({
-        correlationId: wait.correlationId,
-        resumeAtMs,
-        seconds: Math.max(1, Math.ceil((resumeAtMs - now) / 1000)),
+        correlationId: timer.correlationId,
+        resumeAtMs: timer.resumeAtMs,
+        seconds:
+          timer.kind === 'rate'
+            ? timerSeconds('rate', timer.resumeAtMs)
+            : Math.max(1, Math.ceil((timer.resumeAtMs - now) / 1000)),
       });
     }
     return timers;
@@ -2734,6 +2892,60 @@ async function runQuickJSDelivery(
    * the wait is still woken if this invocation dies mid-sleep; the exit sweep
    * then skips them (`scheduledWaitContinuations`).
    */
+  /**
+   * Waits in this delivery for the slot of the nearest rate limit call due
+   * within `getOrchestratorRateWaitMs` and before the inline deadline, so
+   * the call goes ahead at its slot instead of a queue delay later (the
+   * node engine's `waitForNearRateSlot`). Its timers are sent first: if
+   * this process dies while it waits, the queue still wakes the run. It
+   * stops early for anything the run should see first: a `sleep()` falling
+   * due, or an event the feed delivers. `true` once it waited, so the loop
+   * takes another turn, which acquires the slot.
+   */
+  const waitForNearRateSlot = async (
+    pendingOperations: PendingOperation[]
+  ): Promise<boolean> => {
+    const windowMs = getOrchestratorRateWaitMs();
+    if (windowMs <= 0 || params.inlineDeadlineMs === undefined) return false;
+    const now = Date.now();
+    const latestMs = Math.min(
+      now + windowMs,
+      params.inlineDeadlineMs - inlineMarginMs
+    );
+    let slotMs: number | undefined;
+    for (const op of pendingOperations) {
+      const timer = timerOf(op);
+      if (
+        timer?.kind === 'rate' &&
+        timer.resumeAtMs > now &&
+        timer.resumeAtMs + RATE_SLOT_MARGIN_MS <= latestMs &&
+        (slotMs === undefined || timer.resumeAtMs < slotMs)
+      ) {
+        slotMs = timer.resumeAtMs;
+      }
+    }
+    if (slotMs === undefined) return false;
+    const timers = pendingWaitTimers(pendingOperations);
+    await armNearDueWaitTimers(timers);
+    await armWaitTimers(timers);
+    const untilMs = slotMs + RATE_SLOT_MARGIN_MS;
+    wfdiag('rate_slot_wait', { waitMs: untilMs - now });
+    budget.pause();
+    try {
+      while (Date.now() < untilMs) {
+        const fedBefore = fedEventCount;
+        await waitForInlineProgress(pendingOperations);
+        const sleepDue = pendingOperations.some((op) => {
+          const timer = op.type === 'wait' ? timerOf(op) : undefined;
+          return timer !== undefined && timer.resumeAtMs <= Date.now();
+        });
+        if (fedEventCount !== fedBefore || sleepDue) break;
+      }
+    } finally {
+      budget.resume();
+    }
+    return true;
+  };
   const lingerTimes = new LingerTimes();
   const lingerForExternalWork = async (
     external: ExternalWork | undefined,
@@ -3169,6 +3381,23 @@ async function runQuickJSDelivery(
         await Promise.all(waitCompletePromises);
         await armCompletedChains(fullLog());
       }
+      // Rate limit calls whose slot has come (never by `run.wakeUp()`):
+      // what each `rate_acquired` commits reaches the VM off its response.
+      for (const op of pendingOperations) {
+        const timer = timerOf(op);
+        if (
+          timer?.kind !== 'rate' ||
+          timer.createdSlot === undefined ||
+          timer.resumeAtMs > Date.now()
+        ) {
+          continue;
+        }
+        await acquireRateSlot(
+          timer.correlationId,
+          timer.createdSlot,
+          timer.resumeAtMs
+        );
+      }
 
       // 2. Cheap progress first: feed newly recorded events into the live
       // VM before blocking on step bodies. What the writes above handed back
@@ -3292,7 +3521,9 @@ async function runQuickJSDelivery(
         // No in-process progress possible: the run awaits an external
         // stimulus (hook payload, queued step, wait timer). While it waits
         // on a hook or a step running from its own message, stay live for
-        // it instead of leaving it to a queued wake.
+        // it instead of leaving it to a queued wake. A rate limit slot due
+        // in a moment is waited for here first.
+        if (await waitForNearRateSlot(pendingOperations)) continue;
         if (
           await lingerForExternalWork(
             externalWorkOfPass(pendingOperations),
@@ -3314,20 +3545,18 @@ async function runQuickJSDelivery(
         seconds: number;
       }[] = [];
       for (const op of pendingOperations) {
-        if (op.type !== 'wait') continue;
-        const wait = op as PendingWait;
-        // Completed by this invocation already; the event just has not been
-        // fed back into the VM yet.
-        if (completedWaitIds2.has(wait.correlationId)) continue;
-        const resumeAtMs = new Date(wait.resumeAt).getTime();
+        // Completed by this invocation already (`timerOf` leaves it out);
+        // the event just has not been fed back into the VM yet.
+        const timer = timerOf(op);
+        if (timer === undefined) continue;
         // An elapsed wait still gets a continuation (clamped to 1s): one
         // whose deadline fell between the elapsed-wait pass above and this
         // sweep would otherwise get neither a wait_completed nor a timer.
-        const seconds = Math.max(
-          1,
-          Math.ceil((resumeAtMs - Date.now()) / 1000)
-        );
-        sweep.push({ correlationId: wait.correlationId, resumeAtMs, seconds });
+        sweep.push({
+          correlationId: timer.correlationId,
+          resumeAtMs: timer.resumeAtMs,
+          seconds: timerSeconds(timer.kind, timer.resumeAtMs),
+        });
       }
       await armWaitTimers(sweep);
 
@@ -3806,6 +4035,22 @@ async function runQuickJSDelivery(
     }[] = [];
     let hasElapsedWait = false;
     for (const op of pendingOperations) {
+      if (op.type === 'rate') {
+        // A rate limit call waiting for its slot: an elapsed one is
+        // acquired by the next invocation's pass over the log.
+        const timer = timerOf(op);
+        if (timer === undefined) continue;
+        if (timer.resumeAtMs - Date.now() <= 0) {
+          hasElapsedWait = true;
+        } else {
+          exitSweep.push({
+            correlationId: timer.correlationId,
+            resumeAtMs: timer.resumeAtMs,
+            seconds: timerSeconds('rate', timer.resumeAtMs),
+          });
+        }
+        continue;
+      }
       if (op.type !== 'wait') continue;
       const wait = op as PendingWait;
       const resumeAtMs = new Date(wait.resumeAt).getTime();

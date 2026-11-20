@@ -381,6 +381,46 @@ export class Store {
     );
   }
 
+  // --------------------------------------------------------- rate limits
+
+  /** Whether `correlationId` has an event in `runId`'s log after `seq`. */
+  hasCorrelationEventAfter(
+    runId: string,
+    correlationId: string,
+    seq: number
+  ): boolean {
+    return (
+      this.db.get<{ seq: number }>(
+        `SELECT seq FROM ${EVENTS_BY_CORRELATION}
+         WHERE run_id = ? AND correlation_id = ? AND seq > ?
+         LIMIT 1`,
+        runId,
+        correlationId,
+        seq
+      ) !== undefined
+    );
+  }
+
+  /** A rate limit key's next free slot (epoch µs), or undefined if idle. */
+  getRateTat(key: string): number | undefined {
+    const row = this.db.get<{ tat_us: number }>(
+      'SELECT tat_us FROM rate_limits WHERE tag = ? AND key = ?',
+      this.tag ?? '',
+      key
+    );
+    return row?.tat_us;
+  }
+
+  setRateTat(key: string, tatUs: number): void {
+    this.db.run(
+      `INSERT INTO rate_limits (tag, key, tat_us) VALUES (?, ?, ?)
+       ON CONFLICT (tag, key) DO UPDATE SET tat_us = excluded.tat_us`,
+      this.tag ?? '',
+      key,
+      tatUs
+    );
+  }
+
   // --------------------------------------------------------------- hooks
 
   getHook(hookId: string): Hook | null {

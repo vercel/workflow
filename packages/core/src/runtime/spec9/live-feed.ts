@@ -95,6 +95,55 @@ export const DEFAULT_ORCHESTRATOR_LINGER_MS = 5_000;
 export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
 
 /**
+ * Default of {@link getOrchestratorRateWaitMs}: a call is woken about this
+ * long before its slot, which covers a queue delivery's latency (about 1.5 s
+ * at p99) and a cold start, and it waits the rest in process. It is what lets
+ * the World's grace stay near its 5-second floor.
+ */
+export const DEFAULT_ORCHESTRATOR_RATE_WAIT_MS = 5_000;
+
+/**
+ * How long past a rate limit call's slot an in-process wait ends
+ * (`waitForNearRateSlot` on the node engine): a World whose clock is a few milliseconds behind
+ * this one refuses a `rate_acquired` at the slot itself as too early, and
+ * that costs a whole-second queue timer.
+ */
+export const RATE_SLOT_MARGIN_MS = 15;
+
+/**
+ * The in-process backoffs (ms) of a `rate_acquired` the World refuses as too
+ * early (`acquireRate`, on either engine): its clock is behind this one by more than
+ * {@link RATE_SLOT_MARGIN_MS}. About 150 ms in all, after which the call's
+ * queue timer takes over. The World never grants a slot early, so these only
+ * trade latency, never correctness.
+ */
+export const RATE_TOO_EARLY_RETRY_MS = [10, 20, 40, 80] as const;
+
+/**
+ * How far ahead an `experimental_rateLimit()` call's slot may be for the
+ * orchestrator delivery that finds it waiting to wait for it in process
+ * (`WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`, default
+ * {@link DEFAULT_ORCHESTRATOR_RATE_WAIT_MS}), instead of suspending until a
+ * queued timer wakes the run. A queue delay is whole seconds and its delivery
+ * adds latency, so a call whose slot is half a second away would otherwise
+ * go ahead well over a second after it. The timer is still sent first, so a
+ * delivery that dies while it waits leaves the run woken all the same. Never
+ * past the delivery's inline deadline. `0` disables it.
+ */
+export function getOrchestratorRateWaitMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = env.WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_ORCHESTRATOR_RATE_WAIT_MS;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0
+    ? value
+    : DEFAULT_ORCHESTRATOR_RATE_WAIT_MS;
+}
+
+/**
  * How long an orchestrator delivery stays live after its last pass found
  * nothing to run, while the run still waits on a background step
  * (`WORKFLOW_ORCHESTRATOR_LINGER_MS`, default

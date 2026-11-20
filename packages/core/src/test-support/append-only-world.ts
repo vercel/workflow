@@ -1,18 +1,27 @@
 import {
+  EntityConflictError,
   InBandSupersededError,
   RunExpiredError,
+  TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
   type BatchEventRequest,
   type CreateEventParams,
+  decideRateLimit,
+  decideRateWake,
   type Event,
   type EventListResponse,
   type EventResult,
   IN_BAND_SEQ_AT_RUN_CREATION,
   type ListEventsParams,
+  MAX_RATE_WAIT_MS,
   orchestratorRunIdOf,
   type QueueBatchResult,
+  RATE_MAX_LATE_WAKES,
+  rateLimitIntervalUs,
+  rateLimitToleranceUs,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorContinuationPayload,
   slotToEventId,
@@ -160,6 +169,8 @@ export class AppendOnlyWorld {
     | undefined;
   seq = 0;
   seqInBand = 0;
+  /** Each rate limit key's next free slot (epoch µs), as `world-local` keeps. */
+  readonly rateTats = new Map<string, number>();
   private readonly subscribers = new Set<{
     afterSlot: number;
     onEvent: (event: Event) => void;
@@ -246,6 +257,14 @@ export class AppendOnlyWorld {
        * does.
        */
       takenHookTokens?: readonly string[];
+      /** The spec version the seeded run is stamped with (default 9). */
+      runSpecVersion?: number;
+      /**
+       * Declare `capabilities.rateEventsInBatch` and decide rate events in a
+       * batch as a single write does. Without it a batch carrying one is
+       * refused whole, as a World without the capability refuses it.
+       */
+      rateEventsInBatch?: boolean;
       /**
        * Honor `resolveData: 'skip-step-inputs'` on replay pages (list pages
        * and skipped-slot reports): `step_created` and `step_started` are
@@ -337,7 +356,8 @@ export class AppendOnlyWorld {
   /** Seed a run as if `run_created` had been written. */
   seedRun(run: Omit<WorkflowRun, 'specVersion'> & { specVersion?: number }) {
     this.run = {
-      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      specVersion:
+        this.options.runSpecVersion ?? SPEC_VERSION_SINGLE_ORCHESTRATOR,
       ...run,
     } as WorkflowRun;
     this.append({
@@ -559,6 +579,9 @@ export class AppendOnlyWorld {
       'step_started',
       'step_retrying',
       'wait_created',
+      // A rate limit write reserves a slot of a key every run shares.
+      'rate_created',
+      'rate_acquired',
     ];
     if (
       this.run &&
@@ -635,6 +658,184 @@ export class AppendOnlyWorld {
       correlationId: data.correlationId,
       eventData: { token, conflictingRunId: 'wrun_token_owner' },
     } as Partial<Event>;
+  }
+
+  /**
+   * The event a rate limit write commits, as a World declaring `rateLimits`
+   * decides it (see `world-local`): a `rate_created` reserves its slot and
+   * becomes `rate_acquired`, `rate_created` with `acquireAt`, or
+   * `rate_failed`; a `rate_acquired` must name its own `rate_created`, once,
+   * after its `acquireAt`. `reserve` stores the reservation; the caller runs
+   * it only once the write is accepted.
+   */
+  private committedRate(
+    data: Partial<Event>,
+    // The World's own count, for a call reserved again after a late wake.
+    lateWakes = 0
+  ): {
+    event: Partial<Event>;
+    reserve?: () => void;
+  } {
+    const eventData = (data as { eventData?: Record<string, unknown> })
+      .eventData;
+    // As every World that declares `rateLimits` does: no rate event on a run
+    // stamped below spec 10.
+    if (
+      (data.eventType === 'rate_created' ||
+        data.eventType === 'rate_acquired') &&
+      (this.run?.specVersion ?? 0) < SPEC_VERSION_RATE_LIMITS
+    ) {
+      throw new WorkflowWorldError(
+        `${data.eventType} can only be written to a run stamped at spec version ${SPEC_VERSION_RATE_LIMITS} or later`,
+        { status: 400 }
+      );
+    }
+    if (data.eventType === 'rate_created' && eventData) {
+      // One request per call, as world-local refuses a second (a call
+      // reserved again is decided here from its rate_acquired instead).
+      if (
+        lateWakes === 0 &&
+        this.events.some((event) => event.correlationId === data.correlationId)
+      ) {
+        throw new EntityConflictError(
+          `Rate limit call "${data.correlationId}" already exists`
+        );
+      }
+      const call = {
+        key: eventData.key as string,
+        limit: eventData.limit as number,
+        periodMs: eventData.periodMs as number,
+        ...(typeof eventData.burst === 'number' &&
+          eventData.burst > 1 && { burst: eventData.burst }),
+      };
+      const expiresAt = new Date(
+        Math.min(
+          new Date(eventData.expiresAt as Date).getTime(),
+          Date.now() + MAX_RATE_WAIT_MS
+        )
+      );
+      const nowUs = Date.now() * 1000;
+      const decision = decideRateLimit({
+        tatUs: this.rateTats.get(call.key),
+        intervalUs: rateLimitIntervalUs(call),
+        toleranceUs: rateLimitToleranceUs(call),
+        nowUs,
+        deadlineUs: expiresAt.getTime() * 1000,
+      });
+      const request = {
+        ...call,
+        expiresAt,
+        ...(lateWakes > 0 && { lateWakes }),
+      };
+      if (decision.status === 'deadline_exceeded') {
+        const failed = {
+          ...data,
+          eventType: 'rate_failed',
+          eventData: {
+            ...request,
+            reason: 'max_wait',
+            acquireAt: new Date(Math.ceil(decision.wouldAcquireAtUs / 1000)),
+          },
+        } as Partial<Event>;
+        return { event: failed };
+      }
+      const reserve = () => this.rateTats.set(call.key, decision.tatUs);
+      if (decision.acquireAtUs <= nowUs) {
+        const acquired = {
+          ...data,
+          eventType: 'rate_acquired',
+          eventData: {
+            ...request,
+            acquireAt: new Date(Math.floor(decision.acquireAtUs / 1000)),
+          },
+        } as Partial<Event>;
+        return { event: acquired, reserve };
+      }
+      const waiting = {
+        ...data,
+        eventData: {
+          ...request,
+          acquireAt: new Date(Math.ceil(decision.acquireAtUs / 1000)),
+          creatorMessageId: eventData.creatorMessageId,
+        },
+      } as Partial<Event>;
+      return { event: waiting, reserve };
+    }
+    if (data.eventType === 'rate_acquired' && eventData) {
+      const createdId = slotToEventId(eventData.createdSlot as number);
+      const created = this.events.find((event) => event.eventId === createdId);
+      if (
+        created?.eventType !== 'rate_created' ||
+        created.correlationId !== data.correlationId
+      ) {
+        throw new EntityConflictError(
+          `Slot ${eventData.createdSlot} does not hold the rate_created of ${data.correlationId}`
+        );
+      }
+      // Settled: acquired, failed, or reserved again past its grace window.
+      if (
+        this.events.some(
+          (event) =>
+            event.correlationId === data.correlationId &&
+            event.eventId > createdId
+        )
+      ) {
+        throw new EntityConflictError(
+          `${data.correlationId} was already acquired`
+        );
+      }
+      const acquireAt = new Date(created.eventData.acquireAt as Date);
+      if (acquireAt.getTime() > Date.now()) {
+        throw new TooEarlyError(`${data.correlationId} is not due`, {
+          retryAfter: Math.ceil((acquireAt.getTime() - Date.now()) / 1000),
+        });
+      }
+      const lateWakes =
+        (created.eventData.lateWakes as number | undefined) ?? 0;
+      const wake = decideRateWake({
+        acquireAt,
+        nowMs: Date.now(),
+        periodMs: created.eventData.periodMs as number,
+        lateWakes,
+        expiresAt: new Date(created.eventData.expiresAt as Date),
+      });
+      if (wake === 'reserve_again') {
+        // Woken past its grace window: reserved again from the recorded call.
+        return this.committedRate(
+          {
+            ...data,
+            eventType: 'rate_created',
+            eventData: created.eventData,
+          } as Partial<Event>,
+          Math.min(lateWakes + 1, RATE_MAX_LATE_WAKES)
+        );
+      }
+      const {
+        creatorMessageId: _creator,
+        lateWakes: _lateWakes,
+        ...recorded
+      } = created.eventData;
+      if (wake === 'fail') {
+        // Late past its largest grace and past its deadline: it fails.
+        const failed = {
+          ...data,
+          eventType: 'rate_failed',
+          eventData: {
+            ...recorded,
+            ...(lateWakes > 0 && { lateWakes }),
+            reason: 'max_wait',
+            acquireAt,
+          },
+        } as Partial<Event>;
+        return { event: failed };
+      }
+      const acquired = {
+        ...data,
+        eventData: { ...recorded, createdSlot: eventData.createdSlot },
+      } as Partial<Event>;
+      return { event: acquired };
+    }
+    return { event: data };
   }
 
   /**
@@ -926,11 +1127,31 @@ export class AppendOnlyWorld {
             message: (error as Error).message,
           };
         }
-        const event = this.append(
-          this.committedHook(data as Partial<Event>),
-          undefined,
-          occurredAt(index)
-        );
+        let committed = this.committedHook(data as Partial<Event>);
+        if (
+          data.eventType === 'rate_created' ||
+          data.eventType === 'rate_acquired'
+        ) {
+          try {
+            const rate = this.committedRate(data as Partial<Event>);
+            rate.reserve?.();
+            committed = rate.event;
+          } catch (error) {
+            // Refused as the single write would be, its position sealed.
+            this.append({ eventType: 'noop' } as Partial<Event>);
+            const status = EntityConflictError.is(error)
+              ? 409
+              : TooEarlyError.is(error)
+                ? 425
+                : ((error as { status?: number }).status ?? 400);
+            return {
+              status,
+              error: (error as Error).name,
+              message: (error as Error).message,
+            };
+          }
+        }
+        const event = this.append(committed, undefined, occurredAt(index));
         this.creates.push({ event, params: params as CreateEventParams });
         return { status: 200 as const, event: this.responseEvent(event) };
       }),
@@ -954,9 +1175,12 @@ export class AppendOnlyWorld {
         }
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
+        const rate = self.committedRate(self.committedHook(data));
         self.checkFence(params, 1);
+        // Only a write the fence accepted reserves its slot.
+        rate.reserve?.();
         const event = self.append(
-          self.committedHook(data),
+          rate.event,
           undefined,
           params?.inBand === true && params.occurredAt
             ? new Date(params.occurredAt)
@@ -1023,6 +1247,15 @@ export class AppendOnlyWorld {
         ) {
           throw new WorkflowWorldError(
             `An event batch may carry at most ${WORLD_EVENT_BATCH_LIMITS.maxBytes} bytes`,
+            { status: 400 }
+          );
+        }
+        if (
+          !self.options.rateEventsInBatch &&
+          batch.some(({ event }) => event.eventType.startsWith('rate_'))
+        ) {
+          throw new WorkflowWorldError(
+            'A rate event cannot be batched on this World',
             { status: 400 }
           );
         }
@@ -1183,6 +1416,7 @@ export class AppendOnlyWorld {
       },
       capabilities: {
         inBandFence: true,
+        ...(self.options.rateEventsInBatch ? { rateEventsInBatch: true } : {}),
       },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';

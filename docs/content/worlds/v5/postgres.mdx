@@ -343,6 +343,8 @@ Change it when: more than one application shares the database. Give each one its
 
 A World claims jobs only under its own prefix and stamps that prefix on every run it creates. On `start()`, it re-enqueues only the active runs stamped with its prefix, so restarting one application does not hand another application's runs to its worker. `WORKFLOW_QUEUE_NAMESPACE` does not separate applications that share a database.
 
+The prefix also scopes [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) keys: every deployment of an application shares a key's rate, and applications with different prefixes do not.
+
 Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. The CLI and the observability UI build their World from the environment, so a run they create, such as a re-run, is stamped with the prefix they see, and only a World with that prefix runs and recovers it.
 
 ### `WORKFLOW_POSTGRES_DEPLOYMENT_ID`

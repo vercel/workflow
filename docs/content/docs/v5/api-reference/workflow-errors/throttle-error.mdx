@@ -8,7 +8,7 @@ related:
   - /docs/api-reference/workflow-errors/too-early-error
 ---
 
-`ThrottleError` is thrown when a request to the workflow backend is rate-limited. It corresponds to HTTP 429 Too Many Requests semantics.
+`ThrottleError` is thrown when a request to the workflow backend is rate-limited. It corresponds to HTTP 429 Too Many Requests semantics. It is about the backend limiting the SDK's own requests. To keep your workflows' calls to an upstream API under its limit, see [Rate Limits](/docs/foundations/rate-limits).
 
 The `retryAfter` property contains the number of seconds to wait before retrying.
 
