@@ -894,6 +894,75 @@ export const client = { provider: providerName };`
     expect(output).toContain('from-serde');
     expect(output).not.toMatch(/from\s+["']workflow-pkg["']/);
   });
+
+  it('picks up import graph changes on rebuild', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'server', 'workflows', 'my-workflow.ts');
+    const pkgDir = join(testRoot, 'node_modules', 'workflow-pkg');
+    const pkgIndex = join(pkgDir, 'index.js');
+    const pkgSerde = join(pkgDir, 'serde.js');
+
+    writeFile(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'workflow-pkg', main: 'index.js' })
+    );
+    writeFile(pkgSerde, `export const value = "from-serde";`);
+    writeFile(pkgIndex, `export const value = "from-index";`);
+    writeFile(
+      stepFile,
+      `import { value } from 'workflow-pkg';\nexport async function myStep() {\n  'use step';\n  return value;\n}`
+    );
+
+    const discover = () =>
+      esbuild.build({
+        entryPoints: [stepFile],
+        absWorkingDir: testRoot,
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        plugins: [
+          createDiscoverEntriesPlugin(
+            {
+              discoveredSteps: new Set<string>(),
+              discoveredWorkflows: new Set<string>(),
+              discoveredSerdeFiles: new Set<string>(),
+            },
+            testRoot
+          ),
+        ],
+      });
+    const ctx = await esbuild.context({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile, pkgSerde],
+          outdir,
+        }),
+      ],
+    });
+
+    try {
+      await discover();
+      const before = (await ctx.rebuild()).outputFiles[0].text;
+      expect(before).toMatch(/from\s+["']workflow-pkg["']/);
+
+      writeFile(pkgIndex, `export { value } from './serde.js';`);
+      await discover();
+      const after = (await ctx.rebuild()).outputFiles[0].text;
+      expect(after).toContain('from-serde');
+      expect(after).not.toMatch(/from\s+["']workflow-pkg["']/);
+    } finally {
+      await ctx.dispose();
+    }
+  });
 });
 
 describe('createSwcPlugin sideEffectEntries', () => {

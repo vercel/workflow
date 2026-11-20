@@ -7,10 +7,8 @@ import {
   applySwcTransform,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
-import {
-  jsTsRegex,
-  parentHasChild,
-} from './discover-entries-esbuild-plugin.js';
+import { importParents, jsTsRegex } from './discover-entries-esbuild-plugin.js';
+import { type EntryReachability, entryReachability } from './import-graph.js';
 import {
   hashManifestSource,
   type ManifestEntryLocation,
@@ -125,10 +123,12 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
     setup(build) {
       let stepIdsForCurrentBuild = new Map<string, ManifestEntryLocation>();
       let workflowIdsForCurrentBuild = new Map<string, ManifestEntryLocation>();
+      let reachability: (EntryReachability & { version: number }) | undefined;
 
       build.onStart(() => {
         stepIdsForCurrentBuild = new Map();
         workflowIdsForCurrentBuild = new Map();
+        reachability = undefined;
         if (options.workflowManifest) {
           delete options.workflowManifest.steps;
           delete options.workflowManifest.workflows;
@@ -273,40 +273,24 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           );
 
           if (options.entriesToBundle) {
-            let shouldBundle = false;
-            for (const entryToBundle of options.entriesToBundle) {
-              const normalizedEntry = entryToBundle.replace(/\\/g, '/');
-
-              if (normalizedResolvedPath === normalizedEntry) {
-                shouldBundle = true;
-                break;
-              }
-
-              // if the current entry imports a child that needs
-              // to be bundled then it needs to also be bundled so
-              // that the child can have our transform applied
-              if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
-                shouldBundle = true;
-                break;
-              }
-
-              // Bundle project-local source files that are imported by a
-              // step/serde entry so direct runtime loaders do not see raw TS
-              // extensionless imports. Keep package dependencies external
-              // unless they are themselves in entriesToBundle or are parents
-              // of a discovered workflow/step/serde file via the check above.
-              if (
-                options.bundleTransitiveLocalStepDependencies &&
+            if (reachability?.version !== importParents.version) {
+              reachability = {
+                version: importParents.version,
+                ...entryReachability(
+                  importParents,
+                  options.entriesToBundle.map(normalizePath)
+                ),
+              };
+            }
+            const shouldBundle =
+              reachability.entries.has(normalizedResolvedPath) ||
+              reachability.leadsToEntry.has(normalizedResolvedPath) ||
+              (!!options.bundleTransitiveLocalStepDependencies &&
                 isProjectLocalFile(
                   normalizedResolvedPath,
                   moduleSpecifierRoot
                 ) &&
-                parentHasChild(normalizedEntry, normalizedResolvedPath)
-              ) {
-                shouldBundle = true;
-                break;
-              }
-            }
+                reachability.reachedFromEntry.has(normalizedResolvedPath));
 
             if (shouldBundle) {
               // Let esbuild bundle this entry, but override sideEffects if needed.

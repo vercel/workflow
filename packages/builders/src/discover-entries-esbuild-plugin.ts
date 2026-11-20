@@ -4,6 +4,7 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { applySwcTransform } from './apply-swc-transform.js';
+import { ImportGraph } from './import-graph.js';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
@@ -53,7 +54,7 @@ function isGeneratedBuildArtifactPath(filePath: string): boolean {
 }
 
 // parent -> children relationship (a file can import multiple files)
-export const importParents = new Map<string, Set<string>>();
+export const importParents = new ImportGraph();
 
 // check if a parent has a child in its import chain
 // e.g. if a dependency needs to be bundled because it has
@@ -122,13 +123,7 @@ export function createDiscoverEntriesPlugin(
             // Normalize path separators for cross-platform compatibility
             const normalizedImporter = args.importer.replace(/\\/g, '/');
             const normalizedResolved = resolved.replace(/\\/g, '/');
-            // A file can import multiple files, so we store a Set of children
-            let children = importParents.get(normalizedImporter);
-            if (!children) {
-              children = new Set<string>();
-              importParents.set(normalizedImporter, children);
-            }
-            children.add(normalizedResolved);
+            importParents.addEdge(normalizedImporter, normalizedResolved);
           }
         } catch (_) {}
         return null;
