@@ -32,6 +32,8 @@ export class WorkflowAbortSignal {
 
   readonly [ABORT_STREAM_NAME]: string;
   readonly [ABORT_HOOK_TOKEN]: string;
+  /** Set on the signal of a controller created with `{ inBandOnly: true }`. */
+  readonly [ABORT_IN_BAND_ONLY]: boolean;
 
   #listeners: Array<() => void> = [];
   #onabort: ((this: WorkflowAbortSignal) => void) | null = null;
@@ -47,9 +49,10 @@ export class WorkflowAbortSignal {
     }
   }
 
-  constructor(streamName: string, hookToken: string) {
+  constructor(streamName: string, hookToken: string, inBandOnly = false) {
     this[ABORT_STREAM_NAME] = streamName;
     this[ABORT_HOOK_TOKEN] = hookToken;
+    this[ABORT_IN_BAND_ONLY] = inBandOnly;
   }
 
   /**
@@ -130,7 +133,11 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
       this[ABORT_STREAM_NAME] = streamName;
       this[ABORT_HOOK_TOKEN] = hookToken;
       this[ABORT_IN_BAND_ONLY] = options?.inBandOnly === true;
-      this.signal = new WorkflowAbortSignal(streamName, hookToken);
+      this.signal = new WorkflowAbortSignal(
+        streamName,
+        hookToken,
+        this[ABORT_IN_BAND_ONLY]
+      );
 
       // Register an internal system hook in the invocations queue. Its token
       // is unique by construction. Never the run's start Hook id (see `mintHookCorrelationId`).
