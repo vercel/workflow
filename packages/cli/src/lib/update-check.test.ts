@@ -9,6 +9,16 @@ describe('isBetaVersion', () => {
     expect(isBetaVersion('5.0.0-beta.1+build.7')).toBe(true);
   });
 
+  it('matches beta case-insensitively', () => {
+    expect(isBetaVersion('5.0.0-BETA.1')).toBe(true);
+  });
+
+  // Preview tarballs append the git sha to the package version
+  // (tarballs/scripts/pack.ts), so a preview of a beta is still a beta.
+  it('is true for a preview tarball of a beta', () => {
+    expect(isBetaVersion('5.0.0-beta.58-abc1234')).toBe(true);
+  });
+
   it('is false for stable releases', () => {
     expect(isBetaVersion('5.3.0')).toBe(false);
     expect(isBetaVersion('4.3.20')).toBe(false);
