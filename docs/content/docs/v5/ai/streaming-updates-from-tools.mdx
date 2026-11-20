@@ -14,7 +14,7 @@ related:
 
 After [building a durable AI agent](/docs/ai), we already get UI message chunks for displaying tool invocations and return values. However, for long-running steps, we may want to show progress updates, or stream step output to the user while it's being generated.
 
-Workflow SDK enables this by letting step functions write custom chunks to the same stream the agent uses. These chunks appear as data parts in your messages, which you can render however you like.
+Workflow SDK enables this by letting step functions write custom chunks to the same stream the agent uses. Any step can write them, whether it runs as a tool or elsewhere in the workflow. These chunks appear as data parts in your messages, which you can render however you like.
 
 As an example, we'll extend our Flight Booking Agent to emit more granular progress updates while searching for flights.
 
@@ -92,6 +92,43 @@ Key points:
 - Write objects with `type`, `id`, and `data` fields
 - Always call `releaseLock()` when done writing (learn more about [streaming](/docs/foundations/streaming))
 
+`WorkflowAgent` writes `ModelCallStreamPart` chunks to the same stream, and your route converts them with `createModelCallToUIChunkTransform()`. The transform forwards `data-*` chunks unchanged, so they reach the client live and are replayed when [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) reconnects. Use the same transform in the route that starts the run and in the reconnect route.
+
+<Callout type="warn">
+`@ai-sdk/workflow` 2.0.102 and earlier drop `data-*` chunks in `createModelCallToUIChunkTransform()`. Upgrade, or wrap the exported `toUIMessageChunk()` in your own transform:
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript title="lib/chat-stream.ts" lineNumbers
+import { toUIMessageChunk } from "@ai-sdk/workflow";
+import type { UIMessageChunk } from "ai";
+
+export function createChatUITransform({ uiStartIndex = 0 } = {}) {
+  let index = 0;
+  const emit = (
+    controller: TransformStreamDefaultController<UIMessageChunk>,
+    chunk: UIMessageChunk
+  ) => {
+    if (index++ >= uiStartIndex) controller.enqueue(chunk);
+  };
+
+  return new TransformStream<any, UIMessageChunk>({
+    start: (controller) => {
+      emit(controller, { type: "start" });
+      emit(controller, { type: "start-step" });
+    },
+    flush: (controller) => {
+      emit(controller, { type: "finish-step" });
+      emit(controller, { type: "finish" });
+    },
+    transform: (part, controller) => {
+      const chunk = part.type.startsWith("data-") ? part : toUIMessageChunk(part);
+      if (chunk) emit(controller, chunk);
+    },
+  });
+}
+```
+</Callout>
+
 </Step>
 
 <Step>
@@ -142,6 +179,10 @@ The pattern is:
 </Steps>
 
 Now, when you run the agent to search for flights, you'll see the flight results pop up one after another. This will be most useful if you have tool calls that take minutes to complete, and you need to show granular progress updates to the user.
+
+## Persisting data parts
+
+Data parts are not part of the model loop, so they are not in `result.steps` or `result.messages`. To keep them in your chat history, return them from the step that writes them (or keep the latest value per `id`, since parts with the same `id` replace each other on the client) and save them with the turn's messages in a step at the end of each turn. Saving the assembled `UIMessage` from `useChat`'s `onFinish` also works, but depends on a client staying connected. Set `transient: true` on data parts that should not be added to `message.parts`.
 
 ## Related documentation
 
