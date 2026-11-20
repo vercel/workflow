@@ -9,7 +9,7 @@ import {
   RUN_USAGE_ENTITIES,
   type RunUsage,
   type RunUsageEntity,
-  USAGE_COUNTING_DOCS_URL,
+  USAGE_DOCS_URL,
   USAGE_ROW_TYPE_LABELS,
   type UsageRowGroup,
   usageRows,
@@ -225,9 +225,9 @@ export function formatRunUsageText(
     );
   }
 
-  // What each event is lives in the docs.
+  // What each event is, and what storage counts, live in the docs.
   lines.push('');
-  lines.push(c.dim(`How events are counted: ${USAGE_COUNTING_DOCS_URL}`));
+  lines.push(c.dim(`How usage is counted: ${USAGE_DOCS_URL}`));
 
   // Storage, without the entities that wrote nothing.
   lines.push('');

@@ -188,12 +188,10 @@ per flag.
 
 - Command: `workflow inspect run <run-id>`
 - Default: disabled
-- Prints the run's usage instead of the run: its events, listed by type (each step function with its calls, events, share and retries; each hook by its token; attributes, sleeps and the run's own events), and its **Storage (local)** by entity (run, steps, hooks, streams). With `--json`, prints the same numbers as one JSON object, storage as `dataWritten`. See [how events are counted](/docs/observability#how-events-are-counted).
-- Storage counts the bytes of the run's payloads as the SDK sent them (compressed when that saves space, and encrypted when encryption is on) and its stream bytes. It doesn't count QuickJS VM snapshots or a dynamic workflow's code. See [how storage is counted](/docs/observability#how-storage-is-counted).
-- The output includes hook tokens, and a token resumes its hook. Share the output, `--json` included, only where you would share the run's data.
-- Prints in color only to a terminal; output is plain text when piped, with `NO_COLOR` set, or with `TERM=dumb`.
-- Only the Local World counts usage so far; on other backends the command fails rather than printing the run.
+- Prints the run's [usage](/docs/observability/usage) instead of the run: its events by type, and its storage. With `--json`, prints the same numbers as JSON.
+- Only the Local World counts usage; on other backends the command fails rather than printing the run.
 - Cannot be combined with `--url`/`--web`, `--withData`, or `--decrypt`.
+- Prints in color only to a terminal; output is plain text when piped, with `NO_COLOR` set, or with `TERM=dumb`.
 
 ## Bulk cancel
 
