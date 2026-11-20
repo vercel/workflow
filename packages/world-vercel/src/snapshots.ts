@@ -182,8 +182,9 @@ export function createSnapshotsStorage(
 
       const getStart = performance.now();
       const response = await withFirewallDenyRetry(
-        () =>
-          fetch(url, {
+        () => {
+          headers.set('X-Request-Time', Date.now().toString());
+          return fetch(url, {
             method: 'GET',
             headers,
             // A 3xx here is a misdirected request, not a hop to take: following
@@ -193,7 +194,8 @@ export function createSnapshotsStorage(
             redirect: 'manual',
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher
             dispatcher: getDispatcher(config),
-          } as any),
+          } as any);
+        },
         { ...fetchResponse, label: `GET /v2/runs/${runId}/snapshot` }
       );
       const getDurationMs = Math.round(performance.now() - getStart);
