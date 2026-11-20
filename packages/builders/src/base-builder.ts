@@ -1827,7 +1827,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         warn: (message) => console.warn(chalk.yellow(message)),
       });
     } catch (error) {
-      await Promise.all([
+      // allSettled so a failing dispose cannot replace the check's error.
+      await Promise.allSettled([
         stepsContext?.dispose(),
         workflowsResult.interimBundleCtx?.dispose(),
       ]);

@@ -42,15 +42,20 @@ function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
 
 /**
  * Stands in for a discovery miss: the builder behaves normally except that
- * `skippedStepFile` is never reported as a step file, which is what happened
- * to a step whose `"use step"` shared a line with its body.
+ * the step file ending in `skippedStepFile` (a path relative to the project,
+ * with forward slashes) is never reported as a step file, which is what
+ * happened to a step whose `"use step"` shared a line with its body.
  */
 class StepDiscoveryMissBuilder extends VercelBuildOutputAPIBuilder {
+  /** Contexts handed back by the two bundles, to check they get disposed. */
+  readonly contexts: { dispose: ReturnType<typeof vi.fn> }[] = [];
+
   constructor(
     workingDir: string,
-    private readonly skippedStepFile: string
+    private readonly skippedStepFile: string,
+    private readonly options: { watch?: boolean; rejectDispose?: boolean } = {}
   ) {
-    super(createConfig(workingDir));
+    super({ ...createConfig(workingDir), watch: options.watch });
   }
 
   protected override async discoverEntries(
@@ -63,8 +68,58 @@ class StepDiscoveryMissBuilder extends VercelBuildOutputAPIBuilder {
       outdir,
       tsconfigPath
     );
-    discovered.discoveredSteps.delete(this.skippedStepFile);
+    const skipped = [...discovered.discoveredSteps].filter((file) =>
+      file.replace(/\\/g, '/').endsWith(`/${this.skippedStepFile}`)
+    );
+    // Without this, a path that does not match (backslashes on Windows, for
+    // one) turns the miss into a normal build and the test into a no-op.
+    if (skipped.length !== 1) {
+      throw new Error(
+        `Expected to skip one step file ending in ${this.skippedStepFile}, found ${JSON.stringify([...discovered.discoveredSteps])}`
+      );
+    }
+    discovered.discoveredSteps.delete(skipped[0]);
     return discovered;
+  }
+
+  /** Calls createCombinedBundle() directly, the way watch-mode builders do. */
+  async combine() {
+    return this.createCombinedBundle({
+      inputFiles: await this.getInputFiles(),
+      stepsOutfile: join(this.config.workingDir, '.out/steps.mjs'),
+      flowOutfile: join(this.config.workingDir, '.out/flow.mjs'),
+      bundleFinalOutput: false,
+    });
+  }
+
+  private track<T extends { dispose: () => Promise<void> } | undefined>(
+    context: T
+  ): T {
+    if (!context) return context;
+    const dispose = context.dispose.bind(context);
+    const spy = vi.fn(async () => {
+      await dispose();
+      if (this.options.rejectDispose) throw new Error('dispose failed');
+    });
+    context.dispose = spy;
+    this.contexts.push({ dispose: spy });
+    return context;
+  }
+
+  protected override async createStepsBundle(
+    args: Parameters<VercelBuildOutputAPIBuilder['createStepsBundle']>[0]
+  ) {
+    const result = await super.createStepsBundle(args);
+    this.track(result.context);
+    return result;
+  }
+
+  protected override async createWorkflowsBundle(
+    args: Parameters<VercelBuildOutputAPIBuilder['createWorkflowsBundle']>[0]
+  ) {
+    const result = await super.createWorkflowsBundle(args);
+    this.track(result.interimBundleCtx);
+    return result;
   }
 }
 
@@ -383,7 +438,7 @@ export async function orderWorkflow() {
     async () => {
       const builder = new StepDiscoveryMissBuilder(
         workingDir,
-        join(workingDir, 'src/lib/payments.ts')
+        'src/lib/payments.ts'
       );
 
       const error = await builder.build().then(
@@ -404,6 +459,35 @@ export async function orderWorkflow() {
     }
   );
 
+  it.each([
+    ['', false],
+    [' when disposing a context fails', true],
+  ])(
+    'disposes both watch-mode contexts when the check fails%s',
+    { timeout: BUILD_TIMEOUT },
+    async (_, rejectDispose) => {
+      const builder = new StepDiscoveryMissBuilder(
+        workingDir,
+        'src/lib/payments.ts',
+        { watch: true, rejectDispose }
+      );
+
+      const error = await builder.combine().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+
+      // The check's error wins over a failed dispose.
+      expect((error as Error).message).toContain(
+        'Workflow code can call 1 step that is not registered'
+      );
+      expect(builder.contexts).toHaveLength(2);
+      for (const context of builder.contexts) {
+        expect(context.dispose).toHaveBeenCalledOnce();
+      }
+    }
+  );
+
   it(
     'builds with a warning behind the escape hatch',
     { timeout: BUILD_TIMEOUT },
@@ -413,7 +497,7 @@ export async function orderWorkflow() {
       try {
         await new StepDiscoveryMissBuilder(
           workingDir,
-          join(workingDir, 'src/lib/payments.ts')
+          'src/lib/payments.ts'
         ).build();
 
         const warnings = warnSpy.mock.calls.map(([message]) => String(message));
