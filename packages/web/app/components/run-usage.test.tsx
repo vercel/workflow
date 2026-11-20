@@ -303,9 +303,71 @@ describe('the usage table', () => {
     expect(detail('hooks')).toBe('2 hooks');
     expect(detail('attributes')).toBe('1 write');
     expect(detail('sleeps')).toBe('1 sleep');
-    // Run: the run's own events, by type.
-    expect(detail('run')).toBe('1 created, 1 started, 1 completed');
+    // Run: just "Run"; its event types are in its tooltip.
+    expect(detail('run')).toBeUndefined();
     expect(document.body.textContent).not.toContain('×');
+    expect(document.body.textContent).not.toContain('1 created');
+  });
+
+  it('shows the Run row’s event types in a tooltip, on focus', async () => {
+    // Radix measures the tooltip; jsdom has no ResizeObserver.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    const run = groups().find((row) => row.getAttribute('data-type') === 'run');
+    const label = within(run as HTMLElement).getByTestId(
+      'run-usage-type-label'
+    );
+    expect(label.textContent).toBe('Run');
+    // Reachable by keyboard, not only on hover.
+    expect(label.tabIndex).toBe(0);
+    fireEvent.focus(label);
+    expect((await screen.findByRole('tooltip')).textContent).toBe(
+      '1 created, 1 started, 1 completed'
+    );
+  });
+
+  it('puts the retries badge under the name below sm, and hides its column', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    const charge = childrenOf('steps').getAllByTestId('run-usage-child')[0];
+    const [nameCell, ...cells] = within(charge).getAllByRole('cell');
+    // jsdom has no layout: check the breakpoint classes each copy sits in.
+    const inline = within(nameCell).getByTestId('run-usage-retries-inline');
+    expect(inline.textContent).toBe('1 retry');
+    expect(inline.parentElement?.className.split(/\s+/)).toContain('sm:hidden');
+    const column = cells.at(-1) as HTMLElement;
+    expect(within(column).getByTestId('run-usage-retries').textContent).toBe(
+      '1 retry'
+    );
+    expect(column.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(['hidden', 'sm:table-cell'])
+    );
+    // The header's Retries column hides with it.
+    const headers = within(screen.getByTestId('run-usage-types')).getAllByRole(
+      'columnheader'
+    );
+    expect((headers.at(-1) as HTMLElement).className.split(/\s+/)).toEqual(
+      expect.arrayContaining(['hidden', 'sm:table-cell'])
+    );
+    // The Steps row carries its retries too.
+    const steps = groups().find(
+      (row) => row.getAttribute('data-type') === 'steps'
+    );
+    expect(
+      within(steps as HTMLElement).getByTestId('run-usage-retries-inline')
+        .textContent
+    ).toBe('1 retry');
+    // A row with no retries has no badge.
+    const sendEmail = childrenOf('steps').getAllByTestId('run-usage-child')[1];
+    expect(
+      within(sendEmail).queryByTestId('run-usage-retries-inline')
+    ).toBeNull();
   });
 
   it('makes Steps and Hooks toggles, expanded by default', () => {
@@ -475,6 +537,8 @@ describe('the usage table', () => {
     expect(label.textContent).toBe(token);
     // After each of : - / . - _
     expect(label.querySelectorAll('wbr')).toHaveLength(6);
+    // And only there: nothing lets the browser break inside a word.
+    expect(label.className).not.toMatch(/overflow-wrap:anywhere|break-all/);
   });
 
   it('keeps the removed content off the page', () => {
@@ -687,10 +751,10 @@ describe('RunUsagePage states', () => {
     expect(screen.queryByTestId('run-usage-types')).toBeNull();
   });
 
-  it('explains a World without usage and links back to the run', () => {
+  it('says the page isn’t available on a backend without usage, and links back', () => {
     render(<RunUsagePage runId="wrun_1" usage={null} error={null} />);
-    expect(screen.getByTestId('run-usage-unsupported').textContent).toContain(
-      'This World doesn’t count run usage.'
+    expect(screen.getByTestId('run-usage-unsupported').textContent).toBe(
+      'This page isn’t available for this backend.Back to run'
     );
     expect(
       screen.getByRole('link', { name: 'Back to run' }).getAttribute('href')

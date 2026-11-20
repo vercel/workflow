@@ -260,7 +260,10 @@ describe('the Usage route', { timeout: 20_000 }, () => {
     serverConfig.backendId = 'vercel';
     vi.mocked(fetchRunUsage).mockResolvedValue({ success: true, data: null });
     renderAt('/run/wrun_1/usage');
-    await screen.findByTestId('run-usage-unsupported');
+    const page = await screen.findByTestId('run-usage-unsupported');
+    expect(page.textContent).toContain(
+      'This page isn’t available for this backend.'
+    );
     expect(screen.queryByTestId('run-usage-events')).toBeNull();
     expect(
       screen.getByRole('link', { name: 'Back to run' }).getAttribute('href')

@@ -128,41 +128,58 @@ function RowIcon({ type }: { type: UsageRowType }) {
   );
 }
 
-function RetryBadge({ retries }: { retries: number }) {
+function RetryBadge({
+  retries,
+  testId = 'run-usage-retries',
+}: {
+  retries: number;
+  testId?: string;
+}) {
   if (retries <= 0) return null;
   return (
     <span
       className="inline-flex items-center whitespace-nowrap rounded-full border border-amber-400 bg-amber-100 px-2 text-label-12 leading-4 text-amber-900"
-      data-testid="run-usage-retries"
+      data-testid={testId}
     >
       {formatCount(retries, 'retry', 'retries')}
     </span>
   );
 }
 
-/**
- * Secondary text after a row's name: calls, hooks, writes, event types. A
- * count stays on one line; a list (the run's event types) wraps, so on a
- * phone it does not push the table past the screen.
- */
+/** Secondary text after a row's name: calls, hooks, writes. One line. */
 function RowDetail({
   children,
   testId,
-  wrap = false,
 }: {
   children: ReactNode;
   testId: string;
-  wrap?: boolean;
 }) {
   return (
     <span
-      className={cn(
-        'font-sans text-label-12 text-gray-700',
-        !wrap && 'whitespace-nowrap'
-      )}
+      className="whitespace-nowrap font-sans text-label-12 text-gray-700"
       data-testid={testId}
     >
       {children}
+    </span>
+  );
+}
+
+/**
+ * Below `sm` the retries column is hidden (a 320px screen has no room for
+ * it), and the row's badge sits here, under its name.
+ */
+function InlineRetryBadge({
+  retries,
+  className,
+}: {
+  retries: number;
+  /** Lines the badge up under the row's name. */
+  className?: string;
+}) {
+  if (retries <= 0) return null;
+  return (
+    <span className={cn('mt-1 block sm:hidden', className)}>
+      <RetryBadge retries={retries} testId="run-usage-retries-inline" />
     </span>
   );
 }
@@ -371,13 +388,20 @@ export function formatRunEventTypes(usage: RunUsage): string | null {
   return parts.join(', ');
 }
 
-const CELL = 'py-2 pr-4';
+// Tighter below sm, so a 320px screen fits the columns: names wrap only at
+// their separators, so they can't shrink to make room.
+const CELL = 'py-2 pr-2 sm:pr-4';
+/** Share is the last column below sm (Retries is hidden): no gap after it. */
+const SHARE_CELL = 'py-2 pr-0 sm:pr-4';
 
 const TABLE_HEAD_ROW =
   'text-label-12 text-gray-900 border-b border-gray-alpha-400';
 
-/** What a group row says after its type: `9 calls`, `3 hooks`, `1 write`. */
-function groupDetail(group: UsageRowGroup, usage: RunUsage): string | null {
+/**
+ * What a group row says after its type: `9 calls`, `3 hooks`, `1 write`.
+ * The Run row says nothing there: its event types are in its tooltip.
+ */
+function groupDetail(group: UsageRowGroup): string | null {
   switch (group.type) {
     case 'steps':
       return formatCount(group.calls, 'call', 'calls');
@@ -387,8 +411,6 @@ function groupDetail(group: UsageRowGroup, usage: RunUsage): string | null {
       return formatCount(group.calls, 'write', 'writes');
     case 'sleeps':
       return formatCount(group.calls, 'sleep', 'sleeps');
-    case 'run':
-      return formatRunEventTypes(usage);
     default:
       return null;
   }
@@ -398,7 +420,8 @@ function groupDetail(group: UsageRowGroup, usage: RunUsage): string | null {
  * A long step name or hook token, with break opportunities after the
  * characters that separate its parts (`approval:` `order-1042`,
  * `./src/workflows/`), so a narrow screen wraps it there rather than in
- * the middle of a word. The full label is also the row's tooltip.
+ * the middle of a word: nothing else breaks it. The full label is also the
+ * row's tooltip.
  */
 function BreakableLabel({ label }: { label: string }) {
   const parts = label.split(/(?<=[:/._-])/);
@@ -437,10 +460,10 @@ function CountCells({
       <td className={cn(CELL, 'hidden sm:table-cell')}>
         <ShareBar share={row.share} />
       </td>
-      <td className={cn(CELL, 'text-right tabular-nums text-gray-900')}>
+      <td className={cn(SHARE_CELL, 'text-right tabular-nums text-gray-900')}>
         {formatUsageShare(row.share)}
       </td>
-      <td className="py-2">
+      <td className="hidden py-2 sm:table-cell">
         <RetryBadge retries={row.retries} />
       </td>
     </>
@@ -467,7 +490,9 @@ function UsageGroup({
   const [expanded, setExpanded] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const label = USAGE_ROW_TYPE_LABELS[group.type];
-  const detail = groupDetail(group, usage);
+  const detail = groupDetail(group);
+  const runEventTypes =
+    group.type === 'run' ? formatRunEventTypes(usage) : null;
   const childrenId = `${idPrefix}-${group.type}`;
   // "+ N other steps" opens the rest: read the group again without a limit.
   const shown =
@@ -480,19 +505,33 @@ function UsageGroup({
     <>
       <RowIcon type={group.type} />
       <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-        <span
-          className="font-medium text-gray-1000"
-          data-testid="run-usage-type-label"
-        >
-          {label}
-        </span>
-        {detail && (
-          <RowDetail
-            testId="run-usage-group-detail"
-            wrap={group.type === 'run'}
+        {runEventTypes ? (
+          // Just "Run"; its event types are its tooltip, on hover or focus.
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip's trigger, so the event types are reachable by keyboard
+                tabIndex={0}
+                className="rounded-sm font-medium text-gray-1000 underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
+                data-testid="run-usage-type-label"
+              >
+                {label}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent data-testid="run-usage-run-events">
+              {runEventTypes}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <span
+            className="font-medium text-gray-1000"
+            data-testid="run-usage-type-label"
           >
-            {detail}
-          </RowDetail>
+            {label}
+          </span>
+        )}
+        {detail && (
+          <RowDetail testId="run-usage-group-detail">{detail}</RowDetail>
         )}
       </span>
     </>
@@ -530,6 +569,8 @@ function UsageGroup({
               // Lines up with the toggles' labels: a chevron's width in.
               <div className="flex min-w-0 items-start gap-2 pl-6">{name}</div>
             )}
+            {/* Under the type's label: past the chevron and the icon. */}
+            <InlineRetryBadge retries={group.retries} className="pl-12" />
           </td>
           <CountCells row={group} emphasis />
         </tr>
@@ -551,7 +592,7 @@ function UsageGroup({
               <td className={cn(CELL, 'pl-12')}>
                 <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
                   <span
-                    className="min-w-0 font-mono text-gray-1000 [overflow-wrap:anywhere]"
+                    className="min-w-0 font-mono text-gray-1000"
                     title={child.label}
                     data-testid="run-usage-child-label"
                   >
@@ -563,6 +604,7 @@ function UsageGroup({
                     </RowDetail>
                   )}
                 </span>
+                <InlineRetryBadge retries={child.retries} />
               </td>
               <CountCells row={child} />
             </tr>
@@ -577,6 +619,7 @@ function UsageGroup({
                 >
                   {shown.otherChildren.label}
                 </button>
+                <InlineRetryBadge retries={shown.otherChildren.retries} />
               </td>
               <CountCells row={shown.otherChildren} />
             </tr>
@@ -604,8 +647,8 @@ function UsageTable({ usage }: { usage: RunUsage }) {
             <th className={cn(CELL, 'hidden w-1/4 sm:table-cell')}>
               <span className="sr-only">Share of Events</span>
             </th>
-            <th className={cn(CELL, 'text-right font-medium')}>Share</th>
-            <th className="py-2 text-left font-medium">
+            <th className={cn(SHARE_CELL, 'text-right font-medium')}>Share</th>
+            <th className="hidden py-2 text-left font-medium sm:table-cell">
               <span className="sr-only">Retries</span>
             </th>
           </tr>
@@ -813,10 +856,7 @@ export function RunUsagePage({
         data-testid="run-usage-unsupported"
       >
         <p className="text-copy-14 text-gray-1000">
-          This World doesn’t count run usage.
-        </p>
-        <p className="text-copy-13 text-gray-900">
-          A run’s events and storage are counted on the Local World.
+          This page isn’t available for this backend.
         </p>
         <Link
           to={runPath(runId)}
