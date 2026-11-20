@@ -170,7 +170,7 @@ const runViews = () =>
 const matchedFiles = (path: string) =>
   matchRoutes(routeObjects, path)?.map((match) => match.route.id) ?? null;
 
-describe('the Usage route', () => {
+describe('the Usage route config', () => {
   it('is a child of the run page', () => {
     expect(matchedFiles('/run/wrun_1/usage')).toEqual([
       './routes/run-detail.tsx',
@@ -187,7 +187,13 @@ describe('the Usage route', () => {
     });
     expect(rootMeta()[0]).toEqual({ title: 'Workflow Observability UI' });
   });
+});
 
+// Each test here renders the run page: RunDetailView under the route config.
+// The file's first render is the slowest. On a loaded CI runner it took 5.4s,
+// past the 5s default, against about 0.4s locally, and the others took up to
+// 1.6s there. 20s leaves room and still fails on a hang.
+describe('the Usage route', { timeout: 20_000 }, () => {
   it('opens from the run header, under the same header, without a second read', async () => {
     const router = renderAt('/run/wrun_1');
     const events = await screen.findByRole('link', {
