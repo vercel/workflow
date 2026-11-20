@@ -32,8 +32,10 @@ export interface RateLimitOptions {
    */
   maxWait?: StringValue | number;
   /**
-   * How many calls may go ahead at once on an idle key, from 1 (the default,
-   * no burst) to `limit`. The key then refills one call every
+   * How many calls may go ahead at once on an idle key: 1 (the default) is
+   * no burst, and it may be more than `limit`, saving up at most 24 hours of
+   * the rate (`limit: 1, period: "1s", burst: 60` saves up a minute). The
+   * key then refills one call every
    * `period / limit`, like a token bucket of size `burst`: the long-run rate
    * is still `limit` per `period`, but a rolling `period` can see up to
    * `limit + burst - 1` calls. Match an upstream that publishes a burst size,

@@ -43,15 +43,15 @@ export function resolveRateLimitCall(
       options.burst < 1)
   ) {
     throw new RangeError(
-      `experimental_rateLimit(): burst must be a whole number from 1 to the limit, got ${JSON.stringify(options.burst)}`
+      `experimental_rateLimit(): burst must be a whole number of at least 1, got ${JSON.stringify(options.burst)}`
     );
   }
   const call = {
     key: options.key,
     limit: options.limit,
     periodMs: durationMs(options.period, 'period'),
-    // A burst of 1 is no burst, so it isn't sent. Above the limit is
-    // refused by `validateRateLimitCall`.
+    // A burst of 1 is no burst, so it isn't sent. One that saves up more
+    // than a day is refused by `validateRateLimitCall`.
     ...(options.burst !== undefined &&
       options.burst > 1 && { burst: options.burst }),
   };

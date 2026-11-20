@@ -374,7 +374,12 @@ export function createEventsStorage(
         eventData.burst > 1 && { burst: eventData.burst }),
     };
     try {
-      validateRateLimitCall(call);
+      // The burst as sent, so a 0 or a fraction is refused rather than read
+      // as no burst.
+      validateRateLimitCall({
+        ...call,
+        ...(eventData.burst !== undefined && { burst: eventData.burst }),
+      });
     } catch (error) {
       throw new WorkflowWorldError((error as Error).message, { status: 400 });
     }
