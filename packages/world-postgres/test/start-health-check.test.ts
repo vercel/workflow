@@ -192,14 +192,24 @@ describe.skipIf(process.platform === 'win32')(
         );
         expect(healthChecks).toBe(1);
         // A later publish is not told again.
-        await queue.queue(`${getQueueTopicPrefix('workflow')}noop`, {
-          runId: 'wrun_none',
-        });
+        const { messageId } = await queue.queue(
+          `${getQueueTopicPrefix('workflow')}noop`,
+          { runId: 'wrun_none' }
+        );
         expect(
           warn.mock.calls.filter((call) =>
             String(call[0]).includes('runs no jobs')
           )
         ).toHaveLength(1);
+        // No worker runs here: long enough for a runner (Graphile polls every
+        // 500 ms, and LISTEN/NOTIFY wakes it sooner) to have claimed the job,
+        // it is still waiting, untouched.
+        await sleep(2_000);
+        const { rows } = await pool.query(
+          'SELECT locked_by, attempts FROM graphile_worker._private_jobs WHERE key = $1',
+          [messageId]
+        );
+        expect(rows).toEqual([{ locked_by: null, attempts: 0 }]);
       } finally {
         await queue.close();
         await pool.query('TRUNCATE graphile_worker._private_jobs');
