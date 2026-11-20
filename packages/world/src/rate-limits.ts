@@ -34,6 +34,34 @@
 export const MAX_RATE_KEY_BYTES = 512;
 
 /**
+ * Keys that start with this are reserved for the Workflow SDK's own utilities
+ * and libraries, like `$`-prefixed attribute keys. A call may use one only
+ * with `allowReservedKey: true` ({@link assertRateLimitKeyAllowed}).
+ */
+export const RESERVED_RATE_LIMIT_KEY_PREFIX = '$';
+
+/**
+ * Throws a `RangeError` for a key in the reserved namespace
+ * ({@link RESERVED_RATE_LIMIT_KEY_PREFIX}) unless the call opted in. Checked
+ * on the call's `rate_created` request, by the runtime and by the World; a
+ * call the World reserves again was already checked.
+ */
+export function assertRateLimitKeyAllowed(
+  key: string,
+  allowReservedKey: boolean | undefined
+): void {
+  if (
+    allowReservedKey !== true &&
+    typeof key === 'string' &&
+    key.startsWith(RESERVED_RATE_LIMIT_KEY_PREFIX)
+  ) {
+    throw new RangeError(
+      `rate limit key ${JSON.stringify(key.slice(0, 64))} starts with the reserved prefix "${RESERVED_RATE_LIMIT_KEY_PREFIX}": that namespace is reserved for Workflow SDK libraries. Set { allowReservedKey: true } only if your caller is one.`
+    );
+  }
+}
+
+/**
  * The longest period a call may use: 24 hours. With a call waiting at most
  * {@link MAX_RATE_WAIT_MS}, a daily limit already queues up to 30 times its
  * limit before calls fail. The Vercel World's backend uses the same bound.

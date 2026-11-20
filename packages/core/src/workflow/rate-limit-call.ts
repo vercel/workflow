@@ -1,4 +1,8 @@
-import { MAX_RATE_WAIT_MS, validateRateLimitCall } from '@workflow/world';
+import {
+  assertRateLimitKeyAllowed,
+  MAX_RATE_WAIT_MS,
+  validateRateLimitCall,
+} from '@workflow/world';
 import ms, { type StringValue } from 'ms';
 import type { RateLimitOptions } from '../rate-limit.js';
 
@@ -15,7 +19,6 @@ function durationMs(value: StringValue | number, name: string): number {
 /**
  * The call as its `rate_created` carries it, checked the way the World checks
  * it. `nowMs` is the workflow's deterministic clock.
- *
  */
 export function resolveRateLimitCall(
   options: RateLimitOptions,
@@ -26,6 +29,7 @@ export function resolveRateLimitCall(
   periodMs: number;
   burst?: number;
   expiresAt: Date;
+  allowReservedKey?: true;
 } {
   if (!options || typeof options !== 'object') {
     throw new TypeError(
@@ -46,8 +50,17 @@ export function resolveRateLimitCall(
     ...(options.burst === true &&
       options.limit > 1 && { burst: options.limit }),
   };
+  if (
+    options.allowReservedKey !== undefined &&
+    typeof options.allowReservedKey !== 'boolean'
+  ) {
+    throw new TypeError(
+      `experimental_rateLimit(): allowReservedKey must be true or false, got ${JSON.stringify(options.allowReservedKey)}`
+    );
+  }
   try {
     validateRateLimitCall(call);
+    assertRateLimitKeyAllowed(call.key, options.allowReservedKey);
   } catch (error) {
     throw new RangeError(
       `experimental_rateLimit(): ${(error as Error).message}`
@@ -59,5 +72,10 @@ export function resolveRateLimitCall(
     options.maxWait === undefined
       ? MAX_RATE_WAIT_MS
       : Math.min(durationMs(options.maxWait, 'maxWait'), MAX_RATE_WAIT_MS);
-  return { ...call, expiresAt: new Date(nowMs + waitMs) };
+  return {
+    ...call,
+    expiresAt: new Date(nowMs + waitMs),
+    // Sent, so the World checks the key the same way.
+    ...(options.allowReservedKey === true && { allowReservedKey: true }),
+  };
 }

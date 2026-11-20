@@ -11,6 +11,8 @@ related:
 
 This error is thrown by [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) when the key's next free slot is later than the call's `maxWait`. The call reserved nothing, so it used up none of the key's capacity.
 
+It is also thrown, after waiting, by a call whose run woke [so late](/docs/api-reference/workflow/rate-limit#calls-that-wake-late) that it was given new slots and ended up past its `maxWait`. That call had reserved a slot.
+
 ## Error message
 
 ```text
@@ -23,6 +25,6 @@ Every call on a key takes the next slot, `period / limit` after the one before. 
 
 ## How to fix it
 
-- Catch it with `RateLimitMaxWaitError.is(error)` from `workflow/errors` and skip, defer or report the work. `error.wouldAcquireAt` is when the call would have gone ahead.
+- Catch it with `RateLimitMaxWaitError.is(error)` from `workflow/errors` and skip, defer or report the work. `error.wouldAcquireAt` is when the call would have gone ahead (for a call that woke late, the slot it missed).
 - Raise the `maxWait`, or leave it out to wait as long as it takes (up to 30 days).
 - Spread the work across keys that the upstream limits separately.

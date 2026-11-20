@@ -47,6 +47,7 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
+  assertRateLimitKeyAllowed,
   decideRateLimit,
   decideRateWake,
   getEventDataRefFields,
@@ -679,6 +680,14 @@ export function createEventsStorage(
           `Cannot set attributes on run in terminal state "${run.status}"`
         );
       }
+      // A late rate_acquired may reserve the call again: a finished run has
+      // nobody to wait for that slot, so it would only use up the key's
+      // capacity, which every run of the project shares.
+      if (data.eventType === 'rate_acquired') {
+        throw new EntityConflictError(
+          `Cannot acquire a rate limit slot on run in terminal state "${run.status}"`
+        );
+      }
     }
 
     // ---- Step ordering ----------------------------------------------------
@@ -1201,6 +1210,26 @@ export function createEventsStorage(
       }
 
       case 'rate_created': {
+        // One call is one rate_created request: a second for the same id
+        // (a replay that drew an id already in the log) would reserve
+        // another slot for a call already decided.
+        if (store.hasCorrelationEventAfter(runId, data.correlationId, 0)) {
+          throw new EntityConflictError(
+            `Rate limit call "${data.correlationId}" already exists`
+          );
+        }
+        // The reserved `$` namespace, checked on the request only: a call
+        // reserved again was checked when it was made.
+        try {
+          assertRateLimitKeyAllowed(
+            data.eventData.key,
+            data.eventData.allowReservedKey
+          );
+        } catch (error) {
+          throw new WorkflowWorldError((error as Error).message, {
+            status: 400,
+          });
+        }
         event = decideRateCreated(event, data.eventData);
         break;
       }

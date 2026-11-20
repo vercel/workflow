@@ -133,6 +133,7 @@ export {
   WorkflowInvokePayloadSchema,
 } from './queue.js';
 export {
+  assertRateLimitKeyAllowed,
   decideRateLimit,
   decideRateWake,
   MAX_RATE_KEY_BYTES,
@@ -145,6 +146,7 @@ export {
   RATE_MAX_LATE_WAKES,
   type RateLimitDecision,
   type RateWakeDecision,
+  RESERVED_RATE_LIMIT_KEY_PREFIX,
   rateGraceMs,
   rateLateAdmitMaxMs,
   rateLimitIntervalUs,

@@ -815,14 +815,22 @@ export interface WorldCapabilities {
    *   `acquireAt` when the slot is now, `rate_created` with `acquireAt` when
    *   it is later, `rate_failed` (`reason: 'max_wait'`) when it is past
    *   `expiresAt`. Reserve nothing for a write the fence or the run's state
-   *   would refuse. `rateLimitIntervalUs` and `decideRateLimit` in
+   *   would refuse. Refuse with `EntityConflictError` a `rate_created` whose
+   *   correlation id already has an event, and with a 400 a key that starts
+   *   with `$` unless the request sets `allowReservedKey: true`
+   *   (`assertRateLimitKeyAllowed`); the opt-in is not kept on the committed
+   *   event. `rateLimitIntervalUs` and `decideRateLimit` in
    *   `@workflow/world` are the algorithm.
    * - **`rate_acquired`** (in-band only): `eventData.createdSlot` names the
-   *   call's `rate_created`. Refuse it with `EntityConflictError` when that
-   *   slot holds no `rate_created` of the same correlation id or the call was
-   *   already acquired, and with `TooEarlyError` (`retryAfter` in seconds)
-   *   before that event's `acquireAt` by the World's clock. Commit the
-   *   recorded `acquireAt`, never one the request carries.
+   *   call's `rate_created`. Refuse it with `EntityConflictError` on a run in
+   *   a terminal state, when that slot holds no `rate_created` of the same
+   *   correlation id, or when the call was already settled, and with
+   *   `TooEarlyError` (`retryAfter` in seconds) before that event's
+   *   `acquireAt` by the World's clock. Within the call's grace
+   *   (`decideRateWake`), commit the recorded `acquireAt`, never one the
+   *   request carries; past it, reserve the call again and commit what that
+   *   decided in place of the request (`rate_acquired`, `rate_created` with
+   *   `acquireAt` and `lateWakes`, or `rate_failed`).
    * - **`rate_failed`** is never accepted from a client.
    *
    * A World without it refuses every rate event, so a spec 10 run never

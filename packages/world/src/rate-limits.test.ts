@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertRateLimitKeyAllowed,
   decideRateLimit,
   decideRateWake,
   MAX_RATE_PERIOD_MS,
   RATE_GRACE_FLOOR_MS,
   RATE_GRACE_MAX_MS,
   RATE_MAX_LATE_WAKES,
+  RESERVED_RATE_LIMIT_KEY_PREFIX,
   rateGraceMs,
   rateLateAdmitMaxMs,
   rateLimitIntervalUs,
@@ -38,6 +40,20 @@ describe('validateRateLimitCall', () => {
     [{ burst: 1.5 }, /burst must be/],
   ])('refuses %o', (bad, message) => {
     expect(() => validateRateLimitCall({ ...ok, ...bad })).toThrow(message);
+  });
+});
+
+describe('assertRateLimitKeyAllowed', () => {
+  it('reserves the $ namespace unless the call opts in', () => {
+    expect(() =>
+      assertRateLimitKeyAllowed('$workflow.agent', undefined)
+    ).toThrow(/reserved prefix "\$"/);
+    expect(() => assertRateLimitKeyAllowed('$x', false)).toThrow(RangeError);
+    expect(() => assertRateLimitKeyAllowed('$x', true)).not.toThrow();
+    // Only a leading $ is reserved.
+    expect(() => assertRateLimitKeyAllowed('openai$', undefined)).not.toThrow();
+    expect(() => assertRateLimitKeyAllowed('openai', undefined)).not.toThrow();
+    expect(RESERVED_RATE_LIMIT_KEY_PREFIX).toBe('$');
   });
 });
 

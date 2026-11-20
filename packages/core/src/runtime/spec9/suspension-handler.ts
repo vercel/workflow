@@ -513,6 +513,9 @@ export async function handleSuspension({
                   burst: queueItem.burst,
                 }),
                 expiresAt: queueItem.expiresAt,
+                ...(queueItem.allowReservedKey === true && {
+                  allowReservedKey: true as const,
+                }),
                 ...(creatorMessageId !== undefined && { creatorMessageId }),
               },
             },

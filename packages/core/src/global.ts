@@ -76,6 +76,8 @@ export interface RateInvocationQueueItem {
   burst?: number;
   /** The call's deadline: past it, the call fails instead of waiting. */
   expiresAt: Date;
+  /** The call opted in to a key in the reserved `$` namespace. */
+  allowReservedKey?: true;
   hasCreatedEvent?: boolean;
 }
 

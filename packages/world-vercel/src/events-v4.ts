@@ -458,6 +458,8 @@ interface CreateEventV4InputBase {
   rateExpiresAt?: Date;
   /** rate_acquired after a wait: the log slot of the call's rate_created. */
   rateCreatedSlot?: number;
+  /** rate_created: the call opted in to a reserved `$` key. */
+  rateAllowReservedKey?: boolean;
   /** Content digest of the serialized resume payload. Forwarded alongside
    *  `resumeId` so the direct write and the queue re-ensure record an identical
    *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
@@ -887,6 +889,9 @@ function buildPostFrameMeta(
   }
   if (input.rateCreatedSlot !== undefined) {
     meta.rateCreatedSlot = input.rateCreatedSlot;
+  }
+  if (input.rateAllowReservedKey !== undefined) {
+    meta.rateAllowReservedKey = input.rateAllowReservedKey;
   }
   return meta;
 }
@@ -1329,6 +1334,12 @@ export function createEventResponseSchema<T extends EventType>(
       // place (see the rate events in @workflow/world).
       (eventType === 'rate_created' &&
         (event.eventType === 'rate_acquired' ||
+          event.eventType === 'rate_failed')) ||
+      // A rate_acquired woken past its grace window is reserved again, and
+      // what that decided is committed in its place: a new rate_created (the
+      // call waits again) or rate_failed (past its deadline).
+      (eventType === 'rate_acquired' &&
+        (event.eventType === 'rate_created' ||
           event.eventType === 'rate_failed')),
     { path: ['event', 'eventType'] }
   );

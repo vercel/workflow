@@ -607,6 +607,12 @@ const RateCreatedEventSchema = BaseEventSchema.extend({
      * grace the call's next wake is judged with. Never set by the runtime.
      */
     lateWakes: z.number().int().nonnegative().optional(),
+    /**
+     * The request's opt-in to a key in the reserved `$` namespace
+     * (`RESERVED_RATE_LIMIT_KEY_PREFIX`), for Workflow SDK libraries. Checked
+     * by the World on the request; never set on a committed event.
+     */
+    allowReservedKey: z.literal(true).optional(),
   }),
 });
 

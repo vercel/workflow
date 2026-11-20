@@ -399,4 +399,66 @@ describe('rate limits on the Local World', () => {
       'rate_acquired'
     );
   });
+  it('refuses a second rate_created for a call, reserving nothing', async () => {
+    const runId = await createRun();
+    const first = committed(await inBand(runId, rateCreated({}, 'rate_DUP')));
+    expect(first.eventType).toBe('rate_acquired');
+    await expect(inBand(runId, rateCreated({}, 'rate_DUP'))).rejects.toThrow(
+      EntityConflictError
+    );
+    // The key's next slot is one interval after the first call's, not two.
+    const next = committed(await inBand(runId, rateCreated()));
+    if (
+      next.eventType !== 'rate_created' ||
+      first.eventType !== 'rate_acquired'
+    )
+      throw new Error('not waiting');
+    expect(
+      next.eventData.acquireAt!.getTime() - first.eventData.acquireAt!.getTime()
+    ).toBeLessThanOrEqual(60_000 + 1);
+  });
+
+  it('refuses a late rate_acquired on a cancelled run, reserving nothing', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const runId = await createRun();
+    committed(await inBand(runId, rateCreated()));
+    const waiting = committed(await inBand(runId, rateCreated()));
+    if (waiting.eventType !== 'rate_created') throw new Error('not waiting');
+    const slot = waiting.eventData.acquireAt!.getTime();
+    // Cancelled out of band, so the in-band fence does not stop the wake.
+    await storage.events.create(runId, {
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_RATE_LIMITS,
+    } as AnyEventRequest);
+    vi.setSystemTime(slot + rateGraceMs(60_000) + 1);
+    await expect(
+      inBand(runId, {
+        eventType: 'rate_acquired',
+        specVersion: SPEC_VERSION_RATE_LIMITS,
+        correlationId: waiting.correlationId,
+        eventData: { createdSlot: eventIdToSlot(waiting.eventId) },
+      })
+    ).rejects.toThrow(EntityConflictError);
+    // Another run gets the slot right after the cancelled call's (which it
+    // still holds), not one more interval later.
+    const other = await createRun();
+    const next = committed(await inBand(other, rateCreated()));
+    if (next.eventType !== 'rate_created') throw new Error('not waiting');
+    expect(next.eventData.acquireAt!.getTime()).toBe(slot + 60_000);
+  });
+  it('refuses a reserved $ key unless the call opts in', async () => {
+    const runId = await createRun();
+    await expect(
+      inBand(runId, rateCreated({ key: '$sdk.internal' }))
+    ).rejects.toThrow(/reserved prefix/);
+    const allowed = committed(
+      await inBand(
+        runId,
+        rateCreated({ key: '$sdk.internal', allowReservedKey: true })
+      )
+    );
+    expect(allowed.eventType).toBe('rate_acquired');
+    // The opt-in is the request's, not part of the committed call.
+    expect(allowed.eventData).not.toHaveProperty('allowReservedKey');
+  });
 });

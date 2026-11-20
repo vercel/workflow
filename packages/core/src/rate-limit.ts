@@ -6,8 +6,10 @@ import { WORKFLOW_RATE_LIMIT } from './symbols.js';
 export interface RateLimitOptions {
   /**
    * What is limited. Every call with the same key shares its rate, across
-   * every run of the project and environment. At most 512 bytes. Keys are
-   * stored as-is in the run's events, so don't put personal data in them.
+   * every run of the project and environment. From 1 character to 512 bytes
+   * (UTF-8). Keys that start with `$` are reserved for Workflow SDK libraries
+   * and are refused unless `allowReservedKey` is set. Keys are stored as-is
+   * in the run's events, so don't put personal data in them.
    */
   key: string;
   /** How many calls the key admits per `period`. */
@@ -33,14 +35,27 @@ export interface RateLimitOptions {
    * call can go ahead of calls already waiting without one.
    */
   burst?: boolean;
+  /**
+   * Allow a `key` that starts with `$`.
+   *
+   * **Do not set this in application code.** The `$` namespace is reserved
+   * for Workflow SDK utilities and libraries, which rely on owning those keys
+   * (and the shared capacity behind them). A workflow that writes a reserved
+   * key can starve those libraries' calls, or be starved by them, and may
+   * break when a future SDK release starts using that key. Without this
+   * option, a `$` key throws a `RangeError` before anything is recorded.
+   */
+  allowReservedKey?: boolean;
 }
 
 /**
  * Wait for a slot under a shared rate limit, inside a workflow.
  *
  * Calls with the same `key` share its rate across every run of the project:
- * at most `limit` calls go ahead per `period`, each at least `period / limit`
- * after the one before. A call whose slot is now resolves at once; otherwise
+ * they get slots at most `limit` per `period`, each at least `period / limit`
+ * after the one before. A call whose run wakes late can still go ahead within
+ * a grace of its slot (at least 5 seconds), so keep handling the upstream's
+ * own rate limit errors. A call whose slot is now resolves at once; otherwise
  * the run sleeps until its slot, like `sleep()`, and resolves then. When the
  * slot would be later than `maxWait`, the call rejects with
  * `RateLimitMaxWaitError` instead, without using up a slot.
