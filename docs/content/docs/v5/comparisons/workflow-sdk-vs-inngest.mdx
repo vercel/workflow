@@ -258,7 +258,7 @@ Inngest configures these on the function, and its event bus applies them before 
 
 | Inngest | With the Workflow SDK |
 | --- | --- |
-| `rateLimit: { key, limit: 1, period }` | A start token per key, retained for the period. A second start before the period has passed throws `HookConflictError`; skip it. See [Rate limit](#rate-limit). |
+| `rateLimit: { key, limit, period }` | [`experimental_rateLimit()`](/docs/foundations/rate-limits) with a short `maxWait` at the top of the workflow, returning when it rejects; or, to start no run at all, a start token per key retained for the period. See [Rate limit](#rate-limit). |
 | `debounce: { key, period }` | One run per key and window that waits out the window, then reads the current state in a step. See [Debounce](#debounce). |
 | `batchEvents: { maxSize, timeout, key }` | The same shape as debounce: store each event where a step can read it, such as a table keyed by the batch key, start one run per window, and read the whole batch in a step once the window ends. |
 | `concurrency: { key, limit: 1 }` where overlapping runs can be dropped | The `singleton: { mode: 'skip' }` row in [Concept mapping](#concept-mapping): a start token with no retention. |
@@ -289,7 +289,32 @@ Unlike `throttle`, which limits run starts, `experimental_rateLimit()` can sit i
 
 #### Rate limit
 
-Inngest's `rateLimit` drops events once the limit for a key is reached in the period. A start token retained for the period does the same for `limit: 1`. The token stays taken until the period has passed since the accepted start, and for as long as that run is still running:
+Inngest's `rateLimit` drops events once the limit for a key is reached in the period, using GCRA. There are two ways to do the same, which differ in where the excess is dropped.
+
+**Inside the run, with `experimental_rateLimit()`.** Call it first thing in the workflow with a short `maxWait`, and return when it rejects with `RateLimitMaxWaitError`. It takes any `limit`, `period` and `burst`, makes the same GCRA decision as Inngest, and can guard any call in the run, not only its start:
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow";
+import { RateLimitMaxWaitError } from "workflow/errors";
+declare function pushToCrm(accountId: string): Promise<void>; // @setup
+
+// Inngest: rateLimit: { key: "event.data.accountId", limit: 10, period: "1m" }
+export async function syncAccount(accountId: string) {
+  "use workflow";
+  try {
+    await experimental_rateLimit({ key: `sync:${accountId}`, limit: 10, period: "1m", maxWait: "1s" }); // [!code highlight]
+  } catch (error) {
+    if (RateLimitMaxWaitError.is(error)) return { skipped: true }; // rate-limited
+    throw error;
+  }
+  await pushToCrm(accountId);
+  return { skipped: false };
+}
+```
+
+Every dropped event still starts a run, which records its creation, its start, the refused call and its completion before it ends. That is fine for occasional excess, but a sender that is rate-limited most of the time creates a run for every event it sends.
+
+**Before the run, with a start token.** A start token retained for the period drops the excess at `start()`, so a dropped event never becomes a run. It covers `limit: 1` directly. The token stays taken until the period has passed since the accepted start, and for as long as that run is still running:
 
 ```typescript lineNumbers
 import { start } from "workflow/api";

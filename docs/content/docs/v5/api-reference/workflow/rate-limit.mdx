@@ -18,14 +18,14 @@ Experimental, and available in `workflow` 5.8.0 and later on the Vercel and Loca
 </Callout>
 
 ```typescript lineNumbers
-import { experimental_rateLimit } from "workflow"
+import { experimental_rateLimit } from "workflow";
 declare function callModel(doc: string): Promise<void>; // @setup
 
 export async function summarize(docs: string[]) {
-  "use workflow"
+  "use workflow";
   for (const doc of docs) {
-    await experimental_rateLimit({ key: "openai", limit: 60, period: "1m" }) // [!code highlight]
-    await callModel(doc)
+    await experimental_rateLimit({ key: "openai", limit: 60, period: "1m" }); // [!code highlight]
+    await callModel(doc);
   }
 }
 ```
@@ -39,6 +39,14 @@ definition={`
 import { experimental_rateLimit } from "workflow";
 export default experimental_rateLimit;`}
 showSections={['parameters']}
+/>
+
+#### RateLimitOptions
+
+<TSDoc
+definition={`
+import type { RateLimitOptions } from "workflow";
+export default RateLimitOptions;`}
 />
 
 ## Behavior
@@ -72,35 +80,35 @@ A call that wakes later than its grace is given a new slot behind the calls alre
 ### Giving up when the wait is too long
 
 ```typescript lineNumbers
-import { experimental_rateLimit } from "workflow"
-import { RateLimitMaxWaitError } from "workflow/errors"
+import { experimental_rateLimit } from "workflow";
+import { RateLimitMaxWaitError } from "workflow/errors";
 declare function sendSms(userId: string): Promise<void>; // @setup
 
 export async function notify(userId: string) {
-  "use workflow"
+  "use workflow";
   try {
-    await experimental_rateLimit({ key: "sms", limit: 10, period: "1s", maxWait: "30s" }) // [!code highlight]
+    await experimental_rateLimit({ key: "sms", limit: 10, period: "1s", maxWait: "30s" }); // [!code highlight]
   } catch (error) {
-    if (RateLimitMaxWaitError.is(error)) return "skipped"
-    throw error
+    if (RateLimitMaxWaitError.is(error)) return "skipped";
+    throw error;
   }
-  await sendSms(userId)
-  return "sent"
+  await sendSms(userId);
+  return "sent";
 }
 ```
 
 ### Letting a burst through at once
 
 ```typescript lineNumbers
-import { experimental_rateLimit } from "workflow"
+import { experimental_rateLimit } from "workflow";
 declare function fetchPage(url: string): Promise<void>; // @setup
 
 export async function crawl(urls: string[]) {
-  "use workflow"
+  "use workflow";
   for (const url of urls) {
     // The first 100 go at once; after that, one every 600 ms.
-    await experimental_rateLimit({ key: "crawler", limit: 100, period: "1m", burst: 100 }) // [!code highlight]
-    await fetchPage(url)
+    await experimental_rateLimit({ key: "crawler", limit: 100, period: "1m", burst: 100 }); // [!code highlight]
+    await fetchPage(url);
   }
 }
 ```

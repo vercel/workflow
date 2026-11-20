@@ -82,6 +82,10 @@ export interface RateLimitOptions {
  *   }
  * }
  * ```
+ *
+ * @param options - The key to limit, its `limit` per `period`, and optionally
+ * how long to wait at most (`maxWait`) and how many calls an idle key admits at
+ * once (`burst`). See {@link RateLimitOptions}.
  */
 export async function experimental_rateLimit(
   options: RateLimitOptions
