@@ -61,10 +61,11 @@ export const setupCliWorld = async (
       chalk.cyan(
         `Update available: ${updateCheck.currentVersion} → ${updateCheck.latestVersion}`
       ),
-      // latestVersion is the npm "latest" dist-tag, which is the stable line.
-      chalk.gray(
-        `Run: \`[npm|bun|pnpm] i workflow@${updateCheck.latestVersion}\``
-      ),
+      // The versions above are @workflow/cli versions, but users install the
+      // `workflow` package, which has its own version numbers. Suggest its
+      // "latest" dist-tag rather than pinning a CLI version number, which
+      // could name an older `workflow` release than the one installed.
+      chalk.gray('Run: `[npm|bun|pnpm] i workflow@latest`'),
       chalk.gray(
         terminalLink(
           'View changelog',
