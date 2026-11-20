@@ -1,6 +1,10 @@
 import type { Event } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { buildNameMaps } from '../lib/event-list-model';
+import {
+  buildListItems,
+  buildNameMaps,
+  type EventListRow,
+} from '../lib/event-list-model';
 
 function event(
   eventType: Event['eventType'],
@@ -47,5 +51,31 @@ describe('buildNameMaps', () => {
       const { correlationNameMap } = buildNameMaps(events, null);
       expect(correlationNameMap.get('step_a')).toBe('fetchInvoices');
     }
+  });
+});
+
+describe('buildListItems', () => {
+  const rowAt = (ms: number) =>
+    ({
+      event: { eventId: `evt_${ms}`, createdAt: new Date(ms) },
+    }) as unknown as EventListRow;
+  const sincePrevious = (rows: EventListRow[]) =>
+    buildListItems(rows, { showGaps: false, hookNameMap: new Map() }).map(
+      (item) => (item.kind === 'event' ? item.sincePreviousMs : null)
+    );
+
+  it('measures each event from the one before it in time, in either order', () => {
+    expect(sincePrevious([rowAt(0), rowAt(5), rowAt(5), rowAt(40)])).toEqual([
+      undefined,
+      5,
+      0,
+      35,
+    ]);
+    expect(sincePrevious([rowAt(40), rowAt(5), rowAt(5), rowAt(0)])).toEqual([
+      35,
+      0,
+      5,
+      undefined,
+    ]);
   });
 });
