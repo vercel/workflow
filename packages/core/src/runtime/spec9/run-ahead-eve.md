@@ -66,9 +66,9 @@ Either:
 
 Each proposal has a stacked draft PR. They show one way to implement it, so the trade-offs are concrete. They are not proposals for the final design: the actual choices are for the Workflow team.
 
-- Proposal 1: _link to follow_
-- Proposal 3 (b): _link to follow_
-- Proposal 2: _link to follow_
+- Proposal 1, in-band-only `AbortController` (opt-in): #5658
+- Proposal 3 (b), the wait counts as due only within the skew allowance: #5659
+- Proposal 2, strict speculative writes past an awaited hook, behind a new `strictEventCount` World capability (test World only): #5660
 
 Proposal 3 (a), a cancellable `sleep()`, is not prototyped: it needs a new event type in every World and in workflow-server.
 
