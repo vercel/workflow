@@ -109,6 +109,12 @@ export {
   resumeWebhook,
 } from './runtime/resume-hook.js';
 export {
+  RESUME_HOOK_OR_START_MAX_ATTEMPTS,
+  type ResumeHookOrStartOptions,
+  type ResumeHookOrStartResult,
+  resumeHookOrStart,
+} from './runtime/resume-hook-or-start.js';
+export {
   getRun,
   Run,
   type WorkflowReadableStream,
