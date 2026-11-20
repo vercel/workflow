@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 4.4.1
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- Updated dependencies [[`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964)]:
+  - @workflow/world@4.5.2
+  - @workflow/world-local@4.4.6
+  - @workflow/errors@4.2.2
+
 ## 4.4.0
 
 ### Minor Changes
