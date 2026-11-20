@@ -14,6 +14,12 @@ The v4 implementation now completes the planned dispatch migration while preserv
 - The World spec is bumped to v4; attributes are supported for v4 runs rather than being backported into older run specifications.
 - The direct server attributes endpoint remains available only as a deprecated compatibility path for clients that shipped with the MVP.
 
+## Retiring the MVP write path
+
+The MVP write path shipped in `workflow` 5.0.0-beta.8 through 5.0.0-beta.14 (step-body calls from beta.9). From beta.15 on, the SDK writes attributes only as `attr_set` events, so nothing in the current SDK calls `runs.experimentalSetAttributes`. The `__builtin_set_attributes` step bridge has been removed: no current workflow body dispatches it, and a run whose log still records it (an MVP-era run, spec version 3) cannot be replayed by a v5 runtime at all, because its event IDs are not slot-numbered.
+
+`runs.experimentalSetAttributes` and `ExperimentalSetAttributesResult` stay on the World interface, optional and `@deprecated`, so existing implementations keep compiling. The first-party Worlds keep implementing the method, and `world-vercel` keeps posting to `POST /v2/runs/:runId/attributes`, because a newer World package can still be installed next to one of those betas: `world-postgres` has no peer dependency on `workflow` or `@workflow/core`, and any World package can be selected by name through `WORKFLOW_TARGET_WORLD`. Drop the implementations once those betas no longer need supporting.
+
 The remainder of this document documents the original MVP motivation and implementation.
 
 ## What MVP supports

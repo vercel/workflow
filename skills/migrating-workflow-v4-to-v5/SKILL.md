@@ -4,7 +4,7 @@ description: >-
   Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `hook.metadata` read synchronously off a `getHookByToken()` result, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.11'
+  version: '0.2.12'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -241,7 +241,7 @@ Beyond the stream and step signatures above, the interface gained:
 
 - `streams` as a namespace (see the table in step 2).
 - `analytics` — metadata-only listings for runs, steps, events, hooks, waits, and attributes.
-- attribute support on runs, including `experimentalSetAttributes`.
+- attribute support on runs: `attr_set` events and attributes on `run_created`.
 - capability advertisement, so the runtime can gate optimizations. Unadvertised capabilities fail closed, which means an incomplete World stays correct but slower — advertise a capability only once it is genuinely implemented. Event ID allocation is not among them: it is a requirement, not a capability. A World that rejected stale writes behind the old `preconditionGuard` flag can delete that code, since the flag is gone and nothing replaced it.
 - an optional per-run event ceiling returned on run reads, which the runtime enforces.
 - optional `createRunId()` and a `region` on queue options, for worlds that place run state regionally.
