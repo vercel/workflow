@@ -1,4 +1,5 @@
 import {
+  EventSlotTakenError,
   InBandSupersededError,
   RUN_ERROR_CODES,
   WorkflowRuntimeError,
@@ -21,6 +22,7 @@ import {
   MAX_IN_BAND_CREATION_BATCH_BYTES,
 } from '../constants.js';
 import { assertWorldSupportsInBandFence } from '../world-compatibility.js';
+import { RunAheadStopError } from './run-ahead.js';
 import { creationBatchBytes } from './step-wait-creation.js';
 
 /**
@@ -509,7 +511,7 @@ export class InBandWriter {
           : written;
       } catch (error) {
         this.answerSend();
-        throw this.stop(error, required);
+        throw this.stop(slotTakenAsRunAheadStop(error), required);
       }
       this.accepted(result.event);
       if (verify) {
@@ -677,12 +679,15 @@ export class InBandWriter {
               ? { requestId: first.params.requestId }
               : {}),
             ...(resolveData !== undefined ? { resolveData } : {}),
+            ...(group.some((write) => write.params.strictEventCount === true)
+              ? { strictEventCount: true as const }
+              : {}),
             ...this.fenceParams(),
           }
         );
       } catch (error) {
         this.answerSend();
-        const stopped = this.stop(error, true);
+        const stopped = this.stop(slotTakenAsRunAheadStop(error), true);
         for (const write of group) write.reject(stopped);
         return;
       }
@@ -802,6 +807,9 @@ export class InBandWriter {
           ...(item.computeInstanceId !== undefined
             ? { computeInstanceId: item.computeInstanceId }
             : {}),
+          ...(params.strictEventCount === true
+            ? { strictEventCount: true as const }
+            : {}),
         },
         false
       );
@@ -812,6 +820,10 @@ export class InBandWriter {
         allocated: written.allocated ?? 1,
       } as EventBatchResult;
     } catch (error) {
+      if (EventSlotTakenError.is(error)) {
+        write.reject(this.stop(slotTakenAsRunAheadStop(error), true));
+        return;
+      }
       if (this.stopped || !isDefiniteRefusal(error)) {
         write.reject(error);
         return;
@@ -919,7 +931,7 @@ export class InBandWriter {
         return answered;
       } catch (error) {
         this.answerSend();
-        throw this.stop(error, required);
+        throw this.stop(slotTakenAsRunAheadStop(error), required);
       }
     });
   }
@@ -1091,6 +1103,20 @@ interface AheadWrite {
   verify: (result: EventResult | EventBatchResult) => void;
   resolve: (result: EventResult | EventBatchResult) => void;
   reject: (error: unknown) => void;
+}
+
+/**
+ * A run-ahead write sent with `strictEventCount` found its slot taken: another
+ * writer appended first, and nothing decided from the speculative view has
+ * committed. Stopping with a `RunAheadStopError` restarts the delivery from
+ * the log, as a hazard stop does, with nothing left to repair.
+ */
+function slotTakenAsRunAheadStop(error: unknown): unknown {
+  return EventSlotTakenError.is(error)
+    ? new RunAheadStopError(
+        'a conditional run-ahead write found its slot taken by another writer'
+      )
+    : error;
 }
 
 function isNewSlot(eventId: string, knownMaxSlot: number): boolean {

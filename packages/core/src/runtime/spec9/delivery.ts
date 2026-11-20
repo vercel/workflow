@@ -2648,6 +2648,11 @@ async function runDelivery(
       return steps.size <= runAheadDepth;
     };
     const speculationsBySlot = new Map<number, Speculation>();
+    /**
+     * Speculative writes in flight that were sent without `strictEventCount`.
+     * A conditional boundary drains these first (proof of concept).
+     */
+    let nonStrictSpeculations = 0;
     /** Set when a speculative write failed; the delivery stops. */
     let runAheadFailure: unknown;
     /**
@@ -3083,6 +3088,8 @@ async function runDelivery(
       speculativeEvents.add(event);
       everSpeculative.add(event);
       const releaseContext = noteRunAheadContext(context);
+      const strict = context.conditional === true;
+      if (!strict) nonStrictSpeculations++;
       const commit = writer.createAhead(
         data,
         {
@@ -3090,6 +3097,7 @@ async function runDelivery(
           ...slotSnapshot(),
           resolveData: REPLAY_RESOLVE_DATA,
           occurredAt,
+          ...(strict ? { strictEventCount: true as const } : {}),
         },
         (result) => {
           const committed = result.event;
@@ -3115,6 +3123,7 @@ async function runDelivery(
       const settled = commit.then(
         (result) => {
           releaseContext();
+          if (!strict) nonStrictSpeculations--;
           speculativeSlots.delete(slot);
           speculationsBySlot.delete(slot);
           if (!runAheadRepair) {
@@ -3127,6 +3136,7 @@ async function runDelivery(
         },
         (error: unknown) => {
           releaseContext();
+          if (!strict) nonStrictSpeculations--;
           speculationsBySlot.delete(slot);
           if (runAheadFailure === undefined) {
             runAheadStats.failureStops++;
@@ -3164,6 +3174,8 @@ async function runDelivery(
           }) as Event
       );
       const releaseContext = noteRunAheadContext(context);
+      const strict = context.conditional === true;
+      if (!strict) nonStrictSpeculations++;
       const postSentAtMs = Date.now();
       const verifyCreation = (result: EventBatchResult) => {
         for (const below of result.events ?? []) {
@@ -3208,12 +3220,14 @@ async function runDelivery(
         {
           ...slotSnapshot(),
           ...(requestId ? { requestId } : {}),
+          ...(strict ? { strictEventCount: true as const } : {}),
         },
         verifyCreation
       );
       const settled = commit.then(
         (result) => {
           releaseContext();
+          if (!strict) nonStrictSpeculations--;
           speculative.forEach((_, index) => {
             speculativeSlots.delete(first + index);
             speculationsBySlot.delete(first + index);
@@ -3247,6 +3261,7 @@ async function runDelivery(
         },
         (error: unknown) => {
           releaseContext();
+          if (!strict) nonStrictSpeculations--;
           speculative.forEach((_, index) => {
             speculationsBySlot.delete(first + index);
           });
@@ -3876,6 +3891,18 @@ async function runDelivery(
               +new Date(item.resumeAt) <= waitWindowEndMs
           ),
       });
+      // Not inert only because workflow code waits on a hook, on a World
+      // that refuses a write whose slot another writer took first
+      // (`strictEventCount`): run ahead with strict writes (proof of
+      // concept).
+      const conditionalBoundary =
+        !observation.inert &&
+        world.capabilities?.strictEventCount === true &&
+        observation.observedHookCount > 0 &&
+        observation.unknownHookCount === 0 &&
+        observation.abortSignalHookCount === 0 &&
+        observation.externalStepCount === 0 &&
+        !observation.waitDue;
       let boundaryRunAhead: RunAheadContext | undefined;
       if (schedulesInline) {
         if (observation.inert) {
@@ -3898,7 +3925,7 @@ async function runDelivery(
           }
           if (observation.waitDue) outOfBandBoundaries.waitDue++;
         }
-        if (runAheadDepth > 0 && observation.inert) {
+        if (runAheadDepth > 0 && (observation.inert || conditionalBoundary)) {
           runAheadStats.runAhead++;
           boundaryRunAhead = runAheadContextFor({
             observation,
@@ -3908,14 +3935,21 @@ async function runDelivery(
             observedHookIds: suspension.observedHookIds,
             selfStepIds,
           });
+          if (conditionalBoundary) boundaryRunAhead.conditional = true;
         } else if (runAheadDepth > 0) {
           runAheadStats.drained++;
         }
         recordRunAheadSpan();
       }
+      // A conditional boundary only drains writes sent without
+      // `strictEventCount`: a strict write cannot commit with an event
+      // below it that the workflow has not seen.
       if (
         !observation.inert &&
-        (speculationsBySlot.size > 0 || runAheadRepair)
+        (runAheadRepair ||
+          (conditionalBoundary
+            ? nonStrictSpeculations > 0
+            : speculationsBySlot.size > 0))
       ) {
         if ((await drainRunAhead()) === 'repair') {
           await repairRunAhead();

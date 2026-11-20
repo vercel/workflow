@@ -481,6 +481,8 @@ A speculative event sits in the delivery's log at the slot its write is expected
 
 The decisions that depend only on what the delivery holds (where a speculative event may be placed, what a read or an answer may fold, how a settled outcome joins the log) are pure functions in `speculative-placement.ts`, tested one by one. Counting each position once is the writer's (`in-band-writer.ts`); the awaited drain and the feed's start are in `delivery.ts`. `run-ahead-placement.runtime.test.ts` runs the orderings these rules exist for as whole deliveries, each with a fixed sequence.
 
+**Conditional boundaries (proof of concept).** On a World that declares `capabilities.strictEventCount`, a boundary whose only reason not to be inert is a hook workflow code awaits runs ahead too. Its speculative writes, outcomes and creations alike, carry `strictEventCount: true`: the World commits each only at slot `eventCount + 1`, and otherwise refuses it with `EventSlotTakenError`, allocating nothing. A payload that lands first therefore refuses the next speculative write instead of committing below it. The writer turns the refusal into a `RunAheadStopError`, and the delivery restarts from a fresh load (`MAX_RUN_AHEAD_RESTARTS`). Such a boundary drains only the speculative writes in flight that were sent without `strictEventCount`. New steps' bodies still start before their creation commits, so a refusal can run one again, side effects included. Holding those side effects until the commit is not implemented. No shipped World declares the capability yet: only the test World (`AppendOnlyWorld`, `strictEventCount: true`) does.
+
 #### Checking speculative writes
 
 Each speculative write is checked when it commits:

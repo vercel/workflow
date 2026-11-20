@@ -19,6 +19,15 @@ export interface RunAheadContext {
   sensitiveHookIds: ReadonlySet<string>;
   /** Steps this delivery runs inline: only it writes their events. */
   selfStepIds: ReadonlySet<string>;
+  /**
+   * The boundary is not inert only because workflow code waits on a hook, and
+   * the World honors `strictEventCount` (proof of concept). Its speculative
+   * writes are sent strict, so a payload landing first refuses them instead
+   * of committing below them. New steps' bodies still start before their
+   * creation commits, as at an inert boundary, so a refusal can run one
+   * again (and its side effects are not held back).
+   */
+  conditional?: true;
 }
 
 /**
