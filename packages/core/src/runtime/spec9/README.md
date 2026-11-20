@@ -89,7 +89,7 @@ Settings that apply to every run, read differently on spec 9 runs:
 
 - **`WORKFLOW_MAX_QUEUE_DELIVERIES`** (48): only orchestrator messages count. A fence refusal's redelivery counts on every first-party World, so a run whose every write is refused fails instead of looping; a handoff does not count. Step messages retry in place and are bounded by `maxRetries` and retention instead, except that past the cap a step showing no activity for an hour (every delivery fails before it starts, say because its input cannot be read) fails with a catchable `FatalError` naming `MAX_DELIVERIES_EXCEEDED`.
 - **`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`**: recovery replays run in the same delivery, reloading the log and replaying from cold in a fresh VM. Once spent, the run fails with [`CORRUPTED_EVENT_LOG`](https://workflow-sdk.dev/docs/errors/corrupted-event-log); a redelivery starts the count again.
-- **`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`**: an open wait due within the inline window plus this allowance makes [run-ahead](#workflow_run_ahead_depth) wait for its writes at that boundary.
+- **`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`**: an open wait due within this allowance of now (capped at the inline deadline) makes [run-ahead](#workflow_run_ahead_depth) wait for its writes at that boundary.
 - **`WORKFLOW_MAX_INLINE_STEPS`**: clamped to `0` to `16`. `0` enqueues every step (on spec 8 runs `0` is read as unset). An inline step whose retry is due moves to the background.
 - **`WORKFLOW_OPTIMISTIC_INLINE_START`**: only `0` or `false` has an effect, making bodies wait for their start to commit on turbo's first delivery, under run-ahead, and under `WORKFLOW_OPTIMISTIC_BACKGROUND_START`.
 - **Not read**: `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` and the `WORKFLOW_PRECONDITION_*` settings. Spec 9 runs have no precondition guard; the fence replaces it.
@@ -458,7 +458,7 @@ At each suspension that schedules inline steps, the delivery classifies who else
 flowchart TD
     A["Boundary schedules inline steps"] --> B{"Depth above 0, and run-ahead not off for this World or delivery?"}
     B -->|"no"| AW["Awaited writes"]
-    B -->|"yes"| C{"An awaited or unknown hook, an abort-signal hook (other than an in-band-only one), a step running elsewhere, or a wait due within the inline window plus 30 s?"}
+    B -->|"yes"| C{"An awaited or unknown hook, an abort-signal hook (other than an in-band-only one), a step running elsewhere, or a wait due within 30 s?"}
     C -->|"yes"| DR["Not inert: drain speculative writes, fold what landed below, then decide"]
     C -->|"no"| G["Inert: run ahead"]
     G --> H{"All new steps inline, no wait, World has createBatch, at most 16 events, none with maxRetries 0?"}
@@ -466,7 +466,7 @@ flowchart TD
     H -->|"no"| PC["Creations committed first, outcomes still run ahead"]
 ```
 
-An `AbortController` created with `new AbortController({ inBandOnly: true })` can't leave workflow code (serializing the controller throws; its `signal` still can), so only the orchestrator ever writes its `hook_received`, in order with its other writes. On node:vm its hook is classified like any other hook instead of as an abort-signal hook, and the check covers any object whose `signal` is the controller's (such an object reduces as a controller). QuickJS ignores the option: it keeps treating the hook as path-changing and does not enforce the serialization check, since its reducers read symbols only from a captured root that VM snapshots persist. A hook the workflow created but does not await is inert on node:vm: its payload is buffered and moves neither step results nor the clock (on QuickJS it moves the clock; see the clock gate below). A wait is classified by time, since whether anything still awaits a sleep cannot be told; only the orchestrator writes `wait_completed` on spec 9, so a far-future wait is inert. At an inert boundary the outcome is placed at the slot the writer predicts and handed to the VM while the write is in flight, with `occurredAt` set to the time the workflow used.
+An `AbortController` created with `new AbortController({ inBandOnly: true })` can't leave workflow code (serializing the controller throws; its `signal` still can), so only the orchestrator ever writes its `hook_received`, in order with its other writes. On node:vm its hook is classified like any other hook instead of as an abort-signal hook, and the check covers any object whose `signal` is the controller's (such an object reduces as a controller). QuickJS ignores the option: it keeps treating the hook as path-changing and does not enforce the serialization check, since its reducers read symbols only from a captured root that VM snapshots persist. A hook the workflow created but does not await is inert on node:vm: its payload is buffered and moves neither step results nor the clock (on QuickJS it moves the clock; see the clock gate below). A wait is classified by time, since whether anything still awaits a sleep cannot be told; only the orchestrator writes `wait_completed` on spec 9, so a wait more than 30 s away is inert. At an inert boundary the outcome is placed at the slot the writer predicts and handed to the VM while the write is in flight, with `occurredAt` set to the time the workflow used.
 
 #### Where a speculative event is placed
 
@@ -1502,7 +1502,7 @@ If only the wait's own timer delivery could arm the next one, a first timer coal
 
 - A `Promise.race` between a hook and a `sleep()` does not cancel the sleep's timer. If the hook wins, the timer, when it comes, completes the wait in a delivery that replays the finished race and changes nothing, or finds a terminal run and acknowledges.
 - If a hook payload and a timer arrive close together on world-vercel, the second wake is coalesced into the first's delivery. The re-run reads the log, sees both, and the replay picks the winner by log order, the same on every later replay.
-- A wait due within the invocation's inline window plus `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` (30 s) makes the next boundary path-changing, so the orchestrator does not run ahead past it.
+- A wait due within `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` (30 s) of now, capped at the invocation's inline deadline, makes the next boundary path-changing, so the orchestrator does not run ahead past it. A wait due later doesn't: only the orchestrator completes waits, at the top of a later pass, after the writes in flight.
 
 #### Long sleeps are reached in hops
 

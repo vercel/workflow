@@ -2216,7 +2216,8 @@ async function runQuickJSDelivery(
     const waitWindowEndMs =
       params.inlineDeadlineMs === undefined
         ? Number.POSITIVE_INFINITY
-        : params.inlineDeadlineMs + getOpenWaitClockSkewMs();
+        : Math.min(params.inlineDeadlineMs, Date.now()) +
+          getOpenWaitClockSkewMs();
     const items: QueueItem[] = [];
     let waitDue = false;
     for (const op of pendingOperations) {
