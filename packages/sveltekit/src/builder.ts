@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
@@ -10,11 +10,15 @@ import {
   writeFileIfChanged,
 } from '@workflow/builders';
 
-const SVELTEKIT_VIRTUAL_MODULES = [
+// Specifiers left to Vite: SvelteKit's virtual modules and the `#lib`
+// package.json subpath import that replaces `$lib` in SvelteKit 3.
+const SVELTEKIT_EXTERNALS = [
   '$env/*', // All $env subpaths
   '$lib', // Exact $lib import
   '$lib/*', // All $lib subpaths
   '$app/*', // All $app subpaths
+  '#lib', // Exact #lib import (SvelteKit 3 package.json subpath import)
+  '#lib/*', // All #lib subpaths
 ];
 
 export class SvelteKitBuilder extends BaseBuilder {
@@ -30,13 +34,16 @@ export class SvelteKitBuilder extends BaseBuilder {
     ];
     const projectRoot = config.projectRoot ?? resolveProjectRoot(workingDir);
     const routesDir = resolve(workingDir, config.routesDir ?? 'src/routes');
+    const externalPackages = [
+      ...new Set([...SVELTEKIT_EXTERNALS, ...readSubpathImports(workingDir)]),
+    ];
     super({
       ...createBaseBuilderConfig({
         workingDir,
         projectRoot,
         dirs,
         watch: config.watch,
-        externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+        externalPackages,
         sourcemap: config.sourcemap,
       }),
       ...config,
@@ -45,7 +52,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       workingDir,
       projectRoot,
       moduleSpecifierRoot: config.moduleSpecifierRoot ?? workingDir,
-      externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+      externalPackages,
     });
     this.#routesDir = routesDir;
   }
@@ -193,6 +200,37 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
   private async loadRoutesDirectory(): Promise<string> {
     await assertDirectory(this.#routesDir);
     return this.#routesDir;
+  }
+}
+
+/**
+ * Keys of the app's package.json `imports` field. SvelteKit 3 recommends
+ * subpath imports for custom aliases, so they are left to Vite like `$lib`.
+ *
+ * Keys that do not start with `#` or that have more than one `*` are ignored:
+ * Node ignores them too, and esbuild fails the build on an external pattern
+ * with more than one wildcard.
+ *
+ * The file is read once, when the builder is created, so a key added while
+ * the dev server is running takes effect after a restart.
+ */
+function readSubpathImports(workingDir: string): string[] {
+  try {
+    const { imports } = JSON.parse(
+      readFileSync(join(workingDir, 'package.json'), 'utf-8')
+    ) as { imports?: unknown };
+    if (
+      typeof imports !== 'object' ||
+      imports === null ||
+      Array.isArray(imports)
+    ) {
+      return [];
+    }
+    return Object.keys(imports).filter(
+      (key) => key.startsWith('#') && key.split('*').length <= 2
+    );
+  } catch {
+    return [];
   }
 }
 
