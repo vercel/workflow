@@ -243,6 +243,35 @@ describe('send-and-hold (experimental_hold)', () => {
       expect(metas[1]?.invocationStartedAt).toBe(metas[0]?.invocationStartedAt);
     });
 
+    it("carries the calling request's x-vercel-id as its requestId", async () => {
+      const payload = { runId: 'wrun_1' };
+      const metas: { requestId?: string }[] = [];
+      const consume = vi.fn(
+        async (
+          callback: (message: unknown, metadata: unknown) => Promise<void>
+        ) => {
+          await callback(mockSend.mock.calls[0][1], {
+            messageId: 'msg_1',
+            deliveryCount: 1,
+            createdAt: new Date(),
+          });
+        }
+      );
+      const key = Symbol.for('@vercel/request-context');
+      const g = globalThis as unknown as Record<symbol, unknown>;
+      const previous = g[key];
+      g[key] = { get: () => ({ headers: { 'x-vercel-id': 'iad1::abc' } }) };
+      try {
+        const { result } = await sendHeld(payload, consume);
+        await heldOf(result).consume(async (_message, meta) => {
+          metas.push(meta);
+        });
+      } finally {
+        g[key] = previous;
+      }
+      expect(metas[0]?.requestId).toBe('iad1::abc');
+    });
+
     it('is not taken for a message pinned to another deployment', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg_1' });
       const result = await createQueue().queue(

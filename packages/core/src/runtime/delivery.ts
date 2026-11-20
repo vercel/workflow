@@ -54,6 +54,10 @@ import {
   readDynamicWorkflowMetadata,
 } from './dynamic-workflow.js';
 import { memoizeEncryptionKey, queueMessage } from './helpers.js';
+import {
+  currentInlineDelivery,
+  inlineBudgetMs,
+} from './inline-orchestrator.js';
 import type { RunInputActivity } from './invocations.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
@@ -371,8 +375,26 @@ export function hasRecordedTerminalRunEvent(
  * 1. `WORKFLOW_V2_TIMEOUT_MS` env var
  * 2. Tiered budget derived from `world.getRuntimeDeadline()`
  * 3. Default of 2 minutes
+ *
+ * An inline delivery (run in the route that called
+ * `start()` / `resumeHook()`) is further capped by what is left of that
+ * route's own deadline, which is usually shorter than the flow route's, so it
+ * hands off to the queue before the route is stopped.
  */
 export async function getMaxInlineDurationMs(
+  world: World,
+  invocationStartTime: number
+): Promise<number> {
+  const budgetMs = await getFlowInlineDurationMs(world, invocationStartTime);
+  if (!currentInlineDelivery()) return budgetMs;
+  return inlineBudgetMs(
+    invocationStartTime,
+    await world.getRuntimeDeadline?.(),
+    budgetMs
+  );
+}
+
+async function getFlowInlineDurationMs(
   world: World,
   invocationStartTime: number
 ): Promise<number> {

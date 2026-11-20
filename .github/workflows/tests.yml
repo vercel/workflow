@@ -566,6 +566,9 @@ jobs:
     # queue service: packages/core/e2e/e2e-queue-hold.test.ts holds queue
     # health checks from this runner and checks who ran them. A World and
     # queue feature, the same for every framework, so one app is enough.
+    # packages/core/e2e/e2e-inline-start.test.ts drives the workbench's
+    # inline-start routes: `start` / `resumeHook` run the held orchestrator
+    # delivery in the API route by default on Vercel.
     #
     # Until send-and-hold is on for the target, every send comes back
     # `not_held` and the suite proves only the fallback (the queue delivers
@@ -618,7 +621,7 @@ jobs:
         run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
 
       - name: Run Queue Hold E2E Tests
-        run: pnpm vitest run packages/core/e2e/e2e-queue-hold.test.ts --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-queue-hold-$APP_NAME.json"
+        run: pnpm vitest run packages/core/e2e/e2e-queue-hold.test.ts packages/core/e2e/e2e-inline-start.test.ts --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-queue-hold-$APP_NAME.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
           DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}

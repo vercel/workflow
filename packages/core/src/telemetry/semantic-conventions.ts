@@ -592,10 +592,104 @@ export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
   'workflow.dispatch.republish_skipped'
 );
 
+// Inline orchestrator delivery (`start()` / `resumeHook()` on a World that
+// can hold queue messages)
+
+/**
+ * **Experimental.** What a `start()` / `resumeHook()` asked to run inline
+ * came to: `held` (this process runs the first orchestrator delivery),
+ * `not_held` (the queue delivers it; see `workflow.inline.not_held_reason`),
+ * `skipped` (not attempted; see `workflow.inline.skip_reason`),
+ * `hold_failed` (the held send threw and was sent again without a hold), or
+ * `no_hold_result` (the World ignored the hold).
+ */
+export const WorkflowInlineOutcome = SemanticConvention<
+  'held' | 'not_held' | 'skipped' | 'hold_failed' | 'no_hold_result'
+>('workflow.inline.outcome');
+
+/** **Experimental.** Why an inline request was not attempted. */
+export const WorkflowInlineSkipReason = SemanticConvention<
+  | 'disabled'
+  | 'no_capability'
+  | 'no_handler'
+  | 'other_deployment'
+  | 'other_region'
+  | 'unknown_region'
+  | 'in_step'
+  | 'unsupported_start'
+  | 'missing_steps'
+  | 'no_engine'
+>('workflow.inline.skip_reason');
+
+/** **Experimental.** The queue's `not_held` reason for an inline request. */
+export const WorkflowInlineNotHeldReason = SemanticConvention<
+  | 'unsupported'
+  | 'deferred'
+  | 'lost'
+  | 'coalesced'
+  | 'concurrency_limited'
+  | 'duplicate'
+  | 'error'
+>('workflow.inline.not_held_reason');
+
+/** **Experimental.** Round trip of the held send, in ms. */
+export const WorkflowInlineHoldSendMs = SemanticConvention<number>(
+  'workflow.inline.hold_send_ms'
+);
+
+/**
+ * **Experimental.** Whether the delivery's setup was started while the hold's
+ * answer was in flight: `started`, `disabled` (`WORKFLOW_INLINE_SPECULATION=0`)
+ * or `unavailable` (the flow entry offers none).
+ */
+export const WorkflowInlineSpeculation = SemanticConvention<
+  'started' | 'disabled' | 'unavailable'
+>('workflow.inline.speculation');
+
+/** **Experimental.** How long the speculative setup took, in ms. */
+export const WorkflowInlineSpeculationMs = SemanticConvention<number>(
+  'workflow.inline.speculation_ms'
+);
+
+/** **Experimental.** From the hold being consumed to the first step body, ms. */
+export const WorkflowInlineFirstStepMs = SemanticConvention<number>(
+  'workflow.inline.first_step_ms'
+);
+
+/**
+ * **Experimental.** From the `start()` / `resumeHook()` call to the inline
+ * delivery's first step body, in ms.
+ */
+export const WorkflowInlineTimeToFirstStepMs = SemanticConvention<number>(
+  'workflow.inline.time_to_first_step_ms'
+);
+
+/**
+ * **Experimental.** `start()` phase timings, in ms (see `workflow.start`):
+ * waiting for the flow entry, the inline checks, `run_created`, and the
+ * orchestrator send.
+ */
+export const WorkflowStartEntryLoadMs = SemanticConvention<number>(
+  'workflow.start.inline_entry_load_ms'
+);
+export const WorkflowStartInlineChecksMs = SemanticConvention<number>(
+  'workflow.start.inline_checks_ms'
+);
+export const WorkflowStartRunCreatedMs = SemanticConvention<number>(
+  'workflow.start.run_created_ms'
+);
+export const WorkflowStartEnqueueMs = SemanticConvention<number>(
+  'workflow.start.enqueue_ms'
+);
+
 // Route attributes
 
-/** The workflow runtime route being handled */
-export const WorkflowRouteType = SemanticConvention<'flow'>(
+/**
+ * The workflow runtime route being handled: `flow` for the generated flow
+ * route, `inline` for an orchestrator delivery run in the route that sent it
+ * (`workflow.inline.consume`).
+ */
+export const WorkflowRouteType = SemanticConvention<'flow' | 'inline'>(
   'workflow.route.type'
 );
 

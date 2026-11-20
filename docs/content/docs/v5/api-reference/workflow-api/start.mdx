@@ -225,6 +225,41 @@ A child canceled without the SDK (by a tool that writes the cancellation to the 
 
 `returnValue` still polls when the waiting code is not the parent: a step, an API route, or another workflow handed the `Run`. It also polls for a child on another deployment (`deploymentId`) that predates the system hook, and for every child while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. A polling step holds its worker slot until the child finishes.
 
+### Where the first delivery runs
+
+On Vercel, `start()` runs the new run's first orchestrator delivery in the route that called it, right after it returns, instead of handing it to the queue for the generated flow route. The first step doesn't wait for a queue hop. The queue still backs the run up: it holds the message for the calling route ([send-and-hold](/docs/api-reference/workflow-runtime/world/queue#running-a-message-in-the-request-that-sent-it-experimental)) and delivers it to the flow route as usual if the route stops before finishing it. Nothing changes in your code:
+
+{/* @skip-typecheck: depends on an app's workflow module */}
+```typescript title="app/api/signup/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { onboardUser } from "@/workflows/onboard-user";
+
+export async function POST(request: Request) {
+  const { email } = await request.json();
+  const run = await start(onboardUser, [email]); // runs its first delivery here, after returning
+  return Response.json({ runId: run.runId });
+}
+```
+
+The route returns as soon as the run is accepted. The delivery keeps running under `waitUntil`, with the same semantics as a queue delivery: steps run inline until the workflow suspends, and longer work continues on the queue. [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) wakes a run the same way.
+
+The run is queued for the flow route instead when any of these is true:
+
+* The World can't hold queue messages (local development, Postgres), or the queue didn't hold this one.
+* The route can't load the workflow's code. With Next.js, a route that imports the workflow it starts or resumes can; a route that only has its ID (or a `defineHook()` module) can't, and queues. Nitro (v3, Node.js presets) loads the whole flow entry. SvelteKit, Astro, Nuxt, Nest and standalone builds queue every run for now.
+* A step the workflow can call isn't registered in the route's process, or the run uses the QuickJS engine (`WORKFLOW_VM=quickjs`) and the route doesn't bundle it. With Next.js, a route that imports a workflow has its steps; QuickJS stays in the flow route.
+* The run targets another deployment (`deploymentId`), or its data lives in a region other than the route's.
+* `start()` runs inside a workflow, a step or another orchestrator delivery, or it's a dynamic workflow, an `experimental_hook` start, or passes its own `world`.
+* `WORKFLOW_INLINE_DELIVERY=0` is set. Use it as a kill switch.
+
+Things to know:
+
+* **Bundle size.** With Next.js, a route carries the compiled workflow code of the workflows it imports (one entry per workflow file, plus one shared copy of the app's serde registrations), loaded on its first `start()` or `resumeHook()` of that workflow. Its steps are the ones the route's own imports already registered, as before; the QuickJS engine is not added. Routes that don't import a workflow carry nothing new.
+* **Duration.** The delivery is bounded by the calling route's `maxDuration`, not the flow route's. It hands off to the queue before the route's deadline. A step body that outlives the route is stopped with it and retried on the queue, as after any crash.
+* **Request scope.** A step that runs inline runs inside the calling request's context. With Next.js, `fetch` follows the calling segment's caching configuration.
+* **Preparation.** While the queue answers the held send, the route already prepares the delivery: it loads the run's orchestrator and compiles the workflow (or the QuickJS baseline). That preparation writes nothing and starts no step, so it is simply dropped when the message isn't held. `WORKFLOW_INLINE_SPECULATION=0` turns it off.
+* **Observability.** The `workflow.start` span records `workflow.inline.outcome` (`held`, `not_held`, `skipped`, `hold_failed` or `no_hold_result`) and the reason when the run was queued. The delivery's `workflow.inline.consume` span (`workflow.route.type: inline`) is part of the calling request's trace, and its events carry that request's ID. Phase timings explain the time to the first step: `workflow.start.inline_entry_load_ms`, `workflow.start.inline_checks_ms`, `workflow.start.run_created_ms`, `workflow.start.enqueue_ms` and `workflow.inline.hold_send_ms` on `workflow.start`, and `workflow.inline.speculation_ms`, `workflow.inline.first_step_ms` and `workflow.inline.time_to_first_step_ms` on `workflow.inline.consume`.
+
 ### Dynamic Workflow Source
 
 <Callout type="warning">
