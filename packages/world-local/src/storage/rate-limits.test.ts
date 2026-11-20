@@ -129,7 +129,7 @@ describe('rate limits on the Local World', () => {
     );
     expect(failed.eventType).toBe('rate_failed');
     if (failed.eventType === 'rate_failed') {
-      expect(failed.eventData.reason).toBe('timeout');
+      expect(failed.eventData.reason).toBe('max_wait');
     }
     // The next call still gets the slot the failed one would have had.
     const next = committed(await inBand(runId, rateCreated()));

@@ -1,4 +1,4 @@
-import { RateLimitTimeoutError, ReplayDivergenceError } from '@workflow/errors';
+import { RateLimitMaxWaitError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { SPEC_VERSION_RATE_LIMITS } from '@workflow/world';
 import { EventConsumerResult } from '../events-consumer.js';
@@ -22,7 +22,7 @@ import { resolveRateLimitCall } from './rate-limit-call.js';
  * - `rate_created` with `acquireAt`: the slot is later. The call stays
  *   pending, and the run sleeps until then like a `sleep()`.
  * - `rate_failed`: the slot is past the call's `maxWait`. The call rejects with
- *   `RateLimitTimeoutError`, having reserved nothing.
+ *   `RateLimitMaxWaitError`, having reserved nothing.
  */
 export function createRateLimit(
   ctx: WorkflowOrchestratorContext,
@@ -108,7 +108,7 @@ export function createRateLimit(
           ? () => resolve()
           : () =>
               reject(
-                new RateLimitTimeoutError(
+                new RateLimitMaxWaitError(
                   call.key,
                   event.eventData.acquireAt !== undefined
                     ? new Date(event.eventData.acquireAt)

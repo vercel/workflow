@@ -212,13 +212,13 @@ export function getWebRevivers(): Revivers {
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
-    RateLimitTimeoutError: (value) => {
+    RateLimitMaxWaitError: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
       const error = new Error(value.message, opts) as Error & {
         key?: string;
         wouldAcquireAt?: Date;
       };
-      error.name = 'RateLimitTimeoutError';
+      error.name = 'RateLimitMaxWaitError';
       error.key = value.key;
       if (value.wouldAcquireAt !== undefined) {
         error.wouldAcquireAt = value.wouldAcquireAt;

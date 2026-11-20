@@ -411,7 +411,7 @@ export function createEventsStorage(
         eventType: 'rate_failed',
         eventData: {
           ...request,
-          reason: 'timeout',
+          reason: 'max_wait',
           acquireAt: new Date(Math.ceil(decision.wouldAcquireAtUs / 1000)),
         },
       } as Event;
@@ -519,7 +519,7 @@ export function createEventsStorage(
         eventData: {
           ...call,
           ...(lateWakes > 0 && { lateWakes }),
-          reason: 'timeout',
+          reason: 'max_wait',
           acquireAt,
         },
       } as Event;

@@ -168,7 +168,7 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     });
     await world.runOnClock();
 
-    expect(await runResult(world)).toBe('RateLimitTimeoutError:slow');
+    expect(await runResult(world)).toBe('RateLimitMaxWaitError:slow');
     expect(eventsOf(world, 'rate_failed')).toHaveLength(1);
     // The failed call left the key where the first call put it.
     expect(world.rateTats.get('slow')).toBe(

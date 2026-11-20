@@ -2,4 +2,4 @@
 'workflow': minor
 ---
 
-Export `experimental_rateLimit()` and `RateLimitTimeoutError`.
+Export `experimental_rateLimit()` and `RateLimitMaxWaitError`.
