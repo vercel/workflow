@@ -45,12 +45,12 @@ export function StatusBadge({
             getStatusColorClass(status)
           )}
         />
-        <span className="text-muted-foreground text-xs font-medium capitalize">
+        <span className="text-label-12 font-medium text-gray-900 capitalize">
           {status}
         </span>
       </span>
       {durationMs !== undefined && (
-        <span className="text-gray-700 text-xs">
+        <span className="text-label-12 text-gray-700 tabular-nums">
           ({formatDuration(durationMs)})
         </span>
       )}
