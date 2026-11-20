@@ -117,6 +117,7 @@ export interface RecordedCreate {
  * - `subscribe`: the live feed.
  * - `reportIncomplete`: answer in-band writes with an incomplete skipped-slot
  *   report (`hasMore: true`).
+ * - `noReport`: answer in-band writes with no skipped-slot report at all.
  *
  * Every created event is recorded, so a test can assert what the runtime
  * wrote and with which params.
@@ -148,6 +149,12 @@ export class AppendOnlyWorld {
   readonly correlationListCalls: Array<Record<string, unknown>> = [];
   /** Replay events served without their step input (`skipStepInputs`). */
   strippedStepInputs = 0;
+  /**
+   * The run's event ceiling, reported as `maxEvents` on `run_started`
+   * responses and on every `list` page. Unreported when absent. Mutable, so a
+   * test can model a run whose log is already past the ceiling.
+   */
+  maxEvents: number | undefined;
   private handler:
     | ((message: unknown, meta: Record<string, unknown>) => Promise<unknown>)
     | undefined;
@@ -157,6 +164,8 @@ export class AppendOnlyWorld {
     afterSlot: number;
     onEvent: (event: Event) => void;
   }>();
+  /** Delayed live-feed pushes, in commit order (`subscribeDelayMs`). */
+  private pushes: Promise<void> = Promise.resolve();
   private run: WorkflowRun | undefined;
   /** The orchestrator delivery in flight, in `coalesce` mode. */
   private activeOrchestrator: { coalesced: number } | undefined;
@@ -198,6 +207,7 @@ export class AppendOnlyWorld {
        */
       lazyCreatePayloads?: boolean;
       reportIncomplete?: boolean;
+      noReport?: boolean;
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
       /**
@@ -215,6 +225,21 @@ export class AppendOnlyWorld {
        * milliseconds late, after committing, as a remote World's round trip.
        */
       createDelayMs?: number;
+      /**
+       * Push each event to the live feed this many milliseconds after it
+       * committed (in commit order), as on a World whose push travels apart
+       * from a write's answer and can arrive well after it. Without it the
+       * push is synchronous with the commit.
+       */
+      subscribeDelayMs?: number;
+      /**
+       * Called after an `events.create` or `events.createBatch` committed and
+       * before it answers, with the events it committed. A test awaits in it
+       * to hold the answer back while the commit is already visible (the live
+       * feed has pushed it), as on a remote World whose push outruns the
+       * answer.
+       */
+      afterCommit?: (committed: readonly Event[]) => void | Promise<void>;
       /**
        * Hook tokens another run already holds: a `hook_created` for one of
        * them commits `hook_conflict` instead, as a World with a token index
@@ -292,8 +317,22 @@ export class AppendOnlyWorld {
        * Absent: a key is deduplicated for as long as the fake lives.
        */
       keyDedupeWindowMs?: number;
+      /** Initial {@link AppendOnlyWorld.maxEvents}. */
+      maxEvents?: number;
+      /**
+       * Report {@link AppendOnlyWorld.maxEvents} on `run_started` responses
+       * only, not on `list` pages, as a World that predates the list field.
+       */
+      maxEventsOnStartOnly?: boolean;
+      /**
+       * The most events one `list` page without a `limit` returns, as a World
+       * that bounds a full-log read and answers `hasMore` past it.
+       */
+      listPageSize?: number;
     } = {}
-  ) {}
+  ) {
+    this.maxEvents = options.maxEvents;
+  }
 
   /** Seed a run as if `run_created` had been written. */
   seedRun(run: Omit<WorkflowRun, 'specVersion'> & { specVersion?: number }) {
@@ -454,8 +493,25 @@ export class AppendOnlyWorld {
     this.events.push(event);
     this.events.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
     this.applyToRun(event);
-    for (const sub of this.subscribers) {
-      if (slot > sub.afterSlot) sub.onEvent(event);
+    const push = () => {
+      for (const sub of this.subscribers) {
+        if (slot > sub.afterSlot) sub.onEvent(event);
+      }
+    };
+    const delayMs = this.options.subscribeDelayMs;
+    if (delayMs === undefined) {
+      push();
+    } else {
+      // One chain, so pushes keep commit order whatever their timers do.
+      this.pushes = this.pushes.then(
+        () =>
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              push();
+              resolve();
+            }, delayMs)
+          )
+      );
     }
     return event;
   }
@@ -526,6 +582,7 @@ export class AppendOnlyWorld {
     ownSlot: number
   ): Pick<EventResult, 'events' | 'cursor' | 'hasMore'> {
     if (params?.inBand !== true || params.eventCount === undefined) return {};
+    if (this.options.noReport) return {};
     if (this.options.reportIncomplete) {
       return { events: [], cursor: null, hasMore: true };
     }
@@ -916,9 +973,13 @@ export class AppendOnlyWorld {
         if (self.options.createDelayMs) {
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));
         }
+        await self.options.afterCommit?.([event]);
         return {
           event: self.responseEvent(event),
           run: self.run,
+          ...(data.eventType === 'run_started' && self.maxEvents !== undefined
+            ? { maxEvents: self.maxEvents }
+            : {}),
           ...self.report(params, slot),
           // A start written at the first slot as the creation sits at a
           // position the writer may already count as the creation's: its
@@ -970,12 +1031,16 @@ export class AppendOnlyWorld {
         if (params?.inBand && params.eventCount !== undefined) {
           self.reportSpans.push({ eventCount: params.eventCount, firstSlot });
         }
+        const committed = self.commitBatch(batch, params, firstSlot);
         if (self.options.createDelayMs) {
-          const committed = self.commitBatch(batch, params, firstSlot);
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));
-          return committed;
         }
-        return self.commitBatch(batch, params, firstSlot);
+        await self.options.afterCommit?.(
+          committed.results.flatMap((item) =>
+            item.error === undefined ? [item.event] : []
+          )
+        );
+        return committed;
       },
       async get(_runId: string, eventId: string) {
         const event = self.events.find((e) => e.eventId === eventId);
@@ -989,7 +1054,7 @@ export class AppendOnlyWorld {
         const desc = params.pagination?.sortOrder === 'desc';
         let data = self.events.filter((e) => !cursor || e.eventId > cursor);
         if (desc) data = [...data].reverse();
-        const limit = params.pagination?.limit;
+        const limit = params.pagination?.limit ?? self.options.listPageSize;
         const page = limit ? data.slice(0, limit) : data;
         return {
           data: self.served(
@@ -999,6 +1064,9 @@ export class AppendOnlyWorld {
           cursor: page.at(-1)?.eventId ?? cursor ?? null,
           hasMore: page.length < data.length,
           snapshot: { seq: self.seq, seqInBand: self.seqInBand },
+          ...(self.maxEvents !== undefined && !self.options.maxEventsOnStartOnly
+            ? { maxEvents: self.maxEvents }
+            : {}),
         };
       },
       async listByCorrelationId(params) {

@@ -75,7 +75,12 @@ import { monotonicFactory } from 'ulid';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { CommitThenThrow, type Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
-import { purgeRunData, purgesUserDataOnFinish } from './run-retention.js';
+import {
+  purgeLateStepWrite,
+  purgeRunData,
+  purgesUserDataOnFinish,
+  ranPurge,
+} from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { startHookRecord, withStartHookId } from './start-hook.js';
 import { eventCursor, type RunRow, Store } from './store.js';
@@ -991,13 +996,54 @@ export function createEventsStorage(
       );
     }
 
+    // A step still running when its run ended (a `Promise.race` loser, or
+    // one on another delivery) can settle after the run's data was deleted,
+    // by zero retention or on demand: only a running step writes on an ended
+    // run (see Step ordering). What it writes is scrubbed here, in the same
+    // transaction, so the run's data stays gone.
+    const lateOnPurgedRun =
+      !runPurged &&
+      step !== undefined &&
+      (data.eventType === 'step_completed' ||
+        data.eventType === 'step_failed' ||
+        data.eventType === 'step_retrying') &&
+      ranPurge(runForLateStepCheck());
+
+    let reported = stored;
     if (runPurged) {
       purgeRunData(db, runId);
       // The scrubbed bytes are still in the WAL until it is checkpointed.
       effects.push(() => db.checkpoint());
+    } else if (lateOnPurgedRun && step) {
+      // Only this write's step and event: the rest of the run is already
+      // scrubbed, and re-running the whole purge per late write would cost
+      // the run's size times the number of steps still running.
+      const seq = Number(stored.eventId.slice('evnt_'.length));
+      purgeLateStepWrite(db, runId, step.stepId, seq);
+      effects.push(() => db.checkpoint());
+      // Answer with what is stored, not with the payload just scrubbed.
+      step = store.getStep(runId, step.stepId) ?? step;
+      reported = store.getEventAt(runId, seq) ?? stored;
     }
 
-    return finish(stored, resultRun, { step, hook, wait, stepCreatedLazily });
+    return finish(reported, resultRun, {
+      step,
+      hook,
+      wait,
+      stepCreatedLazily,
+    });
+
+    /**
+     * The run, for the late-step check. step_completed and step_retrying do
+     * not read it up front, so only its status is read, and its document
+     * only when it is terminal.
+     */
+    function runForLateStepCheck(): WorkflowRun | undefined {
+      if (run) return run;
+      const status = store.getRunStatus(runId);
+      if (!status || !isTerminalWorkflowRunStatus(status)) return undefined;
+      return store.getRun(runId)?.run;
+    }
 
     function finish(
       committed: Event,
@@ -1382,13 +1428,10 @@ export function createEventsStorage(
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       // Read before the page: a load that follows its cursor to the end sees
       // every in-band write this count stands for.
-      const runRow = db.get<{ seq: number; seq_in_band: number }>(
-        'SELECT seq, seq_in_band FROM runs WHERE run_id = ?',
-        params.runId
-      );
+      const runRow = store.getRunAnyTag(params.runId);
       const snapshot = {
-        seq: Number(runRow?.seq ?? 0),
-        seqInBand: Number(runRow?.seq_in_band ?? IN_BAND_SEQ_AT_RUN_CREATION),
+        seq: runRow?.seq ?? 0,
+        seqInBand: runRow?.seqInBand ?? IN_BAND_SEQ_AT_RUN_CREATION,
       };
       const result = store.listEvents(params.runId, {
         cursor: params.pagination?.cursor,
@@ -1405,6 +1448,9 @@ export function createEventsStorage(
                 stripEventDataRefs(event, resolveData)
               ),
         snapshot,
+        // The ceiling `run_started` reports, so a delivery that did not
+        // write it enforces the same one.
+        ...(runRow ? { maxEvents: getMaxEventsForRun(runRow.run) } : {}),
       };
     },
 

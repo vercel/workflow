@@ -1,5 +1,43 @@
 # @workflow/nitro
 
+## 5.0.13
+
+### Patch Changes
+
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03), [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c), [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6)]:
+  - @workflow/core@5.7.1
+  - @workflow/builders@5.1.4
+  - @workflow/web@5.3.1
+  - @workflow/rollup@5.0.13
+  - @workflow/vite@5.0.13
+
+## 5.0.12
+
+### Patch Changes
+
+- Updated dependencies [[`5edc5b2`](https://github.com/vercel/workflow/commit/5edc5b2b768272512a7a65a84979ce71bd29c55c), [`0a497dc`](https://github.com/vercel/workflow/commit/0a497dc857056740038a6650757b12c993412fcb), [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`bace5ef`](https://github.com/vercel/workflow/commit/bace5ef5d554711f6eea9d02cee95ab0b4c34e39), [`d7053a8`](https://github.com/vercel/workflow/commit/d7053a82a561f0a78f8832fbb2df34a73799377a), [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997), [`b074e75`](https://github.com/vercel/workflow/commit/b074e7590b099ad80bca0979e309a32ffc159598), [`44d4b95`](https://github.com/vercel/workflow/commit/44d4b95df03bc23b9b47d03361fedda3262c434b), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc), [`3671902`](https://github.com/vercel/workflow/commit/367190219322f3cbb8fc0606989f59473354f6ca), [`46dff1c`](https://github.com/vercel/workflow/commit/46dff1c9b2130835f3b26752d1d3f030dd62dced), [`036e1a8`](https://github.com/vercel/workflow/commit/036e1a855ef5424663f7f1cdac3e3a083bb81f92), [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8), [`5699483`](https://github.com/vercel/workflow/commit/569948318c7ae642cc2a2a554912ff5dd883eed3), [`4890ea9`](https://github.com/vercel/workflow/commit/4890ea98976e14e0754c9992faeb708e1320ab9b), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`5df0437`](https://github.com/vercel/workflow/commit/5df043770f41bd38435fa02ea80ead7ab7a03d05), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087)]:
+  - @workflow/web@5.3.0
+  - @workflow/core@5.7.0
+  - @workflow/rollup@5.0.12
+  - @workflow/builders@5.1.3
+  - @workflow/vite@5.0.12
+
+## 5.0.11
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`2589760`](https://github.com/vercel/workflow/commit/25897607325b93221660290a92272ecc586f4693), [`f36b515`](https://github.com/vercel/workflow/commit/f36b515ab5fe2c597df83c57c79ff4435af9a2e6), [`66d487b`](https://github.com/vercel/workflow/commit/66d487bd5b3809087576d23c8e816d1ae590ff37), [`bb100a9`](https://github.com/vercel/workflow/commit/bb100a9decb69483bb9342dc1062b0c3118b0763), [`3b98faf`](https://github.com/vercel/workflow/commit/3b98faf5aa22b74e79fd6372a59ab99fab5cdb2e), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`54dc65b`](https://github.com/vercel/workflow/commit/54dc65b6c773df9712f8e6c752a1b8481da2e045), [`f957b8e`](https://github.com/vercel/workflow/commit/f957b8ea5de0d155c02b5c6c4cbf474556971ede), [`d18aff2`](https://github.com/vercel/workflow/commit/d18aff22acec8a3f57237e58624d7a4d25ca7eed), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`1782a0f`](https://github.com/vercel/workflow/commit/1782a0f78c93ed20d8b56365839e2719b85e74bf), [`7d6a310`](https://github.com/vercel/workflow/commit/7d6a310a95f62b3ebbca548d724b67b53d600fa2), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`b1f9269`](https://github.com/vercel/workflow/commit/b1f92691bcc3bc18b9df094d45379c6464cf4d65), [`021723b`](https://github.com/vercel/workflow/commit/021723bc679a0788332e6ebba9d58da55ba4333c), [`87cde0b`](https://github.com/vercel/workflow/commit/87cde0b52c59bded6ce98a87aef5c2582ac6b19c), [`e4ec16f`](https://github.com/vercel/workflow/commit/e4ec16f9b2aa092782bbd43c9f9fc50083f926f5)]:
+  - @workflow/web@5.2.0
+  - @workflow/core@5.6.1
+  - @workflow/builders@5.1.2
+  - @workflow/rollup@5.0.11
+  - @workflow/vite@5.0.11
+
 ## 5.0.10
 
 ### Patch Changes

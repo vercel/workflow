@@ -1042,6 +1042,14 @@ export interface CreateEventParams {
    */
   replayDivergenceCount?: number;
   /**
+   * The ids of the events at which the replays of that episode diverged,
+   * oldest first, sent with {@link CreateEventParams.replayDivergenceCount}.
+   * Event ids only, never payloads, so a divergence can be located even when
+   * the run's error payload is encrypted. Request telemetry like the count:
+   * Worlds may log it, and must not require or persist it.
+   */
+  replayDivergenceEventIds?: readonly string[];
+  /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
    * strictly after this cursor (via `events`/`cursor`/`hasMore`): the
@@ -1466,6 +1474,14 @@ export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
  */
 export type EventListResponse = PaginatedResponse<Event> & {
   snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling, the same value {@link EventResult.maxEvents}
+   * carries on a run-lifecycle write. Optional: a World that does not report
+   * it here leaves the runtime with the ceiling from its own `run_started`
+   * write, if any. The spec 9 orchestrator, which writes `run_started` only on
+   * a run's first delivery, enforces it on every later one from its log load.
+   */
+  maxEvents?: number;
 };
 
 /** Options for {@link Storage.events.subscribe}. */

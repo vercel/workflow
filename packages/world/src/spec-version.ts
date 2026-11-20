@@ -192,7 +192,7 @@ export interface MintedSpecVersionOptions {
  * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
  * | `9` | not `true` | the default, with a warning once per process |
  * | `6` to `8` | any | that version |
- * | anything else | any | the default, with a warning once per process |
+ * | anything else | any | the default (8), with a warning once per process that names it |
  *
  * Values are trimmed.
  *
@@ -244,7 +244,7 @@ export function mintedSpecVersion(
     }
     warnOnce(
       `${SPEC_VERSION_ENV_VAR}=${requested}`,
-      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}.`
+      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}, so new runs use spec ${fallback}.`
     );
   }
   return fallback;

@@ -1,5 +1,63 @@
 # @workflow/world-postgres
 
+## 5.4.1
+
+### Patch Changes
+
+- [#5618](https://github.com/vercel/workflow/pull/5618) [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The invoke executor's wake and delivery check use the configured `GRAPHILE_WORKER_SCHEMA` instead of always `graphile_worker`, as the rest of the World does.
+
+- [#5618](https://github.com/vercel/workflow/pull/5618) [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - A zero-retention run's data is purged after its terminal write commits, so a race's loser settling at the same moment can no longer deadlock the purge. A backstop job committed with the terminal write retries the purge if the process stops first or the purge fails; any deployment's workers run it, and Kubernetes scaling and pruning keep the run's version until it has run.
+
+- [#5626](https://github.com/vercel/workflow/pull/5626) [`7d710a5`](https://github.com/vercel/workflow/commit/7d710a5aeca7581b6b941715486f804a3433c75b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `skipWorkers` (`WORKFLOW_POSTGRES_SKIP_WORKERS=1`): a process that starts the World without running workers. It can still start runs, resume hooks, cancel runs and read them. Processes with workers on the same database, `jobPrefix` and `deploymentId` (when one is set) execute those runs, and recover the ones it didn't enqueue the next time they start.
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62)]:
+  - @workflow/errors@5.1.5
+  - @workflow/world-local@5.5.1
+
+## 5.4.0
+
+### Minor Changes
+
+- [#5353](https://github.com/vercel/workflow/pull/5353) [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `runs.deleteDataMany` method to the World interface, which deletes the stored data (payloads, not metadata) of finished runs on demand, and implement it in the Vercel, Local and Postgres Worlds. Exposed as `run.delete()` and `deleteRuns()` (`workflow/api`), `deleteRuns(world, runIds)` (`@workflow/core/runtime`), and `pnpx workflow delete <runId>` in the CLI. `workflow cancel` and `workflow start` no longer accept listing flags they ignored, such as `--limit` on `start` or `--cursor` and `--sort` on either. `workflow delete`, `workflow cancel` and `workflow start` now print the error they fail with, such as an unknown flag, instead of exiting with no output.
+
+### Patch Changes
+
+- [#5421](https://github.com/vercel/workflow/pull/5421) [`f41f84f`](https://github.com/vercel/workflow/commit/f41f84ff9e3665b3bb384e611e707e23a8aa4368) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix concurrent forced hook claims in Postgres World. When several runs called `createHook()` with `experimental_force: true` (`force: true` once renamed) on one token at the same time, some of them could get a plain `hook_conflict`, which fails the run with "the configured World does not support force-claiming hook tokens", or a 503 "changed owner 5 times while being force-claimed". Every forced claim now ends registered, and the claims form one chain to the final owner.
+
+- [#5535](https://github.com/vercel/workflow/pull/5535) [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep spec 9 orchestrator deliveries alive through short sleeps instead of re-invoking for each one, and lower the default `WORKFLOW_ORCHESTRATOR_LINGER_MS` to 5 seconds
+
+- [#5468](https://github.com/vercel/workflow/pull/5468) [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9) Thanks [@benpankow](https://github.com/benpankow)! - A `resumeHook()` wake names the `hook_received` it was sent for, so a spec 9 orchestrator delivery in a process that already consumed the run's log below that event skips the tail read that checks for a no-op wake.
+
+- [#5531](https://github.com/vercel/workflow/pull/5531) [`58de1dc`](https://github.com/vercel/workflow/commit/58de1dc05d6615c855a2f1e7203c8d65cb3fc030) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add Kubernetes support for runs pinned to a `deploymentId`. Features per-deployment backlog queries, KEDA autoscaling, pruning of drained versions' worker Deployments. See Helm chart in the package's `chart` directory. Works by deploying app pods and a separate worker Deployment and KEDA ScaledObject per version, kept across upgrades until that version's runs finish.
+
+- [#5407](https://github.com/vercel/workflow/pull/5407) [`96c8d36`](https://github.com/vercel/workflow/commit/96c8d36fae7ec92ecaa0b0df24801a03b0541f8f) Thanks [@div-cowboy](https://github.com/div-cowboy)! - Skip runs parked on a hook or a future wait in startup recovery, and stop restarts from stacking duplicate recovery jobs; run `bootstrap` before upgrading (migration 0032).
+
+- [#5495](https://github.com/vercel/workflow/pull/5495) [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep a run started with `experimental_retention: 0` free of data after it ends: the bundled Worlds clear what a step still running when the run ended (a `Promise.race` loser) writes to it, and write no stream chunks to it.
+- Updated dependencies [[`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f), [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`10f35e3`](https://github.com/vercel/workflow/commit/10f35e334a16489916bf117f022c8e1ccdc61efd), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772)]:
+  - @workflow/world-local@5.5.0
+  - @workflow/world@5.3.0
+  - @workflow/errors@5.1.4
+
+## 5.3.0
+
+### Minor Changes
+
+- [#5397](https://github.com/vercel/workflow/pull/5397) [`90e8d72`](https://github.com/vercel/workflow/commit/90e8d723b9fd1873270916f8a20b715ed33455f8) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `deploymentId` (`WORKFLOW_POSTGRES_DEPLOYMENT_ID`), which pins every run to the deployment that started it. Each deployment claims and recovers only its own runs, a message for another deployment's run (such as a hook resumed from a newer deployment) is routed to that deployment's jobs, `getDeploymentId()` returns it, and the World declares deployment affinity. Runs started without it stay on the unpinned task, which a process without `deploymentId` claims.
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5435](https://github.com/vercel/workflow/pull/5435) [`be8a7ce`](https://github.com/vercel/workflow/commit/be8a7ce296d3654be5e1df18f86195a58abc0ddf) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Serialize a spec 9 run's orchestrator deliveries, and invoke mode's executor deliveries, with a per-run delivery lease (`workflow.workflow_run_delivery_leases`, migration 0031) in place of a Graphile named queue per run. Graphile never deletes a named queue's row, and its job fetch locks every available queue row on each poll, so throughput fell as runs accumulated: about 1,200 jobs/s at 1,000 queue rows, 60 at 52,000 and 7 at 302,000, against about 4,500 for jobs outside named queues. A lease row exists only while a delivery holds it. A delivery that finds the run's lease held leaves its message for the holder, which re-runs for it (coalescing) or re-adds it as a job when it releases. Run `bootstrap` before upgrading. During a rolling upgrade, deliveries of processes on the earlier version are not serialized with those of upgraded processes; the in-band fence refuses an overlapping delivery's writes. Earlier versions' empty queue rows stay until Graphile Worker's `GC_JOB_QUEUES` cleanup task removes them.
+- Updated dependencies [[`e6a3975`](https://github.com/vercel/workflow/commit/e6a3975c953b366497c29749d7f1ab2e7c17732c), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/world-local@5.4.1
+  - @workflow/errors@5.1.3
+  - @workflow/utils@5.1.1
+  - @workflow/world@5.2.2
+
 ## 5.2.1
 
 ### Patch Changes

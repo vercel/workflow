@@ -100,9 +100,17 @@ describe.each([
   // Each pass that finds nothing to run starts the time again, so a run
   // whose events keep coming stays on one delivery for longer than one
   // linger window.
+  //
+  // Two payloads, each sent `PAYLOAD_GAP_MS` after the delivery last went
+  // idle: together longer than one window, each well inside it. The test's
+  // own timer may fire late by the difference (900 ms) before a payload
+  // misses its window. With 100 ms to spare (200 ms in a 300 ms window) it
+  // failed on loaded runners, whose timers fire that late.
+  const LINGER_MS = 2_000;
+  const PAYLOAD_GAP_MS = 1_100;
   it('starts the linger time again after every pass', async () => {
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
-    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '300');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', String(LINGER_MS));
     const {
       world,
       runId,
@@ -119,7 +127,7 @@ describe.each([
       { timeout: 5000 }
     );
     for (const n of [1, 2]) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, PAYLOAD_GAP_MS));
       world.appendOutOfBand({
         eventType: 'hook_received',
         runId,

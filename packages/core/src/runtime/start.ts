@@ -1,5 +1,6 @@
 import type { Span } from '@opentelemetry/api';
 import {
+  DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   HookConflictError,
   InBandSupersededError,
@@ -76,10 +77,7 @@ import {
   CHILD_RUN_COMPLETION_VERSION,
 } from './child-run-completion.js';
 import { isChildRunCompletionHookEnabled } from './child-run-completion-notify.js';
-import {
-  DYNAMIC_WORKFLOWS_ENV,
-  isDynamicWorkflowsEnabled,
-} from './constants.js';
+import { isDynamicWorkflowsEnabled } from './constants.js';
 import {
   compileDynamicWorkflow,
   DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES,
@@ -765,11 +763,16 @@ export type {
 /**
  * Dynamic starts are same-deployment only, so the process calling `start()` is
  * also the deployment that executes the run, and it must have opted in.
+ *
+ * A missing opt-in is the project's configuration, not an SDK failure, so
+ * this refusal is a `DynamicWorkflowsNotEnabledError` (fatal, and classified
+ * `USER_ERROR` if it fails a run) rather than the `WorkflowRuntimeError` the
+ * other dynamic refusals use.
  */
 function assertDynamicWorkflowsEnabled(): void {
   if (!isDynamicWorkflowsEnabled()) {
-    throw dynamicStartRefusal(
-      `Dynamic workflows are disabled on this deployment, so no run was created. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    throw new DynamicWorkflowsNotEnabledError(
+      'Dynamic workflows are not enabled for this project, so start() did not create a run for the given workflow source.'
     );
   }
 }

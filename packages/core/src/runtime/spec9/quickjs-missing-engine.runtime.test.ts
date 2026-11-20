@@ -6,6 +6,7 @@ import {
   runResult,
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
+import { runAsInlineDeliveryForTests } from '../inline-orchestrator.js';
 import {
   __unregisterQuickJSEngineForTests,
   registerQuickJSEngine,
@@ -44,7 +45,7 @@ describe('a QuickJS run where the engine is not bundled', () => {
     expect(engine).toBeDefined();
     let first: unknown;
     try {
-      first = await world.deliver(start);
+      first = await runAsInlineDeliveryForTests(() => world.deliver(start));
     } finally {
       if (engine) registerQuickJSEngine(engine);
     }
@@ -58,5 +59,23 @@ describe('a QuickJS run where the engine is not bundled', () => {
     await world.runUntilIdle();
     expect(ran).toBe(1);
     expect(await runResult(world)).toBe(2);
+  });
+
+  it('is not handed off outside an inline delivery: the flow route must have the engine', async () => {
+    const { world, start } = await setupOrchestratorRun(
+      code,
+      [1],
+      {},
+      'quickjs'
+    );
+    const engine = __unregisterQuickJSEngineForTests();
+    try {
+      // A missing engine in the flow route is a bundling bug: handing off
+      // would only loop, so the delivery fails and the queue retries it.
+      await expect(world.deliver(start)).rejects.toThrow(/QuickJS/);
+    } finally {
+      if (engine) registerQuickJSEngine(engine);
+    }
+    expect(ran).toBe(0);
   });
 });

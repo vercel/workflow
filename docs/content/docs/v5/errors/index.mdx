@@ -15,7 +15,7 @@ When a workflow run fails, its `errorCode` identifies the failure category. You 
 
 | Code | Description |
 | --- | --- |
-| `USER_ERROR` | An error thrown by workflow or step code, including an unhandled step failure or `FatalError`. |
+| `USER_ERROR` | An error thrown by workflow or step code, including an unhandled step failure or `FatalError`, or a project configuration problem such as [`DynamicWorkflowsNotEnabledError`](/docs/api-reference/workflow-errors/dynamic-workflows-not-enabled-error). |
 | `RUNTIME_ERROR` | The Workflow runtime encountered an internal error, such as missing runtime data or an invariant failure. Persistent occurrences should be [reported](https://github.com/vercel/workflow/issues). |
 | [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) | The run's event log cannot be replayed because it contains orphaned or mismatched events, a gap, or an unreadable stored payload. |
 | [`REPLAY_DIVERGENCE`](/docs/errors/replay-divergence) | One replay could not consume the event log deterministically. The runtime automatically retries before treating repeated divergence as a corrupted event log. |

@@ -1,12 +1,25 @@
-// Registers the QuickJS workflow engine for every delivery this runtime
-// runs. The per-workflow inline entries import `workflowEntrypoint` from
-// `runtime/flow-entrypoint.ts` instead, without it (see
-// `runtime/quickjs-loader.ts`).
-import './runtime/quickjs-engine.js';
+import { workflowEntrypoint as flowWorkflowEntrypoint } from './runtime/flow-entrypoint.js';
+import { registerBundledQuickJSEngine } from './runtime/quickjs-engine.js';
 
-export type { Event, WorkflowRun } from '@workflow/world';
+export type {
+  DeleteRunDataResult,
+  DeleteRunsDataResult,
+  Event,
+  WorkflowRun,
+} from '@workflow/world';
 export { WorkflowSuspension } from './global.js';
-export { workflowEntrypoint } from './runtime/flow-entrypoint.js';
+
+/**
+ * Creates the route that runs this app's workflow and step deliveries (see
+ * `runtime/flow-entrypoint.ts`), with the QuickJS engine registered for
+ * them. The per-workflow inline entries use the engine-less variant.
+ */
+export function workflowEntrypoint(
+  ...args: Parameters<typeof flowWorkflowEntrypoint>
+): ReturnType<typeof flowWorkflowEntrypoint> {
+  registerBundledQuickJSEngine();
+  return flowWorkflowEntrypoint(...args);
+}
 export {
   type HealthCheckOptions,
   type HealthCheckResult,
@@ -34,6 +47,7 @@ export {
   type CancelRunOptions,
   cancelRun,
   cancelRuns,
+  deleteRuns,
   listStreams,
   pendingWakeUpWaits,
   type ReadStreamOptions,

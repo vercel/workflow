@@ -314,6 +314,67 @@ export class WorkflowStartError extends WorkflowError {
 }
 
 /**
+ * @internal
+ * The environment variable a deployment sets to opt into dynamic workflows.
+ * Mirrors `DYNAMIC_WORKFLOWS_ENV` in `@workflow/core`, which this package
+ * cannot import.
+ */
+const DYNAMIC_WORKFLOWS_ENV_VAR = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
+
+const DYNAMIC_WORKFLOWS_DOCS_URL =
+  'https://workflow-sdk.dev/docs/advanced/dynamic-workflows#enabling-dynamic-workflows';
+
+/**
+ * @internal
+ * The fix-it hint carried by every {@link DynamicWorkflowsNotEnabledError}.
+ * Exported so presentation layers (e.g. `describeError` in `@workflow/core`)
+ * repeat the same instructions instead of drifting from them.
+ */
+export const DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT = `Set the ${DYNAMIC_WORKFLOWS_ENV_VAR}=1 environment variable on your project, then redeploy (or restart your dev server) so the new value takes effect.`;
+
+/**
+ * Thrown when a dynamic workflow is started or delivered on a deployment that
+ * has not opted into dynamic workflows with the
+ * `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` environment variable.
+ *
+ * This is a configuration problem in the user's project, not an SDK failure,
+ * so it is deliberately **not** a `WorkflowRuntimeError`: when a run fails
+ * on it (for example because `start()` refused inside a step and the
+ * workflow did not catch it), the run is recorded as `USER_ERROR` rather
+ * than `RUNTIME_ERROR`.
+ *
+ * `fatal` is set because the refusal is deterministic: a step that calls
+ * `start()` fails straight away instead of spending its retry budget on the
+ * same refusal. See `FatalError.is()`.
+ *
+ * Use the static `DynamicWorkflowsNotEnabledError.is()` method for
+ * type-safe checking in catch blocks. It is a name-based check, so it also
+ * recognizes the error after it crosses a step boundary or VM realm.
+ */
+export class DynamicWorkflowsNotEnabledError extends WorkflowError {
+  readonly fatal = true;
+
+  /**
+   * @param message - What was refused, e.g. that `start()` created no run.
+   *   The fix-it hint and a docs link are appended to it.
+   */
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      appendFramedDetails(message, [
+        { label: 'hint', value: DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT },
+        { label: 'docs', value: DYNAMIC_WORKFLOWS_DOCS_URL },
+      ]),
+      { cause: options?.cause }
+    );
+    this.name = 'DynamicWorkflowsNotEnabledError';
+  }
+
+  static is(value: unknown): value is DynamicWorkflowsNotEnabledError {
+    return isError(value) && value.name === 'DynamicWorkflowsNotEnabledError';
+  }
+}
+
+/**
  * Thrown when a workflow run fails during execution.
  *
  * This error indicates that the workflow encountered a fatal error and cannot
@@ -494,19 +555,28 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
  * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
  */
 export class MaxEventsExceededError extends WorkflowError {
+  /**
+   * The events the runtime counted. A lower bound on the log's size when
+   * {@link eventCountIsLowerBound} is set: the runtime stopped reading the
+   * log once it held the limit.
+   */
   readonly eventCount: number;
   readonly limit: number;
+  readonly eventCountIsLowerBound: boolean;
 
   constructor(
     eventCount: number,
     limit: number,
-    options?: WorkflowErrorOptions
+    options?: WorkflowErrorOptions & { eventCountIsLowerBound?: boolean }
   ) {
+    const eventCountIsLowerBound = options?.eventCountIsLowerBound === true;
     // Frame hint + docs here (instead of passing `slug` through) so the
     // hint sits above the docs link.
     super(
       formatErrorMessageWithDetails(
-        `Workflow exceeded the maximum of ${limit} events per run`,
+        eventCountIsLowerBound
+          ? `Workflow exceeded the maximum of ${limit} events per run (its event log holds at least ${eventCount} events)`
+          : `Workflow exceeded the maximum of ${limit} events per run`,
         {
           hint: `${QUICKJS_SNAPSHOT_REMEDIATION} Alternatively, split the work into child workflows.`,
           slug: options?.slug ?? ERROR_SLUGS.MAX_EVENTS_EXCEEDED,
@@ -517,6 +587,7 @@ export class MaxEventsExceededError extends WorkflowError {
     this.name = 'MaxEventsExceededError';
     this.eventCount = eventCount;
     this.limit = limit;
+    this.eventCountIsLowerBound = eventCountIsLowerBound;
   }
 
   static is(value: unknown): value is MaxEventsExceededError {
@@ -982,16 +1053,37 @@ export class HookNotFoundError extends WorkflowError {
  *
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
+ *
+ * `code` carries the World's reason for the conflict when it gives one, such
+ * as {@link RUN_ALREADY_STARTED_CODE}. Without a code, the conflict says
+ * nothing about which of those cases it is.
  */
 export class EntityConflictError extends WorkflowWorldError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { code?: string; url?: string }) {
+    super(message, options);
     this.name = 'EntityConflictError';
   }
 
   static is(value: unknown): value is EntityConflictError {
     return isError(value) && value.name === 'EntityConflictError';
   }
+}
+
+/**
+ * Error code a World gives an {@link EntityConflictError} refusing a second
+ * `run_started` for a run that is running: the run was started, by this
+ * delivery's own earlier attempt or by another one, and has not finished. It
+ * does not mean the run finished, which a World answers differently.
+ */
+export const RUN_ALREADY_STARTED_CODE = 'run-already-started';
+
+/** Whether `error` refuses a `run_started` because the run already started. */
+export function isRunAlreadyStartedError(
+  error: unknown
+): error is EntityConflictError {
+  return (
+    EntityConflictError.is(error) && error.code === RUN_ALREADY_STARTED_CODE
+  );
 }
 
 /**
