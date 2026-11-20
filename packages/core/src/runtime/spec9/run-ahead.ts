@@ -117,6 +117,7 @@ export function runAheadContextFor(input: {
     correlationId: string;
     token: string;
     isSystem?: boolean;
+    inBandOnly?: boolean;
     disposed?: boolean;
   }[];
   observedHookIds: ReadonlySet<string> | undefined;
