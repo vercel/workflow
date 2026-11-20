@@ -769,31 +769,54 @@ describe.each(ENGINES)('rate limit calls made at once (%s)', (engine) => {
     expect(new Set(acquired.map((event) => event.correlationId)).size).toBe(10);
   }, 60_000);
 
-  // On node every waiting rate limit call arms a timer of its own before the
-  // in-process wait; QuickJS arms the earliest one per pass, so it never
-  // sent several there.
-  it.skipIf(engine === 'quickjs')(
-    "sends the waiting calls' timers at once, not one after another",
-    async () => {
-      const { world } = await setupOrchestratorRun(
-        fanOut,
-        [4],
-        {
-          runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-          rateEventsInBatch: true,
-          queueDelayMs: 30,
-        },
-        engine
-      );
-      await world.runOnClock();
+  it("sends the waiting calls' timers at once, each out before it waits", async () => {
+    const debug = vi.spyOn(runtimeLogger, 'debug');
+    let world: AppendOnlyWorld | undefined;
+    // How many timers were out in the queue as each in-process wait for a
+    // slot began: node logs it, QuickJS records a `rate_slot_wait`
+    // checkpoint.
+    const timersOutAtWait: number[] = [];
+    debug.mockImplementation((message, fields) => {
+      if (
+        String(message).startsWith(
+          'Waiting in process for a rate limit slot'
+        ) ||
+        (message === 'QUICKJS_VM_DIAG' &&
+          (fields as { checkpoint?: string } | undefined)?.checkpoint ===
+            'rate_slot_wait')
+      ) {
+        timersOutAtWait.push(world?.waitTimersOut ?? -1);
+      }
+    });
+    ({ world } = await setupOrchestratorRun(
+      fanOut,
+      [4],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+        rateEventsInBatch: true,
+        queueDelayMs: 30,
+      },
+      engine
+    ));
+    await world.runOnClock();
 
-      expect(await runResult(world)).toBe(4);
-      // Three calls wait, each with a timer of its own, sent side by side.
+    expect(await runResult(world)).toBe(4);
+    expect(eventsOf(world, 'rate_acquired')).toHaveLength(4);
+    // Each wait for a slot arms at least the timer of the call it waits for,
+    // and waits only once that is out: the i-th wait has at least i + 1 out.
+    // A send not waited on reaches the queue after the wait began.
+    expect(timersOutAtWait.length).toBeGreaterThan(0);
+    expect(timersOutAtWait.every((out, i) => out >= i + 1)).toBe(true);
+    // Every timer a delivery sent was out before it ended.
+    expect(world.queueInFlightAtDeliveryEnd.every((n) => n === 0)).toBe(true);
+    if (engine === 'node') {
+      // On node each of the three waiting calls has a timer of its own, all
+      // out before the first wait, sent side by side. (QuickJS arms the
+      // earliest one per pass.)
+      expect(timersOutAtWait[0]).toBe(3);
       expect(world.maxQueueInFlight).toBeGreaterThan(1);
-      expect(eventsOf(world, 'rate_acquired')).toHaveLength(4);
-    },
-    60_000
-  );
+    }
+  }, 60_000);
 
   it('writes each call on its own turn on a World without the capability', async () => {
     const { world } = await setupOrchestratorRun(

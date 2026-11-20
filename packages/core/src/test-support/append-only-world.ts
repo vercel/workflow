@@ -137,9 +137,17 @@ export class AppendOnlyWorld {
   readonly creates: RecordedCreate[] = [];
   readonly queueCalls: RecordedQueueCall[] = [];
   /** `queue` calls in flight, with {@link options.queueDelayMs}. */
-  private queueInFlight = 0;
+  queueInFlight = 0;
   /** The most `queue` calls in flight at once, with `queueDelayMs`. */
   maxQueueInFlight = 0;
+  /**
+   * `queue` calls still in flight as each delivery ended, with
+   * `queueDelayMs`: a delivery acknowledges or hands off only once every
+   * message it owes is out.
+   */
+  readonly queueInFlightAtDeliveryEnd: number[] = [];
+  /** Wait timer messages whose `queue` call has returned: out in the queue. */
+  waitTimersOut = 0;
   /** Messages enqueued and not yet acknowledged. */
   readonly held: HeldMessage[] = [];
   readonly deliveries: RecordedDelivery[] = [];
@@ -945,6 +953,7 @@ export class AppendOnlyWorld {
       if (key !== undefined && acknowledged) this.acknowledgedKeys.add(key);
       return result;
     } finally {
+      this.queueInFlightAtDeliveryEnd.push(this.queueInFlight);
       if (key !== undefined) {
         const left = (this.deliveringKeys.get(key) ?? 1) - 1;
         if (left > 0) this.deliveringKeys.set(key, left);
@@ -1399,6 +1408,13 @@ export class AppendOnlyWorld {
         },
       },
       async queue(queueName: string, message: unknown, opts?: object) {
+        // Counted once the call returns: the timer is out in the queue.
+        const out = <R>(result: R): R => {
+          if ((message as { waitContinuation?: unknown }).waitContinuation) {
+            self.waitTimersOut++;
+          }
+          return result;
+        };
         if (self.options.queueDelayMs) {
           self.queueInFlight++;
           self.maxQueueInFlight = Math.max(
@@ -1424,7 +1440,7 @@ export class AppendOnlyWorld {
         ) {
           self.activeOrchestrator.coalesced++;
           self.coalescedMessages++;
-          return { messageId };
+          return out({ messageId });
         }
         const key = options?.idempotencyKey as string | undefined;
         // Deduplicate like a queue does while the keyed message exists
@@ -1443,7 +1459,7 @@ export class AppendOnlyWorld {
             self.deliveringKeys.has(key) ||
             self.acknowledgedKeys.has(key))
         ) {
-          return { messageId: null };
+          return out({ messageId: null });
         }
         if (key !== undefined) self.keySentAtMs.set(key, Date.now());
         const delaySeconds = (options?.delaySeconds as number | undefined) ?? 0;
@@ -1456,7 +1472,7 @@ export class AppendOnlyWorld {
           dueAtMs: Date.now() + Math.max(0, delaySeconds) * 1000,
           opts: options,
         });
-        return { messageId };
+        return out({ messageId });
       },
       createQueueHandler(
         _prefix: string,
