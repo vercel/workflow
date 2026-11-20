@@ -1,0 +1,177 @@
+---
+title: Rate Limits
+description: Use experimental_rateLimit() to keep calls to a shared upstream API under its rate limit across every workflow run.
+type: conceptual
+summary: Keep calls to an upstream API under its rate limit across all workflow runs.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/workflow/rate-limit
+  - /docs/errors/rate-limit-max-wait
+  - /docs/foundations/errors-and-retries
+---
+
+Rate limits keep the calls your workflows make to an upstream API, such as a model provider or a payments API, under the limit that API enforces. Every run of your project shares the same limit, so a thousand runs started at once still call the upstream at the rate you set instead of all at once.
+
+<Callout type="warn">
+`experimental_rateLimit()` is experimental. Runs must be created at spec version 10 ([`WORKFLOW_SPEC_VERSION=10`](/docs/configuration/runtime-tuning#workflow_spec_version)) on the Vercel or Local World, with the default `node` workflow VM.
+</Callout>
+
+## Limit calls to an upstream API
+
+Call [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) in a workflow before the step that calls the upstream. The call resolves when the key has a free slot for it:
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow"
+
+async function summarizeDoc(doc: string) {
+  "use step"
+  const response = await fetch("https://api.example.com/summarize", {
+    method: "POST",
+    body: JSON.stringify({ doc }),
+  })
+  return response.json()
+}
+
+export async function summarizeAll(docs: string[]) {
+  "use workflow"
+  const summaries = []
+  for (const doc of docs) {
+    await experimental_rateLimit({ key: "summarize-api", limit: 60, period: "1m" }) // [!code highlight]
+    summaries.push(await summarizeDoc(doc))
+  }
+  return summaries
+}
+```
+
+With `limit: 60` and `period: "1m"`, calls on the `summarize-api` key go ahead at most one per second, across every run that uses the key.
+
+## How a rate limit decides when a call goes ahead
+
+A rate limit spaces calls `period / limit` apart. Each key keeps its next free slot, and every call on the key takes that slot and moves it on by one interval:
+
+- **A call whose slot is now** resolves at once, and the workflow continues.
+- **A call whose slot is later** suspends the run until its slot, the same way [`sleep()`](/docs/api-reference/workflow/sleep) does, so a long wait uses no compute.
+- **Calls from different runs** take slots in the order the World receives them, so no run can skip ahead of another.
+
+Calls in parallel each take their own slot. With `limit: 10, period: "1s"`, the first call in this `Promise.all()` resolves at once and the rest follow 100 ms apart:
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow"
+declare function sendEmail(to: string): Promise<void>; // @setup
+
+export async function notifyAll(recipients: string[]) {
+  "use workflow"
+  await Promise.all(
+    recipients.map(async (to) => {
+      await experimental_rateLimit({ key: "email", limit: 10, period: "1s" }) // [!code highlight]
+      await sendEmail(to)
+    })
+  )
+}
+```
+
+## How to choose a rate limit key
+
+A key names one limit that an upstream enforces. Calls with the same key share it across every run and every workflow in the project, and each environment has its own: preview and production deployments never share a key's capacity.
+
+- **One key per upstream limit**: Use `"openai"` for a limit that covers your whole account.
+- **One key per tenant**: Build the key from an ID, such as `` `stripe:${accountId}` ``, when the upstream limits each account separately. Each tenant then gets its own rate.
+- **Keep keys free of personal data**: Keys are stored as-is in the run's event log.
+
+A key is 1 character to 512 bytes (UTF-8). Keys that start with `$` are reserved for Workflow SDK libraries, and `experimental_rateLimit()` throws for one.
+
+## Give up when the wait is too long
+
+Set `maxWait` when a call that waits too long isn't worth making. A call whose slot is further out than `maxWait` rejects at once with [`RateLimitMaxWaitError`](/docs/errors/rate-limit-max-wait) and uses up none of the key's capacity:
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow"
+import { RateLimitMaxWaitError } from "workflow/errors"
+declare function sendSms(userId: string): Promise<void>; // @setup
+
+export async function notify(userId: string) {
+  "use workflow"
+  try {
+    await experimental_rateLimit({ key: "sms", limit: 10, period: "1s", maxWait: "30s" }) // [!code highlight]
+  } catch (error) {
+    if (RateLimitMaxWaitError.is(error)) return "skipped"
+    throw error
+  }
+  await sendSms(userId)
+  return "sent"
+}
+```
+
+Without `maxWait`, a call waits up to 30 days, which is also the longest `maxWait` can be.
+
+## Let a burst through at once
+
+Set `burst` when the upstream allows short bursts above its steady rate. An idle key then admits up to `burst` calls at once and refills one every `period / limit`, like a token bucket of that size:
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow"
+declare function fetchPage(url: string): Promise<void>; // @setup
+
+export async function crawl(urls: string[]) {
+  "use workflow"
+  for (const url of urls) {
+    // Up to 100 at once on an idle key, then one every 600 ms.
+    await experimental_rateLimit({ key: "crawler", limit: 100, period: "1m", burst: 100 }) // [!code highlight]
+    await fetchPage(url)
+  }
+}
+```
+
+The default `burst` of 1 is no burst. A larger `burst` keeps the long-run rate at `limit` per `period`, but one rolling `period` can see up to `limit + burst - 1` calls. Set `burst` to the burst size the upstream publishes, or keep `limit + burst - 1` under the most it allows in any window. A `burst` can be larger than `limit` as long as it saves up at most 24 hours of the rate: `limit: 1, period: "1s", burst: 60` lets a key that was idle for a minute send 60 calls at once.
+
+## Use one setting per key
+
+Use the same `limit`, `period`, and `burst` everywhere you use a key. A key records only its next free slot, not a limit, so each call applies its own settings:
+
+- **A limit changed in a new deployment** applies after the slots that calls at the old limit already reserved.
+- **A call with a longer interval** holds up every call after it. A `limit: 1, period: "24h"` call on a shared key makes every later call on that key wait a day.
+- **A call with a larger `burst`** can go ahead of calls already waiting with a smaller one.
+
+To change a limit, give the new limit a new key. See [One key with different settings](/docs/api-reference/workflow/rate-limit#one-key-with-different-settings) for the details.
+
+## Handle the upstream's rate limit errors too
+
+A rate limit controls when your workflow starts a call, but the upstream still decides whether to accept it. Keep handling its rate limit responses in the step, for two reasons:
+
+- **Step retries skip the rate limit**: A step that fails is retried without running the workflow code before it again, so its retries don't wait for a new slot.
+- **A run that wakes late can go ahead late**: A call goes ahead if its run wakes within a grace of its slot, which is 10% of the `period`, at least 5 seconds and at most 60 seconds. After a stall, calls queued in that window can go ahead together. See [Calls that wake late](/docs/api-reference/workflow/rate-limit#calls-that-wake-late).
+
+Throw a [`RetryableError`](/docs/api-reference/workflow/retryable-error) with the wait the upstream asks for, so the retry doesn't run before the upstream accepts it:
+
+```typescript lineNumbers
+import { RetryableError } from "workflow"
+
+async function callModel(prompt: string) {
+  "use step"
+  const response = await fetch("https://api.example.com/v1/complete", {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  })
+  if (response.status === 429) {
+    const seconds = Number(response.headers.get("retry-after") ?? "1")
+    throw new RetryableError("Rate limited by the upstream", { // [!code highlight]
+      retryAfter: seconds * 1000, // [!code highlight]
+    }) // [!code highlight]
+  }
+  return response.json()
+}
+```
+
+## When to use a rate limit
+
+- **Use a rate limit** when many runs call the same upstream and it limits how often you can call it, such as a model provider's requests per minute.
+- **Use [`sleep()`](/docs/api-reference/workflow/sleep)** when one run needs to wait a fixed time, independent of other runs.
+- **Use [`RetryableError`](/docs/foundations/errors-and-retries#customize-retry-behavior) alone** when calls are rare and an occasional 429 retry is cheaper than spacing every call.
+
+## Related documentation
+
+- [`experimental_rateLimit()` API reference](/docs/api-reference/workflow/rate-limit)
+- [`RateLimitMaxWaitError`](/docs/errors/rate-limit-max-wait)
+- [Errors & Retrying](/docs/foundations/errors-and-retries)
+- [`sleep()`](/docs/api-reference/workflow/sleep)
