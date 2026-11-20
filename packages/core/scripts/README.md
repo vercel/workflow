@@ -93,3 +93,22 @@ etc.). The runner detects the backend as `vercel` and writes
 switch on the deployment (an env var on the Vercel project) for
 the off baseline, since compression runs server-side in the step/workflow
 handlers there.
+
+# Engine cold-start benchmark
+
+`benchmark-engine-cold-start.mjs` measures the time to the first step body of a
+spec 9 run's turbo first delivery in a fresh process, on node:vm and on QuickJS.
+It runs each one in a new `node` process, on the in-memory World, from the built
+package. Pass `--bundle <file>` to load a build's workflow bundle (the
+`workflowCode` its flow route embeds) next to the benchmark workflow:
+
+```bash
+pnpm --filter @workflow/core build
+cd packages/core
+node scripts/benchmark-engine-cold-start.mjs --runs 5
+node scripts/benchmark-engine-cold-start.mjs --runs 5 --bundle /path/to/workflowCode.js
+```
+
+Warm-process numbers come from the opt-in harness in
+`src/runtime/spec9/engine-latency.bench.runtime.test.ts`. What both found is in
+`src/runtime/quickjs-performance.md`.

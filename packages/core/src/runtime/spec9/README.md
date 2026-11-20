@@ -2027,7 +2027,7 @@ Vercel Queues bills operations on keyed messages at a higher rate than on unkeye
 
 ### QuickJS
 
-Spec 9 runs on both engines, and every spec 9 runtime test file runs on both. Differences and gaps:
+Spec 9 runs on both engines, and every spec 9 runtime test file runs on both. Their latency is compared, with suggestions for closing each gap, in `../quickjs-performance.md`. Differences and gaps:
 
 - **Run-ahead restarts instead of repairing** (see [QuickJS run-ahead](#quickjs-run-ahead)).
 - **No replay-divergence recovery.** QuickJS fails the run on a VM failure; recovery is tested on node only.
