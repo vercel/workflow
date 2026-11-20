@@ -662,6 +662,8 @@ async function runQuickJSDelivery(
   const settleTimerSends = async (
     sends: readonly Promise<void>[]
   ): Promise<void> => {
+    // Nothing to send costs no turn of the event loop, as the loops did.
+    if (sends.length === 0) return;
     const settled = await Promise.allSettled(sends);
     const failed = settled.find(
       (outcome): outcome is PromiseRejectedResult =>

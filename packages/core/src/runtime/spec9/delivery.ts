@@ -5239,6 +5239,8 @@ async function runDelivery(
       waits: readonly Parameters<typeof sendWaitTimer>[0][],
       options?: Parameters<typeof sendWaitTimer>[1]
     ): Promise<void> {
+      // Nothing to send costs no turn of the event loop, as the loops did.
+      if (waits.length === 0) return;
       const unique = new Map(waits.map((wait) => [wait.correlationId, wait]));
       const settled = await Promise.allSettled(
         [...unique.values()].map((wait) => sendWaitTimer(wait, options))
