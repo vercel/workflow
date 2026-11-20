@@ -367,9 +367,18 @@ export async function waitForSleep(
     // A sleep `run.wakeUp()` already named is being completed by the run's
     // orchestrator; the next pending sleep is another one.
     const wokenIds = pendingWakeUpWaits(run.runId);
+    const hookIds = new Set(
+      events
+        .filter((e) => e.eventType === 'hook_created')
+        .map((e) => e.correlationId)
+    );
     const pendingSleep = events.find(
       (e) =>
         e.eventType === 'wait_created' &&
+        // A hook's expiry (its `ttl`) is not a sleep: its id reuses its
+        // hook's ULID.
+        !e.eventData?.hookId &&
+        !hookIds.has(e.correlationId.replace(/^wait_/, 'hook_')) &&
         !waitCompletedIds.has(e.correlationId) &&
         !wokenIds.has(e.correlationId)
     );

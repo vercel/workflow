@@ -96,8 +96,18 @@ async function drainPendingQueueItems(
   drainPendingQueue: PendingQueueDrain | undefined
 ): Promise<void> {
   if (pendingQueue.size === 0 || !drainPendingQueue) return;
+  // A hook's expiry wait (`ttl`) only exists to wake a live run. Termination
+  // releases the hook, so a run that ends has nothing left to expire.
+  let drained = pendingQueue;
+  for (const [correlationId, item] of pendingQueue) {
+    if (item.type === 'wait' && item.hookId !== undefined) {
+      if (drained === pendingQueue) drained = new Map(pendingQueue);
+      drained.delete(correlationId);
+    }
+  }
+  if (drained.size === 0) return;
   try {
-    const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
+    const synthesized = new WorkflowSuspension(drained, vmGlobalThis);
     await drainPendingQueue(synthesized, workflowRun);
   } catch (err) {
     runtimeLogger.warn(

@@ -68,7 +68,7 @@ const TAKEN_TOKEN = 'rv-taken-token';
 const getConflictCleanWorkflow = `const s1 = ${step('rv_s1')};
   const createHook = ${CREATE_HOOK};
   async function workflow() {
-    const hook = createHook({ token: "rv-free-token" });
+    const hook = createHook({ ttl: Infinity, token: "rv-free-token" });
     const conflict = await hook.getConflict();
     const a = await s1();
     return conflict === null ? a : -1;
@@ -78,7 +78,7 @@ const getConflictCleanWorkflow = `const s1 = ${step('rv_s1')};
 const getConflictTakenWorkflow = `const s1 = ${step('rv_s1')};
   const createHook = ${CREATE_HOOK};
   async function workflow() {
-    const hook = createHook({ token: "${TAKEN_TOKEN}" });
+    const hook = createHook({ ttl: Infinity, token: "${TAKEN_TOKEN}" });
     let observed;
     try {
       observed = (await hook.getConflict()) === null ? "clean" : "conflict";
@@ -93,7 +93,7 @@ const getConflictTakenWorkflow = `const s1 = ${step('rv_s1')};
 const awaitTakenWorkflow = `const s1 = ${step('rv_s1')};
   const createHook = ${CREATE_HOOK};
   async function workflow() {
-    const hook = createHook({ token: "${TAKEN_TOKEN}" });
+    const hook = createHook({ ttl: Infinity, token: "${TAKEN_TOKEN}" });
     let observed;
     try {
       await hook;

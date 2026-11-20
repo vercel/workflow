@@ -18,6 +18,7 @@ export {
 export {
   createHook,
   createWebhook,
+  DEFAULT_HOOK_TTL,
   type Hook,
   type HookOptions,
   type RequestWithResponse,

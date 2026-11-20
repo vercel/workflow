@@ -1770,7 +1770,7 @@ function defineTests(mode: 'sync' | 'async') {
       const sleep = createSleep(ctx);
 
       return async () => {
-        const hook = createHook({ token: 'test-token' });
+        const hook = createHook({ token: 'test-token', ttl: Infinity });
         const s = sleep('1d');
 
         const r1: RaceResult = await Promise.race([

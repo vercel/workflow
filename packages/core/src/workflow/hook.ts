@@ -1,6 +1,7 @@
 import {
   FatalError,
   HookConflictError,
+  HookExpiredError,
   HookForceClaimedError,
   ReplayDivergenceError,
 } from '@workflow/errors';
@@ -12,7 +13,12 @@ import {
 } from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
 import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
-import type { Hook, HookOptions, SystemHookOptions } from '../create-hook.js';
+import {
+  DEFAULT_HOOK_TTL,
+  type Hook,
+  type HookOptions,
+  type SystemHookOptions,
+} from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { webhookLogger } from '../logger.js';
 import {
@@ -83,6 +89,23 @@ export function startHookOptionsError(rejected: readonly string[]): string {
  * the same symbol.
  */
 export const HOOK_RELEASE_AWAITER = Symbol.for('WORKFLOW_HOOK_RELEASE_AWAITER');
+
+/**
+ * When a hook created with `ttl` expires, or `undefined` for one that never
+ * does (`ttl: Infinity`). Shared with the QuickJS guest's validation.
+ */
+export function resolveHookExpiry(ttl: HookOptions['ttl']): Date | undefined {
+  const value = ttl ?? DEFAULT_HOOK_TTL;
+  if (value === Number.POSITIVE_INFINITY) {
+    return undefined;
+  }
+  if (typeof value === 'number' && !(value >= 0)) {
+    throw new Error(
+      `\`createHook()\` was called with an invalid \`ttl\` (${value}). Pass a duration string, a non-negative number of milliseconds, a \`Date\`, or \`Infinity\` for a hook that never expires.`
+    );
+  }
+  return parseDurationToDate(value);
+}
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
@@ -190,6 +213,26 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const isSystem =
       (options as SystemHookOptions).isSystem === true && !isWebhook;
 
+    // A hook expires at the end of its `ttl` (30 days unless configured;
+    // `Infinity` opts out). SDK-internal hooks live exactly as long as what
+    // they track, so they never expire.
+    //
+    // The expiry is an ordinary wait, recorded in the log beside the hook
+    // and tagged with its id, so it is scheduled, woken and replayed by the
+    // same machinery as `sleep()` and needs nothing new from the World. Its
+    // events are consumed by this hook's subscriber below, in log order with
+    // the hook's own, which is what decides whether a payload beat the
+    // expiry.
+    //
+    // The wait's id reuses the hook's ULID (`hook_<ulid>` -> `wait_<ulid>`):
+    // unique, valid as a wait id, and drawing no extra id keeps every id
+    // minted after this call the same with or without a `ttl`.
+    let expiresAt = isSystem ? undefined : resolveHookExpiry(options.ttl);
+    const expiryWaitId =
+      expiresAt === undefined
+        ? undefined
+        : `wait_${correlationId.slice(correlationId.indexOf('_') + 1)}`;
+
     ctx.invocationsQueue.set(
       correlationId,
       bindsStartHook
@@ -214,6 +257,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             ...(isSystem && { isSystem: true }),
           }
     );
+    if (expiryWaitId !== undefined && expiresAt !== undefined) {
+      ctx.invocationsQueue.set(expiryWaitId, {
+        type: 'wait',
+        correlationId: expiryWaitId,
+        resumeAt: expiresAt,
+        hookId: correlationId,
+      });
+    }
 
     // Queue of buffered hook payloads (received before the workflow awaited
     // the hook). Each entry's `claim()` builds the consumer-facing promise
@@ -268,6 +319,20 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // the log's `hook_disposed` names it. Payloads received before the
     // takeover are still delivered; every await after them rejects with this.
     let forceClaimedErrorRef: HookForceClaimedError | null = null;
+    // Expiry state (see `expiryWaitId`). `expiryWaitCreated` is set once the
+    // log has the expiry's `wait_created`, `expiryCompleted` once it has its
+    // `wait_completed`. `expiredErrorRef` is set when that completion found
+    // the hook still live: the hook expired, and every await from then on
+    // (after buffered payloads) rejects with it once `expiryDelivered`
+    // settles, the expiry's own position in the delivery order.
+    let expiryWaitCreated = false;
+    let expiryCompleted = false;
+    let expiredErrorRef: HookExpiredError | null = null;
+    let expiryDelivered: Promise<void> = Promise.resolve();
+    // Set when this hook's own events are over (`hook_disposed`). The
+    // subscriber can outlive them to consume the expiry's `wait_completed`,
+    // but any later event for the hook is still unexpected.
+    let hookEventsFinished = false;
     // The conflicting run handle, shared by every `getConflict` await so
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: Run<unknown> | null = null;
@@ -330,6 +395,102 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // stays useful after that lands, for logs written before it deployed.
     const seenResumeIds = new Set<string>();
 
+    // The hook ended before its expiry was recorded (a conflict, or a
+    // disposal in the log): drop the expiry so no suspension records it.
+    function dropUnrecordedExpiry(): void {
+      if (expiryWaitId === undefined || expiryWaitCreated) return;
+      const expiryItem = ctx.invocationsQueue.get(expiryWaitId);
+      if (
+        expiryItem &&
+        expiryItem.type === 'wait' &&
+        !expiryItem.hasCreatedEvent
+      ) {
+        ctx.invocationsQueue.delete(expiryWaitId);
+      }
+    }
+
+    // Consumes the expiry wait's events (see `expiryWaitId`).
+    function consumeExpiryEvent(
+      event: NonNullable<
+        Parameters<Parameters<typeof ctx.eventsConsumer.subscribe>[0]>[0]
+      >
+    ): EventConsumerResult {
+      if (event.eventType === 'wait_created') {
+        expiryWaitCreated = true;
+        expiresAt = event.eventData.resumeAt;
+        const queueItem =
+          expiryWaitId && ctx.invocationsQueue.get(expiryWaitId);
+        if (queueItem && queueItem.type === 'wait') {
+          queueItem.hasCreatedEvent = true;
+          queueItem.resumeAt = event.eventData.resumeAt;
+        }
+        return EventConsumerResult.Consumed;
+      }
+
+      if (event.eventType !== 'wait_completed') {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          ctx.onWorkflowError(
+            new ReplayDivergenceError(
+              `Replay divergence: Unexpected event type for the expiry of hook ${correlationId} (token: ${token}) "${event.eventType}"`,
+              { eventId: event.eventId }
+            )
+          );
+        });
+        return EventConsumerResult.Finished;
+      }
+
+      expiryCompleted = true;
+      if (expiryWaitId) ctx.invocationsQueue.delete(expiryWaitId);
+
+      // Nothing to expire: the hook is already disposed (by the workflow, or
+      // by a takeover), or never registered.
+      if (
+        hookEventsFinished ||
+        hasDisposedEvent ||
+        hasConflict ||
+        forceClaimedErrorRef ||
+        isDisposed
+      ) {
+        return hookEventsFinished || hasConflict
+          ? EventConsumerResult.Finished
+          : EventConsumerResult.Consumed;
+      }
+
+      const error = new HookExpiredError(
+        token,
+        new Date(expiresAt ?? +event.createdAt)
+      );
+      expiredErrorRef = error;
+      // The hook can never receive another payload, so release it: the next
+      // suspension writes `hook_disposed`, which frees the token.
+      ctx.hookPayloadAwaiters?.delete(correlationId);
+      const queueItem = ctx.invocationsQueue.get(correlationId);
+      if (queueItem && queueItem.type === 'hook') {
+        queueItem.disposed = true;
+      }
+
+      // Deliver the expiry like any `wait_completed`: after every earlier
+      // delivery in the log and before every later one, so a payload that
+      // landed first wins and the workflow sees the same order on every
+      // replay (see `ctx.pendingDeliveryBarriers`).
+      const eventIndex = ctx.eventsConsumer.eventIndex;
+      const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait', {
+        deliveredAt: +event.createdAt,
+      });
+      const earlierDelivered = awaitEarlierDeliveries(ctx, eventIndex, 'wait');
+      const pendingPayload = pending;
+      pending = undefined;
+      expiryDelivered = ctx.promiseQueue
+        .then(() => earlierDelivered)
+        .then(() => {
+          barrier.markDelivered();
+          pendingPayload?.reject(error);
+        });
+      webhookLogger.debug('Hook expired', { correlationId, token });
+      // `hook_disposed` is still to come.
+      return EventConsumerResult.Consumed;
+    }
+
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and an await is pending,
@@ -347,7 +508,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
-      if (event.correlationId !== correlationId) {
+      if (expiryWaitId !== undefined && event.correlationId === expiryWaitId) {
+        return consumeExpiryEvent(event);
+      }
+
+      if (event.correlationId !== correlationId || hookEventsFinished) {
         // We're not interested in this event - the correlationId belongs to a different entity
         return EventConsumerResult.NotConsumed;
       }
@@ -394,6 +559,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Remove this hook from the invocations queue
         ctx.invocationsQueue.delete(correlationId);
         ctx.hookPayloadAwaiters?.delete(correlationId);
+        dropUnrecordedExpiry();
 
         // Store the conflict event so we can reject any awaited promises.
         const conflictEvent = event as HookConflictEvent;
@@ -452,6 +618,18 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_received') {
+        // The hook expired before this payload landed: the World accepted it
+        // in the moment between the expiry's `wait_completed` and this run
+        // writing `hook_disposed`, but the workflow already moved on. Drop it,
+        // in every replay alike.
+        if (expiredErrorRef) {
+          webhookLogger.debug('Hook payload dropped: hook already expired', {
+            correlationId,
+            token,
+          });
+          return EventConsumerResult.Consumed;
+        }
+
         // Drop duplicate deliveries of the same resume attempt (same
         // `resumeId`; see `seenResumeIds` above). Events without a
         // `resumeId` (older SDKs, legacy spec versions) are never deduped.
@@ -647,6 +825,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         ctx.hookPayloadAwaiters?.delete(correlationId);
         // Mark that the event log confirms disposal happened
         hasDisposedEvent = true;
+        dropUnrecordedExpiry();
 
         const claimedBy = event.eventData?.forceClaimedBy;
         if (claimedBy) {
@@ -681,8 +860,13 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             claimedByRunId: claimedBy.runId,
           });
         }
-        // We're done processing any more events for this hook
-        return EventConsumerResult.Finished;
+        // We're done processing any more events for this hook. Keep the
+        // subscription only while the hook's expiry wait is recorded but not
+        // complete: its `wait_completed` may still land and must be consumed.
+        hookEventsFinished = true;
+        return expiryWaitCreated && !expiryCompleted
+          ? EventConsumerResult.Consumed
+          : EventConsumerResult.Finished;
       }
 
       // This replay installed a different consumer than the stored event needs.
@@ -732,6 +916,18 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           // claim site.
           return nextDelivery.claim();
         }
+      }
+
+      // Buffered payloads above are drained first: they landed before the
+      // expiry. With none left, nothing can ever arrive for this hook again.
+      if (expiredErrorRef) {
+        const error = expiredErrorRef;
+        const resolvers = withResolvers<T>();
+        const delivered = expiryDelivered;
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          void delivered.then(() => resolvers.reject(error));
+        });
+        return resolvers.promise;
       }
 
       // Buffered payloads above are drained first: they landed before the
@@ -826,6 +1022,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (queueItem && queueItem.type === 'hook') {
         queueItem.disposed = true;
       }
+
+      // Disposed before its expiry was ever recorded: nothing needs to wake
+      // the run for it, so don't record it at all. (An expiry already in the
+      // log still completes in its time; the subscriber consumes it as a
+      // no-op.)
+      dropUnrecordedExpiry();
 
       // Drop the pending awaiter waiting for a payload. Without this,
       // promises created by `await hook` or the async iterator's

@@ -27,7 +27,7 @@ const TOKEN = 'wait-chain-hook';
 const hookAndTwoSleeps = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
-    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const hook = createHook({ ttl: Infinity, token: ${JSON.stringify(TOKEN)} });
     const sleeps = Promise.all([sleep("1h"), sleep("2h")]);
     await hook;
     await sleeps;
@@ -39,7 +39,7 @@ const SHORT_SLEEP_SECONDS = 30;
 const hookAndShortSleep = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
-    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const hook = createHook({ ttl: Infinity, token: ${JSON.stringify(TOKEN)} });
     await Promise.all([sleep("${SHORT_SLEEP_SECONDS}s"), hook]);
     return "done";
   }${registerWorkflow()}`;
@@ -51,7 +51,7 @@ const LONG_SLEEP_SECONDS = 2 * HOP_SECONDS + 30;
 const hookAndLongSleep = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
-    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const hook = createHook({ ttl: Infinity, token: ${JSON.stringify(TOKEN)} });
     await Promise.all([sleep("${LONG_SLEEP_SECONDS}s"), hook]);
     return "done";
   }${registerWorkflow()}`;

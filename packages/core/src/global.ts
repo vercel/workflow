@@ -63,6 +63,12 @@ export interface WaitInvocationQueueItem {
   correlationId: string;
   resumeAt: Date;
   hasCreatedEvent?: boolean;
+  /**
+   * Set on the wait that expires a hook at the end of its `ttl`: the hook's
+   * correlationId, recorded on `wait_created` so tooling can tell it from a
+   * `sleep()`.
+   */
+  hookId?: string;
 }
 
 export interface AttributeInvocationQueueItem {

@@ -19,7 +19,7 @@ vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 const TOKEN = 'held-read-hook';
 const loopWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const hook = createHook({ ttl: Infinity, token: ${JSON.stringify(TOKEN)} });
     const seen = [];
     for await (const payload of hook) {
       seen.push(payload);

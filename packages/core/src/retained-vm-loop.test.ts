@@ -157,7 +157,7 @@ const openHookRaceWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW
   const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
   async function workflow() {
-    const hook = createHook({ token: "retained-hook" });
+    const hook = createHook({ ttl: Infinity, token: "retained-hook" });
     const a = await Promise.race([hook.then(() => 999), s1()]);
     const b = await s2();
     return a + b;
@@ -197,8 +197,8 @@ const bufferedHookAcrossStepWorkflow = `const createHook = globalThis[Symbol.for
   const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
   async function workflow() {
-    const buffered = createHook({ token: "retained-buffered-hook" });
-    const empty = createHook({ token: "retained-empty-hook" });
+    const buffered = createHook({ ttl: Infinity, token: "retained-buffered-hook" });
+    const empty = createHook({ ttl: Infinity, token: "retained-empty-hook" });
     await s1();
     const stepValue = await s2();
     const payload = await new Promise((resolve, reject) => {
@@ -359,7 +359,7 @@ registerStepFunction('r_echo', async (value) => value);
 const hookConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "retained-conflict-token" });
+    const hook = createHook({ ttl: Infinity, token: "retained-conflict-token" });
     const conflict = await hook.getConflict();
     const a = await s1();
     return conflict === null ? a : -1;
@@ -381,7 +381,7 @@ const CONFLICTING_TOKEN = 'retained-taken-token';
 const conflictingAwaitWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
-    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
+    const hook = createHook({ ttl: Infinity, token: "${CONFLICTING_TOKEN}" });
     let observed;
     try {
       await hook;

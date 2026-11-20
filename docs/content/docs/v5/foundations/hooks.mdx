@@ -235,6 +235,38 @@ Racing a fresh `hook.then()` on each attempt also receives an event that arrives
 
 Don't await one hook from several places at the same time, for example `Promise.all([hook, hook])`. Which event each await receives depends on how far the workflow had replayed when it awaited, so it can differ between code that looks equivalent. To receive successive events, await them one after another or iterate with `for await...of`.
 
+### Hook expiry
+
+A hook doesn't wait forever. Unless you set `ttl`, it expires 30 days after it was created: the runtime disposes the hook and wakes the workflow, and the pending await rejects with [`HookExpiredError`](/docs/api-reference/workflow-errors/hook-expired-error). Payloads that arrived before the hook expired are still delivered first, so a `for await...of` loop drains them and then throws.
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+import { HookExpiredError } from "workflow/errors";
+
+export async function signupWorkflow(email: string) {
+  "use workflow";
+
+  using confirmation = createHook<{ confirmed: true }>({
+    token: `confirm:${email}`,
+    ttl: "48h", // [!code highlight]
+  });
+
+  try {
+    await confirmation;
+    return { status: "confirmed" };
+  } catch (error) {
+    if (HookExpiredError.is(error)) {
+      return { status: "abandoned" };
+    }
+    throw error;
+  }
+}
+```
+
+Use `ttl` as the hook's own deadline when the workflow has nothing to do before it. To act at intermediate deadlines, such as sending reminders, race the hook against `sleep()` as shown above, and give the hook a `ttl` long enough to cover every reminder.
+
+`ttl` takes the same values as `sleep()`, and `ttl: Infinity` turns expiry off. Keep that for hooks that are certain to be resumed or disposed of. A run waiting on a hook stays open, and an open run keeps its event log, its data and its deployment from being cleaned up, so on Vercel its storage keeps being billed and the deployment can't be removed. A long or infinite `ttl` on a hook nothing ever resumes keeps all of that around indefinitely. See [`createHook()`](/docs/api-reference/workflow/create-hook#expiring-hooks-with-ttl).
+
 ### Disposing hooks early
 
 When a workflow ends, hooks are automatically disposed. However, you may want to release a hook token early so another workflow can use it while your workflow continues running. Use a block scope with `using` to control when disposal happens:

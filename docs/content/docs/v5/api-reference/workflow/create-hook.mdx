@@ -95,6 +95,43 @@ export async function approvalWorkflow() {
 }
 ```
 
+### Expiring hooks with `ttl`
+
+Every hook expires. Unless you pass `ttl`, a hook stops waiting 30 days after `createHook()` runs: the runtime disposes it, which releases its token, and wakes the workflow. The pending `await hook`, or the next iteration of a `for await...of` loop, rejects with [`HookExpiredError`](/docs/api-reference/workflow-errors/hook-expired-error), and so does every later await. Payloads that arrived before the hook expired are delivered first.
+
+`ttl` accepts the same values as [`sleep()`](/docs/api-reference/workflow/sleep): a duration string, a number of milliseconds, or a `Date`. Pass `Infinity` for a hook that never expires.
+
+```typescript lineNumbers
+import { createHook } from "workflow"
+import { HookExpiredError } from "workflow/errors"
+
+export async function approvalWorkflow(documentId: string) {
+  "use workflow";
+
+  using hook = createHook<{ approved: boolean }>({
+    token: `approval:${documentId}`,
+    ttl: "7d", // [!code highlight]
+  });
+
+  try {
+    const { approved } = await hook;
+    return { approved };
+  } catch (error) {
+    if (HookExpiredError.is(error)) { // [!code highlight]
+      // Nobody answered within a week.
+      return { approved: false, reason: "expired" };
+    }
+    throw error;
+  }
+}
+```
+
+A hook that expired is disposed, so a later [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) for its token fails with [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error). Disposing the hook yourself (including with `using`) cancels its expiry.
+
+<Callout type="warn">
+**A long or infinite `ttl` can keep a run alive forever.** A run waiting on a hook stays open, and while a run is open, its event log, step data and metadata are kept, and so is the deployment it runs on. On Vercel, that means the run's storage and its deployment can't be cleaned up. Usage for an open run keeps adding up until the hook is resumed or the run is cancelled. A forgotten `ttl: Infinity` is the easiest way to end up with runs, and costs, that never go away. Pick the shortest `ttl` that fits the wait, and use `Infinity` only for a hook that truly has no deadline and that something is certain to resume or dispose of.
+</Callout>
+
 ### Customizing tokens
 
 Tokens are used to identify a specific hook. You can customize the token to be more specific to a use case.

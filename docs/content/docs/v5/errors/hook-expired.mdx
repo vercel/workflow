@@ -1,0 +1,78 @@
+---
+title: hook-expired
+description: A hook reached the end of its ttl without receiving a payload.
+type: troubleshooting
+summary: Handle HookExpiredError when nobody resumed a hook before its ttl ran out, and choose a ttl that fits the wait.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/workflow/create-hook
+  - /docs/api-reference/workflow-errors/hook-expired-error
+---
+
+<CopyPrompt
+  text="Handle hook-expired. Find every `createHook()`, `createWebhook()` and `defineHook().create()` call. For each, decide how long the workflow should really wait and pass it as `ttl` (a duration string such as '7d', milliseconds, or a Date). Wrap the `await hook` / `for await...of` in a try/catch, check `HookExpiredError.is(error)` from `workflow/errors`, and make the run finish cleanly when nobody answered in time (notify, mark the request abandoned, or return a default). Only use `ttl: Infinity` for a hook that is certain to be resumed or disposed, and leave a comment saying why, because an open run is never cleaned up."
+/>
+
+This error is thrown to a workflow run that was waiting on a hook when the hook reached the end of its [`ttl`](/docs/api-reference/workflow/create-hook#expiring-hooks-with-ttl). The hook is disposed, its token is released, and it will not receive anything further.
+
+## Error message
+
+```text
+Hook with token "<token>" expired at <time> without receiving a payload
+```
+
+## Why this happens
+
+Every hook has a time-to-live. When you don't set `ttl`, it is 30 days from the moment `createHook()` runs. When the time passes:
+
+1. The run is woken, even if it was suspended on nothing but the hook.
+2. The hook is disposed, which releases its token. A later `resumeHook()` for the token fails with [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error).
+3. If the run was awaiting the hook, that promise rejects with `HookExpiredError`. Payloads that arrived before the hook expired are still delivered first; a `for await...of` loop drains them and then throws. Every later await of the hook rejects too.
+
+Expiry exists so that a hook nobody will ever resume doesn't keep its run open forever. An open run keeps its event log, its data and the deployment it runs on from being cleaned up, and on Vercel that storage keeps being billed.
+
+## Handling the expiry
+
+Catch the error where the hook is awaited and finish the run:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+import { HookExpiredError } from "workflow/errors";
+
+declare function notifyRequester(requestId: string): Promise<void>; // @setup
+
+export async function accessRequestWorkflow(requestId: string) {
+  "use workflow";
+
+  using hook = createHook<{ granted: boolean }>({
+    token: `access:${requestId}`,
+    ttl: "14d",
+  });
+
+  try {
+    const { granted } = await hook;
+    return { granted };
+  } catch (error) {
+    if (HookExpiredError.is(error)) { // [!code highlight]
+      await notifyRequester(requestId);
+      return { granted: false, reason: "expired" };
+    }
+    throw error;
+  }
+}
+```
+
+If the run should keep waiting, create a new hook in the `catch` branch. Its `ttl` starts over.
+
+## Choosing a `ttl`
+
+- **The wait has a natural deadline** (an approval, a confirmation link, a payment). Set `ttl` to it, and handle the expiry as the "nobody answered" case.
+- **The run listens for as long as something is active** (a chat session, a device). Pick a `ttl` that covers the longest idle period you want to keep, and start a new run, or create a new hook, when it expires.
+- **The hook truly has no deadline.** Pass `ttl: Infinity`, and make sure something is certain to resume the hook, dispose of it or cancel the run. A run waiting on such a hook that nobody resumes stays open, and keeps its storage and deployment, forever.
+
+## Related
+
+- [Hooks](/docs/foundations/hooks#hook-expiry) - Hook expiry
+- [createHook](/docs/api-reference/workflow/create-hook#expiring-hooks-with-ttl) - The `ttl` option
+- [HookExpiredError](/docs/api-reference/workflow-errors/hook-expired-error) - Error reference

@@ -40,7 +40,7 @@ registerStepFunction('rapc_step', async (index: number) => {
 const workflowCode = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
 const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("rapc_step");
 async function workflow(steps) {
-  const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+  const hook = createHook({ ttl: Infinity, token: ${JSON.stringify(TOKEN)} });
   const seen = [];
   for (let i = 0; i < steps; i++) {
     const result = await step(i);

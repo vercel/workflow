@@ -165,7 +165,7 @@ const attributesStepWorkflow = `const s = ${step('iw_attributes')};
 const hookRaceWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   const gated = ${step('iw_gated')};
   async function workflow() {
-    const hook = createHook({ token: "iw-race-hook" });
+    const hook = createHook({ ttl: Infinity, token: "iw-race-hook" });
     return await Promise.race([hook.then(() => "hook"), gated()]);
   }${registerWorkflow()}`;
 

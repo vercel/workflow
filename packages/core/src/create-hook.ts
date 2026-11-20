@@ -109,6 +109,13 @@ export interface Webhook<T extends Request> extends Hook<T> {
 }
 
 /**
+ * The `ttl` a hook gets when `createHook()`, `createWebhook()` or
+ * `defineHook().create()` is called without one: 30 days. After it, the hook
+ * expires and its awaiters reject with `HookExpiredError`.
+ */
+export const DEFAULT_HOOK_TTL = '30d' satisfies StringValue;
+
+/**
  * Options accepted by the orchestrator's `createHook` for hooks the SDK
  * itself creates (the `AbortController` signal hook, the child-run completion
  * hook). Deliberately not part of the public {@link HookOptions}.
@@ -155,6 +162,44 @@ export interface HookOptions {
    * ```
    */
   token?: string;
+
+  /**
+   * How long this hook waits for payloads before it expires. Defaults to
+   * {@link DEFAULT_HOOK_TTL} (30 days).
+   *
+   * Accepts the same values as `sleep()`: a duration string, a number of
+   * milliseconds, or an absolute `Date`. A relative duration starts when
+   * `createHook()` runs. Pass `Infinity` to opt out of expiry entirely.
+   *
+   * When the time passes, the runtime disposes the hook (releasing its
+   * token) and wakes the workflow: the pending `await hook`, or the next
+   * iteration of `for await (const payload of hook)`, rejects with
+   * `HookExpiredError`, as does every later await. Payloads received before
+   * the hook expired are delivered first. Calling `dispose()` (including
+   * through `using`) before then cancels the expiry.
+   *
+   * A run waiting on a hook stays open, and an open run keeps its event log,
+   * its data and the deployment it runs on from being cleaned up. A long or
+   * infinite `ttl` is therefore an easy way to keep a run, and what it costs
+   * to store, alive indefinitely. Prefer the shortest `ttl` that fits, and
+   * use `Infinity` only for a hook that truly has no deadline.
+   *
+   * @default '30d'
+   *
+   * @example
+   *
+   * ```ts
+   * const approval = createHook<{ approved: boolean }>({ ttl: '7d' });
+   * try {
+   *   const { approved } = await approval;
+   * } catch (error) {
+   *   if (HookExpiredError.is(error)) {
+   *     // nobody answered within a week
+   *   }
+   * }
+   * ```
+   */
+  ttl?: StringValue | Date | number;
 
   /**
    * **Experimental.** Keeps this Hook's token unavailable for at least the

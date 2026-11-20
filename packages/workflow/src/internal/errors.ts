@@ -2,6 +2,7 @@ export {
   DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   HookConflictError,
+  HookExpiredError,
   HookForceClaimedError,
   HookNotFoundError,
   InBandSupersededError,

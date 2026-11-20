@@ -2212,9 +2212,23 @@ async function workflow() {
       }
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect(error.message).toEqual('1 hook has not been created yet');
-      expect((error as WorkflowSuspension).items).toHaveLength(1);
-      expect((error as WorkflowSuspension).items[0].type).toEqual('hook');
+      // The hook's default 30-day `ttl` is recorded beside it, as a wait
+      // tagged with the hook's id.
+      expect(error.message).toEqual(
+        '1 hook and 1 wait have not been processed yet'
+      );
+      const items = (error as WorkflowSuspension).items;
+      expect(items).toHaveLength(2);
+      expect(items[0].type).toEqual('hook');
+      expect(items[1]).toMatchObject({
+        type: 'wait',
+        correlationId: items[0].correlationId.replace(/^hook_/, 'wait_'),
+        hookId: items[0].correlationId,
+      });
+      const resumeAt = (items[1] as { resumeAt: Date }).resumeAt.getTime();
+      expect(
+        Math.abs(resumeAt - (Date.now() + 30 * 24 * 60 * 60 * 1000))
+      ).toBeLessThan(60_000);
       // createHook() should always set isWebhook: false
       expect((error as WorkflowSuspension).items[0] as any).toHaveProperty(
         'isWebhook',
@@ -2852,7 +2866,7 @@ async function workflow() {
           `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
       const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
       async function workflow() {
-        const hook = createHook({ token: 'test-token' });
+        const hook = createHook({ token: 'test-token', ttl: Infinity });
         for await (const payload of hook) {
           await add(payload.iteration, 2);
         }
@@ -2955,7 +2969,7 @@ async function workflow() {
         await runWorkflow(
           `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
           async function workflow() {
-            const hook = createHook({ token: 'claim-only-token' });
+            const hook = createHook({ token: 'claim-only-token', ttl: Infinity });
             await hook.getConflict();
             return 'registered';
           }${getWorkflowTransformCode('workflow')}`,
