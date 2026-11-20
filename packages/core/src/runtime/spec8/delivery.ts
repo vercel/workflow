@@ -132,7 +132,10 @@ import {
 } from '../out-of-band-observation.js';
 import { maybeQuickJSEngine, quickJSEngine } from '../quickjs-loader.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
-import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
+import {
+  ReplayRecoveryReporter,
+  reportedDivergenceEventIds,
+} from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
 import { resolveRunStartHook } from '../start-hook-binding.js';
@@ -382,7 +385,10 @@ async function runDelivery(
   // not send them again. See `forcedCreationsOwingWake`.
   const forceClaimVictimWakes = new Set<string>();
   const replayRecoveryReporter = replayDivergence
-    ? new ReplayRecoveryReporter(replayDivergence.count)
+    ? new ReplayRecoveryReporter(
+        replayDivergence.count,
+        replayDivergence.eventIds ?? [replayDivergence.eventId]
+      )
     : ReplayRecoveryReporter.inert();
   // Compilation is useful only for the Node VM. Wait until the
   // run's engine selection is known so QuickJS deliveries never
@@ -2242,8 +2248,9 @@ async function runDelivery(
   //
   // A refusal to execute stored code (opt-in off, a marker
   // that does not match the run, missing or undecodable code)
-  // is a WorkflowRuntimeError and fails the run: every
-  // redelivery would reach the same verdict.
+  // fails the run: every redelivery would reach the same
+  // verdict. The opt-in is recorded as USER_ERROR, the rest
+  // as RUNTIME_ERROR (see `getWorkflowSetupErrorCode`).
   let resolvedWorkflowCode: ResolvedWorkflowCode;
   try {
     resolvedWorkflowCode = await resolveWorkflowCodeForRun(
@@ -4842,7 +4849,9 @@ async function runDelivery(
           throw err;
         }
 
-        let replayDivergenceCountForFailure: number | undefined;
+        let replayDivergenceForFailure:
+          | { count: number; eventIds: readonly string[] }
+          | undefined;
         // Populated for a divergence so the terminal log below
         // carries the same context the WARN does.
         let divergenceFields: Record<string, unknown> = {};
@@ -4921,7 +4930,10 @@ async function runDelivery(
             return;
           }
 
-          replayDivergenceCountForFailure = divergenceCount;
+          replayDivergenceForFailure = {
+            count: divergenceCount,
+            eventIds: divergenceEventIds,
+          };
           terminalError = new CorruptedEventLogError(
             `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}; divergent event ids: ${divergenceEventIds.join(', ')}. Last divergence: ${err.message}`,
             { cause: err }
@@ -5029,9 +5041,12 @@ async function runDelivery(
             },
             {
               requestId,
-              ...(replayDivergenceCountForFailure !== undefined
+              ...(replayDivergenceForFailure !== undefined
                 ? {
-                    replayDivergenceCount: replayDivergenceCountForFailure,
+                    replayDivergenceCount: replayDivergenceForFailure.count,
+                    ...reportedDivergenceEventIds(
+                      replayDivergenceForFailure.eventIds
+                    ),
                   }
                 : {}),
             }

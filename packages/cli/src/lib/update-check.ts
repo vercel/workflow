@@ -38,6 +38,20 @@ interface CachedVersionData {
 }
 
 /**
+ * Whether a CLI version is a beta release, such as `5.0.0-beta.58`.
+ * Stable releases (`5.3.0`) and other prerelease builds, such as
+ * commit-tagged snapshots (`5.2.0-25050c7`), are not betas.
+ */
+export function isBetaVersion(version: string): boolean {
+  const dash = version.indexOf('-');
+  if (dash === -1) return false;
+  const prerelease = version.slice(dash + 1).split('+')[0];
+  return prerelease
+    .split('.')
+    .some((identifier) => identifier.toLowerCase() === 'beta');
+}
+
+/**
  * Compare two semver versions including pre-release tags
  * Returns true if version a is greater than version b
  */

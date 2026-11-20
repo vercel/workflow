@@ -7,7 +7,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
-import type { StreamWriteSession } from '@workflow/world';
+import type { StreamInfoResponse, StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -40,6 +40,10 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
+import {
+  onLocalAbort,
+  publishLocalAbort,
+} from './serialization/abort-local.js';
 import {
   frameAbortStreamPayload,
   readAbortStreamPacket,
@@ -957,6 +961,26 @@ const getFramedStreamMaxTotalReconnects = (): number =>
   );
 
 /**
+ * Consecutive live-read sessions that may end without receiving any bytes while
+ * the stream's metadata reports a chunk at the resume index, before the read
+ * fails. Such a session is not waiting for new data: the chunk is known to
+ * exist but was not served, so the index is a hole (the chunk is missing from
+ * storage) and reconnecting from it can never make progress. Each stalled
+ * session typically lasts the server's maximum response duration, so the
+ * general reconnect budget alone would stall a reader for over an hour.
+ */
+export const FRAMED_STREAM_MAX_STALLS_BELOW_TAIL = 3;
+
+/**
+ * Shortest zero-byte session that counts as a stall below the tail. A session
+ * at a hole stays open until the server's maximum response duration (about two
+ * minutes on world-vercel). One that ends sooner is a transport blip: it is
+ * retried against the general reconnect budget as before, and neither counts
+ * toward nor resets {@link FRAMED_STREAM_MAX_STALLS_BELOW_TAIL}.
+ */
+export const FRAMED_STREAM_MIN_STALL_SESSION_MS = 10_000;
+
+/**
  * Wraps the length-prefix-framed byte stream from `world.streams.get` with
  * transparent auto-reconnect.
  *
@@ -979,6 +1003,14 @@ const getFramedStreamMaxTotalReconnects = (): number =>
  * trusted (legacy behavior) rather than failing a read that may well be
  * complete.
  *
+ * A session that stays open for at least `FRAMED_STREAM_MIN_STALL_SESSION_MS`
+ * and ends without receiving any bytes while the metadata reports a chunk at
+ * the resume index is a stall at a hole (a chunk missing from storage). After
+ * `FRAMED_STREAM_MAX_STALLS_BELOW_TAIL` consecutive stalls the read errors
+ * with a `StreamError` naming the missing index, so the consumer can resume
+ * past it with `startIndex` instead of waiting indefinitely. The reader never
+ * skips the hole itself: silently dropping a chunk can corrupt consumer state.
+ *
  * Negative `startIndex` values (last-N semantics) skip the reconnect
  * machinery because we cannot compute an absolute resume position without
  * a tail-index lookup; the returned stream behaves as a single-shot read.
@@ -995,6 +1027,8 @@ export function createReconnectingFramedStream(
   let consumedFrames = 0;
   let reconnectCount = 0;
   let totalReconnectCount = 0;
+  let stallsBelowTail = 0;
+  let sessionStartedAt = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let canceled = false;
   let cancelReason: unknown;
@@ -1041,8 +1075,19 @@ export function createReconnectingFramedStream(
       return false;
     }
     if (connectMs === undefined) connectMs = Date.now() - connectStart;
+    sessionStartedAt = Date.now();
     reader = stream.getReader();
     return true;
+  }
+
+  /** The stream's metadata, or `undefined` if the lookup fails. */
+  async function getStreamInfo(): Promise<StreamInfoResponse | undefined> {
+    try {
+      const world = await getWorldLazy();
+      return await world.streams.getInfo(runId, name);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1053,13 +1098,48 @@ export function createReconnectingFramedStream(
    * into an error (or a reconnect loop) on a transient metadata blip would
    * be worse than the legacy behavior this check guards against.
    */
-  async function isVerifiedComplete(): Promise<boolean> {
-    try {
-      const world = await getWorldLazy();
-      const info = await world.streams.getInfo(runId, name);
-      return info.done && currentStartIndex + consumedFrames > info.tailIndex;
-    } catch {
-      return true;
+  function isVerifiedComplete(info: StreamInfoResponse | undefined): boolean {
+    if (!info) return true;
+    return info.done && currentStartIndex + consumedFrames > info.tailIndex;
+  }
+
+  /**
+   * Called when a session ends. Throws once consecutive sessions have stayed
+   * open without receiving any bytes while the metadata reports a chunk at
+   * the resume index. Metadata is only fetched for long sessions that
+   * received nothing (unless the caller already has it), so sessions that
+   * deliver data pay nothing extra.
+   */
+  async function assertNotStalledAtHole(
+    info?: StreamInfoResponse
+  ): Promise<void> {
+    // Partial-frame bytes count as progress: the server is serving the chunk
+    // at the resume index (a large one cut mid-body), so it is not a hole.
+    if (consumedFrames > 0 || buffer.length > 0) {
+      stallsBelowTail = 0;
+      return;
+    }
+    // A zero-byte session that ended quickly is a blip, not a session held
+    // open at a hole: leave it to the general reconnect budget.
+    if (Date.now() - sessionStartedAt < FRAMED_STREAM_MIN_STALL_SESSION_MS) {
+      return;
+    }
+    const resolved = info ?? (await getStreamInfo());
+    // Unknown metadata neither confirms nor rules out a hole.
+    if (!resolved) return;
+    if (resolved.tailIndex < currentStartIndex) {
+      stallsBelowTail = 0;
+      return;
+    }
+    stallsBelowTail++;
+    if (stallsBelowTail >= FRAMED_STREAM_MAX_STALLS_BELOW_TAIL) {
+      throw new StreamError(
+        `Stream "${name}" of run "${runId}" has no readable chunk at index ` +
+          `${currentStartIndex}, below its tail index ${resolved.tailIndex}: ` +
+          `${stallsBelowTail} consecutive reads from that index delivered ` +
+          `nothing. The chunk is missing from storage; read from startIndex ` +
+          `${currentStartIndex + 1} or later to continue past it.`
+      );
     }
   }
 
@@ -1147,6 +1227,8 @@ export function createReconnectingFramedStream(
             return;
           }
           try {
+            await assertNotStalledAtHole();
+            if (canceled) return;
             if (!(await reconnect())) return;
           } catch (reconnectErr) {
             controller.error(reconnectErr);
@@ -1165,11 +1247,11 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body; both
           // would otherwise be silently read as a shorter, complete stream.
-          const verifiedComplete =
-            !reconnectSupported || (await isVerifiedComplete());
+          const info = reconnectSupported ? await getStreamInfo() : undefined;
           if (canceled) return;
-          if (!verifiedComplete) {
+          if (reconnectSupported && !isVerifiedComplete(info)) {
             try {
+              await assertNotStalledAtHole(info);
               if (!(await reconnect())) return;
             } catch (reconnectErr) {
               controller.error(reconnectErr);
@@ -2029,6 +2111,7 @@ function attachAbortListenerOnce(
               runId,
               key
             );
+            publishLocalAbort(runId, streamName, payload as Uint8Array);
             const writable = new WorkflowServerWritableStream(
               runId,
               streamName
@@ -2685,66 +2768,144 @@ export function cancelAbortReaders(...values: unknown[]): void {
 }
 
 /**
+ * How long a step's abort reader keeps listening for an abort published in
+ * this process once its stream ended without one, if the step's teardown
+ * never cancels it (see `setupAbortStreamReader`).
+ */
+const LOCAL_ABORT_LISTEN_AFTER_STREAM_END_MS = 60 * 60 * 1000;
+
+/**
  * Sets up a stream reader on the controller that listens for an abort packet.
  * Returns the readerCancel controller so it can be stored on both the
  * controller and signal for cleanup by cancelAbortReaders.
+ *
+ * With `untilCancelled` (a step's arguments), a stream that ends or fails
+ * without a packet leaves the reader listening for an abort published in
+ * this process until `cancelAbortReaders` stops it, which the step executor
+ * does when the step returns, or for at most
+ * {@link LOCAL_ABORT_LISTEN_AFTER_STREAM_END_MS}. The op it pushes settles
+ * with the stream either way. Elsewhere nothing cancels the reader, so it
+ * stops with the stream.
  */
 function setupAbortStreamReader(
   controller: AbortController,
   runId: string,
   streamName: string,
-  ops: Promise<void>[]
+  ops: Promise<void>[],
+  cryptoKey: EncryptionKeyParam,
+  untilCancelled: boolean
 ): AbortController {
   const readerCancel = new AbortController();
+  // An abort published in this process (by the workflow, or by a sibling
+  // step) arrives without the stream, which a finished zero-retention run has
+  // already cleared (see abort-local.ts). Listen from the moment the signal
+  // is revived. Settled from the publisher's call, the promise resumes the
+  // abort below in this reader's own async context, not the publisher's.
+  let resolveLocal: ((packet: Uint8Array) => void) | undefined;
+  const localPacket = new Promise<Uint8Array>((resolve) => {
+    resolveLocal = resolve;
+  });
+  const stopLocal = onLocalAbort(runId, streamName, (packet) =>
+    resolveLocal?.(packet)
+  );
 
   ops.push(
     (async () => {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      let keepListening = false;
       try {
-        const readable = new WorkflowServerReadableStream(runId, streamName);
-        reader = readable.getReader();
-        const ctxForKey = contextStorage.getStore();
+        let keyPromise: Promise<PayloadKey | undefined> | undefined;
         let decoded: { reason?: unknown } | undefined;
         const decodePacket = async (packet: Uint8Array) => {
+          keyPromise ??= resolveEncryptionKey(cryptoKey);
           decoded = (await hydrateStepArguments(
             packet,
             runId,
-            ctxForKey?.encryptionKey
+            await keyPromise
           )) as { reason?: unknown } | undefined;
         };
-        const result = await Promise.race([
-          readAbortStreamPacket(reader, decodePacket),
-          new Promise<undefined>((resolve) => {
-            if (readerCancel.signal.aborted) {
-              resolve(undefined);
-              return;
-            }
-            readerCancel.signal.addEventListener(
-              'abort',
-              () => resolve(undefined),
-              { once: true }
-            );
-          }),
-        ]);
-        if (result) {
+        // Hydrate via the same machinery the writer used so the reason
+        // round-trips with full type fidelity. The key comes from the
+        // reviver, not the step context: argument hydration runs before the
+        // step's contextStorage frame exists. Legacy packets were already
+        // hydrated to establish completeness (`already`); framed packets
+        // have a known length and hydrate once here.
+        const abortWith = async (
+          packet: Uint8Array,
+          already: { reason?: unknown } | undefined
+        ) => {
           try {
-            // Hydrate via the same machinery the writer used so the reason
-            // round-trips with full type fidelity. Encryption key (if any)
-            // comes from the step context, set up by the step executor before
-            // this reader runs. Fallback to undefined for external-context
-            // revives (the hydrate path is encryption-key-tolerant).
-            // Legacy packets were already hydrated to establish completeness.
-            // Framed packets have a known length and can hydrate once here.
-            if (decoded === undefined) await decodePacket(result);
+            decoded = already;
+            if (decoded === undefined) await decodePacket(packet);
             controller.abort(decoded?.reason);
           } catch {
             controller.abort();
           }
+        };
+        const cancelled = new Promise<undefined>((resolve) => {
+          if (readerCancel.signal.aborted) {
+            resolve(undefined);
+            return;
+          }
+          readerCancel.signal.addEventListener(
+            'abort',
+            () => resolve(undefined),
+            { once: true }
+          );
+        });
+        // Without the stream, a packet published in this process still
+        // arrives.
+        let streamPacket: Promise<Uint8Array | undefined>;
+        try {
+          const readable = new WorkflowServerReadableStream(runId, streamName);
+          reader = readable.getReader();
+          streamPacket = readAbortStreamPacket(reader, decodePacket);
+        } catch {
+          streamPacket = new Promise<never>(() => {});
+        }
+        const local = localPacket.then((packet) => ({ packet, local: true }));
+        const winner = await Promise.race([
+          local,
+          untilCancelled
+            ? // An empty or failed stream is not the end of the abort.
+              streamPacket.then(
+                (packet) => (packet ? { packet, local: false } : undefined),
+                () => undefined
+              )
+            : streamPacket.then((packet) =>
+                packet ? { packet, local: false } : undefined
+              ),
+          cancelled,
+        ]);
+        if (winner) {
+          // A legacy stream read decodes its candidate as it goes; a local
+          // packet is decoded on its own.
+          await abortWith(winner.packet, winner.local ? undefined : decoded);
+        } else if (untilCancelled && !readerCancel.signal.aborted) {
+          // The stream ended (a finished zero-retention run's is cleared) or
+          // failed without a packet. An abort published in this process can
+          // still come, so keep listening for it until the step's teardown
+          // cancels the reader, but outside `ops`: this op settles with the
+          // stream, so a signal the teardown cannot reach holds nothing open.
+          keepListening = true;
+          const expiry = setTimeout(
+            stopLocal,
+            LOCAL_ABORT_LISTEN_AFTER_STREAM_END_MS
+          );
+          (expiry as { unref?: () => void }).unref?.();
+          void Promise.race([local, cancelled])
+            .then(async (late) => {
+              clearTimeout(expiry);
+              stopLocal();
+              if (late) await abortWith(late.packet, undefined);
+            })
+            .catch(() => {});
         }
       } catch {
         // Stream read failed: signal won't propagate in real-time,
         // but hook-based propagation on next replay provides fallback
       } finally {
+        if (!keepListening) stopLocal();
         // Transport teardown may require a network round trip. Do not await
         // it before abort delivery or hold the finishing step open. Cancelling
         // also stops a pending partial-packet read when the step finishes.
@@ -2804,12 +2965,15 @@ function copyAbortInternals(src: AbortSignal, dest: AbortSignal): void {
  * @param value - The serialized abort controller/signal data
  * @param ops - The ops array for tracking async work
  * @param runId - The workflow run ID (for stream reads)
+ * @param cryptoKey - The run's encryption key (for decoding the abort packet)
  * @returns A real AbortController with patched abort() method
  */
 function reviveAbortController(
   value: SerializableSpecial['AbortController'],
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey: EncryptionKeyParam,
+  untilCancelled = false
 ): AbortController {
   const controller = new AbortController();
 
@@ -2821,7 +2985,9 @@ function reviveAbortController(
       controller,
       runId,
       value.streamName,
-      ops
+      ops,
+      cryptoKey,
+      untilCancelled
     );
     tagAbortPair(controller, value, readerCancel);
   } else {
@@ -2848,6 +3014,13 @@ function reviveAbortController(
               { aborted: true, reason },
               ctx.workflowMetadata.workflowRunId,
               ctx.encryptionKey
+            );
+            // A sibling step running in this process gets it at once (see
+            // abort-local.ts).
+            publishLocalAbort(
+              ctx.workflowMetadata.workflowRunId,
+              value.streamName,
+              payload as Uint8Array
             );
             const writable = new WorkflowServerWritableStream(
               ctx.workflowMetadata.workflowRunId,
@@ -2902,7 +3075,9 @@ function reviveAbortController(
 function reviveAbortSignal(
   value: SerializableSpecial['AbortSignal'],
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey: EncryptionKeyParam,
+  untilCancelled = false
 ): AbortSignal {
   const controller = new AbortController();
 
@@ -2914,7 +3089,9 @@ function reviveAbortSignal(
       controller,
       runId,
       value.streamName,
-      ops
+      ops,
+      cryptoKey,
+      untilCancelled
     );
     tagAbortPair(controller, value, readerCancel);
   } else {
@@ -3346,11 +3523,11 @@ export function getExternalRevivers(
     AbortController: (value) =>
       options?.liveAbortSignals === false
         ? reviveAbortSnapshot(value)
-        : reviveAbortController(value, ops, runId),
+        : reviveAbortController(value, ops, runId, cryptoKey),
     AbortSignal: (value) =>
       options?.liveAbortSignals === false
         ? reviveAbortSnapshot(value).signal
-        : reviveAbortSignal(value, ops, runId),
+        : reviveAbortSignal(value, ops, runId, cryptoKey),
   };
 }
 
@@ -3832,8 +4009,12 @@ function getStepRevivers(
       return writable;
     },
 
-    AbortController: (value) => reviveAbortController(value, ops, runId),
-    AbortSignal: (value) => reviveAbortSignal(value, ops, runId),
+    // A step's readers are cancelled when the step returns
+    // (`cancelAbortReaders`), so they may outlive an empty stream.
+    AbortController: (value) =>
+      reviveAbortController(value, ops, runId, cryptoKey, true),
+    AbortSignal: (value) =>
+      reviveAbortSignal(value, ops, runId, cryptoKey, true),
   };
 }
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { RotateCcw, Search, ZoomIn, ZoomOut } from 'lucide-react';
+import { RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -13,7 +13,7 @@ import {
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { IconButton } from '../ui/icon-button';
-import { Kbd } from '../ui/kbd';
+import { SearchInput } from '../ui/search-input';
 import { Spinner } from '../ui/spinner';
 import { TooltipProvider } from '../ui/tooltip';
 import { TraceDetailPanel } from './components/detail-panel';
@@ -162,6 +162,12 @@ function TraceViewerContent({
   const { activeSpanId, setActiveSpan, clearActiveSpan } = useActiveSpan();
 
   const reducedMotion = useReducedMotion();
+
+  const [isLanding, setIsLanding] = useState(activeSpanId !== null);
+  useEffect(() => {
+    const timer = setTimeout(() => setIsLanding(false), 1000);
+    return () => clearTimeout(timer);
+  }, []);
 
   const [searchQuery, setSearchQuery] = useState('');
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -477,6 +483,7 @@ function TraceViewerContent({
     >
       <div
         id="trace-parent"
+        data-span-landing={isLanding || undefined}
         className="@container flex-1 min-w-0 grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <Minimap
@@ -490,38 +497,15 @@ function TraceViewerContent({
         <SplitPane
           scrollContainerRef={scrollContainerRef}
           startHeader={
-            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center pl-4 pr-2 gap-1.5">
-              <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
-              <input
-                id="trace-viewer-search"
-                name="trace-viewer-search"
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape' && searchQuery) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setSearchQuery('');
-                  }
-                }}
-                placeholder="Search spans..."
-                aria-label="Search spans"
-                className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  aria-label="Clear search"
-                  onClick={() => setSearchQuery('')}
-                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-label-16 text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
-                >
-                  <Kbd variant="outline" size="search">
-                    Esc
-                  </Kbd>
-                </button>
-              )}
-            </div>
+            <SearchInput
+              id="trace-viewer-search"
+              name="trace-viewer-search"
+              label="Search spans"
+              placeholder="Search spans…"
+              value={searchQuery}
+              onValueChange={setSearchQuery}
+              className="pl-4"
+            />
           }
           endHeader={
             <TimelineHeader markers={timeMarkers} hoverInfo={hoverInfo} />
@@ -537,7 +521,7 @@ function TraceViewerContent({
             <div ref={loadMoreSentinelRef} className="flex justify-center">
               {isLoadingMore ? (
                 <div className="flex items-center justify-center gap-2 py-3 text-label-14 text-gray-800">
-                  <Spinner size={14} />
+                  <Spinner size="md" />
                   <span>Loading spans…</span>
                 </div>
               ) : null}
@@ -572,7 +556,6 @@ function TraceViewerContent({
             />
             <div className="pointer-events-auto flex items-center border border-gray-alpha-400 rounded-md bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
               <IconButton
-                variant="muted"
                 size="small"
                 onClick={zoomOut}
                 disabled={isAtMinZoom}
@@ -581,7 +564,6 @@ function TraceViewerContent({
                 <ZoomOut className="w-4 h-4" />
               </IconButton>
               <IconButton
-                variant="muted"
                 size="small"
                 onClick={resetZoom}
                 aria-label="Reset zoom"
@@ -589,7 +571,6 @@ function TraceViewerContent({
                 <RotateCcw className="w-3.5 h-3.5" />
               </IconButton>
               <IconButton
-                variant="muted"
                 size="small"
                 onClick={zoomIn}
                 disabled={isAtMaxZoom}

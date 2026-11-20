@@ -57,8 +57,19 @@ describe('serializeForClipboard', () => {
     expect(serializeForClipboard(circular)).toBe('[object Object]');
   });
 
-  it('falls back to String() for BigInt values JSON cannot encode', () => {
+  it('serializes a top-level BigInt as its decimal string', () => {
     expect(serializeForClipboard(10n)).toBe('10');
+  });
+
+  it('writes nested BigInt values as decimal strings in valid JSON', () => {
+    expect(
+      JSON.parse(serializeForClipboard({ amount: 10n, name: 'x' }))
+    ).toEqual({ amount: '10', name: 'x' });
+    expect(JSON.parse(serializeForClipboard([1n, 2n]))).toEqual(['1', '2']);
+    expect(
+      JSON.parse(serializeForClipboard({ input: [{ a: { b: 5n } }] }))
+    ).toEqual({ input: [{ a: { b: '5' } }] });
+    expect(serializeForClipboard({ id: 1n })).toBe('{\n  "id": "1"\n}');
   });
 
   it('passes undefined through (JSON.stringify yields no string)', () => {

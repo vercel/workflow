@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { databaseFor } from './db/index.js';
+import { Database, databaseFor } from './db/index.js';
 import { createStreamer } from './streamer.js';
 
 const TEST_RUN_ID = 'wrun_test12345678901234';
@@ -93,6 +93,18 @@ function trackIntervals() {
 }
 const setIntervalOriginal = globalThis.setInterval;
 const clearIntervalOriginal = globalThis.clearInterval;
+
+/**
+ * Opens the data directory's database before intervals are tracked, so the
+ * connection's own idle sweep (an interval started with the process's first
+ * connection, and stopped once it has none) is not counted as the reader's.
+ * A read does not do it: without the file it reads an empty database and
+ * opens nothing, and the first write, mid-test, would start the sweep
+ * whenever no earlier test's connection kept it running.
+ */
+function openDatabase(testDir: string) {
+  databaseFor(testDir).transact(() => {});
+}
 
 /** Listeners on the streamer's in-process wake-up signal, across all streams. */
 function signalListeners() {
@@ -648,10 +660,9 @@ describe('streamer', () => {
 
   describe('reader lifecycle (vercel/workflow#2795, #2797)', () => {
     it('tears down signal listeners and the poll interval on cancel', async () => {
-      const { streamer } = await setupStreamer();
+      const { streamer, testDir } = await setupStreamer();
       const streamName = 'teardown-stream';
-      // Open the database first so its own timers are counted in `before`.
-      await streamer.streams.getInfo(TEST_RUN_ID, streamName);
+      openDatabase(testDir);
       const intervals = trackIntervals();
       onTestFinished(() => intervals.restore());
       const listenersBefore = signalListeners();
@@ -678,9 +689,9 @@ describe('streamer', () => {
     });
 
     it('tears down signal listeners and the poll interval at the end of the stream', async () => {
-      const { streamer } = await setupStreamer();
+      const { streamer, testDir } = await setupStreamer();
       const streamName = 'teardown-at-end';
-      await streamer.streams.getInfo(TEST_RUN_ID, streamName);
+      openDatabase(testDir);
       const intervals = trackIntervals();
       onTestFinished(() => intervals.restore());
       const listenersBefore = signalListeners();
@@ -693,6 +704,54 @@ describe('streamer', () => {
       expect(live.received).toEqual(['data']);
       expect(intervals.open()).toBe(0);
       expect(signalListeners()).toBe(listenersBefore);
+    });
+
+    it('reads a long backlog a bounded batch at a time, as the consumer asks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'backlog';
+      const chunk = new Uint8Array(1024);
+      for (let i = 0; i < 4; i++)
+        await streamer.streams.writeMulti(
+          TEST_RUN_ID,
+          streamName,
+          Array.from({ length: 500 }, () => chunk)
+        );
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const batches: number[] = [];
+      const all = Database.prototype.all;
+      const spy = vi
+        .spyOn(Database.prototype, 'all')
+        .mockImplementation(function (this: Database, sql, ...params) {
+          const rows = all.call(this, sql, ...params);
+          if (sql.includes('FROM stream_chunks WHERE name = ? AND idx > ?'))
+            batches.push(rows.length);
+          return rows as never;
+        });
+      onTestFinished(() => spy.mockRestore());
+
+      const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+      // Opening the reader reads at most one batch.
+      await settle();
+      expect(batches.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(16);
+      const reader = stream.getReader();
+      for (let i = 0; i < 40; i++)
+        expect((await reader.read()).done).toBe(false);
+      await settle();
+      // What was read is what the consumer took, plus one batch at most.
+      expect(Math.max(...batches)).toBeLessThanOrEqual(16);
+      expect(batches.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(40 + 16);
+      await reader.cancel();
+      const afterCancel = batches.length;
+      await settle();
+      expect(batches.length).toBe(afterCancel);
+
+      // Read to the end, every chunk arrives in order.
+      spy.mockRestore();
+      const chunks = await readAll(
+        await streamer.streams.get(TEST_RUN_ID, streamName)
+      );
+      expect(chunks).toHaveLength(2000);
     });
 
     it('reads only the stream asked for, however busy the others are', async () => {

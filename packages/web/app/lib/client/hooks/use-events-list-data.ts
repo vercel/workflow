@@ -8,8 +8,10 @@ import { hydrateResourceIOAsync } from '@workflow/web-shared';
 import type { Event } from '@workflow/world';
 import { useCallback, useRef } from 'react';
 import {
+  getErrorMessage,
   unwrapOrThrow,
   unwrapServerActionResult,
+  type WorkflowWebAPIError,
 } from '~/lib/client/workflow-errors';
 import {
   fetchEvent,
@@ -31,6 +33,13 @@ const PAGE_SIZE = 100;
 const MAX_CORRELATION_SEARCH_PAGES = 5;
 
 const getEventId = (event: Event) => event.eventId;
+
+/** A 404 for an exact ID means nothing matched it, not that the search failed. */
+function toSearchFailure(error: WorkflowWebAPIError): ExactIdSearchResult {
+  return error.request?.status === 404
+    ? { status: 'not_found' }
+    : { status: 'error', message: getErrorMessage(error) };
+}
 
 /**
  * Independent event fetching for the Events tab.
@@ -93,12 +102,11 @@ export function useEventsListData(
         const { error: fetchError, result } = await unwrapServerActionResult(
           fetchEvent(env, runId, id, 'none')
         );
-        if (fetchError || signal?.aborted) {
-          return fetchError
-            ? { status: 'error', message: fetchError.message }
-            : (() => {
-                throw new DOMException('Aborted', 'AbortError');
-              })();
+        if (fetchError) {
+          return toSearchFailure(fetchError);
+        }
+        if (signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
         }
         const [event] = await hydrateEvents([result]);
         return event?.runId === runId
@@ -125,7 +133,7 @@ export function useEventsListData(
           })
         );
         if (fetchError) {
-          return { status: 'error', message: fetchError.message };
+          return toSearchFailure(fetchError);
         }
         if (signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError');

@@ -21,6 +21,7 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  isSealedNoopEvent,
   parseWorldCapabilities,
   ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
@@ -687,14 +688,26 @@ export function withReplayDelta(
  * @param options.specVersion - The run's spec version, handed to every page
  *   read as `ListEventsParams.specVersion`. The spec 9 orchestrator passes it
  *   so the World reads from where the fence `snapshot` is reported.
+ * @param options.eventLimit - Maps the World's reported
+ *   {@link EventListResponse.maxEvents} to the ceiling the caller enforces.
+ *   When given, the load stops following `hasMore` once it holds that many
+ *   workflow events (sealed `noop`s are not counted): a run already past its
+ *   ceiling fails on what it holds, rather than reading its whole log first.
+ *   The returned log then ends at its cursor with more events after it, and
+ *   carries the ceiling as {@link LoadedEventLog.stoppedAtEventLimit}.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
   afterCursor?: string,
-  options?: { signal?: AbortSignal; specVersion?: number }
+  options?: {
+    signal?: AbortSignal;
+    specVersion?: number;
+    eventLimit?: (maxEvents: number | undefined) => number | undefined;
+  }
 ): Promise<LoadedEventLog> {
   const signal = options?.signal;
   const specVersion = options?.specVersion;
+  const eventLimit = options?.eventLimit;
   const incremental = afterCursor !== undefined;
   return trace('workflow.replay.load', async (span) => {
     span?.setAttributes({
@@ -709,6 +722,9 @@ export async function loadWorkflowRunEvents(
     // the sequencer state the listing as a whole covers.
     let snapshot: EventLogSnapshot | undefined;
     let snapshotTaken = false;
+    let maxEvents: number | undefined;
+    let workflowEventCount = 0;
+    let stoppedAtLimit: number | undefined;
     const loadedEventIds = new Set<string>();
     const requestedCursors = new Set<string>();
     let cursor: string | null = afterCursor ?? null;
@@ -755,6 +771,7 @@ export async function loadWorkflowRunEvents(
           loadedEventIds.clear();
           snapshotTaken = false;
           snapshot = undefined;
+          workflowEventCount = 0;
           requestedCursors.clear();
           cursor = null;
           retriedWithoutCursor = true;
@@ -767,7 +784,14 @@ export async function loadWorkflowRunEvents(
         snapshotTaken = true;
         snapshot = response.snapshot;
       }
+      maxEvents = response.maxEvents ?? maxEvents;
+      const before = loadedEvents.length;
       appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      if (eventLimit) {
+        for (let i = before; i < loadedEvents.length; i++) {
+          if (!isSealedNoopEvent(loadedEvents[i])) workflowEventCount++;
+        }
+      }
       hasMore = response.hasMore;
       assertEventPaginationProgress(
         runId,
@@ -795,6 +819,18 @@ export async function loadWorkflowRunEvents(
         hasMore,
         pageMs: Date.now() - pageStart,
       });
+
+      const limit = eventLimit?.(maxEvents);
+      if (hasMore && limit !== undefined && workflowEventCount >= limit) {
+        stoppedAtLimit = limit;
+        runtimeLogger.info('Event load stopped at the run event ceiling', {
+          workflowRunId: runId,
+          totalEvents: loadedEvents.length,
+          workflowEvents: workflowEventCount,
+          limit,
+        });
+        break;
+      }
     }
 
     runtimeLogger.debug('Event load complete', {
@@ -808,11 +844,25 @@ export async function loadWorkflowRunEvents(
     span?.setAttributes({
       ...Attribute.WorkflowEventsCount(loadedEvents.length),
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+      ...(eventLimit
+        ? Attribute.WorkflowEventsLoadStoppedAtLimit(
+            stoppedAtLimit !== undefined
+          )
+        : {}),
+      ...(stoppedAtLimit !== undefined
+        ? Attribute.WorkflowEventsLimit(stoppedAtLimit)
+        : {}),
     });
 
-    return snapshot === undefined
-      ? { events: loadedEvents, cursor }
-      : { events: loadedEvents, cursor, snapshot };
+    return {
+      events: loadedEvents,
+      cursor,
+      ...(snapshot !== undefined ? { snapshot } : {}),
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+      ...(stoppedAtLimit !== undefined
+        ? { stoppedAtEventLimit: stoppedAtLimit }
+        : {}),
+    };
   });
 }
 
@@ -829,6 +879,17 @@ export interface LoadedEventLog {
    * returned one. Absent on incremental loads.
    */
   snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling the World reported on the load
+   * ({@link EventListResponse.maxEvents}), when it did.
+   */
+  maxEvents?: number;
+  /**
+   * The ceiling the load stopped at (see `eventLimit`), when it stopped
+   * before the end of the log: the log holds at least that many workflow
+   * events, and more after the returned cursor.
+   */
+  stoppedAtEventLimit?: number;
 }
 
 /**

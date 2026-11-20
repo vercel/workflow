@@ -1,7 +1,12 @@
 import { workflowEntrypoint as flowWorkflowEntrypoint } from './runtime/flow-entrypoint.js';
 import { registerBundledQuickJSEngine } from './runtime/quickjs-engine.js';
 
-export type { Event, WorkflowRun } from '@workflow/world';
+export type {
+  DeleteRunDataResult,
+  DeleteRunsDataResult,
+  Event,
+  WorkflowRun,
+} from '@workflow/world';
 export { WorkflowSuspension } from './global.js';
 
 /**
@@ -42,6 +47,7 @@ export {
   type CancelRunOptions,
   cancelRun,
   cancelRuns,
+  deleteRuns,
   listStreams,
   pendingWakeUpWaits,
   type ReadStreamOptions,

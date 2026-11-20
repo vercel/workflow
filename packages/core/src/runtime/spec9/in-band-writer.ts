@@ -348,14 +348,89 @@ export class InBandWriter {
    * The slot the next write would take if no other writer appends first:
    * one past every position this writer knows is allocated, including the
    * writes still queued in it. Run-ahead places a speculative event there.
+   *
+   * Each position is counted once. The write being sent is in
+   * `pendingPositions` until it settles, while `knownMaxSlot` can already
+   * cover its positions: the live feed echoes a write before its answer
+   * arrives ({@link observeEvent}), and the answer raises `knownMaxSlot` a
+   * few microtasks before the write settles. Those positions are taken off
+   * ({@link sending}), or the prediction would run past the slot the next
+   * write takes, and a speculative event placed there shares its id with a
+   * later event.
    */
   predictNextSlot(): number {
-    return this.knownMaxSlot + this.pendingPositions + 1;
+    return (
+      this.knownMaxSlot +
+      this.pendingPositions -
+      (this.sending?.covered ?? 0) +
+      1
+    );
   }
 
-  /** A position another writer took, seen in a load, a report or the feed. */
+  /** A position another writer took, seen in a load or a report. */
   observeSlot(slot: number): void {
     if (slot > this.knownMaxSlot) this.knownMaxSlot = slot;
+  }
+
+  /**
+   * An event seen outside this writer's own answers (the live feed, an
+   * incremental load): its position is allocated. When it is an event of the
+   * write being sent (the feed's echo, ahead of the answer), that write's
+   * position is now covered by `knownMaxSlot` and is not counted again by
+   * {@link predictNextSlot}.
+   */
+  observeEvent(
+    event: Pick<Event, 'eventId' | 'eventType' | 'correlationId'>
+  ): void {
+    const slot = eventIdToSlot(event.eventId);
+    if (slot === null || slot <= this.knownMaxSlot) return;
+    this.knownMaxSlot = slot;
+    const sending = this.sending;
+    if (!sending || sending.covered >= sending.positions) return;
+    const at = sending.unechoed.findIndex(
+      (sent) =>
+        sent.eventType === event.eventType &&
+        sent.correlationId === event.correlationId
+    );
+    if (at === -1) return;
+    sending.unechoed.splice(at, 1);
+    sending.covered++;
+  }
+
+  /**
+   * The write being sent: how many positions it asks for, how many of them
+   * `knownMaxSlot` already covers, and its events the live feed has not
+   * echoed yet. Cleared where the write leaves `pendingPositions`.
+   */
+  private sending:
+    | {
+        positions: number;
+        covered: number;
+        unechoed: { eventType: string; correlationId: string | undefined }[];
+      }
+    | undefined;
+
+  private beginSend(events: readonly CreateEventRequest[]): void {
+    this.sending = {
+      positions: events.length,
+      covered: 0,
+      unechoed: events.map((event) => ({
+        eventType: event.eventType,
+        correlationId: event.correlationId,
+      })),
+    };
+  }
+
+  /**
+   * The write being sent was answered, or failed: whatever it allocated is
+   * in `knownMaxSlot` (the caller noted the answer's slots just before), so
+   * none of its positions is predicted on top of that.
+   */
+  private answerSend(): void {
+    const sending = this.sending;
+    if (!sending) return;
+    sending.covered = sending.positions;
+    sending.unechoed = [];
   }
 
   /**
@@ -414,13 +489,16 @@ export class InBandWriter {
       let result: EventResult<T['eventType']>;
       try {
         const position = this.sendPosition(params?.eventCount);
+        const fence = this.fenceParams();
+        this.beginSend([data]);
         const written = await this.world.events.create(this.runId, data, {
           ...params,
           ...position,
-          ...this.fenceParams(),
+          ...fence,
         });
         this.noteComplete(position, written, [written.event]);
         const inferred = this.allocatedBy([written.event], knownAtSend);
+        this.answerSend();
         const allocated = written.allocated ?? inferred;
         this.advance(allocated);
         result = written.event
@@ -430,6 +508,7 @@ export class InBandWriter {
             }
           : written;
       } catch (error) {
+        this.answerSend();
         throw this.stop(error, required);
       }
       this.accepted(result.event);
@@ -586,6 +665,7 @@ export class InBandWriter {
       const knownAtSend = this.knownMaxSlot;
       const position = this.sendPosition(first.params.eventCount);
       let result: EventBatchResult;
+      this.beginSend(events.map(({ event }) => event));
       try {
         result = await this.world.events.createBatch!.call(
           this.world.events,
@@ -601,6 +681,7 @@ export class InBandWriter {
           }
         );
       } catch (error) {
+        this.answerSend();
         const stopped = this.stop(error, true);
         for (const write of group) write.reject(stopped);
         return;
@@ -623,6 +704,7 @@ export class InBandWriter {
       for (const item of result.results) {
         if (item.error === undefined) this.noteSlot(item.event.eventId);
       }
+      this.answerSend();
       this.advance(result.allocated ?? events.length - replayed);
 
       let offset = 0;
@@ -691,6 +773,7 @@ export class InBandWriter {
       }
     } finally {
       this.pendingPositions -= total;
+      this.sending = undefined;
     }
   }
 
@@ -772,6 +855,7 @@ export class InBandWriter {
       const knownAtSend = this.knownMaxSlot;
       const position = this.sendPosition(params?.eventCount);
       try {
+        this.beginSend(events.map(({ event }) => event));
         const result = await createBatch.call(
           this.world.events,
           this.runId,
@@ -804,6 +888,7 @@ export class InBandWriter {
         for (const item of result.results) {
           if (item.error === undefined) this.noteSlot(item.event.eventId);
         }
+        this.answerSend();
         this.advance(result.allocated ?? events.length - replayed);
         const answered: EventBatchResult = {
           ...result,
@@ -833,6 +918,7 @@ export class InBandWriter {
         }
         return answered;
       } catch (error) {
+        this.answerSend();
         throw this.stop(error, required);
       }
     });
@@ -952,6 +1038,9 @@ export class InBandWriter {
     this.pendingPositions += positions;
     const settle = () => {
       this.pendingPositions -= positions;
+      // A run-ahead group leaves `pendingPositions` in `sendGroup`, and has
+      // cleared this there.
+      if (positions > 0) this.sending = undefined;
     };
     const guarded = async (): Promise<T> => {
       try {

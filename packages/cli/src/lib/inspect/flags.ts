@@ -173,3 +173,20 @@ export const urlFlag = {
     helpLabel: '--url',
   }),
 };
+
+/**
+ * The flags that pick the backend to talk to, and how to print: the subset
+ * of {@link cliFlags} a command that is not a listing reads. Commands spread
+ * this instead of `cliFlags`, so `--help` does not advertise (and the parser
+ * does not accept) listing flags such as `--limit` or `--sort` that the
+ * command would silently ignore.
+ */
+export const targetFlags = {
+  verbose: cliFlags.verbose,
+  json: cliFlags.json,
+  backend: cliFlags.backend,
+  authToken: cliFlags.authToken,
+  project: cliFlags.project,
+  team: cliFlags.team,
+  env: cliFlags.env,
+};
