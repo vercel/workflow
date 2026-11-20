@@ -8,6 +8,7 @@ import { TooEarlyError } from '@workflow/errors';
 import {
   rateGraceMs,
   SPEC_VERSION_RATE_LIMITS,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,6 +23,8 @@ import {
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+const ENGINES = ['node', 'quickjs'] as const;
 
 const header = `const rateLimit = globalThis[Symbol.for("WORKFLOW_RATE_LIMIT")];`;
 
@@ -67,6 +70,39 @@ const twoPerMinute = `${header}
     return "done";
   }${registerWorkflow()}`;
 
+/** One call, its rejection caught. */
+const caught = `${header}
+  async function workflow() {
+    try {
+      await rateLimit({ key: "k", limit: 1, period: "1s" });
+      return "granted";
+    } catch (error) {
+      return error.message;
+    }
+  }${registerWorkflow()}`;
+
+/** Bad calls rejected in the workflow, then a good one. */
+const refusedThenGranted = `${header}
+  async function workflow() {
+    const out = [];
+    for (const options of [
+      { key: "", limit: 1, period: "1s" },
+      { key: "$sdk.internal", limit: 1, period: "1s" },
+      { key: "k", limit: 1, period: "2d" },
+      { key: "k", limit: 2, period: "1s", burst: 0 },
+    ]) {
+      try {
+        await rateLimit(options);
+        out.push("granted");
+      } catch (error) {
+        out.push(error.name + ": " + error.message);
+      }
+    }
+    await rateLimit({ key: "$sdk.internal", limit: 1, period: "1s", allowReservedKey: true });
+    out.push("granted");
+    return out;
+  }${registerWorkflow()}`;
+
 /** Two calls on a key at one per minute, the second willing to wait 1s. */
 const timedOut = `${header}
   async function workflow() {
@@ -85,7 +121,9 @@ afterEach(() => {
   setWorld(undefined);
 });
 
-describe('experimental_rateLimit() on the single orchestrator', () => {
+describe.each(
+  ENGINES
+)('experimental_rateLimit() on the single orchestrator (%s)', (engine) => {
   // A clock that only the queue moves: every wait is a timer, never an
   // in-process wait, which would wait on a clock that never moves.
   beforeEach(() => {
@@ -95,9 +133,14 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
   });
 
   it('goes ahead at once when the slot is now, and waits for later slots', async () => {
-    const { world } = await setupOrchestratorRun(sequential, [3], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      sequential,
+      [3],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     await world.runOnClock();
 
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
@@ -123,9 +166,14 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
   }, 60_000);
 
   it('lets a burst go at once, then waits one interval per call', async () => {
-    const { world } = await setupOrchestratorRun(bursting, [4], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      bursting,
+      [4],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     await world.runOnClock();
 
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
@@ -144,9 +192,14 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
   }, 60_000);
 
   it('reserves a call again when its timer is delivered past the grace window', async () => {
-    const { world } = await setupOrchestratorRun(sequential, [2], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      sequential,
+      [2],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     let delayed = false;
     await world.runOnClock({
       deliverAs: (held: HeldMessage) => {
@@ -176,9 +229,14 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
   }, 60_000);
 
   it('waits again for a call reserved behind other runs after a late wake', async () => {
-    const { world } = await setupOrchestratorRun(twoPerMinute, [], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      twoPerMinute,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     let delayed = false;
     await world.runOnClock({
       deliverAs: (held: HeldMessage) => {
@@ -208,9 +266,14 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
   }, 60_000);
 
   it('rejects a call whose slot is past its maxWait, reserving nothing', async () => {
-    const { world } = await setupOrchestratorRun(timedOut, [], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      timedOut,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     await world.runOnClock();
 
     expect(await runResult(world)).toBe('RateLimitMaxWaitError:slow');
@@ -225,8 +288,50 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
     );
   }, 60_000);
 
+  it('rejects bad options in the workflow, before anything is written', async () => {
+    const { world } = await setupOrchestratorRun(
+      refusedThenGranted,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
+    await world.runOnClock();
+
+    const out = (await runResult(world)) as string[];
+    expect(out).toHaveLength(5);
+    expect(out[0]).toMatch(/^RangeError: .*non-empty/);
+    expect(out[1]).toMatch(/^RangeError: .*reserved prefix/);
+    expect(out[2]).toMatch(/^RangeError: .*24 hours/);
+    expect(out[3]).toMatch(/^RangeError: .*burst must be a whole number/);
+    expect(out[4]).toBe('granted');
+    // Only the good call was written, and its id is the run's first.
+    const created = world.events.filter((event) =>
+      event.eventType.startsWith('rate_')
+    );
+    expect(created).toHaveLength(1);
+    expect(dataOf(created[0])?.key).toBe('$sdk.internal');
+  }, 60_000);
+
+  it('rejects the call on a spec 8 run, before drawing an id', async () => {
+    const { world } = await setupOrchestratorRun(
+      caught,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR - 1,
+      },
+      engine
+    );
+    await world.runOnClock();
+    expect(await runResult(world)).toMatch(/needs a run at spec version 10/);
+    expect(
+      world.events.filter((event) => event.eventType.startsWith('rate_'))
+    ).toHaveLength(0);
+  }, 60_000);
+
   it('fails a run below spec 10 with a clear error', async () => {
-    const { world } = await setupOrchestratorRun(sequential, [1]);
+    const { world } = await setupOrchestratorRun(sequential, [1], {}, engine);
     await world.runOnClock();
 
     expect(eventsOf(world, 'rate_created')).toHaveLength(0);
@@ -236,7 +341,9 @@ describe('experimental_rateLimit() on the single orchestrator', () => {
   }, 60_000);
 });
 
-describe('waiting in process for a near rate limit slot', () => {
+describe.each(
+  ENGINES
+)('waiting in process for a near rate limit slot (%s)', (engine) => {
   const isTimerFor = (message: unknown, correlationId: string) =>
     (message as { waitContinuation?: { correlationId?: string } })
       .waitContinuation?.correlationId === correlationId;
@@ -250,16 +357,22 @@ describe('waiting in process for a near rate limit slot', () => {
     );
     const timerBeforeAcquired: boolean[] = [];
     let held: AppendOnlyWorld | undefined;
-    const { world } = await setupOrchestratorRun(halfSecond, [3], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-      beforeCreate: (data: { eventType: string; correlationId?: string }) => {
-        if (data.eventType !== 'rate_acquired' || !data.correlationId) return;
-        const id = data.correlationId;
-        timerBeforeAcquired.push(
-          held?.queueCalls.some((call) => isTimerFor(call.message, id)) ?? false
-        );
+    const { world } = await setupOrchestratorRun(
+      halfSecond,
+      [3],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+        beforeCreate: (data: { eventType: string; correlationId?: string }) => {
+          if (data.eventType !== 'rate_acquired' || !data.correlationId) return;
+          const id = data.correlationId;
+          timerBeforeAcquired.push(
+            held?.queueCalls.some((call) => isTimerFor(call.message, id)) ??
+              false
+          );
+        },
       },
-    });
+      engine
+    );
     held = world;
     await world.runOnClock();
 
@@ -289,28 +402,33 @@ describe('waiting in process for a near rate limit slot', () => {
     const skewMs = 60;
     let refused = 0;
     let held: AppendOnlyWorld | undefined;
-    const { world } = await setupOrchestratorRun(halfSecond, [3], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-      beforeCreate: (data: {
-        eventType: string;
-        eventData?: { createdSlot?: number };
-      }) => {
-        const slot = data.eventData?.createdSlot;
-        if (data.eventType !== 'rate_acquired' || slot === undefined) return;
-        const created = held?.events.find(
-          (event) => event.eventId === slotToEventId(slot)
-        );
-        const acquireAt = new Date(
-          dataOf(created)?.acquireAt as Date
-        ).getTime();
-        if (Date.now() - skewMs < acquireAt) {
-          refused++;
-          throw new TooEarlyError('not due by the World clock', {
-            retryAfter: 1,
-          });
-        }
+    const { world } = await setupOrchestratorRun(
+      halfSecond,
+      [3],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+        beforeCreate: (data: {
+          eventType: string;
+          eventData?: { createdSlot?: number };
+        }) => {
+          const slot = data.eventData?.createdSlot;
+          if (data.eventType !== 'rate_acquired' || slot === undefined) return;
+          const created = held?.events.find(
+            (event) => event.eventId === slotToEventId(slot)
+          );
+          const acquireAt = new Date(
+            dataOf(created)?.acquireAt as Date
+          ).getTime();
+          if (Date.now() - skewMs < acquireAt) {
+            refused++;
+            throw new TooEarlyError('not due by the World clock', {
+              retryAfter: 1,
+            });
+          }
+        },
       },
-    });
+      engine
+    );
     held = world;
     await world.runOnClock();
 
@@ -334,9 +452,14 @@ describe('waiting in process for a near rate limit slot', () => {
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     // One per 3s: the second call's slot is 3s out, past the 2s window.
     const threeSeconds = sequential.replace('period: "1s"', 'period: "3s"');
-    const { world } = await setupOrchestratorRun(threeSeconds, [2], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      threeSeconds,
+      [2],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     await world.runOnClock();
 
     const [, waited] = eventsOf(world, 'rate_acquired');
@@ -366,9 +489,14 @@ describe('waiting in process for a near rate limit slot', () => {
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS', '5000');
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
-    const { world } = await setupOrchestratorRun(racedAgainstSleep, [], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      racedAgainstSleep,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     await world.runOnClock();
 
     expect(await runResult(world)).toBe('sleep');
@@ -383,9 +511,14 @@ describe('waiting in process for a near rate limit slot', () => {
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS', '100');
     vi.useFakeTimers({ toFake: ['Date'] });
-    const { world } = await setupOrchestratorRun(sequential, [2], {
-      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
-    });
+    const { world } = await setupOrchestratorRun(
+      sequential,
+      [2],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      },
+      engine
+    );
     await world.runOnClock();
     expect(eventsOf(world, 'rate_acquired')).toHaveLength(2);
     // The one wait was a delivered timer.

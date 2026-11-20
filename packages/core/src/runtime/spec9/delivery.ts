@@ -196,6 +196,8 @@ import {
   LiveLogFeed,
   lingerKindOf,
   orchestratorLingerUntil,
+  RATE_SLOT_MARGIN_MS,
+  RATE_TOO_EARLY_RETRY_MS,
 } from './live-feed.js';
 import { EventLogIndex } from './log-index.js';
 import {
@@ -5598,23 +5600,6 @@ async function runDelivery(
     return undefined;
   }
 }
-
-/**
- * How long past a rate limit call's slot an in-process wait ends
- * (`waitForNearRateSlot`): a World whose clock is a few milliseconds behind
- * this one refuses a `rate_acquired` at the slot itself as too early, and
- * that costs a whole-second queue timer.
- */
-const RATE_SLOT_MARGIN_MS = 15;
-
-/**
- * The in-process backoffs (ms) of a `rate_acquired` the World refuses as too
- * early (`acquireRate`): its clock is behind this one by more than
- * {@link RATE_SLOT_MARGIN_MS}. About 150 ms in all, after which the call's
- * queue timer takes over. The World never grants a slot early, so these only
- * trade latency, never correctness.
- */
-const RATE_TOO_EARLY_RETRY_MS = [10, 20, 40, 80] as const;
 
 /** The spec 9 orchestrator, for the shared entrypoint. */
 export const spec9Orchestrator: Orchestrator = {
