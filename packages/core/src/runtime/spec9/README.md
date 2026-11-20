@@ -164,7 +164,7 @@ Settings that exist only for spec 9 runs:
 
 - Default: `10`
 - Clamp: `0` to `16`
-- Node.js VM engine only. When no other writer could change what the workflow does next (no awaited hook, no `AbortController`, no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits, and at most this many outcomes are unconfirmed at once. Writes still land in order. See [Run-ahead](#run-ahead).
+- Node.js VM engine only. When no other writer could change what the workflow does next (no awaited hook, no `AbortController` other than an in-band-only one, no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits, and at most this many outcomes are unconfirmed at once. Writes still land in order. See [Run-ahead](#run-ahead).
 - A refused or failed write stops the delivery's decisions; it reloads the log and replays from cold with run-ahead off. A path-changing event landing below a speculative write is detected the same way but may already have been decided around: it is logged at error level with `possibleLogCorruption: true` and counted in `workflow.run_ahead.hazard_stops`. Report one with the workflow's code.
 - `0` disables run-ahead.
 
@@ -458,7 +458,7 @@ At each suspension that schedules inline steps, the delivery classifies who else
 flowchart TD
     A["Boundary schedules inline steps"] --> B{"Depth above 0, and run-ahead not off for this World or delivery?"}
     B -->|"no"| AW["Awaited writes"]
-    B -->|"yes"| C{"An awaited or unknown hook, an abort-signal hook, a step running elsewhere, or a wait due within the inline window plus 30 s?"}
+    B -->|"yes"| C{"An awaited or unknown hook, an abort-signal hook (other than an in-band-only one), a step running elsewhere, or a wait due within the inline window plus 30 s?"}
     C -->|"yes"| DR["Not inert: drain speculative writes, fold what landed below, then decide"]
     C -->|"no"| G["Inert: run ahead"]
     G --> H{"All new steps inline, no wait, World has createBatch, at most 16 events, none with maxRetries 0?"}
@@ -466,7 +466,7 @@ flowchart TD
     H -->|"no"| PC["Creations committed first, outcomes still run ahead"]
 ```
 
-A hook the workflow created but does not await is inert on node:vm: its payload is buffered and moves neither step results nor the clock (on QuickJS it moves the clock; see the clock gate below). A wait is classified by time, since whether anything still awaits a sleep cannot be told; only the orchestrator writes `wait_completed` on spec 9, so a far-future wait is inert. At an inert boundary the outcome is placed at the slot the writer predicts and handed to the VM while the write is in flight, with `occurredAt` set to the time the workflow used.
+An `AbortController` created with `new AbortController({ inBandOnly: true })` can't leave workflow code (serializing the controller throws; its `signal` still can), so only the orchestrator ever writes its `hook_received`, in order with its other writes. On node:vm its hook is classified like any other hook instead of as an abort-signal hook. QuickJS keeps treating it as path-changing. A hook the workflow created but does not await is inert on node:vm: its payload is buffered and moves neither step results nor the clock (on QuickJS it moves the clock; see the clock gate below). A wait is classified by time, since whether anything still awaits a sleep cannot be told; only the orchestrator writes `wait_completed` on spec 9, so a far-future wait is inert. At an inert boundary the outcome is placed at the slot the writer predicts and handed to the VM while the write is in flight, with `occurredAt` set to the time the workflow used.
 
 #### Where a speculative event is placed
 
@@ -493,7 +493,7 @@ A displaced write commits above its predicted slot, and that slot's event id the
 
 | Event below a speculative write | Hazard when |
 |---|---|
-| `hook_received`, `hook_disposed`, `hook_conflict` | the hook was sensitive at a boundary still in flight: awaited, unknown, or an abort-signal hook |
+| `hook_received`, `hook_disposed`, `hook_conflict` | the hook was sensitive at a boundary still in flight: awaited, unknown, or an abort-signal hook other than an in-band-only one |
 | `step_started`, `step_completed`, `step_failed`, `step_retrying` | the step is not one this delivery runs inline |
 | `wait_completed` | always: on spec 9 only the orchestrator completes waits (world-vercel refuses an out-of-band one with 409 `wait-completion-in-band-only`) |
 | anything else (`run_cancelled`, `attr_set`, `noop`) | never |

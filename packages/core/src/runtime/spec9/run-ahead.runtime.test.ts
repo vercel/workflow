@@ -188,6 +188,19 @@ const withAbortSignal = `const inc = ${step};
     return controller.signal.aborted ? -1 : n;
   }${registerWorkflow()}`;
 
+// An AbortController only workflow code aborts (`{ inBandOnly: true }`),
+// optionally aborted halfway through the loop.
+const withInBandOnlyAbort = (abortHalfway: boolean) => `const inc = ${step};
+  async function workflow(steps) {
+    const controller = new AbortController({ inBandOnly: true });
+    let n = 0;
+    for (let i = 0; i < steps; i++) {
+      ${abortHalfway ? 'if (i === Math.floor(steps / 2)) controller.abort("halfway");' : ''}
+      n = await inc(controller.signal.aborted ? n + 100 : n);
+    }
+    return n;
+  }${registerWorkflow()}`;
+
 // The child-run completion system hook (`child-run-completion.ts`), kept
 // open between waits, with or without a `then()` waiting on it.
 const withCompletionHook = (waiting: boolean) => `const inc = ${step};
@@ -1134,6 +1147,31 @@ describe.each([
     expect(await runResult(world)).toBe(STEPS);
     expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
   });
+
+  // node:vm only: QuickJS has no awaiter tracking, so it keeps every open
+  // hook path-changing.
+  it.runIf(vm === 'node')(
+    'runs ahead with an in-band-only AbortController open',
+    async () => {
+      const { world } = await run(withInBandOnlyAbort(false), [STEPS]);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(STEPS);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    'runs ahead past an in-band-only abort from workflow code, and a replay decides the same',
+    async () => {
+      const source = withInBandOnlyAbort(true);
+      const { world } = await run(source, [STEPS]);
+      await world.runUntilIdle();
+      const live = await runResult(world);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      const cold = await coldReplay(world, source);
+      expect(cold.result).toEqual(live);
+    }
+  );
 
   // Why the parent can keep its completion hook open between waits
   // (`child-run-completion.ts`): unlike an abort hook, it is path-changing
