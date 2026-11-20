@@ -104,7 +104,7 @@ describe('createRateLimit', () => {
     [{ ...CALL, limit: 0 }, /positive integer/],
     [{ ...CALL, period: 'soon' }, /invalid period/],
     [{ ...CALL, period: '2d' }, /24 hours/],
-    [{ ...CALL, timeout: -1 }, /invalid timeout/],
+    [{ ...CALL, maxWait: -1 }, /invalid maxWait/],
     [{ ...CALL, burst: 'yes' }, /burst must be true or false/],
   ])('refuses %o', async (options, message) => {
     const { rateLimit, ctx } = rateLimitFor([]);
@@ -114,7 +114,7 @@ describe('createRateLimit', () => {
 
   it('queues the call and suspends when the log holds nothing for it', async () => {
     const { rateLimit, ctx, errorReceived } = rateLimitFor([]);
-    void rateLimit({ ...CALL, timeout: '30s' });
+    void rateLimit({ ...CALL, maxWait: '30s' });
     expect(await errorReceived.promise).toBeInstanceOf(WorkflowSuspension);
     const item = ctx.invocationsQueue.get(CID);
     expect(item).toMatchObject({
@@ -123,7 +123,7 @@ describe('createRateLimit', () => {
       limit: 60,
       periodMs: 60_000,
     });
-    // The deadline is the workflow's clock plus the timeout.
+    // The deadline is the workflow's clock plus the maxWait.
     if (item?.type !== 'rate') throw new Error('not a rate item');
     expect(item.expiresAt.getTime()).toBe(ctx.globalThis.Date.now() + 30_000);
     expect(item.hasCreatedEvent).toBeUndefined();
@@ -150,7 +150,7 @@ describe('createRateLimit', () => {
     }
   });
 
-  it('waits up to 30 days without a timeout, and no longer with one', async () => {
+  it('waits up to 30 days without a maxWait, and no longer with one', async () => {
     const { rateLimit, ctx, errorReceived } = rateLimitFor([]);
     void rateLimit(CALL);
     await errorReceived.promise;
@@ -161,7 +161,7 @@ describe('createRateLimit', () => {
     );
 
     const long = rateLimitFor([]);
-    void long.rateLimit({ ...CALL, timeout: '90d' });
+    void long.rateLimit({ ...CALL, maxWait: '90d' });
     await long.errorReceived.promise;
     const capped = long.ctx.invocationsQueue.get(CID);
     if (capped?.type !== 'rate') throw new Error('not a rate item');

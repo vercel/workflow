@@ -21,7 +21,7 @@ import { resolveRateLimitCall } from './rate-limit-call.js';
  *   the reserved slot had passed.
  * - `rate_created` with `acquireAt`: the slot is later. The call stays
  *   pending, and the run sleeps until then like a `sleep()`.
- * - `rate_failed`: the slot is past the call's timeout. The call rejects with
+ * - `rate_failed`: the slot is past the call's `maxWait`. The call rejects with
  *   `RateLimitTimeoutError`, having reserved nothing.
  */
 export function createRateLimit(
