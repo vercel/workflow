@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   RUN_ERROR_CODES,
+  TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -899,6 +900,60 @@ describe('a rate limit write beside run-ahead writes', () => {
     const error = (settled[1] as PromiseRejectedResult).reason;
     expect(WorkflowWorldError.is(error)).toBe(true);
     expect((error as WorkflowWorldError).status).toBe(503);
+    expect(writer.isStopped).toBe(false);
+  });
+
+  it('does not count a refusal behind another item against the resends', async () => {
+    let batch = -1;
+    let refusedInBatch = false;
+    const world: AppendOnlyWorld = seeded({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+      // Each batch's first item is too early; the World puts nothing after
+      // a refused rate item, so every later one is refused behind it.
+      refuseBatchedRate: () => {
+        if (world.batches.length !== batch) {
+          batch = world.batches.length;
+          refusedInBatch = false;
+        }
+        if (refusedInBatch) {
+          return { status: 409, error: 'batch-earlier-position-failed' };
+        }
+        refusedInBatch = true;
+        return { status: 425, error: 'TooEarlyError' };
+      },
+    });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    const settled = await Promise.allSettled(
+      ['rate_1', 'rate_2', 'rate_3', 'rate_4'].map((cid) =>
+        writer.create(rateCreated(cid))
+      )
+    );
+
+    // rate_4 is refused behind another item three times, one more than the
+    // resends a refusal of its own gets, and still lands, alone.
+    expect(world.batches).toEqual([
+      ['rate_created', 'rate_created', 'rate_created', 'rate_created'],
+      ['rate_created', 'rate_created', 'rate_created'],
+      ['rate_created', 'rate_created'],
+    ]);
+    expect(settled.map((s) => s.status)).toEqual([
+      'rejected',
+      'rejected',
+      'rejected',
+      'fulfilled',
+    ]);
+    for (const refused of settled.slice(0, 3)) {
+      expect(TooEarlyError.is((refused as PromiseRejectedResult).reason)).toBe(
+        true
+      );
+    }
     expect(writer.isStopped).toBe(false);
   });
 });
