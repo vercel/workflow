@@ -624,12 +624,15 @@ describe.skipIf(skip)('rate limits on the Postgres World', () => {
   it('declares rateLimits, and mints spec 10 on request', async () => {
     const previous = process.env.WORKFLOW_SPEC_VERSION;
     process.env.WORKFLOW_SPEC_VERSION = '10';
+    // Closed after: creating it opens the streamer's LISTEN connection,
+    // which the container's stop in afterAll would otherwise terminate.
+    const world = createWorld({ pool });
     try {
-      const world = createWorld({ pool });
       expect(world.capabilities?.rateLimits).toBe(true);
       expect(world.capabilities?.rateEventsInBatch).toBeUndefined();
       expect(world.specVersion).toBe(SPEC_VERSION_RATE_LIMITS);
     } finally {
+      await world.close?.();
       if (previous === undefined) delete process.env.WORKFLOW_SPEC_VERSION;
       else process.env.WORKFLOW_SPEC_VERSION = previous;
     }
