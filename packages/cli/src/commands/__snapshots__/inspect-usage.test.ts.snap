@@ -19,7 +19,7 @@ Hooks  1 hook                                 2     5%  █░░░░░░░
 Run                                           3     8%  █░░░░░░░░░
 TOTAL                                        37   100%
 
-How events are counted: https://workflow-sdk.dev/docs/observability#how-events-are-counted
+How usage is counted: https://workflow-sdk.dev/docs/observability/usage
 
 STORAGE (LOCAL)     SIZE
 Run                 20 B

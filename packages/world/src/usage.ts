@@ -30,9 +30,9 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
 export const WORKFLOW_PRICING_DOCS_URL =
   'https://vercel.com/docs/workflows/pricing';
 
-/** The docs section on what each event of a run is, and how it counts. */
-export const USAGE_COUNTING_DOCS_URL =
-  'https://workflow-sdk.dev/docs/observability#how-events-are-counted';
+/** The docs page on a run's usage: what it counts, and how. */
+export const USAGE_DOCS_URL =
+  'https://workflow-sdk.dev/docs/observability/usage';
 
 /** How many children a group of rows shows before folding the rest. */
 const USAGE_SPANS_SHOWN = 5;

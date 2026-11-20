@@ -3,7 +3,7 @@ import {
   formatUsageFooter,
   type RunUsage,
   type RunUsageAggregates,
-  USAGE_COUNTING_DOCS_URL,
+  USAGE_DOCS_URL,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
@@ -59,7 +59,7 @@ describe('formatRunUsageText', () => {
       Run                                             3    12%  █░░░░░░░░░
       TOTAL                                          25   100%
 
-      How events are counted: https://workflow-sdk.dev/docs/observability#how-events-are-counted
+      How usage is counted: https://workflow-sdk.dev/docs/observability/usage
 
       STORAGE (LOCAL)     SIZE
       Run                510 B
@@ -75,9 +75,7 @@ describe('formatRunUsageText', () => {
     const usage = usageOf();
     const text = formatRunUsageText(usage);
     expect(text).toContain(formatUsageFooter(usage));
-    expect(text).toContain(
-      `How events are counted: ${USAGE_COUNTING_DOCS_URL}`
-    );
+    expect(text).toContain(`How usage is counted: ${USAGE_DOCS_URL}`);
     // The counting explanation is in the docs, not printed.
     expect(text).not.toMatch(/steps? wrote|retr(y|ies) added|A retry adds/);
   });
