@@ -321,8 +321,8 @@ export class InBandWriter {
     data: T,
     params?: CreateEventParams
   ): Promise<EventResult<T['eventType']>> {
-    if (this.mayJoinOpenGroup(data)) {
-      return this.joinOpenGroup(data, params ?? {}) as Promise<
+    if (this.batchesRateWrite(data)) {
+      return this.writeRate(data, params ?? {}, 0) as Promise<
         EventResult<T['eventType']>
       >;
     }
@@ -330,45 +330,51 @@ export class InBandWriter {
   }
 
   /**
-   * Whether `data` may ride in the run-ahead group waiting for its turn, as
-   * its last write, instead of waiting behind it for a turn of its own. A
-   * rate limit call's write (`rate_created`, or `rate_acquired` after a
-   * wait) comes right after the speculative outcome of the step before it,
-   * so this saves the call a whole round trip. Only on a World whose batch
-   * decides a rate event the way a single write does
-   * (`WorldCapabilities.rateEventsInBatch`).
+   * Whether `data` is a rate limit call's write (`rate_created`, or
+   * `rate_acquired` after a wait) on a World whose batch decides a rate event
+   * the way a single write does (`WorldCapabilities.rateEventsInBatch`):
+   * such a write goes out in a group, beside the writes it does not depend
+   * on (see {@link writeRate}).
    */
-  private mayJoinOpenGroup(data: CreateEventRequest): boolean {
-    const group = this.openGroup;
+  private batchesRateWrite(data: CreateEventRequest): boolean {
     return (
       (data.eventType === 'rate_created' ||
         data.eventType === 'rate_acquired') &&
       this.world.capabilities?.rateEventsInBatch === true &&
-      this.supportsBatch &&
-      group !== undefined &&
-      groupSize(group) + 1 <= MAX_BATCH_EVENTS &&
-      groupBytes(group) + creationBatchBytes(data) <=
-        MAX_IN_BAND_CREATION_BATCH_BYTES
+      this.supportsBatch
     );
   }
 
   /**
-   * Adds `data` to the open run-ahead group as its last write and closes the
-   * group, so nothing is sent after it in the batch. It keeps the outcome of
-   * a write of its own: a refusal of it rejects this call with the World's
-   * error and leaves the writer as it was (see {@link sendGroup}), as a
-   * refused {@link create} does. Positions are counted as for any batch: the
-   * World seals a refused item's position, or reports `allocated`.
+   * Sends a rate limit call's write in a group rather than in a turn of its
+   * own:
+   *
+   * - It joins the open group when it fits: after the speculative outcome of
+   *   the step before it (which saves the call a whole round trip), or after
+   *   the writes of the calls made beside it (`Promise.all`), so several
+   *   calls go out in one batch rather than one round trip after another.
+   * - Otherwise it opens a group of its own, which the next calls' writes
+   *   join until its turn comes. Alone in it, it goes out as a single write.
+   *
+   * Once a rate write is in a group, only rate writes join it after it: a
+   * run-ahead write made later may depend on what the call decides, while
+   * another call's write in flight beside it cannot.
+   *
+   * It keeps the outcome of a write of its own: a refusal of it rejects this
+   * call with the World's error and leaves the writer as it was (see
+   * {@link sendGroup}), as a refused {@link create} does, except a refusal
+   * that says nothing was reserved or committed for it
+   * ({@link RATE_RESEND_ERRORS}), which sends it again in the next group.
+   * Positions are counted as for any batch: the World seals a refused item's
+   * position, or reports `allocated`.
    */
-  private joinOpenGroup(
+  private writeRate(
     data: CreateEventRequest,
-    params: CreateEventParams
+    params: CreateEventParams,
+    resends: number
   ): Promise<EventResult> {
-    const group = this.openGroup;
-    if (!group) return this.write(data, params, false);
     return new Promise((resolve, reject) => {
-      this.pendingPositions += 1;
-      group.push({
+      const member: AheadWrite = {
         kind: 'single',
         events: [
           {
@@ -384,10 +390,24 @@ export class InBandWriter {
         params,
         verify: () => {},
         own: true,
+        resends,
         resolve: resolve as (result: EventResult | EventBatchResult) => void,
         reject,
-      });
-      this.openGroup = undefined;
+      };
+      this.pendingPositions += 1;
+      const group = this.openGroup;
+      if (
+        group &&
+        groupSize(group) + 1 <= MAX_BATCH_EVENTS &&
+        groupBytes(group) + creationBatchBytes(data) <=
+          MAX_IN_BAND_CREATION_BATCH_BYTES
+      ) {
+        group.push(member);
+        return;
+      }
+      const own = [member];
+      this.serialize(0, () => this.sendGroup(own)).catch(() => {});
+      this.openGroup = own;
     });
   }
 
@@ -669,6 +689,8 @@ export class InBandWriter {
       this.pendingPositions += member.events.length;
       if (
         this.openGroup &&
+        // Never behind a rate limit call's write (see writeRate).
+        this.openGroup.at(-1)?.own !== true &&
         groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS &&
         groupBytes(this.openGroup) + groupBytes([member]) <=
           MAX_IN_BAND_CREATION_BATCH_BYTES
@@ -819,6 +841,20 @@ export class InBandWriter {
           if (write.kind === 'single') {
             const item = slice[0];
             if (write.own === true && item && item.error !== undefined) {
+              const resends = write.resends ?? 0;
+              if (
+                RATE_RESEND_ERRORS.has(item.error) &&
+                resends < MAX_RATE_RESENDS
+              ) {
+                // Nothing was reserved or committed for it: sent again, in
+                // the next group, with the others sent again beside it.
+                this.writeRate(
+                  write.events[0]!.event,
+                  write.params as CreateEventParams,
+                  resends + 1
+                ).then(write.resolve, write.reject);
+                continue;
+              }
               // Its own refusal, as a single write's: the writer goes on.
               write.reject(refusalOf(item, write.events[0]?.event.eventType));
               continue;
@@ -1161,10 +1197,12 @@ function groupBytes(group: AheadWrite[]): number {
 interface AheadWrite {
   kind: 'single' | 'batch';
   /**
-   * A write with an outcome of its own that joined the group as its last
-   * write ({@link InBandWriter.joinOpenGroup}): its refusal rejects it alone.
+   * A rate limit call's write, with an outcome of its own
+   * ({@link InBandWriter.writeRate}): its refusal rejects it alone.
    */
   own?: boolean;
+  /** How many times an `own` write was sent again ({@link RATE_RESEND_ERRORS}). */
+  resends?: number;
   events: BatchEventRequest[];
   params: CreateEventParams | Omit<CreateEventBatchParams, 'inBand'>;
   verify: (result: EventResult | EventBatchResult) => void;
@@ -1192,6 +1230,27 @@ export function withWrittenEventData<E extends Event>(
     eventData: fresh ? { ...stored, ...sent } : { ...sent, ...stored },
   };
 }
+
+/**
+ * Refusals of a rate limit call's write in a batch that say nothing was
+ * reserved or committed for it, so the writer sends it again
+ * ({@link InBandWriter.writeRate}) rather than failing the call:
+ *
+ * - `rate-batch-deferred` (503): the batch ran out of time to decide it;
+ * - `rate-decision-failed` (503): its key's reservation failed (throttled,
+ *   or not settled under contention);
+ * - `batch-earlier-position-failed` (409): an earlier in-band item of the
+ *   batch was refused, such as another call's `rate_acquired` before its
+ *   slot.
+ */
+const RATE_RESEND_ERRORS: ReadonlySet<string> = new Set([
+  'rate-batch-deferred',
+  'rate-decision-failed',
+  'batch-earlier-position-failed',
+]);
+
+/** How many times a rate limit call's write is sent again before it fails. */
+const MAX_RATE_RESENDS = 2;
 
 /**
  * The error a refused batch item stands for, as the single-event write would

@@ -740,4 +740,165 @@ describe('a rate limit write beside run-ahead writes', () => {
     expect(world.events.at(-1)?.correlationId).toBe('next');
     expect(writer.isSuperseded).toBe(false);
   });
+
+  it('sends rate writes made at once in one batch', async () => {
+    const world = seeded({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+    });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    const results = await Promise.all(
+      ['rate_1', 'rate_2', 'rate_3'].map((cid) =>
+        writer.create(rateCreated(cid))
+      )
+    );
+
+    expect(world.batches).toEqual([
+      ['rate_created', 'rate_created', 'rate_created'],
+    ]);
+    // Each call gets its own answer, in request order.
+    expect(results.map((r) => r.event?.correlationId)).toEqual([
+      'rate_1',
+      'rate_2',
+      'rate_3',
+    ]);
+    expect(writer.expectedSeqInBand).toBe(4);
+  });
+
+  it('sends a lone rate write as a single write', async () => {
+    const world = seeded({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+    });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    const result = await writer.create(rateCreated('rate_1'));
+
+    expect(world.batches).toEqual([]);
+    expect(result.event?.eventType).toBe('rate_acquired');
+  });
+
+  it('joins the calls queued behind a write in flight, and no run-ahead write after them', async () => {
+    const { world, writer, release } = await ready({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+    });
+    const inFlight = writer.create(waitCreated('first'));
+    const ahead = writer.createAhead(waitCreated('ahead'), {}, () => {});
+    const rates = [
+      writer.create(rateCreated('rate_1')),
+      writer.create(rateCreated('rate_2')),
+    ];
+    const after = writer.createAhead(waitCreated('after'), {}, () => {});
+    await release();
+    await Promise.all([inFlight, ahead, after, ...rates]);
+
+    expect(world.batches).toEqual([
+      ['wait_created', 'rate_created', 'rate_created'],
+    ]);
+    expect(world.events.slice(1).map((e) => e.correlationId)).toEqual([
+      'first',
+      'ahead',
+      'rate_1',
+      'rate_2',
+      'after',
+    ]);
+  });
+
+  it('sends again a rate write the World refused before deciding it', async () => {
+    const refused = new Set<string>();
+    const world = seeded({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+      // The first time it sees rate_2: deferred, nothing reserved.
+      refuseBatchedRate: (event) => {
+        const cid = event.correlationId ?? '';
+        if (cid !== 'rate_2' || refused.has(cid)) return undefined;
+        refused.add(cid);
+        return { status: 503, error: 'rate-batch-deferred' };
+      },
+    });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    const results = await Promise.all(
+      ['rate_1', 'rate_2', 'rate_3'].map((cid) =>
+        writer.create(rateCreated(cid))
+      )
+    );
+
+    // Sent again on its own: a lone write goes out as a single write.
+    expect(world.batches).toEqual([
+      ['rate_created', 'rate_created', 'rate_created'],
+    ]);
+    expect(results.map((r) => r.event?.correlationId)).toEqual([
+      'rate_1',
+      'rate_2',
+      'rate_3',
+    ]);
+    expect(
+      world.events
+        .filter((e) => e.eventType !== 'noop')
+        .slice(1)
+        .map((e) => e.correlationId)
+    ).toEqual(['rate_1', 'rate_3', 'rate_2']);
+    expect(writer.isStopped).toBe(false);
+    // The next write carries the right expected count and lands.
+    await writer.create(waitCreated('next'));
+    expect(world.events.at(-1)?.correlationId).toBe('next');
+  });
+
+  it('fails a rate write the World keeps refusing before deciding it', async () => {
+    const world = seeded({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+      refuseBatchedRate: (event) =>
+        event.correlationId === 'rate_1'
+          ? undefined
+          : { status: 503, error: 'rate-decision-failed' },
+    });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    // Two refused calls, so each resend goes out as a batch again.
+    const settled = await Promise.allSettled(
+      ['rate_1', 'rate_2', 'rate_3'].map((cid) =>
+        writer.create(rateCreated(cid))
+      )
+    );
+
+    expect(world.batches).toEqual([
+      ['rate_created', 'rate_created', 'rate_created'],
+      ['rate_created', 'rate_created'],
+      ['rate_created', 'rate_created'],
+    ]);
+    expect(settled.map((s) => s.status)).toEqual([
+      'fulfilled',
+      'rejected',
+      'rejected',
+    ]);
+    const error = (settled[1] as PromiseRejectedResult).reason;
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect((error as WorkflowWorldError).status).toBe(503);
+    expect(writer.isStopped).toBe(false);
+  });
 });

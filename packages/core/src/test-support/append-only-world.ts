@@ -8,6 +8,7 @@ import {
 import {
   type BatchEventRequest,
   type CreateEventParams,
+  type CreateEventRequest,
   decideRateLimit,
   decideRateWake,
   type Event,
@@ -265,6 +266,14 @@ export class AppendOnlyWorld {
        * refused whole, as a World without the capability refuses it.
        */
       rateEventsInBatch?: boolean;
+      /**
+       * Refuses a rate event in a batch before deciding it, reserving
+       * nothing, when this returns a refusal: as the backend answers one it
+       * had no time to decide (503 `rate-batch-deferred`).
+       */
+      refuseBatchedRate?: (
+        event: CreateEventRequest
+      ) => { status: number; error: string } | undefined;
       /**
        * Honor `resolveData: 'skip-step-inputs'` on replay pages (list pages
        * and skipped-slot reports): `step_created` and `step_started` are
@@ -1132,6 +1141,11 @@ export class AppendOnlyWorld {
           data.eventType === 'rate_created' ||
           data.eventType === 'rate_acquired'
         ) {
+          const refusal = this.options.refuseBatchedRate?.(data);
+          if (refusal) {
+            this.append({ eventType: 'noop' } as Partial<Event>);
+            return { ...refusal, message: 'refused before it was decided' };
+          }
           try {
             const rate = this.committedRate(data as Partial<Event>);
             rate.reserve?.();
