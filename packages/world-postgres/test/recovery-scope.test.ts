@@ -4,7 +4,7 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { Pool } from 'pg';
 import { ulid } from 'ulid';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createWorld } from '../src/index.js';
 import { MessageData } from '../src/message.js';
@@ -134,6 +134,66 @@ describe('startup recovery scope', () => {
     } finally {
       await worldA.close();
       await worldB.close();
+    }
+  });
+
+  test('a World with skipWorkers enqueues but leaves recovery to worker processes', async () => {
+    const sender = createWorld({
+      pool,
+      jobPrefix: 'app_d_',
+      skipWorkers: true,
+    });
+    const worker = createWorld({ pool, jobPrefix: 'app_d_' });
+
+    const interrupted = `wrun_${ulid()}`;
+    const sent = `wrun_${ulid()}`;
+    await sender.events.create(interrupted, runEvent('run_created'));
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await sender.start();
+      expect(await queuedRunIds('app_d_flows')).not.toContain(interrupted);
+      // Says what its runs need, since they stay pending without such workers.
+      expect(info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'jobPrefix "app_d_" and deploymentId "postgres"'
+        )
+      );
+
+      // Starting a run or resuming a hook sends a message like this one.
+      await sender.queue(
+        '__wkf_workflow_recovery-scope-test' as never,
+        {
+          runId: sent,
+        } as never
+      );
+      expect(await queuedRunIds('app_d_flows')).toContain(sent);
+
+      await worker.start();
+      expect(await queuedRunIds('app_d_flows')).toContain(interrupted);
+    } finally {
+      info.mockRestore();
+      await sender.close();
+      await worker.close();
+    }
+  });
+
+  test('a pinned World with skipWorkers logs the configured prefix, not the effective one', async () => {
+    const sender = createWorld({
+      pool,
+      jobPrefix: 'app_e_',
+      deploymentId: 'v1',
+      skipWorkers: true,
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      await sender.start();
+      // Its jobs go to `app_e_v1_flows`, but the workers set `app_e_`.
+      expect(info).toHaveBeenCalledWith(
+        expect.stringContaining('jobPrefix "app_e_" and deploymentId "v1"')
+      );
+    } finally {
+      info.mockRestore();
+      await sender.close();
     }
   });
 
