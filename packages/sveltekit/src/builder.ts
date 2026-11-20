@@ -5,6 +5,7 @@ import {
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  removeGeneratedDir,
   resolveProjectRoot,
   type SvelteKitConfig,
   writeFileIfChanged,
@@ -116,11 +117,11 @@ export const POST = async ({request}) => {
 
     // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
     // SvelteKit serves files from static/ at the root URL.
+    const staticManifestDir = join(
+      this.config.workingDir,
+      'static/.well-known/workflow/v1'
+    );
     if (this.shouldExposePublicManifest && manifestJson) {
-      const staticManifestDir = join(
-        this.config.workingDir,
-        'static/.well-known/workflow/v1'
-      );
       await mkdir(staticManifestDir, { recursive: true });
       if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
         await writeFileIfChanged(join(staticManifestDir, '.gitignore'), '*');
@@ -131,6 +132,8 @@ export const POST = async ({request}) => {
         join(staticManifestDir, 'manifest.json'),
         manifestJson
       );
+    } else if (!this.shouldExposePublicManifest) {
+      await removeGeneratedDir(staticManifestDir);
     }
   }
 

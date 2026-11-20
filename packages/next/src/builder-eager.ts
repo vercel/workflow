@@ -167,7 +167,9 @@ export async function getNextBuilderEager(
       // keep answering at its old URL with a frozen workflow list.
       await this.removeStaleGeneratedDirs({
         roots: [outputDir, publicDir],
-        keep: [workflowGeneratedDir, publicManifestDir],
+        keep: this.shouldExposePublicManifest
+          ? [workflowGeneratedDir, publicManifestDir]
+          : [workflowGeneratedDir],
       });
 
       // Ensure output directories exist
