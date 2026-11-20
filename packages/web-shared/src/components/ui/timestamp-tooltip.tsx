@@ -44,17 +44,52 @@ function formatTimeDifference(diff: number): string {
 }
 
 /**
+ * Detailed relative time for a `date` relative to `now`, e.g.
+ * "2 hours, 15 minutes, 30 seconds ago" for past dates and
+ * "in 2 hours, 15 minutes, 30 seconds" for future dates.
+ */
+export function formatTimeAgo(date: number, now: number): string {
+  const diff = now - date;
+  const formattedDiff = formatTimeDifference(diff);
+  if (!formattedDiff) return 'Just now';
+  return diff < 0 ? `in ${formattedDiff}` : `${formattedDiff} ago`;
+}
+
+/**
+ * Short relative time for a `date` relative to `now`, e.g. "3 days ago" for
+ * past dates and "In 3 days" for future dates.
+ */
+export function formatShortTimeAgo(date: number, now: number): string {
+  const diff = now - date;
+  const abs = Math.abs(diff);
+  const days = Math.floor(abs / (1000 * 60 * 60 * 24));
+  const hours = Math.floor(abs / (1000 * 60 * 60));
+  const minutes = Math.floor(abs / (1000 * 60));
+
+  let value: string;
+  if (days > 0) {
+    value = `${days} day${days > 1 ? 's' : ''}`;
+  } else if (hours > 0) {
+    value = `${hours} hour${hours > 1 ? 's' : ''}`;
+  } else if (minutes > 0) {
+    value = `${minutes} minute${minutes > 1 ? 's' : ''}`;
+  } else {
+    return diff < 0 ? 'In less than a minute' : 'Just now';
+  }
+  return diff < 0 ? `In ${value}` : `${value} ago`;
+}
+
+/**
  * Detailed relative time string that auto-updates every second
- * (e.g. "2 hours, 15 minutes, 30 seconds ago"). Used inside the hover card.
+ * (e.g. "2 hours, 15 minutes, 30 seconds ago", or "in 5 minutes, 3 seconds"
+ * for future dates). Used inside the hover card.
  */
 export function useTimeAgo(date: number): string {
   const [timeAgo, setTimeAgo] = useState<string>('');
 
   useEffect(() => {
     const updateTimeAgo = (): void => {
-      const diff = Date.now() - date;
-      const formattedDiff = formatTimeDifference(diff);
-      setTimeAgo(formattedDiff ? `${formattedDiff} ago` : 'Just now');
+      setTimeAgo(formatTimeAgo(date, Date.now()));
     };
 
     updateTimeAgo();
@@ -67,7 +102,8 @@ export function useTimeAgo(date: number): string {
 
 /**
  * Short relative time string that auto-updates every minute
- * (e.g. "3 days ago", "5 hours ago"). Returns an empty string if `date` is
+ * (e.g. "3 days ago", "5 hours ago", "In 2 hours"). Returns an empty
+ * string if `date` is
  * nullish.
  */
 export function useShortTimeAgo(date: number | null | undefined): string {
@@ -80,20 +116,7 @@ export function useShortTimeAgo(date: number | null | undefined): string {
     }
 
     const updateShortTimeAgo = (): void => {
-      const diff = Date.now() - date;
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor(diff / (1000 * 60));
-
-      if (days > 0) {
-        setShortTimeAgo(`${days} day${days > 1 ? 's' : ''} ago`);
-      } else if (hours > 0) {
-        setShortTimeAgo(`${hours} hour${hours > 1 ? 's' : ''} ago`);
-      } else if (minutes > 0) {
-        setShortTimeAgo(`${minutes} minute${minutes > 1 ? 's' : ''} ago`);
-      } else {
-        setShortTimeAgo('Just now');
-      }
+      setShortTimeAgo(formatShortTimeAgo(date, Date.now()));
     };
 
     updateShortTimeAgo();
