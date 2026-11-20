@@ -184,6 +184,15 @@ per flag.
 - Default: disabled
 - Decrypts encrypted values. Triggers an audit-logged key retrieval.
 
+### `--usage`
+
+- Command: `workflow inspect run <run-id>`
+- Default: disabled
+- Prints the run's [usage](/docs/observability/usage) instead of the run: its events by type, and its storage. With `--json`, prints the same numbers as JSON.
+- Only the Local World counts usage; on other backends the command fails rather than printing the run.
+- Cannot be combined with `--url`/`--web`, `--withData`, or `--decrypt`.
+- Prints in color only to a terminal; output is plain text when piped, with `NO_COLOR` set, or with `TERM=dumb`.
+
 ## Bulk cancel
 
 `workflow cancel <run-id>` cancels one run. Given a filter instead, it bulk-cancels a batch; bulk mode requires `--status` or `--workflowName`.
