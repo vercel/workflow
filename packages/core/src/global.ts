@@ -54,6 +54,12 @@ export interface HookInvocationQueueItem {
   disposed?: boolean;
   isWebhook?: boolean;
   isSystem?: boolean;
+  /**
+   * An `AbortController` hook created with `{ inBandOnly: true }`: only
+   * workflow code can abort it, and the controller can never be passed to a
+   * step, so no out-of-band writer can append its `hook_received`.
+   */
+  inBandOnly?: boolean;
   abortRequested?: boolean;
   abortReason?: unknown;
 }

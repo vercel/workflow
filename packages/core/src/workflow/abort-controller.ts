@@ -8,7 +8,11 @@ import {
 import { replayPayloadEventKey } from '../replay-payload-cache.js';
 import { mintHookCorrelationId } from '../runtime/start-hook-binding.js';
 import { hydrateStepReturnValue } from '../serialization.js';
-import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
+import {
+  ABORT_HOOK_TOKEN,
+  ABORT_IN_BAND_ONLY,
+  ABORT_STREAM_NAME,
+} from '../symbols.js';
 import { getAbortStreamId } from '../util.js';
 
 /**
@@ -111,14 +115,21 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     readonly signal: WorkflowAbortSignal;
     readonly [ABORT_STREAM_NAME]: string;
     readonly [ABORT_HOOK_TOKEN]: string;
+    readonly [ABORT_IN_BAND_ONLY]: boolean;
 
-    constructor() {
+    /**
+     * `options.inBandOnly` declares that only workflow code aborts this
+     * controller. Its hook then doesn't stop run-ahead, and passing the
+     * controller itself (rather than its `signal`) to a step throws.
+     */
+    constructor(options?: { inBandOnly?: boolean }) {
       const id = ctx.generateUlid();
       const streamName = getAbortStreamId(id);
       const hookToken = `abrt_${id}`;
 
       this[ABORT_STREAM_NAME] = streamName;
       this[ABORT_HOOK_TOKEN] = hookToken;
+      this[ABORT_IN_BAND_ONLY] = options?.inBandOnly === true;
       this.signal = new WorkflowAbortSignal(streamName, hookToken);
 
       // Register an internal system hook in the invocations queue. Its token
@@ -133,6 +144,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         token: hookToken,
         isWebhook: false,
         isSystem: true,
+        ...(this[ABORT_IN_BAND_ONLY] && { inBandOnly: true }),
       });
 
       // Subscribe to events for this hook's lifecycle

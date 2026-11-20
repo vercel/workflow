@@ -121,6 +121,7 @@ import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   ABORT_HOOK_TOKEN,
+  ABORT_IN_BAND_ONLY,
   ABORT_LISTENER_ATTACHED,
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
@@ -2523,6 +2524,14 @@ export function getWorkflowReducers(
         ) {
           return false;
         }
+      }
+      if (readProperty(value, ABORT_IN_BAND_ONLY) === true) {
+        throw new SerializationError(
+          'An AbortController created with { inBandOnly: true } cannot leave workflow code.',
+          {
+            hint: 'Pass its signal instead. Only workflow code may abort an in-band-only controller.',
+          }
+        );
       }
       const signal = readProperty(value, 'signal');
       if (!signal) return false;
