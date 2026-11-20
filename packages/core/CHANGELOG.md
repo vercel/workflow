@@ -1,5 +1,21 @@
 # @workflow/core
 
+## 5.7.1
+
+### Patch Changes
+
+- [#5502](https://github.com/vercel/workflow/pull/5502) [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62) Thanks [@pranaygp](https://github.com/pranaygp)! - Throw `DynamicWorkflowsNotEnabledError` instead of `WorkflowRuntimeError` when dynamic workflows are not enabled, at `start()` and on delivery, so a run that fails on it is recorded as `USER_ERROR` instead of `RUNTIME_ERROR`. Code that caught this refusal with `WorkflowRuntimeError.is(err)` should check `DynamicWorkflowsNotEnabledError.is(err)` instead.
+
+- [#5618](https://github.com/vercel/workflow/pull/5618) [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - An abort published by a workflow or a step reaches the inline steps running in the same process directly, so a race's loser on a zero-retention run is still aborted when the run's end clears the abort stream before the step reads it.
+
+- [#5643](https://github.com/vercel/workflow/pull/5643) [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Close a remaining spec 9 run-ahead gap: an incremental read of the event log could bring a committed event to a slot the orchestrator held another event's speculative copy at, drop it, and let a pass run before the log was repaired. A read now follows the same rule as the live feed and a write's answer, and the repair runs before the next pass.
+
+- [#5627](https://github.com/vercel/workflow/pull/5627) [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix spec 9 runs that failed with `CORRUPTED_EVENT_LOG` ("Workflow replay diverged …" or "has a hole at slot …"), or never completed, after the orchestrator ran ahead of its writes while the live event feed delivered one of those writes before its answer. The orchestrator then placed later speculative events at the wrong slots, where two events could share an id and one of them, a step's outcome among them, was dropped from the log the workflow consumed. Each position is now counted once, no two events share a slot, a step outcome still being written is taken in before any speculative one placed after it, and a committed event is never dropped in favour of a speculative one.
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62)]:
+  - @workflow/errors@5.1.5
+  - @workflow/world-local@5.5.1
+  - @workflow/world-vercel@5.7.1
+
 ## 5.7.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nitro",
-  "version": "5.0.12",
+  "version": "5.0.13",
   "description": "Nitro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
