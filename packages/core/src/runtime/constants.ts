@@ -519,6 +519,30 @@ export function getOpenWaitClockSkewMs(): number {
 }
 
 /**
+ * The smallest allowance run-ahead's wait check uses, whatever
+ * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` says (proof of concept): a few round
+ * trips, so a wait coming due while the writes in flight commit always counts.
+ */
+export const MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS = 1_000;
+
+/**
+ * Where run-ahead's wait check ends (proof of concept): an open wait whose
+ * `resumeAt` is at or before this makes a boundary path-changing. It is now
+ * plus the allowance (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`, at least
+ * {@link MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS}), capped at the inline deadline plus
+ * that allowance, where the check used to end.
+ */
+export function getRunAheadWaitWindowEndMs(
+  nowMs: number,
+  inlineDeadlineMs: number
+): number {
+  return (
+    Math.min(nowMs, inlineDeadlineMs) +
+    Math.max(getOpenWaitClockSkewMs(), MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS)
+  );
+}
+
+/**
  * Ceiling on events per `createBatch` call the orchestrator makes. A World
  * caps a batch by event count and by bytes (world-vercel: 100 events, and a
  * byte budget over frame meta plus inline-bound payloads) and refuses an

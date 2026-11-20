@@ -65,7 +65,7 @@ import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
-  getOpenWaitClockSkewMs,
+  getRunAheadWaitWindowEndMs,
   isOptimisticInlineStartExplicitlyDisabled,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
@@ -2216,8 +2216,7 @@ async function runQuickJSDelivery(
     const waitWindowEndMs =
       params.inlineDeadlineMs === undefined
         ? Number.POSITIVE_INFINITY
-        : Math.min(params.inlineDeadlineMs, Date.now()) +
-          getOpenWaitClockSkewMs();
+        : getRunAheadWaitWindowEndMs(Date.now(), params.inlineDeadlineMs);
     const items: QueueItem[] = [];
     let waitDue = false;
     for (const op of pendingOperations) {
