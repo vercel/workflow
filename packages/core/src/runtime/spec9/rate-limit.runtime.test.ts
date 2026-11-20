@@ -402,8 +402,12 @@ describe.each(
     );
     // The World's clock is 60 ms behind this one: past the in-process
     // wait's margin, so the first rate_acquired at the slot is too early.
+    // A slow machine (Windows CI) can wake past the skew, so each call's
+    // first rate_acquired is refused whenever it comes: the retry is always
+    // exercised, and still lands at least the skew after the slot.
     const skewMs = 60;
     let refused = 0;
+    const attempted = new Set<number>();
     let held: AppendOnlyWorld | undefined;
     const { world } = await setupOrchestratorRun(
       halfSecond,
@@ -422,7 +426,9 @@ describe.each(
           const acquireAt = new Date(
             dataOf(created)?.acquireAt as Date
           ).getTime();
-          if (Date.now() - skewMs < acquireAt) {
+          const first = !attempted.has(slot);
+          attempted.add(slot);
+          if (first || Date.now() - skewMs < acquireAt) {
             refused++;
             throw new TooEarlyError('not due by the World clock', {
               retryAfter: 1,
