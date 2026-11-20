@@ -6,8 +6,10 @@ import {
   IconRefreshCounterClockwise,
 } from '@vercel/geistdocs/assets/icons';
 import { Button } from '@vercel/geistdocs/components/button';
+import { CodeBlock } from '@vercel/geistdocs/components/code-block';
 import {
   type CSSProperties,
+  Fragment,
   type ReactNode,
   useCallback,
   useEffect,
@@ -133,15 +135,43 @@ const asksFor = (calls: number, arrivals: Arrivals) =>
 const msLabel = (ms: number) =>
   ms >= 1000 ? `${Number((ms / 1000).toFixed(2))}s` : `${Math.round(ms)}ms`;
 
-const callCode = (o: Options) => {
-  const parts = [
-    'key: "api"',
-    `limit: ${o.limit}`,
-    'period: "1s"',
-    ...(o.burst > 1 ? [`burst: ${o.burst}`] : []),
-    ...(o.maxWaitMs !== null ? [`maxWait: "${msLabel(o.maxWaitMs)}"`] : []),
+/**
+ * The call the options make, as highlighted tokens: one line, so it is
+ * tokenized here rather than by Shiki, in the same token colors as the docs'
+ * code blocks.
+ */
+const callTokens = (o: Options): { text: string; color?: string }[] => {
+  const keyword = 'var(--shiki-token-keyword)';
+  const fn = 'var(--shiki-token-function)';
+  const string = 'var(--shiki-token-string)';
+  const number = 'var(--shiki-token-constant)';
+  const punct = 'var(--shiki-token-punctuation)';
+  const fields: [string, string | number][] = [
+    ['key', 'api'],
+    ['limit', o.limit],
+    ['period', '1s'],
+    ...(o.burst > 1 ? [['burst', o.burst] as [string, number]] : []),
+    ...(o.maxWaitMs !== null
+      ? [['maxWait', msLabel(o.maxWaitMs)] as [string, string]]
+      : []),
   ];
-  return `await experimental_rateLimit({ ${parts.join(', ')} })`;
+  const tokens: { text: string; color?: string }[] = [
+    { text: 'await', color: keyword },
+    { text: ' ' },
+    { text: 'experimental_rateLimit', color: fn },
+    { text: '({ ', color: punct },
+  ];
+  fields.forEach(([name, value], i) => {
+    if (i > 0) tokens.push({ text: ', ', color: punct });
+    tokens.push({ text: name }, { text: ': ', color: punct });
+    tokens.push(
+      typeof value === 'number'
+        ? { text: String(value), color: number }
+        : { text: `"${value}"`, color: string }
+    );
+  });
+  tokens.push({ text: ' });', color: punct });
+  return tokens;
 };
 
 // ---------------------------------------------------------------- drawing
@@ -151,10 +181,13 @@ const colors = {
   primary: 'var(--ds-gray-1000)',
   secondary: 'var(--ds-gray-900)',
   work: 'var(--ds-gray-800)',
-  band: 'var(--ds-gray-alpha-200)',
+  // The accent, as in the Workflow SDK 5 explainers: what the key lets go.
+  accent: 'var(--ds-blue-800)',
+  accentStrong: 'var(--ds-blue-900)',
+  band: 'var(--ds-blue-200)',
   gridline: 'var(--ds-gray-alpha-300)',
   guide: 'var(--ds-gray-alpha-700)',
-  playhead: 'var(--ds-gray-alpha-600)',
+  playhead: 'var(--ds-blue-700)',
   halo: 'var(--ds-background-100)',
 };
 const strokeBase: CSSProperties = {
@@ -263,7 +296,7 @@ function Timeline({
         height={12}
         key={`key-slot-${call.run}`}
         rx={1}
-        style={{ fill: colors.work }}
+        style={{ fill: colors.accent }}
         width={3}
         x={x(call.slotAt) - 1.5}
         y={keyY - 6}
@@ -305,7 +338,7 @@ function Timeline({
       <path
         d={`M ${x(shown)} ${keyY - 7} l 6 7 l -6 7 l -6 -7 z`}
         key="key-tat"
-        style={{ fill: colors.primary }}
+        style={{ fill: colors.accentStrong }}
       />,
       <Label
         anchor={nearEnd ? 'end' : 'start'}
@@ -387,7 +420,7 @@ function Timeline({
           height={14}
           key={`go-${call.run}`}
           rx={2}
-          style={{ fill: colors.work }}
+          style={{ fill: colors.accent }}
           width={Math.max(1.5, x(end) - x(call.slotAt))}
           x={x(call.slotAt)}
           y={y - 7}
@@ -739,9 +772,23 @@ export const RateLimitExplainer = () => {
         />
       </div>
 
-      <pre className="m-0 overflow-x-auto rounded-md border border-gray-alpha-400 bg-background-200 px-3 py-2 font-mono text-[13px] text-gray-1000">
-        <code>{callCode(options)}</code>
-      </pre>
+      <CodeBlock className="my-0! min-w-0">
+        {[
+          <Fragment key="call">
+            <span className="line">
+              {callTokens(options).map((token, i) => (
+                <span
+                  // biome-ignore lint/suspicious/noArrayIndexKey: tokens never reorder
+                  key={i}
+                  style={token.color ? { color: token.color } : undefined}
+                >
+                  {token.text}
+                </span>
+              ))}
+            </span>
+          </Fragment>,
+        ]}
+      </CodeBlock>
 
       <div className="min-w-0 overflow-x-auto" ref={timelineRef}>
         <Timeline
@@ -772,7 +819,7 @@ export const RateLimitExplainer = () => {
           </label>
           <input
             aria-valuetext={status}
-            className="w-full accent-[var(--ds-gray-1000)]"
+            className="w-full accent-[var(--ds-blue-800)]"
             id={`${id}-scrub`}
             max={100}
             min={0}
