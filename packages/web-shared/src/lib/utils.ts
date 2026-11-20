@@ -1,4 +1,3 @@
-import type { Step } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 
 const MS_IN_SECOND = 1000;
@@ -127,24 +126,6 @@ export function formatDurationPrecise(ms: number, fractionDigits = 2): string {
   return parts.join(' ');
 }
 
-/**
- * Returns a formatted pagination display string
- * @param currentPage - The current page number
- * @param totalPages - The total number of pages visited so far
- * @param hasMore - Whether there are more pages available
- * @returns Formatted string like "Page 1 of 3+" or "Page 2 of 2"
- */
-export function getPaginationDisplay(
-  currentPage: number,
-  totalPages: number,
-  hasMore: boolean
-): string {
-  if (hasMore) {
-    return `Page ${currentPage} of ${totalPages}+`;
-  }
-  return `Page ${currentPage} of ${totalPages}`;
-}
-
 // ============================================================================
 // Durable Agent Utilities
 // ============================================================================
@@ -180,33 +161,4 @@ export function extractConversation(stepInput: unknown): ModelMessage[] | null {
   }
 
   return firstArg as ModelMessage[];
-}
-
-/**
- * A doStreamStep with its conversation input extracted
- */
-export interface StreamStep {
-  stepId: string;
-  stepName: string;
-  displayName: string;
-  conversation: ModelMessage[];
-}
-
-/**
- * Identifies all stream steps (doStreamStep) in a run and extracts their conversations.
- */
-export function identifyStreamSteps(steps: Step[]): StreamStep[] {
-  return steps
-    .filter((step) => isDoStreamStep(step.stepName))
-    .map((step) => {
-      const functionName = step.stepName.split('//').pop() ?? 'unknown';
-      const conversation = extractConversation(step.input) ?? [];
-
-      return {
-        stepId: step.stepId,
-        stepName: step.stepName,
-        displayName: functionName,
-        conversation,
-      };
-    });
 }

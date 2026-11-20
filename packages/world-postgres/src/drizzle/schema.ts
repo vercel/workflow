@@ -12,6 +12,7 @@ import {
 } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   customType,
@@ -165,6 +166,15 @@ export const runs = schema.table(
      */
     jobPrefix: varchar('job_prefix'),
     /**
+     * Whether an orchestrator delivery is owed: set in the transaction of an
+     * event that wakes the run (or of `run_started`), cleared when an
+     * orchestrator delivery completes. Startup recovery skips a run parked
+     * on a hook or wait only while it is clear, so a wake whose job was
+     * never queued (the process died between the two) still recovers.
+     * Internal, stripped from the run returned to callers.
+     */
+    wakePending: boolean('wake_pending').notNull().default(false),
+    /**
      * The start Hook this run was admitted with through `start({ experimental_hook })`,
      * without its metadata (which lives on the start Hook's own row in
      * `workflow_hooks`). Echo only: the Hook row is what holds the token.
@@ -183,7 +193,11 @@ export const runs = schema.table(
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
       'input' | 'output' | 'executionContext' | 'error'
-    > & { dynamicWorkflowCode?: SerializedData; jobPrefix?: string }
+    > & {
+      dynamicWorkflowCode?: SerializedData;
+      jobPrefix?: string;
+      wakePending?: boolean;
+    }
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
@@ -450,14 +464,28 @@ export const snapshots = schema.table('workflow_snapshots', {
 
 /**
  * Graphile workers of processes that renew their job locks (`job-lease.ts`).
- * The default stale-lock sweep releases a per-run named-queue job only when
- * its holder is listed here, so a process on an earlier version, which
+ * The default stale-lock sweep releases a job that owns a run's delivery
+ * lease only when its holder is listed here, so a process on an earlier version, which
  * neither renews nor fences its acknowledgement, is never released under.
  * `renewed_at` only ages out the rows of workers that hold no job.
  */
 export const jobLockHolders = schema.table('workflow_job_lock_holders', {
   workerId: text('worker_id').primaryKey(),
   renewedAt: timestamptz('renewed_at').default(sql`now()`).notNull(),
+});
+
+/**
+ * Per-run delivery leases (`run-lease.ts`): a run's row exists only while a
+ * delivery drives it. `ownerJobId` is the Graphile job that owns it; `wake`
+ * and `deferred` are the messages other deliveries left for that owner.
+ */
+export const runDeliveryLeases = schema.table('workflow_run_delivery_leases', {
+  runId: varchar('run_id').primaryKey(),
+  ownerJobId: bigint('owner_job_id', { mode: 'bigint' }).notNull(),
+  wake: jsonb('wake'),
+  wakeResume: boolean('wake_resume').default(false).notNull(),
+  deferred: jsonb('deferred').default(sql`'[]'::jsonb`).notNull(),
+  claimedAt: timestamptz('claimed_at').default(sql`now()`).notNull(),
 });
 
 export const streams = schema.table(

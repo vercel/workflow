@@ -33,6 +33,7 @@ import {
   type EventBatchResult,
   type EventResult,
   eventIdToSlot,
+  isSealedNoopEvent,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   type SerializedData,
@@ -113,11 +114,7 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
-import {
-  getSnapshotThresholdForHandler,
-  isSnapshotThresholdConfigured,
-  isUnencryptedSnapshottingAllowed,
-} from '../vm-mode.js';
+import { getSnapshotThresholdForHandler } from '../vm-mode.js';
 import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
@@ -140,9 +137,11 @@ import {
 } from './in-band-writer.js';
 import {
   getOrchestratorFeedPollIntervalMs,
-  getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
+  LingerTimes,
   LiveLogFeed,
+  lingerKindOf,
+  orchestratorLingerUntil,
 } from './live-feed.js';
 import {
   analyzeLogSteps,
@@ -330,181 +329,205 @@ async function queueStepMessage(params: {
   });
 }
 
-export async function runWorkflowWithQuickJS(params: {
-  workflowCode: string;
-  workflowName: string;
-  workflowRun: WorkflowRun;
-  /**
-   * Events returned inline by `events.create('run_started', ...)` or by
-   * the lazy hook fast path's `hook_received` preload. When they indicate
-   * a first invocation, or when `preloadedEventsComplete` attests they
-   * are the complete log, they are used as the event log instead of
-   * fetching via `events.list`, matching the node:vm engine's fast path.
-   */
-  preloadedEvents?: Event[];
-  /**
-   * True when the caller has validated that `preloadedEvents` is the run's
-   * COMPLETE event log (e.g. the lazy hook fast path's hasMore-false
-   * replay preload). The first-invocation heuristic below only recognizes
-   * run_created/run_started-only preloads, so without this attestation a
-   * hook-resume preload would be discarded and refetched.
-   */
-  preloadedEventsComplete?: boolean;
-  /**
-   * The `events.list` cursor positioned after the last of `preloadedEvents`,
-   * when the caller has one. Lets this invocation read incrementally from
-   * where the preload ended and ask for an inline delta against it. Without
-   * it the first read after the preload starts from the top of the log.
-   */
-  preloadedCursor?: string | null;
-  /**
-   * Run input carried through the queue message on first delivery. Used
-   * as a last-resort fallback for `run_created.eventData.input` when
-   * the event log is incomplete.
-   */
-  runInput?: RunInput;
-  /**
-   * The parent OTel span (the outer `WORKFLOW {workflowName}` span from
-   * `runtime.ts`). When supplied, VM lifecycle attributes are attached
-   * to it for end-to-end visibility.
-   */
-  parentSpan?: Span;
-  /**
-   * Server-supplied per-run event ceiling from the run_started response
-   * (undefined ⇒ no enforcement). Mirrors the node:vm engine's guard:
-   * a runaway run is failed once its log reaches the ceiling. The throw
-   * propagates to the replay loop's catch in runtime.ts (the QuickJS
-   * dispatch runs inside that loop's try), which classifies it and
-   * records run_failed with MAX_EVENTS_EXCEEDED.
-   */
-  maxEventsLimit?: number;
-  /**
-   * Queue delivery attempt of the message driving this invocation (from
-   * the queue handler's metadata; 1 = first delivery). A redelivery may own
-   * wait chains a crashed delivery left (see `ownedWaitChains`), and the
-   * step re-send rule reads it.
-   */
-  deliveryAttempt?: number;
-  /**
-   * Whether this delivery may hold an orchestrator message the queue
-   * coalesced into it (any delivery but its message's first), and so arms
-   * the near-due waits of chains it does not own on exit (see
-   * `armNearDueTimers` in `delivery.ts`). Absent: it may.
-   */
-  armsNearDueWaits?: boolean;
-  /**
-   * Epoch ms of the invocation's inline deadline: its start plus its inline
-   * window (`WORKFLOW_V2_TIMEOUT_MS`), as on the node engine. A turn that
-   * begins at or past it starts nothing more and continues the run in the
-   * next delivery (`continueInNextDelivery`). Within the inline-start margin
-   * before it (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`), new steps are
-   * background steps instead of inline ones, and a delivery with nothing
-   * left to run does not linger for work done elsewhere (see
-   * `getOrchestratorLingerMsFor`). Absent (standalone callers): no deadline
-   * and no lingering.
-   */
-  inlineDeadlineMs?: number;
-  /**
-   * Continues the run in a fresh delivery once this one ends: a handoff of
-   * the delivery's message (`{ timeoutSeconds: 0 }`). Absent (standalone
-   * callers): a new orchestrator message.
-   */
-  continueInNextDelivery?: () => Promise<void>;
-  /**
-   * Queue message ID of the delivery driving this invocation, stamped as
-   * `ownerMessageId` on inline lazy step claims so wake replays defer to
-   * the in-flight body instead of requeueing the step.
-   */
-  ownerMessageId?: string;
-  /** Request ID of the queue invocation, when the queue provides one. */
-  requestId?: string;
-  /**
-   * The orchestrator's in-band writer. Every event this engine writes goes
-   * through it, so the writes are marked in-band and fenced.
-   */
-  writer?: InBandWriter;
-  /**
-   * Run-ahead depth for this delivery (`WORKFLOW_RUN_AHEAD_DEPTH`, or 0 when
-   * run-ahead is off for it; see `runtime/out-of-band-observation.ts`): at an
-   * inert boundary, at most this many inline step outcomes reach the VM
-   * before their writes commit. Absent or 0, or without a `writer`: off.
-   */
-  runAheadDepth?: number;
-  /**
-   * Queue namespace resolved at route registration (runtime.ts). Must be
-   * threaded into every message publish: the builders bake the namespace
-   * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`.
-   * A publish without it lands on `__wkf_workflow_*` and is never
-   * picked up.
-   */
-  namespace?: string;
-  /**
-   * Run-origin trace carrier accessor from runtime.ts
-   * (getNextTraceCarrier). In the default `linked` trace mode every
-   * invocation must link back to the run's origin (workflow.start) in a
-   * star; capturing the current invocation context instead would chain
-   * invocations to each other and fragment the run view on async queues.
-   */
-  nextTraceCarrier?: () => Promise<Record<string, string>>;
-  /**
-   * The wait this invocation is the delayed continuation for, if it is one
-   * (`WorkflowInvokePayload.waitContinuation`). Read only to decide the next
-   * continuation's idempotency key: a continuation that finds its own wait
-   * still pending has spent its key, so the re-arm has to advance the attempt
-   * or the world's dedupe window drops it and the wait loses its only timer.
-   */
-  waitContinuation?: { correlationId: string; attempt: number };
-  /**
-   * Turbo mode (the run's first delivery, see `isTurboEnabled`): the caller
-   * wrote `run_started` without waiting for it and did not load the log, which
-   * holds only the run's creation. The VM starts on an empty log, no snapshot
-   * is looked up, and while `optimistic` holds, inline step bodies start
-   * before their `step_created`/`step_started` commit, until a suspension has
-   * an operation other than a step.
-   */
-  /**
-   * Waits a `run.wakeUp()` asked this delivery to complete whatever their
-   * `resumeAt` (`WorkflowInvokePayload.completeWaits`).
-   */
-  wakeUpWaits?: ReadonlySet<string>;
-  /**
-   * Called once a step's message went out, with the step's correlation id.
-   * The delivery keeps what its committed writes still owe the queue, and
-   * sends that itself if it ends early (a fence refusal).
-   */
-  onStepMessageSent?: (correlationId: string) => void;
-  /** Called once a wait's timer message went out, with the wait's id. */
-  onWaitTimerSent?: (correlationId: string) => void;
-  /**
-   * The steps of a log whose message this delivery sends again (see
-   * `stepsToReenqueue`), once per invocation. Absent (standalone callers):
-   * the re-send rule applied to `deliveryAttempt` on every pass.
-   */
-  stepResends?: (events: readonly Event[]) => ReadonlySet<string>;
-  /** Called for each step whose message this delivery sends again. */
-  onStepResent?: (correlationId: string) => void;
-  /**
-   * A delivery of a message the World sent after it lost its queue: every
-   * open wait's chain is this delivery's to arm (see `stepsToReenqueue` for
-   * the steps).
-   */
-  recovery?: boolean;
-  /**
-   * Waits whose `wait_completed` this delivery committed, filled by the
-   * delivery from its writer's accepted events; this engine adds its own
-   * completions too. Their chains are this delivery's to arm (see
-   * `ownedWaitChains`).
-   */
-  completedWaits?: Set<string>;
-  turbo?: {
-    /** The backgrounded `run_started`, folded into the log view on landing. */
-    runStarted: Promise<EventResult>;
-    /** Settles once `run_started` landed; rejects if it failed. */
-    runReadyBarrier: Promise<void>;
-    /** Whether inline bodies may start ahead of their start. */
-    optimistic: boolean;
-  };
-}): Promise<{ timeoutSeconds?: number } | void> {
+/**
+ * Inline bodies still running when the delivery's run ended (a race's
+ * loser), which settle after its terminal event is written. See
+ * {@link runWorkflowWithQuickJS}.
+ */
+type InlineBodiesAfterTerminal = { drain?: Promise<void> };
+
+export async function runWorkflowWithQuickJS(
+  params: Parameters<typeof runQuickJSDelivery>[0]
+): ReturnType<typeof runQuickJSDelivery> {
+  // A workflow that finishes while an inline body still runs does not wait
+  // for that body before its terminal event, as on node:vm: the body settles
+  // after it, before the delivery returns.
+  const afterTerminal: InlineBodiesAfterTerminal = {};
+  try {
+    return await runQuickJSDelivery(params, afterTerminal);
+  } finally {
+    await afterTerminal.drain;
+  }
+}
+
+async function runQuickJSDelivery(
+  params: {
+    workflowCode: string;
+    workflowName: string;
+    workflowRun: WorkflowRun;
+    /**
+     * Events returned inline by `events.create('run_started', ...)` or by
+     * the lazy hook fast path's `hook_received` preload. When they indicate
+     * a first invocation, or when `preloadedEventsComplete` attests they
+     * are the complete log, they are used as the event log instead of
+     * fetching via `events.list`, matching the node:vm engine's fast path.
+     */
+    preloadedEvents?: Event[];
+    /**
+     * True when the caller has validated that `preloadedEvents` is the run's
+     * COMPLETE event log (e.g. the lazy hook fast path's hasMore-false
+     * replay preload). The first-invocation heuristic below only recognizes
+     * run_created/run_started-only preloads, so without this attestation a
+     * hook-resume preload would be discarded and refetched.
+     */
+    preloadedEventsComplete?: boolean;
+    /**
+     * The `events.list` cursor positioned after the last of `preloadedEvents`,
+     * when the caller has one. Lets this invocation read incrementally from
+     * where the preload ended and ask for an inline delta against it. Without
+     * it the first read after the preload starts from the top of the log.
+     */
+    preloadedCursor?: string | null;
+    /**
+     * Run input carried through the queue message on first delivery. Used
+     * as a last-resort fallback for `run_created.eventData.input` when
+     * the event log is incomplete.
+     */
+    runInput?: RunInput;
+    /**
+     * The parent OTel span (the outer `WORKFLOW {workflowName}` span from
+     * `runtime.ts`). When supplied, VM lifecycle attributes are attached
+     * to it for end-to-end visibility.
+     */
+    parentSpan?: Span;
+    /**
+     * Server-supplied per-run event ceiling from the run_started response
+     * (undefined ⇒ no enforcement). Mirrors the node:vm engine's guard:
+     * a runaway run is failed once its log reaches the ceiling. The throw
+     * propagates to the replay loop's catch in runtime.ts (the QuickJS
+     * dispatch runs inside that loop's try), which classifies it and
+     * records run_failed with MAX_EVENTS_EXCEEDED.
+     */
+    maxEventsLimit?: number;
+    /**
+     * Queue delivery attempt of the message driving this invocation (from
+     * the queue handler's metadata; 1 = first delivery). A redelivery may own
+     * wait chains a crashed delivery left (see `ownedWaitChains`), and the
+     * step re-send rule reads it.
+     */
+    deliveryAttempt?: number;
+    /**
+     * Whether this delivery may hold an orchestrator message the queue
+     * coalesced into it (any delivery but its message's first), and so arms
+     * the near-due waits of chains it does not own on exit (see
+     * `armNearDueTimers` in `delivery.ts`). Absent: it may.
+     */
+    armsNearDueWaits?: boolean;
+    /**
+     * Epoch ms of the invocation's inline deadline: its start plus its inline
+     * window (`WORKFLOW_V2_TIMEOUT_MS`), as on the node engine. A turn that
+     * begins at or past it starts nothing more and continues the run in the
+     * next delivery (`continueInNextDelivery`). Within the inline-start margin
+     * before it (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`), new steps are
+     * background steps instead of inline ones, and a delivery with nothing
+     * left to run does not linger for work done elsewhere (see
+     * `getOrchestratorLingerMsFor`). Absent (standalone callers): no deadline
+     * and no lingering.
+     */
+    inlineDeadlineMs?: number;
+    /**
+     * Continues the run in a fresh delivery once this one ends: a handoff of
+     * the delivery's message (`{ timeoutSeconds: 0 }`). Absent (standalone
+     * callers): a new orchestrator message.
+     */
+    continueInNextDelivery?: () => Promise<void>;
+    /**
+     * Queue message ID of the delivery driving this invocation, stamped as
+     * `ownerMessageId` on inline lazy step claims so wake replays defer to
+     * the in-flight body instead of requeueing the step.
+     */
+    ownerMessageId?: string;
+    /** Request ID of the queue invocation, when the queue provides one. */
+    requestId?: string;
+    /**
+     * The orchestrator's in-band writer. Every event this engine writes goes
+     * through it, so the writes are marked in-band and fenced.
+     */
+    writer?: InBandWriter;
+    /**
+     * Run-ahead depth for this delivery (`WORKFLOW_RUN_AHEAD_DEPTH`, or 0 when
+     * run-ahead is off for it; see `runtime/out-of-band-observation.ts`): at an
+     * inert boundary, at most this many inline step outcomes reach the VM
+     * before their writes commit. Absent or 0, or without a `writer`: off.
+     */
+    runAheadDepth?: number;
+    /**
+     * Queue namespace resolved at route registration (runtime.ts). Must be
+     * threaded into every message publish: the builders bake the namespace
+     * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`.
+     * A publish without it lands on `__wkf_workflow_*` and is never
+     * picked up.
+     */
+    namespace?: string;
+    /**
+     * Run-origin trace carrier accessor from runtime.ts
+     * (getNextTraceCarrier). In the default `linked` trace mode every
+     * invocation must link back to the run's origin (workflow.start) in a
+     * star; capturing the current invocation context instead would chain
+     * invocations to each other and fragment the run view on async queues.
+     */
+    nextTraceCarrier?: () => Promise<Record<string, string>>;
+    /**
+     * The wait this invocation is the delayed continuation for, if it is one
+     * (`WorkflowInvokePayload.waitContinuation`). Read only to decide the next
+     * continuation's idempotency key: a continuation that finds its own wait
+     * still pending has spent its key, so the re-arm has to advance the attempt
+     * or the world's dedupe window drops it and the wait loses its only timer.
+     */
+    waitContinuation?: { correlationId: string; attempt: number };
+    /**
+     * Turbo mode (the run's first delivery, see `isTurboEnabled`): the caller
+     * wrote `run_started` without waiting for it and did not load the log, which
+     * holds only the run's creation. The VM starts on an empty log, no snapshot
+     * is looked up, and while `optimistic` holds, inline step bodies start
+     * before their `step_created`/`step_started` commit, until a suspension has
+     * an operation other than a step.
+     */
+    /**
+     * Waits a `run.wakeUp()` asked this delivery to complete whatever their
+     * `resumeAt` (`WorkflowInvokePayload.completeWaits`).
+     */
+    wakeUpWaits?: ReadonlySet<string>;
+    /**
+     * Called once a step's message went out, with the step's correlation id.
+     * The delivery keeps what its committed writes still owe the queue, and
+     * sends that itself if it ends early (a fence refusal).
+     */
+    onStepMessageSent?: (correlationId: string) => void;
+    /** Called once a wait's timer message went out, with the wait's id. */
+    onWaitTimerSent?: (correlationId: string) => void;
+    /**
+     * The steps of a log whose message this delivery sends again (see
+     * `stepsToReenqueue`), once per invocation. Absent (standalone callers):
+     * the re-send rule applied to `deliveryAttempt` on every pass.
+     */
+    stepResends?: (events: readonly Event[]) => ReadonlySet<string>;
+    /** Called for each step whose message this delivery sends again. */
+    onStepResent?: (correlationId: string) => void;
+    /**
+     * A delivery of a message the World sent after it lost its queue: every
+     * open wait's chain is this delivery's to arm (see `stepsToReenqueue` for
+     * the steps).
+     */
+    recovery?: boolean;
+    /**
+     * Waits whose `wait_completed` this delivery committed, filled by the
+     * delivery from its writer's accepted events; this engine adds its own
+     * completions too. Their chains are this delivery's to arm (see
+     * `ownedWaitChains`).
+     */
+    completedWaits?: Set<string>;
+    turbo?: {
+      /** The backgrounded `run_started`, folded into the log view on landing. */
+      runStarted: Promise<EventResult>;
+      /** Settles once `run_started` landed; rejects if it failed. */
+      runReadyBarrier: Promise<void>;
+      /** Whether inline bodies may start ahead of their start. */
+      optimistic: boolean;
+    };
+  },
+  afterTerminal: InlineBodiesAfterTerminal
+): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
     workflowName,
@@ -779,16 +802,16 @@ export async function runWorkflowWithQuickJS(params: {
   // `snapshotThreshold` events have been processed since the last one,
   // and resumptions restore the VM and replay only the delta events.
   //
-  // Forced to 0 (pure full replay, always correct) when:
-  // - the World doesn't provide `experimental_snapshots` (optional);
-  // - the run has no encryption key and the handler hasn't opted in with
-  //   WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED. A snapshot is executable VM
-  //   state holding the run's in-memory data; the key is what keeps it
-  //   confidential at rest and authenticates it on restore.
+  // Forced to 0 (pure full replay, always correct) when the World doesn't
+  // provide `experimental_snapshots` (optional). A run without an encryption
+  // key (world-local, world-postgres, or any World that doesn't implement
+  // `getEncryptionKeyForRun`) is snapshotted in plaintext, the same as its
+  // event log and payloads; a run with a key always seals its snapshot, and
+  // `openSnapshot` rejects a plaintext snapshot for it on restore.
   // An invalid policy value disables snapshotting with a warning rather
   // than failing every invocation (see getSnapshotThresholdForHandler).
   const snapshotsStorage = world.experimental_snapshots;
-  let snapshotThreshold = snapshotsStorage
+  const snapshotThreshold = snapshotsStorage
     ? getSnapshotThresholdForHandler(workflowRun, (message) =>
         warnOnce(`snapshot-threshold:${message}`, () =>
           runtimeLogger.warn(
@@ -798,30 +821,6 @@ export async function runWorkflowWithQuickJS(params: {
         )
       )
     : 0;
-  // The configured policy, before the encryption gate below: terminal
-  // cleanup keys on it, so snapshots saved while the gate was open are
-  // still deleted after it closes.
-  const snapshotPolicyThreshold = snapshotThreshold;
-  if (
-    snapshotThreshold > 0 &&
-    !encryptionKey &&
-    !isUnencryptedSnapshottingAllowed()
-  ) {
-    // Only warn when snapshotting was explicitly configured: with the
-    // default threshold, worlds without run encryption keys (world-local,
-    // world-postgres) would otherwise warn on every QuickJS deployment.
-    if (isSnapshotThresholdConfigured(workflowRun)) {
-      warnOnce('snapshot-unencrypted', () =>
-        runtimeLogger.warn(
-          'QuickJS runtime: VM snapshotting is configured but this run has no encryption key; ' +
-            'snapshots are disabled. Set WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1 to store them unencrypted.',
-          { workflowRunId: runId }
-        )
-      );
-    }
-    snapshotThreshold = 0;
-  }
-
   // Try to load a persisted snapshot. Skipped on the first invocation
   // (nothing can have been saved yet) and on any load/decode failure —
   // the fresh-boot full replay below is always a correct fallback (the
@@ -1195,20 +1194,32 @@ export async function runWorkflowWithQuickJS(params: {
   // pre-snapshot event against the ceiling (tripping
   // MaxEventsExceededError below the real limit) and stamp the inflated
   // total into the next save's `eventCount`, compounding.
+  //
+  // Units: the delta counts workflow events (sealed `noop`s excluded, as
+  // the node engine counts), but the snapshot's `eventCount` is the log
+  // positions through its cursor (`eventsThroughCursor`), noops included.
+  // The total over-counts by the noops before the snapshot, so a resumed
+  // snapshot run can fail slightly before the node engine would. A run the
+  // World exempts (a persisted positive snapshot threshold) has no finite
+  // ceiling unless `WORKFLOW_MAX_EVENTS_OVERRIDE` sets one. A noop-free
+  // count would need a new snapshot metadata field.
   let restoredEventCount = existingSnapshot?.metadata.eventCount ?? 0;
+  const workflowEventCount = events.filter(
+    (event) => !isSealedNoopEvent(event)
+  ).length;
   if (
     maxEventsLimit !== undefined &&
-    restoredEventCount + events.length >= maxEventsLimit
+    restoredEventCount + workflowEventCount >= maxEventsLimit
   ) {
     throw new MaxEventsExceededError(
-      restoredEventCount + events.length,
+      restoredEventCount + workflowEventCount,
       maxEventsLimit
     );
   }
   maybeWarnApproachingEventLimit({
     runId,
     workflowName,
-    eventCount: restoredEventCount + events.length,
+    eventCount: restoredEventCount + workflowEventCount,
     limit: maxEventsLimit,
     isQuickJS: true,
   });
@@ -1436,8 +1447,14 @@ export async function runWorkflowWithQuickJS(params: {
   // possible in-process, the replay budget is exhausted, or the run is
   // gone.
   const seenEventIds = new Set<string>();
+  const seenNoopIds = new Set<string>();
+  const noteSeenEvent = (event: Event): void => {
+    if (!event.eventId) return;
+    seenEventIds.add(event.eventId);
+    if (isSealedNoopEvent(event)) seenNoopIds.add(event.eventId);
+  };
   for (const e of events) {
-    if (e.eventId) seenEventIds.add(e.eventId);
+    noteSeenEvent(e);
   }
   // Events processed since the restored snapshot (or since run start when
   // booting fresh) — compared against snapshotThreshold at suspension
@@ -1572,7 +1589,7 @@ export async function runWorkflowWithQuickJS(params: {
         logView.screen(e);
         screenWrittenEvents([e], 'listing');
         if (e.eventId && seenEventIds.has(e.eventId)) continue;
-        if (e.eventId) seenEventIds.add(e.eventId);
+        noteSeenEvent(e);
         unseen.push(e);
       }
       if (response.cursor) {
@@ -1604,7 +1621,7 @@ export async function runWorkflowWithQuickJS(params: {
   const takeQueuedEvents = (): Event[] => {
     const queued = logView.takeContiguous();
     for (const e of queued) {
-      if (e.eventId) seenEventIds.add(e.eventId);
+      noteSeenEvent(e);
     }
     noteFedOutcomes(queued);
     return queued;
@@ -1620,6 +1637,8 @@ export async function runWorkflowWithQuickJS(params: {
     outcome: PromiseSettledResult<StepExecutionResult>;
   };
   const inFlightInline = new Map<string, Promise<void>>();
+  /** Set when the workflow finished while an inline body still ran. */
+  let deferInlineDrain = false;
   const settledInline: InlineSettled[] = [];
   let inlineFeed: LiveLogFeed | undefined;
   /** Removes the live feed's listener on the writer's commits. */
@@ -2644,38 +2663,124 @@ export async function runWorkflowWithQuickJS(params: {
   };
 
   /**
-   * Keeps this delivery live while the run waits on work done elsewhere (see
-   * `getOrchestratorLingerMsFor`: the full window for a background step, the
-   * hook window for open hooks alone). `true` once the feed delivered an
-   * event or a wait fell due, so the loop takes another turn; `false` when
-   * the time ran out without either, or the live feed is not (or stops being)
-   * live.
+   * The open waits of `pendingOperations` this invocation has not completed,
+   * as timer candidates (`armWaitTimers`). An elapsed wait still gets a
+   * continuation (clamped to 1s).
    */
+  const pendingWaitTimers = (pendingOperations: PendingOperation[]) => {
+    const now = Date.now();
+    const timers: {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[] = [];
+    for (const op of pendingOperations) {
+      if (op.type !== 'wait') continue;
+      const wait = op as PendingWait;
+      if (completedWaitIds2.has(wait.correlationId)) continue;
+      const resumeAtMs = new Date(wait.resumeAt).getTime();
+      timers.push({
+        correlationId: wait.correlationId,
+        resumeAtMs,
+        seconds: Math.max(1, Math.ceil((resumeAtMs - now) / 1000)),
+      });
+    }
+    return timers;
+  };
+
+  /**
+   * Arms, on a delivery that may hold a timer the queue coalesced into it a
+   * little before its wait was due (`armsNearDueWaits`), the timer of every
+   * wait due within the near-due window whatever chain it is in (see
+   * `getNearDueWaitWindowSeconds`), keyed so that the re-arms of one wait
+   * within a second are one message. The first delivery of a message (a
+   * wake that brought nothing new included) holds none.
+   */
+  const armNearDueWaitTimers = async (
+    waits: readonly {
+      correlationId: string;
+      resumeAtMs: number;
+      seconds: number;
+    }[]
+  ): Promise<void> => {
+    if (!armsNearDueWaits) return;
+    const nearDueHorizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
+    for (const wait of waits) {
+      if (wait.resumeAtMs > nearDueHorizonMs) continue;
+      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+      scheduledWaitContinuations.add(wait.correlationId);
+      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
+        nearDue: true,
+      });
+      wfdiag('wait_continuation_scheduled', {
+        correlationId: wait.correlationId,
+        delaySeconds: wait.seconds,
+        nearDue: true,
+      });
+    }
+  };
+
+  /**
+   * Keeps this delivery live while the run waits on work done elsewhere, or
+   * on a wait due soon enough (see `orchestratorLingerUntil`: the full window
+   * for a background step, the hook window for open hooks alone, until the
+   * earliest open wait is due when it falls within the wait window and before
+   * the inline deadline). `true` once the feed delivered an event or a wait
+   * fell due, so the loop takes another turn, which completes the wait;
+   * `false` when the time ran out without either, or the live feed is not (or
+   * stops being) live.
+   *
+   * A linger taken for a wait arms the timers the exit sweep would first, so
+   * the wait is still woken if this invocation dies mid-sleep; the exit sweep
+   * then skips them (`scheduledWaitContinuations`).
+   */
+  const lingerTimes = new LingerTimes();
   const lingerForExternalWork = async (
     external: ExternalWork | undefined,
     pendingOperations: PendingOperation[]
   ): Promise<boolean> => {
-    const lingerMs = getOrchestratorLingerMsFor(external);
+    // A run another writer ended (a cancel) has nothing left to wait for.
     if (
-      lingerMs <= 0 ||
+      runEndSeen ||
       params.inlineDeadlineMs === undefined ||
       !world.events.subscribe ||
       !logView.tracking
     ) {
       return false;
     }
-    const untilMs = Math.min(
-      Date.now() + lingerMs,
-      params.inlineDeadlineMs - inlineMarginMs
-    );
-    if (untilMs <= Date.now()) return false;
+    const waits = pendingWaitTimers(pendingOperations);
+    const linger = orchestratorLingerUntil({
+      work: external,
+      // A reduce, not a spread: a run may hold any number of open waits.
+      nextWaitAtMs:
+        waits.length === 0
+          ? undefined
+          : waits.reduce(
+              (earliest, wait) => Math.min(earliest, wait.resumeAtMs),
+              Number.POSITIVE_INFINITY
+            ),
+      nowMs: Date.now(),
+      capMs: params.inlineDeadlineMs - inlineMarginMs,
+    });
+    if (!linger) return false;
+    const { untilMs } = linger;
     ensureInlineFeed();
     if (!inlineFeed?.isLive) {
       wfdiag('linger', { outcome: 'feed-down', lingeredMs: 0 });
       return false;
     }
+    if (linger.forWait) {
+      await armNearDueWaitTimers(waits);
+      await armWaitTimers(waits);
+    }
+    const kind = lingerKindOf(linger, external);
     const fedBefore = fedEventCount;
     const startedAtMs = Date.now();
+    const lingered = (): number => {
+      const ms = Date.now() - startedAtMs;
+      parentSpan?.setAttributes(lingerTimes.add(kind, ms));
+      return ms;
+    };
     budget.pause();
     try {
       while (Date.now() < untilMs) {
@@ -2697,14 +2802,16 @@ export async function runWorkflowWithQuickJS(params: {
         if (fedEventCount > fedBefore || waitDue) {
           wfdiag('linger', {
             outcome: 'resumed',
-            lingeredMs: Date.now() - startedAtMs,
+            kind,
+            lingeredMs: lingered(),
           });
           return true;
         }
         if (!inlineFeed?.isLive) {
           wfdiag('linger', {
             outcome: 'feed-down',
-            lingeredMs: Date.now() - startedAtMs,
+            kind,
+            lingeredMs: lingered(),
           });
           return false;
         }
@@ -2714,7 +2821,8 @@ export async function runWorkflowWithQuickJS(params: {
     }
     wfdiag('linger', {
       outcome: 'idle',
-      lingeredMs: Date.now() - startedAtMs,
+      kind,
+      lingeredMs: lingered(),
     });
     return false;
   };
@@ -2726,15 +2834,15 @@ export async function runWorkflowWithQuickJS(params: {
       // Re-check the event ceiling every turn: the loop appends events on
       // each continueWithEvents, so a single invocation can otherwise grow
       // the log arbitrarily far past the operator's limit (the node engine
-      // re-checks per replay for the same reason). `seenEventIds` counts
-      // every event this invocation has observed: initial log + all
-      // feeds.
+      // re-checks per replay for the same reason). Count workflow events
+      // from the initial log and all feeds, excluding sealed noops.
       if (
         maxEventsLimit !== undefined &&
-        restoredEventCount + seenEventIds.size >= maxEventsLimit
+        restoredEventCount + seenEventIds.size - seenNoopIds.size >=
+          maxEventsLimit
       ) {
         throw new MaxEventsExceededError(
-          restoredEventCount + seenEventIds.size,
+          restoredEventCount + seenEventIds.size - seenNoopIds.size,
           maxEventsLimit
         );
       }
@@ -3291,9 +3399,22 @@ export async function runWorkflowWithQuickJS(params: {
       });
       await waitForInlineProgress(pendingOperations);
     }
-    // Every inline body settles before the delivery returns, including when
-    // the workflow finished while one still ran.
-    await drainInline();
+    // A workflow that finished while an inline body still runs (a race's
+    // loser) writes its terminal event without waiting for that body, as on
+    // node:vm; the body settles after it (`afterTerminal`). Its outcome, if
+    // it lands, follows the run's terminal event and is inert. Speculative
+    // writes still settle first: nothing is decided past one that failed or
+    // was displaced. This holds whatever the run's retention: on a
+    // zero-retention run the World discards what a late outcome writes after
+    // the purge. Every other exit lets every body settle here.
+    deferInlineDrain = !result.suspended && inFlightInline.size > 0;
+    if (deferInlineDrain) {
+      // The loser's outcome is a plain write, never a speculative one.
+      boundaryInert = false;
+      await settleRunAhead();
+    } else {
+      await drainInline();
+    }
     await processSettledInline();
     // Nothing is decided past a speculative write that failed or was
     // displaced: the run's terminal write included.
@@ -3366,8 +3487,15 @@ export async function runWorkflowWithQuickJS(params: {
     // Every exit, a throw included, lets running inline bodies settle and
     // stops the live feed before the VM goes away; otherwise the feed keeps
     // polling and holds its subscription for as long as the process lives.
-    await drainInline();
-    session.dispose();
+    // A finished run's still-running bodies settle after its terminal event
+    // (see above), and the VM goes away once they have.
+    if (deferInlineDrain) {
+      const vm = session;
+      afterTerminal.drain = drainInline().finally(() => vm.dispose());
+    } else {
+      await drainInline();
+      session.dispose();
+    }
     if (writer && runAheadDepth > 0) writer.onAccepted = previousOnAccepted;
   }
 
@@ -3468,8 +3596,8 @@ export async function runWorkflowWithQuickJS(params: {
     if (!snapshotsStorage) return;
     const mayExist =
       snapshotStored ||
-      (snapshotPolicyThreshold > 0 &&
-        restoredEventCount + seenEventIds.size >= snapshotPolicyThreshold);
+      (snapshotThreshold > 0 &&
+        restoredEventCount + seenEventIds.size >= snapshotThreshold);
     if (!mayExist) return;
     safeWaitUntil(
       Promise.resolve().then(() => snapshotsStorage.delete(runId)),
@@ -3720,22 +3848,7 @@ export async function runWorkflowWithQuickJS(params: {
     // `getNearDueWaitWindowSeconds`), keyed so that the re-arms of one wait
     // within a second are one message. The first delivery of a message
     // (a wake that brought nothing new included) holds none.
-    const nearDueHorizonMs = armsNearDueWaits
-      ? Date.now() + getNearDueWaitWindowSeconds() * 1000
-      : Number.NEGATIVE_INFINITY;
-    for (const wait of exitSweep) {
-      if (wait.resumeAtMs > nearDueHorizonMs) continue;
-      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
-      scheduledWaitContinuations.add(wait.correlationId);
-      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
-        nearDue: true,
-      });
-      wfdiag('wait_continuation_scheduled', {
-        correlationId: wait.correlationId,
-        delaySeconds: wait.seconds,
-        nearDue: true,
-      });
-    }
+    await armNearDueWaitTimers(exitSweep);
 
     if (
       exitSweep.some(

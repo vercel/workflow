@@ -1,5 +1,78 @@
 # workflow
 
+## 5.7.0
+
+### Minor Changes
+
+- [#5353](https://github.com/vercel/workflow/pull/5353) [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `runs.deleteDataMany` method to the World interface, which deletes the stored data (payloads, not metadata) of finished runs on demand, and implement it in the Vercel, Local and Postgres Worlds. Exposed as `run.delete()` and `deleteRuns()` (`workflow/api`), `deleteRuns(world, runIds)` (`@workflow/core/runtime`), and `pnpx workflow delete <runId>` in the CLI. `workflow cancel` and `workflow start` no longer accept listing flags they ignored, such as `--limit` on `start` or `--cursor` and `--sort` on either. `workflow delete`, `workflow cancel` and `workflow start` now print the error they fail with, such as an unknown flag, instead of exiting with no output.
+
+### Patch Changes
+
+- Updated dependencies [[`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997), [`b074e75`](https://github.com/vercel/workflow/commit/b074e7590b099ad80bca0979e309a32ffc159598), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc), [`036e1a8`](https://github.com/vercel/workflow/commit/036e1a855ef5424663f7f1cdac3e3a083bb81f92), [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8), [`5699483`](https://github.com/vercel/workflow/commit/569948318c7ae642cc2a2a554912ff5dd883eed3), [`4890ea9`](https://github.com/vercel/workflow/commit/4890ea98976e14e0754c9992faeb708e1320ab9b), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`5df0437`](https://github.com/vercel/workflow/commit/5df043770f41bd38435fa02ea80ead7ab7a03d05), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087)]:
+  - @workflow/core@5.7.0
+  - @workflow/cli@5.3.0
+  - @workflow/rollup@5.0.12
+  - @workflow/errors@5.1.4
+  - @workflow/nitro@5.0.12
+  - @workflow/next@5.1.3
+  - @workflow/typescript-plugin@5.0.1
+  - @workflow/astro@5.0.12
+  - @workflow/sveltekit@5.0.12
+  - @workflow/nest@5.1.10
+  - @workflow/nuxt@5.0.12
+
+## 5.6.1
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`bb100a9`](https://github.com/vercel/workflow/commit/bb100a9decb69483bb9342dc1062b0c3118b0763), [`f6eb4a2`](https://github.com/vercel/workflow/commit/f6eb4a2b7cdc5d962ef3c813ffff3c6d8bf761c9), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`f957b8e`](https://github.com/vercel/workflow/commit/f957b8ea5de0d155c02b5c6c4cbf474556971ede), [`d18aff2`](https://github.com/vercel/workflow/commit/d18aff22acec8a3f57237e58624d7a4d25ca7eed), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`b1f9269`](https://github.com/vercel/workflow/commit/b1f92691bcc3bc18b9df094d45379c6464cf4d65), [`021723b`](https://github.com/vercel/workflow/commit/021723bc679a0788332e6ebba9d58da55ba4333c), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c), [`87cde0b`](https://github.com/vercel/workflow/commit/87cde0b52c59bded6ce98a87aef5c2582ac6b19c), [`e4ec16f`](https://github.com/vercel/workflow/commit/e4ec16f9b2aa092782bbd43c9f9fc50083f926f5)]:
+  - @workflow/core@5.6.1
+  - @workflow/cli@5.2.0
+  - @workflow/astro@5.0.11
+  - @workflow/nitro@5.0.11
+  - @workflow/sveltekit@5.0.11
+  - @workflow/errors@5.1.3
+  - @workflow/nest@5.1.9
+  - @workflow/next@5.1.2
+  - @workflow/nuxt@5.0.11
+  - @workflow/rollup@5.0.11
+  - @workflow/typescript-plugin@5.0.1
+  - @workflow/utils@5.1.1
+
+## 5.6.0
+
+### Minor Changes
+
+- [#5235](https://github.com/vercel/workflow/pull/5235) [`c11fc40`](https://github.com/vercel/workflow/commit/c11fc40013681fef9afe0b315b1d22284579bbe0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Store the Local World in one SQLite database (`<dataDir>/world.db`, opened with the built-in `node:sqlite` or `bun:sqlite`) instead of one JSON file per entity:
+  
+  - Every `events.create` is one transaction: an event and every change it makes to its run, step, wait and hook commit together or not at all, so a process killed mid-write never leaves a run stuck behind a half-written change. This removes the lock files, claim files and crash-repair paths of earlier releases.
+  - The queue stays in memory, as before. Startup recovery re-enqueues active runs as before, and now also wakes each recovered run when each of its open waits is due (for a wait due within the queue's longest timer, about 24.8 days), as a backstop to the recovery delivery re-arming the run's wait timers.
+  - `close()` no longer aborts a message the app has not received yet, so a short-lived sender (`wf start`, a script calling `start()`) no longer loses the run it just started. It waits until the app has written to the message's run, up to 10 seconds (enough for a dev server compiling its routes on the first request), or up to 1 second for a message without a run.
+  - Reading a data directory that has no database yet (the CLI or web UI pointed at an app that has not run) reads it as empty, and creates nothing: the first write creates the directory and `world.db`.
+  - Stream chunks are numbered in the transaction that writes them, so readers always get them in order. An idle reader's poll costs the same however long the stream is, and a stream takes no writes once it has ended.
+  - Several processes on one data directory (an app and a test runner, `@workflow/vitest`'s workers) wait for each other's writes without blocking their event loop.
+  - `clear()` gives the freed space back to the file system, and the WAL is kept to 64 MiB after a checkpoint.
+  - One `events.list` page ends early, with a cursor, once it holds about 8 MiB, so a page of large payloads does not hold the thread while it decodes.
+  - Node.js 22.x's `ExperimentalWarning` for `node:sqlite` is no longer printed.
+  
+  Requires Node.js 22.13 or later, or Bun. Local run data written by earlier releases is not migrated: it is left in place in the data directory, unread, and new runs start in an empty database. The first write after the upgrade, which creates `world.db`, says so once, naming the directories that can be deleted.
+
+### Patch Changes
+
+- Updated dependencies [[`55fa58b`](https://github.com/vercel/workflow/commit/55fa58b0b47d45c0e47743ae53e6b087eb6f87b3), [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72)]:
+  - @workflow/core@5.6.0
+  - @workflow/errors@5.1.2
+  - @workflow/cli@5.1.1
+  - @workflow/astro@5.0.10
+  - @workflow/nest@5.1.8
+  - @workflow/next@5.1.1
+  - @workflow/nitro@5.0.10
+  - @workflow/rollup@5.0.10
+  - @workflow/sveltekit@5.0.10
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/nuxt@5.0.10
+
 ## 5.5.0
 
 ### Minor Changes

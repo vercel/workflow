@@ -53,10 +53,25 @@ function startWriter(writer: string) {
   return { proc, ready, exited };
 }
 
+// Each round starts three fresh Node processes, so a round's cost is mostly
+// process startup: about half a second on an idle machine, but up to ten
+// seconds on a loaded CI runner (Windows especially), where 12 rounds took
+// anywhere from 16 s to over the 120 s timeout. Rounds stop once the budget
+// is spent, so a slow runner kills fewer writers instead of timing out; the
+// checks below hold for whatever rounds ran.
+const MAX_ROUNDS = 12;
+const ROUNDS_BUDGET_MS = 45_000;
+
 describe('crash consistency (world-local)', () => {
   it('a SIGKILL at any point leaves every entity backed by its events, and every log dense', async () => {
-    for (let round = 0; round < 12; round++) {
+    const started = Date.now();
+    for (
+      let round = 0;
+      round < MAX_ROUNDS && Date.now() - started < ROUNDS_BUDGET_MS;
+      round++
+    ) {
       const writers = [1, 2, 3].map((i) => startWriter(`${round}-${i}`));
+      // Each writer is ready once it has written its first run.
       await Promise.all(writers.map((writer) => writer.ready));
       await new Promise((resolve) =>
         setTimeout(resolve, 40 + Math.random() * 120)

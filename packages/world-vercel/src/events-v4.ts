@@ -430,6 +430,8 @@ interface CreateEventV4InputBase {
   maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
+  /** The events those replays diverged at, oldest first. Telemetry only. */
+  replayDivergenceEventIds?: readonly string[];
   /**
    * Whether the run's orchestrator made this write (spec >= 9). Required by
    * the backend on every write to a single-orchestrator run; ignored for
@@ -627,6 +629,20 @@ const CreateEventV4BodySchemas: {
 };
 
 const MaxEventsHeaderSchema = z.coerce.number().int().positive();
+
+/**
+ * The run's event ceiling from a list response's header. `undefined` when the
+ * header is absent or malformed: a list is read the same either way, and the
+ * runtime keeps whatever ceiling it already has.
+ */
+function maxEventsFromHeaders(headers: {
+  get(name: string): string | null;
+}): number | undefined {
+  const raw = headers.get(MAX_EVENTS_HEADER);
+  if (raw === null || !DECIMAL_COUNTER.test(raw)) return undefined;
+  const parsed = MaxEventsHeaderSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
 
 /**
  * The in-band fence's counters as a list response carries them
@@ -832,6 +848,9 @@ function buildPostFrameMeta(
   if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;
+  }
+  if (input.replayDivergenceEventIds !== undefined) {
+    meta.replayDivergenceEventIds = input.replayDivergenceEventIds;
   }
   if (input.resumePayloadDigest !== undefined) {
     meta.resumePayloadDigest = input.resumePayloadDigest;
@@ -2231,6 +2250,11 @@ export interface ListEventsV4Result {
    * slots below it.
    */
   snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling from the `x-wf-max-events` response header, when
+   * the backend sends a valid one. Older backends do not send it on a list.
+   */
+  maxEvents?: number;
 }
 
 /**
@@ -2329,12 +2353,14 @@ async function consumeEventFrameStream(
         const snapshot =
           snapshotFromEnd(end.snapshot) ??
           snapshotFromHeaders(response.headers);
+        const maxEvents = maxEventsFromHeaders(response.headers);
         return {
           kind: 'complete',
           events,
           cursor: end.next ?? null,
           hasMore: end.hasMore,
           ...(snapshot ? { snapshot } : {}),
+          ...(maxEvents !== undefined ? { maxEvents } : {}),
         };
       }
       if (frame.meta._error === 1) {
@@ -2701,6 +2727,9 @@ export async function getWorkflowRunEventsV4(
     // the first one, so this is the first snapshot the read saw.
     ...(consumed.kind === 'complete' && consumed.snapshot
       ? { snapshot: consumed.snapshot }
+      : {}),
+    ...(consumed.kind === 'complete' && consumed.maxEvents !== undefined
+      ? { maxEvents: consumed.maxEvents }
       : {}),
   };
 }

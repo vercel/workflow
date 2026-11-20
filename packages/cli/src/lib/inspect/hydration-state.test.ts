@@ -82,15 +82,27 @@ describe('CLI inspection of state stored by reference', () => {
     const run = storedRun(2_000);
     resolveStateFrom(run.world as never);
     const step = { runId: 'wrun_cli_long', stepId: 's', input: run.input };
-    const started = performance.now();
+    // CPU time, not wall-clock time: on a busy CI runner the test process
+    // spends most of its wall-clock time waiting for a core (CI measured over
+    // 5 s against a 5 s budget), which says nothing about the work done here.
+    const started = cpuTime();
     const shown = (await hydrateResourceIO(step)) as any;
-    const first = performance.now() - started;
-    const again = performance.now();
+    const first = cpuTime() - started;
     await hydrateResourceIO(step);
-    const cached = performance.now() - again;
     expect(shown.input.history).toHaveLength(2_000);
-    // ~135 ms on a laptop: the history is read and rebuilt once.
+    // The history is read once, and the second resource reuses what it rebuilt.
+    expect(run.lists()).toBe(1);
+    // ~0.5 s of CPU on a laptop, and about the same with every core busy:
+    // the history is rebuilt once, not once per step.
     expect(first).toBeLessThan(5_000);
-    expect(cached).toBeLessThan(first);
   });
 });
+
+/** CPU milliseconds spent by this thread (or process, on older Node). */
+function cpuTime(): number {
+  const usage =
+    (
+      process as { threadCpuUsage?: () => NodeJS.CpuUsage }
+    ).threadCpuUsage?.() ?? process.cpuUsage();
+  return (usage.user + usage.system) / 1000;
+}

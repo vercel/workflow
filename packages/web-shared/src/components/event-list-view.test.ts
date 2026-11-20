@@ -1,6 +1,6 @@
 import type { Event } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { buildNameMaps } from './event-list-view';
+import { buildNameMaps } from '../lib/event-list-model';
 
 function event(
   eventType: Event['eventType'],

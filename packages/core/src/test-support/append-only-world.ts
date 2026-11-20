@@ -117,6 +117,7 @@ export interface RecordedCreate {
  * - `subscribe`: the live feed.
  * - `reportIncomplete`: answer in-band writes with an incomplete skipped-slot
  *   report (`hasMore: true`).
+ * - `noReport`: answer in-band writes with no skipped-slot report at all.
  *
  * Every created event is recorded, so a test can assert what the runtime
  * wrote and with which params.
@@ -148,6 +149,12 @@ export class AppendOnlyWorld {
   readonly correlationListCalls: Array<Record<string, unknown>> = [];
   /** Replay events served without their step input (`skipStepInputs`). */
   strippedStepInputs = 0;
+  /**
+   * The run's event ceiling, reported as `maxEvents` on `run_started`
+   * responses and on every `list` page. Unreported when absent. Mutable, so a
+   * test can model a run whose log is already past the ceiling.
+   */
+  maxEvents: number | undefined;
   private handler:
     | ((message: unknown, meta: Record<string, unknown>) => Promise<unknown>)
     | undefined;
@@ -198,6 +205,7 @@ export class AppendOnlyWorld {
        */
       lazyCreatePayloads?: boolean;
       reportIncomplete?: boolean;
+      noReport?: boolean;
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
       /**
@@ -292,8 +300,22 @@ export class AppendOnlyWorld {
        * Absent: a key is deduplicated for as long as the fake lives.
        */
       keyDedupeWindowMs?: number;
+      /** Initial {@link AppendOnlyWorld.maxEvents}. */
+      maxEvents?: number;
+      /**
+       * Report {@link AppendOnlyWorld.maxEvents} on `run_started` responses
+       * only, not on `list` pages, as a World that predates the list field.
+       */
+      maxEventsOnStartOnly?: boolean;
+      /**
+       * The most events one `list` page without a `limit` returns, as a World
+       * that bounds a full-log read and answers `hasMore` past it.
+       */
+      listPageSize?: number;
     } = {}
-  ) {}
+  ) {
+    this.maxEvents = options.maxEvents;
+  }
 
   /** Seed a run as if `run_created` had been written. */
   seedRun(run: Omit<WorkflowRun, 'specVersion'> & { specVersion?: number }) {
@@ -526,6 +548,7 @@ export class AppendOnlyWorld {
     ownSlot: number
   ): Pick<EventResult, 'events' | 'cursor' | 'hasMore'> {
     if (params?.inBand !== true || params.eventCount === undefined) return {};
+    if (this.options.noReport) return {};
     if (this.options.reportIncomplete) {
       return { events: [], cursor: null, hasMore: true };
     }
@@ -919,6 +942,9 @@ export class AppendOnlyWorld {
         return {
           event: self.responseEvent(event),
           run: self.run,
+          ...(data.eventType === 'run_started' && self.maxEvents !== undefined
+            ? { maxEvents: self.maxEvents }
+            : {}),
           ...self.report(params, slot),
           // A start written at the first slot as the creation sits at a
           // position the writer may already count as the creation's: its
@@ -989,7 +1015,7 @@ export class AppendOnlyWorld {
         const desc = params.pagination?.sortOrder === 'desc';
         let data = self.events.filter((e) => !cursor || e.eventId > cursor);
         if (desc) data = [...data].reverse();
-        const limit = params.pagination?.limit;
+        const limit = params.pagination?.limit ?? self.options.listPageSize;
         const page = limit ? data.slice(0, limit) : data;
         return {
           data: self.served(
@@ -999,6 +1025,9 @@ export class AppendOnlyWorld {
           cursor: page.at(-1)?.eventId ?? cursor ?? null,
           hasMore: page.length < data.length,
           snapshot: { seq: self.seq, seqInBand: self.seqInBand },
+          ...(self.maxEvents !== undefined && !self.options.maxEventsOnStartOnly
+            ? { maxEvents: self.maxEvents }
+            : {}),
         };
       },
       async listByCorrelationId(params) {

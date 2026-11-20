@@ -1,3 +1,4 @@
+import '../../../test-utils/vercel-request-context.js';
 import {
   EntityConflictError,
   PreconditionFailedError,
@@ -957,6 +958,7 @@ describe('workflowEntrypoint replay guards', () => {
     expect(terminalAttemptParams[failedIndex]).toEqual(
       expect.objectContaining({
         replayDivergenceCount: REPLAY_DIVERGENCE_MAX_RETRIES + 1,
+        replayDivergenceEventIds: [...priorEventIds, slotToEventId(1)],
       })
     );
   });
@@ -1003,6 +1005,8 @@ describe('workflowEntrypoint replay guards', () => {
     expect(createdEventParams[completedIndex]).toEqual(
       expect.objectContaining({
         replayDivergenceCount: 2,
+        // A producer that predates `eventIds` names only its latest event.
+        replayDivergenceEventIds: ['event-diverged'],
       })
     );
   });
