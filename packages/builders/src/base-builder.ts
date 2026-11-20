@@ -549,10 +549,8 @@ export abstract class BaseBuilder {
     // `inputs` array reference is preserved for WeakMap caching: callers
     // like createWorkflowsBundle and createStepsBundle can share the same
     // cache entry when they pass the same inputFiles array.
-    const resolvedWorkflowRuntime = await enhancedResolve(
-      outdir,
-      '@workflow/core/runtime/run'
-    ).catch(() => undefined);
+    const resolvedWorkflowRuntime =
+      await this.resolveWorkflowRuntimeEntry(outdir);
     const entryPoints = resolvedWorkflowRuntime
       ? [...inputs, resolvedWorkflowRuntime]
       : inputs;
@@ -579,6 +577,40 @@ export abstract class BaseBuilder {
 
     this.discoveredEntries.set(inputs, state);
     return state;
+  }
+
+  /**
+   * Resolves `@workflow/core/runtime/run`, the SDK file that defines `Run`
+   * and its steps, so discovery can seed it.
+   *
+   * It is resolved through the `workflow` package first. That is the copy the
+   * workflow bundle reaches, through `workflow`'s `workflow` export condition
+   * (which discovery does not use), and it is the only copy a project that
+   * depends on `workflow` alone can reach under a layout that does not hoist
+   * `@workflow/core`, such as pnpm's. Resolving from the output directory
+   * alone failed there, so `Run`'s steps were left out of the steps bundle
+   * while the workflow bundle still had a proxy for each.
+   */
+  private async resolveWorkflowRuntimeEntry(
+    outdir: string
+  ): Promise<string | undefined> {
+    const throughWorkflowPackage = await enhancedResolve(
+      outdir,
+      'workflow/internal/builtins'
+    )
+      .then((builtins) =>
+        enhancedResolve(
+          dirname(builtins as string),
+          '@workflow/core/runtime/run'
+        )
+      )
+      .catch(() => undefined);
+    if (throughWorkflowPackage) {
+      return throughWorkflowPackage as string;
+    }
+    return (await enhancedResolve(outdir, '@workflow/core/runtime/run').catch(
+      () => undefined
+    )) as string | undefined;
   }
 
   /**

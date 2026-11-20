@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -280,6 +280,68 @@ export async function inlineWorkflow() {
         'src/lib/helpers.ts',
         'src/workflows/inline.ts',
       ]);
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder SDK steps', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    "registers Run's steps when the project can resolve workflow but not @workflow/core",
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // The project depends on `workflow` alone, the way pnpm installs it:
+      // `@workflow/core` is reachable from `workflow`, not from the project.
+      // The workflow bundle reaches `Run`'s steps through `workflow`'s
+      // `workflow` export condition, so the steps bundle has to as well.
+      const workflowPackage = realpathSync(
+        join(import.meta.dirname, '../../workflow')
+      );
+      await mkdir(join(workingDir, 'node_modules'), { recursive: true });
+      symlinkSync(
+        workflowPackage,
+        join(workingDir, 'node_modules/workflow'),
+        'junction'
+      );
+      await write(
+        join(workingDir, 'src/workflows/hello.ts'),
+        `import { sleep } from 'workflow';
+
+export async function helloWorkflow() {
+  'use workflow';
+  await sleep('1s');
+  return 'done';
+}
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      const registered = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `await import(${JSON.stringify(
+              pathToFileURL(join(getFlowFuncDir(workingDir), 'index.mjs')).href
+            )});
+const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
+process.stdout.write(JSON.stringify([...(steps?.keys() ?? [])]));`,
+          ],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+        )
+      ) as string[];
+      expect(registered.some((id) => id.endsWith('//Run#status'))).toBe(true);
     }
   );
 });
