@@ -434,7 +434,6 @@ function hasDirective(
 
 const blankMatch = (match: string) => match.replace(/[^\r\n]/g, ' ');
 
-const directiveLinePattern = /^\s*(['"])(use workflow|use step)\1;?\s*$/;
 const stringDirectiveLinePattern = /^\s*(['"])[^'"]+\1;?\s*$/;
 
 // Returns the trimmed line before `lineStart` that is not blank, if any.
@@ -456,32 +455,49 @@ function previousMeaningfulLine(source: string, lineStart: number) {
 /**
  * The line-based check that detection used before it looked at tokens: the
  * directive is on a line of its own, and the line before it opens a block or
- * is another directive. Kept as the last check so detection never finds fewer
- * directives than it used to. A scanner misreading earlier on the line (see
- * `stripCommentsFromSource`) can corrupt the token check's walk back to the
- * `{`, while this check only reads the line before.
+ * is another string literal statement. It is kept as a fallback so detection
+ * never finds fewer directives than it used to. A scanner misreading earlier
+ * on the line (see `stripCommentsFromSource`) can corrupt the token check's
+ * walk back to the `{`, while this check only reads the line before.
+ *
+ * `masked` is one of the readings `hasDirective` takes. The directive text is
+ * read from `source`, and its quotes have to survive in `masked`. Masking
+ * string contents only blanks text, so on any line this accepts at least what
+ * the old check accepted on the same masking without string contents masked.
  */
 function hasDirectiveOnItsOwnLine(
+  source: string,
   masked: string,
   directive: 'use workflow' | 'use step'
 ) {
   let from = 0;
   for (;;) {
-    const at = masked.indexOf(directive, from);
+    const at = source.indexOf(directive, from);
     if (at === -1) {
       return false;
     }
-    const lineStart = masked.lastIndexOf('\n', at) + 1;
-    let lineEnd = masked.indexOf('\n', at);
+    from = at + directive.length;
+    const quoteStart = at - 1;
+    const quoteEnd = at + directive.length;
+    const quote = source[quoteStart];
+    if (
+      !isQuote(quote) ||
+      source[quoteEnd] !== quote ||
+      masked[quoteStart] !== quote ||
+      masked[quoteEnd] !== quote
+    ) {
+      continue;
+    }
+    const lineStart = masked.lastIndexOf('\n', quoteStart) + 1;
+    let lineEnd = masked.indexOf('\n', quoteEnd);
     if (lineEnd === -1) {
       lineEnd = masked.length;
     }
-    from = lineEnd;
-
-    const directiveMatch = directiveLinePattern.exec(
-      masked.slice(lineStart, lineEnd).trim()
-    );
-    if (directiveMatch?.[2] !== directive) {
+    const after = masked.slice(quoteEnd + 1, lineEnd).trim();
+    if (
+      masked.slice(lineStart, quoteStart).trim() !== '' ||
+      (after !== '' && after !== ';')
+    ) {
       continue;
     }
     const previousLine = previousMeaningfulLine(masked, lineStart);
@@ -501,11 +517,12 @@ const quotedStringPattern =
 const blankQuotedStringContents = (match: string) =>
   `${match[0]}${blankMatch(match.slice(1, -1))}${match[0]}`;
 
-const closingParenThenSlashPattern = /\)\s*\//;
+// A `)` followed by a `/` that does not start a comment.
+const closingParenThenSlashPattern = /\)\s*\/(?![/*])/;
 
 /**
  * Returns a check for directives outside comments, template literals, and
- * other strings. A directive found by any of the readings below counts: a
+ * other strings. A directive found in any of the readings below counts: a
  * missed directive drops a step without a warning, while an extra match only
  * costs a transform that finds nothing.
  *
@@ -515,57 +532,52 @@ const closingParenThenSlashPattern = /\)\s*\//;
  *    but does not share the scanner's known gaps.
  * 3. The scanner again, reading a `/` after `)` as a regex, for code such as
  *    `if (a) /"/.test(b)`, whose quote otherwise hides the rest of the line.
- * 4. The line-based check detection used before (`hasDirectiveOnItsOwnLine`),
- *    on the maskings it used, so nothing it found is missed now.
+ *    Only when the source has a `)` followed by a `/` outside a comment.
  *
- * Only the first reading runs when it finds the directive, which is the
- * common case. The others run for files that mention the directive text
- * without one being found.
+ * Each reading is checked with the token check (`hasDirective`) and then the
+ * line-based one (`hasDirectiveOnItsOwnLine`) before the next is computed,
+ * so a file whose directive the first reading shows costs one scan.
  */
 function createDirectiveCheck(source: string) {
   const mayHaveScannerGap = source.includes('`') || source.includes('/');
-  let scanned: string | undefined;
-  let regexMasked: string | undefined;
-  let scannedWithRegexAfterParen: string | undefined;
-  let lineScanned: string | undefined;
-  let lineRegexMasked: string | undefined;
+  const readings: string[] = [];
+  const reading = (index: number): string | undefined => {
+    if (index < readings.length) {
+      return readings[index];
+    }
+    let next: string | undefined;
+    if (index === 0) {
+      next = stripCommentsFromSource(source, true, true);
+    } else if (!mayHaveScannerGap) {
+      // Without a backtick or a slash there is no template literal, comment,
+      // or regex literal for the scanner to misread.
+      next = undefined;
+    } else if (index === 1) {
+      next = source
+        .replace(templateLiteralPattern, blankMatch)
+        .replace(commentPattern, blankMatch)
+        .replace(quotedStringPattern, blankQuotedStringContents);
+    } else if (index === 2 && closingParenThenSlashPattern.test(source)) {
+      next = stripCommentsFromSource(source, true, true, true);
+    }
+    if (next !== undefined) {
+      readings.push(next);
+    }
+    return next;
+  };
   return (directive: 'use workflow' | 'use step') => {
-    scanned ??= stripCommentsFromSource(source, true, true);
-    if (hasDirective(source, scanned, directive)) {
-      return true;
-    }
-    // Without a backtick or a slash there is no template literal, comment,
-    // or regex literal for the scanner to misread, and the source itself is
-    // what the line-based check used to read.
-    if (!mayHaveScannerGap) {
-      return hasDirectiveOnItsOwnLine(source, directive);
-    }
-    regexMasked ??= source
-      .replace(templateLiteralPattern, blankMatch)
-      .replace(commentPattern, blankMatch)
-      .replace(quotedStringPattern, blankQuotedStringContents);
-    if (hasDirective(source, regexMasked, directive)) {
-      return true;
-    }
-    if (closingParenThenSlashPattern.test(source)) {
-      scannedWithRegexAfterParen ??= stripCommentsFromSource(
-        source,
-        true,
-        true,
-        true
-      );
-      if (hasDirective(source, scannedWithRegexAfterParen, directive)) {
+    for (let index = 0; ; index++) {
+      const masked = reading(index);
+      if (masked === undefined) {
+        return false;
+      }
+      if (
+        hasDirective(source, masked, directive) ||
+        hasDirectiveOnItsOwnLine(source, masked, directive)
+      ) {
         return true;
       }
     }
-    lineScanned ??= stripCommentsFromSource(source, true);
-    if (hasDirectiveOnItsOwnLine(lineScanned, directive)) {
-      return true;
-    }
-    lineRegexMasked ??= source
-      .replace(templateLiteralPattern, blankMatch)
-      .replace(commentPattern, blankMatch);
-    return hasDirectiveOnItsOwnLine(lineRegexMasked, directive);
   };
 }
 

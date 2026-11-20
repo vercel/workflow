@@ -21,7 +21,10 @@
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { applySwcTransform } from './apply-swc-transform.js';
-import { detectWorkflowPatterns } from './transform-utils.js';
+import {
+  detectWorkflowPatterns,
+  stripCommentsFromSource,
+} from './transform-utils.js';
 
 const SEED = Number(process.env.DIRECTIVE_FUZZ_SEED ?? 20261120);
 const RUNS = Number(process.env.DIRECTIVE_FUZZ_RUNS ?? 4000);
@@ -259,6 +262,61 @@ function typescriptFindsUseStep({ source, jsx }: Program): boolean | undefined {
   return found;
 }
 
+/**
+ * The line-based check detection used before it read tokens, kept here
+ * verbatim so the tests can hold detection to finding at least as much.
+ */
+function lineBasedDetectionFindsUseStep(source: string): boolean {
+  if (!source.includes('use step')) return false;
+  const directiveLine = /^\s*(['"])(use workflow|use step)\1;?\s*$/;
+  const stringDirectiveLine = /^\s*(['"])[^'"]+\1;?\s*$/;
+  const previousMeaningfulLine = (text: string, lineStart: number) => {
+    let end = lineStart - 1;
+    while (end >= 0) {
+      const start = end > 0 ? text.lastIndexOf('\n', end - 1) + 1 : 0;
+      const line = text.slice(start, end).trim();
+      if (line !== '') return line;
+      end = start - 1;
+    }
+    return undefined;
+  };
+  const check = (text: string) => {
+    let from = 0;
+    for (;;) {
+      const at = text.indexOf('use step', from);
+      if (at === -1) return false;
+      const lineStart = text.lastIndexOf('\n', at) + 1;
+      let lineEnd = text.indexOf('\n', at);
+      if (lineEnd === -1) lineEnd = text.length;
+      from = lineEnd;
+      if (
+        directiveLine.exec(text.slice(lineStart, lineEnd).trim())?.[2] !==
+        'use step'
+      ) {
+        continue;
+      }
+      const previous = previousMeaningfulLine(text, lineStart);
+      if (
+        previous === undefined ||
+        previous.endsWith('{') ||
+        stringDirectiveLine.test(previous)
+      ) {
+        return true;
+      }
+    }
+  };
+  if (!source.includes('`') && !source.includes('/')) return check(source);
+  const blank = (match: string) => match.replace(/[^\r\n]/g, ' ');
+  return (
+    check(stripCommentsFromSource(source, true)) ||
+    check(
+      source
+        .replace(/`(?:\\[\s\S]|[^`\\])*`/g, blank)
+        .replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, blank)
+    )
+  );
+}
+
 function* validPrograms(seed: number, runs: number) {
   const next = createGenerator(seed);
   const seen = new Set<string>();
@@ -289,6 +347,20 @@ describe('detectWorkflowPatterns against parsers', () => {
     expect(checked).toBeGreaterThan(RUNS * 0.8);
     expect(withDirective).toBeGreaterThan(checked * 0.1);
     expect(withDirective).toBeLessThan(checked * 0.9);
+    expect(missed.slice(0, 5)).toEqual([]);
+  });
+
+  it(`finds every directive the line-based check found (seed ${SEED})`, () => {
+    const missed: string[] = [];
+    let foundBefore = 0;
+    for (const { program } of validPrograms(SEED + 2, RUNS)) {
+      if (!lineBasedDetectionFindsUseStep(program.source)) continue;
+      foundBefore++;
+      if (!detectWorkflowPatterns(program.source).hasUseStep) {
+        missed.push(program.source);
+      }
+    }
+    expect(foundBefore).toBeGreaterThan(RUNS * 0.01);
     expect(missed.slice(0, 5)).toEqual([]);
   });
 
