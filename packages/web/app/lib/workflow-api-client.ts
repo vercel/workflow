@@ -14,17 +14,9 @@
  * Consumers can import directly from those modules or from this barrel.
  */
 
-export type { ResumeHookResult } from '~/lib/types';
-export {
-  useInfiniteList,
-  useWorkflowRunsInfinite,
-} from './client/hooks/use-infinite-list';
+export { useWorkflowRunsInfinite } from './client/hooks/use-infinite-list';
 export { useLoadMoreOnScroll } from './client/hooks/use-load-more-on-scroll';
-export {
-  usePaginatedList,
-  useWorkflowHooks,
-  useWorkflowRuns,
-} from './client/hooks/use-paginated-list';
+export { useWorkflowHooks } from './client/hooks/use-paginated-list';
 export {
   createRunStateHydratorForEnv,
   fetchSpanDetailResource,
@@ -47,4 +39,4 @@ export {
   unwrapServerActionResult,
   WorkflowWebAPIError,
 } from './client/workflow-errors';
-export { listStreams, readStream } from './client/workflow-streams';
+export { readStream } from './client/workflow-streams';
