@@ -14,11 +14,14 @@ import { join, relative, resolve } from 'node:path';
 // Resolve symlinks in tmpdir to avoid macOS /var -> /private/var issues
 const realTmpdir = realpathSync(tmpdir());
 
+import { createContext, runInContext } from 'node:vm';
 import * as esbuild from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import {
   createNodeModuleErrorPlugin,
+  createUnavailableBuiltinModule,
   escapeRegExp,
+  formatUnavailableBuiltinWarning,
   getImportedIdentifier,
   getPackageName,
   getViolationLocation,
@@ -687,6 +690,131 @@ export function workflow() {
       file: relativePath('workflow.ts'),
       line: 7,
     });
+  });
+});
+
+describe('builtins imported only by dependencies', () => {
+  async function bundle(files: Record<string, string>) {
+    const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
+    const { mkdirSync } = await import('node:fs');
+    for (const [path, contents] of Object.entries(files)) {
+      const absolutePath = join(tempDir, path);
+      mkdirSync(resolve(absolutePath, '..'), { recursive: true });
+      writeFileSync(absolutePath, contents);
+    }
+    try {
+      return await esbuild.build({
+        entryPoints: [join(tempDir, 'workflow.ts')],
+        absWorkingDir: tempDir,
+        bundle: true,
+        write: false,
+        format: 'cjs',
+        platform: 'neutral',
+        mainFields: ['module', 'main'],
+        logLevel: 'silent',
+        plugins: [createNodeModuleErrorPlugin()],
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  const pkg = (name: string, index: string) => ({
+    [`node_modules/${name}/package.json`]: JSON.stringify({
+      name,
+      main: 'index.js',
+    }),
+    [`node_modules/${name}/index.js`]: index,
+  });
+
+  it('bundles a stand-in instead of leaving the builtin external', async () => {
+    const result = await bundle({
+      ...pkg(
+        'dep',
+        [
+          "const os = require('node:os');",
+          'module.exports.host = () => os.hostname();',
+          "module.exports.ok = () => 'ok';",
+        ].join('\n')
+      ),
+      ...pkg('wrapper', "module.exports = require('dep');"),
+      'workflow.ts': "import { ok } from 'wrapper';\nexport const run = ok;",
+    });
+    const text = result.outputFiles[0].text;
+
+    expect(result.errors).toHaveLength(0);
+    expect(text).not.toContain('require("node:os")');
+    expect(formatUnavailableBuiltinWarning(result.metafile)).toContain(
+      '"node:os" imported by node_modules/dep/index.js'
+    );
+  });
+
+  it('does not report a stand-in that tree-shaking removed', async () => {
+    const result = await bundle({
+      'node_modules/dep/package.json': JSON.stringify({
+        name: 'dep',
+        type: 'module',
+        module: 'index.js',
+        sideEffects: false,
+      }),
+      'node_modules/dep/index.js': [
+        "import { hostname } from 'node:os';",
+        'export const host = () => hostname();',
+        "export const ok = () => 'ok';",
+      ].join('\n'),
+      'node_modules/wrapper/package.json': JSON.stringify({
+        name: 'wrapper',
+        type: 'module',
+        module: 'index.js',
+        sideEffects: false,
+      }),
+      'node_modules/wrapper/index.js': "export * from 'dep';",
+      'workflow.ts': "import { ok } from 'wrapper';\nexport const run = ok;",
+    });
+
+    expect(result.errors).toHaveLength(0);
+    // The stand-in was resolved, then dropped with the unused export.
+    expect(Object.keys(result.metafile?.inputs ?? {})).toContain(
+      'workflow-unavailable-builtin:node:os'
+    );
+    expect(result.outputFiles[0].text).not.toContain(
+      'NodeJsModuleInWorkflowError'
+    );
+    expect(formatUnavailableBuiltinWarning(result.metafile)).toBeUndefined();
+  });
+});
+
+describe('createUnavailableBuiltinModule', () => {
+  function load(specifier: string, names: string[]) {
+    const module = { exports: {} as Record<string, any> };
+    runInContext(
+      createUnavailableBuiltinModule(specifier, names),
+      createContext({ module, exports: module.exports })
+    );
+    return module.exports;
+  }
+
+  it('loads without throwing and keeps the named exports', () => {
+    const zlib = load('node:zlib', ['crc32', 'gzipSync']);
+    expect(Object.keys(zlib)).toEqual(['crc32', 'gzipSync']);
+    // Feature detection at module load keeps working.
+    expect(typeof zlib.crc32).toBe('function');
+    expect(zlib.crc32.then).toBeUndefined();
+  });
+
+  it('throws a descriptive error when called, constructed or read through', () => {
+    const { Buffer, EventEmitter } = load('node:buffer', [
+      'Buffer',
+      'EventEmitter',
+    ]);
+    expect(() => Buffer.from('x')).toThrow(
+      /Cannot use node:buffer\.Buffer\.from: "node:buffer" is a Node\.js module/
+    );
+    expect(() => new EventEmitter()).toThrow(/use step/);
+    // Subclassing at module load still works; only instantiation throws.
+    class Emitter extends EventEmitter {}
+    expect(() => new Emitter()).toThrow(/node:buffer\.EventEmitter/);
+    expect({} instanceof Buffer).toBe(false);
   });
 });
 

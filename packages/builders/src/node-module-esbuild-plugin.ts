@@ -32,6 +32,105 @@ export function isRuntimeBuiltinSpecifier(specifier: string): boolean {
   return runtimeModulesRegex.test(specifier);
 }
 
+/**
+ * esbuild namespace for the stand-in modules that replace built-ins imported
+ * only by dependencies. Shows up in metafile inputs as
+ * `workflow-unavailable-builtin:<specifier>`.
+ */
+export const UNAVAILABLE_BUILTIN_NAMESPACE = 'workflow-unavailable-builtin';
+
+const DOCS_URL = `https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
+
+/**
+ * Built-ins that print a runtime deprecation warning when loaded. Their export
+ * names are not enumerated (see {@link getBuiltinExportNames}), so the build
+ * does not print that warning on the user's behalf.
+ */
+const DEPRECATED_ON_LOAD = /^(node:)?(punycode|sys|_stream_\w+|_tls_\w+)$/;
+
+const builtinExportNamesCache = new Map<string, string[]>();
+
+/**
+ * The names a built-in exports in the Node.js running the build, so the
+ * stand-in module can offer the same named exports. Bun modules (and anything
+ * this Node.js does not have) get none, and their named imports read as
+ * `undefined`.
+ */
+function getBuiltinExportNames(specifier: string): string[] {
+  const cached = builtinExportNamesCache.get(specifier);
+  if (cached) return cached;
+  let names: string[] = [];
+  if (!bunModulesRegex.test(specifier) && !DEPRECATED_ON_LOAD.test(specifier)) {
+    try {
+      const mod = process.getBuiltinModule?.(specifier) as
+        | Record<string, unknown>
+        | undefined;
+      if (mod) {
+        names = Object.keys(mod).filter(
+          (name) => name !== 'default' && name !== '__esModule'
+        );
+      }
+    } catch {
+      // Not a built-in in this Node.js version.
+    }
+  }
+  builtinExportNamesCache.set(specifier, names);
+  return names;
+}
+
+/**
+ * Source of the CommonJS module that stands in for a Node.js / Bun built-in a
+ * dependency imports, inside the workflow bundle.
+ *
+ * The workflow sandbox has no `require`, so leaving the built-in external (a
+ * top-level `require("node:crypto")`) would stop the whole bundle from
+ * loading, even when no workflow ever reaches the code that needs it. The
+ * stand-in loads fine. Each export is a function that throws a descriptive
+ * error when it is called or constructed, and so is every property read off
+ * one (`Buffer.from`), so only code that really uses the module fails, at the
+ * point where it uses it.
+ */
+export function createUnavailableBuiltinModule(
+  specifier: string,
+  exportNames: string[]
+): string {
+  const message = [
+    `"${specifier}" is a ${getModuleTypeLabel(specifier)} module, and ${getModuleTypeLabel(specifier)} modules are not available in workflow functions.`,
+    'A dependency of this workflow imports it, which is fine as long as workflow code never calls into it.',
+    'Move the code that calls it into a "use step" function.',
+    '',
+    `Learn more: ${DOCS_URL}`,
+  ].join('\n');
+  return `"use strict";
+var specifier = ${JSON.stringify(specifier)};
+var message = ${JSON.stringify(message)};
+function fail(path) {
+  var error = new Error("Cannot use " + path + ": " + message);
+  error.name = "NodeJsModuleInWorkflowError";
+  throw error;
+}
+function unavailable(path) {
+  var target = function () {};
+  return new Proxy(target, {
+    apply: function () { return fail(path); },
+    construct: function () { return fail(path); },
+    get: function (target, key, receiver) {
+      // Keep function internals (prototype, name, Symbol.hasInstance, ...)
+      // so \`extends\`, \`instanceof\` and \`typeof\` checks still work, and
+      // never look thenable.
+      if (typeof key !== "string" || key in target) return Reflect.get(target, key, receiver);
+      if (key === "then") return undefined;
+      return unavailable(path + "." + key);
+    },
+  });
+}
+var names = ${JSON.stringify(exportNames)};
+for (var i = 0; i < names.length; i++) {
+  exports[names[i]] = unavailable(specifier + "." + names[i]);
+}
+`;
+}
+
 type PackageViolation = {
   packageName: string;
   importer: string;
@@ -306,6 +405,67 @@ function getModuleTypeLabel(modulePath: string): string {
   return 'Node.js';
 }
 
+/** Inputs that contributed code to the output, i.e. survived tree-shaking. */
+function getEmittedInputs(metafile: esbuild.Metafile): Set<string> {
+  const emitted = new Set<string>();
+  for (const output of Object.values(metafile.outputs)) {
+    for (const [input, info] of Object.entries(output.inputs)) {
+      if (info.bytesInOutput > 0) emitted.add(input);
+    }
+  }
+  return emitted;
+}
+
+/** Maps each stand-in built-in in the output to the inputs importing it. */
+function getUnavailableBuiltinImporters(
+  metafile: esbuild.Metafile
+): Map<string, string[]> {
+  const prefix = `${UNAVAILABLE_BUILTIN_NAMESPACE}:`;
+  const emitted = getEmittedInputs(metafile);
+  const importersBySpecifier = new Map<string, string[]>();
+  for (const [input, info] of Object.entries(metafile.inputs)) {
+    if (!emitted.has(input)) continue;
+    const stubs = info.imports.filter(
+      (imp) => imp.path.startsWith(prefix) && emitted.has(imp.path)
+    );
+    for (const imp of stubs) {
+      const specifier = imp.path.slice(prefix.length);
+      const importers = importersBySpecifier.get(specifier) ?? [];
+      if (!importers.includes(input)) importers.push(input);
+      importersBySpecifier.set(specifier, importers);
+    }
+  }
+  return importersBySpecifier;
+}
+
+/**
+ * Describes the built-ins that dependencies still import after tree-shaking
+ * and that the workflow bundle replaced with stand-ins, each with a module
+ * that imports it. Returns `undefined` when there are none. The bundle loads
+ * either way; this says where to look if a workflow does reach that code.
+ */
+export function formatUnavailableBuiltinWarning(
+  metafile: esbuild.Metafile | undefined
+): string | undefined {
+  if (!metafile) return undefined;
+  const importersBySpecifier = getUnavailableBuiltinImporters(metafile);
+  if (importersBySpecifier.size === 0) return undefined;
+
+  const lines = [...importersBySpecifier.keys()].sort().map((specifier) => {
+    const importers = (importersBySpecifier.get(specifier) ?? []).sort();
+    const more =
+      importers.length > 1 ? ` (and ${importers.length - 1} more)` : '';
+    return `  • "${specifier}" imported by ${importers[0]}${more}`;
+  });
+  return [
+    'The workflow bundle includes dependencies that import Node.js or Bun modules, which are not available in workflow functions:',
+    ...lines,
+    '',
+    'Each one is replaced with a stand-in that throws if a workflow calls into it, so the bundle still loads. If a workflow needs that code, move it into a "use step" function.',
+    `Learn more: ${DOCS_URL}`,
+  ].join('\n');
+}
+
 /**
  * Create an esbuild plugin to detect violations of the Node.js module usage rule.
  * This plugin prevents workflow functions from importing Node.js or Bun built-in
@@ -318,7 +478,8 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
       const cwd = process.cwd();
       const importParents = new Map<string, string>();
       const packageViolations: PackageViolation[] = [];
-      const seenViolations = new Set<string>();
+      // Whether each package/workflow-file pair was reported as a violation.
+      const reportedViolations = new Map<string, boolean>();
 
       // Enable the esbuild metafile so we can inspect which Node.js / Bun
       // built-in imports actually survive tree-shaking. We need this to
@@ -411,7 +572,25 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
 
         const workflowFile = filteredChain[0] ?? importerPath;
 
+        // A built-in that only a dependency imports, which the user never
+        // imported themselves. Bundling the dependency does not mean any
+        // workflow calls the code that needs the built-in (a provider SDK
+        // pulled in through a barrel file, a checksum helper picked at module
+        // load), so swap in a stand-in that loads and only throws when it is
+        // used. Built-ins imported from user code, and packages the user
+        // imports directly that need one, stay external below and fail the
+        // build instead.
+        const stubUnreported = importerPath.includes('node_modules');
+        const unavailable = {
+          path: args.path,
+          namespace: UNAVAILABLE_BUILTIN_NAMESPACE,
+          // Lets esbuild drop the import when nothing that survives
+          // tree-shaking reads from it.
+          sideEffects: false,
+        };
+
         if (!workflowFile || workflowFile.includes('node_modules')) {
+          if (stubUnreported) return unavailable;
           // Mark builtin imports as side-effect-free so esbuild can tree-shake
           // them when they're only referenced by dead (e.g. step-only) code
           // paths in shared modules. The onEnd filter below uses the metafile
@@ -430,8 +609,8 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
         const relativeWorkflowFile = relative(cwd, workflowFile);
         const violationKey = `${packageName}:${relativeWorkflowFile}`;
 
-        if (!seenViolations.has(violationKey)) {
-          seenViolations.add(violationKey);
+        let reported = reportedViolations.get(violationKey);
+        if (reported === undefined) {
           const location = await getViolationLocation(
             cwd,
             relativeWorkflowFile,
@@ -441,6 +620,8 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
           // If we can't find it, the package is likely a transitive dependency
           // that the user didn't directly import - we'll report the top-level
           // package they did import instead.
+          reported = location !== undefined && location !== null;
+          reportedViolations.set(violationKey, reported);
           if (location) {
             packageViolations.push({
               path: args.path,
@@ -450,6 +631,8 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
             });
           }
         }
+
+        if (!reported && stubUnreported) return unavailable;
 
         // Mark builtin imports as side-effect-free so esbuild can tree-shake
         // them when they're only referenced by dead (e.g. step-only) code
@@ -472,6 +655,17 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
       // `onResolve` above, esbuild can drop such imports from the output.
       // Here we consult the metafile to see which builtin imports remain
       // in the emitted bundle and only report those.
+      build.onLoad(
+        { filter: /.*/, namespace: UNAVAILABLE_BUILTIN_NAMESPACE },
+        (args) => ({
+          contents: createUnavailableBuiltinModule(
+            args.path,
+            getBuiltinExportNames(args.path)
+          ),
+          loader: 'js',
+        })
+      );
+
       build.onEnd((result) => {
         if (packageViolations.length === 0) return;
 
