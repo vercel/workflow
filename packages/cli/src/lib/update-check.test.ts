@@ -6,6 +6,7 @@ describe('isBetaVersion', () => {
     expect(isBetaVersion('5.0.0-beta.58')).toBe(true);
     expect(isBetaVersion('4.0.1-beta.1')).toBe(true);
     expect(isBetaVersion('5.0.0-beta')).toBe(true);
+    expect(isBetaVersion('5.0.0-beta.1+build.7')).toBe(true);
   });
 
   it('is false for stable releases', () => {
