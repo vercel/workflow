@@ -33,6 +33,10 @@ import { z } from 'zod/v4';
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getQueueDispatcher } from './http-client.js';
 import { getTransientTransportCode } from './http-core.js';
+import {
+  markQueueReschedule,
+  runQueueDelivery,
+} from './queue-edge-deny-retry.js';
 import { withQueueSendRetry } from './queue-send-retry.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
@@ -1373,6 +1377,10 @@ export function createQueue(config?: APIConfig): Queue {
     // remain idempotent because queue retries can happen close together.
     experimental_maxCoalescedReruns: MAX_COALESCED_RERUNS,
     retry: (error, { messageId, deliveryCount }) => {
+      // `@vercel/queue` reschedules the message right after this returns; a
+      // reschedule the Vercel edge refuses is retried once
+      // (queue-edge-deny-retry.ts).
+      markQueueReschedule();
       if (error instanceof RedeliverSameMessage) {
         // A requested redelivery, not a failure: no backoff, no log line.
         return error.handoff
@@ -1425,7 +1433,7 @@ export function createQueue(config?: APIConfig): Queue {
         startedAt: Date.now(),
       };
       const response = await invocationStorage.run(invocation, () =>
-        vqsHandler(req)
+        runQueueDelivery(() => vqsHandler(req))
       );
       return attachStepIds(response, invocation);
     };
