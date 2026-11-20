@@ -1075,6 +1075,69 @@ describe.each([
     expect(Math.max(...unconfirmedAtStart.slice(before))).toBeGreaterThan(0);
   });
 
+  // Proof of concept: on a World that honors `strictEventCount`, a boundary
+  // whose only reason not to be inert is an awaited hook runs ahead with
+  // strict writes. The payload landing first refuses the next one instead of
+  // committing below it, and the delivery restarts from the log.
+  it.runIf(vm === 'node')(
+    'runs ahead while the workflow waits on a hook on a strict World, and restarts when the payload refuses a write',
+    async () => {
+      const error = vi.spyOn(runtimeLogger, 'error');
+      const { world, runId } = await run(observedHook, [STEPS], {
+        ...slowOutcomes,
+        strictEventCount: true,
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (
+            data.eventType === 'step_completed' &&
+            eventsOf(world, 'step_completed').length >= 2 &&
+            eventsOf(world, 'hook_received').length === 0
+          ) {
+            const hookId = eventsOf(world, 'hook_created')[0]?.correlationId;
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: hookId,
+              eventData: {
+                token: 'ra-observed',
+                payload: await dehydrateStepReturnValue(
+                  { ok: true },
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const hookAt = world.events.findIndex(
+        (e) => e.eventType === 'hook_received'
+      );
+      const before = eventsOf(world, 'step_completed').filter(
+        (e) => world.events.indexOf(e) < hookAt
+      ).length;
+      // While the hook was awaited, outcomes ran ahead of their writes.
+      expect(
+        Math.max(...unconfirmedAtStart.slice(0, before + 1))
+      ).toBeGreaterThan(0);
+      // The payload refused a strict write instead of landing below it.
+      expect(world.strictRefusals.length).toBeGreaterThan(0);
+      expect(
+        error.mock.calls.some(
+          ([, meta]) =>
+            (meta as { possibleLogCorruption?: boolean } | undefined)
+              ?.possibleLogCorruption === true
+        )
+      ).toBe(false);
+      const live = await runResult(world);
+      const cold = await coldReplay(world, observedHook);
+      expect(cold.result).toEqual(live);
+    }
+  );
+
   // A VM snapshot is taken only once every speculative event the heap
   // consumed is confirmed at its position, so a restore replays nothing the
   // log does not hold.

@@ -1,4 +1,5 @@
 import {
+  EventSlotTakenError,
   InBandSupersededError,
   RunExpiredError,
   WorkflowWorldError,
@@ -210,6 +211,12 @@ export class AppendOnlyWorld {
       noReport?: boolean;
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
+      /**
+       * Declare `capabilities.strictEventCount` and honor `strictEventCount`:
+       * refuse such a write with `EventSlotTakenError` unless it lands at slot
+       * `eventCount + 1`.
+       */
+      strictEventCount?: boolean;
       /**
        * Offer `queueBatch`, recorded in {@link AppendOnlyWorld.queueBatches}.
        * Each message is published as a single `queue` call would be. A throw
@@ -534,6 +541,24 @@ export class AppendOnlyWorld {
         ? { startedAt: event.createdAt }
         : {}),
     } as WorkflowRun;
+  }
+
+  /** Writes refused for `strictEventCount`, in order. */
+  readonly strictRefusals: { eventCount: number; seq: number }[] = [];
+
+  private checkStrictSlot(params: CreateEventParams | undefined): void {
+    if (
+      !this.options.strictEventCount ||
+      params?.strictEventCount !== true ||
+      params.eventCount === undefined ||
+      params.eventCount === this.seq
+    ) {
+      return;
+    }
+    this.strictRefusals.push({ eventCount: params.eventCount, seq: this.seq });
+    throw new EventSlotTakenError(
+      `Slot ${params.eventCount + 1} is taken: the log holds ${this.seq} events`
+    );
   }
 
   private checkFence(params: CreateEventParams | undefined, n: number): void {
@@ -954,6 +979,7 @@ export class AppendOnlyWorld {
         }
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
+        self.checkStrictSlot(params);
         self.checkFence(params, 1);
         const event = self.append(
           self.committedHook(data),
@@ -1026,6 +1052,7 @@ export class AppendOnlyWorld {
             { status: 400 }
           );
         }
+        self.checkStrictSlot(params as CreateEventParams);
         self.checkFence(params as CreateEventParams, batch.length);
         const firstSlot = self.seq + 1;
         if (params?.inBand && params.eventCount !== undefined) {
@@ -1183,6 +1210,7 @@ export class AppendOnlyWorld {
       },
       capabilities: {
         inBandFence: true,
+        ...(self.options.strictEventCount ? { strictEventCount: true } : {}),
       },
       async getDeploymentId() {
         return self.run?.deploymentId ?? 'dpl_test';

@@ -1013,6 +1013,14 @@ export interface CreateEventParams {
    */
   eventCount?: number;
   /**
+   * Commit only at slot `eventCount + 1` (proof of concept). When that slot is
+   * already taken, refuse with `EventSlotTakenError` and allocate nothing,
+   * instead of bumping to the next free slot and reporting what was skipped.
+   * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
+   * and only with {@link eventCount}.
+   */
+  strictEventCount?: true;
+  /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
    * when the backing service accepted or stored the event.
@@ -1316,6 +1324,14 @@ export interface CreateEventBatchParams {
    * {@link EventBatchResult}).
    */
   eventCount?: number;
+  /**
+   * Commit only at slot `eventCount + 1` (proof of concept). When that slot is
+   * already taken, refuse with `EventSlotTakenError` and allocate nothing,
+   * instead of bumping to the next free slot and reporting what was skipped.
+   * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
+   * and only with {@link eventCount}, for the whole block.
+   */
+  strictEventCount?: true;
 }
 
 /**

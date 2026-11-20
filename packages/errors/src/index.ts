@@ -1297,6 +1297,30 @@ export class InBandSupersededError extends WorkflowWorldError {
   }
 }
 
+export const EVENT_SLOT_TAKEN_CODE = 'event-slot-taken';
+
+/**
+ * Thrown when a World refuses a write sent with `strictEventCount: true`
+ * because the slot after its `eventCount` is already taken (HTTP 412,
+ * `event-slot-taken`). The World writes and allocates nothing for it.
+ *
+ * Spec 9 run-ahead sends its speculative writes this way at boundaries where
+ * workflow code waits on a hook (proof of concept). A refusal means another
+ * writer appended first, so nothing decided from the speculative view has
+ * committed: the delivery restarts from the log. The runtime handles this;
+ * users calling a World's storage API directly may encounter it.
+ */
+export class EventSlotTakenError extends WorkflowWorldError {
+  constructor(message: string) {
+    super(message, { status: 412, code: EVENT_SLOT_TAKEN_CODE });
+    this.name = 'EventSlotTakenError';
+  }
+
+  static is(value: unknown): value is EventSlotTakenError {
+    return isError(value) && value.name === 'EventSlotTakenError';
+  }
+}
+
 /**
  * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
  *
