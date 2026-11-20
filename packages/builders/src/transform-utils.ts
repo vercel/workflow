@@ -347,28 +347,53 @@ const previousSignificantIndex = (masked: string, end: number) => {
  * kept, so the opening quote of an earlier string literal is the previous
  * matching quote.
  */
-function isInDirectivePrologue(masked: string, quoteStart: number) {
-  let index = previousSignificantIndex(masked, quoteStart);
+function isInDirectivePrologue(
+  masked: string,
+  quoteStart: number,
+  cache: Map<number, boolean>
+) {
+  // The answer for a string literal is the answer for the string literal
+  // statement before it, so every opening quote the walk passes gets the same
+  // answer. Caching them keeps a run of string statements linear: without it,
+  // each statement walked back over all the ones before it.
+  const visited: number[] = [];
+  let current = quoteStart;
+  let result: boolean;
   for (;;) {
+    const cached = cache.get(current);
+    if (cached !== undefined) {
+      result = cached;
+      break;
+    }
+    visited.push(current);
+    const index = previousSignificantIndex(masked, current);
     if (index === -1) {
-      return true;
+      result = true;
+      break;
     }
     if (masked[index] === '{') {
       // `${` opens an expression inside a template literal, not a body.
-      return masked[index - 1] !== '$';
+      result = masked[index - 1] !== '$';
+      break;
     }
     const closingQuote =
       masked[index] === ';' ? previousSignificantIndex(masked, index) : index;
     const quote = masked[closingQuote];
     if (!isQuote(quote)) {
-      return false;
+      result = false;
+      break;
     }
     const openingQuote = masked.lastIndexOf(quote, closingQuote - 1);
     if (openingQuote === -1) {
-      return false;
+      result = false;
+      break;
     }
-    index = previousSignificantIndex(masked, openingQuote);
+    current = openingQuote;
   }
+  for (const position of visited) {
+    cache.set(position, result);
+  }
+  return result;
 }
 
 /**
@@ -407,7 +432,8 @@ function endsDirectiveStatement(masked: string, afterQuote: number) {
 function hasDirective(
   source: string,
   masked: string,
-  directive: 'use workflow' | 'use step'
+  directive: 'use workflow' | 'use step',
+  prologueCache: Map<number, boolean>
 ) {
   let from = 0;
   for (;;) {
@@ -424,7 +450,7 @@ function hasDirective(
       source[quoteEnd] === quote &&
       masked[quoteStart] === quote &&
       masked[quoteEnd] === quote &&
-      isInDirectivePrologue(masked, quoteStart) &&
+      isInDirectivePrologue(masked, quoteStart, prologueCache) &&
       endsDirectiveStatement(masked, quoteEnd + 1)
     ) {
       return true;
@@ -450,6 +476,40 @@ function previousMeaningfulLine(source: string, lineStart: number) {
     end = start - 1;
   }
   return undefined;
+}
+
+const isSpaceOnLine = (masked: string, index: number) =>
+  masked[index] !== '\n' && isWhitespace(masked[index]);
+
+/**
+ * Returns where the line starts if the string literal between `quoteStart`
+ * and `quoteEnd` is alone on it, with only whitespace before it and only
+ * whitespace and an optional `;` after it, or -1. Reads outwards from the
+ * quotes, so a long line costs only what is next to each string.
+ */
+function lineStartIfAloneOnLine(
+  masked: string,
+  quoteStart: number,
+  quoteEnd: number
+) {
+  let before = quoteStart - 1;
+  while (before >= 0 && isSpaceOnLine(masked, before)) {
+    before--;
+  }
+  if (before >= 0 && masked[before] !== '\n') {
+    return -1;
+  }
+  let after = quoteEnd + 1;
+  while (after < masked.length && isSpaceOnLine(masked, after)) {
+    after++;
+  }
+  if (masked[after] === ';') {
+    after++;
+    while (after < masked.length && isSpaceOnLine(masked, after)) {
+      after++;
+    }
+  }
+  return after < masked.length && masked[after] !== '\n' ? -1 : before + 1;
 }
 
 /**
@@ -488,16 +548,8 @@ function hasDirectiveOnItsOwnLine(
     ) {
       continue;
     }
-    const lineStart = masked.lastIndexOf('\n', quoteStart) + 1;
-    let lineEnd = masked.indexOf('\n', quoteEnd);
-    if (lineEnd === -1) {
-      lineEnd = masked.length;
-    }
-    const after = masked.slice(quoteEnd + 1, lineEnd).trim();
-    if (
-      masked.slice(lineStart, quoteStart).trim() !== '' ||
-      (after !== '' && after !== ';')
-    ) {
+    const lineStart = lineStartIfAloneOnLine(masked, quoteStart, quoteEnd);
+    if (lineStart === -1) {
       continue;
     }
     const previousLine = previousMeaningfulLine(masked, lineStart);
@@ -541,6 +593,9 @@ const closingParenThenSlashPattern = /\)\s*\/(?![/*])/;
 function createDirectiveCheck(source: string) {
   const mayHaveScannerGap = source.includes('`') || source.includes('/');
   const readings: string[] = [];
+  // One per reading, shared by both directives: whether a string literal
+  // opens a prologue does not depend on which directive it spells.
+  const prologueCaches: Map<number, boolean>[] = [];
   const reading = (index: number): string | undefined => {
     if (index < readings.length) {
       return readings[index];
@@ -562,6 +617,7 @@ function createDirectiveCheck(source: string) {
     }
     if (next !== undefined) {
       readings.push(next);
+      prologueCaches.push(new Map());
     }
     return next;
   };
@@ -572,7 +628,7 @@ function createDirectiveCheck(source: string) {
         return false;
       }
       if (
-        hasDirective(source, masked, directive) ||
+        hasDirective(source, masked, directive, prologueCaches[index]) ||
         hasDirectiveOnItsOwnLine(source, masked, directive)
       ) {
         return true;

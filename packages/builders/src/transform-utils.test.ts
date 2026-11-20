@@ -823,6 +823,18 @@ export async function run() {
       expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
     });
 
+    it.each([
+      ['on one line', ' ', ''],
+      ['on their own lines', '\n', '\n'],
+    ])('stays linear for a long run of string statements %s', (_, separator, end) => {
+      // Each statement walked back over all the ones before it until the walk
+      // was cached: 8,000 of them took 2 seconds, 50,000 would take a minute.
+      const source = `function f() {${separator}x = 1;${separator}${`"use step";${end || separator}`.repeat(50_000)}}`;
+      const started = performance.now();
+      detectWorkflowPatterns(source);
+      expect(performance.now() - started).toBeLessThan(2000);
+    });
+
     it('misses a directive spelled with an escape (known limitation)', () => {
       // The SWC plugin compares the decoded value, so this is a step to it.
       // Detection searches the source text for `use step`.
