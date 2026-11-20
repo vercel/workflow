@@ -641,7 +641,12 @@ const RateFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('rate_failed'),
   correlationId: z.string(),
   eventData: RateCallSchema.extend({
-    reason: z.literal('max_wait'),
+    /**
+     * `max_wait`: the slot is past the call's `maxWait`. Logs written before
+     * the option was renamed from `timeout` say `timeout`, and they stay
+     * readable.
+     */
+    reason: z.enum(['max_wait', 'timeout']),
     /** The slot the call would have had. */
     acquireAt: z.coerce.date().optional(),
     /** As on `rate_created`: late wakes before the call failed. */

@@ -262,6 +262,16 @@ describe('rate limit events', () => {
     expect(parsed.eventType).toBe('rate_failed');
   });
 
+  it("still reads the 'timeout' reason of logs written before maxWait", () => {
+    const legacy = EventSchema.safeParse({
+      ...base,
+      eventId: 'evnt_00000000000000000000000006',
+      eventType: 'rate_failed',
+      eventData: { ...call, reason: 'timeout' },
+    });
+    expect(legacy.success).toBe(true);
+  });
+
   it('refuses a rate_failed with an unknown reason', () => {
     const unknown = EventSchema.safeParse({
       ...base,
