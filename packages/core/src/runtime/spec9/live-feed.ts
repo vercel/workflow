@@ -103,6 +103,23 @@ export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
 export const DEFAULT_ORCHESTRATOR_RATE_WAIT_MS = 5_000;
 
 /**
+ * How long past a rate limit call's slot an in-process wait ends
+ * (`waitForNearRateSlot` on the node engine): a World whose clock is a few milliseconds behind
+ * this one refuses a `rate_acquired` at the slot itself as too early, and
+ * that costs a whole-second queue timer.
+ */
+export const RATE_SLOT_MARGIN_MS = 15;
+
+/**
+ * The in-process backoffs (ms) of a `rate_acquired` the World refuses as too
+ * early (`acquireRate`, on either engine): its clock is behind this one by more than
+ * {@link RATE_SLOT_MARGIN_MS}. About 150 ms in all, after which the call's
+ * queue timer takes over. The World never grants a slot early, so these only
+ * trade latency, never correctness.
+ */
+export const RATE_TOO_EARLY_RETRY_MS = [10, 20, 40, 80] as const;
+
+/**
  * How far ahead an `experimental_rateLimit()` call's slot may be for the
  * orchestrator delivery that finds it waiting to wait for it in process
  * (`WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`, default
