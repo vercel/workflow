@@ -240,7 +240,7 @@ What a snapshot contains, and how it is protected:
 - Default: disabled
 - Set `1` or `true` (case-insensitive) to let this deployment start [dynamic workflows](/docs/advanced/dynamic-workflows), execute their stored code on delivery, and advertise dynamic support in its health check. Any other value leaves it disabled.
 - Dynamic source runs with the full privileges of the deployment's functions. Enable it only on deployments whose dynamic source you trust as much as your own code.
-- When disabled, `start()` with source throws before writing anything, and a delivered dynamic run fails instead of executing.
+- When disabled, `start()` with source throws [`DynamicWorkflowsNotEnabledError`](/docs/api-reference/workflow-errors/dynamic-workflows-not-enabled-error) before writing anything, and a delivered dynamic run fails with that error and a `USER_ERROR` code instead of executing.
 
 ## Compression and tracing
 
