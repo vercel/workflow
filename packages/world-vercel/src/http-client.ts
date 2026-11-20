@@ -13,7 +13,6 @@ import {
   RetryAgent,
   type RetryHandler,
 } from 'undici';
-import { queueEdgeDenyRetryInterceptor } from './queue-edge-deny-retry.js';
 import { QUEUE_REQUEST_DEADLINE_CODE } from './queue-request-deadline.js';
 import type { APIConfig } from './utils.js';
 import { version } from './version.js';
@@ -1160,11 +1159,7 @@ export function createQueueDispatcher(): RetryAgent {
   const agent = new Agent(getQueueAgentOptions());
   return new RetryAgent(
     supportsCompose(agent)
-      ? agent.compose(
-          deadlineInterceptor(getQueueRequestTimeoutMs()),
-          // Outside the deadline, so its one retry gets a deadline of its own.
-          queueEdgeDenyRetryInterceptor
-        )
+      ? agent.compose(deadlineInterceptor(getQueueRequestTimeoutMs()))
       : agent,
     RETRY_AGENT_OPTIONS
   );
