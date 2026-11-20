@@ -85,6 +85,17 @@ function getWorkflowBuilds(): Map<string, Promise<void>> {
   return globalWithBuilds[WORKFLOW_BUILDS_SYMBOL];
 }
 
+// When `next dev` stops, it spawns Next's telemetry helper
+// (`next/dist/telemetry/detached-flush.js`), which evaluates next.config in
+// the development phase with NODE_ENV=development only to read `distDir`.
+// Building there starts the dev watcher in a process that nothing ever stops,
+// so the helper never exits. See https://github.com/vercel/workflow/issues/4470.
+function isNextTelemetryFlushProcess(): boolean {
+  return (process.argv[1] ?? '')
+    .replace(/\\/g, '/')
+    .endsWith('/next/dist/telemetry/detached-flush.js');
+}
+
 // Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
 function setWorkflowBasePath(basePath: string | undefined): void {
   globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
@@ -761,7 +772,8 @@ export function withWorkflow(
     // as Next.js uses child processes for different builds
     if (
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
-      phase !== 'phase-production-server'
+      phase !== 'phase-production-server' &&
+      !isNextTelemetryFlushProcess()
     ) {
       const builds = getWorkflowBuilds();
       let build = builds.get(workingDir);
