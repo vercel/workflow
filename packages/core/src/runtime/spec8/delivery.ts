@@ -125,7 +125,10 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
-import { currentInlineDelivery } from '../inline-orchestrator.js';
+import {
+  currentInlineDelivery,
+  noteInlineRunStarted,
+} from '../inline-orchestrator.js';
 import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
@@ -1849,6 +1852,7 @@ async function runDelivery(
         // wasted list+resolve it would otherwise compute.
         { requestId, skipPreload: true }
       );
+      noteInlineRunStarted(runId, startedPromise);
       runReadyBarrier = startedPromise;
       try {
         startWorkflowCompile(runInput);
@@ -1960,6 +1964,7 @@ async function runDelivery(
           }
           throw setupError;
         }
+        noteInlineRunStarted(runId, replayLoad);
         const result = await replayLoad;
         recordAcceptedStartHookCandidate(runInput, result.run, span);
         // A single-orchestrator run reached here on a wrong routing

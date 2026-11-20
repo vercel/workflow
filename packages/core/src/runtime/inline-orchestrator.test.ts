@@ -1,5 +1,7 @@
 import {
   EntityConflictError,
+  InBandSupersededError,
+  RunExpiredError,
   ThrottleError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -19,10 +21,12 @@ import { getMaxInlineDurationMs } from './delivery.js';
 import {
   INLINE_ENV,
   INLINE_HANDOFF_MARGIN_MS,
+  INLINE_SKIP_RUN_CREATED_ENV,
   INLINE_SPECULATION_ENV,
   INLINE_WORKFLOW_LOADERS_KEY,
   inlineBudgetMs,
   loadInlineEntry,
+  noteInlineRunStarted,
   noteInlineStepStarted,
   registerInlineOrchestrator,
   resetInlineOrchestratorsForTests,
@@ -97,6 +101,8 @@ interface FakeWorldOptions {
   deploymentId?: string;
   regionForRunId?: (runId: string) => string | null;
   runtimeDeadline?: Date;
+  /** `capabilities.runStartedCreatesRun`. */
+  runStartedCreatesRun?: boolean;
 }
 
 function heldMessage(
@@ -150,6 +156,7 @@ function fakeWorld(options: FakeWorldOptions = {}) {
     capabilities: {
       inBandFence: true,
       ...(options.hold !== false && { experimental_queueHold: true }),
+      ...(options.runStartedCreatesRun && { runStartedCreatesRun: true }),
     },
     getDeploymentId: vi
       .fn()
@@ -832,6 +839,260 @@ describe('run creation beside the held send', () => {
     // The message was already the queue's (here: held) when run_created
     // failed: the delivery's `run_started` decides, as for a queued start.
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('skipping run_created for a held start (WORKFLOW_INLINE_SKIP_RUN_CREATED=1)', () => {
+  const resilientOf = (run: unknown) =>
+    (
+      Run as unknown as Record<
+        symbol,
+        (r: unknown) => { resilientStart?: boolean }
+      >
+    )[WORKFLOW_SERIALIZE](run).resilientStart;
+  const createCalls = (world: World) =>
+    (world.events.create as ReturnType<typeof vi.fn>).mock.calls;
+
+  /**
+   * A flow entry whose delivery reports its `run_started` as the
+   * orchestrators do (`noteInlineRunStarted`), settling with `outcome`.
+   */
+  function registerCreatingHandler(
+    outcome: () => Promise<unknown> = async () => ({})
+  ) {
+    return registerHandler(async (message) => {
+      const { runId } = message as { runId: string };
+      const written = outcome();
+      noteInlineRunStarted(runId, written);
+      await written.catch(() => {});
+      return undefined;
+    });
+  }
+
+  beforeEach(() => {
+    vi.stubEnv(INLINE_SKIP_RUN_CREATED_ENV, '1');
+  });
+
+  it("writes no run_created, and returns once the held delivery's run_started created the run", async () => {
+    const { world, queue } = fakeWorld({ runStartedCreatesRun: true });
+    setWorld(world);
+    const runStarted = deferred<unknown>();
+    const handler = registerCreatingHandler(() => runStarted.promise);
+
+    let returned = false;
+    const started = start(WORKFLOW, [1]).then((run) => {
+      returned = true;
+      return run;
+    });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Held, and waiting on the delivery's `run_started`.
+    expect(returned).toBe(false);
+    runStarted.resolve({});
+    const run = await started;
+
+    expect(createCalls(world)).toHaveLength(0);
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue.mock.calls[0][2]).toMatchObject({ experimental_hold: true });
+    expect(resilientOf(run)).toBe(false);
+    expect(spanAttributes).toMatchObject({
+      'workflow.inline.outcome': 'held',
+      'workflow.start.run_creation': 'run_started',
+      'workflow.run.status': 'running',
+    });
+    expect(spanAttributes['workflow.start.run_started_wait_ms']).toBeTypeOf(
+      'number'
+    );
+  });
+
+  it.each([
+    ['EntityConflictError (the run exists)', new EntityConflictError('x')],
+    ['RunExpiredError (the run already ended)', new RunExpiredError('x')],
+  ])('succeeds when run_started answers %s', async (_name, error) => {
+    const { world } = fakeWorld({ runStartedCreatesRun: true });
+    setWorld(world);
+    registerCreatingHandler(async () => {
+      throw error;
+    });
+    const run = await start(WORKFLOW, [1]);
+    expect(createCalls(world)).toHaveLength(0);
+    expect(resilientOf(run)).toBe(false);
+  });
+
+  it.each([
+    ['a retryable failure', new ThrottleError('slow down')],
+    [
+      'a fence refusal (a redelivery wrote first)',
+      new InBandSupersededError('superseded', { seq: 2, seqInBand: 2 }),
+    ],
+  ])('returns a resilient start on %s of run_started', async (_name, error) => {
+    const { world } = fakeWorld({ runStartedCreatesRun: true });
+    setWorld(world);
+    registerCreatingHandler(async () => {
+      throw error;
+    });
+    const run = await start(WORKFLOW, [1]);
+    expect(createCalls(world)).toHaveLength(0);
+    expect(resilientOf(run)).toBe(true);
+  });
+
+  it('throws a permanent run_started failure, as it would a permanent run_created one', async () => {
+    const { world } = fakeWorld({ runStartedCreatesRun: true });
+    setWorld(world);
+    registerCreatingHandler(async () => {
+      throw new WorkflowRuntimeError('bad input');
+    });
+    await expect(start(WORKFLOW, [1])).rejects.toThrow('bad input');
+    expect(createCalls(world)).toHaveLength(0);
+  });
+
+  it('returns a resilient start when the held delivery ends without a run_started', async () => {
+    const { world } = fakeWorld({ runStartedCreatesRun: true });
+    setWorld(world);
+    // Dies (or hands the message back) before writing anything.
+    registerHandler(async () => {
+      throw new Error('process died');
+    });
+    const run = await start(WORKFLOW, [1]);
+    expect(createCalls(world)).toHaveLength(0);
+    expect(resilientOf(run)).toBe(true);
+  });
+
+  it.each([
+    'unsupported',
+    'deferred',
+    'lost',
+    'coalesced',
+    'concurrency_limited',
+    'duplicate',
+    'error',
+  ] as const)('writes run_created after a not_held (%s) answer', async (reason) => {
+    const order: string[] = [];
+    const { world, queue, consume } = fakeWorld({
+      runStartedCreatesRun: true,
+      holdResult: () => {
+        order.push('answer');
+        return { status: 'not_held', reason };
+      },
+      runCreated: async () => {
+        order.push('run_created');
+        return { run: { runId: createCalls(world)[0][0], status: 'pending' } };
+      },
+    });
+    setWorld(world);
+    const handler = registerCreatingHandler();
+
+    const run = await start(WORKFLOW, [1]);
+    expect(order).toEqual(['answer', 'run_created']);
+    expect(createCalls(world)).toHaveLength(1);
+    expect(createCalls(world)[0][1]).toMatchObject({
+      eventType: 'run_created',
+    });
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(consume).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    expect(resilientOf(run)).toBe(false);
+    expect(spanAttributes['workflow.start.run_creation']).toBe('run_created');
+  });
+
+  it('keeps the resilient start of a not_held answer whose run_created fails transiently', async () => {
+    const { world } = fakeWorld({
+      runStartedCreatesRun: true,
+      holdResult: () => ({ status: 'not_held', reason: 'lost' }),
+      runCreated: async () => {
+        throw new ThrottleError('slow down');
+      },
+    });
+    setWorld(world);
+    registerCreatingHandler();
+    const run = await start(WORKFLOW, [1]);
+    expect(resilientOf(run)).toBe(true);
+  });
+
+  it('writes run_created after the plain resend is accepted when the held send throws', async () => {
+    const order: string[] = [];
+    const { world, queue } = fakeWorld({
+      runStartedCreatesRun: true,
+      holdThrows: new Error('socket hang up'),
+      runCreated: async () => {
+        order.push('run_created');
+        return { run: { runId: createCalls(world)[0][0], status: 'pending' } };
+      },
+    });
+    const send = queue.getMockImplementation()!;
+    queue.mockImplementation(async (...args) => {
+      const result = await send(...args);
+      order.push(args[2]?.experimental_hold ? 'held send' : 'resend');
+      return result;
+    });
+    setWorld(world);
+    registerCreatingHandler();
+    const run = await start(WORKFLOW, [1]);
+    expect(queue).toHaveBeenCalledTimes(2);
+    expect(queue.mock.calls[1][2]?.idempotencyKey).toBe(
+      `wkf-start-${run.runId}`
+    );
+    // Never a run without its message: the resend lands first.
+    expect(order).toEqual(['resend', 'run_created']);
+    expect(resilientOf(run)).toBe(false);
+  });
+
+  it('writes no run if the send fails outright', async () => {
+    const { world, queue } = fakeWorld({ runStartedCreatesRun: true });
+    queue.mockImplementation(async () => {
+      throw new WorkflowRuntimeError('queue down');
+    });
+    setWorld(world);
+    registerCreatingHandler();
+    await expect(start(WORKFLOW, [1])).rejects.toThrow('queue down');
+    // Neither the held attempt nor its resend was accepted, so no
+    // `run_created`: no run is left without a message.
+    expect(createCalls(world)).toHaveLength(0);
+  });
+
+  it('writes run_created beside the plain send when the start cannot be held here', async () => {
+    const gate = deferred();
+    const { world, queue } = fakeWorld({ runStartedCreatesRun: true });
+    queue.mockImplementation(async () => {
+      await gate.promise;
+      return { messageId: 'msg_plain' };
+    });
+    setWorld(world);
+    // No flow entry registered: `no_handler`.
+    const started = start(WORKFLOW, [1]);
+    await vi.waitFor(() => expect(createCalls(world)).toHaveLength(1));
+    // Before the send answered.
+    expect(queue.mock.calls[0][2]).not.toHaveProperty('experimental_hold');
+    gate.resolve();
+    await started;
+    expect(spanAttributes['workflow.inline.skip_reason']).toBe('no_handler');
+  });
+
+  it.each([
+    ['the World does not declare runStartedCreatesRun', '1', false],
+    ['the flag is off', '0', true],
+  ])('writes run_created beside the held send when %s', async (_name, flag, capability) => {
+    vi.stubEnv(INLINE_SKIP_RUN_CREATED_ENV, flag);
+    const gate = deferred();
+    const { world } = fakeWorld({
+      runStartedCreatesRun: capability,
+      holdGate: gate.promise,
+    });
+    setWorld(world);
+    const handler = registerCreatingHandler();
+    const started = start(WORKFLOW, [1]);
+    // Concurrently with the held send, which has not answered yet.
+    await vi.waitFor(() => expect(createCalls(world)).toHaveLength(1));
+    gate.resolve();
+    const run = await started;
+    await drainWaitUntil();
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(resilientOf(run)).toBe(false);
+    expect(spanAttributes).not.toHaveProperty('workflow.start.run_creation');
+  });
+
+  it('ignores a run_started reported outside an inline delivery', () => {
+    noteInlineRunStarted('wrun_x', Promise.resolve());
   });
 });
 

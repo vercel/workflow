@@ -27,6 +27,12 @@ import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-header
  *
  * `WORKFLOW_E2E_INLINE_SAMPLES` (default 5) sets how many runs of each mode
  * the timing comparison takes.
+ *
+ * The `skipRunCreated` tests set `WORKFLOW_INLINE_SKIP_RUN_CREATED=1` for
+ * their `start()` call: a held start writes no `run_created`, and the inline
+ * delivery's `run_started` creates the run. A backend with support records
+ * that `run_started` alone at the first slot; one without writes a
+ * `run_created` under it. Both are accepted here.
  */
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -52,6 +58,8 @@ interface StepReport {
 interface StartAnswer {
   runId: string;
   queued: boolean;
+  skipRunCreated?: boolean;
+  runExistedAtReturn?: boolean;
   startCalledAt: number;
   startReturnedAt: number;
   instance: string;
@@ -153,10 +161,15 @@ interface TimingValue {
   steps: StepReport[];
 }
 
-async function startTiming(inline: boolean, specVersion?: number) {
+async function startTiming(
+  inline: boolean,
+  specVersion?: number,
+  skipRunCreated?: boolean
+) {
   const answer = await post<StartAnswer>('/api/inline-start', {
     queued: !inline,
     ...(specVersion !== undefined && { specVersion }),
+    ...(skipRunCreated && { skipRunCreated: true }),
   });
   const read = await readRun<TimingValue>(answer.runId);
   return { answer, read, value: read.returnValue as TimingValue };
@@ -190,6 +203,42 @@ describe
         expectEachStepOnce(log, value.steps);
         // Past the hold's lease: a redelivery that ran the run again would
         // have written to the log by now.
+        await sleep(LEASE_LAPSE_MS);
+        const after = eventLog(await readRun(answer.runId));
+        expect(after.types).toEqual(log.types);
+      }
+    );
+
+    test.each([
+      ['the default spec', undefined],
+      ['spec 9 (single orchestrator)', 9],
+    ])(
+      'skipping run_created, a start with %s is created by its run_started, once',
+      { timeout: 240_000 },
+      async (_label, specVersion) => {
+        const { answer, read, value } = await startTiming(
+          true,
+          specVersion,
+          true
+        );
+        expect(answer.skipRunCreated).toBe(true);
+        // start() returned with the run in the World, inline or not.
+        expect(answer.runExistedAtReturn).toBe(true);
+        const inline = ranInline(answer, value.steps);
+        const log = eventLog(read);
+        expectEachStepOnce(log, value.steps);
+        // One creation, first: a `run_created` (queued, or a backend that
+        // records it under the creating `run_started`), or the `run_started`
+        // alone.
+        expect(['run_created', 'run_started']).toContain(log.types[0]);
+        expect(
+          log.types.filter((t) => t === 'run_created').length
+        ).toBeLessThanOrEqual(1);
+        expect(log.types.filter((t) => t === 'run_started')).toHaveLength(1);
+        console.info(
+          '[e2e-inline-start] skipRunCreated log head',
+          JSON.stringify({ inline, head: log.types.slice(0, 3) })
+        );
         await sleep(LEASE_LAPSE_MS);
         const after = eventLog(await readRun(answer.runId));
         expect(after.types).toEqual(log.types);
@@ -294,11 +343,16 @@ describe
         const rows: Record<string, number | string | boolean>[] = [];
         // Interleaved, so both modes see the same conditions.
         for (let i = 0; i < samples; i++) {
-          for (const inline of [true, false]) {
-            const { answer, read, value } = await startTiming(inline);
+          for (const mode of ['inline', 'inline-skip', 'queued'] as const) {
+            const inline = mode !== 'queued';
+            const { answer, read, value } = await startTiming(
+              inline,
+              undefined,
+              mode === 'inline-skip'
+            );
             const { completedAt } = read;
             rows.push({
-              mode: inline ? 'inline' : 'queued',
+              mode,
               ranInline: value.steps[0]?.instance === answer.instance,
               startMs: answer.startReturnedAt - answer.startCalledAt,
               firstStepMs: value.steps[0].at - answer.startCalledAt,
@@ -310,19 +364,21 @@ describe
             });
           }
         }
-        const summary = (['inline', 'queued'] as const).map((mode) => {
-          const of = rows.filter((r) => r.mode === mode);
-          const pick = (key: string) => median(of.map((r) => Number(r[key])));
-          return {
-            mode,
-            samples: of.length,
-            ranInline: of.filter((r) => r.ranInline).length,
-            medianStartMs: pick('startMs'),
-            medianFirstStepMs: pick('firstStepMs'),
-            medianLastStepMs: pick('lastStepMs'),
-            medianCompletedMs: pick('completedMs'),
-          };
-        });
+        const summary = (['inline', 'inline-skip', 'queued'] as const).map(
+          (mode) => {
+            const of = rows.filter((r) => r.mode === mode);
+            const pick = (key: string) => median(of.map((r) => Number(r[key])));
+            return {
+              mode,
+              samples: of.length,
+              ranInline: of.filter((r) => r.ranInline).length,
+              medianStartMs: pick('startMs'),
+              medianFirstStepMs: pick('firstStepMs'),
+              medianLastStepMs: pick('lastStepMs'),
+              medianCompletedMs: pick('completedMs'),
+            };
+          }
+        );
         console.info(
           '[e2e-inline-start] timing samples',
           JSON.stringify(rows, null, 2)
@@ -333,6 +389,7 @@ describe
         );
         if (expectInline) {
           expect(summary[0].ranInline).toBe(samples);
+          expect(summary[1].ranInline).toBe(samples);
         }
       }
     );

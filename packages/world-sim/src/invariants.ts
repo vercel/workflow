@@ -17,6 +17,7 @@
 
 import {
   type Event,
+  isRunCreationEvent,
   isTerminalRunEventType,
   type Step,
   type Wait,
@@ -84,19 +85,22 @@ export function checkInvariants(input: InvariantInput): InvariantViolation[] {
     previousKey = key;
   }
 
-  if (events.length > 0 && events[0].eventType !== 'run_created') {
+  // The run's creation comes first: its `run_created`, or a `run_started`
+  // that created it alone at the first slot (`createsRun`).
+  if (events.length > 0 && !isRunCreationEvent(events[0])) {
     add(
       'run.created-first',
-      `First event is ${events[0].eventType}, expected run_created`,
+      `First event is ${events[0].eventType}, expected the run's creation`,
       events[0].eventId
     );
   }
 
-  const createdCount = events.filter(
-    (e) => e.eventType === 'run_created'
-  ).length;
+  const createdCount = events.filter((e) => isRunCreationEvent(e)).length;
   if (createdCount > 1) {
-    add('run.created-once', `${createdCount} run_created events for one run`);
+    add(
+      'run.created-once',
+      `${createdCount} creation events (run_created, or run_started at the first slot) for one run`
+    );
   }
 
   const terminalIndex = events.findIndex((e) =>
@@ -340,7 +344,9 @@ export function checkInvariants(input: InvariantInput): InvariantViolation[] {
   // replay see different run state.
   const runEntity = input.runs.find((r) => r.runId === runId);
   if (runEntity) {
-    const created = events.find((e) => e.eventType === 'run_created');
+    const created = events.find((e) => isRunCreationEvent(e)) as
+      | { eventData?: { attributes?: Record<string, string> } }
+      | undefined;
     const derivedAttributes: Record<string, string> = {
       ...(created?.eventData?.attributes ?? {}),
     };

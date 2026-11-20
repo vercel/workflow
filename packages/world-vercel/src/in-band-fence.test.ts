@@ -187,6 +187,68 @@ describe('in-band writer fence (world-vercel)', () => {
     expect(meta).toMatchObject({ inBand: true, expectedSeqInBand: 3 });
   });
 
+  it.each([
+    ['run_started', true],
+    ['step_created', false],
+  ] as const)('sends createsRun on a %s only', async (eventType, sent) => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => supersededResponse());
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      eventType === 'run_started'
+        ? {
+            eventType,
+            specVersion: 9,
+            eventData: {
+              input: new Uint8Array([1]),
+              deploymentId: 'dpl_1',
+              workflowName: 'wf',
+            },
+          }
+        : {
+            eventType,
+            specVersion: 9,
+            correlationId: 'step_1',
+            eventData: { stepName: 'a', input: new Uint8Array([1]) },
+          },
+      {
+        inBand: true,
+        expectedSeqInBand: 1,
+        createsRun: true,
+        ...(eventType === 'run_started' && { skipPreload: true }),
+      },
+      config
+    ).catch(() => undefined);
+
+    const [meta] = frameMetas(fetchSpy.mock.calls[0][1]?.body);
+    if (sent) expect(meta).toMatchObject({ createsRun: true });
+    else expect(meta).not.toHaveProperty('createsRun');
+  });
+
+  it('sends no createsRun unless asked', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => supersededResponse());
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'run_started',
+        specVersion: 9,
+        eventData: {
+          input: new Uint8Array([1]),
+          deploymentId: 'dpl_1',
+          workflowName: 'wf',
+        },
+      },
+      { inBand: true, expectedSeqInBand: 1, skipPreload: true },
+      config
+    ).catch(() => undefined);
+    const [meta] = frameMetas(fetchSpy.mock.calls[0][1]?.body);
+    expect(meta).not.toHaveProperty('createsRun');
+  });
+
   it('sends no fence fields when the caller sets none', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')

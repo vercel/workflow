@@ -16,6 +16,12 @@
  *   is in that call.
  * - `none`: a control.
  *
+ * Each case also picks whether `start()` skips its `run_created` for a held
+ * start (`WORKFLOW_INLINE_SKIP_RUN_CREATED=1`), on a World that declares
+ * `runStartedCreatesRun` or (fail closed) one that does not, and how the
+ * World records a creating `run_started`: with a synthetic `run_created`
+ * under it, or alone at the first slot (`createsRun`).
+ *
  * Every case must end with the run `completed` and its expected output, each
  * step with exactly one committed outcome, one terminal run event, no
  * invariant violation, and a log a cold replay re-derives (`runScenario`
@@ -127,7 +133,14 @@ workflowEntrypoint(WORKFLOWS.steps_missing.code, {
 });
 
 type WorkflowKey = keyof typeof WORKFLOWS;
-type Fault = 'none' | 'lapse' | 'crash' | 'resume' | 'not_held';
+type Fault =
+  | 'none'
+  | 'lapse'
+  | 'crash'
+  | 'resume'
+  | 'not_held'
+  /** The held send enqueues, then throws: `start()` resends unheld. */
+  | 'hold_throws';
 
 // ---------------------------------------------------------------------------
 // Seeded choices
@@ -154,9 +167,24 @@ interface Case {
   phase: 'before' | 'after';
   /** `WORKFLOW_INLINE_DELIVERY=0`: everything is queued, as before. */
   killSwitch?: boolean;
+  /**
+   * `WORKFLOW_INLINE_SKIP_RUN_CREATED=1` on a World that declares
+   * `runStartedCreatesRun` (`on`), or on one that does not (`no_capability`).
+   */
+  skip?: 'off' | 'on' | 'no_capability';
+  /** The World records a `createsRun` `run_started` alone at the first slot. */
+  creationOnStart?: boolean;
   /** The workflow engine (`WORKFLOW_VM`). */
   vm?: 'node' | 'quickjs';
 }
+
+/** Whether `start()` of case `c` may have skipped its `run_created`. */
+const skipsRunCreated = (c: Case) =>
+  c.skip === 'on' &&
+  c.workflow !== 'steps_missing' &&
+  !c.killSwitch &&
+  c.fault !== 'not_held' &&
+  c.fault !== 'hold_throws';
 
 function caseFor(seed: number): Case {
   const next = prng(seed * 2654435761);
@@ -174,12 +202,21 @@ function caseFor(seed: number): Case {
     specVersion: pick([8, 9] as const),
     fault: pick(
       workflow === 'hook'
-        ? (['none', 'lapse', 'crash', 'resume', 'not_held'] as const)
-        : (['none', 'lapse', 'crash', 'not_held'] as const)
+        ? ([
+            'none',
+            'lapse',
+            'crash',
+            'resume',
+            'not_held',
+            'hold_throws',
+          ] as const)
+        : (['none', 'lapse', 'crash', 'not_held', 'hold_throws'] as const)
     ),
     ordinal: 1 + Math.floor(next() * 12),
     phase: pick(['before', 'after'] as const),
     killSwitch: next() < 0.1,
+    skip: pick(['off', 'on', 'on', 'no_capability'] as const),
+    creationOnStart: next() < 0.5,
     vm: next() < 0.3 ? 'quickjs' : 'node',
   };
 }
@@ -258,7 +295,11 @@ function scriptFor(c: Case): ScenarioScript {
     if (c.workflow === 'hook' && c.fault !== 'resume') {
       jobs.push(deliverHookWhenCreated(sim));
     }
-    if (c.fault !== 'none' && c.fault !== 'not_held') {
+    if (
+      c.fault !== 'none' &&
+      c.fault !== 'not_held' &&
+      c.fault !== 'hold_throws'
+    ) {
       jobs.push(
         (async () => {
           let seen = 0;
@@ -318,12 +359,20 @@ function scenarioFor(c: Case, script: ScenarioScript) {
       queueHold: true,
       // `not_held`: the start's held send is refused after a round trip, by
       // which time the sender has started preparing the delivery.
-      ...(c.fault === 'not_held' && {
+      ...((c.fault === 'not_held' || c.fault === 'hold_throws') && {
         holdAnswer: (payload: unknown) =>
           (payload as { runInput?: unknown }).runInput !== undefined
-            ? { answer: 'lost' as const, latencyMs: 5 }
+            ? {
+                answer:
+                  c.fault === 'not_held'
+                    ? ('lost' as const)
+                    : ('throw' as const),
+                latencyMs: 5,
+              }
             : undefined,
       }),
+      runStartedCreatesRun: c.skip === 'on',
+      creationOnStart: c.creationOnStart,
       startOptions: { specVersion: c.specVersion },
       script,
       expect: { status: 'completed', output: wf.output },
@@ -333,6 +382,8 @@ function scenarioFor(c: Case, script: ScenarioScript) {
       env: {
         WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS: '0',
         ...(c.killSwitch && { WORKFLOW_INLINE_DELIVERY: '0' }),
+        ...(c.skip !== undefined &&
+          c.skip !== 'off' && { WORKFLOW_INLINE_SKIP_RUN_CREATED: '1' }),
         ...(c.vm === 'quickjs' && { WORKFLOW_VM: 'quickjs' }),
       },
     },
@@ -347,7 +398,11 @@ function scenarioFor(c: Case, script: ScenarioScript) {
  */
 async function play(c: Case): Promise<{ c: Case; result: ScenarioResult }> {
   let played = c;
-  if (c.fault !== 'none' && c.fault !== 'not_held') {
+  if (
+    c.fault !== 'none' &&
+    c.fault !== 'not_held' &&
+    c.fault !== 'hold_throws'
+  ) {
     const counter = { calls: 0 };
     await scenarioFor(c, countingScriptFor(c, counter));
     played =
@@ -394,6 +449,57 @@ describe('inline orchestrator delivery under faults', () => {
     expect(result.trace.some((t) => t.kind === 'delivery')).toBe(false);
   });
 
+  it.each([
+    8, 9,
+  ] as const)('a held start that skips run_created returns once the run exists (spec %i)', async (specVersion) => {
+    const c: Case = {
+      seed: 0,
+      workflow: 'steps',
+      specVersion,
+      fault: 'none',
+      ordinal: 1,
+      phase: 'after',
+      skip: 'on',
+      creationOnStart: true,
+    };
+    const { result } = await play(c);
+    expect(result.ok, describeFailure(c, result)).toBe(true);
+    expect(result.deliveries).toBe(0);
+    expect(result.startReturned).toEqual({
+      runExisted: true,
+      resilientStart: false,
+    });
+    const types = result.events.map((e) => e.eventType);
+    if (specVersion === 9) {
+      // The held delivery's `run_started` is the creation, alone.
+      expect(types[0]).toBe('run_started');
+      expect(types).not.toContain('run_created');
+    } else {
+      // Spec 8 writes are not in-band, so a World always records the
+      // creation as a `run_created` it derives from `run_started`.
+      expect(types.slice(0, 2)).toEqual(['run_created', 'run_started']);
+    }
+  });
+
+  it('fails closed on a World without runStartedCreatesRun', async () => {
+    const c: Case = {
+      seed: 0,
+      workflow: 'steps',
+      specVersion: 9,
+      fault: 'none',
+      ordinal: 1,
+      phase: 'after',
+      skip: 'no_capability',
+      creationOnStart: true,
+    };
+    const { result } = await play(c);
+    expect(result.ok, describeFailure(c, result)).toBe(true);
+    // `start()` wrote `run_created` itself, before the run started.
+    const types = result.events.map((e) => e.eventType);
+    expect(types.slice(0, 2)).toEqual(['run_created', 'run_started']);
+    expect(result.startReturned?.runExisted).toBe(true);
+  });
+
   /** Cases played, by workflow, spec and the fault that actually landed. */
   const summary = new Map<string, number>();
   afterAll(() => {
@@ -412,6 +518,38 @@ describe('inline orchestrator delivery under faults', () => {
     const detail = describeFailure(c, result);
     expect(result.ok, detail).toBe(true);
     expect(result.outcome, detail).toBe('completed');
+
+    // `start()` returned with the run created, or said it may not be yet.
+    // (Or never returned: a crash of its held delivery's sender while it
+    // waited on that delivery's `run_started` is a crash of its caller.)
+    if (result.startCrashed) {
+      expect(skipsRunCreated(c) && c.fault === 'crash', detail).toBe(true);
+    } else {
+      expect(
+        result.startReturned?.runExisted ||
+          result.startReturned?.resilientStart,
+        detail
+      ).toBe(true);
+    }
+    // Exactly one creation, first; and no `run_created` at all when the
+    // skip applied and the World records a creating `run_started` alone.
+    const creations = result.events.filter(
+      (e) =>
+        e.eventType === 'run_created' ||
+        (e.eventType === 'run_started' && e === result.events[0])
+    );
+    expect(creations.length, detail).toBe(1);
+    if (c.skip !== 'on') {
+      // Without the flag (or the capability) nothing asks for `createsRun`,
+      // so every log keeps a `run_created`.
+      expect(result.events[0]?.eventType, detail).toBe('run_created');
+    }
+    if (skipsRunCreated(c) && c.creationOnStart && c.specVersion === 9) {
+      expect(
+        result.events.some((e) => e.eventType === 'run_created'),
+        detail
+      ).toBe(false);
+    }
 
     const { perStep, terminal } = outcomes(result.events);
     expect(
@@ -432,6 +570,7 @@ describe('inline orchestrator delivery under faults', () => {
     if (
       c.killSwitch ||
       c.fault === 'not_held' ||
+      c.fault === 'hold_throws' ||
       c.workflow === 'steps_missing'
     ) {
       // Nothing ran inline before the queue delivered the start message:
@@ -456,7 +595,7 @@ describe('inline orchestrator delivery under faults', () => {
       // A complete per-workflow entry runs the whole run inline.
       expect(result.deliveries, detail).toBe(0);
     }
-    const key = `${c.workflow}/spec${c.specVersion}/${c.vm ?? 'node'}/${c.killSwitch ? 'kill-switch' : c.fault}`;
+    const key = `${c.workflow}/spec${c.specVersion}/${c.vm ?? 'node'}/${c.killSwitch ? 'kill-switch' : c.fault}/skip-${c.skip ?? 'off'}${c.creationOnStart ? '/creation-on-start' : ''}`;
     summary.set(key, (summary.get(key) ?? 0) + 1);
   }, 30_000);
 });

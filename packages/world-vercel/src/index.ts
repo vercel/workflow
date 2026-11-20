@@ -86,6 +86,15 @@ export function createWorld(config?: APIConfig): World {
       // Support, not configuration: a queue service with it switched off
       // answers `not_held` / `unsupported` and delivers the message as usual.
       experimental_queueHold: true,
+      // A first delivery's `run_started` carrying `runInput` creates a run
+      // that has no `run_created` yet (resilient start). With
+      // `CreateEventParams.createsRun`, a backend that supports it records
+      // that `run_started` alone at the first slot; one that does not writes
+      // a `run_created` under it, as for every resilient start. Either way
+      // the run is created once, with the same in-band count, so declaring
+      // this is safe against both. `start()` only acts on it with
+      // `WORKFLOW_INLINE_SKIP_RUN_CREATED=1`.
+      runStartedCreatesRun: true,
       // Cached hook writes use a distinct endpoint that rejects before writing
       // when the backend cannot enforce the required deduplication contract.
       resolvedHookResume: true,

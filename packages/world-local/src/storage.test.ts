@@ -310,6 +310,38 @@ describe('Storage', () => {
         ).toBe(PUBLIC_KEY);
       });
 
+      it('creates the run from a run_started that asks for createsRun, keeping run_created', async () => {
+        // `createsRun` is advisory (`WORKFLOW_INLINE_SKIP_RUN_CREATED=1`):
+        // this World still records the creation as a run_created under the
+        // run_started, at the same in-band count.
+        const runId = `wrun_${monotonicFactory()()}`;
+        const result = await storage.events.create(
+          runId,
+          {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              deploymentId: 'deployment-123',
+              workflowName: 'creates-run-test',
+              input: new Uint8Array([7]),
+            },
+          } as never,
+          { createsRun: true }
+        );
+        expect(result.run?.status).toBe('running');
+        const events = await storage.events.list({
+          runId,
+          pagination: { sortOrder: 'asc' },
+        });
+        expect(events.data.map((e) => e.eventType)).toEqual([
+          'run_created',
+          'run_started',
+        ]);
+        const reread = await storage.runs.get(runId);
+        expect(reread.workflowName).toBe('creates-run-test');
+        expect(reread.input).toEqual(new Uint8Array([7]));
+      });
+
       it('leaves the field unset when the SDK does not supply it', async () => {
         const created = await createRun(storage, {
           deploymentId: 'deployment-123',

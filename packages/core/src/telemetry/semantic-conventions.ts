@@ -682,6 +682,25 @@ export const WorkflowStartEnqueueMs = SemanticConvention<number>(
   'workflow.start.enqueue_ms'
 );
 
+/**
+ * **Experimental.** How `start()` created the run
+ * (`WORKFLOW_INLINE_SKIP_RUN_CREATED=1`): `run_created` (its own write, as
+ * always without the flag), or `run_started` (the held inline delivery's
+ * `run_started` created it, and `start()` wrote no `run_created`). A bounded
+ * set.
+ */
+export const WorkflowStartRunCreation = SemanticConvention<
+  'run_created' | 'run_started'
+>('workflow.start.run_creation');
+/**
+ * **Experimental.** With `workflow.start.run_creation=run_started`: how long
+ * `start()` waited, after the hold was taken, for the inline delivery's
+ * `run_started` to settle, in ms.
+ */
+export const WorkflowStartRunStartedWaitMs = SemanticConvention<number>(
+  'workflow.start.run_started_wait_ms'
+);
+
 // Route attributes
 
 /**

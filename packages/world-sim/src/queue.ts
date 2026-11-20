@@ -199,8 +199,13 @@ export function decodeMessage(body: string): unknown {
  * answer other than the natural one (see `SimWorldOptions.holdAnswer`).
  */
 export interface SimHoldAnswer {
-  /** `held`, or the `not_held` reason to answer with (the queue delivers). */
-  answer: 'held' | QueueNotHeldReason;
+  /**
+   * `held`, or the `not_held` reason to answer with (the queue delivers), or
+   * `throw`: the send enqueues the message but its answer is lost, so it
+   * throws (the queue delivers it; a resend with the same idempotency key is
+   * dropped while it is in flight).
+   */
+  answer: 'held' | QueueNotHeldReason | 'throw';
   /**
    * Real milliseconds to wait before answering: the send's round trip, during
    * which the sender may already be preparing the delivery.
@@ -284,6 +289,13 @@ export function createSimQueue(opts: {
       const override = opts.holdAnswer?.(payload);
       if (override?.latencyMs) {
         await new Promise((resolve) => setTimeout(resolve, override.latencyMs));
+      }
+      if (override?.answer === 'throw') {
+        messages.push(entry);
+        notifyChange();
+        throw new Error(
+          'simulated: the held send enqueued, but its answer was lost'
+        );
       }
       if (override && override.answer !== 'held') {
         messages.push(entry);

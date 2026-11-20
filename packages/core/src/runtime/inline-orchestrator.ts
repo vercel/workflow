@@ -128,6 +128,33 @@ export type InlinePrewarm = (
  */
 export const INLINE_SPECULATION_ENV = 'WORKFLOW_INLINE_SPECULATION';
 
+/**
+ * **Experimental, off by default.** `WORKFLOW_INLINE_SKIP_RUN_CREATED=1` lets
+ * `start()` skip its `run_created` when the run's first orchestrator message
+ * is held for this process: the held delivery's `run_started`, which carries
+ * the run's creation data, creates the run instead. Read on every call.
+ *
+ * Only on a World that declares `capabilities.runStartedCreatesRun` (and
+ * can hold). With the flag on, that World is also asked to record such a
+ * `run_started` as the run's creation, alone at the first slot
+ * (`CreateEventParams.createsRun`), wherever a first delivery creates the
+ * run. Off until every reader of run creations accepts a log whose creation
+ * is a `run_started`.
+ */
+export const INLINE_SKIP_RUN_CREATED_ENV = 'WORKFLOW_INLINE_SKIP_RUN_CREATED';
+
+/**
+ * Whether `WORKFLOW_INLINE_SKIP_RUN_CREATED=1` applies on `world`: it can
+ * hold, and its `run_started` can create a run (see
+ * {@link INLINE_SKIP_RUN_CREATED_ENV}). Fails closed.
+ */
+export function skipsRunCreated(world: World): boolean {
+  return (
+    process.env[INLINE_SKIP_RUN_CREATED_ENV] === '1' &&
+    world.capabilities?.runStartedCreatesRun === true
+  );
+}
+
 // On `globalThis` so the registry is shared by every copy of this module a
 // bundler emits: the flow entry and the calling route can resolve
 // `@workflow/core` to different copies in one server build.
@@ -477,6 +504,40 @@ interface InlineDeliveryContext {
   sendStartedAt?: number;
   /** Set once the delivery's first step body started. */
   firstStepNoted?: boolean;
+  /** The run the held message belongs to. */
+  runId?: string;
+  /**
+   * Set when the sender waits for this delivery's `run_started` (it skipped
+   * `run_created`, see {@link INLINE_SKIP_RUN_CREATED_ENV}). Called once,
+   * by {@link noteInlineRunStarted}.
+   */
+  onRunStarted?: (written: Promise<unknown>) => void;
+}
+
+/** What came of the held delivery's `run_started`, for its sender. */
+export type InlineRunCreation =
+  /** It landed: the run exists. */
+  | { status: 'created' }
+  /** It was refused or failed; `error` is what the World answered. */
+  | { status: 'failed'; error: unknown }
+  /** The delivery ended without settling one (it died or handed off first). */
+  | { status: 'not_written' };
+
+/**
+ * Called by the orchestrators with their first delivery's `run_started`
+ * write (awaited or backgrounded): an inline delivery whose sender skipped
+ * `run_created` reports its outcome to that sender, which returns once the
+ * run exists. A no-op anywhere else, and after the first call. @internal
+ */
+export function noteInlineRunStarted(
+  runId: string,
+  written: Promise<unknown>
+): void {
+  const context = inlineDeliveryStorage.getStore();
+  if (!context?.onRunStarted || context.runId !== runId) return;
+  const report = context.onRunStarted;
+  context.onRunStarted = undefined;
+  report(written);
 }
 
 const inlineDeliveryStorage = globalSingleton(
@@ -554,6 +615,19 @@ export function inlineBudgetMs(
  */
 export async function sendOrchestratorMessage(params: {
   decision: InlineDecision;
+  /**
+   * The sender skipped `run_created` and waits for the held delivery's
+   * `run_started` to create the run: a held result then carries
+   * `inlineRunCreation`.
+   */
+  awaitRunCreation?: boolean;
+  /**
+   * Called once it is known that this process will not run the message and
+   * the queue has it (`not_held`, no hold result, or a held attempt that
+   * threw, once its plain resend is accepted), so a sender that skipped
+   * `run_created` can write it then.
+   */
+  onNotHeld?: () => void;
   runId: string;
   span: Span | undefined;
   send: (
@@ -565,7 +639,12 @@ export async function sendOrchestratorMessage(params: {
   queueName?: string;
   /** When the calling `start()` / `resumeHook()` began (epoch ms). */
   callStartedAt?: number;
-}): Promise<QueueResult> {
+}): Promise<
+  QueueResult & {
+    /** See `awaitRunCreation`; never rejects. */
+    inlineRunCreation?: Promise<InlineRunCreation>;
+  }
+> {
   const { decision, runId, span } = params;
   if (!decision.inline) {
     span?.setAttributes({
@@ -598,7 +677,12 @@ export async function sendOrchestratorMessage(params: {
         error: error instanceof Error ? error.message : String(error),
       }
     );
-    return params.send({}, true);
+    // The resend goes first, and `onNotHeld` only after it is accepted: a
+    // `run_created` beside it could commit for a run whose message never
+    // reached the queue, if this process died before the resend did.
+    const resent = await params.send({}, true);
+    params.onNotHeld?.();
+    return resent;
   }
   const hold: QueueHoldResult | undefined = result.experimental_hold;
   if (hold?.status !== 'held') {
@@ -606,10 +690,20 @@ export async function sendOrchestratorMessage(params: {
       ...Attribute.WorkflowInlineOutcome(hold ? 'not_held' : 'no_hold_result'),
       ...(hold ? Attribute.WorkflowInlineNotHeldReason(hold.reason) : {}),
     });
+    params.onNotHeld?.();
     return result;
   }
   span?.setAttributes(Attribute.WorkflowInlineOutcome('held'));
   const handler = decision.handler;
+  let settleRunCreation: ((creation: InlineRunCreation) => void) | undefined;
+  const inlineRunCreation = params.awaitRunCreation
+    ? new Promise<InlineRunCreation>((resolve) => {
+        settleRunCreation = (creation) => {
+          settleRunCreation = undefined;
+          resolve(creation);
+        };
+      })
+    : undefined;
   safeWaitUntil(
     // Started now, not after the caller's other writes: nothing renews the
     // hold until `consume()` runs.
@@ -630,14 +724,31 @@ export async function sendOrchestratorMessage(params: {
           );
         }
       });
-      await inlineDeliveryStorage.run(
-        {
-          startedAt: Date.now(),
-          span: consumeSpan,
-          sendStartedAt: params.callStartedAt,
-        },
-        () => hold.consume(handler)
-      );
+      try {
+        await inlineDeliveryStorage.run(
+          {
+            startedAt: Date.now(),
+            span: consumeSpan,
+            sendStartedAt: params.callStartedAt,
+            runId,
+            ...(settleRunCreation && {
+              onRunStarted: (written: Promise<unknown>) => {
+                written.then(
+                  () => settleRunCreation?.({ status: 'created' }),
+                  (error: unknown) =>
+                    settleRunCreation?.({ status: 'failed', error })
+                );
+              },
+            }),
+          },
+          () => hold.consume(handler)
+        );
+      } finally {
+        // A delivery that ended without a settled `run_started` (it died
+        // before writing one, or handed the message back): its sender stops
+        // waiting, and a redelivery creates the run from `runInput`.
+        settleRunCreation?.({ status: 'not_written' });
+      }
     }),
     (error) => {
       // The hold lapses and the queue delivers the message to the flow route;
@@ -653,7 +764,7 @@ export async function sendOrchestratorMessage(params: {
       );
     }
   );
-  return result;
+  return inlineRunCreation ? { ...result, inlineRunCreation } : result;
 }
 
 /**

@@ -446,6 +446,12 @@ interface CreateEventV4InputBase {
   expectedSeqInBand?: number;
   /** step_created: whether the orchestrator may run the step in-process. */
   inline?: boolean;
+  /** run_started: record a run this write creates as the `run_started`
+   *  alone at the first slot, with no `run_created` under it. See
+   *  CreateEventParams.createsRun in @workflow/world. The backend acts on it
+   *  only for an in-band apiVersion 5 write at `expectedSeqInBand: 1`, and a
+   *  backend without support ignores it and writes `run_created` as before. */
+  createsRun?: true;
   /** step_created / wait_created: queue message id of the orchestrator
    *  delivery that wrote the event. */
   creatorMessageId?: string;
@@ -863,6 +869,7 @@ function buildPostFrameMeta(
     meta.expectedSeqInBand = input.expectedSeqInBand;
   }
   if (input.inline !== undefined) meta.inline = input.inline;
+  if (input.createsRun) meta.createsRun = true;
   if (input.creatorMessageId !== undefined) {
     meta.creatorMessageId = input.creatorMessageId;
   }

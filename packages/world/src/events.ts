@@ -949,6 +949,21 @@ export interface CreateEventParams {
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
+   * **Experimental.** Asks the World to record a creating `run_started` (one
+   * carrying the run's creation data, on a run that does not exist yet) as
+   * the run's creation itself, alone at the first slot, instead of writing a
+   * `run_created` under it. Sent only on a spec 9 run's first in-band write
+   * at `expectedSeqInBand: IN_BAND_SEQ_AT_RUN_CREATION`, and only with
+   * `WORKFLOW_INLINE_SKIP_RUN_CREATED=1` on a World that declares
+   * `WorldCapabilities.runStartedCreatesRun`.
+   *
+   * Advisory: a World that ignores it writes the `run_created` as before, and
+   * both shapes keep the same in-band count. Meaningless on any other write.
+   *
+   * @experimental
+   */
+  createsRun?: true;
+  /**
    * Compute instance whose handler is writing this event (`COMPUTE_INSTANCE_ID`
    * in @workflow/core). Ambient per-event identity like {@link requestId},
    * which distinguishes invocations *within* an instance. Read back via
