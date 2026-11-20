@@ -111,9 +111,8 @@ export function createWorld(config?: APIConfig): World {
       // and any it cannot decide, so no call is recorded without a
       // reservation.
       rateLimits: true,
-      // The backend's batch decides a rate event on a spec 10 run as the
-      // single write does (vercel/workflow-server#1444), each key's calls in
-      // one reservation, so the in-band writer sends rate limit calls made
+      // world-vercel's batch decides a rate event on a spec 10 run as the
+      // single write does, so the in-band writer sends rate limit calls made
       // at once in one batch, and a call's write beside the step outcome
       // before it.
       rateEventsInBatch: true,

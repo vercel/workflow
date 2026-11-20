@@ -842,16 +842,20 @@ export class InBandWriter {
             const item = slice[0];
             if (write.own === true && item && item.error !== undefined) {
               const resends = write.resends ?? 0;
+              // Behind another item's refusal, the World never got to this
+              // one: that costs it no resend. Each group's first item gets
+              // an answer of its own, so these resends end.
+              const behindRefusal = item.error === EARLIER_POSITION_FAILED;
               if (
                 RATE_RESEND_ERRORS.has(item.error) &&
-                resends < MAX_RATE_RESENDS
+                (behindRefusal || resends < MAX_RATE_RESENDS)
               ) {
                 // Nothing was reserved or committed for it: sent again, in
                 // the next group, with the others sent again beside it.
                 this.writeRate(
                   write.events[0]!.event,
                   write.params as CreateEventParams,
-                  resends + 1
+                  behindRefusal ? resends : resends + 1
                 ).then(write.resolve, write.reject);
                 continue;
               }
@@ -1237,8 +1241,8 @@ export function withWrittenEventData<E extends Event>(
  * ({@link InBandWriter.writeRate}) rather than failing the call:
  *
  * - `rate-batch-deferred` (503): the batch ran out of time to decide it;
- * - `rate-decision-failed` (503): its key's reservation failed (throttled,
- *   or not settled under contention);
+ * - `rate-decision-failed` (503): the World could not decide its key's
+ *   calls in this batch;
  * - `batch-earlier-position-failed` (409): an earlier in-band item of the
  *   batch was refused, such as another call's `rate_acquired` before its
  *   slot.
@@ -1249,7 +1253,17 @@ const RATE_RESEND_ERRORS: ReadonlySet<string> = new Set([
   'batch-earlier-position-failed',
 ]);
 
-/** How many times a rate limit call's write is sent again before it fails. */
+/** The refusal of an item behind another item's refusal in the batch. */
+const EARLIER_POSITION_FAILED = 'batch-earlier-position-failed';
+
+/**
+ * How many times a rate limit call's write is sent again, for a refusal of
+ * its own (503), before it fails. A refusal behind another item's
+ * (`batch-earlier-position-failed`) does not count: several wakes due
+ * together while the World's clock is a little behind are each refused too
+ * early in turn, and the last of them would otherwise run out of resends
+ * and fail as a conflict, as if it were already acquired.
+ */
 const MAX_RATE_RESENDS = 2;
 
 /**
