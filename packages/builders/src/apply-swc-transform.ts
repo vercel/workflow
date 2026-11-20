@@ -7,13 +7,12 @@ import { resolveModuleSpecifier } from './module-specifier.js';
 
 const require = createRequire(import.meta.url);
 
-// Cache decorator options per directory - tsconfig doesn't change during a build
 const decoratorOptionsCache = new Map<
   string,
   ReturnType<typeof getDecoratorOptionsForDirectory>
 >();
 
-function getDecoratorOptions(projectRoot?: string) {
+export function getCachedDecoratorOptions(projectRoot?: string) {
   const cwd = projectRoot ?? process.cwd();
   let cached = decoratorOptionsCache.get(cwd);
   if (!cached) {
@@ -74,7 +73,7 @@ export async function applySwcTransform(
   const resolvedProjectRoot = projectRoot ?? process.cwd();
   const resolvedModuleSpecifierRoot =
     moduleSpecifierRoot ?? resolvedProjectRoot;
-  const decoratorOptions = await getDecoratorOptions(resolvedProjectRoot);
+  const decoratorOptions = await getCachedDecoratorOptions(resolvedProjectRoot);
 
   const swcPluginPath = require.resolve('@workflow/swc-plugin', {
     paths: [dirname(fileURLToPath(import.meta.url))],
