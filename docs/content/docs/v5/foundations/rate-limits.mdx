@@ -77,7 +77,7 @@ export async function notifyAll(recipients: string[]) {
 
 ## How to choose a rate limit key
 
-A key names one limit that an upstream enforces. Calls with the same key share it across every run and every workflow in the project, and each environment has its own: preview and production deployments never share a key's capacity.
+A key names one limit that an upstream enforces. Calls with the same key share it across every run and every workflow in the project. On Vercel each environment has its own: preview and production deployments never share a key's capacity.
 
 - **One key per upstream limit**: Use `"openai"` for a limit that covers your whole account.
 - **One key per tenant**: Build the key from an ID, such as `` `stripe:${accountId}` ``, when the upstream limits each account separately. Each tenant then gets its own rate.

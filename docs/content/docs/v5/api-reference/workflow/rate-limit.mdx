@@ -52,7 +52,7 @@ export default RateLimitOptions;`}
 ## Behavior
 
 - Calls on one key share it across runs, so they are admitted in the order the World receives them. Use the same `limit`, `period` and `burst` everywhere you use a key (see [One key with different settings](#one-key-with-different-settings)).
-- The rate is per project and environment: preview and production deployments have separate budgets for the same key.
+- On Vercel, the rate is per project and environment: preview and production deployments have separate budgets for the same key. On the Local World it is per data directory, and on the Postgres World per [`jobPrefix`](/worlds/postgres).
 - A `key` is 1 character to 512 bytes (UTF-8). Keys are stored as-is in the run's event log. Don't put personal data in them.
 - Keys that start with `$` are reserved for Workflow SDK libraries, and a call with one throws. Don't use them in your own code: the `allowReservedKey` option that permits them exists only for those libraries, and a workflow that shares their keys can starve them or be starved by them.
 - A `period` can be at most 24 hours.
