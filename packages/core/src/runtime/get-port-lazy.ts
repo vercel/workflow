@@ -16,10 +16,13 @@ import { runtimeLogger } from '../logger.js';
 // scope. The resolved port is a fact about the process, not about one copy of
 // this module, and per-copy caches would each pay the ~60ms `lsof` discovery
 // and could each pin their own answer.
+const NEGATIVE_CACHE_TTL_MS = 5_000;
+
 const portState = globalSingleton('@workflow/core//devServerPort', 1, () => ({
   getPort: undefined as (() => Promise<number | undefined>) | undefined,
   cachedPort: undefined as number | undefined,
   inFlight: undefined as Promise<number | undefined> | undefined,
+  negativeCacheUntil: 0,
 }));
 
 // Per-process cache of the resolved port. The workflow server listens on a
@@ -53,6 +56,12 @@ export async function getPortLazy(): Promise<number | undefined> {
     return envPort;
   }
 
+  // Avoid re-running expensive OS port discovery on every call when no
+  // listening port was found (e.g. inside a separate worker process).
+  if (Date.now() < portState.negativeCacheUntil) {
+    return undefined;
+  }
+
   if (!portState.getPort) {
     portState.getPort = loadGetPort();
   }
@@ -62,11 +71,14 @@ export async function getPortLazy(): Promise<number | undefined> {
   const resolver = portState.getPort ?? (async () => undefined);
   portState.inFlight = resolver()
     .then((port) => {
-      // Only cache a concrete port. A transient `undefined` (e.g. the server is
-      // not listening yet on the first replay) must not poison the cache:
-      // leaving it unset lets the next call retry discovery.
       if (typeof port === 'number') {
         portState.cachedPort = port;
+        portState.negativeCacheUntil = 0;
+      } else {
+        // Negative-cache `undefined` for a short TTL so repeated calls in a
+        // worker without a listening server do not repeatedly shell out to OS
+        // discovery, while still allowing a late-starting server to be found.
+        portState.negativeCacheUntil = Date.now() + NEGATIVE_CACHE_TTL_MS;
       }
       return port;
     })
@@ -158,6 +170,7 @@ export function resetPortCacheForTesting(): void {
   portState.getPort = undefined;
   portState.cachedPort = undefined;
   portState.inFlight = undefined;
+  portState.negativeCacheUntil = 0;
 }
 
 /**
@@ -172,4 +185,5 @@ export function setPortResolverForTesting(
   portState.getPort = fn;
   portState.cachedPort = undefined;
   portState.inFlight = undefined;
+  portState.negativeCacheUntil = 0;
 }
