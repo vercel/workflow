@@ -14,6 +14,7 @@
 
 import type { Span } from '@opentelemetry/api';
 import {
+  DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -43,7 +44,6 @@ import {
 } from '../serialization.js';
 import { afterRunFailed } from './after-terminal-write.js';
 import {
-  DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
   isDynamicWorkflowsEnabled,
   isVmRetentionEnabled,
@@ -403,6 +403,13 @@ export async function getMaxInlineDurationMs(
 }
 
 export function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
+  // A dynamic run delivered to a deployment that has not opted in: the
+  // project's configuration, deterministic on every redelivery, so it fails
+  // the run, attributed to the user rather than the SDK.
+  if (DynamicWorkflowsNotEnabledError.is(err)) {
+    return RUN_ERROR_CODES.USER_ERROR;
+  }
+
   if (WorkflowRuntimeError.is(err)) {
     return RUN_ERROR_CODES.RUNTIME_ERROR;
   }
@@ -503,15 +510,19 @@ export async function recordFatalRunError({
  * with the run, and replaying it means evaluating that exact code rather than
  * whatever the deployment now contains.
  *
- * Stored code is only executed when all of these hold, and each failure is a
- * `WorkflowRuntimeError` so the caller fails the run instead of redelivering a
- * message whose verdict cannot change:
+ * Stored code is only executed when all of these hold, and each failure is
+ * an error `getWorkflowSetupErrorCode` maps to a code, so the caller fails the
+ * run instead of redelivering a message whose verdict cannot change:
  *
- * - this deployment has opted in to dynamic workflows;
+ * - this deployment has opted in to dynamic workflows (otherwise
+ *   `DynamicWorkflowsNotEnabledError`, recorded as `USER_ERROR`: the opt-in
+ *   is the project's configuration);
  * - the run's `workflowName` is the id its `dynamicWorkflow` marker derives
  *   (a marker on a static workflow's run does not redirect it to stored code);
  * - the code exists and hydrates, which requires the `encr` envelope whenever
  *   the run has key material or was started with encryption.
+ *
+ * The last two are `WorkflowRuntimeError` (`RUNTIME_ERROR`).
  *
  * Two sources for the code, in order of what the invocation already holds:
  *
@@ -546,8 +557,10 @@ export async function resolveWorkflowCodeForRun(
 
   const runLabel = `Workflow run "${workflowRun.runId}" is a dynamic workflow run (source ${dynamicWorkflow.sourceHash.slice(0, 12)})`;
   if (!isDynamicWorkflowsEnabled()) {
-    throw new WorkflowRuntimeError(
-      `${runLabel}, but this deployment has not enabled dynamic workflows, so its stored code was not executed. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    // The project's configuration, not an SDK failure: the deployment that
+    // received the run has not opted in. See `getWorkflowSetupErrorCode`.
+    throw new DynamicWorkflowsNotEnabledError(
+      `${runLabel}, but dynamic workflows are not enabled for this project on the deployment that received it, so its stored code was not executed.`
     );
   }
   const expectedWorkflowName = dynamicWorkflowName(dynamicWorkflow);
