@@ -15,8 +15,6 @@ With the proof-of-concept stack below, latency drops sharply. Measured on a depl
 | Client: `call.settled` → next text delta | 252ms | **168ms** |
 | Client: send → final delta (whole turn) | 684ms | **600ms** |
 
-eve's inbox reader was paused during steps in place of proposal 2, which needs workflow-server support.
-
 eve's steering and cancel behaviors are constrained enough that it seems possible for them to coexist with run-ahead.
 
 ## Active eve counters
