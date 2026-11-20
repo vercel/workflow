@@ -4,15 +4,18 @@
 
 Spec 9 run-ahead introduces the notion of an "inert boundary" (`out-of-band-observation.ts`, #4683): a step boundary where nothing outside the orchestrator can append an event that would change the decision of the workflow state machine. At an inert boundary, run-ahead delivers the outcome of an inline step to the workflow before the `step_completed` for that step commits, and can start the body of the next inline step before its creation commits. Because no other writer can append a path-changing event in between, replay makes the same decisions the speculative run made, even if other events land in between.
 
-eve's turn steps are never marked inert, because every boundary has open steering and cancel hooks. eve is unable to get the speed benefits of run-ahead: each step must wait for `step_completed` to commit, and then for the `step_started` of the next step to commit. These serial writes inflate eve's tool hop by ~150ms, far more than competing frameworks.
+eve's turn steps are never marked inert, because every boundary has open steering and cancel hooks. eve is unable to get the speed benefits of run-ahead: each step must wait for `step_completed` to commit, and then for the `step_started` of the next step to commit. These serial writes inflate eve's tool hop by ~80ms, far more than competing frameworks.
 
-When run-ahead is forcibly enabled on eve, latency drops sharply. Measured on a deployed probe agent:
+With the proof-of-concept stack below, latency drops sharply. Measured on a deployed probe agent:
 
-| | Default | Run-ahead forced on |
+| | eve main, Workflow 5.7.0 | With the PoC stack |
 |---|--:|--:|
-| Server: tool result → next model call | 272ms | **124ms** |
-| Client: `call.settled` → next text delta | 296ms | **144ms** |
-| Client: send → final delta (whole turn) | 874ms | **622ms** |
+| Inert step boundaries | 0 of 43 | **40 of 43** |
+| Server: tool result → next model call | 252ms | **182ms** |
+| Client: `call.settled` → next text delta | 252ms | **168ms** |
+| Client: send → final delta (whole turn) | 684ms | **600ms** |
+
+eve's inbox reader was paused during steps in place of proposal 2, which needs workflow-server support.
 
 eve's steering and cancel behaviors are constrained enough that it seems possible for them to coexist with run-ahead.
 
