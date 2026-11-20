@@ -769,6 +769,32 @@ describe.each(ENGINES)('rate limit calls made at once (%s)', (engine) => {
     expect(new Set(acquired.map((event) => event.correlationId)).size).toBe(10);
   }, 60_000);
 
+  // On node every waiting rate limit call arms a timer of its own before the
+  // in-process wait; QuickJS arms the earliest one per pass, so it never
+  // sent several there.
+  it.skipIf(engine === 'quickjs')(
+    "sends the waiting calls' timers at once, not one after another",
+    async () => {
+      const { world } = await setupOrchestratorRun(
+        fanOut,
+        [4],
+        {
+          runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+          rateEventsInBatch: true,
+          queueDelayMs: 30,
+        },
+        engine
+      );
+      await world.runOnClock();
+
+      expect(await runResult(world)).toBe(4);
+      // Three calls wait, each with a timer of its own, sent side by side.
+      expect(world.maxQueueInFlight).toBeGreaterThan(1);
+      expect(eventsOf(world, 'rate_acquired')).toHaveLength(4);
+    },
+    60_000
+  );
+
   it('writes each call on its own turn on a World without the capability', async () => {
     const { world } = await setupOrchestratorRun(
       fanOut,

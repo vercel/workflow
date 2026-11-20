@@ -3563,14 +3563,12 @@ async function runDelivery(
           // failure after the commit would leave the redelivery not
           // knowing this delivery completed the wait.
           if (due.length > 0) {
-            for (const next of chainTimersBeforeCompletion({
-              openWaits: openWaits(log.events),
-              completing: due.map((wait) => wait.correlationId),
-            })) {
-              if (!timedWaits.has(next.correlationId)) {
-                await sendWaitTimer(next);
-              }
-            }
+            await sendWaitTimers(
+              chainTimersBeforeCompletion({
+                openWaits: openWaits(log.events),
+                completing: due.map((wait) => wait.correlationId),
+              }).filter((next) => !timedWaits.has(next.correlationId))
+            );
           }
           // Consecutive due rate calls write their `rate_acquired` at once,
           // so the writer sends them in one batch (see
@@ -5113,13 +5111,13 @@ async function runDelivery(
           (wait.event !== undefined &&
             waitCreatorMessageId(wait.event) !== creatorMessageId)
       );
-      for (const wait of waitTimersToArm(
-        owned,
-        creatorMessageId,
-        waitContinuation?.correlationId
-      )) {
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
-      }
+      await sendWaitTimers(
+        waitTimersToArm(
+          owned,
+          creatorMessageId,
+          waitContinuation?.correlationId
+        ).filter((wait) => !timedWaits.has(wait.correlationId))
+      );
     }
 
     /**
@@ -5153,14 +5151,15 @@ async function runDelivery(
       const ownChain = openWaits(knownEvents()).filter(
         (wait) => waitCreatorMessageId(wait.event) === creatorMessageId
       );
-      for (const wait of waitTimersToArm(
-        [...ownChain, ...created],
-        creatorMessageId,
-        undefined
-      )) {
-        if ('event' in wait) continue;
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
-      }
+      await sendWaitTimers(
+        waitTimersToArm(
+          [...ownChain, ...created],
+          creatorMessageId,
+          undefined
+        ).filter(
+          (wait) => !('event' in wait) && !timedWaits.has(wait.correlationId)
+        )
+      );
     }
 
     /**
@@ -5199,18 +5198,13 @@ async function runDelivery(
           (waitCreatorMessageId(wait.event) ?? creatorMessageId) ===
           creatorMessageId
       );
-      for (const wait of waitTimersToArm(
-        ownChain,
-        creatorMessageId,
-        undefined
-      )) {
-        if (
-          ownOpenWaits.has(wait.correlationId) &&
-          !timedWaits.has(wait.correlationId)
-        ) {
-          await sendWaitTimer(wait);
-        }
-      }
+      await sendWaitTimers(
+        waitTimersToArm(ownChain, creatorMessageId, undefined).filter(
+          (wait) =>
+            ownOpenWaits.has(wait.correlationId) &&
+            !timedWaits.has(wait.correlationId)
+        )
+      );
     }
 
     /**
@@ -5224,12 +5218,36 @@ async function runDelivery(
     async function armNearDueTimers(events: Event[]): Promise<void> {
       if (!mayHoldCoalescedTimer) return;
       const horizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
-      for (const wait of openWaits(events)) {
-        if (wait.resumeAtMs > horizonMs) continue;
-        if (!timedWaits.has(wait.correlationId)) {
-          await sendWaitTimer(wait, { nearDue: true });
-        }
-      }
+      await sendWaitTimers(
+        openWaits(events).filter(
+          (wait) =>
+            wait.resumeAtMs <= horizonMs && !timedWaits.has(wait.correlationId)
+        ),
+        { nearDue: true }
+      );
+    }
+
+    /**
+     * Sends the timers of `waits` at once rather than one after another: a
+     * run with many open waits (rate limit calls made at once each have one)
+     * otherwise held the delivery a queue round trip per wait before it could
+     * wait in process or hand off. Resolves once every send has settled, so
+     * each timer is out before the caller goes on, and throws the first
+     * failure, as the sends one after another did.
+     */
+    async function sendWaitTimers(
+      waits: readonly Parameters<typeof sendWaitTimer>[0][],
+      options?: Parameters<typeof sendWaitTimer>[1]
+    ): Promise<void> {
+      const unique = new Map(waits.map((wait) => [wait.correlationId, wait]));
+      const settled = await Promise.allSettled(
+        [...unique.values()].map((wait) => sendWaitTimer(wait, options))
+      );
+      const failed = settled.find(
+        (outcome): outcome is PromiseRejectedResult =>
+          outcome.status === 'rejected'
+      );
+      if (failed) throw failed.reason;
     }
 
     /**

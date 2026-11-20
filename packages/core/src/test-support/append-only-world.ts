@@ -136,6 +136,10 @@ export class AppendOnlyWorld {
   readonly events: Event[] = [];
   readonly creates: RecordedCreate[] = [];
   readonly queueCalls: RecordedQueueCall[] = [];
+  /** `queue` calls in flight, with {@link options.queueDelayMs}. */
+  private queueInFlight = 0;
+  /** The most `queue` calls in flight at once, with `queueDelayMs`. */
+  maxQueueInFlight = 0;
   /** Messages enqueued and not yet acknowledged. */
   readonly held: HeldMessage[] = [];
   readonly deliveries: RecordedDelivery[] = [];
@@ -237,6 +241,12 @@ export class AppendOnlyWorld {
        * milliseconds late, after committing, as a remote World's round trip.
        */
       createDelayMs?: number;
+      /**
+       * Answer every `queue` call this many milliseconds late, as a remote
+       * queue's round trip. {@link AppendOnlyWorld.maxQueueInFlight} records
+       * how many overlapped.
+       */
+      queueDelayMs?: number;
       /**
        * Push each event to the live feed this many milliseconds after it
        * committed (in commit order), as on a World whose push travels apart
@@ -1389,6 +1399,18 @@ export class AppendOnlyWorld {
         },
       },
       async queue(queueName: string, message: unknown, opts?: object) {
+        if (self.options.queueDelayMs) {
+          self.queueInFlight++;
+          self.maxQueueInFlight = Math.max(
+            self.maxQueueInFlight,
+            self.queueInFlight
+          );
+          try {
+            await new Promise((r) => setTimeout(r, self.options.queueDelayMs));
+          } finally {
+            self.queueInFlight--;
+          }
+        }
         const options = opts as Record<string, unknown> | undefined;
         self.queueCalls.push({ queueName, message, opts: options });
         const messageId = `msg_${self.queueCalls.length}`;
