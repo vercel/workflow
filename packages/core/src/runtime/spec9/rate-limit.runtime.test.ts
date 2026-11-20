@@ -5,6 +5,7 @@
  * records `rate_acquired`, and a call past its maxWait rejects.
  */
 import { TooEarlyError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import {
   rateGraceMs,
   SPEC_VERSION_RATE_LIMITS,
@@ -22,6 +23,7 @@ import {
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
 import { setWorld } from '../world.js';
+import { InBandWriter } from './in-band-writer.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -544,10 +546,41 @@ const stepThenFreeCall = `${header}
     return await step(one);
   }${registerWorkflow()}`;
 
+/**
+ * A `beforeCreate` that holds the run's first `step_started` until the
+ * workflow's rate limit call has reached the in-band writer. The step's
+ * outcome then queues behind that write, and the call joins its batch,
+ * however slow the machine. (A fixed write delay let a loaded one send the
+ * outcome alone before the call was made.)
+ */
+function holdStepStartUntilRateCall() {
+  const rateCallMade = withResolvers<void>();
+  const create = InBandWriter.prototype.create;
+  vi.spyOn(InBandWriter.prototype, 'create').mockImplementation(function (
+    this: InBandWriter,
+    ...args: Parameters<typeof create>
+  ) {
+    const result = create.apply(this, args);
+    if (args[0].eventType === 'rate_created') rateCallMade.resolve();
+    return result;
+  } as typeof create);
+  let held = false;
+  return async (
+    data: { eventType: string },
+    _params: unknown,
+    source?: { batch: boolean }
+  ) => {
+    if (held || source?.batch || data.eventType !== 'step_started') return;
+    held = true;
+    await rateCallMade.promise;
+  };
+}
+
 describe.each(
   ENGINES
 )('a rate limit call beside run-ahead writes (%s)', (engine) => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     setWorld(undefined);
   });
@@ -559,8 +592,7 @@ describe.each(
       {
         runSpecVersion: SPEC_VERSION_RATE_LIMITS,
         rateEventsInBatch: true,
-        // Each write in flight long enough for the next ones to queue.
-        createDelayMs: 20,
+        beforeCreate: holdStepStartUntilRateCall(),
       },
       engine
     );
@@ -583,12 +615,13 @@ describe.each(
       {
         runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         rateEventsInBatch: true,
-        createDelayMs: 20,
+        beforeCreate: holdStepStartUntilRateCall(),
       },
       engine
     );
     await world.runOnClock();
 
+    expect(world.batches).toContainEqual(['step_completed', 'rate_created']);
     const failed = eventsOf(world, 'run_failed');
     expect(failed).toHaveLength(1);
     expect(eventsOf(world, 'rate_created')).toHaveLength(0);
