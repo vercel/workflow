@@ -35,9 +35,10 @@ describe('validateRateLimitCall', () => {
     [{ periodMs: 0 }, /positive whole number/],
     [{ periodMs: 0.5 }, /positive whole number/],
     [{ periodMs: MAX_RATE_PERIOD_MS + 1 }, /24 hours/],
-    [{ burst: 0 }, /burst must be an integer from 1 to the limit/],
-    [{ burst: 11 }, /burst must be an integer from 1 to the limit \(10\)/],
-    [{ burst: 1.5 }, /burst must be/],
+    [{ burst: 0 }, /burst must be a whole number of at least 1/],
+    [{ burst: 1.5 }, /burst must be a whole number/],
+    // 10 per second saves up at most a day: 1 + 24 * 3600 * 10 calls.
+    [{ burst: 864_002 }, /more than 24 hours/],
   ])('refuses %o', (bad, message) => {
     expect(() => validateRateLimitCall({ ...ok, ...bad })).toThrow(message);
   });
@@ -232,6 +233,35 @@ describe('burst', () => {
     expect(
       rateLimitToleranceUs({ ...huge, burst: Number.MAX_SAFE_INTEGER })
     ).toBe(1_000);
+  });
+
+  it('may be larger than the limit, saving up to a day of the rate', () => {
+    expect(() => validateRateLimitCall({ ...call, burst: 11 })).not.toThrow();
+    expect(() =>
+      validateRateLimitCall({ ...call, burst: 1 + 24 * 60 * 10 })
+    ).not.toThrow();
+    // 1 per second with a burst of 60: a minute saved up.
+    const perSecond = { key: 'k', limit: 1, periodMs: 1_000, burst: 60 };
+    expect(rateLimitToleranceUs(perSecond)).toBe(59_000_000);
+    expect(rateLimitToleranceUs({ ...call, burst: 25 })).toBe(24 * T);
+  });
+
+  it('admits a burst larger than the limit at once, then one per interval', () => {
+    const slots = slotsFor(Array(27).fill(NOW), 25);
+    expect(slots.slice(0, 25)).toEqual(Array(25).fill(NOW));
+    expect(slots[25]).toBe(NOW + T);
+    expect(slots[26]).toBe(NOW + 2 * T);
+  });
+
+  it('keeps a burst above the limit at its exact tolerance when T rounds up', () => {
+    // 3 per microsecond: T rounds 1/3 µs up to 1 µs. A burst of 3 million
+    // saves up about one second, not three.
+    const fast = { key: 'k', limit: 3_000_000, periodMs: 1_000 };
+    expect(rateLimitIntervalUs(fast)).toBe(1);
+    expect(rateLimitToleranceUs({ ...fast, burst: 3_000_000 })).toBe(1_000_000);
+    expect(rateLimitToleranceUs({ ...fast, burst: 9_000_000 })).toBe(
+      Math.ceil((8_999_999 * 1_000_000) / 3_000_000)
+    );
   });
 
   it('admits a full burst at once on an idle key, then one per interval', () => {

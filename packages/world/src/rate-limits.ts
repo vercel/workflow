@@ -16,11 +16,12 @@
  *
  * - **No burst** (the default, `τ = 0`): slots are exactly `T` apart and no
  *   period holds more than `limit` of them.
- * - **Burst** (`burst` on the call, `τ = (burst - 1) * T`, never more than the
- *   period): the key is a token bucket holding `burst` calls. An idle key
- *   admits `burst` at once, then refills one per `T`. Any window of length `W`
- *   holds at most `floor((W + τ) / T) + 1` slots, so a full burst can see up
- *   to `2 * limit - 1` calls in one rolling period.
+ * - **Burst** (`burst` on the call, `τ = (burst - 1) * T`, see
+ *   {@link rateLimitToleranceUs}): the key is a token bucket holding `burst`
+ *   calls, which may be more than `limit` (it saves up at most 24 hours of
+ *   the rate). An idle key admits `burst` at once, then refills one per `T`.
+ *   Any window of length `W` holds at most `floor((W + τ) / T) + 1` slots, so
+ *   one rolling period can see up to `limit + burst - 1` calls.
  *
  * Each call uses its own `T` and `τ`, so calls on one key that ask for
  * different rates or bursts blend: each uses up its own share of the key's
@@ -181,8 +182,8 @@ export interface RateLimitCall {
   limit: number;
   periodMs: number;
   /**
-   * How many calls may go at once on an idle key, from 1 to `limit`. Absent
-   * (or 1) for no burst.
+   * How many calls may go at once on an idle key, at least 1, saving up at
+   * most 24 hours of the rate. Absent (or 1) for no burst.
    */
   burst?: number;
 }
@@ -218,12 +219,20 @@ export function validateRateLimitCall(call: RateLimitCall): void {
   }
   if (
     call.burst !== undefined &&
-    (!Number.isSafeInteger(call.burst) ||
-      call.burst < 1 ||
-      call.burst > call.limit)
+    (!Number.isSafeInteger(call.burst) || call.burst < 1)
   ) {
     throw new RangeError(
-      `rate limit burst must be an integer from 1 to the limit (${call.limit}), got ${call.burst}`
+      `rate limit burst must be a whole number of at least 1, got ${call.burst}`
+    );
+  }
+  // A burst saves up `(burst - 1) * period / limit` of the key's time: at
+  // most the longest period, so a bucket holds at most a day of the rate.
+  if (
+    call.burst !== undefined &&
+    (call.burst - 1) * call.periodMs > MAX_RATE_PERIOD_MS * call.limit
+  ) {
+    throw new RangeError(
+      `rate limit burst of ${call.burst} saves up more than 24 hours of a limit of ${call.limit} per ${call.periodMs}ms`
     );
   }
 }
@@ -238,15 +247,20 @@ export function rateLimitIntervalUs(call: RateLimitCall): number {
 
 /**
  * A call's burst tolerance `(burst - 1) * T` in microseconds: what lets
- * `burst` calls go at once. 0 for no burst. Never more than the period: a full
- * window is less than one anyway, unless `T` was rounded up to a whole
- * microsecond, which would otherwise stretch it without bound.
+ * `burst` calls go at once. 0 for no burst.
+ *
+ * `T` is rounded up to a whole microsecond, which could stretch it: a limit
+ * of more than one call per microsecond would otherwise give a tolerance of
+ * centuries. So it is never more than the exact `(burst - 1) * period /
+ * limit`, rounded up, or the period, whichever is longer. Up to a burst of
+ * `limit` that is the period, as a full window is less than one anyway.
  */
 export function rateLimitToleranceUs(call: RateLimitCall): number {
   const burst = call.burst ?? 1;
+  const exactUs = Math.ceil(((burst - 1) * call.periodMs * 1000) / call.limit);
   return Math.min(
     (burst - 1) * rateLimitIntervalUs(call),
-    call.periodMs * 1000
+    Math.max(call.periodMs * 1000, exactUs)
   );
 }
 

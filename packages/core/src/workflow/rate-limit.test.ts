@@ -109,7 +109,7 @@ describe('createRateLimit', () => {
     [{ ...CALL, burst: true }, /burst must be a whole number/],
     [{ ...CALL, burst: 0 }, /burst must be a whole number/],
     [{ ...CALL, burst: 2.5 }, /burst must be a whole number/],
-    [{ ...CALL, burst: 61 }, /burst must be an integer from 1 to the limit/],
+    [{ ...CALL, burst: 86_402 }, /more than 24 hours/],
     [{ ...CALL, key: 'k'.repeat(513) }, /513 bytes/],
     [{ ...CALL, key: '$sdk.internal' }, /reserved prefix/],
     [
@@ -169,7 +169,7 @@ describe('createRateLimit', () => {
   });
 
   it('sends the burst it asks for, and nothing for no burst', async () => {
-    for (const burst of [60, 20, 2]) {
+    for (const burst of [60, 20, 2, 600]) {
       const bursting = rateLimitFor([]);
       void bursting.rateLimit({ ...CALL, burst });
       await bursting.errorReceived.promise;

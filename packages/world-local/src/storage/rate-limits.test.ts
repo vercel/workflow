@@ -225,11 +225,25 @@ describe('rate limits on the Local World', () => {
     ).toBeGreaterThanOrEqual(20_000 - 1);
   });
 
-  it('refuses a burst outside 1 to the limit', async () => {
+  it('admits a burst larger than the limit, and refuses one past a day', async () => {
     const runId = await createRun();
+    // 1 per minute, a burst of 5: five at once, then one per minute.
+    const first = [];
+    for (let i = 0; i < 6; i++)
+      first.push(
+        committed(await inBand(runId, rateCreated({ key: 'saved', burst: 5 })))
+      );
+    expect(first.slice(0, 5).map((event) => event.eventType)).toEqual(
+      Array(5).fill('rate_acquired')
+    );
+    expect(first[5]!.eventType).toBe('rate_created');
+    await expect(inBand(runId, rateCreated({ burst: 0 }))).rejects.toThrow(
+      /burst must be a whole number/
+    );
+    // 1 per minute saves up at most a day: a burst of 1 + 24 * 60.
     await expect(
-      inBand(runId, rateCreated({ limit: 3, burst: 4 }))
-    ).rejects.toThrow(/burst must be an integer from 1 to the limit/);
+      inBand(runId, rateCreated({ burst: 1 + 24 * 60 + 1 }))
+    ).rejects.toThrow(/more than 24 hours/);
   });
 
   it('keeps the burst when it reserves a late wake again', async () => {
