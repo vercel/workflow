@@ -14,9 +14,10 @@ if (process.platform === 'win32') {
   test.skip('skipped on Windows since it relies on a docker container', () => {});
 } else {
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  // The shared suite at spec 8, the default, whatever the environment opts
-  // in to; `spec9.test.ts` runs it at spec 9. The servers the suite starts
-  // read the version when they create their World.
+  // The shared suite pinned to spec 8 for backwards compatibility, whatever
+  // the environment asks for; `spec9.test.ts` runs it at spec 9, the default.
+  // The servers the suite starts read the version when they create their
+  // World.
   const previousSpecVersion = process.env.WORKFLOW_SPEC_VERSION;
 
   beforeAll(async () => {

@@ -8,10 +8,10 @@ import {
 } from '@workflow/world-testing/dist/src/util.mjs';
 import { afterAll, beforeAll, expect, test, vi } from 'vitest';
 
-// The shared suite over world-postgres with spec 9 opted in, which the
-// runtime drives with its single orchestrator: the per-run named queue,
+// The shared suite over world-postgres pinned to spec 9, the default, which
+// the runtime drives with its single orchestrator: the per-run named queue,
 // coalesced re-runs and the LISTEN/NOTIFY live feed. `spec.test.ts` runs it
-// at spec 8, the default.
+// at spec 8 for backwards compatibility.
 if (process.platform === 'win32') {
   test.skip('skipped on Windows since it relies on a docker container', () => {});
 } else {
