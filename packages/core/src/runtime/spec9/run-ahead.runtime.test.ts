@@ -1165,12 +1165,28 @@ describe.each([
     'runs ahead past an in-band-only abort from workflow code, and a replay decides the same',
     async () => {
       const source = withInBandOnlyAbort(true);
+      // Steps before the abort add 1; from the abort on, each adds 101.
+      const half = Math.floor(STEPS / 2);
+      const expected = half + (STEPS - half) * 101;
       const { world } = await run(source, [STEPS]);
       await world.runUntilIdle();
-      const live = await runResult(world);
+      expect(await runResult(world)).toBe(expected);
       expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      expect(eventsOf(world, 'hook_received')).toHaveLength(1);
+
+      // Run-ahead off leaves the same log: the abort's hook_received at the
+      // same position among the step events.
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+      unconfirmedAtStart = [];
+      bodiesStarted = 0;
+      const off = await run(source, [STEPS]);
+      await off.world.runUntilIdle();
+      expect(await runResult(off.world)).toBe(expected);
+      expect(shape(world.events)).toEqual(shape(off.world.events));
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(RUN_AHEAD_DEPTH));
+
       const cold = await coldReplay(world, source);
-      expect(cold.result).toEqual(live);
+      expect(cold.result).toBe(expected);
     }
   );
 

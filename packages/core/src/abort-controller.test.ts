@@ -335,6 +335,22 @@ describe('AbortController in workflow VM', () => {
         )
       ).resolves.toBeDefined();
     });
+
+    it('refuses an object that carries its signal, which would revive as a controller', async () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const controller = new AbortController({ inBandOnly: true });
+      const error = await dehydrateStepArguments(
+        [{ signal: controller.signal, url: 'https://example.test' }],
+        'wrun_test',
+        undefined,
+        ctx.globalThis
+      ).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).cause).toMatchObject({
+        message: expect.stringMatching(/inBandOnly/),
+      });
+    });
   });
 
   describe('AbortSignal static methods', () => {
