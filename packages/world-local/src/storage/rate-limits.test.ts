@@ -414,6 +414,11 @@ describe('rate limits on the Local World', () => {
     );
   });
   it('refuses a second rate_created for a call, reserving nothing', async () => {
+    // The clock held still: an immediate call's acquireAt is never after its
+    // event's createdAt, read a moment before the reservation's now, so on a
+    // slow machine a moving clock puts the next slot a few ms past one
+    // interval.
+    vi.useFakeTimers({ toFake: ['Date'] });
     const runId = await createRun();
     const first = committed(await inBand(runId, rateCreated({}, 'rate_DUP')));
     expect(first.eventType).toBe('rate_acquired');
@@ -429,7 +434,7 @@ describe('rate limits on the Local World', () => {
       throw new Error('not waiting');
     expect(
       next.eventData.acquireAt!.getTime() - first.eventData.acquireAt!.getTime()
-    ).toBeLessThanOrEqual(60_000 + 1);
+    ).toBe(60_000);
   });
 
   it('refuses a late rate_acquired on a cancelled run, reserving nothing', async () => {
