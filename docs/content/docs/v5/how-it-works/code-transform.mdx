@@ -333,6 +333,9 @@ The compiler generates stable IDs for workflows and steps based on file paths an
 - `workflow//workflows/user-signup.js//handleUserSignup`
 - `step//workflows/user-signup.js//createUser`
 - `step//workflows/payments/checkout.ts//processPayment`
+- `step//workflows/receipt.ts//receiptWorkflow/sendReceipt` (a step defined inside `receiptWorkflow`)
+
+A nested step's function name is prefixed with the enclosing function's name. A step bound to a variable (`const sendReceipt = async () => { "use step"; ... }`) takes the variable's name.
 
 **Key properties:**
 

@@ -55,6 +55,11 @@ Two values are accepted today:
 **Deleted:** the run's input, output and error; every step's input, output and
 error; the payloads on the event log; and stream contents.
 
+A step can still be running when the run ends, such as the loser of a
+`Promise.race`. On the [Local](/worlds/local) and [Postgres](/worlds/postgres)
+Worlds, what that step writes once it settles is deleted too, and writes to the
+run's streams are dropped, so the run stays free of user data.
+
 **Kept:** the run, step and event records themselves — their ids, timestamps,
 status, step names, and any [attributes](/docs/observability/attributes) you
 set. They are kept for the World's default period so the run stays visible in

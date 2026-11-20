@@ -86,6 +86,22 @@ By default, steps have a maximum of 3 retry attempts before they fail and propag
 **Important:** Due to serialization, parameters are passed by **value, not by reference**. If you pass an object or array to a step and mutate it, those changes will **not** be visible in the workflow context. Always return modified data from your step functions instead. See [Pass-by-Value Semantics](/docs/foundations/serialization#pass-by-value-semantics) for details and examples.
 </Callout>
 
+A step can also be defined inside a workflow function, or inside any other function, as a function declaration, an arrow function, or a function expression. The nested step receives copies of the variables it reads from the enclosing function, so they must be [serializable](/docs/foundations/serialization), and its name is prefixed with the enclosing function's name (`receiptWorkflow/sendReceipt`).
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript lineNumbers
+export async function receiptWorkflow(orderId: string) {
+  "use workflow";
+
+  const sendReceipt = async function () {
+    "use step"; // [!code highlight]
+    await email.send({ orderId }); // orderId is captured from the workflow
+  };
+
+  await sendReceipt();
+}
+```
+
 <Callout type="info">
 Step functions are primarily meant to be used inside a workflow.
 </Callout>
