@@ -11,7 +11,7 @@ import {
   formatLocalDataWrittenNote,
   type RunUsage,
   type RunUsageAggregates,
-  USAGE_COUNTING_DOCS_URL,
+  USAGE_DOCS_URL,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import type { ReactNode } from 'react';
@@ -23,7 +23,7 @@ import {
   RunUsagePage,
   RunUsagePageSkeleton,
   runUsagePath,
-  STORAGE_COUNTING_DOCS_URL,
+  STORAGE_DOCS_URL,
   USAGE_TABLES_LAYOUT,
 } from './run-usage';
 
@@ -175,12 +175,15 @@ describe('RunUsageHeaderStats', () => {
         onUsagePage
       />
     );
-    expect(screen.queryByRole('link')).toBeNull();
+    // The figures aren't links to the page they're on; only the storage
+    // help link (to the docs) is.
+    expect(
+      screen.queryAllByRole('link').map((a) => a.getAttribute('href'))
+    ).toEqual([STORAGE_DOCS_URL]);
     expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
       '41.4 KB'
     );
   });
-
   it('labels a local run’s figure “Storage (local)”', () => {
     render(
       <RunUsageHeaderStats
@@ -228,7 +231,7 @@ describe('RunUsageHeaderStats', () => {
     expect(dataWrittenLabel(undefined, false)).toBe('Storage');
   });
 
-  it('says what storage counts in a tooltip reachable by keyboard', async () => {
+  it('says what storage counts in a tooltip, and links the docs section', async () => {
     // Radix measures the tooltip; jsdom has no ResizeObserver.
     vi.stubGlobal(
       'ResizeObserver',
@@ -246,17 +249,19 @@ describe('RunUsageHeaderStats', () => {
         isLocalBackend
       />
     );
-    const help = screen.getByRole('button', {
-      name: 'About Storage (local)',
+    const help = screen.getByRole('link', {
+      name: 'How Storage (local) is counted (opens in a new tab)',
     });
+    // The Usage page's storage section, in a new tab.
+    expect(help.getAttribute('href')).toBe(STORAGE_DOCS_URL);
+    expect(STORAGE_DOCS_URL).toBe(
+      'https://workflow-sdk.dev/docs/observability/usage#storage'
+    );
+    expect(help.getAttribute('target')).toBe('_blank');
     fireEvent.focus(help);
     const tooltip = (await screen.findByRole('tooltip')).textContent ?? '';
     // The shared note, the same sentence the other surfaces read.
     expect(tooltip).toBe(formatLocalDataWrittenNote(bigRun()));
-    // What it counts, and what it leaves out.
-    expect(tooltip).toContain('payloads as the SDK sent them');
-    expect(tooltip).toContain('streams');
-    expect(tooltip).toContain('Data Written');
     expect(tooltip).toContain('QuickJS VM snapshots');
     expect(tooltip).toContain("dynamic workflow's code");
   });
@@ -578,27 +583,26 @@ describe('the storage table', () => {
 });
 
 describe('the footer', () => {
-  it('says local runs are not billed, links how events and storage count, and no pricing', () => {
+  it('says local runs are not billed, links how usage is counted, and no pricing', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-footer').textContent).toBe(
       "Local runs aren't billed. Counted from this run's log in your local data directory."
     );
-    expect(
-      screen
-        .getByRole('link', { name: 'How events are counted' })
-        .getAttribute('href')
-    ).toBe(USAGE_COUNTING_DOCS_URL);
-    expect(
-      screen
-        .getByRole('link', { name: 'How storage is counted' })
-        .getAttribute('href')
-    ).toBe(STORAGE_COUNTING_DOCS_URL);
-    expect(STORAGE_COUNTING_DOCS_URL).toMatch(
-      /\/docs\/observability#how-storage-is-counted$/
+    const link = screen.getByRole('link', {
+      name: 'How usage is counted (opens in a new tab)',
+    });
+    expect(link.getAttribute('href')).toBe(USAGE_DOCS_URL);
+    expect(USAGE_DOCS_URL).toBe(
+      'https://workflow-sdk.dev/docs/observability/usage'
     );
-    expect(screen.queryByRole('link', { name: 'Workflow pricing' })).toBeNull();
+    expect(link.getAttribute('target')).toBe('_blank');
+    // The new tab is marked with the Docs button's icon, hidden from readers.
+    expect(link.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    // One docs link, and no pricing on a local run.
+    const footer = screen.getByTestId('run-usage-footer-line');
+    expect(footer.querySelectorAll('a')).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: /Workflow pricing/ })).toBeNull();
   });
-
   it('links pricing on the Vercel backend, and on a billed run', () => {
     const { unmount } = render(
       <RunUsagePage
@@ -610,7 +614,7 @@ describe('the footer', () => {
     );
     expect(
       screen
-        .getByRole('link', { name: 'Workflow pricing' })
+        .getByRole('link', { name: 'Workflow pricing (opens in a new tab)' })
         .getAttribute('href')
     ).toBe(WORKFLOW_PRICING_DOCS_URL);
     unmount();
@@ -621,10 +625,13 @@ describe('the footer', () => {
         error={null}
       />
     );
-    expect(screen.getByRole('link', { name: 'Workflow pricing' })).toBeTruthy();
+    expect(
+      screen.getByRole('link', {
+        name: 'Workflow pricing (opens in a new tab)',
+      })
+    ).toBeTruthy();
   });
-
-  it('puts the links inline, right after its sentence', () => {
+  it('puts the link inline, right after its sentence, with no arrow', () => {
     render(
       <RunUsagePage
         runId="wrun_1"
@@ -636,8 +643,9 @@ describe('the footer', () => {
     const line = screen.getByTestId('run-usage-footer-line');
     expect(line.tagName).toBe('P');
     expect(line.textContent).toBe(
-      "Local runs aren't billed. Counted from this run's log in your local data directory. How events are counted → How storage is counted → Workflow pricing →"
+      "Local runs aren't billed. Counted from this run's log in your local data directory. How usage is counted (opens in a new tab) Workflow pricing (opens in a new tab)"
     );
+    expect(line.textContent).not.toContain('→');
     const footer = line.closest('footer');
     expect(footer?.className ?? '').not.toMatch(
       /justify-between|text-right|\bborder/

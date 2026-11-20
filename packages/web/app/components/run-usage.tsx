@@ -18,7 +18,7 @@ import {
   RUN_USAGE_RUN_EVENT_TYPES,
   type RunUsage,
   type RunUsageEntity,
-  USAGE_COUNTING_DOCS_URL,
+  USAGE_DOCS_URL,
   USAGE_ROW_TYPE_LABELS,
   type UsageRow,
   type UsageRowGroup,
@@ -26,14 +26,68 @@ import {
   usageRows,
   WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
-import { AlertCircle, ChevronRight, HelpCircle, RotateCw } from 'lucide-react';
-import { Fragment, type ReactNode, useId, useState } from 'react';
+import {
+  AlertCircle,
+  ArrowUpRight,
+  ChevronRight,
+  HelpCircle,
+  RotateCw,
+} from 'lucide-react';
+import {
+  type ComponentProps,
+  Fragment,
+  type ReactNode,
+  useId,
+  useState,
+} from 'react';
 import { Link } from 'react-router';
 import { Skeleton } from './ui/skeleton';
 
-/** The docs section on what a run's storage counts. */
-export const STORAGE_COUNTING_DOCS_URL =
-  'https://workflow-sdk.dev/docs/observability#how-storage-is-counted';
+/** The Usage docs page's section on what a run's storage counts. */
+export const STORAGE_DOCS_URL = `${USAGE_DOCS_URL}#storage`;
+
+/**
+ * A link that opens in a new tab: the icon the header's Docs button uses,
+ * and the new tab said out loud, since nothing else on the link says it.
+ */
+function NewTabLink({
+  href,
+  className,
+  children,
+  label,
+  testId,
+  ...rest
+}: Omit<ComponentProps<'a'>, 'target' | 'rel'> & {
+  href: string;
+  children: ReactNode;
+  /** The accessible name, when the link has no text of its own. */
+  label?: string;
+  testId?: string;
+}) {
+  return (
+    <a
+      // A wrapper's handlers and ref (a tooltip trigger) reach the link.
+      {...rest}
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+      aria-label={label ? `${label} (opens in a new tab)` : undefined}
+      data-testid={testId}
+    >
+      {children}
+      {!label && (
+        <>
+          <ArrowUpRight
+            className="ml-0.5 inline h-3.5 w-3.5 align-[-2px]"
+            aria-hidden="true"
+          />
+          <span className="sr-only"> (opens in a new tab)</span>
+        </>
+      )}
+    </a>
+  );
+}
 
 /** The run's Usage page. */
 export function runUsagePath(runId: string): string {
@@ -267,14 +321,14 @@ export function RunUsageHeaderStats({
           {localNote && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  className="-m-1.5 inline-flex cursor-help rounded-sm p-1.5 text-muted-foreground hover:text-gray-1000 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
-                  aria-label={`About ${label}`}
-                  data-testid="run-usage-data-help"
+                <NewTabLink
+                  href={STORAGE_DOCS_URL}
+                  className="-m-1.5 inline-flex rounded-sm p-1.5 text-muted-foreground hover:text-gray-1000 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
+                  label={`How ${label} is counted`}
+                  testId="run-usage-data-help"
                 >
-                  <HelpCircle className="w-3 h-3" />
-                </button>
+                  <HelpCircle className="w-3 h-3" aria-hidden="true" />
+                </NewTabLink>
               </TooltipTrigger>
               <TooltipContent className="max-w-xs">
                 <p>{localNote}</p>
@@ -733,33 +787,18 @@ function UsageFooter({
             formatUsageFooter(usage)
           )}
         </span>{' '}
-        <a
-          href={USAGE_COUNTING_DOCS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={FOOTER_LINK}
-        >
-          How events are counted<span aria-hidden="true"> →</span>
-        </a>{' '}
-        <a
-          href={STORAGE_COUNTING_DOCS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={FOOTER_LINK}
-        >
-          How storage is counted<span aria-hidden="true"> →</span>
-        </a>
+        <NewTabLink href={USAGE_DOCS_URL} className={FOOTER_LINK}>
+          How usage is counted
+        </NewTabLink>
         {showPricing && (
           <>
             {' '}
-            <a
+            <NewTabLink
               href={WORKFLOW_PRICING_DOCS_URL}
-              target="_blank"
-              rel="noopener noreferrer"
               className={FOOTER_LINK}
             >
-              Workflow pricing<span aria-hidden="true"> →</span>
-            </a>
+              Workflow pricing
+            </NewTabLink>
           </>
         )}
       </p>
