@@ -14,7 +14,7 @@ related:
 Rate limits keep the calls your workflows make to an upstream API, such as a model provider or a payments API, under the limit that API enforces. Every run of your project shares the same limit, so a thousand runs started at once still call the upstream at the rate you set instead of all at once.
 
 <Callout type="warn">
-`experimental_rateLimit()` is experimental. Runs must be created at spec version 10 ([`WORKFLOW_SPEC_VERSION=10`](/docs/configuration/runtime-tuning#workflow_spec_version)) on the Vercel or Local World, with the default `node` workflow VM.
+`experimental_rateLimit()` is experimental and is available in `workflow` 5.8.0 and later, on the Vercel and Local Worlds.
 </Callout>
 
 ## Limit calls to an upstream API
@@ -48,11 +48,15 @@ With `limit: 60` and `period: "1m"`, calls on the `summarize-api` key go ahead a
 
 ## How a rate limit decides when a call goes ahead
 
-A rate limit spaces calls `period / limit` apart. Each key keeps its next free slot, and every call on the key takes that slot and moves it on by one interval:
+A rate limit uses the [generic cell rate algorithm (GCRA)](https://en.wikipedia.org/wiki/Generic_cell_rate_algorithm), which spaces calls `period / limit` apart. Each key keeps one number, its next free slot, and every call on the key takes that slot and moves it on by one interval:
 
 - **A call whose slot is now** resolves at once, and the workflow continues.
 - **A call whose slot is later** suspends the run until its slot, the same way [`sleep()`](/docs/api-reference/workflow/sleep) does, so a long wait uses no compute.
 - **Calls from different runs** take slots in the order the World receives them, so no run can skip ahead of another.
+
+Play the scenarios below, or change the options, to see runs ask a key for a slot, wait for it, and go ahead:
+
+<RateLimitExplainer />
 
 Calls in parallel each take their own slot. With `limit: 10, period: "1s"`, the first call in this `Promise.all()` resolves at once and the rest follow 100 ms apart:
 
@@ -129,7 +133,7 @@ The default `burst` of 1 is no burst. A larger `burst` keeps the long-run rate a
 
 Use the same `limit`, `period`, and `burst` everywhere you use a key. A key records only its next free slot, not a limit, so each call applies its own settings:
 
-- **A limit changed in a new deployment** applies after the slots that calls at the old limit already reserved.
+- **A limit changed in a new deployment** applies only to runs on the new deployment, and after the slots that calls at the old limit already reserved. Runs still on the old deployment keep calling with the old settings, which they were deployed with, so the key sees both until those runs finish.
 - **A call with a longer interval** holds up every call after it. A `limit: 1, period: "24h"` call on a shared key makes every later call on that key wait a day.
 - **A call with a larger `burst`** can go ahead of calls already waiting with a smaller one.
 

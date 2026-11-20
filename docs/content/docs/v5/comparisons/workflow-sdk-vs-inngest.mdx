@@ -29,6 +29,7 @@ related:
 | **Languages** | TypeScript / JavaScript (Python beta) | TypeScript; Python and Go (production, pre-1.0) |
 | **Versioning** | Runs pinned to immutable deployment | Tracked by step-ID hashes: hot-edit functions, but editing a step's logic under the **same ID** reuses the old memoized result for in-flight runs; rename the ID or route a new function by timestamp for rewrites |
 | **Duplicate starts** | `start(workflow, args, { experimental_hook: { token } })` admits one run per token, with an optional retention after the run ends | `idempotency` key (24-hour window) or `singleton` |
+| **Rate limiting** | [`experimental_rateLimit()`](/docs/foundations/rate-limits) paces any call inside a run, on a key every run shares: a run waits for its slot, or gives up after `maxWait` | `throttle` (queues run starts) and `rateLimit` (drops run starts) on the function, applied before a run starts |
 | **Searching runs** | String [attributes](/docs/observability/attributes) set with `setAttributes()` or at `start()`, filterable by `key=value` | Search by event payload in the Inngest dashboard |
 | **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Native AI SDK via `step.ai.wrap`; **AgentKit** multi-agent framework and durable **Realtime** (`step.realtime.publish`) + `useAgent` hook, both Developer Preview |
 | **Security** | Zero-config per-run end-to-end (E2E) encryption by default; platform security is per World (the Vercel World inherits Vercel's security posture) | Runs on your infrastructure; signed requests; first-party E2E encryption middleware (TypeScript and Python); SOC 2 Type II, HIPAA add-on |
@@ -253,7 +254,7 @@ Runs started on Inngest keep running on Inngest. Move new work to the Workflow S
 
 ### Flow control, schedules and failure handling
 
-Inngest configures these on the function, and its event bus applies them before a run starts. The Workflow SDK has no event bus between the sender and the run, so you build each one where it belongs. A [start token](/docs/foundations/idempotency#run-idempotency) on `start()` keeps duplicate or excess work from ever becoming a run. A hook, a `sleep()` or a step inside the run handles the rest:
+Inngest configures these on the function, and its event bus applies them before a run starts. The Workflow SDK has no event bus between the sender and the run, so you build each one where it belongs. A [start token](/docs/foundations/idempotency#run-idempotency) on `start()` keeps duplicate or excess work from ever becoming a run, and [`experimental_rateLimit()`](/docs/foundations/rate-limits) paces the work inside runs. A hook, a `sleep()` or a step handles the rest:
 
 | Inngest | With the Workflow SDK |
 | --- | --- |
@@ -262,11 +263,29 @@ Inngest configures these on the function, and its event bus applies them before 
 | `batchEvents: { maxSize, timeout, key }` | The same shape as debounce: store each event where a step can read it, such as a table keyed by the batch key, start one run per window, and read the whole batch in a step once the window ends. |
 | `concurrency: { key, limit: 1 }` where overlapping runs can be dropped | The `singleton: { mode: 'skip' }` row in [Concept mapping](#concept-mapping): a start token with no retention. |
 | `concurrency` where runs wait their turn | Native per-key locks are in development (see the [concurrency controls discussion](https://github.com/vercel/workflow/discussions/301)). Until they ship, keep the lock you use today inside the steps that need it, and make those steps safe to repeat. |
-| `throttle` | For a downstream API's limit, throw `RetryableError` with the provider's `retryAfter` from the step. See [Rate Limiting & Retries](/cookbook/common-patterns/rate-limiting). Native rate limiting inside runs is in development alongside locks. |
+| `throttle: { key, limit, period, burst }` | [`experimental_rateLimit()`](/docs/foundations/rate-limits) at the top of the workflow, or in front of the step the limit protects. Each run waits for its slot, as a throttled run waits in Inngest's queue. See [Throttle](#throttle). |
 | `priority` | No equivalent. Runs start in the order `start()` is called. |
 | Cron triggers | [Vercel Schedules](https://vercel.com/docs/schedules/workflows). A schedule publishes to a queue topic, and its consumer calls `start()` with the occurrence's `executionId` in the start token, retained for longer than redeliveries can arrive (for example `experimental_minRetention: '7 days'`), so a redelivered occurrence never starts a second run, even after the first has finished. Schedules take an IANA `timezone` and also run in Preview branches and custom environments. |
 | Several functions triggered by one event | One `start()` per target workflow where the event is sent, each with its own start token, such as `` `${targetName}:${event.id}` ``, retained with `experimental_minRetention: '24h'`. A retried send within 24 hours then never starts a target twice, even one that has already finished, as with Inngest's 24-hour deduplication of events by `id`. Without the retention, the token is released when the target's run ends. |
 | `onFailure` | [`registerLifecycleHooks({ onRunFailed })`](/docs/api-reference/workflow-api/register-lifecycle-hooks) reports failed runs from one place, for example to Slack or Sentry. It is best-effort. Where a workflow must compensate, also wrap its body in `try`/`catch`, call a cleanup step in `catch`, then rethrow. |
+
+#### Throttle
+
+Inngest's `throttle` holds runs over the limit in a queue and starts them as capacity frees up. Call [`experimental_rateLimit()`](/docs/foundations/rate-limits) before the work the limit protects for the same effect. Every run starts, and each one waits for its slot on the key, suspended like a `sleep()`:
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow";
+declare function pushToCrm(accountId: string): Promise<void>; // @setup
+
+// Inngest: throttle: { key: "event.data.accountId", limit: 10, period: "1m" }
+export async function syncAccount(accountId: string) {
+  "use workflow";
+  await experimental_rateLimit({ key: `crm:${accountId}`, limit: 10, period: "1m" }); // [!code highlight]
+  await pushToCrm(accountId);
+}
+```
+
+Unlike `throttle`, which limits run starts, `experimental_rateLimit()` can sit in front of any call in a run, so a workflow that calls an API in a loop stays under its limit on every call. Inngest's `burst: n` adds `n` starts on top of `limit`, while `experimental_rateLimit()`'s `burst` counts how many calls an idle key admits at once, so Inngest's `burst: n` is `burst: n + 1`. To give up on a call that would wait too long, as a start timeout does for a throttled run, set `maxWait`.
 
 #### Rate limit
 
@@ -294,7 +313,7 @@ export async function requestSync(accountId: string) {
 }
 ```
 
-To limit by fixed windows instead, put the window number in the token, as in `` `sync-account:${accountId}:${Math.floor(Date.now() / 60_000)}` ``. For `limit: n`, try `n` tokens per window (`:0` to `:n-1`) and skip when all of them are taken.
+To limit by fixed windows instead, put the window number in the token, as in `` `sync-account:${accountId}:${Math.floor(Date.now() / 60_000)}` ``. For `limit: n`, try `n` tokens per window (`:0` to `:n-1`) and skip when all of them are taken. To pace the excess runs instead of dropping them, see [Throttle](#throttle).
 
 #### Debounce
 
