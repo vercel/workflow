@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CreateEventSchema, EventSchema } from './events';
+import { CreateEventSchema, EventSchema, isRateEventType } from './events';
 
 describe('dynamic workflow code storage shape', () => {
   const inline = new Uint8Array([1, 2, 3]);
@@ -196,5 +196,86 @@ describe('sealed-log noop events', () => {
       eventData: { sealed: true },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('rate limit events', () => {
+  const base = {
+    runId: 'wrun_123',
+    correlationId: 'rate_01K11TFZ62YS0YYFDQ3E8B9YCV',
+    createdAt: '2026-11-19T22:29:30.000Z',
+    specVersion: 10,
+  };
+  const call = {
+    key: 'openai',
+    limit: 2,
+    periodMs: 1_000,
+    expiresAt: '2026-12-19T22:29:30.000Z',
+  };
+
+  it('reads a rate_created waiting for its slot', () => {
+    const parsed = EventSchema.parse({
+      ...base,
+      eventId: 'evnt_00000000000000000000000004',
+      eventType: 'rate_created',
+      eventData: {
+        ...call,
+        acquireAt: '2026-11-19T22:29:31.000Z',
+        creatorMessageId: 'msg_1',
+        lateWakes: 1,
+      },
+    });
+    expect(parsed.eventType).toBe('rate_created');
+    if (parsed.eventType !== 'rate_created') return;
+    expect(parsed.eventData.acquireAt).toEqual(
+      new Date('2026-11-19T22:29:31.000Z')
+    );
+    expect(parsed.eventData.expiresAt).toBeInstanceOf(Date);
+  });
+
+  it('reads a rate_acquired, after a wait or in place of the request', () => {
+    for (const eventData of [
+      { createdSlot: 4, acquireAt: '2026-11-19T22:29:31.000Z' },
+      { ...call, burst: 2, acquireAt: '2026-11-19T22:29:30.000Z' },
+    ]) {
+      const parsed = EventSchema.parse({
+        ...base,
+        eventId: 'evnt_00000000000000000000000005',
+        eventType: 'rate_acquired',
+        eventData,
+      });
+      expect(parsed.eventType).toBe('rate_acquired');
+    }
+  });
+
+  it('reads a rate_failed', () => {
+    const parsed = EventSchema.parse({
+      ...base,
+      eventId: 'evnt_00000000000000000000000006',
+      eventType: 'rate_failed',
+      eventData: {
+        ...call,
+        reason: 'max_wait',
+        acquireAt: '2026-11-19T22:30:00.000Z',
+      },
+    });
+    expect(parsed.eventType).toBe('rate_failed');
+  });
+
+  it('refuses a rate_failed with an unknown reason', () => {
+    const unknown = EventSchema.safeParse({
+      ...base,
+      eventId: 'evnt_00000000000000000000000006',
+      eventType: 'rate_failed',
+      eventData: { ...call, reason: 'later' },
+    });
+    expect(unknown.success).toBe(false);
+  });
+
+  it('classifies the rate event types', () => {
+    expect(isRateEventType('rate_created')).toBe(true);
+    expect(isRateEventType('rate_acquired')).toBe(true);
+    expect(isRateEventType('rate_failed')).toBe(true);
+    expect(isRateEventType('wait_created')).toBe(false);
   });
 });

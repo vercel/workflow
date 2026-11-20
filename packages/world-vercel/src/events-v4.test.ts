@@ -329,6 +329,83 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('reads the rate limit events of a spec 10 run', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    const call = {
+      key: 'openai',
+      limit: 2,
+      periodMs: 1_000,
+      expiresAt: '2026-12-19T22:29:30.000Z',
+    };
+    const event = (
+      slot: number,
+      eventType: string,
+      eventData: Record<string, unknown>
+    ) =>
+      encodeFrame(
+        {
+          eventId: `evnt_${String(slot).padStart(26, '0')}`,
+          runId: 'wrun_1',
+          eventType,
+          correlationId: 'rate_01K11TFZ62YS0YYFDQ3E8B9YCV',
+          specVersion: 10,
+          createdAt: '2026-11-19T22:29:30.000Z',
+          eventData,
+        },
+        new Uint8Array(0)
+      );
+    const frames = Buffer.concat([
+      event(3, 'rate_created', {
+        ...call,
+        acquireAt: '2026-11-19T22:29:31.000Z',
+      }),
+      event(4, 'rate_acquired', {
+        createdSlot: 3,
+        acquireAt: '2026-11-19T22:29:31.000Z',
+      }),
+      event(5, 'rate_failed', {
+        ...call,
+        reason: 'max_wait',
+        acquireAt: '2026-11-19T22:30:00.000Z',
+      }),
+      encodeFrame(
+        { _end: 1, next: 'cursor-2', hasMore: false },
+        new Uint8Array(0)
+      ),
+    ]);
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.events.map((e) => e.eventType)).toEqual([
+      'rate_created',
+      'rate_acquired',
+      'rate_failed',
+    ]);
+    expect(result.events[0]?.eventData).toMatchObject({
+      key: 'openai',
+      acquireAt: new Date('2026-11-19T22:29:31.000Z'),
+    });
+    agent.assertNoPendingInterceptors();
+  });
+
   it('accepts a lazy step_completed frame whose payload metadata is unavailable', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
