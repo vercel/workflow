@@ -59,9 +59,10 @@ import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
  *
  * Sleep promises are native, so whether anything still awaits a wait cannot be
  * told. A wait is instead classified by time: one whose `resumeAt` falls within
- * the invocation's inline window plus the clock-skew allowance
- * (`OPEN_WAIT_CLOCK_SKEW_MS`) can have its timer fire while this invocation is
- * still deciding, and counts as path-changing; one due later cannot. The
+ * the clock-skew allowance (`OPEN_WAIT_CLOCK_SKEW_MS`) of now, capped at the
+ * invocation's inline deadline, can come due before the writes in flight
+ * commit, and counts as path-changing; one due later is completed at a later
+ * pass, after those writes, like any wait. The
  * caller computes this from both the log and the suspension's own queue,
  * because either can hold a wait the other lacks.
  *

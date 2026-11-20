@@ -3979,7 +3979,10 @@ async function runDelivery(
       const schedulesInline =
         gateMayInline &&
         (gateRunnable.length > 0 || (gateSlots > 0 && gateNewSteps.length > 0));
-      const waitWindowEndMs = inlineDeadlineMs + getOpenWaitClockSkewMs();
+      // A wait counts as due only if it comes due before the writes in flight
+      // can commit: now plus the skew allowance, capped at the inline deadline.
+      const waitWindowEndMs =
+        Math.min(inlineDeadlineMs, Date.now()) + getOpenWaitClockSkewMs();
       const observation = observeOutOfBandWriters({
         items: suspension.items,
         observedHookIds: suspension.observedHookIds,

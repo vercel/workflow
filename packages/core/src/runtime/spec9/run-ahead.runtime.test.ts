@@ -1262,6 +1262,13 @@ describe.each([
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
   });
 
+  it('runs ahead with a wait due inside the inline window but past the skew allowance', async () => {
+    const { world, start } = await run(withSleep('90s'), [STEPS]);
+    await world.deliver(start);
+    expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);
+    expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+  });
+
   it('stops with no orphan writes when the fence refuses a speculative write, and the redelivery completes', async () => {
     // Refuses the write that carries the third outcome, however the writer
     // groups its writes into batches.
