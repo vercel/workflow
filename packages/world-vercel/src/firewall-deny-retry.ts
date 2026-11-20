@@ -91,5 +91,7 @@ export const fetchResponse = {
     status: response.status,
     mitigated: response.headers.get('x-vercel-mitigated'),
   }),
-  discard: (response: Response) => response.body?.cancel() ?? Promise.resolve(),
+  // Draining also works for Next.js's cloned GET responses: cancelling one
+  // tee branch waits for the other branch, which Next.js keeps cached.
+  discard: (response: Response) => response.text().catch(() => {}),
 };
