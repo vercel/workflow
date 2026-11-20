@@ -583,7 +583,7 @@ describe('the storage table', () => {
 });
 
 describe('the footer', () => {
-  it('says local runs are not billed, links how usage is counted, and no pricing', () => {
+  it('says local runs are not billed, and links how usage is counted', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
     expect(screen.getByTestId('run-usage-footer').textContent).toBe(
       "Local runs aren't billed. Counted from this run's log in your local data directory."
@@ -598,26 +598,13 @@ describe('the footer', () => {
     expect(link.getAttribute('target')).toBe('_blank');
     // The new tab is marked with the Docs button's icon, hidden from readers.
     expect(link.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
-    // One docs link, and no pricing on a local run.
+    // One link: the docs page.
     const footer = screen.getByTestId('run-usage-footer-line');
     expect(footer.querySelectorAll('a')).toHaveLength(1);
-    expect(screen.queryByRole('link', { name: /Workflow pricing/ })).toBeNull();
   });
-  it('links pricing on the Vercel backend, and on a billed run', () => {
-    const { unmount } = render(
-      <RunUsagePage
-        runId="wrun_1"
-        usage={bigRun()}
-        error={null}
-        isVercelBackend
-      />
-    );
-    expect(
-      screen
-        .getByRole('link', { name: 'Workflow pricing (opens in a new tab)' })
-        .getAttribute('href')
-    ).toBe(WORKFLOW_PRICING_DOCS_URL);
-    unmount();
+  it('never links pricing, even on a billed run', () => {
+    // Usage is counted on the Local World only; the page never shows on
+    // Vercel, so there is no pricing link to show.
     render(
       <RunUsagePage
         runId="wrun_1"
@@ -625,25 +612,19 @@ describe('the footer', () => {
         error={null}
       />
     );
+    expect(screen.queryByRole('link', { name: /pricing/i })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(WORKFLOW_PRICING_DOCS_URL);
+    const footer = screen.getByTestId('run-usage-footer-line');
     expect(
-      screen.getByRole('link', {
-        name: 'Workflow pricing (opens in a new tab)',
-      })
-    ).toBeTruthy();
+      [...footer.querySelectorAll('a')].map((a) => a.getAttribute('href'))
+    ).toEqual([USAGE_DOCS_URL]);
   });
   it('puts the link inline, right after its sentence, with no arrow', () => {
-    render(
-      <RunUsagePage
-        runId="wrun_1"
-        usage={bigRun()}
-        error={null}
-        isVercelBackend
-      />
-    );
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
     const line = screen.getByTestId('run-usage-footer-line');
     expect(line.tagName).toBe('P');
     expect(line.textContent).toBe(
-      "Local runs aren't billed. Counted from this run's log in your local data directory. How usage is counted (opens in a new tab) Workflow pricing (opens in a new tab)"
+      "Local runs aren't billed. Counted from this run's log in your local data directory. How usage is counted (opens in a new tab)"
     );
     expect(line.textContent).not.toContain('→');
     const footer = line.closest('footer');

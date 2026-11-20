@@ -24,7 +24,6 @@ import {
   type UsageRowGroup,
   type UsageRowType,
   usageRows,
-  WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import {
   AlertCircle,
@@ -763,18 +762,11 @@ const FOOTER_LINK =
   'whitespace-nowrap rounded-sm py-1 text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]';
 
 /**
- * One line under the tables: whether the run is billed, then the links, in
- * the same paragraph so they read as part of it and wrap with it. Pricing
- * is linked only where runs are billed (the Vercel backend).
+ * One line under the tables: that the run isn't billed (usage is counted on
+ * the Local World only), then the docs link, in the same paragraph so it
+ * reads as part of it and wraps with it.
  */
-function UsageFooter({
-  usage,
-  isVercelBackend,
-}: {
-  usage: RunUsage;
-  isVercelBackend: boolean;
-}) {
-  const showPricing = usage.billed || isVercelBackend;
+function UsageFooter({ usage }: { usage: RunUsage }) {
   return (
     <footer className="text-copy-13 text-gray-900">
       <p data-testid="run-usage-footer-line">
@@ -790,17 +782,6 @@ function UsageFooter({
         <NewTabLink href={USAGE_DOCS_URL} className={FOOTER_LINK}>
           How usage is counted
         </NewTabLink>
-        {showPricing && (
-          <>
-            {' '}
-            <NewTabLink
-              href={WORKFLOW_PRICING_DOCS_URL}
-              className={FOOTER_LINK}
-            >
-              Workflow pricing
-            </NewTabLink>
-          </>
-        )}
       </p>
     </footer>
   );
@@ -816,7 +797,6 @@ export function RunUsagePage({
   error,
   onRetry,
   retrying = false,
-  isVercelBackend = false,
 }: {
   runId: string;
   /** `undefined` until the first read; `null` when the World has no usage. */
@@ -825,8 +805,6 @@ export function RunUsagePage({
   /** Reads the usage again: a finished run does not poll. */
   onRetry?: () => void;
   retrying?: boolean;
-  /** The backend is Vercel, where runs are billed: link the pricing. */
-  isVercelBackend?: boolean;
 }) {
   if (usage === null) {
     return (
@@ -894,7 +872,7 @@ export function RunUsagePage({
         }
         data={<DataWrittenTable usage={usage} />}
       />
-      <UsageFooter usage={usage} isVercelBackend={isVercelBackend} />
+      <UsageFooter usage={usage} />
     </div>
   );
 }

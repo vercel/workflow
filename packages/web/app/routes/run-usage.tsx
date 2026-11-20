@@ -10,8 +10,6 @@ import { DEFAULT_META_DESCRIPTION, DEFAULT_TITLE } from '~/lib/meta';
 export interface RunUsageOutletContext {
   runId: string;
   usage: RunUsageState;
-  /** Pricing is linked only on the Vercel backend. */
-  isVercelBackend: boolean;
 }
 
 export function meta({ params }: { params: { runId?: string } }) {
@@ -22,8 +20,7 @@ export function meta({ params }: { params: { runId?: string } }) {
 }
 
 export default function RunUsageRoute() {
-  const { runId, usage, isVercelBackend } =
-    useOutletContext<RunUsageOutletContext>();
+  const { runId, usage } = useOutletContext<RunUsageOutletContext>();
   return (
     <RunUsagePage
       runId={runId}
@@ -31,7 +28,6 @@ export default function RunUsageRoute() {
       error={usage.error}
       onRetry={usage.refresh}
       retrying={usage.loading}
-      isVercelBackend={isVercelBackend}
     />
   );
 }
