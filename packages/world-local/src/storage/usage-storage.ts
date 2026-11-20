@@ -69,7 +69,7 @@ import {
   PAYLOAD_BYTES_SQL,
   readPurgedUsage,
 } from './purged-usage.js';
-import { tagClause, tagParams } from './store.js';
+import { EVENTS_BY_CORRELATION, tagClause, tagParams } from './store.js';
 
 export interface UsageStorage {
   getRun(runId: string): Promise<RunUsage>;
@@ -145,10 +145,15 @@ const HOOK_GROUPS_SQL = `
 /**
  * A hook's token, from the event that created it (or the one that reported
  * its token taken). Looked up once per hook; a purge keeps the token.
+ *
+ * Through `events_by_correlation` (run, correlation id, position): without
+ * planner stats SQLite would walk the run's log by primary key up to the
+ * hook's first event, so a run with thousands of hooks took quadratic time
+ * to count. Exported for the test that pins the plan.
  */
-const HOOK_TOKEN_SQL = `
+export const HOOK_TOKEN_SQL = `
   SELECT json_extract(doc, '$.eventData.token') AS token
-  FROM events
+  FROM ${EVENTS_BY_CORRELATION}
   WHERE run_id = ? AND correlation_id = ?
     AND event_type IN ('hook_created', 'hook_conflict')
   ORDER BY seq LIMIT 1
@@ -160,6 +165,8 @@ const HOOK_ROW_TOKEN_SQL = 'SELECT token FROM hooks WHERE hook_id = ?';
 /**
  * A run's start Hook is created with the run (`run_created`'s `startHook`),
  * not by a `hook_created` event, and its row goes when the run finishes.
+ * A primary key scan, but it stops at the run's first row (`run_created`),
+ * and only a run's start Hook is looked up.
  */
 const START_HOOK_TOKEN_SQL = `
   SELECT json_extract(doc, '$.eventData.startHook.token') AS token
