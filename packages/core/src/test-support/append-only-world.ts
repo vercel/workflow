@@ -234,11 +234,12 @@ export class AppendOnlyWorld {
       subscribeDelayMs?: number;
       /**
        * Called after an `events.create` or `events.createBatch` committed and
-       * before it answers. A test awaits in it to hold the answer back while
-       * the commit is already visible (the live feed has pushed it), as on a
-       * remote World whose push outruns the answer.
+       * before it answers, with the events it committed. A test awaits in it
+       * to hold the answer back while the commit is already visible (the live
+       * feed has pushed it), as on a remote World whose push outruns the
+       * answer.
        */
-      afterCommit?: () => void | Promise<void>;
+      afterCommit?: (committed: readonly Event[]) => void | Promise<void>;
       /**
        * Hook tokens another run already holds: a `hook_created` for one of
        * them commits `hook_conflict` instead, as a World with a token index
@@ -972,7 +973,7 @@ export class AppendOnlyWorld {
         if (self.options.createDelayMs) {
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));
         }
-        await self.options.afterCommit?.();
+        await self.options.afterCommit?.([event]);
         return {
           event: self.responseEvent(event),
           run: self.run,
@@ -1034,7 +1035,11 @@ export class AppendOnlyWorld {
         if (self.options.createDelayMs) {
           await new Promise((r) => setTimeout(r, self.options.createDelayMs));
         }
-        await self.options.afterCommit?.();
+        await self.options.afterCommit?.(
+          committed.results.flatMap((item) =>
+            item.error === undefined ? [item.event] : []
+          )
+        );
         return committed;
       },
       async get(_runId: string, eventId: string) {

@@ -1,0 +1,73 @@
+name: Spec 9 Generated Workflows Fuzz
+
+# Nightly range of the generated-workflow property test of the spec 9
+# orchestrator (packages/core/src/runtime/spec9/generated-workflows.runtime.test.ts).
+# The unit suite runs a small fixed set of seeds on every PR. A seed fixes the
+# workflow and its delays, but the delays run on real timers, so which
+# interleaving a seed produces depends on the machine: the range is the real
+# check. Every night runs seeds no earlier night ran.
+on:
+  schedule:
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: "Seed range to run, e.g. 1-400 (default: tonight's ranges)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Generated workflows (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Pick the seed range
+        id: seeds
+        env:
+          REQUESTED: ${{ inputs.seeds }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if [ -n "$REQUESTED" ]; then
+            # A requested range runs once, on the first shard.
+            if [ "$SHARD" = "0" ]; then
+              echo "range=$REQUESTED" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          # 400 seeds a shard, 1,600 a night, numbered by the day.
+          day=$(( $(date -u +%s) / 86400 ))
+          from=$(( (day * 4 + SHARD) * 400 + 1 ))
+          echo "range=${from}-$(( from + 399 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Repo
+        if: steps.seeds.outputs.range != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup environment
+        if: steps.seeds.outputs.range != ''
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build core and its dependencies
+        if: steps.seeds.outputs.range != ''
+        run: pnpm turbo run build --filter=@workflow/core...
+
+      - name: Run generated workflows
+        if: steps.seeds.outputs.range != ''
+        working-directory: packages/core
+        run: pnpm exec vitest run --config=../../vitest.config.ts src/runtime/spec9/generated-workflows.runtime.test.ts
+        env:
+          WORKFLOW_FUZZ_SEEDS: ${{ steps.seeds.outputs.range }}

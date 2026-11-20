@@ -218,6 +218,13 @@ import {
   runAheadContextFor,
   runAheadHazard,
 } from './run-ahead.js';
+import {
+  committedBelowPrediction,
+  displacesSpeculation,
+  foldReadEvents,
+  settledOutcomeFold,
+  speculativeSlotFor,
+} from './speculative-placement.js';
 import { executeStep, mayRunBeforeItsStart } from './step-executor.js';
 import { handleStepMessage } from './step-handler.js';
 import {
@@ -877,23 +884,36 @@ async function runDelivery(
     return undefined;
   };
   /**
-   * Whether `event` is committed at a position the log holds
-   * another event's speculative copy at: that copy was
-   * placed at the wrong slot, so the log's order is no
-   * longer the run's, and folding `event` in would drop it
-   * (the log keeps one event per id).
+   * Marks a run-ahead repair due because an event committed
+   * where another event's speculative copy sits, found in an
+   * answer, the live feed or an incremental load (replaced
+   * by the orchestrator loop, which counts repairs by cause).
    */
-  const displacesSpeculation = (event: Event): boolean => {
-    const ahead = speculativeEventAt(event.eventId);
-    return (
-      ahead !== undefined &&
-      (ahead.eventType !== event.eventType ||
-        ahead.correlationId !== event.correlationId)
-    );
-  };
-  /** Marks a run-ahead repair due (set by the orchestrator loop). */
-  let noteDisplacedSpeculation = (): void => {
+  let noteDisplacedSpeculation = (
+    _cause: 'response' | 'feed' | 'read'
+  ): void => {
     runAheadRepair = true;
+  };
+  /**
+   * Folds events read outside this delivery's own answers
+   * (the live feed, an incremental load) into the log, by
+   * the one rule for a log that holds speculative events
+   * (`foldReadEvents`): a committed event is never dropped
+   * because a speculative copy holds its id. Returns whether
+   * every event was taken in. When one was displaced, a
+   * repair is due, and the caller must not move its read
+   * position past these events.
+   */
+  const foldReadIntoLog = (
+    events: readonly Event[],
+    cause: 'feed' | 'read'
+  ): boolean => {
+    assert(log, 'The event log is loaded to fold read events');
+    const { fold, displaced } = foldReadEvents(events, speculativeEventAt);
+    if (displaced) noteDisplacedSpeculation(cause);
+    for (const event of fold) prepareReplayEvent(event);
+    indexOf(log.events).merge(fold);
+    return !displaced;
   };
   // Set when an accepted write could not be folded into the
   // log without leaving a hole; the next pass reads first.
@@ -945,11 +965,15 @@ async function runDelivery(
     const report = (result.events ?? []).filter(
       (event) => event.eventId !== own.eventId
     );
-    if (displacesSpeculation(own) || report.some(displacesSpeculation)) {
+    if (
+      [own, ...report].some((event) =>
+        displacesSpeculation(event, speculativeEventAt)
+      )
+    ) {
       // A speculative event sits where this write, or
       // something below it, committed. The repair rebuilds
       // the log from the writes' responses, this one's too.
-      noteDisplacedSpeculation();
+      noteDisplacedSpeculation('response');
       repairWrites.push(result);
       return;
     }
@@ -1072,14 +1096,18 @@ async function runDelivery(
         runId,
       }
     );
-    for (const event of page.events) {
-      prepareReplayEvent(event);
-      // The writer predicts speculative slots from the
-      // positions it knows are taken.
-      writer.observeEvent(event);
+    // The writer predicts speculative slots from the
+    // positions it knows are taken.
+    for (const event of page.events) writer.observeEvent(event);
+    // A page can bring an event that committed at a slot a
+    // speculative event was placed at. It is not folded
+    // (the log would drop it), a repair is due, and the
+    // cursor stays put: once the repair has removed the
+    // speculative copy, the event is read again unless a
+    // write's report already brought it.
+    if (foldReadIntoLog(page.events, 'read')) {
+      log.cursor = page.cursor ?? log.cursor;
     }
-    indexOf(log.events).merge(page.events);
-    log.cursor = page.cursor ?? log.cursor;
     return log;
   };
 
@@ -2442,36 +2470,28 @@ async function runDelivery(
       progressWaiter = undefined;
       waiter?.();
     };
+    /** Folds the buffered live feed events into the log. */
+    const flushFeedEvents = (): void => {
+      if (pendingFeedEvents.length === 0) return;
+      const events = pendingFeedEvents.splice(0);
+      for (const event of events) {
+        // The feed echoes this delivery's own writes too,
+        // some before their answers: the writer counts
+        // each position once (`observeEvent`).
+        writer.observeEvent(event);
+        checkRunAheadHazard(event, 'live feed');
+      }
+      // A speculative position is the delivery's own until
+      // its write confirms or repairs it (`foldReadEvents`).
+      // With a repair due nothing is folded: the repair
+      // rebuilds the log from what committed.
+      if (!runAheadRepair) foldReadIntoLog(events, 'feed');
+    };
     /** Folds buffered feed events and inline writes into the log. */
     const flushPending = (): void => {
       if (!log) return;
       if (turboStartLanded) absorbWrite(turboStartLanded);
-      if (pendingFeedEvents.length > 0) {
-        const events = pendingFeedEvents.splice(0).filter((event) => {
-          const slot = eventIdToSlot(event.eventId);
-          // The feed echoes this delivery's own writes too,
-          // some before their answers: the writer counts
-          // each position once (`observeEvent`).
-          writer.observeEvent(event);
-          checkRunAheadHazard(event, 'live feed');
-          // A speculative position is the delivery's own
-          // until its write confirms or repairs it.
-          if (slot !== null && speculativeSlots.has(slot)) {
-            const own = speculationsBySlot.get(slot);
-            if (
-              own &&
-              (own.event.eventType !== event.eventType ||
-                own.event.correlationId !== event.correlationId)
-            ) {
-              markRunAheadRepair('feed');
-            }
-            return false;
-          }
-          return !runAheadRepair;
-        });
-        for (const event of events) prepareReplayEvent(event);
-        indexOf(log.events).merge(events);
-      }
+      flushFeedEvents();
       if (pendingAbsorbs.length > 0) {
         const results = pendingAbsorbs.splice(0);
         results.sort(
@@ -2681,7 +2701,13 @@ async function runDelivery(
        * Counted once per repair, by what found it first.
        */
       repairs: 0,
-      repairsByCause: { feed: 0, outcome: 0, creation: 0, response: 0 },
+      repairsByCause: {
+        feed: 0,
+        outcome: 0,
+        creation: 0,
+        response: 0,
+        read: 0,
+      },
       /** Wall time spent repairing, in milliseconds. */
       repairMs: 0,
       /** Repairs whose retained session survived them. */
@@ -2697,7 +2723,7 @@ async function runDelivery(
       contextsMax: 0,
     };
     const markRunAheadRepair = (
-      cause: 'feed' | 'outcome' | 'creation' | 'response'
+      cause: 'feed' | 'outcome' | 'creation' | 'response' | 'read'
     ): void => {
       if (runAheadRepair) return;
       runAheadRepair = true;
@@ -2705,7 +2731,7 @@ async function runDelivery(
       runAheadStats.repairsByCause[cause]++;
       recordRunAheadSpan();
     };
-    noteDisplacedSpeculation = () => markRunAheadRepair('response');
+    noteDisplacedSpeculation = markRunAheadRepair;
     /**
      * The slot the next speculative write is placed at: the
      * writer's prediction, and never at or below a position
@@ -2717,13 +2743,12 @@ async function runDelivery(
      * commit in and the order the workflow consumed them.
      * When the prediction is exact this changes nothing.
      */
-    const nextSpeculativeSlot = (): number => {
-      let floor = log ? (indexOf(log.events).maxSlot() ?? 0) : 0;
-      for (const slot of speculativeSlots) {
-        if (slot > floor) floor = slot;
-      }
-      return Math.max(writer.predictNextSlot(), floor + 1);
-    };
+    const nextSpeculativeSlot = (): number =>
+      speculativeSlotFor({
+        predicted: writer.predictNextSlot(),
+        heldMaxSlot: log ? indexOf(log.events).maxSlot() : undefined,
+        unconfirmedSlots: speculativeSlots,
+      });
     const outOfBandBoundaries = {
       inert: 0,
       observedHook: 0,
@@ -2761,6 +2786,7 @@ async function runDelivery(
           runAheadStats.repairsByCause.creation,
         'workflow.run_ahead.repairs.response':
           runAheadStats.repairsByCause.response,
+        'workflow.run_ahead.repairs.read': runAheadStats.repairsByCause.read,
         'workflow.run_ahead.repair_ms': runAheadStats.repairMs,
         'workflow.run_ahead.repairs_retained': runAheadStats.repairsRetained,
         'workflow.run_ahead.repair_reads': runAheadStats.repairReads,
@@ -3007,12 +3033,7 @@ async function runDelivery(
       // committed below its predicted slot was placed past
       // the position it took; the session replays from cold
       // over the rebuilt log instead.
-      for (const [predicted, committed] of repairAliases) {
-        if (committed < predicted) {
-          session = null;
-          break;
-        }
-      }
+      if (committedBelowPrediction(repairAliases)) session = null;
       if (session) {
         const sensitive = new Set(runAheadSensitiveHookIds);
         pendingRebase = {
@@ -3419,7 +3440,12 @@ async function runDelivery(
           // A write folded in just now can have committed where
           // a speculative event was placed.
           await repairRunAheadIfDue();
-          if (logBehind) await loadAfter();
+          if (logBehind) {
+            await loadAfter();
+            // So can the page just read: the repair runs
+            // before a pass over a log that left an event out.
+            await repairRunAheadIfDue();
+          }
           assert(log, 'The event log is loaded in the loop');
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
             recordTerminalRun(world, runId);
@@ -4788,24 +4814,24 @@ async function runDelivery(
         }
         assert(log, 'The event log is loaded after inline steps');
         const outcomeEvent = result.result.event;
-        const writtenAhead =
-          outcomeEvent !== undefined && everSpeculative.has(outcomeEvent);
+        const outcomeFold = settledOutcomeFold({
+          writtenAhead:
+            outcomeEvent !== undefined && everSpeculative.has(outcomeEvent),
+          unconfirmed:
+            outcomeEvent !== undefined && speculativeEvents.has(outcomeEvent),
+          slotHeld:
+            outcomeEvent !== undefined &&
+            indexOf(log.events).has(outcomeEvent.eventId),
+        });
         if (runAheadRepair) {
           // Not folded: the log is reloaded once the
           // speculative writes settle.
           reload = true;
-        } else if (writtenAhead && !speculativeEvents.has(outcomeEvent)) {
+        } else if (outcomeFold === 'committed') {
           // Written ahead, and its write settled before the
-          // body did. The committed event already reached the
-          // log with the write's answer, or a repair rebuilt
-          // the log from it. This copy still carries the slot
-          // it was predicted at, which may be another event's
-          // by now: folding it in would hold that id against
-          // the event that committed there.
-        } else if (
-          writtenAhead &&
-          indexOf(log.events).has(outcomeEvent.eventId)
-        ) {
+          // body did: the committed event is in the log, and
+          // this copy is not folded on top of it.
+        } else if (outcomeFold === 'displaced') {
           // The slot it was predicted at is taken: its write
           // commits elsewhere, and the log is rebuilt from
           // the writes' answers.
