@@ -21,6 +21,7 @@ import {
   RATE_MAX_LATE_WAKES,
   rateLimitIntervalUs,
   rateLimitToleranceUs,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorContinuationPayload,
   slotToEventId,
@@ -637,6 +638,18 @@ export class AppendOnlyWorld {
   } {
     const eventData = (data as { eventData?: Record<string, unknown> })
       .eventData;
+    // As every World that declares `rateLimits` does: no rate event on a run
+    // stamped below spec 10.
+    if (
+      (data.eventType === 'rate_created' ||
+        data.eventType === 'rate_acquired') &&
+      (this.run?.specVersion ?? 0) < SPEC_VERSION_RATE_LIMITS
+    ) {
+      throw new WorkflowWorldError(
+        `${data.eventType} can only be written to a run stamped at spec version ${SPEC_VERSION_RATE_LIMITS} or later`,
+        { status: 400 }
+      );
+    }
     if (data.eventType === 'rate_created' && eventData) {
       // One request per call, as world-local refuses a second (a call
       // reserved again is decided here from its rate_acquired instead).

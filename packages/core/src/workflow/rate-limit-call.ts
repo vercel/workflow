@@ -1,6 +1,7 @@
 import {
   assertRateLimitKeyAllowed,
   MAX_RATE_WAIT_MS,
+  SPEC_VERSION_RATE_LIMITS,
   validateRateLimitCall,
 } from '@workflow/world';
 import ms, { type StringValue } from 'ms';
@@ -83,4 +84,15 @@ export function resolveRateLimitCall(
     // Sent, so the World checks the key the same way.
     ...(options.allowReservedKey === true && { allowReservedKey: true }),
   };
+}
+
+/** Why a run below spec 10 can't call `experimental_rateLimit()`. */
+export function rateLimitSpecVersionMessage(
+  runSpecVersion: number | undefined
+): string {
+  return (
+    `experimental_rateLimit() needs a run at spec version ${SPEC_VERSION_RATE_LIMITS} or later, ` +
+    `and this run is at ${runSpecVersion ?? 'an unknown version'}. ` +
+    `Create runs at spec ${SPEC_VERSION_RATE_LIMITS} (WORKFLOW_SPEC_VERSION=${SPEC_VERSION_RATE_LIMITS}) on a World that supports rate limits.`
+  );
 }

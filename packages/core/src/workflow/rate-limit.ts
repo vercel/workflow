@@ -1,6 +1,6 @@
 import { RateLimitMaxWaitError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { SPEC_VERSION_RATE_LIMITS } from '@workflow/world';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import { EventConsumerResult } from '../events-consumer.js';
 import type { RateInvocationQueueItem } from '../global.js';
 import {
@@ -10,7 +10,10 @@ import {
   type WorkflowOrchestratorContext,
 } from '../private.js';
 import type { RateLimitOptions } from '../rate-limit.js';
-import { resolveRateLimitCall } from './rate-limit-call.js';
+import {
+  rateLimitSpecVersionMessage,
+  resolveRateLimitCall,
+} from './rate-limit-call.js';
 
 /**
  * `experimental_rateLimit()` in the workflow VM. One call is one correlation
@@ -31,12 +34,15 @@ export function createRateLimit(
   return async function rateLimitImpl(
     options: RateLimitOptions
   ): Promise<void> {
-    if ((runSpecVersion ?? 0) < SPEC_VERSION_RATE_LIMITS) {
-      throw new Error(
-        `experimental_rateLimit() needs a run at spec version ${SPEC_VERSION_RATE_LIMITS} or later, ` +
-          `and this run is at ${runSpecVersion ?? 'an unknown version'}. ` +
-          `Create runs at spec ${SPEC_VERSION_RATE_LIMITS} (WORKFLOW_SPEC_VERSION=${SPEC_VERSION_RATE_LIMITS}) on a World that supports rate limits.`
-      );
+    // Only the single orchestrator drives rate limit calls. A run never
+    // crosses that version once created, so every replay of the run gives
+    // the same answer here. Whether the run is at spec 10 is the World's to
+    // say when the call's `rate_created` is written: a backend may raise a
+    // spec 9 run to 10 when its `run_started` is written, which a first
+    // delivery running ahead of that response cannot know yet, and the
+    // World refuses a rate event on a run stamped below 10.
+    if ((runSpecVersion ?? 0) < SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+      throw new Error(rateLimitSpecVersionMessage(runSpecVersion));
     }
     // The workflow's deterministic clock, so every replay asks for the same
     // deadline.
