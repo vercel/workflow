@@ -439,6 +439,15 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
       token:
         userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
         process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+      // Set by the CLI when run as `vercel workflow`: Vercel CLI's API proxy,
+      // which authenticates requests itself. Taken only from the server's own
+      // environment, never from the client-provided env map, and only when no
+      // token was given, since the proxy would replace it.
+      vercelApiUrl:
+        userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
+        process.env.WORKFLOW_VERCEL_AUTH_TOKEN
+          ? undefined
+          : process.env.WORKFLOW_VERCEL_API_URL || undefined,
       projectConfig: {
         environment:
           userEnvMap.WORKFLOW_VERCEL_ENV || process.env.WORKFLOW_VERCEL_ENV,

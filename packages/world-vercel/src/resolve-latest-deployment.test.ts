@@ -60,6 +60,26 @@ describe('createResolveLatestDeploymentId', () => {
     expect(headers.get('Authorization')).toBe('Bearer test-token');
   });
 
+  it('uses a custom vercelApiUrl without an ambient token', async () => {
+    process.env.VERCEL_TOKEN = 'ambient-token';
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 'dpl_latest_xyz789' }), {
+        status: 200,
+      })
+    );
+
+    const resolveLatest = createResolveLatestDeploymentId({
+      vercelApiUrl: 'http://127.0.0.1:4321/',
+    });
+    expect(await resolveLatest()).toBe('dpl_latest_xyz789');
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe(
+      'http://127.0.0.1:4321/v1/workflow/resolve-latest-deployment/dpl_current_abc123'
+    );
+    expect((init.headers as Headers).get('Authorization')).toBeNull();
+  });
+
   it('should throw when VERCEL_DEPLOYMENT_ID is not set', async () => {
     delete process.env.VERCEL_DEPLOYMENT_ID;
 

@@ -6,7 +6,8 @@
   "type": "module",
   "bin": {
     "workflow": "./bin/run.js",
-    "wf": "./bin/run.js"
+    "wf": "./bin/run.js",
+    "vercel-workflow": "./bin/vercel-workflow.js"
   },
   "files": [
     "dist",

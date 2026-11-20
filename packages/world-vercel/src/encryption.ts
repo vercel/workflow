@@ -15,6 +15,7 @@ import type { WorkflowRun, World } from '@workflow/world';
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
 import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
+import { getVercelApiUrl } from './utils.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
@@ -110,10 +111,16 @@ export async function fetchRunKey(
     teamId?: string;
     /** Custom HTTP dispatcher. Defaults to the shared undici agent. */
     dispatcher?: unknown;
+    /** Vercel API base URL; see `APIConfig.vercelApiUrl`. */
+    vercelApiUrl?: string;
   }
 ): Promise<Uint8Array | undefined> {
-  const token = await resolveVercelApiToken({ token: options?.token });
-  if (!token) {
+  // A custom `vercelApiUrl` authenticates requests itself, so only an
+  // explicit token is sent to it, and none is required.
+  const token = options?.vercelApiUrl
+    ? options.token
+    : await resolveVercelApiToken({ token: options?.token });
+  if (!token && !options?.vercelApiUrl) {
     throw new Error(
       'Cannot fetch run key: no OIDC token or VERCEL_TOKEN available'
     );
@@ -128,8 +135,8 @@ export async function fetchRunKey(
   // v3/v4 paths have.
   const response = await instrumentedFetch({
     method: 'GET',
-    url: `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
-    headers: new Headers({ Authorization: `Bearer ${token}` }),
+    url: `${getVercelApiUrl(options)}/v1/workflow/run-key/${deploymentId}?${params}`,
+    headers: new Headers(token ? { Authorization: `Bearer ${token}` } : {}),
     dispatcher: getDispatcher({ dispatcher: options?.dispatcher }),
     peerService: 'vercel-api',
     // Preserve the prior no-timeout behavior for this Vercel-API call; the
@@ -172,13 +179,16 @@ export async function fetchRunKey(
  * @param projectId - Vercel project ID for HKDF context isolation
  * @param teamId - Optional team ID for team-scoped API requests
  * @param token - Optional auth token from config
+ * @param dispatcher - Optional custom HTTP dispatcher from config
+ * @param vercelApiUrl - Optional Vercel API base URL from config
  * @returns The `getEncryptionKeyForRun` function, or `undefined` if no projectId
  */
 export function createGetEncryptionKeyForRun(
   projectId: string | undefined,
   teamId?: string,
   token?: string,
-  dispatcher?: unknown
+  dispatcher?: unknown,
+  vercelApiUrl?: string
 ): World['getEncryptionKeyForRun'] {
   if (!projectId) return undefined;
 
@@ -227,6 +237,7 @@ export function createGetEncryptionKeyForRun(
       token,
       teamId,
       dispatcher,
+      vercelApiUrl,
     });
   };
 }
