@@ -31,9 +31,7 @@ This is an **infrastructure error**, not a user code error.
 The build checks that every step workflow code can call is registered in the steps bundle, and fails before anything is deployed when one is not:
 
 ```text
-Workflow code can call 1 step that is not registered in the steps bundle.
-Every call would fail at runtime with "Step ... is not registered in the
-current deployment":
+Workflow code can call 1 step that is not registered in the steps bundle. Every call would fail at runtime with "Step ... is not registered in the current deployment":
   - doWork in workflows/order.ts (step//./workflows/order//doWork)
 ```
 
