@@ -1112,6 +1112,8 @@ describe.each([
             types.includes('step_completed') && types.includes('step_started')
         )
       ).toBe(true);
+      // The World refused a strict write.
+      expect(world.strictRefusals.length).toBeGreaterThan(0);
       // The payload stopped run-ahead instead of landing below a commit.
       expect(
         info.mock.calls.some(
@@ -1178,10 +1180,16 @@ describe.each([
       // The payload stopped run-ahead (refused at the World, or locally once
       // the writer learned of it) instead of strict writes committing above
       // it from a view that never saw it.
-      const stopped = info.mock.calls.some(([message]) =>
-        String(message).includes('Run-ahead stopped')
-      );
-      expect(stopped || world.strictRefusals.length > 0).toBe(true);
+      // The writer refused it locally, before the World could commit it.
+      expect(
+        info.mock.calls.some(
+          ([message, meta]) =>
+            String(message).includes('Run-ahead stopped') &&
+            String((meta as { reason?: string } | undefined)?.reason).includes(
+              'took a position'
+            )
+        )
+      ).toBe(true);
       // The run's logger prints errors through `console.error`.
       expect(
         error.mock.calls.some(([line]) =>
