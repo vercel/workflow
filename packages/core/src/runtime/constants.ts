@@ -301,8 +301,11 @@ export function isVmRetentionEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
-/** Default for {@link getParkedVmMaxBytes}: 8 MiB. */
-export const DEFAULT_PARKED_VM_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * Default for {@link getParkedVmMaxBytes}: 0, so parking is off until an
+ * operator sets a budget.
+ */
+export const DEFAULT_PARKED_VM_MAX_BYTES = 0;
 
 /**
  * The memory budget, in estimated bytes, for the VMs a process parks between
@@ -310,9 +313,10 @@ export const DEFAULT_PARKED_VM_MAX_BYTES = 8 * 1024 * 1024;
  * run's entry may take up to half of it; a larger one is not parked, and
  * parking evicts the oldest entries to stay within it.
  *
- * `WORKFLOW_PARKED_VM_MAX_BYTES=0` turns parking off, keeping VM retention
- * within one invocation (`WORKFLOW_RETAINED_VM`). An invalid value falls back
- * to the default with a one-time warning.
+ * Parking is opt-in: it is off at `WORKFLOW_PARKED_VM_MAX_BYTES=0`, the
+ * default, which keeps VM retention within one invocation
+ * (`WORKFLOW_RETAINED_VM`). An invalid value falls back to the default with a
+ * one-time warning.
  */
 export function getParkedVmMaxBytes(): number {
   const raw = process.env.WORKFLOW_PARKED_VM_MAX_BYTES;

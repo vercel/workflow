@@ -1,5 +1,5 @@
 import type { Event, World } from '@workflow/world';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReplayPayloadCache } from '../../replay-payload-cache.js';
 import type { WorkflowSession } from '../../workflow.js';
 import {
@@ -33,6 +33,11 @@ const parked = (tailSlot: number, payloadBytes = 0): ParkedSession => ({
 
 const newWorld = () => ({}) as World;
 const MAX_AGE_MS = 10 * 60_000;
+
+beforeEach(() => {
+  // Parking is opt-in.
+  vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', String(8 * 1024 * KIB));
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -154,11 +159,21 @@ describe('the parked sessions byte budget', () => {
     expect(takeParkedSession(world, 'wrun_a')).toBeUndefined();
   });
 
+  it('parks nothing by default', () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', '');
+    const world = newWorld();
+    expect(parkSession(world, 'wrun_a', parked(1))).toMatchObject({
+      parked: false,
+      reason: 'disabled',
+    });
+  });
+
   it('falls back to the default budget for an invalid value', () => {
     vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', 'lots');
     const world = newWorld();
     expect(parkSession(world, 'wrun_a', parked(1, 100 * KIB))).toMatchObject({
-      parked: true,
+      parked: false,
+      reason: 'disabled',
     });
   });
 });
