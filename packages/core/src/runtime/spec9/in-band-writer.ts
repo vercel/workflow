@@ -535,7 +535,13 @@ export class InBandWriter {
           : written;
       } catch (error) {
         this.answerSend();
-        throw this.stop(slotTakenAsRunAheadStop(error), required);
+        if (
+          params?.strictEventCount === true &&
+          EventSlotTakenError.is(error)
+        ) {
+          throw error;
+        }
+        throw this.stop(error, required);
       }
       this.accepted(result.event);
       if (verify) {
@@ -580,14 +586,7 @@ export class InBandWriter {
     verify: (result: EventResult) => void,
     strict?: StrictAhead
   ): Promise<EventResult> {
-    if (!this.supportsBatch) {
-      this.assertStrictMaySend(strict);
-      return this.createRequired(
-        data,
-        strict ? { ...params, ...this.strictParams(strict) } : params,
-        verify
-      );
-    }
+    if (!this.supportsBatch) return this.createRequired(data, params, verify);
     return this.enqueueAhead({
       ...(strict ? { strict } : {}),
       kind: 'single',
@@ -618,12 +617,7 @@ export class InBandWriter {
     strict?: StrictAhead
   ): Promise<EventBatchResult> {
     if (!this.supportsBatch) {
-      this.assertStrictMaySend(strict);
-      return this.createBatchRequired(
-        events,
-        strict ? { ...params, ...this.strictParams(strict) } : params,
-        verify
-      );
+      return this.createBatchRequired(events, params, verify);
     }
     return this.enqueueAhead({
       ...(strict ? { strict } : {}),
@@ -687,8 +681,11 @@ export class InBandWriter {
       const first = group[0]!;
       // A lone write goes out as itself, never as a batch of one.
       if (group.length === 1 && first.kind === 'single') {
+        if (first.strict && !this.strictMaySend(first.strict)) {
+          await this.refuseStrict([first], foreignSlotStop());
+          return;
+        }
         try {
-          this.assertStrictMaySend(first.strict);
           first.resolve(
             await this.sendSingle(
               first.events[0]!.event,
@@ -703,6 +700,10 @@ export class InBandWriter {
             )
           );
         } catch (error) {
+          if (first.strict && EventSlotTakenError.is(error)) {
+            await this.refuseStrict([first], slotTakenStop());
+            return;
+          }
           first.reject(error);
         }
         return;
@@ -726,9 +727,8 @@ export class InBandWriter {
       const knownAtSend = this.knownMaxSlot;
       const strictAt = group.findIndex((write) => write.strict !== undefined);
       const strict = strictAt === -1 ? undefined : group[strictAt]!.strict!;
-      if (strict && this.foreignSlots !== strict.foreignSlotsAtDecision) {
-        const stopped = this.stop(foreignSlotStop(), true);
-        for (const write of group) write.reject(stopped);
+      if (strict && !this.strictMaySend(strict)) {
+        await this.refuseStrict(group, foreignSlotStop());
         return;
       }
       // A strict group names exactly the position its first strict write was
@@ -763,7 +763,11 @@ export class InBandWriter {
         );
       } catch (error) {
         this.answerSend();
-        const stopped = this.stop(slotTakenAsRunAheadStop(error), true);
+        if (strict && EventSlotTakenError.is(error)) {
+          await this.refuseStrict(group, slotTakenStop());
+          return;
+        }
+        const stopped = this.stop(error, true);
         for (const write of group) write.reject(stopped);
         return;
       }
@@ -867,13 +871,9 @@ export class InBandWriter {
     const item = write.events[0]!;
     const params = write.params as Omit<CreateEventBatchParams, 'inBand'>;
     let answer: EventBatchResult;
-    if (write.strict) {
-      try {
-        this.assertStrictMaySend(write.strict);
-      } catch (error) {
-        write.reject(error);
-        return;
-      }
+    if (write.strict && !this.strictMaySend(write.strict)) {
+      await this.refuseStrict([write], foreignSlotStop());
+      return;
     }
     try {
       const written = await this.sendSingle(
@@ -902,8 +902,8 @@ export class InBandWriter {
         allocated: written.allocated ?? 1,
       } as EventBatchResult;
     } catch (error) {
-      if (EventSlotTakenError.is(error)) {
-        write.reject(this.stop(slotTakenAsRunAheadStop(error), true));
+      if (write.strict && EventSlotTakenError.is(error)) {
+        await this.refuseStrict([write], slotTakenStop());
         return;
       }
       if (this.stopped || !isDefiniteRefusal(error)) {
@@ -1013,7 +1013,7 @@ export class InBandWriter {
         return answered;
       } catch (error) {
         this.answerSend();
-        throw this.stop(slotTakenAsRunAheadStop(error), required);
+        throw this.stop(error, required);
       }
     });
   }
@@ -1134,15 +1134,66 @@ export class InBandWriter {
   }
 
   /**
-   * Refuses a strict run-ahead write locally once this writer learned of a
-   * position another writer took after the write's boundary was classified:
-   * the workflow decided without that event, and naming a position that
-   * covers it would let the World commit the write.
+   * Whether a strict run-ahead write may still go out: not once this writer
+   * learned of a position another writer took after the write's boundary was
+   * classified. The workflow decided without that event, and naming a
+   * position that covers it would let the World commit the write.
    */
-  private assertStrictMaySend(strict: StrictAhead | undefined): void {
-    if (strict && this.foreignSlots !== strict.foreignSlotsAtDecision) {
-      throw this.stop(foreignSlotStop(), true);
+  private strictMaySend(strict: StrictAhead): boolean {
+    return this.foreignSlots === strict.foreignSlotsAtDecision;
+  }
+
+  /**
+   * A strict group was refused, at the World or locally. Stops every later
+   * decision, then sends the members `mayStillWrite` allows (the outcomes of
+   * steps whose start committed) as ordinary writes, so the restart that
+   * decides from the log runs none of those steps again. Every other member
+   * fails with `stop`.
+   */
+  private async refuseStrict(
+    writes: readonly AheadWrite[],
+    stop: RunAheadStopError
+  ): Promise<void> {
+    const mayStillWrite =
+      writes.find((write) => write.strict)?.strict?.mayStillWrite ??
+      (() => false);
+    this.stopDecisions(stop, mayStillWrite);
+    this.refusedStrict = true;
+    for (const write of writes) {
+      const event = write.events[0]?.event;
+      if (
+        write.kind !== 'single' ||
+        event === undefined ||
+        !mayStillWrite([event])
+      ) {
+        write.reject(stop);
+        continue;
+      }
+      try {
+        write.resolve(
+          await this.sendSingle(
+            event,
+            write.params as CreateEventParams,
+            true,
+            write.verify
+          )
+        );
+      } catch (error) {
+        write.reject(error);
+      }
     }
+  }
+
+  private refusedStrict = false;
+
+  /**
+   * Whether a strict run-ahead write was refused. Every write this writer
+   * committed from a speculative view since went out strict at its exact
+   * position, so none sits above an event the view did not see; only the
+   * outcomes {@link refuseStrict} still sends can, and they decide nothing.
+   */
+  get strictRefused(): boolean {
+    return this.refusedStrict;
   }
 
   /** Releases the strict outcome held for coalescing, if one is. */
@@ -1233,6 +1284,11 @@ export interface StrictAhead {
   foreignSlotsAtDecision: number;
   /** Hold the write open for the next creation to join it. */
   coalesce?: boolean;
+  /**
+   * What the writer may still send once a strict write is refused: the
+   * delivery's rule for writes after a hazard stop.
+   */
+  mayStillWrite: (events: readonly CreateEventRequest[]) => boolean;
 }
 
 function foreignSlotStop(): RunAheadStopError {
@@ -1253,16 +1309,14 @@ interface AheadWrite {
 
 /**
  * A run-ahead write sent with `strictEventCount` found its slot taken: another
- * writer appended first, and nothing decided from the speculative view has
- * committed. Stopping with a `RunAheadStopError` restarts the delivery from
- * the log, as a hazard stop does, with nothing left to repair.
+ * writer appended first, and the refused write did not commit. Stopping with
+ * a `RunAheadStopError` restarts the delivery from the log, as a hazard stop
+ * does.
  */
-function slotTakenAsRunAheadStop(error: unknown): unknown {
-  return EventSlotTakenError.is(error)
-    ? new RunAheadStopError(
-        'a conditional run-ahead write found its slot taken by another writer'
-      )
-    : error;
+function slotTakenStop(): RunAheadStopError {
+  return new RunAheadStopError(
+    'a conditional run-ahead write found its slot taken by another writer'
+  );
 }
 
 function isNewSlot(eventId: string, knownMaxSlot: number): boolean {

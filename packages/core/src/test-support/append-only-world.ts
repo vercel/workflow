@@ -561,7 +561,7 @@ export class AppendOnlyWorld {
     );
   }
 
-  private checkFence(params: CreateEventParams | undefined, n: number): void {
+  private checkFence(params: CreateEventParams | undefined): void {
     if (params?.inBand !== true) return;
     if (params.expectedSeqInBand === undefined) {
       throw new WorkflowWorldError(
@@ -575,7 +575,11 @@ export class AppendOnlyWorld {
         seqInBand: this.seqInBand,
       });
     }
-    this.seqInBand += n;
+  }
+
+  /** Counts `n` committed in-band events past the fence. */
+  private advanceFence(params: CreateEventParams | undefined, n: number): void {
+    if (params?.inBand === true) this.seqInBand += n;
   }
 
   private checkRunAcceptsWork(eventType: string): void {
@@ -979,8 +983,9 @@ export class AppendOnlyWorld {
         }
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
-        self.checkFence(params, 1);
+        self.checkFence(params);
         self.checkStrictSlot(params);
+        self.advanceFence(params, 1);
         const event = self.append(
           self.committedHook(data),
           undefined,
@@ -1052,8 +1057,9 @@ export class AppendOnlyWorld {
             { status: 400 }
           );
         }
-        self.checkFence(params as CreateEventParams, batch.length);
+        self.checkFence(params as CreateEventParams);
         self.checkStrictSlot(params as CreateEventParams);
+        self.advanceFence(params as CreateEventParams, batch.length);
         const firstSlot = self.seq + 1;
         if (params?.inBand && params.eventCount !== undefined) {
           self.reportSpans.push({ eventCount: params.eventCount, firstSlot });
