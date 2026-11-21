@@ -1361,7 +1361,8 @@ describe.each([
     // the 1.3 s wait starts outside it and comes due while the loop runs.
     vi.stubEnv('WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS', '50');
     const info = vi.spyOn(runtimeLogger, 'info');
-    const error = vi.spyOn(runtimeLogger, 'error');
+    // The run's logger prints errors through `console.error`.
+    const error = vi.spyOn(console, 'error');
     const source = withSleep('1300ms');
     const steps = 120;
     const { world } = await run(source, [steps]);
@@ -1393,10 +1394,8 @@ describe.each([
       )
     ).toBe(false);
     expect(
-      error.mock.calls.some(
-        ([, meta]) =>
-          (meta as { possibleLogCorruption?: boolean } | undefined)
-            ?.possibleLogCorruption === true
+      error.mock.calls.some(([line]) =>
+        String(line).includes('possibleLogCorruption')
       )
     ).toBe(false);
 
