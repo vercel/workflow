@@ -121,6 +121,7 @@ import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   ABORT_HOOK_TOKEN,
+  ABORT_IN_BAND_ONLY,
   ABORT_LISTENER_ATTACHED,
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
@@ -2526,6 +2527,20 @@ export function getWorkflowReducers(
       }
       const signal = readProperty(value, 'signal');
       if (!signal) return false;
+      // Checked on the signal too: any object whose `signal` carries the
+      // abort symbol reduces as a controller here (a `{ signal, url }`
+      // included), and would revive with a working `abort()` in the step.
+      if (
+        readProperty(value, ABORT_IN_BAND_ONLY) === true ||
+        readProperty(signal, ABORT_IN_BAND_ONLY) === true
+      ) {
+        throw new SerializationError(
+          'An AbortController created with { inBandOnly: true } cannot leave workflow code.',
+          {
+            hint: 'Pass its signal instead. Only workflow code may abort an in-band-only controller.',
+          }
+        );
+      }
       return reduceAbortBySymbol(signal as AbortSignal, holder);
     },
     AbortSignal: (value) => {

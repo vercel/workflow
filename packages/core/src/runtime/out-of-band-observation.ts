@@ -172,17 +172,23 @@ export interface OutOfBandObservation {
 
 /**
  * Whether an open hook is path-changing whether or not workflow code awaits
- * it. True for `AbortController` hooks only. The child-run completion hook is
+ * it. True for `AbortController` hooks, except ones created with
+ * `{ inBandOnly: true }`: those can't be passed to a step, so their
+ * `hook_received` is only ever written in-band, by the orchestrator, in order
+ * with its other writes, and is classified like any other hook. The child-run
+ * completion hook is
  * also a system hook, but its payloads only reach workflow code through the
  * dispatcher's `then()` (`child-run-completion.ts`), so it is observed exactly
  * like a user hook: while that `then()` is pending.
  */
 export function isAlwaysObservedHook(item: {
   isSystem?: boolean;
+  inBandOnly?: boolean;
   token: string;
 }): boolean {
   return (
     item.isSystem === true &&
+    item.inBandOnly !== true &&
     !item.token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX)
   );
 }
