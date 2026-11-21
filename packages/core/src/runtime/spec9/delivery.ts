@@ -1220,6 +1220,24 @@ async function runDelivery(
     return { events: [...entry.written], run: entry.run };
   };
   /**
+   * Set by a resume on this process's writes ({@link takeWrittenSinceParked})
+   * to the in-band count it adopted without a read, until a write of this
+   * delivery commits at it. Until then nothing confirms that no other
+   * orchestrator wrote past the kept events, or ended the run, so no boundary
+   * runs ahead: a body started ahead of its creation would run although the
+   * creation is refused, here as well as wherever the turn was handled, or
+   * on a run that has ended.
+   */
+  let unconfirmedSeqInBand: number | undefined;
+  const fenceUnconfirmed = (): boolean => {
+    if (unconfirmedSeqInBand === undefined) return false;
+    if (writer.expectedSeqInBand !== unconfirmedSeqInBand) {
+      unconfirmedSeqInBand = undefined;
+      return false;
+    }
+    return true;
+  };
+  /**
    * {@link readSinceParked}'s `resume` for events this process wrote since
    * the park: they are the log past `tailSlot`, and the fence count is the
    * parked one, since none of them is in-band. Another orchestrator's write
@@ -1228,6 +1246,7 @@ async function runDelivery(
    */
   const takeWrittenSinceParked = (entry: ParkedSession, events: Event[]) =>
     writer.exclusive(async () => {
+      unconfirmedSeqInBand = entry.expectedSeqInBand;
       const snapshot = {
         seq: entry.tailSlot + events.length,
         seqInBand: entry.expectedSeqInBand,
@@ -4227,7 +4246,11 @@ async function runDelivery(
           }
           if (observation.waitDue) outOfBandBoundaries.waitDue++;
         }
-        if (runAheadDepth > 0 && observation.inert) {
+        // Not until a write confirms the in-band count a resume on this
+        // process's writes adopted without a read (`fenceUnconfirmed`): a
+        // body started ahead of its creation would run although that
+        // creation is refused.
+        if (runAheadDepth > 0 && observation.inert && !fenceUnconfirmed()) {
           runAheadStats.runAhead++;
           boundaryRunAhead = runAheadContextFor({
             observation,

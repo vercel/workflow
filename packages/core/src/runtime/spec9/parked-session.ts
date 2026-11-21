@@ -65,8 +65,13 @@ export interface TakenParkedSession extends ParkedSession {
 }
 
 interface Entry extends TakenParkedSession {
-  /** {@link estimateParkedBytes} of `events`. */
+  /** {@link estimateParkedBytes} of `events`, plus what `written` adds. */
   readonly bytes: number;
+  /**
+   * More than {@link MAX_WRITTEN_EVENTS} were written while parked: none is
+   * kept any more, since the resume reads the log anyway.
+   */
+  readonly writesDropped?: true;
 }
 
 interface ParkedSessions {
@@ -202,7 +207,10 @@ export function parkSession(
   parked: ParkedSession,
   nowMs = Date.now()
 ): ParkResult {
-  const bytes = estimateParkedBytes(parked.events);
+  // A no-op wake puts back the entry it took, events written since included.
+  const bytes =
+    estimateParkedBytes(parked.events) +
+    BYTES_PER_PAYLOAD_BYTE * payloadBytesOf(parked.written ?? []);
   const budget = getParkedVmMaxBytes();
   if (budget === 0) return { parked: false, bytes, reason: 'disabled' };
   const sessions = sessionsFor(world);
@@ -247,26 +255,66 @@ export function takeParkedSession(
 }
 
 /**
+ * At most this many events written while parked are kept per entry. A run
+ * that takes more writes than this between two deliveries has its kept
+ * events dropped, and the delivery that resumes it reads the log instead.
+ */
+export const MAX_WRITTEN_EVENTS = 16;
+
+/** What {@link noteParkedRunWrite} did with the event. */
+export type NoteWriteResult =
+  /** The run has no entry here. */
+  | 'none'
+  | 'kept'
+  /** Over {@link MAX_WRITTEN_EVENTS}: the entry's kept events were dropped. */
+  | 'too_many'
+  /** The entry would take over half the budget with it, so it was dropped. */
+  | 'too_large';
+
+/**
  * Keeps an event this process just wrote for a run whose session is parked
  * here, so the delivery that resumes the session can take it without reading
  * the log. A no-op when nothing is parked for the run. Callers pass the event
  * as a log read would return it, payload included.
+ *
+ * The event counts against the byte budget at once, as a park does: an entry
+ * it takes over half the budget is dropped, and the oldest other entries are
+ * evicted to keep the total within it.
  */
 export function noteParkedRunWrite(
   world: World,
   runId: string,
   event: Event
-): void {
+): NoteWriteResult {
   const sessions = sessionsFor(world);
   const entry = sessions.entries.get(runId);
-  if (!entry) return;
-  const written = [...(entry.written ?? []), event];
-  // Counted against the budget; the next park evicts to make room for it.
+  if (!entry) return 'none';
+  if (entry.writesDropped) return 'too_many';
+  const kept = entry.written ?? [];
+  if (kept.length >= MAX_WRITTEN_EVENTS) {
+    // The resume reads the log; the entry keeps the VM.
+    const keptBytes = BYTES_PER_PAYLOAD_BYTE * payloadBytesOf(kept);
+    sessions.bytes -= keptBytes;
+    sessions.entries.set(runId, {
+      ...entry,
+      written: undefined,
+      writesDropped: true,
+      bytes: entry.bytes - keptBytes,
+    });
+    return 'too_many';
+  }
   const added = BYTES_PER_PAYLOAD_BYTE * payloadBytesOf([event]);
+  const bytes = entry.bytes + added;
+  const budget = getParkedVmMaxBytes();
+  if (bytes > budget / 2) {
+    drop(sessions, runId);
+    return 'too_large';
+  }
   sessions.bytes += added;
-  sessions.entries.set(runId, {
-    ...entry,
-    written,
-    bytes: entry.bytes + added,
-  });
+  sessions.entries.set(runId, { ...entry, written: [...kept, event], bytes });
+  for (const [oldest] of sessions.entries) {
+    if (sessions.bytes <= budget) break;
+    if (oldest !== runId) drop(sessions, oldest);
+  }
+  return 'kept';
 }

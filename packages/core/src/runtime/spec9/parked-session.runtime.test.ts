@@ -86,6 +86,7 @@ const key = (attribute: Record<string, unknown>) => Object.keys(attribute)[0]!;
 const SKIP_REASON = key(Attribute.WorkflowParkedSessionSkipReason('disabled'));
 const READ = key(Attribute.WorkflowParkedSessionRead('resume'));
 const DIVERGED = key(Attribute.WorkflowParkedSessionDiverged(true));
+const TOOK_WRITES = key(Attribute.WorkflowParkedSessionTookWrites(true));
 
 /** Every value the finished spans carry for `attribute`, in finish order. */
 const spanValues = (attribute: string): unknown[] =>
@@ -1088,8 +1089,11 @@ describe("a stale parked VM and the other orchestrator's writes", () => {
 });
 
 describe('a parked session and the events this process writes', () => {
-  async function setup(code: string) {
-    const run = await setupOrchestratorRun(code, []);
+  async function setup(
+    code: string,
+    options: Parameters<typeof setupOrchestratorRun>[2] = {}
+  ) {
+    const run = await setupOrchestratorRun(code, [], options);
     setWorld(withHookLookup(run.world, run.runId));
     await run.world.deliver(run.start);
     return run;
@@ -1119,6 +1123,79 @@ describe('a parked session and the events this process writes', () => {
     expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
     expect(attributeSets).toBe(3);
     expect(preTurnReads.get(world)).toBe(0);
+  });
+
+  /**
+   * A remote World's round trip on each step start, so a body that started
+   * ahead of its start would run before the start is refused.
+   */
+  const slowStarts = {
+    async beforeCreate(data: { eventType: string }) {
+      if (data.eventType === 'step_started') {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+  };
+
+  // The kept `hook_received` still continues the parked log when another
+  // process ends the run after it, so the delivery resumes on the run the
+  // parking delivery held, which says `running`.
+  it.each([
+    ['cancels', 'run_cancelled', false],
+    ['completes', 'run_completed', true],
+  ])('runs no step body when another process %s the run after the handed-over hook_received', async (_label, eventType, inBand) => {
+    const { world, runId } = await setup(sessionWorkflow, slowStarts);
+    const creates = vi.spyOn((await getWorld()).events, 'create');
+    await resumeHook(TOKEN, 'a');
+    world.appendOutOfBand({ eventType, runId } as Partial<Event>);
+    if (inBand) world.seqInBand++;
+    spanExporter.reset();
+    await world.runUntilIdle();
+
+    expect(spanValues(TOOK_WRITES)).toContain(true);
+    expect(echoes).toBe(0);
+    expect(eventsOf(world, 'step_started')).toHaveLength(0);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, eventType)).toHaveLength(1);
+    // The delivery's first in-band write, the turn's step start, is refused:
+    // the World checks the run's state before the fence, so a terminal run
+    // refuses it either way.
+    const firstInBand = creates.mock.calls.findIndex(
+      ([, , params]) => (params as { inBand?: boolean })?.inBand === true
+    );
+    expect(firstInBand).toBeGreaterThanOrEqual(0);
+    expect(creates.mock.settledResults[firstInBand]?.type).toBe('rejected');
+    creates.mockRestore();
+  });
+
+  it('refuses the kept events of a wake another process already handled, and runs the turn once', async () => {
+    const { world, runId } = await setup(sessionWorkflow, slowStarts);
+    const thisProcess = await getWorld();
+    await resumeHook(TOKEN, 'a');
+    const wakeMessage = world.held.at(-1)!.message;
+    // Another process gets the wake first, with no VM parked there: it loads
+    // the whole log and handles the turn.
+    const parked = takeParkedSession(thisProcess, runId);
+    expect(parked?.written).toHaveLength(1);
+    await world.runUntilIdle();
+    expect(echoes).toBe(1);
+    takeParkedSession(thisProcess, runId);
+    // This process gets the same wake, with its VM and the kept event.
+    parkSession(thisProcess, runId, parked!);
+    const refusals = fenceRefusals(world);
+    spanExporter.reset();
+    await world.deliver(world.enqueue(ORCHESTRATOR_QUEUE, wakeMessage));
+    await world.runUntilIdle();
+
+    expect(spanValues(TOOK_WRITES)).toContain(true);
+    expect(refusals()).toBeGreaterThanOrEqual(1);
+    expect(echoes).toBe(1);
+    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+
+    for (const payload of ['b', 'c']) await resume(world, payload);
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
   });
 
   it('reads the log when something else landed since the park', async () => {
