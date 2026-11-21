@@ -186,6 +186,11 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - A run whose estimate is over half the budget isn't parked, and its next delivery loads and replays the log as usual. Parking evicts the oldest parked VMs to stay within the budget. At most 64 VMs are parked, each for up to `WORKFLOW_PARKED_VM_MAX_AGE_MS`.
 - `0` keeps VM retention within one invocation.
 
+### `WORKFLOW_PARKED_VM_ENCRYPTED`
+
+- Default: disabled
+- A parked VM holds the run's decrypted payloads in memory until its next delivery, so a run with an encryption key isn't parked by default. Set `1` or `true` to park encrypted runs too (see `WORKFLOW_PARKED_VM_MAX_BYTES`).
+
 ### `WORKFLOW_PARKED_VM_MAX_AGE_MS`
 
 - Default: `600000` (10 minutes)

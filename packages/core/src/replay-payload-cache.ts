@@ -42,7 +42,9 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * resident for the invocation lifetime. Their memory never crosses workflow
  * runs. It crosses a run's queue deliveries only with a VM parked between
  * them (`runtime/spec9/parked-session.ts`), whose state containers live
- * here, and within that entry's byte budget.
+ * here, and within that entry's byte budget. A run with an encryption key
+ * parks no VM unless `WORKFLOW_PARKED_VM_ENCRYPTED` is set, so by default
+ * decrypted plaintext does not outlive the delivery that decrypted it.
  */
 export class ReplayPayloadCache {
   /** frozen state versions and sources this invocation's replay has seen. */

@@ -396,12 +396,18 @@ export const WorkflowParkedSessionParked = SemanticConvention<boolean>(
 
 /**
  * Why a delivery that suspended parked no VM: `not_retained` kept none to
- * park, `superseded` lost its fence, `disabled` is
+ * park, `superseded` lost its fence, `encrypted` is a run with an encryption
+ * key (unless `WORKFLOW_PARKED_VM_ENCRYPTED`), `disabled` is
  * `WORKFLOW_PARKED_VM_MAX_BYTES=0`, `too_large` would take over half that
  * budget, and `newer_parked` found the run's entry further along.
  */
 export const WorkflowParkedSessionSkipReason = SemanticConvention<
-  'not_retained' | 'superseded' | 'disabled' | 'too_large' | 'newer_parked'
+  | 'not_retained'
+  | 'superseded'
+  | 'encrypted'
+  | 'disabled'
+  | 'too_large'
+  | 'newer_parked'
 >('workflow.parked_session.skip_reason');
 
 /** The estimated memory of the VM the delivery parked or declined to. */

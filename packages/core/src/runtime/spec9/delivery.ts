@@ -88,6 +88,7 @@ import {
   getReplayDivergenceMaxRetries,
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
+  isParkingEncryptedRunsEnabled,
   isTurboEnabled,
   isTurboFirstDeliveryAgeAdmitted,
   MAX_BATCH_EVENTS,
@@ -3886,6 +3887,16 @@ async function runDelivery(
               if (writer.isSuperseded) {
                 span?.setAttributes(
                   Attribute.WorkflowParkedSessionSkipReason('superseded')
+                );
+              } else if (
+                session &&
+                !isParkingEncryptedRunsEnabled() &&
+                (await encryptionKey.value.catch(() => undefined)) !== undefined
+              ) {
+                // A parked entry keeps the run's decrypted payloads past
+                // the delivery that decrypted them.
+                span?.setAttributes(
+                  Attribute.WorkflowParkedSessionSkipReason('encrypted')
                 );
               } else if (
                 outcome.parkSession &&

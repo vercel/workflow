@@ -333,6 +333,18 @@ export function getParkedVmMaxBytes(): number {
   return parsed;
 }
 
+/**
+ * Whether a run with an encryption key may park its VM between deliveries
+ * (`WORKFLOW_PARKED_VM_ENCRYPTED=1` / `true`). Off by default: a parked
+ * entry holds the run's decrypted payloads (the payload cache and the VM's
+ * state) past the delivery that decrypted them.
+ */
+export function isParkingEncryptedRunsEnabled(): boolean {
+  const raw = process.env.WORKFLOW_PARKED_VM_ENCRYPTED;
+  if (raw === undefined || raw === '') return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
 /** Default for {@link getParkedVmMaxAgeMs}: 10 minutes. */
 export const DEFAULT_PARKED_VM_MAX_AGE_MS = 10 * 60_000;
 

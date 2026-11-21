@@ -547,6 +547,8 @@ A run that loops on a hook (one payload per message, as a chat session does) get
 
 With a budget set (`WORKFLOW_PARKED_VM_MAX_BYTES`, `0` and so off by default), a delivery that suspends cleanly parks its VM session in process memory (`parked-session.ts`), with the log it consumed, the cursor after it, its writer's in-band count and the payload cache its events were prepared with (the VM's state containers live there). Only a suspension whose VM retention allows it (`getRetentionDecision`) parks.
 
+A run with an encryption key does not park, unless `WORKFLOW_PARKED_VM_ENCRYPTED` is set, so its decrypted payloads do not outlive the delivery that decrypted them.
+
 The run's next orchestrator delivery in the same process takes the entry, whatever it is. Only a plain wake (no `runInput`, `hookInput`, timer or `wakeUp()` names, and past the re-send gate) resumes it; any other delivery drops it. Resuming it:
 
 1. reads the log from the parked cursor in the writer's queue, keeping that read's first-page snapshot, beside the usual `runs.get`. A wake that names an event the VM already consumed (the queued copy of a wake this process acted on while lingering) almost always finds nothing new, so it reads the run only after the read finds something, and a run the routing already read is used as is;

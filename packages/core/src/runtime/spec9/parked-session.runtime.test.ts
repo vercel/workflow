@@ -586,6 +586,28 @@ describe('deliveries that bypass or drop a parked VM', () => {
   });
 });
 
+describe('deliveries that park no VM', () => {
+  it.each([
+    ['parks no VM', undefined, 'encrypted'],
+    ['parks the VM with WORKFLOW_PARKED_VM_ENCRYPTED', '1', undefined],
+  ])('%s for a run with an encryption key', async (_label, optIn, skip) => {
+    if (optIn) vi.stubEnv('WORKFLOW_PARKED_VM_ENCRYPTED', optIn);
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      [],
+      { encryptionKey: new Uint8Array(32).fill(7) }
+    );
+    await world.deliver(start);
+    expect(spanValues(SKIP_REASON)).toEqual(skip ? [skip] : []);
+    const replays = coldReplays.count;
+    for (const payload of ['a', 'b', 'c']) await send(world, runId, payload);
+
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(echoes).toBe(3);
+    expect(coldReplays.count).toBe(replays + (skip ? 3 : 0));
+  });
+});
+
 describe('deliveries that drop or decline a parked VM', () => {
   it('drops the parked VM on a timer wake, which loads and replays the whole log itself', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
