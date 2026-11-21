@@ -329,6 +329,33 @@ export function getParkedVmMaxBytes(): number {
   return parsed;
 }
 
+/** Default for {@link getParkedVmMaxAgeMs}: 10 minutes. */
+export const DEFAULT_PARKED_VM_MAX_AGE_MS = 10 * 60_000;
+
+/**
+ * How long, in milliseconds, a process keeps a VM parked between a run's
+ * deliveries (see `spec9/parked-session.ts`) before it drops it. The run's
+ * next delivery after that loads and replays the log as it would without
+ * parking.
+ *
+ * `WORKFLOW_PARKED_VM_MAX_AGE_MS` must be a positive integer. An invalid
+ * value falls back to the default with a one-time warning.
+ */
+export function getParkedVmMaxAgeMs(): number {
+  const raw = process.env.WORKFLOW_PARKED_VM_MAX_AGE_MS;
+  if (raw === undefined || raw === '') return DEFAULT_PARKED_VM_MAX_AGE_MS;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    warnOnce(
+      `WORKFLOW_PARKED_VM_MAX_AGE_MS=${raw}`,
+      'Ignoring WORKFLOW_PARKED_VM_MAX_AGE_MS: not a positive integer; using default',
+      { raw, defaultValue: DEFAULT_PARKED_VM_MAX_AGE_MS }
+    );
+    return DEFAULT_PARKED_VM_MAX_AGE_MS;
+  }
+  return parsed;
+}
+
 /**
  * Whether an operator has explicitly disabled optimistic start with
  * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Turbo mode starts the first

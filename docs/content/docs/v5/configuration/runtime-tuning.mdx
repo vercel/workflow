@@ -183,8 +183,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `8388608` (8 MiB)
 - Node.js VM engine and spec 9 runs only. The estimated memory a process may hold in VMs parked between a run's deliveries (see `WORKFLOW_RETAINED_VM`), per World instance. Each parked VM holds the run's history about three times over (the event log, its decrypted payloads, and the workflow's state), so the estimate is 256 KiB plus three times the size of the run's serialized event data.
-- A run whose estimate is over half the budget isn't parked, and its next delivery loads and replays the log as usual. Parking evicts the oldest parked VMs to stay within the budget. At most 64 VMs are parked, for up to 10 minutes each.
+- A run whose estimate is over half the budget isn't parked, and its next delivery loads and replays the log as usual. Parking evicts the oldest parked VMs to stay within the budget. At most 64 VMs are parked, each for up to `WORKFLOW_PARKED_VM_MAX_AGE_MS`.
 - Set `0` to turn parking off while keeping VM retention within one invocation.
+
+### `WORKFLOW_PARKED_VM_MAX_AGE_MS`
+
+- Default: `600000` (10 minutes)
+- How long a process keeps a VM parked between a run's deliveries (see `WORKFLOW_PARKED_VM_MAX_BYTES`). A run whose next delivery arrives later loads and replays the log as usual.
+- Must be a positive integer.
 
 ### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`
 

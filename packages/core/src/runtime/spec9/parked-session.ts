@@ -1,7 +1,7 @@
 import type { Event, World } from '@workflow/world';
 import type { ReplayPayloadCache } from '../../replay-payload-cache.js';
 import type { WorkflowSession } from '../../workflow.js';
-import { getParkedVmMaxBytes } from '../constants.js';
+import { getParkedVmMaxAgeMs, getParkedVmMaxBytes } from '../constants.js';
 
 /**
  * A node:vm session a delivery left suspended cleanly, kept so the run's
@@ -58,12 +58,11 @@ interface ParkedSessions {
 
 /**
  * Each entry holds a live VM and the run's decoded log, so few are kept and
- * not for long, and their estimated size stays within
- * `WORKFLOW_PARKED_VM_MAX_BYTES`. A delivery that finds none, or a stale one,
- * only pays today's full load and replay.
+ * not for long (`WORKFLOW_PARKED_VM_MAX_AGE_MS`), and their estimated size
+ * stays within `WORKFLOW_PARKED_VM_MAX_BYTES`. A delivery that finds none, or
+ * a stale one, only pays today's full load and replay.
  */
 const MAX_ENTRIES = 64;
-const MAX_AGE_MS = 10 * 60_000;
 
 /**
  * What an entry holds besides its events' payloads: the VM's context and the
@@ -135,8 +134,9 @@ function drop(sessions: ParkedSessions, runId: string): Entry | undefined {
 }
 
 function dropExpired(sessions: ParkedSessions, nowMs: number): void {
+  const maxAgeMs = getParkedVmMaxAgeMs();
   for (const [runId, entry] of sessions.entries) {
-    if (nowMs - entry.parkedAtMs <= MAX_AGE_MS) break;
+    if (nowMs - entry.parkedAtMs <= maxAgeMs) break;
     drop(sessions, runId);
   }
 }
@@ -150,7 +150,10 @@ function scheduleSweep(sessions: ParkedSessions): void {
   if (sessions.sweep !== undefined) return;
   const oldest = sessions.entries.values().next().value;
   if (oldest === undefined) return;
-  const delayMs = Math.max(0, oldest.parkedAtMs + MAX_AGE_MS - Date.now());
+  const delayMs = Math.max(
+    0,
+    oldest.parkedAtMs + getParkedVmMaxAgeMs() - Date.now()
+  );
   sessions.sweep = setTimeout(() => {
     sessions.sweep = undefined;
     dropExpired(sessions, Date.now());

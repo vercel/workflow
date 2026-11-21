@@ -70,6 +70,22 @@ describe('parked sessions', () => {
     );
   });
 
+  it('keeps entries for WORKFLOW_PARKED_VM_MAX_AGE_MS', () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_AGE_MS', '1000');
+    const world = newWorld();
+    parkSession(world, 'wrun_a', parked(1), 0);
+    parkSession(world, 'wrun_b', parked(1), 0);
+    expect(takeParkedSession(world, 'wrun_a', 1000)).toBeDefined();
+    expect(takeParkedSession(world, 'wrun_b', 1001)).toBeUndefined();
+  });
+
+  it('falls back to the default age for an invalid value', () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_AGE_MS', '0');
+    const world = newWorld();
+    parkSession(world, 'wrun_a', parked(1), 0);
+    expect(takeParkedSession(world, 'wrun_a', MAX_AGE_MS)).toBeDefined();
+  });
+
   it('expires entries on a timer while nothing touches the map', () => {
     vi.useFakeTimers();
     const world = newWorld();
