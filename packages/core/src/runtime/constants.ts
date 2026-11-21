@@ -495,10 +495,11 @@ export function getRunAheadDepth(): number {
 }
 
 /**
- * Allowance run-ahead's wait check adds to now (capped at the invocation's
- * inline deadline) when deciding whether an open wait can come due while the
- * orchestrator is still deciding. A wait due by then makes a run-ahead
- * boundary drain instead (see `getRunAheadWaitWindowEndMs`).
+ * Allowance added when deciding whether an open wait can come due while the
+ * orchestrator is still deciding. Spec 9 run-ahead adds it to now, capped at
+ * the invocation's inline deadline (`getRunAheadWaitWindowEndMs`); spec 8's
+ * inline scheduling adds it to the end of the inline window. A wait due by
+ * then makes the boundary drain instead.
  *
  * It covers clocks that are not this process's (the host that delivers a
  * timer, and an early timer delivery) and the last boundary of a window
