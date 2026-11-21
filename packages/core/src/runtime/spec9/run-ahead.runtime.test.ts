@@ -44,6 +44,13 @@ vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 // the next step's body can start while the previous step_completed is still
 // in flight.
 
+/** Each step started once, and ran one body. */
+function expectOneBodyPerStep(world: AppendOnlyWorld): void {
+  const starts = eventsOf(world, 'step_started').map((e) => e.correlationId);
+  expect(new Set(starts).size).toBe(starts.length);
+  expect(bodiesStarted).toBe(starts.length);
+}
+
 let currentWorld: AppendOnlyWorld | undefined;
 /** Per body start: how many earlier steps' outcomes had not committed yet. */
 let unconfirmedAtStart: number[] = [];
@@ -141,6 +148,24 @@ const observedHook = `const inc = ${step};
     hook.then(() => { resolved = true; });
     let n = 0;
     while (!resolved && n < 50) n = await inc(n);
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return n;
+  }${registerWorkflow()}`;
+
+// An awaited hook, with a far-off sleep started on every iteration: each
+// iteration also writes a non-strict `wait_created` (proof of concept).
+const observedHookWithSleeps = `const inc = ${step};
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow(steps) {
+    const hook = createHook({ token: "ra-observed" });
+    let resolved = false;
+    hook.then(() => { resolved = true; });
+    let n = 0;
+    while (!resolved && n < 50) {
+      sleep("30d");
+      n = await inc(n);
+    }
     for (let i = 0; i < steps; i++) n = await inc(n);
     return n;
   }${registerWorkflow()}`;
@@ -1037,6 +1062,146 @@ describe.each([
     // After it resolved, the loop ran ahead again.
     expect(Math.max(...unconfirmedAtStart.slice(before))).toBeGreaterThan(0);
   });
+
+  // Proof of concept: on a World that honors `strictEventCount`, a boundary
+  // whose only reason not to be inert is an awaited hook runs ahead with
+  // strict writes. An outcome is held until the next step's creation joins
+  // it, so both commit in one batch, and the next body starts only after it.
+  // The payload landing first refuses a strict write (at the World, or
+  // locally once the writer learned of it), and the delivery restarts.
+  it.runIf(vm === 'node')(
+    'runs ahead while the workflow waits on a hook on a strict World, and restarts when the payload lands',
+    async () => {
+      const info = vi.spyOn(runtimeLogger, 'info');
+      const error = vi.spyOn(console, 'error');
+      const { world, runId } = await run(observedHook, [STEPS], {
+        ...slowOutcomes,
+        strictEventCount: true,
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (
+            data.eventType === 'step_completed' &&
+            eventsOf(world, 'step_completed').length >= 2 &&
+            eventsOf(world, 'hook_received').length === 0
+          ) {
+            const hookId = eventsOf(world, 'hook_created')[0]?.correlationId;
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: hookId,
+              eventData: {
+                token: 'ra-observed',
+                payload: await dehydrateStepReturnValue(
+                  { ok: true },
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      // While the hook was awaited, an outcome and the next creation went
+      // out together.
+      expect(
+        world.batches.some(
+          (types) =>
+            types.includes('step_completed') && types.includes('step_started')
+        )
+      ).toBe(true);
+      // The World refused a strict write.
+      expect(world.strictRefusals.length).toBeGreaterThan(0);
+      // The payload stopped run-ahead instead of landing below a commit.
+      expect(
+        info.mock.calls.some(
+          ([message, meta]) =>
+            String(message).includes('Run-ahead stopped') &&
+            /slot taken|took a position/.test(
+              String((meta as { reason?: string } | undefined)?.reason)
+            )
+        )
+      ).toBe(true);
+      // The run's logger prints errors through `console.error`.
+      expect(
+        error.mock.calls.some(([line]) =>
+          String(line).includes('possibleLogCorruption')
+        )
+      ).toBe(false);
+      // Every body that ran has its step_started committed, and no step
+      // ran twice: a refused outcome is still written.
+      expectOneBodyPerStep(world);
+      const live = await runResult(world);
+      const cold = await coldReplay(world, observedHook);
+      expect(cold.result).toEqual(live);
+    }
+  );
+
+  // The writer learning of the payload through a non-strict write's answer
+  // (its `wait_created` is bumped above the payload) must not let a strict
+  // write queued behind it name a position that covers the payload.
+  it.runIf(vm === 'node')(
+    'refuses a strict write once a non-strict write learned of the payload',
+    async () => {
+      const info = vi.spyOn(runtimeLogger, 'info');
+      const error = vi.spyOn(console, 'error');
+      const { world, runId } = await run(observedHookWithSleeps, [STEPS], {
+        ...slowOutcomes,
+        strictEventCount: true,
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (
+            data.eventType === 'wait_created' &&
+            eventsOf(world, 'step_completed').length >= 2 &&
+            eventsOf(world, 'hook_received').length === 0
+          ) {
+            const hookId = eventsOf(world, 'hook_created')[0]?.correlationId;
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: hookId,
+              eventData: {
+                token: 'ra-observed',
+                payload: await dehydrateStepReturnValue(
+                  { ok: true },
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(eventsOf(world, 'hook_received')).toHaveLength(1);
+      // The payload stopped run-ahead (refused at the World, or locally once
+      // the writer learned of it) instead of strict writes committing above
+      // it from a view that never saw it.
+      // The writer refused it locally, before the World could commit it.
+      expect(
+        info.mock.calls.some(
+          ([message, meta]) =>
+            String(message).includes('Run-ahead stopped') &&
+            String((meta as { reason?: string } | undefined)?.reason).includes(
+              'took a position'
+            )
+        )
+      ).toBe(true);
+      // The run's logger prints errors through `console.error`.
+      expect(
+        error.mock.calls.some(([line]) =>
+          String(line).includes('possibleLogCorruption')
+        )
+      ).toBe(false);
+      expectOneBodyPerStep(world);
+      const live = await runResult(world);
+      const cold = await coldReplay(world, observedHookWithSleeps);
+      expect(cold.result).toEqual(live);
+    }
+  );
 
   // A VM snapshot is taken only once every speculative event the heap
   // consumed is confirmed at its position, so a restore replays nothing the

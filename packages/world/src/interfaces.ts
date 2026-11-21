@@ -824,6 +824,16 @@ export interface WorldCapabilities {
   inBandFence?: boolean;
 
   /**
+   * The World honors `strictEventCount` on in-band creates and batches
+   * (proof of concept): it commits such a write only at slot
+   * `eventCount + 1`, and otherwise refuses it with `EventSlotTakenError`,
+   * allocating nothing. Spec 9 run-ahead then runs ahead at boundaries where
+   * workflow code waits on a hook: a payload landing first refuses the
+   * speculative write instead of committing below it.
+   */
+  strictEventCount?: boolean;
+
+  /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
    * that carry the same `(runId, resumeId)`, collapsing them onto a single
    * committed event and returning the canonical one to every caller. Two
