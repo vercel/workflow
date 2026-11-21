@@ -2653,6 +2653,11 @@ async function runDelivery(
      * A conditional boundary drains these first (proof of concept).
      */
     let nonStrictSpeculations = 0;
+    /**
+     * Whether the last speculative creation batch committed. A conditional
+     * boundary starts its bodies only once it has (proof of concept).
+     */
+    let creationCommitted: Promise<boolean> | undefined;
     /** Set when a speculative write failed; the delivery stops. */
     let runAheadFailure: unknown;
     /**
@@ -3097,7 +3102,6 @@ async function runDelivery(
           ...slotSnapshot(),
           resolveData: REPLAY_RESOLVE_DATA,
           occurredAt,
-          ...(strict ? { strictEventCount: true as const } : {}),
         },
         (result) => {
           const committed = result.event;
@@ -3118,7 +3122,14 @@ async function runDelivery(
             repairAliases.set(event.eventId, committed.eventId);
             markRunAheadRepair('outcome');
           }
-        }
+        },
+        strict
+          ? {
+              eventCount: slot - 1,
+              foreignSlotsAtDecision: context.foreignSlotsAtDecision ?? -1,
+              coalesce: true,
+            }
+          : undefined
       );
       const settled = commit.then(
         (result) => {
@@ -3220,9 +3231,18 @@ async function runDelivery(
         {
           ...slotSnapshot(),
           ...(requestId ? { requestId } : {}),
-          ...(strict ? { strictEventCount: true as const } : {}),
         },
-        verifyCreation
+        verifyCreation,
+        strict
+          ? {
+              eventCount: first - 1,
+              foreignSlotsAtDecision: context.foreignSlotsAtDecision ?? -1,
+            }
+          : undefined
+      );
+      creationCommitted = commit.then(
+        () => true,
+        () => false
       );
       const settled = commit.then(
         (result) => {
@@ -3902,7 +3922,8 @@ async function runDelivery(
         observation.unknownHookCount === 0 &&
         observation.abortSignalHookCount === 0 &&
         observation.externalStepCount === 0 &&
-        !observation.waitDue;
+        !observation.waitDue &&
+        !(log && hasUnconsumedForeignEvent(log.events));
       let boundaryRunAhead: RunAheadContext | undefined;
       if (schedulesInline) {
         if (observation.inert) {
@@ -3935,7 +3956,10 @@ async function runDelivery(
             observedHookIds: suspension.observedHookIds,
             selfStepIds,
           });
-          if (conditionalBoundary) boundaryRunAhead.conditional = true;
+          if (conditionalBoundary) {
+            boundaryRunAhead.conditional = true;
+            boundaryRunAhead.foreignSlotsAtDecision = writer.foreignSlotsSeen;
+          }
         } else if (runAheadDepth > 0) {
           runAheadStats.drained++;
         }
@@ -4181,6 +4205,17 @@ async function runDelivery(
         );
       if (speculativeCreation && boundaryRunAhead) {
         const starts = writeCreationAhead(plan.events, boundaryRunAhead);
+        // At a conditional boundary a refusal is expected, not a
+        // classification gap: no body starts before its creation commits,
+        // so a refused one leaves no side effects behind (proof of concept).
+        if (boundaryRunAhead.conditional && !(await creationCommitted)) {
+          throw RunAheadStopError.is(writer.stopCause)
+            ? writer.stopCause
+            : (runAheadFailure ??
+                new RunAheadStopError(
+                  'a conditional speculative creation did not commit'
+                ));
+        }
         created = {
           createdSteps: [],
           failedStepCorrelationIds: new Set(),

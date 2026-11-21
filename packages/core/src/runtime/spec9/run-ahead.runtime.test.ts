@@ -145,6 +145,24 @@ const observedHook = `const inc = ${step};
     return n;
   }${registerWorkflow()}`;
 
+// An awaited hook, with a far-off sleep started on every iteration: each
+// iteration also writes a non-strict `wait_created` (proof of concept).
+const observedHookWithSleeps = `const inc = ${step};
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow(steps) {
+    const hook = createHook({ token: "ra-observed" });
+    let resolved = false;
+    hook.then(() => { resolved = true; });
+    let n = 0;
+    while (!resolved && n < 50) {
+      sleep("30d");
+      n = await inc(n);
+    }
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return n;
+  }${registerWorkflow()}`;
+
 // A branch on the clock after a step, beside a hook nothing awaits.
 let branchBodies: string[] = [];
 registerStepFunction('ra_first', async () => 'first');
@@ -1040,11 +1058,14 @@ describe.each([
 
   // Proof of concept: on a World that honors `strictEventCount`, a boundary
   // whose only reason not to be inert is an awaited hook runs ahead with
-  // strict writes. The payload landing first refuses the next one instead of
-  // committing below it, and the delivery restarts from the log.
+  // strict writes. An outcome is held until the next step's creation joins
+  // it, so both commit in one batch, and the next body starts only after it.
+  // The payload landing first refuses a strict write (at the World, or
+  // locally once the writer learned of it), and the delivery restarts.
   it.runIf(vm === 'node')(
-    'runs ahead while the workflow waits on a hook on a strict World, and restarts when the payload refuses a write',
+    'runs ahead while the workflow waits on a hook on a strict World, and restarts when the payload lands',
     async () => {
+      const info = vi.spyOn(runtimeLogger, 'info');
       const error = vi.spyOn(runtimeLogger, 'error');
       const { world, runId } = await run(observedHook, [STEPS], {
         ...slowOutcomes,
@@ -1076,18 +1097,24 @@ describe.each([
       await world.runUntilIdle();
       expect(eventsOf(world, 'run_failed')).toHaveLength(0);
       expect(eventsOf(world, 'run_completed')).toHaveLength(1);
-      const hookAt = world.events.findIndex(
-        (e) => e.eventType === 'hook_received'
-      );
-      const before = eventsOf(world, 'step_completed').filter(
-        (e) => world.events.indexOf(e) < hookAt
-      ).length;
-      // While the hook was awaited, outcomes ran ahead of their writes.
+      // While the hook was awaited, an outcome and the next creation went
+      // out together.
       expect(
-        Math.max(...unconfirmedAtStart.slice(0, before + 1))
-      ).toBeGreaterThan(0);
-      // The payload refused a strict write instead of landing below it.
-      expect(world.strictRefusals.length).toBeGreaterThan(0);
+        world.batches.some(
+          (types) =>
+            types.includes('step_completed') && types.includes('step_started')
+        )
+      ).toBe(true);
+      // The payload stopped run-ahead instead of landing below a commit.
+      expect(
+        info.mock.calls.some(
+          ([message, meta]) =>
+            String(message).includes('Run-ahead stopped') &&
+            /slot taken|took a position/.test(
+              String((meta as { reason?: string } | undefined)?.reason)
+            )
+        )
+      ).toBe(true);
       expect(
         error.mock.calls.some(
           ([, meta]) =>
@@ -1095,8 +1122,69 @@ describe.each([
               ?.possibleLogCorruption === true
         )
       ).toBe(false);
+      // No body ran without its step_started committed.
+      expect(bodiesStarted).toBe(eventsOf(world, 'step_started').length);
       const live = await runResult(world);
       const cold = await coldReplay(world, observedHook);
+      expect(cold.result).toEqual(live);
+    }
+  );
+
+  // The writer learning of the payload through a non-strict write's answer
+  // (its `wait_created` is bumped above the payload) must not let a strict
+  // write queued behind it name a position that covers the payload.
+  it.runIf(vm === 'node')(
+    'refuses a strict write once a non-strict write learned of the payload',
+    async () => {
+      const info = vi.spyOn(runtimeLogger, 'info');
+      const error = vi.spyOn(runtimeLogger, 'error');
+      const { world, runId } = await run(observedHookWithSleeps, [STEPS], {
+        ...slowOutcomes,
+        strictEventCount: true,
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (
+            data.eventType === 'wait_created' &&
+            eventsOf(world, 'step_completed').length >= 2 &&
+            eventsOf(world, 'hook_received').length === 0
+          ) {
+            const hookId = eventsOf(world, 'hook_created')[0]?.correlationId;
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: hookId,
+              eventData: {
+                token: 'ra-observed',
+                payload: await dehydrateStepReturnValue(
+                  { ok: true },
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(eventsOf(world, 'hook_received')).toHaveLength(1);
+      // The payload stopped run-ahead (refused at the World, or locally once
+      // the writer learned of it) instead of strict writes committing above
+      // it from a view that never saw it.
+      const stopped = info.mock.calls.some(([message]) =>
+        String(message).includes('Run-ahead stopped')
+      );
+      expect(stopped || world.strictRefusals.length > 0).toBe(true);
+      expect(
+        error.mock.calls.some(
+          ([, meta]) =>
+            (meta as { possibleLogCorruption?: boolean } | undefined)
+              ?.possibleLogCorruption === true
+        )
+      ).toBe(false);
+      expect(bodiesStarted).toBe(eventsOf(world, 'step_started').length);
+      const live = await runResult(world);
+      const cold = await coldReplay(world, observedHookWithSleeps);
       expect(cold.result).toEqual(live);
     }
   );

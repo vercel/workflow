@@ -1017,7 +1017,12 @@ export interface CreateEventParams {
    * already taken, refuse with `EventSlotTakenError` and allocate nothing,
    * instead of bumping to the next free slot and reporting what was skipped.
    * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
-   * and only with {@link eventCount}.
+   * and only with {@link eventCount}. The World checks the in-band fence
+   * first: a stale writer gets `InBandSupersededError`, never
+   * `EventSlotTakenError`. A retry of a strict write the World already
+   * committed (the same request after a lost answer) may be refused with
+   * `EventSlotTakenError` or answered with the original result; it is never
+   * committed twice.
    */
   strictEventCount?: true;
   /**
@@ -1329,7 +1334,12 @@ export interface CreateEventBatchParams {
    * already taken, refuse with `EventSlotTakenError` and allocate nothing,
    * instead of bumping to the next free slot and reporting what was skipped.
    * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
-   * and only with {@link eventCount}, for the whole block.
+   * and only with {@link eventCount}, for the whole block. The World checks the in-band fence
+   * first: a stale writer gets `InBandSupersededError`, never
+   * `EventSlotTakenError`. A retry of a strict write the World already
+   * committed (the same request after a lost answer) may be refused with
+   * `EventSlotTakenError` or answered with the original result; it is never
+   * committed twice.
    */
   strictEventCount?: true;
 }
