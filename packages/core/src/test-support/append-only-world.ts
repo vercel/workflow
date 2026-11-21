@@ -979,8 +979,8 @@ export class AppendOnlyWorld {
         }
         self.checkRunAcceptsWork(data.eventType);
         self.checkStepEventData(data);
-        self.checkStrictSlot(params);
         self.checkFence(params, 1);
+        self.checkStrictSlot(params);
         const event = self.append(
           self.committedHook(data),
           undefined,
@@ -1052,8 +1052,8 @@ export class AppendOnlyWorld {
             { status: 400 }
           );
         }
-        self.checkStrictSlot(params as CreateEventParams);
         self.checkFence(params as CreateEventParams, batch.length);
+        self.checkStrictSlot(params as CreateEventParams);
         const firstSlot = self.seq + 1;
         if (params?.inBand && params.eventCount !== undefined) {
           self.reportSpans.push({ eventCount: params.eventCount, firstSlot });

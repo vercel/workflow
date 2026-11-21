@@ -1306,9 +1306,11 @@ export const EVENT_SLOT_TAKEN_CODE = 'event-slot-taken';
  *
  * Spec 9 run-ahead sends its speculative writes this way at boundaries where
  * workflow code waits on a hook (proof of concept). A refusal means another
- * writer appended first, so nothing decided from the speculative view has
- * committed: the delivery restarts from the log. The runtime handles this;
- * users calling a World's storage API directly may encounter it.
+ * writer appended first and the refused write did not commit; the delivery
+ * restarts from the log. Writes of that run-ahead which committed before the
+ * refusal stay, and were decided from a view the refusing event lands after.
+ * The runtime handles this; users calling a World's storage API directly may
+ * encounter it.
  */
 export class EventSlotTakenError extends WorkflowWorldError {
   constructor(message: string) {
