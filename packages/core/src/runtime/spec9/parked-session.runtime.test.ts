@@ -18,11 +18,11 @@ import {
   vi,
 } from 'vitest';
 import { registerStepFunction } from '../../private.js';
+import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import type { AppendOnlyWorld } from '../../test-support/append-only-world.js';
-import type { WorkflowSession } from '../../workflow.js';
 import {
   eventsOf,
   ORCHESTRATOR_QUEUE,
@@ -30,6 +30,7 @@ import {
   runResult,
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
+import type { WorkflowSession } from '../../workflow.js';
 import { wakeUpRun } from '../runs.js';
 import { getWorld } from '../world.js';
 import { parkSession, takeParkedSession } from './parked-session.js';
@@ -74,6 +75,7 @@ afterAll(async () => {
 const key = (attribute: Record<string, unknown>) => Object.keys(attribute)[0]!;
 const SKIP_REASON = key(Attribute.WorkflowParkedSessionSkipReason('disabled'));
 const READ = key(Attribute.WorkflowParkedSessionRead('resume'));
+const DIVERGED = key(Attribute.WorkflowParkedSessionDiverged(true));
 
 /** Every value the finished spans carry for `attribute`, in finish order. */
 const spanValues = (attribute: string): unknown[] =>
@@ -87,9 +89,12 @@ const spanValues = (attribute: string): unknown[] =>
 // a message does once its orchestrator stopped lingering.
 
 const TOKEN = 'parked-session-hook';
+/** The payloads `ps_echo` bodies ran on. */
+let echoBodies: string[] = [];
 let echoes = 0;
 registerStepFunction('ps_echo', async (payload: string) => {
   echoes++;
+  echoBodies.push(payload);
   return `echo:${payload}`;
 });
 
@@ -344,6 +349,8 @@ describe('a session parked across deliveries', () => {
     const diverging: WorkflowSession = {
       workflowRun: parked!.session.workflowRun,
       argumentCount: parked!.session.argumentCount,
+      rebased: false,
+      displacedWrites: false,
       resume: async () => {
         throw new ReplayDivergenceError('parked VM disagrees', {
           eventId: 'evnt_parked',
@@ -738,5 +745,286 @@ describe("a resumed VM in the resuming delivery's async context", () => {
     expect(coldReplays.count).toBe(replays);
     // The unawaited tail step, recorded by the drain.
     expect(createdIn).toEqual(['resume-b']);
+  });
+});
+
+// The same session, deployed again: from its second payload on, a payload
+// goes to another step. A VM of the first version that replays the second's
+// decisions diverges where they differ; a cold replay of either log on the
+// second version does not.
+let shouts = 0;
+registerStepFunction('ps_shout', async (payload: string) => {
+  shouts++;
+  return `shout:${payload}`;
+});
+
+/** The payloads `ps_once` bodies ran on. */
+let onceBodies: string[] = [];
+registerStepFunction(
+  'ps_once',
+  Object.assign(
+    async (payload: string) => {
+      onceBodies.push(payload);
+      return `once:${payload}`;
+    },
+    { maxRetries: 0 }
+  )
+);
+
+/** {@link sessionWorkflow} on `stepName`, for `count` payloads. */
+const sessionWorkflowOf = (
+  stepName: string,
+  count: number
+) => `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(stepName)});
+  async function workflow() {
+    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const replies = [];
+    for await (const payload of hook) {
+      replies.push(await step(payload));
+      if (replies.length === ${count}) break;
+    }
+    return replies;
+  }${registerWorkflow()}`;
+const shoutingSessionWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_echo");
+  const shout = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_shout");
+  async function workflow() {
+    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const replies = [];
+    for await (const payload of hook) {
+      replies.push(await (replies.length === 0 ? echo : shout)(payload));
+      if (replies.length === 3) break;
+    }
+    return replies;
+  }${registerWorkflow()}`;
+
+/** Appends a payload for the session's hook, with no wake. */
+async function land(world: AppendOnlyWorld, runId: string, payload: string) {
+  world.appendOutOfBand({
+    eventType: 'hook_received',
+    runId,
+    correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+    eventData: {
+      token: TOKEN,
+      payload: await dehydrateStepReturnValue(payload, runId, undefined),
+    },
+  } as unknown as Partial<Event>);
+}
+
+const wake = (world: AppendOnlyWorld, runId: string) =>
+  world.deliver(world.enqueue(ORCHESTRATOR_QUEUE, { runId }));
+
+/** In-band writes the World's fence refused. */
+const fenceRefusals = (world: AppendOnlyWorld) => {
+  const checkFence = vi.spyOn(
+    world as unknown as { checkFence: (...args: unknown[]) => void },
+    'checkFence'
+  );
+  return () =>
+    checkFence.mock.results.filter((result) => result.type === 'throw').length;
+};
+
+describe("a stale parked VM and the other orchestrator's writes", () => {
+  beforeEach(() => {
+    shouts = 0;
+    echoBodies = [];
+    onceBodies = [];
+  });
+
+  // The fence keeps the log to one writer, but does not stop a body from
+  // running twice: with run-ahead, a retriable step's body can start before
+  // its start commits, so the racer the fence then refuses has run it too (see
+  // "The in-band fence" in the README). A `maxRetries: 0` step never starts
+  // ahead, and nor does any step with run-ahead off.
+  it.each([
+    ['a step that allows no retries', 'ps_once', undefined],
+    ['a retriable step with run-ahead off', 'ps_echo', '0'],
+  ])('lets one of it and the orchestrator still lingering past it write, and runs %s once', async (_label, stepName, runAheadDepth) => {
+    if (runAheadDepth !== undefined) {
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', runAheadDepth);
+    }
+    // Holds each racer's first in-band `step_started` for the last payload
+    // until the other one's arrives, so both reach the fence.
+    let raceArmed = false;
+    let racers = 0;
+    let releaseRace!: () => void;
+    const bothRacing = new Promise<void>((resolve) => {
+      releaseRace = resolve;
+    });
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflowOf(stepName, 3),
+      [],
+      {
+        subscribe: true,
+        async beforeCreate(data, params) {
+          if (
+            !raceArmed ||
+            data.eventType !== 'step_started' ||
+            (params as { inBand?: boolean } | undefined)?.inBand !== true
+          ) {
+            return;
+          }
+          if (++racers === 2) releaseRace();
+          await Promise.race([
+            bothRacing,
+            new Promise((resolve) => setTimeout(resolve, 2_000)),
+          ]);
+        },
+      }
+    );
+    await world.deliver(start);
+    await send(world, runId, 'a');
+    // This process's VM, parked after 'a'. Another process handles 'b' and
+    // keeps lingering on the hook with its newer VM.
+    const thisProcess = await getWorld();
+    const stale = takeParkedSession(thisProcess, runId);
+    expect(stale).toBeDefined();
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '10000');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '10000');
+    await land(world, runId, 'b');
+    const lingering = wake(world, runId);
+    await vi.waitFor(
+      () => expect(eventsOf(world, 'step_completed')).toHaveLength(2),
+      { timeout: 5_000 }
+    );
+    expect(world.deliveries).toHaveLength(2);
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '0');
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '0');
+    parkSession(thisProcess, runId, stale!);
+    const refusals = fenceRefusals(world);
+    spanExporter.reset();
+
+    // 'c' reaches both: the lingering orchestrator through its feed, and the
+    // stale VM through its wake.
+    raceArmed = true;
+    await land(world, runId, 'c');
+    await Promise.all([wake(world, runId), lingering]);
+    await world.runUntilIdle();
+
+    expect(racers).toBe(2);
+    expect(refusals()).toBeGreaterThanOrEqual(1);
+    expect(spanValues(READ)).toContain('crossed');
+    const prefix = stepName === 'ps_once' ? 'once' : 'echo';
+    expect(await runResult(world)).toEqual(
+      ['a', 'b', 'c'].map((payload) => `${prefix}:${payload}`)
+    );
+    expect(stepName === 'ps_once' ? onceBodies : echoBodies).toEqual([
+      'a',
+      'b',
+      'c',
+    ]);
+    expect(eventsOf(world, 'step_started')).toHaveLength(3);
+  });
+
+  it('does not let the stale VM replace the newer one when their deliveries finish out of order', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflowOf('ps_echo', 4),
+      []
+    );
+    await world.deliver(start);
+    const thisProcess = await getWorld();
+    // The start's VM goes aside while another process handles 'a', so it is
+    // stale when it comes back.
+    const stale = takeParkedSession(thisProcess, runId);
+    expect(stale).toBeDefined();
+    await send(world, runId, 'a');
+    takeParkedSession(thisProcess, runId);
+    parkSession(thisProcess, runId, stale!);
+
+    // The stale VM resumes over 'a' to handle 'b'. Its read after the turn
+    // comes back late, after another delivery handled 'c' and parked.
+    let holdRead = true;
+    let releaseRead!: () => void;
+    const readHeld = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const list = thisProcess.events.list.bind(thisProcess.events);
+    const reading = vi
+      .spyOn(thisProcess.events, 'list')
+      .mockImplementation(async (params) => {
+        const page = await list(params);
+        if (
+          holdRead &&
+          params.pagination?.cursor !== undefined &&
+          eventsOf(world, 'step_completed').length === 2
+        ) {
+          holdRead = false;
+          await readHeld;
+        }
+        return page;
+      });
+    await land(world, runId, 'b');
+    const crossed = wake(world, runId);
+    await vi.waitFor(() => expect(holdRead).toBe(false));
+    await send(world, runId, 'c');
+    const newer = takeParkedSession(thisProcess, runId);
+    expect(newer).toBeDefined();
+    parkSession(thisProcess, runId, newer!);
+    spanExporter.reset();
+
+    releaseRead();
+    await crossed;
+    reading.mockRestore();
+    expect(spanValues(READ)).toEqual(['crossed']);
+    expect(spanValues(SKIP_REASON)).toEqual(['newer_parked']);
+    expect(takeParkedSession(thisProcess, runId)?.tailSlot).toBe(
+      newer!.tailSlot
+    );
+    parkSession(thisProcess, runId, newer!);
+
+    const replays = coldReplays.count;
+    await send(world, runId, 'd');
+    expect(await runResult(world)).toEqual([
+      'echo:a',
+      'echo:b',
+      'echo:c',
+      'echo:d',
+    ]);
+    expect(echoes).toBe(4);
+    // 'd' resumed the newer VM.
+    expect(coldReplays.count).toBe(replays);
+  });
+
+  it("replays from cold when another orchestrator's events make the parked VM diverge, without spending the divergence budget", async () => {
+    // A divergence the delivery counted would fail the run on the spot.
+    vi.stubEnv('WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES', '0');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    await send(world, runId, 'a');
+    const thisProcess = await getWorld();
+    const stale = takeParkedSession(thisProcess, runId);
+    expect(stale).toBeDefined();
+    // A new deployment, elsewhere, handles 'b' with its new step.
+    await workflowEntrypoint(shoutingSessionWorkflow)(
+      new Request('https://example.test')
+    );
+    await send(world, runId, 'b');
+    expect(shouts).toBe(1);
+    takeParkedSession(thisProcess, runId);
+    parkSession(thisProcess, runId, stale!);
+    const replays = coldReplays.count;
+    spanExporter.reset();
+
+    await send(world, runId, 'c');
+    const diverged = warn.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('Parked VM diverged'));
+    warn.mockRestore();
+
+    expect(spanValues(READ)).toEqual(['crossed']);
+    expect(spanValues(DIVERGED)).toEqual([true]);
+    expect(diverged).toHaveLength(1);
+    expect(diverged[0]).toMatch(/crossedWrites\W+true/);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    // The one cold replay that replaced the VM, on the new deployment.
+    expect(coldReplays.count).toBe(replays + 1);
+    expect(await runResult(world)).toEqual(['echo:a', 'shout:b', 'shout:c']);
+    expect(echoes).toBe(1);
+    expect(shouts).toBe(2);
   });
 });
