@@ -189,16 +189,22 @@ const withAbortSignal = `const inc = ${step};
   }${registerWorkflow()}`;
 
 // An AbortController only workflow code aborts (`{ inBandOnly: true }`),
-// optionally aborted halfway through the loop.
-const withInBandOnlyAbort = (abortHalfway: boolean) => `const inc = ${step};
+// optionally aborted halfway through the loop, optionally with an abort
+// listener that starts a step.
+const withInBandOnlyAbort = (
+  abortHalfway: boolean,
+  listenerStep = false
+) => `const inc = ${step};
   async function workflow(steps) {
     const controller = new AbortController({ inBandOnly: true });
+    let fromListener = Promise.resolve(0);
+    ${listenerStep ? 'controller.signal.addEventListener("abort", () => { fromListener = inc(999); });' : ''}
     let n = 0;
     for (let i = 0; i < steps; i++) {
       ${abortHalfway ? 'if (i === Math.floor(steps / 2)) controller.abort("halfway");' : ''}
       n = await inc(controller.signal.aborted ? n + 100 : n);
     }
-    return n;
+    return n + (await fromListener);
   }${registerWorkflow()}`;
 
 // The child-run completion system hook (`child-run-completion.ts`), kept
@@ -1171,11 +1177,39 @@ describe.each([
       const { world } = await run(source, [STEPS]);
       await world.runUntilIdle();
       expect(await runResult(world)).toBe(expected);
-      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      // The abort was decided with earlier outcomes still in flight; its
+      // hook_received commits behind them.
+      expect(unconfirmedAtStart[half - 1]).toBeGreaterThan(0);
       expect(eventsOf(world, 'hook_received')).toHaveLength(1);
 
       // Run-ahead off leaves the same log: the abort's hook_received at the
       // same position among the step events.
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+      unconfirmedAtStart = [];
+      bodiesStarted = 0;
+      const off = await run(source, [STEPS]);
+      await off.world.runUntilIdle();
+      expect(await runResult(off.world)).toBe(expected);
+      expect(shape(world.events)).toEqual(shape(off.world.events));
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(RUN_AHEAD_DEPTH));
+
+      const cold = await coldReplay(world, source);
+      expect(cold.result).toBe(expected);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    'runs ahead past an in-band-only abort whose listener starts a step',
+    async () => {
+      const source = withInBandOnlyAbort(true, true);
+      const half = Math.floor(STEPS / 2);
+      const expected = half + (STEPS - half) * 101 + 1000;
+      const { world } = await run(source, [STEPS]);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(expected);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS + 1);
+
       vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
       unconfirmedAtStart = [];
       bodiesStarted = 0;
