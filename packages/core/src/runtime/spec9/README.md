@@ -489,6 +489,8 @@ Each speculative write is checked when it commits:
 - its stored `createdAt` must equal the `occurredAt` the workflow used, or the delivery stops and run-ahead is off for that World for the rest of the process;
 - a slot other than the predicted one is a repair, not a stop: another writer appended first, and the delivery rebuilds its log from the write responses, without a read, and replays. A write that committed below its predicted slot was placed past the position it took; the retained session is then dropped and the rebuilt log replays from cold.
 
+A retained session takes the rebuilt log as a rebase (`WorkflowSessionRebase`): each speculative event it consumed maps to the id its write committed at, and an event another writer placed below what it consumed joins only when it is inert. The aliases map the consumed event, not its id, for two reasons: the event that displaced a speculative one holds the id that one was placed at, and can be consumed too, and a repair that shifts adjacent speculative events up reports `a → b` and `b → c` for different events. Followed through each other, id-keyed aliases sent `a` to `c` and the displacing event to the committed id, so every later resume declined and the delivery replayed from cold.
+
 A displaced write commits above its predicted slot, and that slot's event id then belongs to another event. Replay's payload cache, which lives for the whole delivery, is therefore keyed on event id and correlation id together, so a payload prepared at the predicted id is never served to another step's event there.
 
 | Event below a speculative write | Hazard when |

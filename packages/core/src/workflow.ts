@@ -216,6 +216,19 @@ export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
   /**
+   * Whether a rebase moved the session onto a log that is not a strict
+   * extension of what it consumed, so every later `resume` matches the log
+   * through the rebase: it holds aliases ({@link displacedWrites}) or events
+   * admitted below ones it consumed before them.
+   */
+  readonly rebased: boolean;
+  /**
+   * Whether the session consumed some of its own events at ids they did not
+   * commit at (a rebase's `aliases`): another writer's event took the slot a
+   * speculative write was placed at.
+   */
+  readonly displacedWrites: boolean;
+  /**
    * `drainPendingQueue`, when given, replaces the drain the session records
    * its end-of-run queue through. A session resumed by another delivery than
    * the one that created it must be given that delivery's drain: the old one
@@ -1386,17 +1399,22 @@ async function createWorkflowSessionInner(
     workflowFn(...args)
   );
 
-  /** Ids consumed ahead of their write, mapped to the ids they committed at. */
-  const aliases = new Map<string, string>();
+  /**
+   * Events consumed ahead of their write, mapped to the ids they committed
+   * at. Keyed by the consumed event, not its id: the event that displaced a
+   * speculative one holds the id that one was placed at, and can be consumed
+   * too (admitted below it). Each is mapped once, by the rebase that was
+   * handed it, so one alias never leads into another: a repair that shifts
+   * several adjacent speculative events up by one reports `a → b` and
+   * `b → c` for different events.
+   */
+  const aliases = new WeakMap<Event, string>();
+  /** How many consumed events {@link aliases} maps. */
+  let aliasCount = 0;
   /** Events admitted below events consumed before them (see the rebase). */
   const admittedBelow = new Set<string>();
-  const committedId = (eventId: string): string => {
-    let id = eventId;
-    for (let hops = 0; hops < 16 && aliases.has(id); hops++) {
-      id = aliases.get(id)!;
-    }
-    return id;
-  };
+  const committedId = (event: Event): string =>
+    aliases.get(event) ?? event.eventId;
   /**
    * The events of `nextEvents` this session has not consumed, when the rest
    * of it is what the session consumed under the rebase: every consumed
@@ -1415,7 +1433,7 @@ async function createWorkflowSessionInner(
     const consumedIds = new Set<string>();
     let last = -1;
     for (const event of eventsConsumer.events) {
-      const id = committedId(event.eventId);
+      const id = committedId(event);
       const index = indexById.get(id);
       if (index === undefined) return undefined;
       consumedIds.add(id);
@@ -1438,13 +1456,25 @@ async function createWorkflowSessionInner(
   const session: WorkflowSession = {
     workflowRun,
     argumentCount: args.length,
+    get rebased() {
+      return aliasCount > 0 || admittedBelow.size > 0;
+    },
+    get displacedWrites() {
+      return aliasCount > 0;
+    },
     async resume(nextEvents, rebase, drain) {
       switch (state.type) {
         case 'suspended': {
           if (drain) currentDrain = drain;
-          if (rebase || aliases.size > 0 || admittedBelow.size > 0) {
-            for (const [from, to] of rebase?.aliases ?? []) {
-              aliases.set(from, to);
+          if (rebase || aliasCount > 0 || admittedBelow.size > 0) {
+            if (rebase && rebase.aliases.size > 0) {
+              for (const event of eventsConsumer.events) {
+                if (aliases.has(event)) continue;
+                const to = rebase.aliases.get(event.eventId);
+                if (to === undefined || to === event.eventId) continue;
+                aliases.set(event, to);
+                aliasCount++;
+              }
             }
             const fresh = rebasedExtension(nextEvents, rebase);
             if (!fresh) {
