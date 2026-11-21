@@ -44,6 +44,13 @@ vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 // the next step's body can start while the previous step_completed is still
 // in flight.
 
+/** Each step started once, and ran one body. */
+function expectOneBodyPerStep(world: AppendOnlyWorld): void {
+  const starts = eventsOf(world, 'step_started').map((e) => e.correlationId);
+  expect(new Set(starts).size).toBe(starts.length);
+  expect(bodiesStarted).toBe(starts.length);
+}
+
 let currentWorld: AppendOnlyWorld | undefined;
 /** Per body start: how many earlier steps' outcomes had not committed yet. */
 let unconfirmedAtStart: number[] = [];
@@ -1103,7 +1110,7 @@ describe.each([
     'runs ahead while the workflow waits on a hook on a strict World, and restarts when the payload lands',
     async () => {
       const info = vi.spyOn(runtimeLogger, 'info');
-      const error = vi.spyOn(runtimeLogger, 'error');
+      const error = vi.spyOn(console, 'error');
       const { world, runId } = await run(observedHook, [STEPS], {
         ...slowOutcomes,
         strictEventCount: true,
@@ -1152,15 +1159,15 @@ describe.each([
             )
         )
       ).toBe(true);
+      // The run's logger prints errors through `console.error`.
       expect(
-        error.mock.calls.some(
-          ([, meta]) =>
-            (meta as { possibleLogCorruption?: boolean } | undefined)
-              ?.possibleLogCorruption === true
+        error.mock.calls.some(([line]) =>
+          String(line).includes('possibleLogCorruption')
         )
       ).toBe(false);
-      // No body ran without its step_started committed.
-      expect(bodiesStarted).toBe(eventsOf(world, 'step_started').length);
+      // Every body that ran has its step_started committed, and no step
+      // ran twice: a refused outcome is still written.
+      expectOneBodyPerStep(world);
       const live = await runResult(world);
       const cold = await coldReplay(world, observedHook);
       expect(cold.result).toEqual(live);
@@ -1174,7 +1181,7 @@ describe.each([
     'refuses a strict write once a non-strict write learned of the payload',
     async () => {
       const info = vi.spyOn(runtimeLogger, 'info');
-      const error = vi.spyOn(runtimeLogger, 'error');
+      const error = vi.spyOn(console, 'error');
       const { world, runId } = await run(observedHookWithSleeps, [STEPS], {
         ...slowOutcomes,
         strictEventCount: true,
@@ -1212,14 +1219,13 @@ describe.each([
         String(message).includes('Run-ahead stopped')
       );
       expect(stopped || world.strictRefusals.length > 0).toBe(true);
+      // The run's logger prints errors through `console.error`.
       expect(
-        error.mock.calls.some(
-          ([, meta]) =>
-            (meta as { possibleLogCorruption?: boolean } | undefined)
-              ?.possibleLogCorruption === true
+        error.mock.calls.some(([line]) =>
+          String(line).includes('possibleLogCorruption')
         )
       ).toBe(false);
-      expect(bodiesStarted).toBe(eventsOf(world, 'step_started').length);
+      expectOneBodyPerStep(world);
       const live = await runResult(world);
       const cold = await coldReplay(world, observedHookWithSleeps);
       expect(cold.result).toEqual(live);

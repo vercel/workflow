@@ -2823,7 +2823,7 @@ async function runDelivery(
      * the cold replay that follows reads them.
      */
     function checkRunAheadHazard(event: Event, source: string): void {
-      if (speculationsBySlot.size === 0) return;
+      if (speculationsBySlot.size === 0 || writer.strictRefused) return;
       // Every step this delivery runs inline writes its own
       // events, until a retry moves it to its own message; the
       // hooks are those any boundary still in flight was
@@ -3128,6 +3128,7 @@ async function runDelivery(
               eventCount: slot - 1,
               foreignSlotsAtDecision: context.foreignSlotsAtDecision ?? -1,
               coalesce: true,
+              mayStillWrite: mayStillWriteAfterHazard,
             }
           : undefined
       );
@@ -3237,6 +3238,7 @@ async function runDelivery(
           ? {
               eventCount: first - 1,
               foreignSlotsAtDecision: context.foreignSlotsAtDecision ?? -1,
+              mayStillWrite: mayStillWriteAfterHazard,
             }
           : undefined
       );
@@ -3918,6 +3920,7 @@ async function runDelivery(
       const conditionalBoundary =
         !observation.inert &&
         world.capabilities?.strictEventCount === true &&
+        writer.supportsBatch &&
         observation.observedHookCount > 0 &&
         observation.unknownHookCount === 0 &&
         observation.abortSignalHookCount === 0 &&
