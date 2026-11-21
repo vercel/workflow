@@ -634,8 +634,16 @@ export class InBandWriter {
     return new Promise((resolve, reject) => {
       const member: AheadWrite = { ...write, resolve, reject };
       this.pendingPositions += member.events.length;
+      // Strict and ordinary writes never share a batch: a strict batch is
+      // sent at its decided position and refused as a whole.
+      const sameKind =
+        this.openGroup !== undefined &&
+        this.openGroup.some((write) => write.strict !== undefined) ===
+          (member.strict !== undefined);
+      if (!sameKind) this.releaseHeld?.();
       if (
         this.openGroup &&
+        sameKind &&
         groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS &&
         groupBytes(this.openGroup) + groupBytes([member]) <=
           MAX_IN_BAND_CREATION_BATCH_BYTES

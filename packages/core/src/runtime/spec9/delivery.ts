@@ -2653,6 +2653,8 @@ async function runDelivery(
      * A conditional boundary drains these first (proof of concept).
      */
     let nonStrictSpeculations = 0;
+    /** Speculative writes in flight sent with `strictEventCount`. */
+    let strictSpeculations = 0;
     /**
      * Whether the last speculative creation batch committed. A conditional
      * boundary starts its bodies only once it has (proof of concept).
@@ -2823,7 +2825,12 @@ async function runDelivery(
      * the cold replay that follows reads them.
      */
     function checkRunAheadHazard(event: Event, source: string): void {
-      if (speculationsBySlot.size === 0 || writer.strictRefused) return;
+      if (
+        speculationsBySlot.size === 0 ||
+        (writer.strictRefused && nonStrictSpeculations === 0)
+      ) {
+        return;
+      }
       // Every step this delivery runs inline writes its own
       // events, until a retry moves it to its own message; the
       // hooks are those any boundary still in flight was
@@ -3094,7 +3101,8 @@ async function runDelivery(
       everSpeculative.add(event);
       const releaseContext = noteRunAheadContext(context);
       const strict = context.conditional === true;
-      if (!strict) nonStrictSpeculations++;
+      if (strict) strictSpeculations++;
+      else nonStrictSpeculations++;
       const commit = writer.createAhead(
         data,
         {
@@ -3135,7 +3143,8 @@ async function runDelivery(
       const settled = commit.then(
         (result) => {
           releaseContext();
-          if (!strict) nonStrictSpeculations--;
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculativeSlots.delete(slot);
           speculationsBySlot.delete(slot);
           if (!runAheadRepair) {
@@ -3148,7 +3157,8 @@ async function runDelivery(
         },
         (error: unknown) => {
           releaseContext();
-          if (!strict) nonStrictSpeculations--;
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculationsBySlot.delete(slot);
           if (runAheadFailure === undefined) {
             runAheadStats.failureStops++;
@@ -3187,7 +3197,8 @@ async function runDelivery(
       );
       const releaseContext = noteRunAheadContext(context);
       const strict = context.conditional === true;
-      if (!strict) nonStrictSpeculations++;
+      if (strict) strictSpeculations++;
+      else nonStrictSpeculations++;
       const postSentAtMs = Date.now();
       const verifyCreation = (result: EventBatchResult) => {
         for (const below of result.events ?? []) {
@@ -3249,7 +3260,8 @@ async function runDelivery(
       const settled = commit.then(
         (result) => {
           releaseContext();
-          if (!strict) nonStrictSpeculations--;
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculative.forEach((_, index) => {
             speculativeSlots.delete(first + index);
             speculationsBySlot.delete(first + index);
@@ -3283,7 +3295,8 @@ async function runDelivery(
         },
         (error: unknown) => {
           releaseContext();
-          if (!strict) nonStrictSpeculations--;
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculative.forEach((_, index) => {
             speculationsBySlot.delete(first + index);
           });
@@ -3916,17 +3929,20 @@ async function runDelivery(
       // Not inert only because workflow code waits on a hook, on a World
       // that refuses a write whose slot another writer took first
       // (`strictEventCount`): run ahead with strict writes (proof of
-      // concept).
+      // concept). An inert boundary behind strict writes still in flight is
+      // conditional too: if one is refused, the writes decided after it are
+      // refused with it, so their bodies must not have started.
       const conditionalBoundary =
-        !observation.inert &&
         world.capabilities?.strictEventCount === true &&
         writer.supportsBatch &&
-        observation.observedHookCount > 0 &&
-        observation.unknownHookCount === 0 &&
-        observation.abortSignalHookCount === 0 &&
-        observation.externalStepCount === 0 &&
-        !observation.waitDue &&
-        !(log && hasUnconsumedForeignEvent(log.events));
+        (observation.inert
+          ? strictSpeculations > 0
+          : observation.observedHookCount > 0 &&
+            observation.unknownHookCount === 0 &&
+            observation.abortSignalHookCount === 0 &&
+            observation.externalStepCount === 0 &&
+            !observation.waitDue &&
+            !(log && hasUnconsumedForeignEvent(log.events)));
       let boundaryRunAhead: RunAheadContext | undefined;
       if (schedulesInline) {
         if (observation.inert) {

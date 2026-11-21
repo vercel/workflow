@@ -1302,15 +1302,17 @@ export const EVENT_SLOT_TAKEN_CODE = 'event-slot-taken';
 /**
  * Thrown when a World refuses a write sent with `strictEventCount: true`
  * because the slot after its `eventCount` is already taken (HTTP 412,
- * `event-slot-taken`). The World writes and allocates nothing for it.
+ * `event-slot-taken`). The World writes and allocates nothing for the refused
+ * request. A retry of a request the World already committed may be refused
+ * too (see `strictEventCount`): the earlier attempt's write stands.
  *
  * Spec 9 run-ahead sends its speculative writes this way at boundaries where
  * workflow code waits on a hook (proof of concept). A refusal means another
- * writer appended first and the refused write did not commit; the delivery
- * restarts from the log. Writes of that run-ahead which committed before the
- * refusal stay, and were decided from a view the refusing event lands after.
- * The runtime handles this; users calling a World's storage API directly may
- * encounter it.
+ * writer appended first; the delivery restarts from the log. If the refusal
+ * answered a retry whose first attempt committed, the in-band fence refuses
+ * the delivery's next write instead, and the run is redelivered. The runtime
+ * handles this; users calling a World's storage API directly may encounter
+ * it.
  */
 export class EventSlotTakenError extends WorkflowWorldError {
   constructor(message: string) {
