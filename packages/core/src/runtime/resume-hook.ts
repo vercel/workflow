@@ -10,6 +10,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  type Event,
   HOOK_RESUME_DEDUP_VERSION,
   type HookResumeContext,
   HookSchema,
@@ -44,6 +45,7 @@ import { getWorkflowQueueName } from './helpers.js';
 import { publishHookWakeWithRetry } from './hook-wake.js';
 import { HookInvocationResultSchema } from './invocations.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
+import { noteParkedRunWrite } from './spec9/parked-session.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /** Monotonic ULID factory for per-call resume idempotency keys. */
@@ -1032,8 +1034,8 @@ async function resumeHookAttempt<T = any>(
       (resumeContext.runSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
         ? { workflowName: resumeContext.workflowName }
         : {};
-    const write = (claim: boolean, resolved: boolean) =>
-      world.events.create(
+    const write = async (claim: boolean, resolved: boolean) => {
+      const result = await world.events.create(
         hook.runId,
         {
           eventType: 'hook_received',
@@ -1054,6 +1056,21 @@ async function resumeHookAttempt<T = any>(
           ...(resolved ? { requireHookResumeDedup: true } : {}),
         }
       );
+      // A spec 9 run whose session is parked in this process resumes it on
+      // this event without reading the log (see `noteParkedRunWrite`). The
+      // response leaves the payload out, so the event carries the one sent.
+      if (result?.event && workflowNameForRefKey.workflowName !== undefined) {
+        noteParkedRunWrite(world, hook.runId, {
+          ...result.event,
+          eventData: {
+            ...(result.event as { eventData?: object }).eventData,
+            token: hook.token,
+            payload: dehydratedPayload,
+          },
+        } as Event);
+      }
+      return result;
+    };
     // The event this resume committed, named on its wake (`wakeEventId`).
     let committedEventId: string | undefined;
     try {

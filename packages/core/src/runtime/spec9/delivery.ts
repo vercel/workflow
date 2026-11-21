@@ -1078,6 +1078,7 @@ async function runDelivery(
     });
     if (loaded.maxEvents !== undefined) {
       maxEventsLimit = clampMaxEvents(loaded.maxEvents);
+      maxEventsFromReads = maxEventsLimit;
     }
     logStoppedAtEventLimit = loaded.stoppedAtEventLimit !== undefined;
     for (const event of loaded.events) {
@@ -1121,6 +1122,10 @@ async function runDelivery(
         runId,
       }
     );
+    if (page.maxEvents !== undefined) {
+      maxEventsLimit = clampMaxEvents(page.maxEvents);
+      maxEventsFromReads = maxEventsLimit;
+    }
     // The writer predicts speculative slots from the
     // positions it knows are taken.
     for (const event of page.events) writer.observeEvent(event);
@@ -1165,7 +1170,12 @@ async function runDelivery(
   const readSinceParked = (
     entry: ParkedSession
   ): Promise<
-    | { type: 'resume'; page: LoadedEventLog; crossedWrites: boolean }
+    | {
+        type: 'resume';
+        page: LoadedEventLog;
+        crossedWrites: boolean;
+        tookWrites?: true;
+      }
     | { type: 'reloaded'; page: LoadedEventLog }
     | { type: 'unread' }
   > =>
@@ -1184,6 +1194,73 @@ async function runDelivery(
       };
     });
   /**
+   * What this process wrote for the run since `entry` parked, when it
+   * continues the VM's log: the first event takes the slot after `tailSlot`
+   * and the rest follow it, so the log holds nothing in between that the VM
+   * has not seen (every write, in-band or not, takes a slot). A wake that
+   * names its event must name one of them. Needs the run the parking
+   * delivery held, since nothing reads it.
+   */
+  const writtenSinceParked = (
+    entry: ParkedSession
+  ):
+    | { events: Event[]; run: NonNullable<ParkedSession['run']> }
+    | undefined => {
+    if (!entry.written?.length || !entry.run) return undefined;
+    let next = entry.tailSlot + 1;
+    for (const event of entry.written) {
+      if (eventIdToSlot(event.eventId) !== next) return undefined;
+      next++;
+    }
+    if (
+      wakeEventId !== undefined &&
+      !entry.written.some((event) => event.eventId === wakeEventId)
+    ) {
+      return undefined;
+    }
+    return { events: [...entry.written], run: entry.run };
+  };
+  /**
+   * Set by a resume on this process's writes ({@link takeWrittenSinceParked})
+   * to the in-band count it adopted without a read, until a write of this
+   * delivery commits at it. Until then nothing confirms that no other
+   * orchestrator wrote past the kept events, or ended the run, so no boundary
+   * runs ahead: a body started ahead of its creation would run although the
+   * creation is refused, here as well as wherever the turn was handled, or
+   * on a run that has ended.
+   */
+  let unconfirmedSeqInBand: number | undefined;
+  const fenceUnconfirmed = (): boolean => {
+    if (unconfirmedSeqInBand === undefined) return false;
+    if (writer.expectedSeqInBand !== unconfirmedSeqInBand) {
+      unconfirmedSeqInBand = undefined;
+      return false;
+    }
+    return true;
+  };
+  /**
+   * {@link readSinceParked}'s `resume` for events this process wrote since
+   * the park: they are the log past `tailSlot`, and the fence count is the
+   * parked one, since none of them is in-band. Another orchestrator's write
+   * since the park would hold one of their slots, so nothing crossed; the
+   * fence still guards this delivery's first in-band write.
+   */
+  const takeWrittenSinceParked = (entry: ParkedSession, events: Event[]) =>
+    writer.exclusive(async () => {
+      unconfirmedSeqInBand = entry.expectedSeqInBand;
+      const snapshot = {
+        seq: entry.tailSlot + events.length,
+        seqInBand: entry.expectedSeqInBand,
+      };
+      writer.adoptSnapshot(snapshot);
+      return {
+        type: 'resume' as const,
+        page: { events, cursor: entry.cursor, snapshot } as LoadedEventLog,
+        crossedWrites: false,
+        tookWrites: true as const,
+      };
+    });
+  /**
    * Run setup for a parked session: its log extended by what
    * {@link readSinceParked} read, and its VM resumed by the first pass. A
    * read with no snapshot takes the full load, and a read from the start is
@@ -1193,9 +1270,14 @@ async function runDelivery(
     entry: ParkedSession,
     read: Awaited<ReturnType<typeof readSinceParked>>
   ): Promise<LoadedEventLog> => {
-    // The ceiling the full load this replaces would have reported.
-    if (read.type !== 'unread' && read.page.maxEvents !== undefined) {
+    // The ceiling the full load this replaces would have reported, or for a
+    // resume on this process's writes, the one the parking delivery read.
+    if (read.type === 'resume' && read.tookWrites) {
+      maxEventsFromReads = entry.maxEventsLimit;
+      maxEventsLimit = entry.maxEventsLimit ?? maxEventsLimit;
+    } else if (read.type !== 'unread' && read.page.maxEvents !== undefined) {
       maxEventsLimit = clampMaxEvents(read.page.maxEvents);
+      maxEventsFromReads = maxEventsLimit;
     }
     if (read.type !== 'resume') {
       runtimeLogger.debug(
@@ -1232,6 +1314,10 @@ async function runDelivery(
   // when the World reports it there, and from the `run_started`
   // response of the delivery that wrote it.
   let maxEventsLimit: number | undefined = clampMaxEvents(undefined);
+  // The ceiling as this delivery's log reads reported it (not `run_started`):
+  // what a parked VM's next delivery would have read, kept with the VM for
+  // the one that resumes it on this process's writes without a read.
+  let maxEventsFromReads: number | undefined;
   // Whether the log in hand is a prefix that a full load stopped
   // at the ceiling (`loadWorkflowRunEvents`'s `eventLimit`): the
   // run is past its ceiling, and its log holds more than that.
@@ -1488,29 +1574,36 @@ async function runDelivery(
     !waitContinuation &&
     wakeUpWaits.size === 0
   ) {
-    // The run is read beside the log, as on the full-load path, so a resume
-    // does not wait for it after the read. A wake that names an event the
-    // VM already consumed (the queued copy of a wake this process already
-    // acted on, as when it lingered) finds nothing new almost every time,
-    // and the read decides that alone, so that one reads the run only once
-    // it turns out to resume.
+    // Events this process wrote since the park that continue the VM's log
+    // stand in for the read, and the run the parking delivery held for the
+    // run read beside it. Otherwise the run is read beside the log, as on the
+    // full-load path, so a resume does not wait for it after the read. A
+    // wake that names an event the VM already consumed (the queued copy of a
+    // wake this process already acted on, as when it lingered) finds nothing
+    // new almost every time, and the read decides that alone, so that one
+    // reads the run only once it turns out to resume. A run the routing read
+    // already is used as is.
     const readRun = () => {
       const read = world.runs.get(runId, { resolveData: 'none' });
       read.catch(() => {});
       return read;
     };
-    // A run the routing read already is used as is.
+    const written = writtenSinceParked(taken);
     const wakeSlot = wakeEventId ? eventIdToSlot(wakeEventId) : null;
-    const parkedRun =
-      prefetchedRun || (wakeSlot !== null && wakeSlot <= taken.tailSlot)
+    const parkedRun: Promise<WorkflowRunWithoutData> | undefined = written
+      ? Promise.resolve(written.run as WorkflowRunWithoutData)
+      : prefetchedRun || (wakeSlot !== null && wakeSlot <= taken.tailSlot)
         ? undefined
         : readRun();
-    const read = await readSinceParked(taken);
-    span?.setAttributes(
-      Attribute.WorkflowParkedSessionRead(
+    const read = written
+      ? await takeWrittenSinceParked(taken, written.events)
+      : await readSinceParked(taken);
+    span?.setAttributes({
+      ...Attribute.WorkflowParkedSessionTookWrites(!!written),
+      ...Attribute.WorkflowParkedSessionRead(
         read.type === 'resume' && read.crossedWrites ? 'crossed' : read.type
-      )
-    );
+      ),
+    });
     if (
       read.type === 'resume' &&
       read.page.events.length === 0 &&
@@ -3935,6 +4028,10 @@ async function runDelivery(
                     tailSlot: indexOf(log.events).maxSlot() ?? 0,
                     expectedSeqInBand: writer.expectedSeqInBand,
                     replayPayloadCache,
+                    ...(workflowRun && { run: workflowRun }),
+                    ...(maxEventsFromReads !== undefined && {
+                      maxEventsLimit: maxEventsFromReads,
+                    }),
                   })
                 );
               } else {
@@ -4160,7 +4257,11 @@ async function runDelivery(
           }
           if (observation.waitDue) outOfBandBoundaries.waitDue++;
         }
-        if (runAheadDepth > 0 && observation.inert) {
+        // Not until a write confirms the in-band count a resume on this
+        // process's writes adopted without a read (`fenceUnconfirmed`): a
+        // body started ahead of its creation would run although that
+        // creation is refused.
+        if (runAheadDepth > 0 && observation.inert && !fenceUnconfirmed()) {
           runAheadStats.runAhead++;
           boundaryRunAhead = runAheadContextFor({
             observation,

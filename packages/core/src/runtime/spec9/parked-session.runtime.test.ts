@@ -5,8 +5,17 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import { ReplayDivergenceError, WorkflowWorldError } from '@workflow/errors';
-import type { Event } from '@workflow/world';
+import {
+  HookNotFoundError,
+  ReplayDivergenceError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import {
+  type Event,
+  type Hook,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type World,
+} from '@workflow/world';
 import {
   afterAll,
   afterEach,
@@ -31,8 +40,9 @@ import {
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
 import type { WorkflowSession } from '../../workflow.js';
+import { resumeHook } from '../resume-hook.js';
 import { wakeUpRun } from '../runs.js';
-import { getWorld } from '../world.js';
+import { getWorld, setWorld } from '../world.js';
 import { parkSession, takeParkedSession } from './parked-session.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -76,6 +86,7 @@ const key = (attribute: Record<string, unknown>) => Object.keys(attribute)[0]!;
 const SKIP_REASON = key(Attribute.WorkflowParkedSessionSkipReason('disabled'));
 const READ = key(Attribute.WorkflowParkedSessionRead('resume'));
 const DIVERGED = key(Attribute.WorkflowParkedSessionDiverged(true));
+const TOOK_WRITES = key(Attribute.WorkflowParkedSessionTookWrites(true));
 
 /** Every value the finished spans carry for `attribute`, in finish order. */
 const spanValues = (attribute: string): unknown[] =>
@@ -157,6 +168,54 @@ const displacingWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_C
     }
     return { n, replies };
   }${registerWorkflow()}`;
+/**
+ * Log reads a delivery made before starting the turn a `hook_received`
+ * brought: ones issued while that event was the newest in the log.
+ */
+const preTurnReads = new WeakMap<AppendOnlyWorld, number>();
+
+/**
+ * `world` with `hooks.getByToken`, so `resumeHook()` runs against it, and
+ * counting {@link preTurnReads}.
+ */
+function withHookLookup(world: AppendOnlyWorld, runId: string): World {
+  const base = world.asWorld();
+  const list = base.events.list.bind(base.events);
+  preTurnReads.set(world, 0);
+  (base.events as { list: typeof list }).list = (params) => {
+    if (world.events.at(-1)?.eventType === 'hook_received') {
+      preTurnReads.set(world, (preTurnReads.get(world) ?? 0) + 1);
+    }
+    return list(params);
+  };
+  (base as { hooks: unknown }).hooks = {
+    async getByToken(token: string): Promise<Hook> {
+      const created = world.events.find(
+        (e) =>
+          e.eventType === 'hook_created' &&
+          (e as { eventData?: { token?: string } }).eventData?.token === token
+      );
+      if (!created) throw new HookNotFoundError(token);
+      return {
+        runId,
+        hookId: created.correlationId as string,
+        token,
+        ownerId: 'owner_test',
+        projectId: 'project_test',
+        environment: 'production',
+        createdAt: created.createdAt,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        resumeContext: {
+          deploymentId: 'dpl_test',
+          workflowName: 'workflow',
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          workflowCoreVersion: '5.0.0',
+        },
+      } as Hook;
+    },
+  };
+  return base;
+}
 
 /** Full loads: an ascending read of the log from its start. */
 const fullLoadsOf = (world: AppendOnlyWorld) =>
@@ -1048,5 +1107,129 @@ describe("a stale parked VM and the other orchestrator's writes", () => {
     expect(await runResult(world)).toEqual(['echo:a', 'shout:b', 'shout:c']);
     expect(echoes).toBe(1);
     expect(shouts).toBe(2);
+  });
+});
+
+describe('a parked session and the events this process writes', () => {
+  async function setup(
+    code: string,
+    options: Parameters<typeof setupOrchestratorRun>[2] = {}
+  ) {
+    const run = await setupOrchestratorRun(code, [], options);
+    setWorld(withHookLookup(run.world, run.runId));
+    await run.world.deliver(run.start);
+    return run;
+  }
+
+  async function resume(world: AppendOnlyWorld, payload: string) {
+    await resumeHook(TOKEN, payload);
+    await world.runUntilIdle();
+  }
+
+  it('resumes on the hook_received a resumeHook() here wrote, without reading the log', async () => {
+    const { world } = await setup(sessionWorkflow);
+    const startReplays = coldReplays.count;
+
+    for (const payload of ['a', 'b', 'c']) await resume(world, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(preTurnReads.get(world)).toBe(0);
+    expect(coldReplays.count).toBe(startReplays);
+  });
+
+  it('keeps resuming without reads when a step body sets an attribute', async () => {
+    const { world } = await setup(attributeSessionWorkflow);
+
+    for (const payload of ['a', 'b', 'c']) await resume(world, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(attributeSets).toBe(3);
+    expect(preTurnReads.get(world)).toBe(0);
+  });
+
+  /**
+   * A remote World's round trip on each step start, so a body that started
+   * ahead of its start would run before the start is refused.
+   */
+  const slowStarts = {
+    async beforeCreate(data: { eventType: string }) {
+      if (data.eventType === 'step_started') {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    },
+  };
+
+  // The kept `hook_received` still continues the parked log when another
+  // process ends the run after it, so the delivery resumes on the run the
+  // parking delivery held, which says `running`.
+  it.each([
+    ['cancels', 'run_cancelled', false],
+    ['completes', 'run_completed', true],
+  ])('runs no step body when another process %s the run after the handed-over hook_received', async (_label, eventType, inBand) => {
+    const { world, runId } = await setup(sessionWorkflow, slowStarts);
+    const creates = vi.spyOn((await getWorld()).events, 'create');
+    await resumeHook(TOKEN, 'a');
+    world.appendOutOfBand({ eventType, runId } as Partial<Event>);
+    if (inBand) world.seqInBand++;
+    spanExporter.reset();
+    await world.runUntilIdle();
+
+    expect(spanValues(TOOK_WRITES)).toContain(true);
+    expect(echoes).toBe(0);
+    expect(eventsOf(world, 'step_started')).toHaveLength(0);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, eventType)).toHaveLength(1);
+    // The delivery's first in-band write, the turn's step start, is refused:
+    // the World checks the run's state before the fence, so a terminal run
+    // refuses it either way.
+    const firstInBand = creates.mock.calls.findIndex(
+      ([, , params]) => (params as { inBand?: boolean })?.inBand === true
+    );
+    expect(firstInBand).toBeGreaterThanOrEqual(0);
+    expect(creates.mock.settledResults[firstInBand]?.type).toBe('rejected');
+    creates.mockRestore();
+  });
+
+  it('refuses the kept events of a wake another process already handled, and runs the turn once', async () => {
+    const { world, runId } = await setup(sessionWorkflow, slowStarts);
+    const thisProcess = await getWorld();
+    await resumeHook(TOKEN, 'a');
+    const wakeMessage = world.held.at(-1)!.message;
+    // Another process gets the wake first, with no VM parked there: it loads
+    // the whole log and handles the turn.
+    const parked = takeParkedSession(thisProcess, runId);
+    expect(parked?.written).toHaveLength(1);
+    await world.runUntilIdle();
+    expect(echoes).toBe(1);
+    takeParkedSession(thisProcess, runId);
+    // This process gets the same wake, with its VM and the kept event.
+    parkSession(thisProcess, runId, parked!);
+    const refusals = fenceRefusals(world);
+    spanExporter.reset();
+    await world.deliver(world.enqueue(ORCHESTRATOR_QUEUE, wakeMessage));
+    await world.runUntilIdle();
+
+    expect(spanValues(TOOK_WRITES)).toContain(true);
+    expect(refusals()).toBeGreaterThanOrEqual(1);
+    expect(echoes).toBe(1);
+    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+
+    for (const payload of ['b', 'c']) await resume(world, payload);
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+  });
+
+  it('reads the log when something else landed since the park', async () => {
+    const { world, runId } = await setup(sessionWorkflow);
+    world.appendOutOfBand({ eventType: 'noop', runId } as Partial<Event>);
+
+    await resume(world, 'a');
+
+    expect(echoes).toBe(1);
+    expect(preTurnReads.get(world)).toBe(1);
+    // The read caught the VM up, so the next resume needs none.
+    await resume(world, 'b');
+    expect(preTurnReads.get(world)).toBe(1);
   });
 });

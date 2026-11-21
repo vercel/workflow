@@ -4,6 +4,8 @@ import type { ReplayPayloadCache } from '../../replay-payload-cache.js';
 import type { WorkflowSession } from '../../workflow.js';
 import {
   estimateParkedBytes,
+  MAX_WRITTEN_EVENTS,
+  noteParkedRunWrite,
   type ParkedSession,
   parkSession,
   takeParkedSession,
@@ -177,3 +179,98 @@ describe('the parked sessions byte budget', () => {
     });
   });
 });
+
+describe('events written while a session is parked', () => {
+  /** A `hook_received` this process wrote, with `payloadBytes` of payload. */
+  const write = (slot: number, payloadBytes = 0): Event =>
+    ({
+      eventId: `evnt_${slot}`,
+      eventType: 'hook_received',
+      eventData: { payload: new Uint8Array(payloadBytes) },
+    }) as unknown as Event;
+
+  it('keeps an event for a parked run, and nothing for a run with none', () => {
+    const world = newWorld();
+    expect(noteParkedRunWrite(world, 'wrun_a', write(2))).toBe('none');
+    parkSession(world, 'wrun_a', parked(1));
+    expect(noteParkedRunWrite(world, 'wrun_a', write(2))).toBe('kept');
+    expect(takeParkedSession(world, 'wrun_a')?.written).toHaveLength(1);
+  });
+
+  it('evicts the oldest other entries once a kept event takes the total over the budget', () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', String(2 * 1024 * KIB));
+    const world = newWorld();
+    // 556 KiB each: three fit in 2 MiB.
+    for (const runId of ['wrun_a', 'wrun_b', 'wrun_c']) {
+      parkSession(world, runId, parked(1, 100 * KIB));
+    }
+    // 300 KiB more for 'wrun_c' (856 KiB) takes the total to 1968 KiB, then
+    // 150 KiB more (1306 KiB, under half) takes it past 2 MiB.
+    expect(noteParkedRunWrite(world, 'wrun_c', write(2, 100 * KIB))).toBe(
+      'kept'
+    );
+    expect(takeParkedSession(world, 'wrun_a', 0)).toBeDefined();
+    parkSession(world, 'wrun_a', parked(1, 100 * KIB), 0);
+    expect(noteParkedRunWrite(world, 'wrun_c', write(3, 50 * KIB))).toBe(
+      'kept'
+    );
+    // 'wrun_b' is now the oldest, and goes first; 'wrun_a' fits beside.
+    expect(takeParkedSession(world, 'wrun_b', 0)).toBeUndefined();
+    expect(takeParkedSession(world, 'wrun_a', 0)).toBeDefined();
+    expect(takeParkedSession(world, 'wrun_c', 0)?.written).toHaveLength(2);
+  });
+
+  it("drops the run's own entry when a kept event takes it over half the budget", () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', String(2 * 1024 * KIB));
+    const world = newWorld();
+    parkSession(world, 'wrun_a', parked(1, 100 * KIB));
+    parkSession(world, 'wrun_b', parked(1, 100 * KIB));
+    // 556 KiB plus 3 × 200 KiB is over 1 MiB.
+    expect(noteParkedRunWrite(world, 'wrun_b', write(2, 200 * KIB))).toBe(
+      'too_large'
+    );
+    expect(takeParkedSession(world, 'wrun_b')).toBeUndefined();
+    expect(takeParkedSession(world, 'wrun_a')).toBeDefined();
+    // The budget no longer counts the dropped entry: three more fit.
+    for (const runId of ['wrun_c', 'wrun_d', 'wrun_e']) {
+      expect(parkSession(world, runId, parked(1, 100 * KIB))).toMatchObject({
+        parked: true,
+        evicted: 0,
+      });
+    }
+  });
+
+  it(`keeps at most ${MAX_WRITTEN_EVENTS} events per entry, then none, and keeps the VM`, () => {
+    const world = newWorld();
+    parkSession(world, 'wrun_a', parked(1));
+    for (let i = 0; i < MAX_WRITTEN_EVENTS; i++) {
+      expect(noteParkedRunWrite(world, 'wrun_a', write(2 + i, KIB))).toBe(
+        'kept'
+      );
+    }
+    expect(noteParkedRunWrite(world, 'wrun_a', write(100, KIB))).toBe(
+      'too_many'
+    );
+    expect(noteParkedRunWrite(world, 'wrun_a', write(101, KIB))).toBe(
+      'too_many'
+    );
+    const entry = takeParkedSession(world, 'wrun_a');
+    expect(entry).toBeDefined();
+    expect(entry?.written).toBeUndefined();
+  });
+
+  it('counts the kept events of an entry a no-op wake puts back', () => {
+    vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', String(2 * 1024 * KIB));
+    const world = newWorld();
+    parkSession(world, 'wrun_a', parked(1));
+    noteParkedRunWrite(world, 'wrun_a', write(5, 200 * KIB));
+    const taken = takeParkedSession(world, 'wrun_a');
+    expect(parkSession(world, 'wrun_a', taken!)).toMatchObject({
+      parked: true,
+      bytes: entryBytesOf(0) + 3 * 200 * KIB,
+    });
+  });
+});
+
+const entryBytesOf = (payloadBytes: number) =>
+  estimateParkedBytes(logOf(payloadBytes));
