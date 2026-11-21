@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { trace as otelTrace } from '@opentelemetry/api';
 import {
   BasicTracerProvider,
@@ -71,6 +72,7 @@ afterAll(async () => {
 
 const key = (attribute: Record<string, unknown>) => Object.keys(attribute)[0]!;
 const SKIP_REASON = key(Attribute.WorkflowParkedSessionSkipReason('disabled'));
+const READ = key(Attribute.WorkflowParkedSessionRead('resume'));
 
 /** Every value the finished spans carry for `attribute`, in finish order. */
 const spanValues = (attribute: string): unknown[] =>
@@ -482,6 +484,9 @@ describe('deliveries that bypass or drop a parked VM', () => {
     expect(echoes).toBe(0);
     expect(fullLoadsOf(world)).toBe(loads);
     expect(coldReplays.count).toBe(replays);
+    // The delivery saw the cancellation in its read and never handed the
+    // payload to the VM.
+    expect(resumes.count).toBe(0);
   });
 
   it('cold replays every follow-up when the parked VM budget is disabled', async () => {
@@ -523,5 +528,118 @@ describe('deliveries that bypass or drop a parked VM', () => {
     expect(echoes).toBe(3);
     expect(fullLoadsOf(world)).toBe(loads + 2);
     expect(coldReplays.count).toBe(replays + 2);
+  });
+});
+
+describe('deliveries that drop or decline a parked VM', () => {
+  it('drops the parked VM on a timer wake, which loads and replays the whole log itself', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const workflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+        const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_echo");
+        async function workflow() {
+          const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+          let woke = false;
+          sleep("1s").then(() => { woke = true; });
+          const replies = [];
+          for await (const payload of hook) {
+            replies.push(await echo(woke ? payload + ":woke" : payload));
+            if (replies.length === 3) break;
+          }
+          return replies;
+        }${registerWorkflow()}`;
+      const { world, runId, start } = await setupOrchestratorRun(workflow, []);
+      await world.deliver(start);
+      const timer = world.held.find(
+        (held) =>
+          (held.message as { waitContinuation?: unknown }).waitContinuation !==
+          undefined
+      );
+      expect(timer).toBeDefined();
+      await send(world, runId, 'a');
+      const loads = fullLoadsOf(world);
+      const replays = coldReplays.count;
+      spanExporter.reset();
+
+      vi.setSystemTime(Date.now() + 2_000);
+      await world.deliver(timer!);
+      expect(eventsOf(world, 'wait_completed')).toHaveLength(1);
+      // The timer took the VM 'a' parked and dropped it.
+      expect(spanValues(READ)).toEqual(['dropped']);
+      expect(fullLoadsOf(world)).toBe(loads + 1);
+      expect(coldReplays.count).toBe(replays + 1);
+
+      // The timer's own replay parked, so the follow-ups resume that VM.
+      await send(world, runId, 'b');
+      await send(world, runId, 'c');
+      expect(await runResult(world)).toEqual([
+        'echo:a',
+        'echo:b:woke',
+        'echo:c:woke',
+      ]);
+      expect(fullLoadsOf(world)).toBe(loads + 1);
+      expect(coldReplays.count).toBe(replays + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replays from cold when the parked VM declines its resume, and the run finishes', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    await send(world, runId, 'a');
+    // A log that does not extend what the VM consumed sends it to `replay`,
+    // after which it declines every resume.
+    const thisProcess = await getWorld();
+    const entry = takeParkedSession(thisProcess, runId);
+    expect(entry).toBeDefined();
+    expect(await entry!.session.resume([])).toEqual({ type: 'replay' });
+    parkSession(thisProcess, runId, entry!);
+    const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
+
+    await send(world, runId, 'b');
+    // The delivery read on from the cursor and replayed that log from cold.
+    expect(spanValues(READ)).toContain('resume');
+    expect(fullLoadsOf(world)).toBe(loads);
+    expect(coldReplays.count).toBe(replays + 1);
+    await send(world, runId, 'c');
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+    // 'c' resumed the VM the cold replay parked.
+    expect(coldReplays.count).toBe(replays + 1);
+  });
+});
+
+describe("a resumed VM in the resuming delivery's async context", () => {
+  it('drains the end-of-run queue in the store of the delivery that resumed it', async () => {
+    const store = new AsyncLocalStorage<string>();
+    const createdIn: (string | undefined)[] = [];
+    const { world, runId, start } = await setupOrchestratorRun(
+      unawaitedTailWorkflow,
+      [],
+      {
+        async beforeCreate(data) {
+          if (data.eventType === 'step_created') {
+            createdIn.push(store.getStore());
+          }
+        },
+      }
+    );
+    await store.run('parking', () => world.deliver(start));
+    await store.run('resume-a', () => send(world, runId, 'a'));
+    const replays = coldReplays.count;
+    await store.run('resume-b', () => send(world, runId, 'b'));
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b']);
+    // The run finished on the VM the start delivery created.
+    expect(coldReplays.count).toBe(replays);
+    // The unawaited tail step, recorded by the drain.
+    expect(createdIn).toEqual(['resume-b']);
   });
 });
