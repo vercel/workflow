@@ -1984,7 +1984,17 @@ type AbortSerializedData = {
   hookToken: string;
   aborted: boolean;
   reason: unknown;
+  /** From an in-band-only controller: revived signals keep refusing to leave as a controller. */
+  inBandOnly?: true;
 };
+
+/** Whether the holder or its signal comes from an in-band-only controller. */
+function isInBandOnlyAbort(holder: unknown, signal: unknown): boolean {
+  return (
+    readProperty(holder, ABORT_IN_BAND_ONLY) === true ||
+    readProperty(signal, ABORT_IN_BAND_ONLY) === true
+  );
+}
 
 /**
  * Symbol-keyed internal fields tagged onto AbortController/AbortSignal
@@ -1995,6 +2005,7 @@ type AbortInternals = {
   [ABORT_STREAM_NAME]?: string;
   [ABORT_HOOK_TOKEN]?: string;
   [ABORT_READER_CANCEL]?: AbortController;
+  [ABORT_IN_BAND_ONLY]?: true;
 };
 
 type AbortSignalLike = AbortInternals & {
@@ -2049,6 +2060,7 @@ function reduceAbortWithListener(
     hookToken: hookToken!,
     aborted: signal.aborted,
     reason: signal.aborted ? signal.reason : undefined,
+    ...(isInBandOnlyAbort(holder, signal) ? { inBandOnly: true as const } : {}),
   };
 }
 
@@ -2072,6 +2084,7 @@ function reduceAbortBySymbol(
     hookToken: hookToken!,
     aborted: signal.aborted,
     reason: signal.aborted ? signal.reason : undefined,
+    ...(isInBandOnlyAbort(holder, signal) ? { inBandOnly: true as const } : {}),
   };
 }
 
@@ -2530,10 +2543,7 @@ export function getWorkflowReducers(
       // Checked on the signal too: any object whose `signal` carries the
       // abort symbol reduces as a controller here (a `{ signal, url }`
       // included), and would revive with a working `abort()` in the step.
-      if (
-        readProperty(value, ABORT_IN_BAND_ONLY) === true ||
-        readProperty(signal, ABORT_IN_BAND_ONLY) === true
-      ) {
+      if (isInBandOnlyAbort(value, signal)) {
         throw new SerializationError(
           'An AbortController created with { inBandOnly: true } cannot leave workflow code.',
           {
@@ -2938,11 +2948,12 @@ function setupAbortStreamReader(
  */
 function tagAbortPair(
   controller: AbortController,
-  value: { streamName: string; hookToken: string },
+  value: { streamName: string; hookToken: string; inBandOnly?: true },
   readerCancel?: AbortController
 ): void {
   const taggedController = controller as AbortController & AbortInternals;
   const taggedSignal = controller.signal as AbortSignal & AbortInternals;
+  if (value.inBandOnly === true) taggedSignal[ABORT_IN_BAND_ONLY] = true;
   taggedController[ABORT_STREAM_NAME] = value.streamName;
   taggedController[ABORT_HOOK_TOKEN] = value.hookToken;
   taggedSignal[ABORT_STREAM_NAME] = value.streamName;
@@ -2971,6 +2982,7 @@ function copyAbortInternals(src: AbortSignal, dest: AbortSignal): void {
   if (s[ABORT_READER_CANCEL] !== undefined) {
     d[ABORT_READER_CANCEL] = s[ABORT_READER_CANCEL];
   }
+  if (s[ABORT_IN_BAND_ONLY] === true) d[ABORT_IN_BAND_ONLY] = true;
 }
 
 /**
@@ -3673,7 +3685,11 @@ export function getWorkflowRevivers(
     // signal). The signal does not own a hook subscription here; abort state
     // is delivered via the existing replay machinery on the source side.
     AbortController: (value) => {
-      const signal = new WorkflowAbortSignal(value.streamName, value.hookToken);
+      const signal = new WorkflowAbortSignal(
+        value.streamName,
+        value.hookToken,
+        value.inBandOnly === true
+      );
       if (value.aborted) signal._setAborted(value.reason);
       return {
         [ABORT_STREAM_NAME]: value.streamName,
@@ -3683,7 +3699,11 @@ export function getWorkflowRevivers(
       };
     },
     AbortSignal: (value) => {
-      const signal = new WorkflowAbortSignal(value.streamName, value.hookToken);
+      const signal = new WorkflowAbortSignal(
+        value.streamName,
+        value.hookToken,
+        value.inBandOnly === true
+      );
       if (value.aborted) signal._setAborted(value.reason);
       return signal;
     },

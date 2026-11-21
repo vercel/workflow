@@ -262,12 +262,16 @@ export interface SerializableSpecial {
     hookToken: string;
     aborted: boolean;
     reason?: unknown;
+    /** From an in-band-only controller (proof of concept). */
+    inBandOnly?: true;
   };
   AbortSignal: {
     streamName: string;
     hookToken: string;
     aborted: boolean;
     reason?: unknown;
+    /** From an in-band-only controller (proof of concept). */
+    inBandOnly?: true;
   };
 }
 
