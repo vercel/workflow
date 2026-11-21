@@ -1468,7 +1468,8 @@ async function runDelivery(
     | {
         entry: ParkedSession;
         read: Awaited<ReturnType<typeof readSinceParked>>;
-        run: Promise<WorkflowRunWithoutData>;
+        /** Undefined when the routing already read the run. */
+        run: Promise<WorkflowRunWithoutData> | undefined;
       }
     | undefined;
   if (
@@ -1479,9 +1480,23 @@ async function runDelivery(
     !waitContinuation &&
     wakeUpWaits.size === 0
   ) {
-    // The run is read beside the log, as on the full-load path.
-    const parkedRun = world.runs.get(runId, { resolveData: 'none' });
-    parkedRun.catch(() => {});
+    // The run is read beside the log, as on the full-load path, so a resume
+    // does not wait for it after the read. A wake that names an event the
+    // VM already consumed (the queued copy of a wake this process already
+    // acted on, as when it lingered) finds nothing new almost every time,
+    // and the read decides that alone, so that one reads the run only once
+    // it turns out to resume.
+    const readRun = () => {
+      const read = world.runs.get(runId, { resolveData: 'none' });
+      read.catch(() => {});
+      return read;
+    };
+    // A run the routing read already is used as is.
+    const wakeSlot = wakeEventId ? eventIdToSlot(wakeEventId) : null;
+    const parkedRun =
+      prefetchedRun || (wakeSlot !== null && wakeSlot <= taken.tailSlot)
+        ? undefined
+        : readRun();
     const read = await readSinceParked(taken);
     span?.setAttributes(Attribute.WorkflowParkedSessionRead(read.type));
     if (
@@ -1502,7 +1517,11 @@ async function runDelivery(
       );
       return;
     }
-    parked = { entry: taken, read, run: parkedRun };
+    parked = {
+      entry: taken,
+      read,
+      run: parkedRun ?? (prefetchedRun ? undefined : readRun()),
+    };
   } else if (taken) {
     span?.setAttributes(Attribute.WorkflowParkedSessionRead('dropped'));
   }

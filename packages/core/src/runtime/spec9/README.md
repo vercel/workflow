@@ -549,7 +549,7 @@ A delivery that suspends cleanly now parks its VM session in process memory (`pa
 
 The run's next orchestrator delivery in the same process takes the entry, whatever it is. Only a plain wake (no `runInput`, `hookInput`, timer or `wakeUp()` names, and past the re-send gate) resumes it; any other delivery drops it. Resuming it:
 
-1. reads the log from the parked cursor in the writer's queue, keeping that read's first-page snapshot, beside the usual `runs.get`;
+1. reads the log from the parked cursor in the writer's queue, keeping that read's first-page snapshot, beside the usual `runs.get`. A wake that names an event the VM already consumed (the queued copy of a wake this process acted on while lingering) almost always finds nothing new, so it reads the run only after the read finds something, and a run the routing already read is used as is;
 2. keeps the session only when the snapshot's `seqInBand` equals the parked count, so no other orchestrator decided anything since; it then adopts the snapshot and resumes the VM on the new events. Otherwise it does today's full load and cold replay. When the World refused the cursor, the read already went back to the start, so it is that full load;
 3. replaces the no-op check: when the read finds nothing new and no recorded timer is due, the delivery parks the session again and acknowledges.
 

@@ -365,6 +365,59 @@ describe('a session parked across deliveries', () => {
     expect(fullLoadsOf(world)).toBe(startLoads);
   });
 
+  it('reads the run only once a wake naming an event the VM consumed turns out to resume', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      sessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    await send(world, runId, 'a');
+    const runsGet = vi.spyOn((await getWorld()).runs, 'get');
+    // The queued copy of the wake 'a' already resumed the VM on, stamped
+    // with the run's spec as a wake is, so routing reads no run either.
+    const consumed = eventsOf(world, 'hook_received')[0]!.eventId;
+    await world.deliver(
+      world.enqueue(ORCHESTRATOR_QUEUE, {
+        runId,
+        runSpecVersion: 9,
+        wakeEventId: consumed,
+      })
+    );
+    expect(runsGet).not.toHaveBeenCalled();
+    // A wake that names nothing reads the run beside the log.
+    await world.deliver(
+      world.enqueue(ORCHESTRATOR_QUEUE, { runId, runSpecVersion: 9 })
+    );
+    expect(runsGet).toHaveBeenCalledTimes(1);
+    const loads = fullLoadsOf(world);
+    // A payload lands before the old wake's copy arrives: the read finds it,
+    // and the run is read after the read to resume on it.
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      runId,
+      correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+      eventData: {
+        token: TOKEN,
+        payload: await dehydrateStepReturnValue('b', runId, undefined),
+      },
+    } as unknown as Partial<Event>);
+    await world.deliver(
+      world.enqueue(ORCHESTRATOR_QUEUE, {
+        runId,
+        runSpecVersion: 9,
+        wakeEventId: consumed,
+      })
+    );
+    expect(runsGet).toHaveBeenCalledTimes(2);
+    expect(echoes).toBe(2);
+    await send(world, runId, 'c');
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(echoes).toBe(3);
+    expect(fullLoadsOf(world)).toBe(loads);
+    runsGet.mockRestore();
+  });
+
   it('keeps no VM on the QuickJS engine', async () => {
     const { world, runId, start } = await setupOrchestratorRun(
       sessionWorkflow,
