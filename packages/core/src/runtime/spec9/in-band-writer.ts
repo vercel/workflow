@@ -1272,7 +1272,6 @@ function groupBytes(group: AheadWrite[]): number {
   return bytes;
 }
 
-/** A run-ahead write waiting in an open group (see {@link InBandWriter}). */
 /** How long a strict outcome waits for the next creation to join it. */
 const COALESCE_HOLD_MS = 5;
 
@@ -1297,6 +1296,7 @@ function foreignSlotStop(): RunAheadStopError {
   );
 }
 
+/** A run-ahead write waiting in an open group (see {@link InBandWriter}). */
 interface AheadWrite {
   strict?: StrictAhead;
   kind: 'single' | 'batch';
