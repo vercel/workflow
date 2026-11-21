@@ -1,8 +1,25 @@
+import { trace as otelTrace } from '@opentelemetry/api';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { WorkflowWorldError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { registerStepFunction } from '../../private.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
+import { setAttributes } from '../../set-attributes.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
 import type { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   eventsOf,
@@ -12,12 +29,18 @@ import {
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
 import { wakeUpRun } from '../runs.js';
+import { getWorld } from '../world.js';
+import { parkSession, takeParkedSession } from './parked-session.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
 // Cold replays: a fresh VM over the whole log. A resumed parked VM is none,
-// and a resume the VM declines falls back to one.
-const { coldReplays } = vi.hoisted(() => ({ coldReplays: { count: 0 } }));
+// and a resume the VM declines falls back to one. Resumes: a retained or
+// parked VM advanced on more of the log, user code included.
+const { coldReplays, resumes } = vi.hoisted(() => ({
+  coldReplays: { count: 0 },
+  resumes: { count: 0 },
+}));
 vi.mock('../../workflow.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../workflow.js')>();
   return {
@@ -26,8 +49,35 @@ vi.mock('../../workflow.js', async (importOriginal) => {
       coldReplays.count++;
       return actual.replayWorkflow(...args);
     },
+    resumeWorkflow: (...args: Parameters<typeof actual.resumeWorkflow>) => {
+      resumes.count++;
+      return actual.resumeWorkflow(...args);
+    },
   };
 });
+
+const spanExporter = new InMemorySpanExporter();
+const tracerProvider = new BasicTracerProvider();
+
+beforeAll(() => {
+  tracerProvider.addSpanProcessor(new SimpleSpanProcessor(spanExporter));
+  otelTrace.setGlobalTracerProvider(tracerProvider);
+});
+
+afterAll(async () => {
+  await tracerProvider.shutdown();
+  otelTrace.disable();
+});
+
+const key = (attribute: Record<string, unknown>) => Object.keys(attribute)[0]!;
+const SKIP_REASON = key(Attribute.WorkflowParkedSessionSkipReason('disabled'));
+
+/** Every value the finished spans carry for `attribute`, in finish order. */
+const spanValues = (attribute: string): unknown[] =>
+  spanExporter
+    .getFinishedSpans()
+    .map((span) => span.attributes[attribute])
+    .filter((value) => value !== undefined);
 
 // A session-style workflow: one inline step per hook payload. Each payload
 // arrives after the delivery that handled the previous one acknowledged, as
@@ -66,6 +116,40 @@ const unawaitedTailWorkflow = `const createHook = globalThis[Symbol.for("WORKFLO
     return replies;
   }${registerWorkflow()}`;
 
+// A step body that sets an attribute writes an `attr_set` the delivery did
+// not write, which takes the slot the step's speculative outcome was placed
+// at.
+let attributeSets = 0;
+registerStepFunction('ps_echo_attr', async (payload: string) => {
+  attributeSets++;
+  await setAttributes({ last: payload });
+  return `echo:${payload}`;
+});
+const attributeSessionWorkflow = sessionWorkflow.replace(
+  '"ps_echo"',
+  '"ps_echo_attr"'
+);
+
+registerStepFunction('ps_inc', async (n: number) => n + 1);
+
+// An open hook the workflow never awaits, beside a loop of inline steps that
+// runs ahead, then the session's hook loop.
+const displacingWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const inc = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_inc");
+  const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ps_echo");
+  async function workflow() {
+    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    const side = createHook({ token: "ps-side" });
+    let n = 0;
+    for (let i = 0; i < 6; i++) n = await inc(n);
+    const replies = [];
+    for await (const payload of hook) {
+      replies.push(await echo(payload));
+      if (replies.length === 2) break;
+    }
+    return { n, replies };
+  }${registerWorkflow()}`;
+
 /** Full loads: an ascending read of the log from its start. */
 const fullLoadsOf = (world: AppendOnlyWorld) =>
   world.listCalls.filter((call) => {
@@ -91,7 +175,10 @@ async function send(world: AppendOnlyWorld, runId: string, payload: string) {
 
 beforeEach(() => {
   echoes = 0;
+  attributeSets = 0;
   coldReplays.count = 0;
+  resumes.count = 0;
+  spanExporter.reset();
   // No linger, so every payload reaches a new delivery.
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '0');
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
@@ -137,6 +224,77 @@ describe('a session parked across deliveries', () => {
     expect(coldReplays.count).toBe(startReplays);
     // Inline steps record no `step_created`; the unawaited one is the drain's.
     expect(eventsOf(world, 'step_created')).toHaveLength(1);
+  });
+
+  it('parks and resumes a session whose step bodies set attributes', async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      attributeSessionWorkflow,
+      []
+    );
+    await world.deliver(start);
+    const startLoads = fullLoadsOf(world);
+    const startReplays = coldReplays.count;
+    for (const payload of ['a', 'b', 'c']) await send(world, runId, payload);
+
+    expect(await runResult(world)).toEqual(['echo:a', 'echo:b', 'echo:c']);
+    expect(attributeSets).toBe(3);
+    expect(eventsOf(world, 'attr_set')).toHaveLength(3);
+    // Every delivery parked its VM.
+    expect(spanValues(SKIP_REASON)).toEqual([]);
+    expect(fullLoadsOf(world)).toBe(startLoads);
+    expect(coldReplays.count).toBe(startReplays);
+  });
+
+  // Another writer's payload takes the slot the VM consumed a speculative
+  // outcome at, mid-loop, so the session continues rebased onto the ids its
+  // writes committed at, parks, and is resumed through that rebase.
+  it('parks and resumes a session rebased over displaced speculative writes', async () => {
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
+    let injected = false;
+    let outcomes = 0;
+    let world!: AppendOnlyWorld;
+    let runId = '';
+    const setup = await setupOrchestratorRun(displacingWorkflow, [], {
+      async beforeCreate(data) {
+        if (data.eventType !== 'step_completed') return;
+        // A remote World's round trip, so outcomes run ahead of commits.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        if (!injected && ++outcomes === 2) {
+          injected = true;
+          world.appendOutOfBand({
+            eventType: 'hook_received',
+            runId,
+            correlationId: eventsOf(world, 'hook_created')[1]?.correlationId,
+            eventData: {
+              token: 'ps-side',
+              payload: await dehydrateStepReturnValue('late', runId, undefined),
+            },
+          } as unknown as Partial<Event>);
+        }
+      },
+    });
+    world = setup.world;
+    runId = setup.runId;
+    await world.deliver(setup.start);
+    expect(injected).toBe(true);
+    const thisProcess = await getWorld();
+    const entry = takeParkedSession(thisProcess, runId);
+    expect(entry).toBeDefined();
+    expect(entry!.session.rebased).toBe(true);
+    expect(entry!.session.displacedWrites).toBe(true);
+    parkSession(thisProcess, runId, entry!);
+    const loads = fullLoadsOf(world);
+    const replays = coldReplays.count;
+
+    for (const payload of ['a', 'b']) await send(world, runId, payload);
+
+    expect(await runResult(world)).toEqual({
+      n: 6,
+      replies: ['echo:a', 'echo:b'],
+    });
+    expect(spanValues(SKIP_REASON)).toEqual([]);
+    expect(fullLoadsOf(world)).toBe(loads);
+    expect(coldReplays.count).toBe(replays);
   });
 
   it('loads and replays the whole log when another orchestrator wrote in-band meanwhile', async () => {
