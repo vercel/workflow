@@ -1,5 +1,15 @@
 # @workflow/world-postgres
 
+## 5.4.2
+
+### Patch Changes
+
+- [#5649](https://github.com/vercel/workflow/pull/5649) [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `invoke()` timing out when several invocations were submitted to one run while a delivery held it
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world@5.3.1
+  - @workflow/world-local@5.5.2
+  - @workflow/errors@5.1.6
+
 ## 5.4.1
 
 ### Patch Changes
