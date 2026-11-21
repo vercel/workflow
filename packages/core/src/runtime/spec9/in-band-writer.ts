@@ -655,10 +655,15 @@ export class InBandWriter {
       const group = [member];
       const hold =
         member.strict?.coalesce === true ? this.holdForCoalescing() : undefined;
-      this.serialize(0, async () => {
-        await hold;
-        return this.sendGroup(group);
-      }).catch(() => {});
+      this.serialize(
+        0,
+        hold
+          ? async () => {
+              await hold;
+              return this.sendGroup(group);
+            }
+          : () => this.sendGroup(group)
+      ).catch(() => {});
       this.openGroup = group;
     });
   }
