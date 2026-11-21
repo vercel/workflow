@@ -302,6 +302,77 @@ export function isVmRetentionEnabled(): boolean {
 }
 
 /**
+ * Default for {@link getParkedVmMaxBytes}: 0, so parking is off until an
+ * operator sets a budget.
+ */
+export const DEFAULT_PARKED_VM_MAX_BYTES = 0;
+
+/**
+ * The memory budget, in estimated bytes, for the VMs a process parks between
+ * a run's deliveries (see `spec9/parked-session.ts`), per World instance. One
+ * run's entry may take up to half of it; a larger one is not parked, and
+ * parking evicts the oldest entries to stay within it.
+ *
+ * Parking is opt-in: it is off at `WORKFLOW_PARKED_VM_MAX_BYTES=0`, the
+ * default, which keeps VM retention within one invocation
+ * (`WORKFLOW_RETAINED_VM`). An invalid value falls back to the default with a
+ * one-time warning.
+ */
+export function getParkedVmMaxBytes(): number {
+  const raw = process.env.WORKFLOW_PARKED_VM_MAX_BYTES;
+  if (raw === undefined || raw === '') return DEFAULT_PARKED_VM_MAX_BYTES;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    warnOnce(
+      `WORKFLOW_PARKED_VM_MAX_BYTES=${raw}`,
+      'Ignoring WORKFLOW_PARKED_VM_MAX_BYTES: not a nonnegative integer; using default',
+      { raw, defaultValue: DEFAULT_PARKED_VM_MAX_BYTES }
+    );
+    return DEFAULT_PARKED_VM_MAX_BYTES;
+  }
+  return parsed;
+}
+
+/**
+ * Whether a run with an encryption key may park its VM between deliveries
+ * (`WORKFLOW_PARKED_VM_ENCRYPTED=1` / `true`). Off by default: a parked
+ * entry holds the run's decrypted payloads (the payload cache and the VM's
+ * state) past the delivery that decrypted them.
+ */
+export function isParkingEncryptedRunsEnabled(): boolean {
+  const raw = process.env.WORKFLOW_PARKED_VM_ENCRYPTED;
+  if (raw === undefined || raw === '') return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
+/** Default for {@link getParkedVmMaxAgeMs}: 10 minutes. */
+export const DEFAULT_PARKED_VM_MAX_AGE_MS = 10 * 60_000;
+
+/**
+ * How long, in milliseconds, a process keeps a VM parked between a run's
+ * deliveries (see `spec9/parked-session.ts`) before it drops it. The run's
+ * next delivery after that loads and replays the log as it would without
+ * parking.
+ *
+ * `WORKFLOW_PARKED_VM_MAX_AGE_MS` must be a positive integer. An invalid
+ * value falls back to the default with a one-time warning.
+ */
+export function getParkedVmMaxAgeMs(): number {
+  const raw = process.env.WORKFLOW_PARKED_VM_MAX_AGE_MS;
+  if (raw === undefined || raw === '') return DEFAULT_PARKED_VM_MAX_AGE_MS;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    warnOnce(
+      `WORKFLOW_PARKED_VM_MAX_AGE_MS=${raw}`,
+      'Ignoring WORKFLOW_PARKED_VM_MAX_AGE_MS: not a positive integer; using default',
+      { raw, defaultValue: DEFAULT_PARKED_VM_MAX_AGE_MS }
+    );
+    return DEFAULT_PARKED_VM_MAX_AGE_MS;
+  }
+  return parsed;
+}
+
+/**
  * Whether an operator has explicitly disabled optimistic start with
  * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Turbo mode starts the first
  * delivery's inline step bodies before their `step_started` commits (and,

@@ -297,6 +297,14 @@ async function workflow() {
     // Append the step_created/started/completed triplet for the suspension's
     // single pending step, as the runtime's inline execution would.
     let eventCounter = 0;
+    /** An inert event another writer placed, at `eventId`. */
+    const attrAt = (run: WorkflowRun, eventId: string): Event =>
+      ({
+        eventId,
+        runId: run.runId,
+        eventType: 'attr_set',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      }) as Event;
     const completeStep = async (
       run: WorkflowRun,
       events: Event[],
@@ -380,6 +388,90 @@ async function workflow() {
           .filter((message) => String(message).startsWith('retained:'))
       ).toEqual(['retained:entered', 'retained:continued']);
       log.mockRestore();
+    });
+
+    it('reports a rebase that only admitted an event below as no displaced writes', async () => {
+      const run = await sessionRun('wrun_retained_admitted');
+      const workflowCode = `
+        const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+        async function workflow() {
+          const first = await add(1, 2);
+          const second = await add(first, 3);
+          return await add(second, 4);
+        }
+        ${getWorkflowTransformCode('workflow')}`;
+      const events: Event[] = [];
+
+      const first = await replay(run, workflowCode, events);
+      assert(first.type === 'suspended');
+      await completeStep(run, events, first.suspension, 3);
+      const second = await resumeWorkflow(first.session, events);
+      assert(second.type === 'suspended');
+      expect(second.session.rebased).toBe(false);
+      await completeStep(run, events, second.suspension, 6);
+
+      // An inert event another writer placed below the first step's outcome,
+      // which the session consumed before it.
+      events.splice(1, 0, attrAt(run, 'event-attr-below'));
+      const third = await resumeWorkflow(second.session, events, {
+        aliases: new Map(),
+        admitBelow: () => true,
+      });
+      assert(third.type === 'suspended');
+      expect(third.session.rebased).toBe(true);
+      expect(third.session.displacedWrites).toBe(false);
+    });
+
+    // A repair that shifts adjacent speculative events up by one reports
+    // `a → b` and `b → c`. Each maps the event consumed at its key, once:
+    // followed through each other, they would send the first to `c`. The
+    // event that displaced the first holds its old id and maps to nothing.
+    it('maps each displaced event to its own committed id, across later resumes', async () => {
+      const run = await sessionRun('wrun_retained_displaced');
+      const workflowCode = `
+        const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+        async function workflow() {
+          const first = await add(1, 2);
+          const second = await add(first, 3);
+          const third = await add(second, 4);
+          return await add(third, 5);
+        }
+        ${getWorkflowTransformCode('workflow')}`;
+      const committed: Event[] = [];
+      const first = await replay(run, workflowCode, []);
+      assert(first.type === 'suspended');
+      await completeStep(run, committed, first.suspension, 3);
+      // The session consumed the step's events at the ids they were placed
+      // at: one slot below where they committed.
+      const placed = committed.map(
+        (event, index) => ({ ...event, eventId: `slot-${index}` }) as Event
+      );
+      const second = await resumeWorkflow(first.session, placed);
+      assert(second.type === 'suspended');
+
+      // Another writer's event took the first slot.
+      const log = [
+        { ...attrAt(run, 'slot-0') },
+        ...committed.map(
+          (event, index) =>
+            ({ ...event, eventId: `slot-${index + 1}` }) as Event
+        ),
+      ];
+      const aliases = new Map(
+        placed.map((event, index) => [event.eventId, `slot-${index + 1}`])
+      );
+      await completeStep(run, log, second.suspension, 6);
+      const third = await resumeWorkflow(second.session, log, {
+        aliases,
+        admitBelow: (event) => event.eventType === 'attr_set',
+      });
+      assert(third.type === 'suspended');
+      expect(third.session.displacedWrites).toBe(true);
+
+      // A later read, with no rebase, still matches through the aliases.
+      await completeStep(run, log, third.suspension, 10);
+      const fourth = await resumeWorkflow(third.session, log);
+      expect(fourth.type).toBe('suspended');
     });
 
     it('declines resume permanently when the event prefix diverges', async () => {

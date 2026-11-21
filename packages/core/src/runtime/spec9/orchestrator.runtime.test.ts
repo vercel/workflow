@@ -31,7 +31,8 @@ import {
   STEP_DISPATCH_QUEUE_BATCH_SIZE,
 } from '../constants.js';
 import { ReplayBudget } from '../replay-budget.js';
-import { setWorld } from '../world.js';
+import { getWorld, setWorld } from '../world.js';
+import { takeParkedSession } from './parked-session.js';
 import { exceededMaxRetriesMessage } from './step-executor.js';
 import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
@@ -1831,8 +1832,11 @@ describe.each([
             (call.pagination as { sortOrder?: string } | undefined)
               ?.sortOrder === 'desc'
         ).length;
+      // With no VM parked here: a parked one reads only what is new instead.
+      const dropParked = async () => takeParkedSession(await getWorld(), runId);
       const before = tailReads();
       const listsBefore = world.listCalls.length;
+      await dropParked();
       await world.deliver(
         world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
       );
@@ -1842,6 +1846,7 @@ describe.each([
       // A wake naming an event it already consumed still reads the tail, and
       // finds nothing new: the delivery above consumed the event.
       const listsAfter = world.listCalls.length;
+      await dropParked();
       await world.deliver(
         world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
       );
@@ -1849,6 +1854,7 @@ describe.each([
       expect(world.listCalls.length).toBe(listsAfter + 1);
       // A malformed or non-slot name is no hint: the delivery reads the tail.
       for (const wakeEventId of [42, 'evnt_not-a-slot']) {
+        await dropParked();
         await world.deliver(world.enqueue(QUEUE, { runId, wakeEventId }));
       }
       expect(tailReads()).toBe(before + 3);
