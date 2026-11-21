@@ -1349,6 +1349,60 @@ describe.each([
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
   });
 
+  it('runs ahead with a wait due inside the inline window but past the skew allowance', async () => {
+    const { world, start } = await run(withSleep('90s'), [STEPS]);
+    await world.deliver(start);
+    expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);
+    expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+  });
+
+  it('drains once a wait comes due mid-run-ahead, runs ahead again after it completes, and a replay decides the same', async () => {
+    // The allowance is floored at MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS (1 s), so
+    // the 1.3 s wait starts outside it and comes due while the loop runs.
+    vi.stubEnv('WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS', '50');
+    const info = vi.spyOn(runtimeLogger, 'info');
+    // The run's logger prints errors through `console.error`.
+    const error = vi.spyOn(console, 'error');
+    const source = withSleep('1300ms');
+    const steps = 120;
+    const { world } = await run(source, [steps]);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(steps);
+
+    const waitAt = world.events.findIndex(
+      (e) => e.eventType === 'wait_completed'
+    );
+    expect(waitAt).toBeGreaterThan(0);
+    const completedBefore = world.events
+      .slice(0, waitAt)
+      .filter((e) => e.eventType === 'step_completed').length;
+    // The wait completed partway through the loop.
+    expect(completedBefore).toBeGreaterThan(0);
+    expect(completedBefore).toBeLessThan(steps);
+    // Run-ahead before the wait came due, a drained boundary once it was,
+    // and run-ahead again after it completed.
+    const firstAhead = unconfirmedAtStart.findIndex((n) => n > 0);
+    expect(firstAhead).toBeGreaterThanOrEqual(0);
+    const drained = unconfirmedAtStart.indexOf(0, firstAhead);
+    expect(drained).toBeGreaterThan(firstAhead);
+    expect(
+      Math.max(...unconfirmedAtStart.slice(Math.max(drained, completedBefore)))
+    ).toBeGreaterThan(0);
+    expect(
+      info.mock.calls.some(([message]) =>
+        String(message).includes('Run-ahead stopped')
+      )
+    ).toBe(false);
+    expect(
+      error.mock.calls.some(([line]) =>
+        String(line).includes('possibleLogCorruption')
+      )
+    ).toBe(false);
+
+    const cold = await coldReplay(world, source);
+    expect(cold.result).toBe(steps);
+  });
+
   it('stops with no orphan writes when the fence refuses a speculative write, and the redelivery completes', async () => {
     // Refuses the write that carries the third outcome, however the writer
     // groups its writes into batches.

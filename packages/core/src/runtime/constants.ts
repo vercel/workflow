@@ -486,10 +486,10 @@ export function getRunAheadDepth(): number {
 }
 
 /**
- * Allowance added to the invocation's inline window when deciding whether
- * an open wait can come due while the orchestrator is still deciding. A wait
- * due within the window plus this allowance makes a run-ahead boundary drain
- * instead.
+ * Allowance run-ahead's wait check adds to now (capped at the invocation's
+ * inline deadline) when deciding whether an open wait can come due while the
+ * orchestrator is still deciding. A wait due by then makes a run-ahead
+ * boundary drain instead (see `getRunAheadWaitWindowEndMs`).
  *
  * It covers clocks that are not this process's (the host that delivers a
  * timer, and an early timer delivery) and the last boundary of a window
@@ -515,6 +515,30 @@ export function getOpenWaitClockSkewMs(): number {
     {
       integer: true,
     }
+  );
+}
+
+/**
+ * The smallest allowance run-ahead's wait check uses, whatever
+ * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` says (proof of concept): a few round
+ * trips, so a wait coming due while the writes in flight commit always counts.
+ */
+export const MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS = 1_000;
+
+/**
+ * Where run-ahead's wait check ends (proof of concept): an open wait whose
+ * `resumeAt` is at or before this makes a boundary path-changing. It is now
+ * plus the allowance (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`, at least
+ * {@link MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS}), capped at the inline deadline plus
+ * that allowance, where the check used to end.
+ */
+export function getRunAheadWaitWindowEndMs(
+  nowMs: number,
+  inlineDeadlineMs: number
+): number {
+  return (
+    Math.min(nowMs, inlineDeadlineMs) +
+    Math.max(getOpenWaitClockSkewMs(), MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS)
   );
 }
 

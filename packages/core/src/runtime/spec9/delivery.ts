@@ -83,7 +83,7 @@ import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
-  getOpenWaitClockSkewMs,
+  getRunAheadWaitWindowEndMs,
   getReplayDivergenceMaxRetries,
   getRunAheadDepth,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -3858,7 +3858,10 @@ async function runDelivery(
       const schedulesInline =
         gateMayInline &&
         (gateRunnable.length > 0 || (gateSlots > 0 && gateNewSteps.length > 0));
-      const waitWindowEndMs = inlineDeadlineMs + getOpenWaitClockSkewMs();
+      const waitWindowEndMs = getRunAheadWaitWindowEndMs(
+        Date.now(),
+        inlineDeadlineMs
+      );
       const observation = observeOutOfBandWriters({
         items: suspension.items,
         observedHookIds: suspension.observedHookIds,
