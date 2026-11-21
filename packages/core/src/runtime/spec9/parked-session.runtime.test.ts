@@ -181,6 +181,8 @@ beforeEach(() => {
   coldReplays.count = 0;
   resumes.count = 0;
   spanExporter.reset();
+  // Parking is opt-in.
+  vi.stubEnv('WORKFLOW_PARKED_VM_MAX_BYTES', String(8 * 1024 * 1024));
   // No linger, so every payload reaches a new delivery.
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', '0');
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
