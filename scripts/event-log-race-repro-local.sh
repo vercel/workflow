@@ -157,7 +157,7 @@ to 10 here. Export your own value to override:
   WORKFLOW_LOCAL_QUEUE_CONCURRENCY       (--world local)
 
 `WORKFLOW_SPEC_VERSION` is passed through the same way, to the app and the
-harness alike. Both Worlds create spec 9 (single-orchestrator) runs by
+harness alike. Both Worlds create spec 10 (single-orchestrator) runs by
 default; export `WORKFLOW_SPEC_VERSION=8` to race the spec 8 orchestrator
 instead. With it set, the harness fails if a run comes back at another spec
 version.

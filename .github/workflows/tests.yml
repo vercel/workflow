@@ -746,10 +746,10 @@ jobs:
           e2e-start-ms: ${{ steps.e2eStart.outputs.ms }}
 
   e2e-vercel-spec8:
-    # New runs are spec 9 (the single orchestrator) by default, so every other
-    # Vercel lane runs spec 9. This lane keeps spec 8 covered for backwards
-    # compatibility: it deploys its own preview with WORKFLOW_SPEC_VERSION=8
-    # and runs the full suite against it on both VMs.
+    # New runs are spec 10 (the single orchestrator, with rate limits) by
+    # default, so every other Vercel lane runs spec 10. This lane keeps spec 8
+    # covered for backwards compatibility: it deploys its own preview with
+    # WORKFLOW_SPEC_VERSION=8 and runs the full suite against it on both VMs.
     #
     # The variable is set on the deployment AND on the test runner: a
     # cross-deployment start() stamps the lower of the target's and the
@@ -1198,8 +1198,8 @@ jobs:
           if-no-files-found: ignore
 
   e2e-local-spec8:
-    # The Local World counterpart of e2e-vercel-spec8: new runs are spec 9 by
-    # default, so every other local lane runs spec 9. This lane keeps spec 8
+    # The Local World counterpart of e2e-vercel-spec8: new runs are spec 10 by
+    # default, so every other local lane runs spec 10. This lane keeps spec 8
     # covered for backwards compatibility: it builds the Next.js workbench,
     # serves it with WORKFLOW_SPEC_VERSION=8, and runs the full suite against
     # it on both VMs. The variable is set on the server AND on the test runner
@@ -1466,15 +1466,15 @@ jobs:
           test "$restores" -gt 0
 
       # The start({ hook }) block again on the spec 8 engine, for backwards
-      # compatibility: the run above is spec 9, the default. The spec version
+      # compatibility: the run above is spec 10, the default. The spec version
       # is a runtime choice (WORKFLOW_SPEC_VERSION is read when the World is
       # created), so the built app is restarted with WORKFLOW_SPEC_VERSION=8
-      # rather than rebuilt; the spec 9 server is stopped first so its
+      # rather than rebuilt; the spec 10 server is stopped first so its
       # in-process queue workers don't pick the spec 8 runs up.
       - name: Run start({ hook }) E2E at spec 8
         if: ${{ matrix.app.name == 'nextjs-turbopack' && !matrix.app.canary && !matrix.app.snapshotThreshold }}
         run: |
-          # Stop the spec 9 server by its port: Next.js renames its server
+          # Stop the spec 10 server by its port: Next.js renames its server
           # process, so its command line no longer says `next start`.
           listening() { lsof -ti tcp:3000 -sTCP:LISTEN; }
           pids=$(listening || true)

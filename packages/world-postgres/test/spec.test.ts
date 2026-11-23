@@ -15,7 +15,7 @@ if (process.platform === 'win32') {
 } else {
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
   // The shared suite pinned to spec 8 for backwards compatibility, whatever
-  // the environment asks for; `spec9.test.ts` runs it at spec 9, the default.
+  // the environment asks for; `spec10.test.ts` runs it at spec 10, the default.
   // The servers the suite starts read the version when they create their
   // World.
   const previousSpecVersion = process.env.WORKFLOW_SPEC_VERSION;

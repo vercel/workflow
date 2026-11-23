@@ -101,7 +101,7 @@ concurrency:
 
 jobs:
   # Two cells on Vercel. `default` races the standard Git preview, whose new
-  # runs take the default spec version (9, the single orchestrator). `spec8`
+  # runs take the default spec version (10, the single orchestrator). `spec8`
   # races a dedicated preview deployed with WORKFLOW_SPEC_VERSION=8, which
   # keeps the spec 8 orchestrator covered for backwards compatibility. The
   # variable is set on that deployment AND on the runner: a cross-deployment
@@ -263,11 +263,11 @@ jobs:
         run: node .github/scripts/render-event-log-race-repro-results.js event-log-race-repro-results.json --check
 
   # The same harness against the self-hosted Worlds, one parallel job per World
-  # and spec version. `default` creates spec 9 runs; `spec8` sets
+  # and spec version. `default` creates spec 10 runs; `spec8` sets
   # WORKFLOW_SPEC_VERSION=8 for the app and the harness (one process tree, so
   # unlike the Vercel cell there is no deployment to configure separately), and
   # the harness fails if a run comes back at another spec version. Both Worlds
-  # serialize a spec 9 run's orchestrator deliveries in their own way (an
+  # serialize a spec 9+ run's orchestrator deliveries in their own way (an
   # in-process run gate, a Graphile named queue per run), so the single
   # orchestrator needs a cell on each, and the spec 8 orchestrator keeps one
   # each for backwards compatibility.

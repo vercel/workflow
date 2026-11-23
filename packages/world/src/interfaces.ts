@@ -710,8 +710,9 @@ export interface Storage {
  *
  * {@link inBandFence} is required for spec 9 runs: the runtime refuses to
  * create or drive one on a World that does not declare it. A World that
- * declares it creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts
- * out); a World without it creates spec 8 runs.
+ * declares it creates spec 9 runs by default, or spec 10 runs if it also
+ * declares {@link rateLimits} (`WORKFLOW_SPEC_VERSION=8` opts out); a World
+ * without it creates spec 8 runs.
  */
 export interface WorldCapabilities {
   /**
@@ -788,9 +789,9 @@ export interface WorldCapabilities {
    * create one in `start()`, or to begin a spec 9 orchestrator delivery, on
    * a World that does not declare it, before it writes anything. A World
    * that declares this passes `{ inBandFence: true }` to `mintedSpecVersion`,
-   * which then creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8`
-   * keeps them on spec 8). A World without it creates spec 8 runs, which
-   * need no fence.
+   * which then creates spec 9 runs by default, or spec 10 runs with
+   * {@link rateLimits} too (`WORKFLOW_SPEC_VERSION=8` keeps them on spec 8).
+   * A World without it creates spec 8 runs, which need no fence.
    *
    * Declaring it commits the World to all of:
    *
@@ -827,7 +828,8 @@ export interface WorldCapabilities {
   /**
    * The World reserves rate limit slots for `experimental_rateLimit()`, and
    * so may mint runs at `SPEC_VERSION_RATE_LIMITS` (pass it to
-   * `mintedSpecVersion`). It requires {@link inBandFence}.
+   * `mintedSpecVersion`, which then creates spec 10 runs by default). It
+   * requires {@link inBandFence}.
    *
    * What a World that declares this does with the rate events (see
    * `events.ts`):

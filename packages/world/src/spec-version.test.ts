@@ -10,6 +10,7 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_DEFAULT_MINTED_FENCED,
+  SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_RATE_LIMITS,
@@ -100,6 +101,9 @@ describe('spec version constants', () => {
     expect(SPEC_VERSION_DEFAULT_MINTED_FENCED).toBe(
       SPEC_VERSION_SINGLE_ORCHESTRATOR
     );
+    expect(SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS).toBe(
+      SPEC_VERSION_RATE_LIMITS
+    );
     // Spec 9 is structural, so the version assumed for a run that reports
     // none stays below it; only a fenced World mints it.
     expect(SPEC_VERSION_CURRENT).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
@@ -116,7 +120,28 @@ describe('spec version constants', () => {
       );
     });
 
-    it('stamps the single-orchestrator version by default for a fenced World', () => {
+    it('stamps the rate limits version by default for a World with the fence and rate limits', () => {
+      const full = { inBandFence: true, rateLimits: true };
+      expect(mintedSpecVersion({}, full)).toBe(SPEC_VERSION_RATE_LIMITS);
+      expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ' ' }, full)).toBe(
+        SPEC_VERSION_RATE_LIMITS
+      );
+      // Spec 9 and spec 8 stay one setting away.
+      for (const v of [
+        SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      ]) {
+        expect(
+          mintedSpecVersion({ WORKFLOW_SPEC_VERSION: String(v) }, full)
+        ).toBe(v);
+      }
+      // Rate limits without the fence can't mint spec 9 or later.
+      expect(mintedSpecVersion({}, { rateLimits: true })).toBe(
+        SPEC_VERSION_DEFAULT_MINTED
+      );
+    });
+
+    it('stamps the single-orchestrator version by default for a fenced World without rate limits', () => {
       const fenced = { inBandFence: true };
       expect(mintedSpecVersion({}, fenced)).toBe(
         SPEC_VERSION_SINGLE_ORCHESTRATOR
@@ -216,7 +241,7 @@ describe('spec version constants', () => {
       // upgrade, so a typo in it must not create spec 9 runs.
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        const fenced = { inBandFence: true };
+        const fenced = { inBandFence: true, rateLimits: true };
         const typos = ['8.0', 'v8', 'spec8', 'eight-fenced', '99'];
         for (const raw of typos) {
           expect(
@@ -231,10 +256,10 @@ describe('spec version constants', () => {
         }
         // Unset or empty still takes the fenced default.
         expect(mintedSpecVersion({}, fenced)).toBe(
-          SPEC_VERSION_DEFAULT_MINTED_FENCED
+          SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS
         );
         expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ' ' }, fenced)).toBe(
-          SPEC_VERSION_DEFAULT_MINTED_FENCED
+          SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS
         );
       } finally {
         warn.mockRestore();
@@ -278,6 +303,9 @@ describe('spec version constants', () => {
       expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThanOrEqual(
         SPEC_VERSION_MAX_SUPPORTED
       );
+      expect(
+        mintedSpecVersion({}, { inBandFence: true, rateLimits: true })
+      ).toBeLessThanOrEqual(SPEC_VERSION_MAX_SUPPORTED);
     });
   });
 

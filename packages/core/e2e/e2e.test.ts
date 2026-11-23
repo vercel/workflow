@@ -553,8 +553,8 @@ async function allSteps(runId: string) {
 
 /**
  * The steps a test asserts on: the World's step listing, except on lanes
- * that run at spec 9 (what the runner's World mints: the default on a World
- * with the in-band fence), where the listing on world-vercel can lag the
+ * that run at spec 9 or later (what the runner's World mints: spec 10 is the
+ * default on a World with the in-band fence and rate limits), where the listing on world-vercel can lag the
  * event log (see `stepsFromEvents`) and the steps are read from the log
  * instead. The spec 8 lanes keep checking that the listing reaches every
  * step's final state.
@@ -695,8 +695,9 @@ describe.concurrent('e2e', () => {
     }
   );
 
-  // New runs are spec 9 on a World with the in-band fence (local, Postgres,
-  // Vercel) and spec 8 on one without. The spec 8 lanes pin
+  // New runs are spec 10 on a World with the in-band fence and rate limits
+  // (local, Postgres, Vercel), spec 9 on one with only the fence, and spec 8
+  // on one without. The spec 8 lanes pin
   // `WORKFLOW_SPEC_VERSION=8` on their deployment and on this runner (a
   // cross-deployment start stamps the lower of the two). Fails loudly when
   // the default or the setting stops reaching this runner, which would
@@ -712,6 +713,7 @@ describe.concurrent('e2e', () => {
       expect(row.specVersion).toBe(
         mintedSpecVersion(process.env, {
           inBandFence: world.capabilities?.inBandFence === true,
+          rateLimits: world.capabilities?.rateLimits === true,
         })
       );
     }
@@ -7036,7 +7038,10 @@ describe.concurrent('e2e', () => {
             (event) => event.eventType === 'step_completed'
           );
           expect(completions.length).toBeGreaterThan(0);
-          const spec9 = stepEvents.some((event) => event.specVersion === 9);
+          const singleOrchestrator = stepEvents.some(
+            (event) =>
+              (event.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+          );
           const resultsPurged = async () => {
             for (const completion of completions) {
               const { json } = await cliInspectJson(
@@ -7061,7 +7066,8 @@ describe.concurrent('e2e', () => {
               return {
                 steps,
                 listed,
-                logged: spec9 && !listed && (await resultsPurged()),
+                logged:
+                  singleOrchestrator && !listed && (await resultsPurged()),
               };
             },
             ({ listed, logged }) => listed || logged,

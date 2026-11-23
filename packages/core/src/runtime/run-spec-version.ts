@@ -14,9 +14,9 @@ import {
  * event log over a single such event. Capped at the highest version this SDK
  * can drive, `SPEC_VERSION_MAX_SUPPORTED`, not at the version it mints: a
  * process that creates spec 8 runs (`WORKFLOW_SPEC_VERSION=8`, or a World
- * without the in-band fence) still stamps 9 on the `hook_received`,
- * `run_cancelled` and wake events it writes to a spec 9 run, which another
- * process may have created.
+ * without the in-band fence) still stamps 9 or 10 on the `hook_received`,
+ * `run_cancelled` and wake events it writes to a spec 9 or 10 run, which
+ * another process may have created.
  *
  * `whenUnknown` is used for a run with no recorded version. It defaults to
  * `SPEC_VERSION_CURRENT` (spec 8): spec 9 is structural, so it is never

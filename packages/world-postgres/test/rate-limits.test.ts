@@ -621,9 +621,9 @@ describe.skipIf(skip)('rate limits on the Postgres World', () => {
     }
   }, 60_000);
 
-  it('declares rateLimits, and mints spec 10 on request', async () => {
+  it('declares rateLimits, and mints spec 10 by default', async () => {
     const previous = process.env.WORKFLOW_SPEC_VERSION;
-    process.env.WORKFLOW_SPEC_VERSION = '10';
+    delete process.env.WORKFLOW_SPEC_VERSION;
     // Closed after: creating it opens the streamer's LISTEN connection,
     // which the container's stop in afterAll would otherwise terminate.
     const world = createWorld({ pool });

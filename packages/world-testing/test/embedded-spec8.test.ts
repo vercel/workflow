@@ -5,7 +5,7 @@ import { createFetcher, startServer } from '../src/util.mjs';
 
 // The same suite over a Local World pinned to spec 8 with
 // `WORKFLOW_SPEC_VERSION=8`, which the runtime drives with the spec 8
-// orchestrator. `embedded.test.ts` covers the default, spec 9.
+// orchestrator. `embedded.test.ts` covers the default, spec 10.
 const previous = process.env.WORKFLOW_SPEC_VERSION;
 beforeAll(() => {
   process.env.WORKFLOW_SPEC_VERSION = String(

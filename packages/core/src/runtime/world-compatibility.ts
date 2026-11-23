@@ -90,7 +90,8 @@ export function assertWorldSupportsInBandFence(
       'stale in-band write with `InBandSupersededError` (412), it can declare ' +
       '`capabilities.inBandFence: true` and ' +
       '`specVersion: mintedSpecVersion(process.env, { inBandFence: true })`, ' +
-      'which creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts out). ' +
+      'which creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts out), ' +
+      'or spec 10 runs once it also declares `capabilities.rateLimits` and passes `rateLimits: true`. ' +
       'See "Building a World" in the Workflow docs.'
   );
 }

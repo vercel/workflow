@@ -33,7 +33,7 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
-New runs default to spec 9 (a single orchestrator per run behind the World's in-band fence) on Worlds that declare the fence, and to spec 8 on Worlds that do not; `WORKFLOW_SPEC_VERSION=8` opts out. The spec 9 runtime lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
+New runs default to spec 10 (a single orchestrator per run behind the World's in-band fence, plus `experimental_rateLimit()`) on Worlds that declare both the fence and rate limits (Vercel, Local, Postgres), to spec 9 on Worlds that declare only the fence, and to spec 8 on Worlds without it; `WORKFLOW_SPEC_VERSION=8` opts out. Spec 10 is capability-only on top of spec 9, so it runs on the spec 9 runtime. The spec 9 runtime lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
 
 Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
 
@@ -186,9 +186,9 @@ them with an exclusive `link(2)` against a directory that two processes (the app
 and the harness) both write to. A slot race a transaction closes is not
 automatically closed by a filesystem.
 
-Both worlds race the single orchestrator (spec 9) by default; export
+Both worlds race the single orchestrator (spec 10) by default; export
 `WORKFLOW_SPEC_VERSION=8` to race the spec 8 one. CI runs both worlds at the
-default spec and at spec 8. Read the world-local default (spec 9) cell with
+default spec and at spec 8. Read the world-local default (spec 10) cell with
 one difference in mind: its run gate is in-process, and the harness calls
 `start()` and `resumeHook()` from its own process, so those messages reach the
 app through the harness' queue and overlap the app's own deliveries of the run.

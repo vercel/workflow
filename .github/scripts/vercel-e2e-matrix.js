@@ -109,7 +109,7 @@ const HTTP_TRANSPORT_APPS = [
 
 // Apps whose dedicated deployment pins spec 8 runs (WORKFLOW_SPEC_VERSION=8),
 // for backwards compatibility. Every other Vercel lane runs the default,
-// spec 9. Both VMs, since each engine has its own spec 8 orchestrator.
+// spec 10. Both VMs, since each engine has its own spec 8 orchestrator.
 const SPEC8_APPS = ['nextjs-turbopack'];
 
 function project(name) {

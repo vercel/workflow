@@ -46,10 +46,9 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
   // Read once: the runtime validates this declaration, and `run_started`
   // attests the same value (see `APIConfig.mintedSpecVersion`). The backend
-  // fences in-band writes (`capabilities.inBandFence` below), so new runs
-  // are spec 9 by default and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8.
-  // It also reserves rate limit slots (`capabilities.rateLimits`), so
-  // `WORKFLOW_SPEC_VERSION=10` creates spec 10 runs.
+  // fences in-band writes (`capabilities.inBandFence` below) and reserves
+  // rate limit slots (`capabilities.rateLimits`), so new runs are spec 10 by
+  // default; `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8.
   const specVersion = mintedSpecVersion(process.env, {
     inBandFence: true,
     rateLimits: true,
