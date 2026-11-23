@@ -149,6 +149,73 @@ mod compat {
         setter.function.body.visit_mut_with(v);
     }
 
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use swc_core::common::DUMMY_SP;
+
+        fn ident_pat(name: &str) -> Pat {
+            Pat::Ident(BindingIdent::from(Ident::new_no_ctxt(
+                name.into(),
+                DUMMY_SP,
+            )))
+        }
+
+        #[cfg(not(feature = "swc-116"))]
+        fn setter(param: Option<Pat>, body: Option<FnBody>) -> SetterProp {
+            SetterProp {
+                param: Box::new(param.unwrap_or_else(|| ident_pat("v"))),
+                body,
+                ..Default::default()
+            }
+        }
+        #[cfg(feature = "swc-116")]
+        fn setter(param: Option<Pat>, body: Option<FnBody>) -> SetterProp {
+            SetterProp {
+                function: Box::new(Function {
+                    params: param
+                        .into_iter()
+                        .map(|pat| Param {
+                            span: DUMMY_SP,
+                            decorators: vec![],
+                            pat,
+                        })
+                        .collect(),
+                    body,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn setter_param_reads_the_parameter() {
+            let setter = setter(Some(ident_pat("value")), None);
+            let Some(Pat::Ident(param)) = setter_param(&setter) else {
+                panic!("expected an identifier parameter");
+            };
+            assert_eq!(&*param.id.sym, "value");
+        }
+
+        /// swc_core 77 keeps the parameter in a list, which only a hand-built
+        /// AST leaves empty; that must read as no parameter, not panic.
+        #[cfg(feature = "swc-116")]
+        #[test]
+        fn setter_param_is_none_without_a_parameter() {
+            assert!(setter_param(&setter(None, None)).is_none());
+        }
+
+        #[test]
+        fn setter_and_getter_bodies_round_trip() {
+            let body = fn_body(DUMMY_SP, SyntaxContext::empty(), vec![]);
+            assert!(setter_body(&setter(None, Some(body.clone()))).is_some());
+            let mut getter = GetterProp::default();
+            assert!(getter_body(&getter).is_none());
+            *getter_body_mut(&mut getter) = Some(body);
+            assert!(getter_body(&getter).is_some());
+        }
+    }
+
     /// A statement list that is either a block or a function body.
     pub trait Stmts {
         fn stmts(&self) -> &Vec<Stmt>;

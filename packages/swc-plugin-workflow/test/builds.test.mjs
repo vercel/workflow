@@ -57,6 +57,25 @@ describe('the hosts', () => {
   });
 });
 
+// The package's `@swc/core` peer range starts at 1.15.0, and the 1.16 build at
+// 1.16.0: each build has to load on the first release of its line too. Their
+// output isn't compared with the hosts above, because @swc/core prints some
+// code differently between patch releases (1.15.0 and 1.15.3 differ on about
+// a third of the fixtures with the same plugin).
+describe.each([
+  ['1.15.0', 'swc-core-1-15-0', plugin115],
+  ['1.16.0', 'swc-core-1-16-0', plugin116],
+])('on @swc/core %s, its build', (version, pkg, plugin) => {
+  const swc = require(pkg);
+  it('is that release', () => {
+    expect(swc.version).toBe(version);
+  });
+  it.each(inputs)('transforms %s', async (_, file) => {
+    const { code } = await transform(swc, plugin, 'step', file);
+    expect(code).toContain('__internal_workflows');
+  });
+});
+
 describe('each build loads only on its own @swc/core line', () => {
   const [, file] = inputs[0];
   it('rejects the 1.16 build on @swc/core 1.15', async () => {

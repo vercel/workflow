@@ -150,13 +150,20 @@ export function isSupportedSwcCoreVersion(version: string): boolean {
 }
 
 /**
- * The plugin build a `.swcrc` plugin path points at, from its wasm file name,
- * or `undefined` for a path that names neither (a hand-written entry).
+ * The plugin build a `.swcrc` plugin entry points at: an absolute path, from
+ * its wasm file name, or a hand-written package specifier
+ * (`@workflow/swc-plugin`, `@workflow/swc-plugin/swc-1.16`). `undefined` for
+ * anything else.
  */
 export function swcPluginBuildOfPath(
   pluginPath: string
 ): SwcPluginBuild | undefined {
-  const file = pluginPath.replace(/\\/g, '/').split('/').pop();
+  const normalized = pluginPath.replace(/\\/g, '/');
+  const bySpecifier = SWC_PLUGIN_BUILDS.find(
+    (build) => build.specifier === normalized
+  );
+  if (bySpecifier) return bySpecifier;
+  const file = normalized.split('/').pop();
   return SWC_PLUGIN_BUILDS.find((build) => build.wasm === file);
 }
 

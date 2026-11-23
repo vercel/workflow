@@ -196,8 +196,20 @@ describe('swcPluginBuildOfPath', () => {
     expect(swcPluginBuildOfPath(path)?.line).toBe(line);
   });
 
-  it('is undefined for a hand-written entry', () => {
-    expect(swcPluginBuildOfPath('@workflow/swc-plugin')).toBeUndefined();
+  it.each([
+    ['@workflow/swc-plugin', '1.15'],
+    ['@workflow/swc-plugin/swc-1.16', '1.16'],
+  ])('reads a hand-written package specifier %s as %s', (path, line) => {
+    expect(swcPluginBuildOfPath(path)?.line).toBe(line);
+  });
+
+  it.each([
+    '/plugins/other_plugin.wasm',
+    './swc_plugin_workflow.wasm.bak',
+    '@workflow/swc-plugin/build-hash.json',
+    '',
+  ])('is undefined for %j', (path) => {
+    expect(swcPluginBuildOfPath(path)).toBeUndefined();
   });
 });
 

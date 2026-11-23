@@ -162,6 +162,54 @@ describe('runInit', () => {
     expect(swcrcPluginPath()).toBe(PLUGIN_PATH);
   });
 
+  it('warns without --force when a hand-written .swcrc entry names the 1.15 build on @swc/core 1.16', () => {
+    // swc resolves the package's main export, the 1.15 build.
+    createApp({ cli: '0.8.2', core: '1.16.22' });
+    writeFileSync(
+      join(appDir, '.swcrc'),
+      JSON.stringify({
+        jsc: {
+          experimental: {
+            plugins: [['@workflow/swc-plugin', { mode: 'step' }]],
+          },
+        },
+      })
+    );
+    const { code, output } = init();
+    expect(code).toBe(0);
+    expect(output).toContain(
+      'points at the Workflow SWC plugin built for @swc/core 1.15.x, but @swc/core 1.16.22 is installed'
+    );
+  });
+
+  it('does not warn about the build for a .swcrc entry it cannot place', () => {
+    createApp({ cli: '0.8.2', core: '1.16.22' });
+    writeFileSync(
+      join(appDir, '.swcrc'),
+      JSON.stringify({
+        jsc: {
+          experimental: {
+            plugins: [['/vendor/swc-plugin-workflow/custom.wasm', {}]],
+          },
+        },
+      })
+    );
+    const { code, output } = init();
+    expect(code).toBe(0);
+    expect(output).not.toContain('⚠');
+  });
+
+  it('exits 1 without crashing on a .swcrc that is not valid JSON', () => {
+    createApp({ cli: '0.8.2', core: '1.16.22' });
+    writeFileSync(join(appDir, '.swcrc'), '{ "jsc": ');
+    const { code, output } = init();
+    expect(code).toBe(1);
+    expect(output).toContain(
+      '.swcrc already exists without the workflow plugin'
+    );
+    expect(output).not.toContain('points at the Workflow SWC plugin');
+  });
+
   it('does not warn without --force when .swcrc already points at the matching build', () => {
     createApp({ cli: '0.8.2', core: '1.16.22' });
     init();
