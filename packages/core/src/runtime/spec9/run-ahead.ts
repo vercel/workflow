@@ -117,6 +117,7 @@ export function runAheadContextFor(input: {
     correlationId: string;
     token: string;
     isSystem?: boolean;
+    inBandOnly?: boolean;
     disposed?: boolean;
   }[];
   observedHookIds: ReadonlySet<string> | undefined;
@@ -125,7 +126,11 @@ export function runAheadContextFor(input: {
   const sensitiveHookIds = new Set<string>();
   for (const hook of input.hookItems) {
     if (hook.disposed) continue;
+    // An in-band-only abort hook never makes a boundary path-changing, but
+    // its `hook_received` is only ever this orchestrator's own: another
+    // writer's is a hazard (proof of concept).
     if (
+      hook.inBandOnly === true ||
       isAlwaysObservedHook(hook) ||
       input.observedHookIds === undefined ||
       input.observedHookIds.has(hook.correlationId)
