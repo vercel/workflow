@@ -373,6 +373,87 @@ describe('wakeUpRun pending-wake marks', () => {
   });
 });
 
+describe('messages to a run go to the queue namespace the run recorded', () => {
+  const waitCreated: Event = {
+    eventId: 'evnt_0',
+    runId: 'wrun_123',
+    eventType: 'wait_created',
+    correlationId: 'wait_abc',
+    eventData: { resumeAt: new Date('2024-01-01T00:00:01.000Z') },
+    createdAt: new Date(),
+  };
+  const recorded = {
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    executionContext: { queueNamespace: 'eve' },
+  };
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const calls: Array<[string, (world: World) => Promise<unknown>]> = [
+    ['cancelRun', (world) => cancelRun(world, 'wrun_123')],
+    ['wakeUpRun', (world) => wakeUpRun(world, 'wrun_123')],
+    ['reenqueueRun', (world) => reenqueueRun(world, 'wrun_123')],
+  ];
+
+  it.each(
+    calls
+  )('%s sends to the recorded namespace when the caller has none', async (_name, call) => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', '');
+    const world = createMockWorld({
+      run: recorded,
+      events: [waitCreated],
+    });
+    await call(world);
+
+    expect(world.queue).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(world.queue).mock.calls[0][0]).toBe(
+      '__eve_wkf_workflow_test-workflow'
+    );
+  });
+
+  it.each(
+    calls
+  )('%s prefers the recorded namespace to the caller environment', async (_name, call) => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'other');
+    const world = createMockWorld({
+      run: recorded,
+      events: [waitCreated],
+    });
+    await call(world);
+
+    expect(vi.mocked(world.queue).mock.calls[0][0]).toBe(
+      '__eve_wkf_workflow_test-workflow'
+    );
+  });
+
+  it('lets an explicit namespace win over the recorded one', async () => {
+    const world = createMockWorld({ run: recorded, events: [waitCreated] });
+    await wakeUpRun(world, 'wrun_123', { namespace: 'explicit' });
+    await reenqueueRun(world, 'wrun_123', { namespace: 'explicit' });
+
+    for (const [name] of vi.mocked(world.queue).mock.calls) {
+      expect(name).toBe('__explicit_wkf_workflow_test-workflow');
+    }
+  });
+
+  it.each(
+    calls
+  )('%s keeps the environment namespace for a run that recorded none', async (_name, call) => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'fromenv');
+    const world = createMockWorld({
+      run: { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+      events: [waitCreated],
+    });
+    await call(world);
+
+    expect(vi.mocked(world.queue).mock.calls[0][0]).toBe(
+      '__fromenv_wkf_workflow_test-workflow'
+    );
+  });
+});
+
 describe('recreateRunFromExisting', () => {
   afterEach(() => {
     vi.mocked(start).mockReset();

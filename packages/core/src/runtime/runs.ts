@@ -23,6 +23,7 @@ import {
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
+  getRunQueueNamespace,
   type World,
 } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
@@ -84,18 +85,18 @@ export interface StopSleepOptions {
   correlationIds?: string[];
   /**
    * Queue namespace of the run's deployment (e.g. `'eve'`), used when
-   * re-enqueueing the run after completing its waits. Falls back to
-   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process. Cross-context
-   * callers (e.g. the observability dashboard) must pass it explicitly.
+   * re-enqueueing the run after completing its waits. Defaults to the
+   * namespace the run recorded when it started, then to
+   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process.
    */
   namespace?: string;
 }
 
 export interface ReenqueueRunOptions {
   /**
-   * Queue namespace of the run's deployment (e.g. `'eve'`). Falls back to
-   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process. Cross-context
-   * callers (e.g. the observability dashboard) must pass it explicitly.
+   * Queue namespace of the run's deployment (e.g. `'eve'`). Defaults to the
+   * namespace the run recorded when it started, then to
+   * `WORKFLOW_QUEUE_NAMESPACE` in the calling process.
    */
   namespace?: string;
 }
@@ -196,6 +197,24 @@ export function isSingleOrchestratorRun(
 }
 
 /**
+ * The queue a message to an existing run goes to: the namespace the caller
+ * names, else the one the run recorded when it started, else the calling
+ * process's `WORKFLOW_QUEUE_NAMESPACE` (runs started before the namespace was
+ * recorded). A process other than the run's own (a cancel from a CLI, a
+ * dashboard, a recovery pass) therefore reaches the run's consumer without
+ * having its environment.
+ */
+function queueNameForRun(
+  run: Pick<WorkflowRun, 'workflowName' | 'executionContext'>,
+  namespace?: string
+) {
+  return getWorkflowQueueName(
+    run.workflowName,
+    namespace ?? getRunQueueNamespace(run.executionContext)
+  );
+}
+
+/**
  * Wakes a single-orchestrator run's orchestrator after an out-of-band write
  * (a cancellation), so a live or later orchestrator observes it. No
  * idempotency key: a duplicate wake costs a cheap delivery, a key could lose
@@ -207,13 +226,17 @@ export async function wakeRunAfterOutOfBandWrite(
   world: World,
   run: Pick<
     WorkflowRun,
-    'runId' | 'workflowName' | 'deploymentId' | 'specVersion'
+    | 'runId'
+    | 'workflowName'
+    | 'deploymentId'
+    | 'specVersion'
+    | 'executionContext'
   >
 ): Promise<void> {
   if (!isSingleOrchestratorRun(run)) return;
   try {
     await world.queue(
-      getWorkflowQueueName(run.workflowName),
+      queueNameForRun(run),
       {
         runId: run.runId,
         requestedAt: new Date(),
@@ -628,7 +651,7 @@ export async function reenqueueRun(
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
     await world.queue(
-      getWorkflowQueueName(run.workflowName, options?.namespace),
+      queueNameForRun(run, options?.namespace),
       {
         runId,
         runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
@@ -790,7 +813,7 @@ export async function wakeUpRun(
         const forget = rememberWakeUp(runId, correlationIds);
         try {
           await world.queue(
-            getWorkflowQueueName(run.workflowName, options?.namespace),
+            queueNameForRun(run, options?.namespace),
             {
               runId,
               runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
@@ -850,7 +873,7 @@ export async function wakeUpRun(
 
     if (stoppedCount > 0) {
       await world.queue(
-        getWorkflowQueueName(run.workflowName, options?.namespace),
+        queueNameForRun(run, options?.namespace),
         {
           runId,
           runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
