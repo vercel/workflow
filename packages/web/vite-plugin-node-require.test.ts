@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { build, type Plugin, type Rollup } from 'vite';
 import { describe, expect, test } from 'vitest';
 import { nodeRequireBanner } from './vite-plugin-node-require';
@@ -44,6 +48,24 @@ async function buildChunkCode(opts: {
   return chunk.code;
 }
 
+function serverBanner(): string {
+  const rollupOptions: { output?: { banner?: string } } = {};
+  const config = { command: 'build', build: { ssr: true, rollupOptions } };
+  (nodeRequireBanner().configResolved as (config: unknown) => void)(config);
+  return rollupOptions.output?.banner ?? '';
+}
+
+async function runChunk(code: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'workflow-web-banner-'));
+  try {
+    const file = join(dir, 'chunk.mjs');
+    await writeFile(file, code);
+    return execFileSync(process.execPath, [file], { encoding: 'utf8' });
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+}
+
 describe('nodeRequireBanner', () => {
   // The load-bearing assertion: without this banner, bundled undici's lazy
   // `require('node:http2')` finds no `require` in the ESM server bundle, falls
@@ -77,6 +99,18 @@ describe('nodeRequireBanner', () => {
     async () => {
       const code = await buildChunkCode({ ssr: true, withPlugin: false });
       expect(code).not.toContain('__wkfCreateRequire');
+    },
+    BUILD_TEST_TIMEOUT_MS
+  );
+
+  test(
+    'loads a server chunk that declares its own `require`',
+    async () => {
+      const stdout = await runChunk(
+        `${serverBanner()}\nconst require = () => 'chunk';\nconsole.log(typeof globalThis.require, require());\n`
+      );
+
+      expect(stdout.trim()).toBe('function chunk');
     },
     BUILD_TEST_TIMEOUT_MS
   );

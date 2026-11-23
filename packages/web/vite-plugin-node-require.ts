@@ -14,8 +14,11 @@ import type { Plugin, Rollup } from 'vite';
 // Prepend a `createRequire`-backed global `require` to the server chunks so the
 // real `node:http2` resolves. This mirrors the same fix the @workflow/sveltekit
 // and @workflow/nitro plugins apply for their bundled server builds.
+//
+// The check reads `globalThis.require` because a chunk can declare its own
+// `const require` below the banner, which is still in its temporal dead zone.
 export const NODE_REQUIRE_BANNER =
-  "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+  "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof globalThis.require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
 
 /** Prepend NODE_REQUIRE_BANNER to an existing rollup `banner` option, which may
  *  be absent, a string, or a per-chunk function. */
@@ -36,8 +39,8 @@ function prependBanner(
  * Gated to the SSR production build: a `node:module` import would break the
  * client/browser bundle, and dev (`react-router dev`) loads dependencies
  * natively via Vite's SSR runner where a real `require` already exists. The
- * `typeof require === 'undefined'` guard keeps it a safe no-op in any CJS chunk,
- * and `node:module` is always available in the Node server runtime.
+ * check leaves a `require` that already exists alone, and `node:module` is
+ * always available in the Node server runtime.
  */
 export function nodeRequireBanner(): Plugin {
   return {

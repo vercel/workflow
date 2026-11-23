@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -143,5 +144,36 @@ describe('workflowPlugin', () => {
         sourcemap: 'external',
       },
     ]);
+  });
+
+  it('adds a server banner that loads in a chunk declaring its own `require`', async () => {
+    const configPath = join(workingDir, 'svelte.config.js');
+    await writeFile(configPath, 'export default {};');
+    mocks.loadConfig.mockResolvedValue({
+      config: {},
+      configFilePath: configPath,
+      configSource: 'svelte',
+    });
+
+    const [pending] = workflowPlugin();
+    const plugins = (await pending) as Array<{
+      name: string;
+      configResolved?: (config: unknown) => void;
+    }>;
+    const plugin = plugins.find((p) => p.name === 'workflow:sveltekit');
+    const rollupOptions: { output?: { banner?: string } } = {};
+
+    plugin?.configResolved?.({ build: { ssr: true, rollupOptions } });
+
+    const chunk = join(workingDir, 'chunk.mjs');
+    await writeFile(
+      chunk,
+      `${rollupOptions.output?.banner}\nconst require = () => 'chunk';\nconsole.log(typeof globalThis.require, require());\n`
+    );
+
+    const stdout = execFileSync(process.execPath, [chunk], {
+      encoding: 'utf8',
+    });
+    expect(stdout.trim()).toBe('function chunk');
   });
 });
