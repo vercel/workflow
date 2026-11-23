@@ -874,7 +874,8 @@ export interface WorldCapabilities {
    * write would have had (400, 409, 425) and its position is sealed like any
    * refused item's, or the batch reports `allocated`. An item refused with
    * `rate-batch-deferred` or `rate-decision-failed` (503) had nothing
-   * reserved or committed, and the runtime sends it again. The runtime sends
+   * committed, and the runtime sends it again; a slot the World reserved for
+   * it before failing is wasted, never admitted twice. The runtime sends
    * a rate limit call's write in the same batch as the speculative step
    * outcomes queued before it, which saves the call a round trip, and the
    * writes of calls made at once in one batch. Requires {@link rateLimits}.

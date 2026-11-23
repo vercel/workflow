@@ -864,6 +864,48 @@ describe('a rate limit write beside run-ahead writes', () => {
     expect(world.events.at(-1)?.correlationId).toBe('next');
   });
 
+  it("hands the batch's skipped-slot report to the first write that is answered", async () => {
+    const refused = new Set<string>();
+    const world = seeded({
+      runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+      rateEventsInBatch: true,
+      // The group's first write is deferred once: its caller never sees
+      // this batch's answer.
+      refuseBatchedRate: (event) => {
+        const cid = event.correlationId ?? '';
+        if (cid !== 'rate_1' || refused.has(cid)) return undefined;
+        refused.add(cid);
+        return { status: 503, error: 'rate-batch-deferred' };
+      },
+    });
+    const writer = new InBandWriter(world.asWorld(), RUN);
+    writer.adoptSnapshot(
+      requireLoadSnapshot(
+        RUN,
+        await loadWorkflowRunEventsFrom(world.asWorld(), RUN)
+      )
+    );
+    // Another writer's event lands below the batch, unseen by this writer.
+    const foreign = world.appendOutOfBand({
+      eventType: 'hook_received',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      correlationId: 'hook_other',
+      eventData: { payload: new Uint8Array() },
+    } as never);
+    const [first, second] = await Promise.all(
+      ['rate_1', 'rate_2'].map((cid) =>
+        writer.create(rateCreated(cid), { eventCount: 1 })
+      )
+    );
+
+    expect(world.batches).toEqual([['rate_created', 'rate_created']]);
+    // The batch counted the report as delivered (later writes name a
+    // position above it), so the write it answered carries it.
+    expect(second?.events?.map((e) => e.eventId)).toEqual([foreign.eventId]);
+    expect(first?.events ?? []).toEqual([]);
+    expect(first?.event?.correlationId).toBe('rate_1');
+  });
+
   it('fails a rate write the World keeps refusing before deciding it', async () => {
     const world = seeded({
       runSpecVersion: SPEC_VERSION_RATE_LIMITS,
