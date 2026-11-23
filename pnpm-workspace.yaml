@@ -130,3 +130,11 @@ allowBuilds:
   # wrangler's local runtime (@workflow/world-cloudflare e2e); its install
   # script links the platform-specific workerd binary.
   workerd: true
+patchedDependencies:
+  # nitro's Vercel node entry (`vercel: { entryFormat: 'node' }`, used by the
+  # express and fastify workbenches) redefines `req.socket.remoteAddress` on
+  # every request without `configurable: true`, so a second request on a
+  # keep-alive socket throws "Cannot redefine property: remoteAddress". Drop
+  # this once nitro ships the fix; pnpm refuses an install whose patch no
+  # longer matches a resolved version, so a nitro bump surfaces it.
+  nitro@3.0.260610-beta: patches/nitro@3.0.260610-beta.patch
