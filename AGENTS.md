@@ -200,7 +200,7 @@ world-postgres, whose named queue gates across processes.
 
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
 Their defaults live only in `event-log-race-repro.test.ts`; neither the CI
-workflow nor the local script defines a second copy. The default scale (14 runs)
+workflow nor the local script defines a second copy. The default scale
 is a per-PR regression check, not a rate measurement; a clean run means "the
 storms did not trip it", not "the rate is below X". To soak for a *rate*, use the
 historical scale:
@@ -214,6 +214,8 @@ EVENT_LOG_RACE_REPRO_BUDGET_MS=4500000 \
   pnpm run test:e2e:event-log-race-repro:local --skip-build --skip-db-setup
 ```
 
+The measurements below used 14 runs; they are historical calibration data, not the current default scale.
+
 Against world-postgres the storms bite much harder than the CI job's Vercel
 preview does: on `main`, three 14-run passes failed 8 of their 18 `step-storm`
 attempts with `CORRUPTED_EVENT_LOG` while `hook-storm` and `hook-sleep` stayed
@@ -225,7 +227,7 @@ near "the rate is below X".
 That is a *laptop* result, and the distinction matters: `CORRUPTED_EVENT_LOG`
 means the run finished the race, while `stuck` usually means it never got to
 run one. Two dispatches of the local lanes against unmodified `main` on GitHub's
-4-core runners scored, at the default scale, world-postgres 5-6 of 6 `step-storm`
+4-core runners scored, at that scale, world-postgres 5-6 of 6 `step-storm`
 runs `stuck` at `runTimeoutMs` in both, and world-local 6 and 12 of 14 `stuck`.
 The *same* lane, the same commit, "6/14" and "12/14" one dispatch apart. Read a
 single local-lane number as a verdict on a PR and it will mislead you; read
@@ -256,7 +258,7 @@ now bounded. If you change either, know what you are giving up:
 
 The local script also raises `EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS` to 480000
 (export your own to override). A local lane runs the same storm about twice as
-slowly as the Vercel lane. Measured on 4-core runners at the default scale,
+slowly as the Vercel lane. Measured on 4-core runners at that scale,
 `step-storm` takes 194-203s on world-local and 168-175s on world-postgres
 against Vercel's 85-100s, so the harness' 240000 default left the local lanes at
 approximately 83% of their own timeout, close enough that a slow runner turns a
