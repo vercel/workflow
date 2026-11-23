@@ -53,7 +53,7 @@ The only code that awaits the sandbox idle runs between turns, in `stopSandboxOn
 
 Today, observed hooks disable run-ahead. This costs eve the benefit of run-ahead at every boundary, to guard against cases where the observed hook actually fires. Observed hooks can produce out-of-band writes, which land relative to in-band writes in a way that replays may not match.
 
-Instead of disabling run-ahead at these boundaries, Workflow could run ahead optimistically and have the World reject the speculative writes if anything else was appended in the meantime. Today's in-band fence only counts in-band writes. Every spec 9 World also tracks and reports a total `seq` (`list` returns `snapshot: { seq, seqInBand }`), but none checks a write against it.
+Instead of disabling run-ahead at these boundaries, Workflow could run ahead optimistically and have the World reject the speculative writes if anything else was appended in the meantime. Today's in-band fence only counts in-band writes. Every spec 9 World already counts all writes, in-band or not, but none uses that count to refuse a write.
 
 If nothing was appended, the workflow state will match the state in a replay, so whatever decision the state machine made optimistically matches the behavior in a replay. In this happy path, the most common case, eve gets the full benefit of run-ahead.
 
