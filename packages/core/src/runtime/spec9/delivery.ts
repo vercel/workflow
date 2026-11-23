@@ -18,6 +18,7 @@ import {
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RunExpiredError,
+  TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -39,6 +40,7 @@ import {
   isTerminalWorkflowRunStatus,
   type RunInput,
   type SerializedData,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   slotToEventId,
@@ -189,10 +191,13 @@ import {
 import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
+  getOrchestratorRateWaitMs,
   LingerTimes,
   LiveLogFeed,
   lingerKindOf,
   orchestratorLingerUntil,
+  RATE_SLOT_MARGIN_MS,
+  RATE_TOO_EARLY_RETRY_MS,
 } from './live-feed.js';
 import { EventLogIndex } from './log-index.js';
 import {
@@ -201,6 +206,7 @@ import {
   externalWorkOf,
   type InlineStepSpec,
   nextTimerAt,
+  type OpenWait,
   openWaits,
   type StepMessageSpec,
   stepCreationOf,
@@ -247,6 +253,7 @@ import {
   nearDueTimerIdempotencyKey,
   rearmsCoalescableTimer,
   sendNearDueTimerOnce,
+  waitTimerDelaySeconds,
   waitTimerMessage,
 } from './wait-timer.js';
 
@@ -646,12 +653,23 @@ async function runDelivery(
     ) {
       // A step with an outcome needs no message.
       unsentStepMessages.delete(id);
-    } else if (event.eventType === 'wait_created') {
+    } else if (
+      event.eventType === 'wait_created' ||
+      // A rate call that has to wait: open like a wait until its
+      // `rate_acquired` (see `openWaits`).
+      (event.eventType === 'rate_created' &&
+        event.eventData.acquireAt !== undefined)
+    ) {
       ownOpenWaits.set(id, event);
-    } else if (event.eventType === 'wait_completed') {
+    } else if (
+      event.eventType === 'wait_completed' ||
+      event.eventType === 'rate_acquired'
+    ) {
       ownOpenWaits.delete(id);
       completedWaits.add(id);
       recordCompletedWait(world, runId, id);
+    } else if (event.eventType === 'rate_failed') {
+      ownOpenWaits.delete(id);
     }
   };
   const noteStepMessageSent = (correlationId: string): void => {
@@ -3388,6 +3406,83 @@ async function runDelivery(
       return false;
     };
 
+    /**
+     * Waits in this delivery for the slot of the nearest rate limit call
+     * that is due within `getOrchestratorRateWaitMs` and before the inline
+     * deadline, so the call goes ahead at its slot instead of a queue delay
+     * later. Its timer is sent first: if this process dies while it waits,
+     * the queue still wakes the run, and a timer that arrives after the call
+     * went ahead finds it acquired and arms nothing. Resolves `true` once it
+     * waited, so the caller runs another pass, which completes the call.
+     *
+     * It stops early for anything the run should see first: another wait
+     * falling due (a `sleep()` the call races, due before the slot), or an
+     * event another writer appends (a hook payload, a background step's
+     * outcome). Otherwise the pass after the wait would record the call
+     * ahead of them, and a race would resolve the wrong way.
+     */
+    const waitForNearRateSlot = async (): Promise<boolean> => {
+      if (!log) return false;
+      const windowMs = getOrchestratorRateWaitMs();
+      if (windowMs <= 0) return false;
+      const now = Date.now();
+      const latestMs = Math.min(
+        now + windowMs,
+        inlineDeadlineMs - inlineMarginMs
+      );
+      const slots = openWaits(log.events)
+        .filter(
+          (wait) =>
+            wait.kind === 'rate' &&
+            wait.resumeAtMs > now &&
+            wait.resumeAtMs + RATE_SLOT_MARGIN_MS <= latestMs
+        )
+        .map((wait) => wait.resumeAtMs);
+      if (slots.length === 0) return false;
+      const untilMs = Math.min(...slots) + RATE_SLOT_MARGIN_MS;
+      await armNearDueTimers(log.events);
+      await armTimers(log.events);
+      if (world.events.subscribe) ensureLiveFeed();
+      runtimeLogger.debug('Waiting in process for a rate limit slot', {
+        workflowRunId: runId,
+        waitMs: untilMs - now,
+      });
+      // Waiting is not replay work.
+      replayBudget.pause();
+      try {
+        while (true) {
+          const remainingMs = untilMs - Date.now();
+          if (remainingMs <= 0) break;
+          let handle: ReturnType<typeof setTimeout> | undefined;
+          // Wakes on the slot's own timer too, so it is checked below.
+          await Promise.race([
+            waitForProgress(),
+            new Promise<void>((resolve) => {
+              handle = setTimeout(resolve, remainingMs);
+            }),
+          ]);
+          clearTimeout(handle);
+          progressWaiter = undefined;
+          const nowMs = Date.now();
+          if (
+            pendingFeedEvents.some((event) => !isOwnEvent(event)) ||
+            dueWaits(log.events, nowMs, wakeUpWaits).some(
+              (wait) => wait.kind !== 'rate'
+            )
+          ) {
+            runtimeLogger.debug('In-process rate limit wait ended early', {
+              workflowRunId: runId,
+              waitedMs: nowMs - now,
+            });
+            break;
+          }
+        }
+      } finally {
+        replayBudget.resume();
+      }
+      return true;
+    };
+
     /** Throws `MaxEventsExceededError` for a log at the run's ceiling. */
     const enforceEventLimit = (events: readonly Event[]): void => {
       if (maxEventsLimit === undefined) return;
@@ -3479,15 +3574,19 @@ async function runDelivery(
           }
           for (const wait of due) {
             wakeUpWaits.delete(wait.correlationId);
-            const completed = await createEvent(
-              {
-                eventType: 'wait_completed' as const,
-                specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-                correlationId: wait.correlationId,
-                eventData: { resumeAt: wait.resumeAt },
-              },
-              { requestId }
-            );
+            const completed =
+              wait.kind === 'rate'
+                ? await acquireRate(wait)
+                : await createEvent(
+                    {
+                      eventType: 'wait_completed' as const,
+                      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+                      correlationId: wait.correlationId,
+                      eventData: { resumeAt: wait.resumeAt },
+                    },
+                    { requestId }
+                  );
+            if (completed === undefined) continue;
             if (
               consumeOwnResolvingWrite(
                 indexOf(log.events),
@@ -3938,6 +4037,7 @@ async function runDelivery(
             run,
             span,
             requestId,
+            creatorMessageId,
             eventLog: loaded,
             replayRecoveryReporter,
             forceClaimVictimWakes,
@@ -3978,6 +4078,19 @@ async function runDelivery(
         continuation.exit = 'hook-conflict';
         await wakeSelf();
         return { type: 'return', result: undefined };
+      }
+      // A rate limit call the World answered at once (`rate_acquired`, or
+      // `rate_failed` past its timeout) settles its awaiter: the workflow
+      // goes on over the committed event, as after a hook conflict. A call
+      // that has to wait is a timer, armed at suspend.
+      if (hookResult && hookResult.resolvedRateCorrelationIds.length > 0) {
+        const fresh = hookResult.resolvedRateCorrelationIds.filter(
+          (id) => !continuedHookIds.has(id)
+        );
+        if (fresh.length > 0) {
+          for (const id of fresh) continuedHookIds.add(id);
+          return { type: 'continue', retainSession: true };
+        }
       }
       if (hasAttributes) {
         // The committed `attr_set` decides races against the
@@ -4522,6 +4635,11 @@ async function runDelivery(
         })
       ) {
         return { type: 'continue', retainSession: false };
+      }
+      // A rate limit slot due in a moment is waited for here
+      // rather than a whole-second queue delay later.
+      if (await waitForNearRateSlot()) {
+        return { type: 'continue', retainSession: retain };
       }
       // Stay warm for what the run waits on instead of
       // leaving it to a queued wake.
@@ -5097,11 +5215,90 @@ async function runDelivery(
       }
     }
 
+    /**
+     * Records the end of a rate call's wait: the `rate_acquired` naming its
+     * `rate_created`'s slot (the World commits the `acquireAt` recorded
+     * there). Returns undefined when the World refused it and nothing was
+     * written:
+     *
+     * - too early by the World's clock (`TooEarlyError`, a clock a little
+     *   behind this one): retried in process a few times over about 150 ms
+     *   ({@link RATE_TOO_EARLY_RETRY_MS}), since a whole-second queue timer
+     *   would cost far more than the skew; then the call's timer is sent
+     *   again for what is left;
+     * - already acquired, or no such `rate_created` (`EntityConflictError`):
+     *   another delivery wrote it, so the log is read again.
+     */
+    async function acquireRate(
+      wait: OpenWait
+    ): Promise<EventResult | undefined> {
+      const createdSlot = eventIdToSlot(wait.event.eventId);
+      assert(createdSlot !== null, 'A rate_created has a slot id');
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await createEvent(
+            {
+              eventType: 'rate_acquired' as const,
+              specVersion: SPEC_VERSION_RATE_LIMITS,
+              correlationId: wait.correlationId,
+              eventData: { createdSlot },
+            },
+            { requestId }
+          );
+        } catch (error) {
+          const backoffMs = RATE_TOO_EARLY_RETRY_MS[attempt];
+          if (
+            TooEarlyError.is(error) &&
+            backoffMs !== undefined &&
+            getOrchestratorRateWaitMs() > 0 &&
+            Date.now() + backoffMs <= inlineDeadlineMs - inlineMarginMs
+          ) {
+            runtimeLogger.debug(
+              'Rate limit slot not due yet by the World clock, retrying',
+              {
+                workflowRunId: runId,
+                correlationId: wait.correlationId,
+                attempt: attempt + 1,
+                backoffMs,
+              }
+            );
+            await new Promise<void>((resolve) =>
+              setTimeout(resolve, backoffMs)
+            );
+            continue;
+          }
+          return await settleRateRefusal(wait, error);
+        }
+      }
+    }
+
+    /** What {@link acquireRate} does for a refused `rate_acquired`. */
+    async function settleRateRefusal(
+      wait: OpenWait,
+      error: unknown
+    ): Promise<undefined> {
+      if (TooEarlyError.is(error)) {
+        const retryAfterMs = Math.max(1, error.retryAfter ?? 1) * 1000;
+        await sendWaitTimer({
+          correlationId: wait.correlationId,
+          resumeAtMs: Math.max(wait.resumeAtMs, Date.now() + retryAfterMs),
+        });
+        return undefined;
+      }
+      if (EntityConflictError.is(error)) {
+        session = null;
+        await fullLoad();
+        return undefined;
+      }
+      throw error;
+    }
+
     /** Sends the timer message of one wait (see `waitTimerMessage`). */
     async function sendWaitTimer(
       wait: {
         correlationId: string;
         resumeAtMs: number;
+        kind?: 'wait' | 'rate';
       },
       options: { nearDue?: boolean } = {}
     ): Promise<void> {
@@ -5117,7 +5314,11 @@ async function runDelivery(
       const timer = waitTimerMessage({
         correlationId: wait.correlationId,
         resumeAtMs: wait.resumeAtMs,
-        seconds: Math.max(0, Math.ceil((wait.resumeAtMs - now) / 1000)),
+        seconds: waitTimerDelaySeconds({
+          kind: wait.kind,
+          remainingMs: wait.resumeAtMs - now,
+          windowMs: getOrchestratorRateWaitMs(),
+        }),
         nowMs: now,
         attempt,
       });

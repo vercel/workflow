@@ -50,8 +50,8 @@ test('the transport lanes run their fixed app subsets', () => {
   ]);
 });
 
-test('the spec 9 lane runs its app on both VMs', () => {
-  assert.deepEqual(names(matrices['vercel-spec9-matrix']), [
+test('the spec 8 lane runs its app on both VMs', () => {
+  assert.deepEqual(names(matrices['vercel-spec8-matrix']), [
     'nextjs-turbopack/node',
     'nextjs-turbopack/quickjs',
   ]);

@@ -6,6 +6,7 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
@@ -926,5 +927,34 @@ describe('turbo fan-out on the node engine', () => {
     );
     expect(new Set(completed.map((e) => e.correlationId)).size).toBe(BRANCHES);
     expect(completed).toHaveLength(BRANCHES);
+  });
+});
+
+describe('a run raised to spec 10 by its run_started', () => {
+  const rateLimited = `const rateLimit = globalThis[Symbol.for("WORKFLOW_RATE_LIMIT")];
+  async function workflow() {
+    await rateLimit({ key: "raised", limit: 1, period: "1s" });
+    return "done";
+  }${transform('workflow')}`;
+
+  it('lets the first delivery call experimental_rateLimit()', async () => {
+    // A caller that mints spec 9 starts the run; this deployment mints 10,
+    // so the World raises the run when its run_started is written. The
+    // first delivery runs ahead of that response.
+    const { world, start } = await setup(rateLimited, [], {
+      fence: true,
+      beforeCreate(data) {
+        if (data.eventType === 'run_started') {
+          (currentWorld as unknown as { run: WorkflowRun }).run.specVersion =
+            SPEC_VERSION_RATE_LIMITS;
+        }
+      },
+    });
+    await world.deliver(start);
+    await world.runUntilIdle();
+    const failed = world.events.find((e) => e.eventType === 'run_failed');
+    expect(failed).toBeUndefined();
+    expect(types(world.events)).toContain('run_completed');
+    expect(await runResult(world)).toBe('done');
   });
 });

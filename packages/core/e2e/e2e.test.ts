@@ -553,11 +553,11 @@ async function allSteps(runId: string) {
 
 /**
  * The steps a test asserts on: the World's step listing, except on lanes
- * that run at spec 9 (what the runner's World mints, so
- * `WORKFLOW_SPEC_VERSION=9` on a World with the in-band fence), where the
- * listing on world-vercel can lag the event log (see `stepsFromEvents`) and
- * the steps are read from the log instead. The spec 8 lanes keep checking
- * that the listing reaches every step's final state.
+ * that run at spec 9 or later (what the runner's World mints: spec 10 is the
+ * default on a World with the in-band fence and rate limits), where the listing on world-vercel can lag the
+ * event log (see `stepsFromEvents`) and the steps are read from the log
+ * instead. The spec 8 lanes keep checking that the listing reaches every
+ * step's final state.
  */
 async function stepsOf(runId: string): Promise<StepStateFromEvents[]> {
   return (await getWorld()).specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
@@ -695,11 +695,13 @@ describe.concurrent('e2e', () => {
     }
   );
 
-  // New runs are spec 8 unless the lane opts in to spec 9 on a World with the
-  // in-band fence: the spec 9 lanes set `WORKFLOW_SPEC_VERSION=9` on their
-  // deployment and on this runner (a cross-deployment start stamps the lower
-  // of the two). Fails loudly when the setting stops reaching this runner,
-  // which would otherwise leave a lane silently testing another spec version.
+  // New runs are spec 10 on a World with the in-band fence and rate limits
+  // (local, Postgres, Vercel), spec 9 on one with only the fence, and spec 8
+  // on one without. The spec 8 lanes pin
+  // `WORKFLOW_SPEC_VERSION=8` on their deployment and on this runner (a
+  // cross-deployment start stamps the lower of the two). Fails loudly when
+  // the default or the setting stops reaching this runner, which would
+  // otherwise leave a lane silently testing another spec version.
   testJsOnly(
     'stamps the spec version the lane runs at',
     { timeout: 60_000 },
@@ -711,6 +713,7 @@ describe.concurrent('e2e', () => {
       expect(row.specVersion).toBe(
         mintedSpecVersion(process.env, {
           inBandFence: world.capabilities?.inBandFence === true,
+          rateLimits: world.capabilities?.rateLimits === true,
         })
       );
     }
@@ -4251,7 +4254,7 @@ describe.concurrent('e2e', () => {
         await skipUnlessForceClaimSupported(ctx);
         // The victim has to be a run below the force-claim spec version,
         // executed by this deployment. Lanes that run at spec 9 skip it,
-        // since their point is the spec 9 runtime; the default lanes run it,
+        // since their point is the spec 9 runtime; the spec 8 lanes run it,
         // and the refusal is also covered by the backend's tests.
         if (
           (await getWorld()).specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
@@ -7045,7 +7048,10 @@ describe.concurrent('e2e', () => {
             (event) => event.eventType === 'step_completed'
           );
           expect(completions.length).toBeGreaterThan(0);
-          const spec9 = stepEvents.some((event) => event.specVersion === 9);
+          const singleOrchestrator = stepEvents.some(
+            (event) =>
+              (event.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+          );
           const resultsPurged = async () => {
             for (const completion of completions) {
               const { json } = await cliInspectJson(
@@ -7070,7 +7076,8 @@ describe.concurrent('e2e', () => {
               return {
                 steps,
                 listed,
-                logged: spec9 && !listed && (await resultsPurged()),
+                logged:
+                  singleOrchestrator && !listed && (await resultsPurged()),
               };
             },
             ({ listed, logged }) => listed || logged,

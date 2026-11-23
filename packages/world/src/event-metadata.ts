@@ -70,6 +70,9 @@ const ENTITY_EVENT_CLASS_BY_TYPE = {
   step_failed: 'step_terminal',
   wait_created: 'wait_created',
   wait_completed: 'wait_completed',
+  rate_created: 'rate_created',
+  rate_acquired: 'rate_terminal',
+  rate_failed: 'rate_terminal',
   hook_created: 'hook_created',
   hook_disposed: 'hook_disposed',
   run_started: 'run_started',
@@ -112,6 +115,7 @@ export const TERMINAL_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
   'attr_set',
   'step_terminal',
   'wait_completed',
+  'rate_terminal',
   'hook_disposed',
 ]);
 

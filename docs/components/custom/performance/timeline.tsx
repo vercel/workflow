@@ -8,7 +8,8 @@ const colors = {
   work: 'var(--ds-gray-800)',
   gridline: 'var(--ds-gray-alpha-300)',
   guide: 'var(--ds-gray-alpha-700)',
-  playhead: 'var(--ds-gray-alpha-600)',
+  // The accent, as in the Workflow SDK 5 explainers.
+  playhead: 'var(--ds-blue-700)',
   halo: 'var(--ds-background-100)',
 };
 
