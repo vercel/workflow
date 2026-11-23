@@ -573,6 +573,8 @@ type RateLimitCallFromEvents = {
   outcome: 'acquired' | 'failed' | 'pending';
   /** Whether the call held a `rate_created`, so the run slept for its slot. */
   waited: boolean;
+  /** The first reservation, before any late-wake re-reservation. */
+  initialSlotMs: number;
   /** The slot the World gave (or, for a failed call, would have given). */
   slotMs: number;
   reason: string | undefined;
@@ -594,6 +596,7 @@ async function rateLimitCallsOf(
       key: undefined,
       outcome: 'pending' as const,
       waited: false,
+      initialSlotMs: Number.NaN,
       slotMs: Number.NaN,
       reason: undefined,
     };
@@ -601,6 +604,7 @@ async function rateLimitCallsOf(
     if (typeof data?.key === 'string') call.key = data.key;
     if (data?.acquireAt !== undefined) {
       call.slotMs = new Date(data.acquireAt as string | Date).getTime();
+      if (Number.isNaN(call.initialSlotMs)) call.initialSlotMs = call.slotMs;
     }
     if (event.eventType === 'rate_created') call.waited = true;
     if (event.eventType === 'rate_acquired') call.outcome = 'acquired';
@@ -1395,8 +1399,8 @@ describe.concurrent('e2e', () => {
       expect(waited[0].slotMs - Math.min(...burstSlots)).toBeGreaterThanOrEqual(
         intervalMs
       );
-      // And not a slot behind each of the three, as without a burst.
-      expect(waited[0].slotMs - Math.max(...burstSlots)).toBeLessThan(
+      // Check the initial reservation: a late wake may reserve it again.
+      expect(waited[0].initialSlotMs - Math.max(...burstSlots)).toBeLessThan(
         2 * intervalMs
       );
       expectElapsedAtLeast(Math.max(...passedAt) - startedAt, intervalMs);
@@ -1436,7 +1440,7 @@ describe.concurrent('e2e', () => {
       // The slot the refused call would have had is the third call's: had
       // the refusal reserved it, the third would be a further interval out.
       expect(third.slotMs - first.slotMs).toBeGreaterThanOrEqual(intervalMs);
-      expect(third.slotMs - first.slotMs).toBeLessThan(2 * intervalMs);
+      expect(third.initialSlotMs - first.slotMs).toBeLessThan(2 * intervalMs);
       expectElapsedAtLeast(thirdPassedAt - firstPassedAt, 0);
       expectElapsedAtLeast(thirdPassedAt - third.slotMs, 0);
     }
