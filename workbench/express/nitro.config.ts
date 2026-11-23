@@ -2,7 +2,7 @@ import { defineNitroConfig } from 'nitro/config';
 
 export default defineNitroConfig({
   modules: ['workflow/nitro'],
-  vercel: { entryFormat: 'node' },
+  vercel: { entryFormat: 'web' },
   routes: {
     '/**': { handler: './src/index.ts', format: 'node' },
   },
