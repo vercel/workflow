@@ -55,6 +55,14 @@ Accepted values:
 - The SDK's own runtime serde classes (for example, `Run`) stay registered because they are reached through a seeded entry point, and imports *within* `node_modules` are still followed.
 - Explicit framework config wins over this environment variable.
 
+## Build checks
+
+### `WORKFLOW_ALLOW_UNREGISTERED_STEPS`
+
+- Default: disabled
+- The build fails when workflow code can call a step that the steps bundle does not register, listing up to 10 of them with their files and step IDs. See [`step-not-registered`](/docs/errors/step-not-registered#build-time-check).
+- Set `1` to log the failure as a warning and finish the build. Calls to the listed steps still fail at runtime.
+
 ## Testing
 
 ### `WORKFLOW_VITEST_VERSION_CHECK`
