@@ -190,6 +190,15 @@ export const MAX_RUN_AHEAD_RESTARTS = 1;
  */
 export const MAX_INLINE_STEPS = 3;
 
+/**
+ * How many wait timers a delivery sends at once (see `sendWaitTimers` in
+ * `spec9/delivery.ts`). Sent one after another, a run with many open waits
+ * (rate limit calls made at once each have one) waited a queue round trip per
+ * timer; unbounded, a thousand open waits would be a thousand publishes in
+ * flight from one invocation.
+ */
+export const WAIT_TIMER_SEND_CONCURRENCY = 16;
+
 /** Lower bound for the inline-steps env override (0 = every step is enqueued). */
 export const MIN_MAX_INLINE_STEPS = 0;
 

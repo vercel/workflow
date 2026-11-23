@@ -71,6 +71,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
+  WAIT_TIMER_SEND_CONCURRENCY,
 } from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
@@ -117,6 +118,7 @@ import {
   sealSnapshot,
 } from '../quickjs-snapshot-codec.js';
 import { ReplayBudget } from '../replay-budget.js';
+import { runBounded } from '../settle-all.js';
 import { getSnapshotThresholdForHandler } from '../vm-mode.js';
 import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
@@ -669,6 +671,8 @@ async function runQuickJSDelivery(
           armsWaitTimer(wait.correlationId)
       )
       .map((wait) => ({ ...wait, event: waitChainEvent(wait.correlationId) }));
+    // Each wait is claimed above, before its send is queued.
+    const sends: (() => Promise<void>)[] = [];
     for (const wait of waitTimersToArm(
       owned,
       ownerMessageId ?? '',
@@ -676,12 +680,15 @@ async function runQuickJSDelivery(
     )) {
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
-      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs);
-      wfdiag('wait_continuation_scheduled', {
-        correlationId: wait.correlationId,
-        delaySeconds: wait.seconds,
+      sends.push(async () => {
+        await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs);
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: wait.correlationId,
+          delaySeconds: wait.seconds,
+        });
       });
     }
+    await runBounded(sends, WAIT_TIMER_SEND_CONCURRENCY);
   };
   /**
    * Arms the next timer of each wait chain of another message whose wait
@@ -726,6 +733,8 @@ async function runQuickJSDelivery(
   ): Promise<void> => {
     if (completing.length === 0) return;
     const now = Date.now();
+    // Each wait is claimed above, before its send is queued.
+    const sends: (() => Promise<void>)[] = [];
     for (const wait of chainTimersBeforeCompletion({
       openWaits: openWaits(log),
       completing,
@@ -733,18 +742,21 @@ async function runQuickJSDelivery(
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
       const seconds = Math.max(1, Math.ceil((wait.resumeAtMs - now) / 1000));
-      try {
-        await queueWaitTimer(wait.correlationId, seconds, wait.resumeAtMs);
-      } catch (err) {
-        scheduledWaitContinuations.delete(wait.correlationId);
-        throw err;
-      }
-      wfdiag('wait_continuation_scheduled', {
-        correlationId: wait.correlationId,
-        delaySeconds: seconds,
-        beforeCompletion: true,
+      sends.push(async () => {
+        try {
+          await queueWaitTimer(wait.correlationId, seconds, wait.resumeAtMs);
+        } catch (err) {
+          scheduledWaitContinuations.delete(wait.correlationId);
+          throw err;
+        }
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: wait.correlationId,
+          delaySeconds: seconds,
+          beforeCompletion: true,
+        });
       });
     }
+    await runBounded(sends, WAIT_TIMER_SEND_CONCURRENCY);
   };
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
@@ -1434,13 +1446,18 @@ async function runQuickJSDelivery(
     }
   }
   // Rate limit calls whose slot has come (never by `run.wakeUp()`): the
-  // `rate_acquired` naming each one's newest `rate_created`.
+  // `rate_acquired` naming each one's newest `rate_created`, written at once
+  // so the writer sends them in one batch (see `InBandWriter.create`).
+  const dueRateAcquires: Promise<void>[] = [];
   for (const wait of openWaits(events)) {
     if (wait.kind !== 'rate' || wait.resumeAtMs > Date.now()) continue;
     const createdSlot = eventIdToSlot(wait.event.eventId);
     if (createdSlot === null) continue;
-    await acquireRateSlot(wait.correlationId, createdSlot, wait.resumeAtMs);
+    dueRateAcquires.push(
+      acquireRateSlot(wait.correlationId, createdSlot, wait.resumeAtMs)
+    );
   }
+  await Promise.all(dueRateAcquires);
   // The VM has not started, so whatever those writes handed back (each
   // wait_completed, plus anything another writer appended that they skipped
   // over) joins the initial log instead of waiting for a feed.
@@ -2863,19 +2880,27 @@ async function runQuickJSDelivery(
   ): Promise<void> => {
     if (!armsNearDueWaits) return;
     const nearDueHorizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
+    // Each wait is claimed above, before its send is queued.
+    const sends: (() => Promise<void>)[] = [];
     for (const wait of waits) {
       if (wait.resumeAtMs > nearDueHorizonMs) continue;
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
-      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
-        nearDue: true,
-      });
-      wfdiag('wait_continuation_scheduled', {
-        correlationId: wait.correlationId,
-        delaySeconds: wait.seconds,
-        nearDue: true,
+      sends.push(async () => {
+        await queueWaitTimer(
+          wait.correlationId,
+          wait.seconds,
+          wait.resumeAtMs,
+          { nearDue: true }
+        );
+        wfdiag('wait_continuation_scheduled', {
+          correlationId: wait.correlationId,
+          delaySeconds: wait.seconds,
+          nearDue: true,
+        });
       });
     }
+    await runBounded(sends, WAIT_TIMER_SEND_CONCURRENCY);
   };
 
   /**
@@ -3383,6 +3408,8 @@ async function runQuickJSDelivery(
       }
       // Rate limit calls whose slot has come (never by `run.wakeUp()`):
       // what each `rate_acquired` commits reaches the VM off its response.
+      // Written at once, so the writer sends them in one batch.
+      const dueRateAcquires: Promise<void>[] = [];
       for (const op of pendingOperations) {
         const timer = timerOf(op);
         if (
@@ -3392,12 +3419,15 @@ async function runQuickJSDelivery(
         ) {
           continue;
         }
-        await acquireRateSlot(
-          timer.correlationId,
-          timer.createdSlot,
-          timer.resumeAtMs
+        dueRateAcquires.push(
+          acquireRateSlot(
+            timer.correlationId,
+            timer.createdSlot,
+            timer.resumeAtMs
+          )
         );
       }
+      await Promise.all(dueRateAcquires);
 
       // 2. Cheap progress first: feed newly recorded events into the live
       // VM before blocking on step bodies. What the writes above handed back
