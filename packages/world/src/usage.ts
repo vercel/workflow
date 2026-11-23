@@ -297,6 +297,13 @@ export interface RunUsageAggregates {
   billed?: boolean;
   /** See {@link RunUsage.asOf}. */
   asOf?: string;
+  /**
+   * Data Written by entity, from a backend that knows the totals but not
+   * the bytes of each event type or step (world-vercel). When set, it is
+   * reported instead of the sum of the groups' `bytes`. Ignored for a run
+   * whose data was deleted, which reports `savedDataWritten`.
+   */
+  dataWritten?: Record<RunUsageEntity, number>;
 }
 
 const UNKNOWN_STEP_NAME = '(unknown step)';
@@ -533,7 +540,9 @@ function dataWrittenOf(
   input: RunUsageAggregates,
   measured: Record<RunUsageEntity, number>
 ): RunUsage['dataWritten'] {
-  const saved = input.dataPurged ? input.savedDataWritten : undefined;
+  const saved = input.dataPurged
+    ? input.savedDataWritten
+    : (input.dataWritten ?? undefined);
   const byEntity = saved
     ? {
         run: toCount(saved.run),

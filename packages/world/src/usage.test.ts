@@ -309,6 +309,28 @@ describe('usage formatting', () => {
     ).toBeNull();
   });
 
+  it('reports per-entity dataWritten from a backend instead of summing group bytes', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [{ eventType: 'run_created', events: 1, bytes: 999 }],
+        dataWritten: { run: 10, step: 20, hook: 30, stream: 40 },
+      })
+    );
+    expect(usage.dataWritten).toEqual({
+      bytes: 100,
+      byEntity: { run: 10, step: 20, hook: 30, stream: 40 },
+      source: 'log',
+    });
+    // Without it, the groups' bytes are summed as before.
+    expect(
+      buildRunUsage(
+        aggregates({
+          eventGroups: [{ eventType: 'run_created', events: 1, bytes: 999 }],
+        })
+      ).dataWritten.bytes
+    ).toBe(999);
+  });
+
   it('carries asOf only when the backend sets it', () => {
     const local = buildRunUsage(aggregates({}));
     expect('asOf' in local).toBe(false);

@@ -359,16 +359,33 @@ export async function getRunUsage(
       { code: USAGE_UNAVAILABLE }
     );
   }
-  const { asOf, hookGroups, ...usage } = run.usage;
+  if (run.runId !== runId) {
+    throw new WorkflowWorldError(
+      `experimental_usage.getRun: the backend answered for run ${JSON.stringify(run.runId)}, not ${JSON.stringify(runId)}.`
+    );
+  }
+  const {
+    asOf,
+    eventGroups,
+    stepGroups,
+    hookGroups,
+    dataWritten,
+    dataRetained,
+  } = run.usage;
   return buildRunUsage({
-    runId: run.runId,
+    runId,
     status: run.status,
     workflowName: run.workflowName,
-    ...usage,
+    // Bytes come as totals per entity (`dataWritten`), not per group.
+    eventGroups: eventGroups.map((group) => ({ ...group, bytes: 0 })),
+    stepGroups: stepGroups.map((group) => ({ ...group, bytes: 0 })),
+    streamBytes: 0,
+    dataWritten,
+    dataRetained,
     // Analytics carries no hook tokens, so a hook is named by its id.
     hookGroups: hookGroups?.map((group) => ({ ...group, token: null })),
     billed: true,
-    asOf,
+    asOf: asOf.toISOString(),
   });
 }
 

@@ -188,7 +188,7 @@ export default class Inspect extends BaseCommand {
     }),
     usage: Flags.boolean({
       description:
-        "show a run's usage: its events by type, and its storage (only for `inspect run <id>`; local backend)",
+        "show a run's usage: its events by type, and its storage (only for `inspect run <id>`; local backend, or vercel with WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1)",
       required: false,
       default: false,
       helpGroup: 'Display',

@@ -812,9 +812,9 @@ const FOOTER_LINK =
   'whitespace-nowrap rounded-sm py-1 text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]';
 
 /**
- * One line under the tables: that the run isn't billed (usage is counted on
- * the Local World only), then the docs link, in the same paragraph so it
- * reads as part of it and wraps with it.
+ * One line under the tables: the shared footer (a local run isn't billed; a
+ * billed run's usage is not the final bill), then the docs link, in the same
+ * paragraph so it reads as part of it and wraps with it.
  */
 function UsageFooter({ usage }: { usage: RunUsage }) {
   return (

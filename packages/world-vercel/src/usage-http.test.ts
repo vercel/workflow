@@ -25,9 +25,9 @@ const run = {
 const usage = {
   asOf: '2026-11-20T17:10:00.000Z',
   eventGroups: [
-    { eventType: 'run_created', events: 1, bytes: 64 },
-    { eventType: 'run_started', events: 1, bytes: 0 },
-    { eventType: 'run_completed', events: 1, bytes: 16 },
+    { eventType: 'run_created', events: 1 },
+    { eventType: 'run_started', events: 1 },
+    { eventType: 'run_completed', events: 1 },
   ],
   stepGroups: [
     {
@@ -40,10 +40,9 @@ const usage = {
       failed: 0,
       retries: 1,
       restarts: 0,
-      bytes: 104,
     },
   ],
-  streamBytes: 91,
+  dataWritten: { run: 80, step: 104, hook: 0, stream: 91 },
   dataRetained: null,
 };
 
@@ -61,9 +60,11 @@ function agentReplying(
       status,
       body === undefined
         ? ''
-        : contentType === 'application/cbor'
-          ? Buffer.from(encode(body))
-          : JSON.stringify(body),
+        : body instanceof Uint8Array
+          ? Buffer.from(body)
+          : contentType === 'application/cbor'
+            ? Buffer.from(encode(body))
+            : JSON.stringify(body),
       { headers: { 'content-type': contentType } }
     );
   return agent;
@@ -83,6 +84,18 @@ describe('getRunUsage over HTTP', () => {
     expect(result.events).toBe(8);
     expect(result.dataWritten.bytes).toBe(80 + 104 + 91);
     agent.assertNoPendingInterceptors();
+  });
+
+  it('reads a stream size sent as a 64-bit CBOR integer', async () => {
+    // cbor-x decodes a 64-bit integer of 2^32 or more as a bigint.
+    const big = 2n ** 33n;
+    const body = encode({
+      ...run,
+      usage: { ...usage, dataWritten: { ...usage.dataWritten, stream: big } },
+    });
+    const agent = agentReplying(200, body, 'application/cbor');
+    const result = await getRunUsage(RUN_ID, config(agent));
+    expect(result.dataWritten.byEntity.stream).toBe(Number(big));
   });
 
   it('turns a 404 into WorkflowRunNotFoundError', async () => {

@@ -55,70 +55,111 @@ export const AnalyticsRunSchema = z.object({
   workflowEncryptionEnabled: NullableBooleanSchema,
 });
 
-const UsageCountSchema = z.number().int().nonnegative();
+/**
+ * A non-negative count. CBOR delivers an integer of 2^32 or more that was
+ * encoded as a 64-bit integer as a `bigint`; it is read as a number.
+ */
+const UsageCountSchema = z.preprocess(
+  (value) => (typeof value === 'bigint' ? Number(value) : value),
+  z.number().int().nonnegative()
+);
+
+const UsageAmountSchema = z.preprocess(
+  (value) => (typeof value === 'bigint' ? Number(value) : value),
+  z.number().nonnegative()
+);
 
 /**
  * A run's usage aggregates, returned by `GET /v2/analytics/runs/:runId`
- * with `include=usage`: `RunUsageAggregates` without the fields the run
- * itself carries (`runId`, `status`, `workflowName`) and without the
- * world-local fields for runs whose data was deleted. Experimental, read
- * only behind `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1`.
+ * with `include=usage`. Experimental, read only behind
+ * `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1`.
  *
- * Metadata only, like the rest of this namespace: hook groups carry no
- * token (a token resumes its hook), so hooks are labelled by their id.
- * `asOf` is when the counts were taken; ingestion can lag behind it.
- *
- * Step events are counted once, in `stepGroups`; `eventGroups` holds every
- * other event type (as `RunUsageEventGroup` says). A response that lists a
- * `step_*` type in `eventGroups` is rejected, since it would count those
- * events twice.
- *
- * Bytes are the Data Written the backend bills, attributed by event type.
- * `RunUsage` reports them under four entities: `step_*` and `hook_*` bytes
- * under their own, stream bytes under `stream`, and every other type
- * (`run_*`, sleeps, attribute writes) under `run`. What the backend bills to
- * the run itself goes in that group's `run_*` bytes.
+ * - `asOf`: when the counts were taken. Analytics ingestion can lag behind
+ *   it, so the newest events may be missing.
+ * - `eventGroups` and `stepGroups`: event counts, as in
+ *   `RunUsageAggregates`. Step events are counted once, in `stepGroups`;
+ *   a `step_*` type in `eventGroups` is rejected, since it would count those
+ *   events twice.
+ * - `hookGroups`: events per hook. Metadata only, like the rest of this
+ *   namespace: no token (a token resumes its hook), so hooks are labelled by
+ *   their id. Each hook appears once, and together they hold no more events
+ *   than the `hook_*` event groups.
+ * - `dataWritten`: the Data Written the backend bills for the run, by
+ *   entity. Bytes are totals per entity, not per event type or per step.
+ *   Writes for sleeps and attributes count under `run`, as on the Local
+ *   World.
+ * - `dataRetained`: Data Retained, or `null`/absent when there is none.
  */
-export const AnalyticsRunUsageSchema = z.object({
-  asOf: z.string(),
-  eventGroups: z.array(
-    z.object({
-      eventType: z.string().refine((type) => !type.startsWith('step_'), {
-        message: 'step events belong in stepGroups, not eventGroups',
-      }),
-      events: UsageCountSchema,
-      bytes: UsageCountSchema,
-    })
-  ),
-  stepGroups: z.array(
-    z.object({
-      stepName: z.string().nullable(),
-      steps: UsageCountSchema,
-      events: UsageCountSchema,
-      created: UsageCountSchema,
-      started: UsageCountSchema,
-      completed: UsageCountSchema,
-      failed: UsageCountSchema,
-      retries: UsageCountSchema,
-      restarts: UsageCountSchema,
-      bytes: UsageCountSchema,
-    })
-  ),
-  hookGroups: z
-    .array(z.object({ hookId: z.string(), events: UsageCountSchema }))
-    .optional(),
-  streamBytes: UsageCountSchema,
-  dataRetained: z
-    .object({
-      byteMonths: z.number().nonnegative(),
-      retentionMonths: z.number().nonnegative(),
-    })
-    .nullable(),
-});
+export const AnalyticsRunUsageSchema = z
+  .object({
+    asOf: UTCDateSchema,
+    eventGroups: z.array(
+      z.object({
+        eventType: z.string().refine((type) => !type.startsWith('step_'), {
+          message: 'step events belong in stepGroups, not eventGroups',
+        }),
+        events: UsageCountSchema,
+      })
+    ),
+    stepGroups: z.array(
+      z.object({
+        stepName: z.string().nullable(),
+        steps: UsageCountSchema,
+        events: UsageCountSchema,
+        created: UsageCountSchema,
+        started: UsageCountSchema,
+        completed: UsageCountSchema,
+        failed: UsageCountSchema,
+        retries: UsageCountSchema,
+        restarts: UsageCountSchema,
+      })
+    ),
+    hookGroups: z
+      .array(z.object({ hookId: z.string(), events: UsageCountSchema }))
+      .optional(),
+    dataWritten: z.object({
+      run: UsageCountSchema,
+      step: UsageCountSchema,
+      hook: UsageCountSchema,
+      stream: UsageCountSchema,
+    }),
+    dataRetained: z
+      .object({
+        byteMonths: UsageAmountSchema,
+        retentionMonths: UsageAmountSchema,
+      })
+      .nullish()
+      .transform((value) => value ?? null),
+  })
+  .superRefine((usage, ctx) => {
+    if (!usage.hookGroups) return;
+    const seen = new Set<string>();
+    for (const [index, group] of usage.hookGroups.entries()) {
+      if (seen.has(group.hookId)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['hookGroups', index, 'hookId'],
+          message: `hook ${group.hookId} appears more than once`,
+        });
+      }
+      seen.add(group.hookId);
+    }
+    const grouped = usage.hookGroups.reduce((n, g) => n + g.events, 0);
+    const hookEvents = usage.eventGroups
+      .filter((group) => group.eventType.startsWith('hook_'))
+      .reduce((n, g) => n + g.events, 0);
+    if (grouped > hookEvents) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['hookGroups'],
+        message: `hook groups hold ${grouped} events, more than the ${hookEvents} hook_* events`,
+      });
+    }
+  });
 
-/** {@link AnalyticsRunSchema} plus `usage`, absent from a backend without it. */
+/** {@link AnalyticsRunSchema} plus `usage`, absent or `null` from a backend without it. */
 export const AnalyticsRunWithUsageSchema = AnalyticsRunSchema.extend({
-  usage: AnalyticsRunUsageSchema.optional(),
+  usage: AnalyticsRunUsageSchema.nullish(),
 });
 
 export const AnalyticsStepSchema = z.object({
