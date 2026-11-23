@@ -237,7 +237,15 @@ describe('real abort reducers and revivers', () => {
       async () =>
         new ReadableStream<Uint8Array>({
           start(controller) {
-            for (const byte of wire) controller.enqueue(new Uint8Array([byte]));
+            // A framed packet is read by length, so it can arrive a byte at a
+            // time. An unframed one is decoded again after every read (see
+            // readAbortStreamPacket), and one decryption per byte took a
+            // loaded Windows runner past the test timeout: split it into a
+            // few pieces instead, which still never decode before the last.
+            const pieceLength = framed ? 1 : Math.ceil(wire.length / 8);
+            for (let at = 0; at < wire.length; at += pieceLength) {
+              controller.enqueue(wire.slice(at, at + pieceLength));
+            }
             // close() is a separate, best-effort writer RPC. Never provide EOF.
           },
         })

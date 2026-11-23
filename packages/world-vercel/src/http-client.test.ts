@@ -791,8 +791,13 @@ describe('wedged HTTP/2 session', () => {
   const REQUESTS_AFTER_BLACKHOLE = 12;
   // Long enough that a healthy loopback request never hits it, short enough that
   // a wedged one gives up quickly. This is the timeout that turns a black hole
-  // into the UND_ERR_INFO stream timeout seen in production.
-  const STREAM_TIMEOUT_MS = 300;
+  // into the UND_ERR_INFO stream timeout seen in production. At 300ms a loaded
+  // Windows runner timed out a request on the rebuilt, healthy pool, which the
+  // recovery test counts as a fourth failure.
+  const STREAM_TIMEOUT_MS = 1_000;
+  // Every wedged request waits out STREAM_TIMEOUT_MS, so the tests that send
+  // REQUESTS_AFTER_BLACKHOLE of them need more than the default test timeout.
+  const WEDGED_TEST_TIMEOUT_MS = 60_000;
 
   let server: Http2SecureServer;
   let proxy: Server;
@@ -888,93 +893,107 @@ describe('wedged HTTP/2 session', () => {
   // Establishes the premise. Without the failure accounting, an events agent
   // whose session has been black-holed never recovers on its own — which is why
   // one bad flow produced a 25-minute outage rather than a blip.
-  it('never recovers on its own (the failure this fixes)', async () => {
-    const agent = createEventsDispatcher(AGENT_OVERRIDES);
-    try {
-      expect(await attempt(agent)).toBeUndefined();
-      holed.add(1);
+  it(
+    'never recovers on its own (the failure this fixes)',
+    async () => {
+      const agent = createEventsDispatcher(AGENT_OVERRIDES);
+      try {
+        expect(await attempt(agent)).toBeUndefined();
+        holed.add(1);
 
-      const errors: unknown[] = [];
-      for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
-        const error = await attempt(agent);
-        if (error) errors.push(error);
+        const errors: unknown[] = [];
+        for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
+          const error = await attempt(agent);
+          if (error) errors.push(error);
+        }
+        // Every single one, and every one for the reason we key the rebuild off.
+        expect(errors).toHaveLength(REQUESTS_AFTER_BLACKHOLE);
+        expect(errors.every(isRecyclableTransportError)).toBe(true);
+        // The pool never opened a replacement connection.
+        expect(flows).toBe(1);
+      } finally {
+        await agent.close();
       }
-      // Every single one, and every one for the reason we key the rebuild off.
-      expect(errors).toHaveLength(REQUESTS_AFTER_BLACKHOLE);
-      expect(errors.every(isRecyclableTransportError)).toBe(true);
-      // The pool never opened a replacement connection.
-      expect(flows).toBe(1);
-    } finally {
-      await agent.close();
-    }
-  });
+    },
+    WEDGED_TEST_TIMEOUT_MS
+  );
 
-  it('recovers after the failure threshold, and stays recovered', async () => {
-    const recycler = createDispatcherRecycler(
-      () => createEventsDispatcher(AGENT_OVERRIDES),
-      'test transport'
-    );
-    const first = recycler.get();
-    try {
-      recycler.note(first, await attempt(first));
-      holed.add(1);
+  it(
+    'recovers after the failure threshold, and stays recovered',
+    async () => {
+      const recycler = createDispatcherRecycler(
+        () => createEventsDispatcher(AGENT_OVERRIDES),
+        'test transport'
+      );
+      const first = recycler.get();
+      try {
+        recycler.note(first, await attempt(first));
+        holed.add(1);
 
-      const failures: number[] = [];
-      const successes: number[] = [];
-      for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
-        // Re-resolved per request, exactly as fetchV4 does — caching the
-        // dispatcher across requests would pin the caller to the retired pool.
-        const dispatcher = recycler.get();
-        const error = await attempt(dispatcher);
-        recycler.note(dispatcher, error);
-        (error ? failures : successes).push(i);
+        const failures: number[] = [];
+        const successes: number[] = [];
+        for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
+          // Re-resolved per request, exactly as fetchV4 does — caching the
+          // dispatcher across requests would pin the caller to the retired pool.
+          const dispatcher = recycler.get();
+          const error = await attempt(dispatcher);
+          recycler.note(dispatcher, error);
+          (error ? failures : successes).push(i);
+        }
+
+        // Bounded, not merely eventually-fine: the threshold is the entire cost of
+        // the fault, and everything after it succeeds on the rebuilt pool.
+        expect(failures).toHaveLength(
+          EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES
+        );
+        expect(successes[0]).toBe(EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
+        expect(recycler.get()).not.toBe(first);
+        expect(flows).toBeGreaterThan(1);
+      } finally {
+        await recycler.get().close();
+        await first.close();
       }
-
-      // Bounded, not merely eventually-fine: the threshold is the entire cost of
-      // the fault, and everything after it succeeds on the rebuilt pool.
-      expect(failures).toHaveLength(EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
-      expect(successes[0]).toBe(EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
-      expect(recycler.get()).not.toBe(first);
-      expect(flows).toBeGreaterThan(1);
-    } finally {
-      await recycler.get().close();
-      await first.close();
-    }
-  });
+    },
+    WEDGED_TEST_TIMEOUT_MS
+  );
 
   // The kill switch has to reach `allowH2`, not just the multiplexing
   // interceptor: with H2 still enabled the pool keeps the wedged session and the
   // switch mitigates nothing. On H1, undici destroys the socket when the request
   // times out, so the next request opens a fresh connection by itself.
-  it('WORKFLOW_H2_MULTIPLEX=0 takes the events agent off h2, restoring self-healing', async () => {
-    const previous = process.env.WORKFLOW_H2_MULTIPLEX;
-    process.env.WORKFLOW_H2_MULTIPLEX = '0';
-    // Read when the dispatcher is built, so the switch only affects agents
-    // created after it is set.
-    const agent = createEventsDispatcher(AGENT_OVERRIDES);
-    try {
-      expect(await attempt(agent)).toBeUndefined();
-      expect(httpVersions).toEqual(['1.1']);
-      holed.add(1);
+  it(
+    'WORKFLOW_H2_MULTIPLEX=0 takes the events agent off h2, restoring self-healing',
+    async () => {
+      const previous = process.env.WORKFLOW_H2_MULTIPLEX;
+      process.env.WORKFLOW_H2_MULTIPLEX = '0';
+      // Read when the dispatcher is built, so the switch only affects agents
+      // created after it is set.
+      const agent = createEventsDispatcher(AGENT_OVERRIDES);
+      try {
+        expect(await attempt(agent)).toBeUndefined();
+        expect(httpVersions).toEqual(['1.1']);
+        holed.add(1);
 
-      const errors: unknown[] = [];
-      for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
-        const error = await attempt(agent);
-        if (error) errors.push(error);
+        const errors: unknown[] = [];
+        for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
+          const error = await attempt(agent);
+          if (error) errors.push(error);
+        }
+        // A handful of connections are lost to the black hole; the point is that
+        // the agent keeps making progress instead of wedging forever.
+        expect(errors.length).toBeLessThan(REQUESTS_AFTER_BLACKHOLE);
+        expect(flows).toBeGreaterThan(1);
+      } finally {
+        await agent.close();
+        if (previous === undefined) {
+          delete process.env.WORKFLOW_H2_MULTIPLEX;
+        } else {
+          process.env.WORKFLOW_H2_MULTIPLEX = previous;
+        }
       }
-      // A handful of connections are lost to the black hole; the point is that
-      // the agent keeps making progress instead of wedging forever.
-      expect(errors.length).toBeLessThan(REQUESTS_AFTER_BLACKHOLE);
-      expect(flows).toBeGreaterThan(1);
-    } finally {
-      await agent.close();
-      if (previous === undefined) {
-        delete process.env.WORKFLOW_H2_MULTIPLEX;
-      } else {
-        process.env.WORKFLOW_H2_MULTIPLEX = previous;
-      }
-    }
-  });
+    },
+    WEDGED_TEST_TIMEOUT_MS
+  );
 });
 
 describe('dispatcher recycling accounting', () => {

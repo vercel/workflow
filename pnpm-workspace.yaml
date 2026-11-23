@@ -138,3 +138,11 @@ allowBuilds:
   # wrangler's local runtime (@workflow/world-cloudflare e2e); its install
   # script links the platform-specific workerd binary.
   workerd: true
+
+# Nitro's Vercel node entry (`vercel.entryFormat: 'node'`, used by the express
+# and fastify workbenches) defines `req.socket.remoteAddress` on every request
+# without `configurable: true`, so the second request on a reused socket throws
+# `TypeError: Cannot redefine property: remoteAddress` and the function answers
+# 500. Still present in nitro 3.0.261103-rc; drop the patch once Nitro fixes it.
+patchedDependencies:
+  nitro@3.0.260610-beta: patches/nitro@3.0.260610-beta.patch

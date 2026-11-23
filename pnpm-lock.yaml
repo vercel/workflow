@@ -89,6 +89,9 @@ overrides:
   '@vercel/agent-readability>@sveltejs/kit': '-'
   nitro>srvx: 0.11.21
 
+patchedDependencies:
+  nitro@3.0.260610-beta: 94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b
+
 importers:
 
   .:
@@ -833,7 +836,7 @@ importers:
         version: link:../tsconfig
       nitro:
         specifier: 'catalog:'
-        version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
+        version: 3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1879,7 +1882,7 @@ importers:
         version: 5.3.0(supports-color@10.2.2)
       nitro:
         specifier: 'catalog:'
-        version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
+        version: 3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
@@ -1913,7 +1916,7 @@ importers:
         version: 5.12.8
       nitro:
         specifier: 'catalog:'
-        version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
+        version: 3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
@@ -1962,7 +1965,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
+        version: 3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
       openai:
         specifier: ^6.49.0
         version: 6.49.0(@smithy/signature-v4@5.7.5)(ws@8.22.1)(zod@4.6.7)
@@ -2344,7 +2347,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
+        version: 3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
       openai:
         specifier: ^6.49.0
         version: 6.49.0(@smithy/signature-v4@5.7.5)(ws@8.22.1)(zod@4.6.7)
@@ -2615,7 +2618,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
+        version: 3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
       openai:
         specifier: ^6.49.0
         version: 6.49.0(@smithy/signature-v4@5.7.5)(ws@8.22.1)(zod@4.6.7)
@@ -2649,7 +2652,7 @@ importers:
         version: 4.2.0
       nitro:
         specifier: 'catalog:'
-        version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
+        version: 3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21))
       openai:
         specifier: ^6.49.0
         version: 6.49.0(@smithy/signature-v4@5.7.5)(ws@8.22.1)(zod@4.6.7)
@@ -29638,7 +29641,7 @@ snapshots:
 
   nf3@0.3.20: {}
 
-  nitro@3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21)):
+  nitro@3.0.260610-beta(patch_hash=94c94e5713bdf7bafda5a9d71926e5947806f983cdf84a0608683fb3b8809c5b)(@netlify/blobs@9.1.2)(@vercel/blob@2.9.0)(@vercel/functions@3.11.1(@aws-sdk/credential-provider-web-identity@3.972.88)(ws@8.22.1))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.4.2)(drizzle-orm@0.45.4(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-sqlite3@11.10.0)(pg@8.23.1)(postgres@3.4.8))(giget@3.3.1)(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(lru-cache@11.5.3)(rollup@4.68.0)(vite@7.3.8(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))(wrangler@4.146.0(@types/node@22.19.21)):
     dependencies:
       consola: 3.4.2
       crossws: 0.4.17(srvx@0.11.21)
