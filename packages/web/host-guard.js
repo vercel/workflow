@@ -145,6 +145,9 @@ export function checkRequest(request, allowedHosts = []) {
 
   if (!SAFE_METHODS.has(request.method)) {
     const origin = request.headers.get('origin');
+    // No `Origin` means a non-browser client (the CLI, curl, scripts): browsers
+    // always send one on cross-origin and on same-origin unsafe requests. Do
+    // not require it, or those clients break.
     if (origin) {
       let originHost;
       try {
