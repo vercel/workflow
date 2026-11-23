@@ -69,8 +69,9 @@ export interface RateLimitOptions {
  * slot would be later than `maxWait`, the call rejects with
  * `RateLimitMaxWaitError` instead, without using up a slot.
  *
- * Experimental: needs runs created at spec version 10
- * (`WORKFLOW_SPEC_VERSION=10`) on a World that supports rate limits.
+ * Experimental: needs runs created at spec version 10, the default on a World
+ * that supports rate limits (unless `WORKFLOW_SPEC_VERSION` selects an earlier
+ * version).
  *
  * @example
  * ```ts

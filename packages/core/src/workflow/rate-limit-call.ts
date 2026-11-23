@@ -93,6 +93,6 @@ export function rateLimitSpecVersionMessage(
   return (
     `experimental_rateLimit() needs a run at spec version ${SPEC_VERSION_RATE_LIMITS} or later, ` +
     `and this run is at ${runSpecVersion ?? 'an unknown version'}. ` +
-    `Create runs at spec ${SPEC_VERSION_RATE_LIMITS} (WORKFLOW_SPEC_VERSION=${SPEC_VERSION_RATE_LIMITS}) on a World that supports rate limits.`
+    `A World that supports rate limits creates spec ${SPEC_VERSION_RATE_LIMITS} runs by default, unless WORKFLOW_SPEC_VERSION selects an earlier version.`
   );
 }
