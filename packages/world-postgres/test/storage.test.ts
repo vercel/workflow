@@ -2648,6 +2648,8 @@ describe('Storage (Postgres integration)', () => {
     it("names the victim run's recorded queue namespace in claimedFrom, and omits it for a victim that recorded none", async () => {
       const claim = async (executionContext?: Record<string, unknown>) => {
         const token = `force-namespace-${ulid()}`;
+        const victimHookId = `hook_victim_${ulid()}`;
+        const claimerHookId = `hook_claimer_${ulid()}`;
         const victim = await createRun(events, {
           deploymentId: 'dpl_victim',
           workflowName: 'victim',
@@ -2656,7 +2658,7 @@ describe('Storage (Postgres integration)', () => {
         });
         await updateRun(events, victim.runId, 'run_started');
         await createHook(events, victim.runId, {
-          hookId: 'hook_victim',
+          hookId: victimHookId,
           token,
         });
         const claimer = await createRun(events, {
@@ -2667,7 +2669,7 @@ describe('Storage (Postgres integration)', () => {
         await updateRun(events, claimer.runId, 'run_started');
         const result = await events.create(claimer.runId, {
           eventType: 'hook_created',
-          correlationId: 'hook_claimer',
+          correlationId: claimerHookId,
           eventData: { token, force: true },
         });
         return result.hook?.claimedFrom;
