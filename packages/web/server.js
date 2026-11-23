@@ -11,6 +11,7 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { serve } from 'srvx';
+import { checkRequest, normalizeAllowedHosts } from './host-guard.js';
 import { createStaticHandler } from './static.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,10 +23,16 @@ const serverEntry = path.join(buildDir, 'server', 'index.js');
  * Start the production HTTP server.
  *
  * @param {number} [port] - Port to listen on. Defaults to PORT env or 3000.
+ * @param {object} [options]
+ * @param {string | string[] | true} [options.allowedHosts] - Host names,
+ *   besides `localhost`, `*.localhost` and IP literals, that requests may
+ *   address the server by: an array, or a comma-separated string in the format
+ *   of `WORKFLOW_WEB_ALLOWED_HOSTS`, which is the default. `.example.com`
+ *   matches the domain and its subdomains; `true` or `"*"` disables the check.
  * @returns {Promise<import("srvx").Server>} The listening server. The
  *   underlying Node `http.Server` remains reachable via `server.node.server`.
  */
-export async function startServer(port) {
+export async function startServer(port, options = {}) {
   // Import the compiled server build, which exports `createFetchHandler` (the
   // React Router request handler, as a Web `Request` -> `Response` function).
   const { createFetchHandler } = await import(pathToFileURL(serverEntry).href);
@@ -35,10 +42,16 @@ export async function startServer(port) {
   // over a real network, where trading CPU for bytes is worth it.
   const serveStatic = createStaticHandler({ dir: clientDir });
   const ssr = createFetchHandler('/');
+  const allowedHosts = normalizeAllowedHosts(
+    options.allowedHosts ?? process.env.WORKFLOW_WEB_ALLOWED_HOSTS
+  );
 
   const server = serve({
     port: port ?? parseInt(process.env.PORT || '3000', 10),
     async fetch(request) {
+      // Reject DNS-rebound and cross-site requests before anything else runs.
+      const rejection = checkRequest(request, allowedHosts);
+      if (rejection) return rejection;
       return (await serveStatic(request)) ?? ssr(request);
     },
     // Safety net — prevents an unhandled error from taking down the server when

@@ -1,5 +1,17 @@
 # @workflow/nitro
 
+## 5.0.14
+
+### Patch Changes
+
+- [#5671](https://github.com/vercel/workflow/pull/5671) [`c989836`](https://github.com/vercel/workflow/commit/c989836f14d9f4e9b59d151ce706db94a064cc60) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The web UI (standalone and embedded at `/_workflow`) only accepts requests addressed to `localhost` or an IP address; if you reach it under another host name, such as behind a reverse proxy, allow it with `--webAllowedHosts`, `WORKFLOW_WEB_ALLOWED_HOSTS`, or Nitro's `dashboard.allowedHosts`.
+- Updated dependencies [[`f717314`](https://github.com/vercel/workflow/commit/f717314b6fa8e91d653f56f90b9a1facf36a5f38), [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992), [`c989836`](https://github.com/vercel/workflow/commit/c989836f14d9f4e9b59d151ce706db94a064cc60)]:
+  - @workflow/web@5.3.2
+  - @workflow/core@5.7.2
+  - @workflow/builders@5.1.5
+  - @workflow/rollup@5.0.14
+  - @workflow/vite@5.0.14
+
 ## 5.0.13
 
 ### Patch Changes

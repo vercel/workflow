@@ -660,9 +660,11 @@ describe('Retention ($retention: 0)', () => {
 
     it('blanks a stream write that was in flight while the run finished and had its data deleted', async () => {
       const { runId } = await seedRun();
-      // Hold every stream insert open after it has read the run (as running,
-      // so it takes no lock), long enough for the run to finish and have its
-      // data deleted before the insert commits.
+      // Hold every stream insert open after it has locked the run, long
+      // enough for the run to try to finish and have its data deleted before
+      // the insert commits. Both wait for it, so the deletion sees the chunk.
+      // Nothing scrubs the chunk after the insert, so a chunk the deletion
+      // missed would keep its bytes.
       await pool.query(`
         CREATE OR REPLACE FUNCTION workflow.test_slow_chunk_insert()
         RETURNS trigger LANGUAGE plpgsql AS $$
@@ -694,6 +696,92 @@ describe('Retention ($retention: 0)', () => {
         [runId]
       );
       expect(rows).toEqual([{ n: 0 }]);
+    });
+
+    it('makes a stream write to a running run wait for a deletion that finishes it, and refuses it', async () => {
+      const { runId } = await seedRun();
+      // Finish the run and delete its data in one uncommitted transaction:
+      // until it commits, other sessions still read the run as running and
+      // keeping its data, which is when a write must not slip past it.
+      const deleting = await pool.connect();
+      try {
+        await deleting.query('BEGIN');
+        await deleting.query(
+          `UPDATE workflow.workflow_runs
+              SET status = 'completed', expired_at = now()
+            WHERE id = $1`,
+          [runId]
+        );
+        await deleting.query(
+          `UPDATE workflow.workflow_stream_chunks SET data = ''::bytea
+            WHERE run_id = $1`,
+          [runId]
+        );
+
+        let settled = false;
+        const write = streamer.streams
+          .write(runId, 'racing-stream', 'secret')
+          .finally(() => {
+            settled = true;
+          });
+        // Until the insert is seen waiting for a lock, rather than for a
+        // fixed time: a write that never blocks fails the wait.
+        await expect
+          .poll(
+            async () =>
+              (
+                await pool.query(
+                  `SELECT count(*)::int AS n FROM pg_stat_activity
+                    WHERE wait_event_type = 'Lock'
+                      AND query LIKE '%workflow_stream_chunks%'
+                      AND pid <> pg_backend_pid()`
+                )
+              ).rows[0].n,
+            { timeout: 10_000, interval: 20 }
+          )
+          .toBe(1);
+        expect(settled).toBe(false);
+
+        await deleting.query('COMMIT');
+        await write;
+      } finally {
+        deleting.release();
+      }
+
+      const { rows } = await pool.query(
+        `SELECT count(*)::int AS n FROM workflow.workflow_stream_chunks
+          WHERE run_id = $1 AND stream_id = 'racing-stream'`,
+        [runId]
+      );
+      expect(rows[0].n).toBe(0);
+    });
+
+    it('serves no chunk bytes once the run is deleted, even bytes left in the table', async () => {
+      const { runId, streamId } = await seedRun();
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      await runs.deleteDataMany?.({ runIds: [runId] });
+      // Bytes that reached a deleted run's chunk some other way (a restored
+      // backup, a write from an older version of this World).
+      await pool.query(
+        `UPDATE workflow.workflow_stream_chunks SET data = 'secret'::bytea
+          WHERE run_id = $1 AND NOT eof`,
+        [runId]
+      );
+
+      const page = await streamer.streams.getChunks(runId, streamId);
+      expect(page.done).toBe(true);
+      expect(page.data.length).toBeGreaterThan(0);
+      expect(page.data.every((chunk) => chunk.data.byteLength === 0)).toBe(
+        true
+      );
+
+      const read = await streamer.streams.get(runId, streamId);
+      const received: Uint8Array[] = [];
+      for await (const chunk of read) received.push(chunk);
+      expect(received).toEqual([]);
     });
 
     it('writes no stream chunk after the deletion, to a new stream or an existing one', async () => {
@@ -858,7 +946,7 @@ describe('Retention ($retention: 0)', () => {
       });
     }
 
-    it('takes no lock on a run that keeps its data when a step settles or a stream is written', async () => {
+    it('takes no lock on a run that keeps its data when a step settles', async () => {
       const { runId } = await seedRun();
       const stepId = `step_${ulid()}`;
       await events.create(runId, {
@@ -888,7 +976,6 @@ describe('Retention ($retention: 0)', () => {
               )
             ),
           ]);
-        await within(streamer.streams.write(runId, 'unlocked', 'chunk'));
         await within(
           events.create(runId, {
             eventType: 'step_completed',

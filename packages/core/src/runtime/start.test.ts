@@ -12,6 +12,7 @@ import {
   SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -225,6 +226,37 @@ describe('start', () => {
         })
       ).rejects.toThrow(/cannot appear in workflow queue names/);
       expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('refuses a spec 10 run on a World that does not reserve rate limit slots', async () => {
+      const getDeploymentId = vi.fn().mockResolvedValue('deploy_123');
+      const workflow = Object.assign(async () => undefined, {
+        workflowId: 'workflow//./test//rateLimited',
+      });
+      // A World that declares spec 10 some other way than mintedSpecVersion.
+      setWorld({
+        capabilities: { inBandFence: true },
+        specVersion: SPEC_VERSION_RATE_LIMITS,
+        getDeploymentId,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      await expect(start(workflow as never, [])).rejects.toThrow(
+        /capabilities\.rateLimits/
+      );
+      // An explicit spec 10 on a World with the fence but no rate limits.
+      setWorld({
+        capabilities: { inBandFence: true },
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        getDeploymentId,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      await expect(
+        start(workflow as never, [], { specVersion: SPEC_VERSION_RATE_LIMITS })
+      ).rejects.toThrow(/capabilities\.rateLimits/);
       expect(eventsCreate).not.toHaveBeenCalled();
       expect(queue).not.toHaveBeenCalled();
     });
@@ -1021,7 +1053,8 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_MAX_SUPPORTED,
-        capabilities: { inBandFence: true },
+        // The ceiling is spec 10, which needs both.
+        capabilities: { inBandFence: true, rateLimits: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,

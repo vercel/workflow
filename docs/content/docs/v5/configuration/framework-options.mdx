@@ -81,6 +81,12 @@ Configure Workflow through the Nitro `workflow` module options.
 - Default: `inline` in development, `false` in production
 - Controls source maps for generated workflow bundles.
 
+### `workflow.dashboard`
+
+- Environment override: `WORKFLOW_WEB_ALLOWED_HOSTS` (for `allowedHosts`)
+- Default: enabled in development, disabled in production builds, never mounted on Vercel
+- Embeds the observability web UI in the Nitro server at `/_workflow`. Pass `true` or `false` to force it on or off, or an object `{ enabled, path, allowedHosts }`. `allowedHosts` lists host names the dashboard accepts in the `Host` header besides `localhost`, `*.localhost`, and IP addresses (`.example.com` matches the domain and its subdomains, `true` accepts any host); requests under any other name get a `403`. See [`--webAllowedHosts`](/docs/configuration/cli-and-web-ui#--weballowedhosts).
+
 ## NestJS
 
 Configure Workflow through `WorkflowModule.forRoot()`.

@@ -66,6 +66,13 @@ overrides:
   'vite@>=8.3.0 <8.3.7': 8.3.8
   # Lift copies that monaco-editor and mermaid pin onto the current patch.
   'dompurify@>=3 <3.4.17': 3.4.17
+  # These packages list `@sveltejs/kit` as an optional peer for their SvelteKit
+  # entry points, which the docs site and the SWC playground never load. Two of
+  # the peer ranges stop at Kit 2, so pnpm would otherwise keep a second, older
+  # Kit in the lockfile next to the one the SvelteKit workbench uses.
+  '@vercel/analytics>@sveltejs/kit': '-'
+  '@vercel/speed-insights>@sveltejs/kit': '-'
+  '@vercel/agent-readability>@sveltejs/kit': '-'
   # srvx 0.11.22 only honors `X-Forwarded-Proto` behind a configured
   # `trustProxy`, which Nitro's Vercel node preset (this beta) does not pass, so
   # `request.url` turns `http://` behind Vercel's TLS termination and webhook

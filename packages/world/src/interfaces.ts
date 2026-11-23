@@ -708,9 +708,11 @@ export interface Storage {
  * closed (keep their conservative behavior) unless the World explicitly
  * declares it.
  *
- * {@link inBandFence} is required for spec 9 runs, which are opt-in
- * (`WORKFLOW_SPEC_VERSION=9`): the runtime refuses to create or drive one on
- * a World that does not declare it. A World without it creates spec 8 runs.
+ * {@link inBandFence} is required for spec 9 runs: the runtime refuses to
+ * create or drive one on a World that does not declare it. A World that
+ * declares it creates spec 9 runs by default, or spec 10 runs if it also
+ * declares {@link rateLimits} (`WORKFLOW_SPEC_VERSION=8` opts out); a World
+ * without it creates spec 8 runs.
  */
 export interface WorldCapabilities {
   /**
@@ -785,11 +787,11 @@ export interface WorldCapabilities {
    * The World implements the in-band writer fence on single-orchestrator runs
    * (spec >= 9). **Required for spec 9 runs**: `@workflow/core` refuses to
    * create one in `start()`, or to begin a spec 9 orchestrator delivery, on
-   * a World that does not declare it, before it writes anything. Spec 9 runs
-   * are opt-in (`WORKFLOW_SPEC_VERSION=9`), and a World that declares this
-   * passes `{ inBandFence: true }` to `mintedSpecVersion` so the setting can
-   * take effect. A World without it creates spec 8 runs, which need no
-   * fence.
+   * a World that does not declare it, before it writes anything. A World
+   * that declares this passes `{ inBandFence: true }` to `mintedSpecVersion`,
+   * which then creates spec 9 runs by default, or spec 10 runs with
+   * {@link rateLimits} too (`WORKFLOW_SPEC_VERSION=8` keeps them on spec 8).
+   * A World without it creates spec 8 runs, which need no fence.
    *
    * Declaring it commits the World to all of:
    *
@@ -822,6 +824,63 @@ export interface WorldCapabilities {
    * repository) is the full guide.
    */
   inBandFence?: boolean;
+
+  /**
+   * The World reserves rate limit slots for `experimental_rateLimit()`, and
+   * so may mint runs at `SPEC_VERSION_RATE_LIMITS` (pass it to
+   * `mintedSpecVersion`, which then creates spec 10 runs by default). It
+   * requires {@link inBandFence}.
+   *
+   * What a World that declares this does with the rate events (see
+   * `events.ts`):
+   *
+   * - **`rate_created`** (in-band only, on a run at spec 10 or later): reserve
+   *   the call's slot on its key, scoped to the project, then commit what the
+   *   reservation decided IN PLACE of the request: `rate_acquired` with
+   *   `acquireAt` when the slot is now, `rate_created` with `acquireAt` when
+   *   it is later, `rate_failed` (`reason: 'max_wait'`) when it is past
+   *   `expiresAt`. Reserve nothing for a write the fence or the run's state
+   *   would refuse. Refuse with `EntityConflictError` a `rate_created` whose
+   *   correlation id already has an event, and with a 400 a key that starts
+   *   with `$` unless the request sets `allowReservedKey: true`
+   *   (`assertRateLimitKeyAllowed`); the opt-in is not kept on the committed
+   *   event. `rateLimitIntervalUs` and `decideRateLimit` in
+   *   `@workflow/world` are the algorithm.
+   * - **`rate_acquired`** (in-band only): `eventData.createdSlot` names the
+   *   call's `rate_created`. Refuse it with `EntityConflictError` on a run in
+   *   a terminal state, when that slot holds no `rate_created` of the same
+   *   correlation id, or when the call was already settled, and with
+   *   `TooEarlyError` (`retryAfter` in seconds) before that event's
+   *   `acquireAt` by the World's clock. Within the call's grace
+   *   (`decideRateWake`), commit the recorded `acquireAt`, never one the
+   *   request carries; past it, reserve the call again and commit what that
+   *   decided in place of the request (`rate_acquired`, `rate_created` with
+   *   `acquireAt` and `lateWakes`, or `rate_failed`).
+   * - **`rate_failed`** is never accepted from a client.
+   *
+   * A World without it refuses every rate event, so a spec 10 run never
+   * records one it did not decide.
+   */
+  rateLimits?: boolean;
+
+  /**
+   * The World's `events.createBatch` takes in-band `rate_created` and
+   * `rate_acquired` items, at the end of a batch and several at once, and
+   * decides each one exactly as the single-event write does (see
+   * {@link rateLimits}), in request order: it reserves only once the fence
+   * was accepted, and the item's result carries the event committed in its
+   * place (`rate_acquired`, `rate_created` with `acquireAt`, or
+   * `rate_failed`). A refused item is answered with the status the single
+   * write would have had (400, 409, 425) and its position is sealed like any
+   * refused item's, or the batch reports `allocated`. An item refused with
+   * `rate-batch-deferred` or `rate-decision-failed` (503) had nothing
+   * committed, and the runtime sends it again; a slot the World reserved for
+   * it before failing is wasted, never admitted twice. The runtime sends
+   * a rate limit call's write in the same batch as the speculative step
+   * outcomes queued before it, which saves the call a round trip, and the
+   * writes of calls made at once in one batch. Requires {@link rateLimits}.
+   */
+  rateEventsInBatch?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes

@@ -1,5 +1,16 @@
 # @workflow/web-shared
 
+## 5.3.2
+
+### Patch Changes
+
+- [#5653](https://github.com/vercel/workflow/pull/5653) [`3e799a4`](https://github.com/vercel/workflow/commit/3e799a40de88fa372de229733a92b0d2af5f7cd4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Show "in X minutes" instead of "X minutes ago" in timestamp hover cards for future dates
+
+- [#5586](https://github.com/vercel/workflow/pull/5586) [`f717314`](https://github.com/vercel/workflow/commit/f717314b6fa8e91d653f56f90b9a1facf36a5f38) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - On the Local World, a run's page gets a Usage tab and page (`/run/<runId>/usage`) that lists its events by type and its storage, the same table as `workflow inspect run <id> --usage`. `@workflow/web-shared` exports the trace's `ResourceIcon` for it.
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a), [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992)]:
+  - @workflow/world@5.3.1
+  - @workflow/core@5.7.2
+
 ## 5.3.1
 
 ### Patch Changes

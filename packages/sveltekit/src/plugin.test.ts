@@ -124,6 +124,38 @@ describe('workflowPlugin', () => {
     expect(mocks.build).not.toHaveBeenCalled();
   });
 
+  it('keeps the SDK in the server bundle for builds only', async () => {
+    mocks.loadConfig.mockResolvedValue({
+      config: {},
+      configFilePath: join(workingDir, 'vite.config.ts'),
+      configSource: 'vite',
+    });
+
+    const [pending] = workflowPlugin();
+    const plugin = (await pending).find(
+      (candidate) => candidate.name === 'workflow:sveltekit'
+    );
+    const config = plugin?.config as (
+      config: object,
+      env: { command: 'build' | 'serve'; mode: string }
+    ) => { ssr: { noExternal: Array<string | RegExp> } } | undefined;
+
+    expect(config({}, { command: 'serve', mode: 'development' })).toBe(
+      undefined
+    );
+
+    const noExternal = config({}, { command: 'build', mode: 'production' })?.ssr
+      .noExternal;
+    const bundled = (dep: string) =>
+      noExternal?.some((rule) =>
+        typeof rule === 'string' ? rule === dep : rule.test(dep)
+      );
+    expect(bundled('workflow')).toBe(true);
+    expect(bundled('@workflow/world-postgres')).toBe(true);
+    expect(bundled('workflow-other')).toBe(false);
+    expect(bundled('zod')).toBe(false);
+  });
+
   it('passes source map options to the builder', async () => {
     const configPath = join(workingDir, 'svelte.config.js');
     await writeFile(configPath, 'export default {};');

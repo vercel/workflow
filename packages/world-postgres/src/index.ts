@@ -34,7 +34,8 @@ function createStorage(
   runStatusListener: RunStatusListener,
   jobPrefix: string,
   purgeTask: string,
-  runEventsFeed: RunEventsFeed
+  runEventsFeed: RunEventsFeed,
+  rateLimitScope: string
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
@@ -42,6 +43,7 @@ function createStorage(
       jobPrefix,
       purgeTask,
       runEventsFeed,
+      rateLimitScope,
     }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
@@ -109,7 +111,11 @@ export function createWorld(
     runStatusListener,
     jobPrefix,
     worldPurgeTask(config),
-    runEventsFeed
+    runEventsFeed,
+    // Rate limit keys are shared by every deployment of this app (its base
+    // `jobPrefix`, without the deployment), as on the Vercel World, where a
+    // key is shared by the project's deployments in one environment.
+    resolveJobPrefix(config, undefined)
   );
   const streamer = createStreamer(pool, drizzle);
 
@@ -137,6 +143,11 @@ export function createWorld(
     maxConcurrency: true,
     // Required by the runtime; see in-band-fence.test.ts for conformance.
     inBandFence: true,
+    // `experimental_rateLimit()`: each key's next free slot is a row of
+    // `workflow_rate_limits`, reserved under its lock in the fenced
+    // `rate_created` write's transaction (see `reserveRateSlot` in
+    // storage.ts). Not `rateEventsInBatch`: this World has no batch write.
+    rateLimits: true,
     // With a `deploymentId`, each deployment's workers claim only its own
     // runs' jobs and messages for another deployment's runs are routed to
     // its task (queue.ts), so a run executes only where it started.
@@ -145,10 +156,11 @@ export function createWorld(
       : {}),
   } satisfies WorldCapabilities;
   return {
-    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
-    // the in-band fence declared above; spec 8 otherwise.
+    // Spec 10 runs by default, which need the in-band fence and rate limits
+    // declared above; `WORKFLOW_SPEC_VERSION=8` keeps new runs on spec 8.
     specVersion: mintedSpecVersion(process.env, {
       inBandFence: capabilities.inBandFence,
+      rateLimits: capabilities.rateLimits,
     }),
     capabilities,
     ...storage,

@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "5.3.1",
+  "version": "5.3.2",
   "type": "module",
   "private": false,
   "files": [
@@ -13,6 +13,7 @@
     "registry.js",
     "registry.d.ts",
     "static.js",
+    "host-guard.js",
     "package.json"
   ],
   "exports": {

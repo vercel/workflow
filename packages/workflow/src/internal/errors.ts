@@ -6,6 +6,7 @@ export {
   HookNotFoundError,
   InBandSupersededError,
   PreconditionFailedError,
+  RateLimitMaxWaitError,
   RunExpiredError,
   RunNotSupportedError,
   StepNotRegisteredError,

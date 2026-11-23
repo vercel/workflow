@@ -326,7 +326,13 @@ export default {
           DEFAULT_DASHBOARD_PATH
       );
       if (dashboardEnabled && !isVercelDeploy) {
-        addDashboardHandler(nitro, dashboardPath);
+        addDashboardHandler(
+          nitro,
+          dashboardPath,
+          typeof dashboardOption === 'object'
+            ? dashboardOption.allowedHosts
+            : undefined
+        );
       }
 
       addVirtualHandler(
@@ -433,7 +439,11 @@ function normalizeDashboardPath(path: string): string {
  * second server, no separate port, no redirect. The handler is framework-
  * neutral; this is its first consumer.
  */
-function addDashboardHandler(nitro: Nitro, basename: string) {
+function addDashboardHandler(
+  nitro: Nitro,
+  basename: string,
+  allowedHosts: string[] | true | undefined
+) {
   // Resolve `@workflow/web/handler` relative to this module so consumers don't
   // need a direct dependency on `@workflow/web`. Inlined into the virtual
   // handler as a file:// URL and imported with @vite-ignore/webpackIgnore so
@@ -452,12 +462,16 @@ function addDashboardHandler(nitro: Nitro, basename: string) {
   const handlerSource = /* js */ `
     const __workflowWebHandlerUrl = ${JSON.stringify(webHandlerUrl)};
     const __workflowDashboardBasename = ${JSON.stringify(basename)};
+    const __workflowDashboardAllowedHosts = ${JSON.stringify(allowedHosts ?? null)};
     let handlerPromise = null;
     async function getDashboardHandler() {
       if (!handlerPromise) {
         handlerPromise = (async () => {
           const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ __workflowWebHandlerUrl);
-          return mod.createWorkflowWebHandler({ basename: __workflowDashboardBasename });
+          return mod.createWorkflowWebHandler({
+            basename: __workflowDashboardBasename,
+            allowedHosts: __workflowDashboardAllowedHosts ?? undefined,
+          });
         })().catch((error) => {
           handlerPromise = null;
           throw error;
