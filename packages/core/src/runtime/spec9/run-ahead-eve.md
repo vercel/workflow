@@ -47,7 +47,7 @@ The only code that awaits the sandbox idle runs between turns, in `stopSandboxOn
 
 ### 1. Treat in-band-only `AbortController` hooks as inert
 
-`isAlwaysObservedHook()` currently returns true for every system hook except the child-run completion hook. It should return false for abort hooks as long as the controller is never serialized for a step or an external caller (the `reviveAbortController` path). The most straightforward way to do this would be an explicit opt-in, such as `new AbortController({ inBandOnly: true })`, with a revived `abort()` throwing. It could also be detected automatically: the workflow-context reducer already handles controllers and signals separately, so it could flag the hook when a controller crosses the boundary.
+`isAlwaysObservedHook()` currently returns true for every system hook except the child-run completion hook. It should return false for hooks which can only run in-band, e.g. for hooks whose controller is never serialized for a step or an external caller (the `reviveAbortController` path). The most straightforward way to do this would be an explicit opt-in, such as `new AbortController({ inBandOnly: true })`, with a revived `abort()` throwing. It could also be detected automatically: the workflow-context reducer already handles controllers and signals separately, so it could flag the hook when a controller crosses the boundary.
 
 ### 2. Let run-ahead proceed past observed hooks with a conditional commit
 
