@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   createFlushableState,
+  FLUSHABLE_STATE_SYMBOL,
   flushablePipe,
   LOCK_POLL_INTERVAL_MS,
   pollReadableLock,
   pollWritableLock,
+  trackFlushableWritable,
 } from './flushable-stream.js';
 
 describe('flushable stream behavior', () => {
@@ -398,5 +400,110 @@ describe('flushable stream behavior', () => {
     expect(chunks).toContain('valid chunk');
     // Ensure the stream ended
     expect(state.streamEnded).toBe(true);
+  });
+});
+
+describe('tracked flushable writable', () => {
+  function createTrackedPipe(sink: WritableStream<string>) {
+    const { readable, writable } = new TransformStream<string, string>();
+    const state = createFlushableState();
+    flushablePipe(readable, sink, state).catch(() => {
+      // Errors handled via state.reject
+    });
+    const tracked = trackFlushableWritable(writable, state);
+    pollWritableLock(tracked, state);
+    return { state, tracked };
+  }
+
+  it('exposes its state on the writable it returns', () => {
+    const { state, tracked } = createTrackedPipe(new WritableStream());
+    expect((tracked as any)[FLUSHABLE_STATE_SYMBOL]).toBe(state);
+    clearInterval(state.writablePollingInterval);
+  });
+
+  it('passes chunks through in order and closes the sink', async () => {
+    const chunks: string[] = [];
+    let closed = false;
+    const { state, tracked } = createTrackedPipe(
+      new WritableStream<string>({
+        write(chunk) {
+          chunks.push(chunk);
+        },
+        close() {
+          closed = true;
+        },
+      })
+    );
+
+    const writer = tracked.getWriter();
+    await writer.write('a');
+    await writer.write('b');
+    await writer.close();
+    await state.pipeEnded;
+
+    expect(chunks).toEqual(['a', 'b']);
+    expect(closed).toBe(true);
+    expect(state.producedFrames).toBe(2);
+    expect(state.acceptedFrames).toBe(2);
+  });
+
+  it('counts a write when it is requested, before it reaches the pipe', () => {
+    const { state, tracked } = createTrackedPipe(
+      new WritableStream<string>({ write: () => new Promise(() => {}) })
+    );
+
+    const writer = tracked.getWriter();
+    void writer.write('a');
+    void writer.write('b');
+    void writer.write('c');
+
+    expect(state.producedFrames).toBe(3);
+    expect(state.acceptedFrames).toBe(0);
+    clearInterval(state.writablePollingInterval);
+  });
+
+  it('stops lock polling for a writable that is never used', async () => {
+    const { state } = createTrackedPipe(new WritableStream());
+
+    await state.promise;
+    await new Promise((resolve) =>
+      setTimeout(resolve, LOCK_POLL_INTERVAL_MS + 20)
+    );
+    expect(state.writablePollingInterval).toBeUndefined();
+  });
+
+  it('resolves on lock release', async () => {
+    const { state, tracked } = createTrackedPipe(new WritableStream());
+
+    const writer = tracked.getWriter();
+    await writer.write('a');
+    writer.releaseLock();
+
+    await state.promise;
+    expect(state.doneResolved).toBe(true);
+  });
+
+  it('errors the user-facing writable when the sink fails', async () => {
+    const { state, tracked } = createTrackedPipe(
+      new WritableStream<string>({
+        write: () => Promise.reject(new Error('sink failed')),
+      })
+    );
+
+    const writer = tracked.getWriter();
+    await writer.write('a');
+    await expect(state.pipeEnded).rejects.toThrow('sink failed');
+    await expect(writer.write('b')).rejects.toThrow();
+  });
+
+  it('settles a write requested after the writable was closed', async () => {
+    const { state, tracked } = createTrackedPipe(new WritableStream());
+
+    const writer = tracked.getWriter();
+    await writer.write('a');
+    await writer.close();
+    await expect(writer.write('late')).rejects.toThrow();
+
+    await expect(state.settleWrites?.()).resolves.toBeUndefined();
   });
 });

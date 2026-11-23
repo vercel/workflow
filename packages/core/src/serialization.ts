@@ -35,12 +35,16 @@ export async function resolveEncryptionKey(
 
 import {
   createFlushableState,
+  FLUSHABLE_STATE_SYMBOL,
+  type FlushableStreamState,
   flushablePipe,
   pollReadableLock,
   pollWritableLock,
+  trackFlushableWritable,
 } from './flushable-stream.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
+import { settleStepStreams } from './runtime/step-streams.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
 import {
@@ -1042,6 +1046,34 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       reject: (err: unknown) => void;
     }> = [];
 
+    // Progress of the chunks handed to this stream, for `settled()`.
+    const progress = {
+      /** Chunks passed to `write()`, counted when the call is made. */
+      requested: 0,
+      /** Chunks whose write to the server has finished. */
+      written: 0,
+      /** The close in progress or finished, once one has started. */
+      close: undefined as Promise<void> | undefined,
+      /** Set once the stream takes no more chunks: closed, failed or aborted. */
+      ended: false,
+      waiters: [] as Array<{ target: number; resolve: () => void }>,
+    };
+    const notifyProgress = (): void => {
+      const waiting = progress.waiters;
+      progress.waiters = [];
+      for (const waiter of waiting) {
+        if (progress.ended || waiter.target <= progress.written) {
+          waiter.resolve();
+        } else {
+          progress.waiters.push(waiter);
+        }
+      }
+    };
+    const endProgress = (): void => {
+      progress.ended = true;
+      notifyProgress();
+    };
+
     const scheduleFlush = (): void => {
       if (flushTimer) return; // Already scheduled
 
@@ -1060,55 +1092,113 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }, world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
     };
 
-    super({
-      async write(chunk) {
-        // Wait for any in-progress flush to complete before adding to buffer
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
+    const writeChunk = async (chunk: Uint8Array): Promise<void> => {
+      // Wait for any in-progress flush to complete before adding to buffer
+      if (flushPromise) {
+        await flushPromise;
+        flushPromise = null;
+      }
 
-        buffer.push(chunk);
-        scheduleFlush();
+      buffer.push(chunk);
+      scheduleFlush();
 
-        // Wait for the scheduled flush to complete so that callers
-        // (like flushablePipe) know data has reached the server
-        // before decrementing pendingOps. Without this, pendingOps
-        // reaches 0 when the buffered write returns (instant), but
-        // the 10ms flush timer hasn't fired yet.
-        await new Promise<void>((resolve, reject) => {
-          flushWaiters.push({ resolve, reject });
-        });
+      // Wait for the scheduled flush to complete so that callers
+      // (like flushablePipe) know data has reached the server
+      // before decrementing pendingOps. Without this, pendingOps
+      // reaches 0 when the buffered write returns (instant), but
+      // the 10ms flush timer hasn't fired yet.
+      await new Promise<void>((resolve, reject) => {
+        flushWaiters.push({ resolve, reject });
+      });
+    };
+
+    const closeStream = async (): Promise<void> => {
+      // Wait for any in-progress flush to complete
+      if (flushPromise) {
+        await flushPromise;
+        flushPromise = null;
+      }
+
+      // Flush any remaining buffered chunks
+      await flush();
+
+      await world.closeStream(name, runId);
+    };
+
+    super(
+      {
+        async write(chunk) {
+          try {
+            await writeChunk(chunk);
+            progress.written++;
+            notifyProgress();
+          } catch (err) {
+            // A failed write errors the stream; queued chunks never arrive.
+            endProgress();
+            throw err;
+          }
+        },
+        close() {
+          progress.close = closeStream().finally(endProgress);
+          return progress.close;
+        },
+        abort(reason) {
+          // Clean up timer to prevent leaks
+          if (flushTimer) {
+            clearTimeout(flushTimer);
+            flushTimer = null;
+          }
+          // Discard buffered chunks - they won't be written
+          buffer = [];
+          // Reject any pending flushWaiters so the write() promises settle
+          // and don't leak. Without this, write() hangs forever on an
+          // unsettled promise because the cleared timer will never fire.
+          const waiters = flushWaiters;
+          flushWaiters = [];
+          const abortError = reason ?? new Error('Stream aborted');
+          for (const w of waiters) w.reject(abortError);
+          endProgress();
+        },
       },
-      async close() {
-        // Wait for any in-progress flush to complete
-        if (flushPromise) {
-          await flushPromise;
-          flushPromise = null;
-        }
+      {
+        highWaterMark: 1,
+        // A stream sizes each chunk inside `write()`, before it queues it, so
+        // this also counts chunks waiting behind a write still in progress.
+        size() {
+          progress.requested++;
+          return 1;
+        },
+      }
+    );
 
-        // Flush any remaining buffered chunks
-        await flush();
+    this.#progress = progress;
+  }
 
-        await world.closeStream(name, runId);
-      },
-      abort(reason) {
-        // Clean up timer to prevent leaks
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flushTimer = null;
-        }
-        // Discard buffered chunks - they won't be written
-        buffer = [];
-        // Reject any pending flushWaiters so the write() promises settle
-        // and don't leak. Without this, write() hangs forever on an
-        // unsettled promise because the cleared timer will never fire.
-        const waiters = flushWaiters;
-        flushWaiters = [];
-        const abortError = reason ?? new Error('Stream aborted');
-        for (const w of waiters) w.reject(abortError);
-      },
-    });
+  readonly #progress: {
+    requested: number;
+    written: number;
+    close: Promise<void> | undefined;
+    ended: boolean;
+    waiters: Array<{ target: number; resolve: () => void }>;
+  };
+
+  /**
+   * Resolves once the chunks handed to this stream so far are on the server
+   * and, if its source has ended, the stream is closed there too. Chunks
+   * handed over after the call are not waited for. Never rejects: a failed
+   * write is reported by whoever owns the pipe into this stream.
+   */
+  async settled(): Promise<void> {
+    const progress = this.#progress;
+    const target = progress.requested;
+    if (!progress.ended && progress.written < target) {
+      await new Promise<void>((resolve) => {
+        progress.waiters.push({ target, resolve });
+      });
+    }
+    // A source that has ended closes the stream right after its last write.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await progress.close?.catch(() => {});
   }
 }
 
@@ -1680,7 +1770,8 @@ function getStepReducers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  framedByteStreams = false
+  framedByteStreams = false,
+  nestedStreams?: Array<{ settled(): Promise<void> }>
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -1712,6 +1803,7 @@ function getStepReducers(
         framing = type === 'bytes' && framedByteStreams ? 'framed-v1' : framing;
 
         const writable = new WorkflowServerWritableStream(name, runId);
+        nestedStreams?.push(writable);
         if (type === 'bytes') {
           if (framing === 'framed-v1') {
             pushPipeOp(
@@ -1732,7 +1824,8 @@ function getStepReducers(
                     ops,
                     runId,
                     cryptoKey,
-                    framedByteStreams
+                    framedByteStreams,
+                    nestedStreams
                   ),
                   cryptoKey
                 )
@@ -2261,7 +2354,8 @@ function getStepRevivers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  deploymentId?: string
+  deploymentId?: string,
+  streamStates?: FlushableStreamState[]
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -2354,6 +2448,21 @@ function getStepRevivers(
           const writer = responseWritable.getWriter();
           await writer.write(response);
           await writer.close();
+          // The webhook's HTTP handler is waiting on the response stream, so
+          // the response is only sent once its frame is on the server, along
+          // with as much of its body as exists by then. The serialization
+          // pipe writes them after `close()` has resolved; a step that
+          // returned before then could complete the run first, and the server
+          // does not create streams for a finished run. A body the step
+          // produces later is not waited for here. A write that fails or
+          // takes too long is reported by the step's background flush, as for
+          // any other stream.
+          const state: FlushableStreamState | undefined = (
+            responseWritable as any
+          )[FLUSHABLE_STATE_SYMBOL];
+          if (state) {
+            await settleStepStreams([state]).catch(() => {});
+          }
         };
       }
       return request;
@@ -2447,8 +2556,22 @@ function getStepRevivers(
           ? cryptoKey
           : lazyForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
 
+      // Create flushable state for this stream. Inside a step, the handler
+      // settles the step's finished writes before it completes the step.
+      const state = createFlushableState();
+      state.nestedStreams = [];
+      streamStates?.push(state);
+      ops.push(state.promise);
+
       const serialize = getSerializeStream(
-        getStepReducers(global, ops, targetRunId, targetKey),
+        getStepReducers(
+          global,
+          ops,
+          targetRunId,
+          targetKey,
+          false,
+          state.nestedStreams
+        ),
         targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
@@ -2456,17 +2579,20 @@ function getStepRevivers(
         targetRunId
       );
 
-      // Create flushable state for this stream
-      const state = createFlushableState();
-      ops.push(state.promise);
-
       // Start the flushable pipe in the background
       flushablePipe(serialize.readable, serverWritable, state).catch(() => {
         // Errors are handled via state.reject
       });
 
+      // Track which writes the step has finished, independently of the lock.
+      const writable = trackFlushableWritable(
+        serialize.writable,
+        state,
+        global.WritableStream
+      );
+
       // Start polling to detect when user releases lock
-      pollWritableLock(serialize.writable, state);
+      pollWritableLock(writable, state);
 
       // Record the underlying `(runId, name)` so downstream reducers can
       // recognize that this writable is already backed by a workflow
@@ -2474,26 +2600,22 @@ function getStepRevivers(
       // the child passes this writable on to a grandchild — the
       // external reducer needs both to emit the original `runId` in
       // the descriptor.
-      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+      Object.defineProperty(writable, STREAM_NAME_SYMBOL, {
         value: value.name,
         writable: false,
       });
-      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      Object.defineProperty(writable, STREAM_SERVER_RUN_ID_SYMBOL, {
         value: targetRunId,
         writable: false,
       });
       if (targetDeploymentId) {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-          {
-            value: targetDeploymentId,
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+          value: targetDeploymentId,
+          writable: false,
+        });
       }
 
-      return serialize.writable;
+      return writable;
     },
   };
 }
@@ -2819,6 +2941,10 @@ export async function dehydrateStepArguments(
  * @param ops - Promise array for stream operations
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param deploymentId - Deployment that owns the run, for forwarded streams
+ * @param streamStates - Collects the state of each writable the arguments
+ *   carry, so the step handler can settle their writes before it completes
+ *   the step
  * @returns The hydrated value, ready to be consumed by the step user-code function
  */
 export async function hydrateStepArguments(
@@ -2828,7 +2954,8 @@ export async function hydrateStepArguments(
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
-  deploymentId?: string
+  deploymentId?: string,
+  streamStates?: FlushableStreamState[]
 ) {
   // Decrypt if needed
   const decrypted = await maybeDecrypt(value, key);
@@ -2838,7 +2965,7 @@ export async function hydrateStepArguments(
   // via devalue's unflatten().
   if (!(decrypted instanceof Uint8Array)) {
     return unflatten(decrypted as any[], {
-      ...getStepRevivers(global, ops, runId, key, deploymentId),
+      ...getStepRevivers(global, ops, runId, key, deploymentId, streamStates),
       ...extraRevivers,
     });
   }
@@ -2848,7 +2975,7 @@ export async function hydrateStepArguments(
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
     const obj = parse(str, {
-      ...getStepRevivers(global, ops, runId, key, deploymentId),
+      ...getStepRevivers(global, ops, runId, key, deploymentId, streamStates),
       ...extraRevivers,
     });
     return obj;

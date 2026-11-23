@@ -2,6 +2,7 @@ import {
   createFlushableState,
   flushablePipe,
   pollWritableLock,
+  trackFlushableWritable,
 } from '../flushable-stream.js';
 import {
   getExternalReducers,
@@ -66,13 +67,17 @@ export function getWritable<W = any>(
   // .pipeTo() only resolves on stream close.
   const serverWritable = new WorkflowServerWritableStream(name, runId);
   const state = createFlushableState();
+  // The step handler waits for the step's writes to reach the server before
+  // it completes the step.
+  ctx.streamStates?.push(state);
   ctx.ops.push(state.promise);
 
   flushablePipe(serialize.readable, serverWritable, state).catch(() => {
     // Errors are handled via state.reject
   });
 
-  pollWritableLock(serialize.writable, state);
+  const writable = trackFlushableWritable(serialize.writable, state);
+  pollWritableLock(writable, state);
 
   // Tag the writable with its underlying `(runId, name)` so downstream
   // reducers can recognize that it's already backed by a workflow
@@ -81,25 +86,21 @@ export function getWritable<W = any>(
   // dehydrated descriptor, so the child's reviver can open the
   // writable against the original `(runId, name)` directly — no
   // in-process bridge tied to this step's lifetime.
-  Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+  Object.defineProperty(writable, STREAM_NAME_SYMBOL, {
     value: name,
     writable: false,
   });
-  Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+  Object.defineProperty(writable, STREAM_SERVER_RUN_ID_SYMBOL, {
     value: runId,
     writable: false,
   });
   if (ctx.workflowDeploymentId) {
-    Object.defineProperty(
-      serialize.writable,
-      STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-      {
-        value: ctx.workflowDeploymentId,
-        writable: false,
-      }
-    );
+    Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: ctx.workflowDeploymentId,
+      writable: false,
+    });
   }
 
-  // Return the writable side of the transform stream
-  return serialize.writable;
+  // Return the user-facing side of the serialization pipe
+  return writable as WritableStream<W>;
 }

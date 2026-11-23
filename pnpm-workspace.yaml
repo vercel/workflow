@@ -79,4 +79,14 @@ overrides:
   'vite@>=7.0.0 <7.3.7': 7.3.7
   'vite@>=8.0.0 <8.1.6': 8.1.6
 
+# Nitro's Vercel node entry (`vercel.entryFormat: 'node'`, used by the express
+# and fastify workbenches) defines `req.socket.remoteAddress` on every request
+# without `configurable: true`, so the second request on a reused socket throws
+# `TypeError: Cannot redefine property: remoteAddress` and the function answers
+# 500. Still present in nitro 3.0.261103-rc; the upstream fix is
+# https://github.com/nitrojs/nitro/pull/5178. Drop the patch once a Nitro
+# release carries it.
+patchedDependencies:
+  nitro@3.0.260610-beta: patches/nitro@3.0.260610-beta.patch
+
 savePrefix: ''

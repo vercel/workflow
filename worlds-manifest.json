@@ -67,6 +67,7 @@
       "repository": "https://github.com/mizzle-dev/workflow-worlds",
       "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/turso",
       "features": [],
+      "knownGaps": ["zero-delay-redelivery", "cross-process-streams"],
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow-worlds/turso",
         "WORKFLOW_TURSO_DATABASE_URL": "file:workflow.db"
@@ -83,6 +84,7 @@
       "repository": "https://github.com/mizzle-dev/workflow-worlds",
       "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/mongodb",
       "features": [],
+      "knownGaps": ["zero-delay-redelivery"],
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow-worlds/mongodb",
         "WORKFLOW_MONGODB_URI": "mongodb://localhost:27017",
@@ -111,6 +113,7 @@
       "repository": "https://github.com/mizzle-dev/workflow-worlds",
       "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/redis",
       "features": [],
+      "knownGaps": ["zero-delay-redelivery"],
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow-worlds/redis",
         "WORKFLOW_REDIS_URI": "redis://localhost:6379"

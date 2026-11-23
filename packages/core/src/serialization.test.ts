@@ -7,6 +7,7 @@ import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction, registerStepFunction } from './private.js';
+import { settleStepStreams } from './runtime/step-streams.js';
 import { setWorld } from './runtime/world.js';
 import {
   decodeFormatPrefix,
@@ -5271,5 +5272,159 @@ describe('stream pipe ops are observed as soon as they are created (#5055)', () 
       capture.stop();
       setWorld(undefined);
     }
+  });
+});
+
+describe('webhook respondWith() from a step', () => {
+  /**
+   * A world whose stream writes take `delayMs` to reach the server, or
+   * `bodyDelayMs` for streams other than the webhook response itself.
+   */
+  function createSlowStreamWorld(delayMs: number, bodyDelayMs = delayMs) {
+    const landed: string[] = [];
+    const land = (operation: string, name: string) =>
+      new Promise<void>((resolve) => {
+        setTimeout(
+          () => {
+            landed.push(`${operation}:${name}`);
+            resolve();
+          },
+          name === 'strm_webhookresponse' ? delayMs : bodyDelayMs
+        );
+      });
+    return {
+      landed,
+      world: {
+        writeToStream: vi.fn((name: string) => land('write', name)),
+        closeStream: vi.fn((name: string) => land('close', name)),
+      } as any,
+    };
+  }
+
+  /** The step-side `Request` a manual-response webhook hands to a step. */
+  async function hydrateWebhookRequest(streamStates?: unknown[]) {
+    const request = new Request('https://example.com/webhook', {
+      method: 'POST',
+    });
+    const responseWritable = new WritableStream();
+    Object.defineProperty(responseWritable, STREAM_NAME_SYMBOL, {
+      value: 'strm_webhookresponse',
+      writable: false,
+    });
+    (request as any)[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] =
+      responseWritable;
+
+    const serialized = await dehydrateStepArguments(
+      request,
+      mockRunId,
+      undefined
+    );
+    const ops: Promise<void>[] = [];
+    const hydrated = (await hydrateStepArguments(
+      serialized,
+      mockRunId,
+      undefined,
+      ops,
+      globalThis,
+      {},
+      undefined,
+      streamStates as any
+    )) as Request & { respondWith: (response: Response) => Promise<void> };
+    return { request: hydrated, ops };
+  }
+
+  afterEach(() => {
+    setWorld(undefined);
+  });
+
+  it('resolves once the response and its body are written to the server', async () => {
+    // The body takes far longer to land than the response frame, so waiting
+    // for the frame alone would return before the body is on the server.
+    const { world, landed } = createSlowStreamWorld(10, 150);
+    setWorld(world);
+    const { request, ops } = await hydrateWebhookRequest([]);
+
+    // Long enough for lock polling to have looked at the still-unused writable.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await request.respondWith(new Response('Hello from webhook!'));
+
+    // The step returns here, and completing it can finish the run. Everything
+    // the webhook's HTTP handler reads has to be on the server by now.
+    expect(landed).toContain('write:strm_webhookresponse');
+    expect(landed).toContain('close:strm_webhookresponse');
+    const bodyStreams = new Set(
+      landed
+        .map((entry) => entry.split(':')[1])
+        .filter((name) => name !== 'strm_webhookresponse')
+    );
+    expect(bodyStreams.size).toBe(1);
+    const [bodyStream] = bodyStreams;
+    expect(landed).toContain(`write:${bodyStream}`);
+    expect(landed).toContain(`close:${bodyStream}`);
+
+    await Promise.all(ops);
+  });
+
+  it('does not wait for a body the step writes after responding', async () => {
+    const { world, landed } = createSlowStreamWorld(20);
+    setWorld(world);
+    const streamStates: any[] = [];
+    const { request, ops } = await hydrateWebhookRequest(streamStates);
+
+    const body = new TransformStream<Uint8Array, Uint8Array>();
+    await request.respondWith(new Response(body.readable));
+    // The response frame is on the server; the body has no bytes yet.
+    expect(landed).toEqual([
+      'write:strm_webhookresponse',
+      'close:strm_webhookresponse',
+    ]);
+
+    const writer = body.writable.getWriter();
+    await writer.write(new TextEncoder().encode('late body'));
+    await writer.close();
+
+    // The end of the step waits for the body the step has produced by then.
+    await settleStepStreams(streamStates);
+    const bodyStream = landed
+      .map((entry) => entry.split(':')[1])
+      .find((name) => name !== 'strm_webhookresponse');
+    expect(bodyStream).toBeDefined();
+    expect(landed).toContain(`write:${bodyStream}`);
+    expect(landed).toContain(`close:${bodyStream}`);
+
+    await Promise.all(ops);
+  });
+
+  it('does not wait at the end of the step for a body that stays open', async () => {
+    const { world } = createSlowStreamWorld(5);
+    setWorld(world);
+    const streamStates: any[] = [];
+    const { request } = await hydrateWebhookRequest(streamStates);
+
+    const body = new TransformStream<Uint8Array, Uint8Array>();
+    await request.respondWith(new Response(body.readable));
+    await expect(
+      settleStepStreams(streamStates, 1_000)
+    ).resolves.toBeUndefined();
+
+    await body.writable.close();
+  });
+
+  it('resolves and leaves a refused write to the background flush', async () => {
+    const world = {
+      writeToStream: vi
+        .fn()
+        .mockRejectedValue(new Error('Run "wrun_1" is already completed')),
+      closeStream: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    setWorld(world);
+    const { request, ops } = await hydrateWebhookRequest([]);
+
+    await expect(
+      request.respondWith(new Response(null, { status: 204 }))
+    ).resolves.toBeUndefined();
+    await expect(Promise.all(ops)).rejects.toThrow(
+      'Run "wrun_1" is already completed'
+    );
   });
 });

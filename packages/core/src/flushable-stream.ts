@@ -21,6 +21,15 @@ import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 export const LOCK_POLL_INTERVAL_MS = 100;
 
 /**
+ * Property under which {@link trackFlushableWritable} exposes a writable's
+ * {@link FlushableStreamState}. `Symbol.for` keeps it one key across the copies
+ * of this module a bundler may create.
+ */
+export const FLUSHABLE_STATE_SYMBOL = Symbol.for(
+  'WORKFLOW_FLUSHABLE_STREAM_STATE'
+);
+
+/**
  * State tracker for flushable stream operations.
  * Resolves when either:
  * 1. Stream completes (close/error), OR
@@ -37,6 +46,41 @@ export const LOCK_POLL_INTERVAL_MS = 100;
 export interface FlushableStreamState extends PromiseWithResolvers<void> {
   /** Number of write operations currently in flight to the server */
   pendingOps: number;
+  /**
+   * Chunks the step has asked the user-facing writable to write. Counted when
+   * `write()` is called, so it includes chunks still queued in the writable.
+   */
+  producedFrames: number;
+  /** Chunks this pipe's sink has confirmed, i.e. written to the server. */
+  acceptedFrames: number;
+  /** Set once the user-facing writable's close has reached its sink. */
+  userWritableClosing?: boolean;
+  /** The user-facing writable's sink write in progress, if any. */
+  userWrite?: Promise<void>;
+  /**
+   * Settles when the pipe has ended: resolved once the source closed and the
+   * sink was flushed and closed, rejected with the pipe's error. Unlike
+   * `promise`, lock polling never settles it early.
+   */
+  pipeEnded?: Promise<void>;
+  /**
+   * Server writables of the streams nested in chunks written to this
+   * writable, such as the body of a `Response`. Only writables a step
+   * receives as arguments record them; `getWritable()` leaves this unset, so
+   * streams nested in its chunks are flushed in the background.
+   */
+  nestedStreams?: Array<{ settled(): Promise<void> }>;
+  /**
+   * Waits until everything the step has asked this writable to write so far
+   * is on the server, whether or not a writer still holds its lock: the chunks
+   * passed to `write()`, a requested `close()`, and what the streams listed
+   * in `nestedStreams` have produced. Chunks written after the call are not
+   * waited for, so a writer that keeps writing in the background does not
+   * hold the caller. Rejects with the pipe's error.
+   */
+  settleWrites?: () => Promise<void>;
+  /** Callbacks waiting for `acceptedFrames` to reach their target. */
+  frameWaiters: Array<{ target: number; resolve: () => void }>;
   /** Whether the `done` promise has been resolved */
   doneResolved: boolean;
   /** Whether the underlying stream has actually closed/errored */
@@ -51,6 +95,9 @@ export function createFlushableState(): FlushableStreamState {
   const state: FlushableStreamState = {
     ...withResolvers<void>(),
     pendingOps: 0,
+    producedFrames: 0,
+    acceptedFrames: 0,
+    frameWaiters: [],
     doneResolved: false,
     streamEnded: false,
   };
@@ -197,6 +244,138 @@ export function pollReadableLock(
   state.readablePollingInterval = intervalId;
 }
 
+/** Records one more chunk confirmed by the sink and wakes the drains it satisfies. */
+function confirmFrame(state: FlushableStreamState): void {
+  state.acceptedFrames++;
+  const ready = state.frameWaiters.filter(
+    (waiter) => waiter.target <= state.acceptedFrames
+  );
+  state.frameWaiters = state.frameWaiters.filter(
+    (waiter) => waiter.target > state.acceptedFrames
+  );
+  for (const waiter of ready) waiter.resolve();
+}
+
+/**
+ * Waits until the pipe's sink has confirmed every chunk the step has asked the
+ * user-facing writable to write so far. The sink confirms a chunk once it is
+ * written to the server, so this is the point at which the step's output so
+ * far is durable. It does not depend on the user releasing a writer lock.
+ *
+ * Also returns when the pipe ends first: a pipe that ended cleanly has flushed
+ * and closed its sink, and one that failed rejects with its error.
+ */
+export async function drainFlushableSnapshot(
+  state: FlushableStreamState
+): Promise<void> {
+  const target = state.producedFrames;
+  if (state.acceptedFrames >= target) return;
+  const accepted = new Promise<void>((resolve) => {
+    state.frameWaiters.push({ target, resolve });
+  });
+  await (state.pipeEnded
+    ? Promise.race([accepted, state.pipeEnded])
+    : accepted);
+}
+
+/**
+ * Wraps the user-facing writable of a flushable pipe so the runtime can tell,
+ * when a step ends, which of its writes still have to reach the server. The
+ * original writable stays the input of the serialization pipe; the returned one
+ * is what user code gets.
+ *
+ * A step's `step_completed` event lets the workflow continue, and a workflow
+ * that then finishes leaves a run the server no longer creates streams for. A
+ * write still in flight at that point is refused and the chunk is lost, so the
+ * step handler calls {@link FlushableStreamState.settleWrites} first.
+ */
+export function trackFlushableWritable<T>(
+  writable: WritableStream<T>,
+  state: FlushableStreamState,
+  WritableStreamConstructor: typeof WritableStream = WritableStream
+): WritableStream<T> {
+  const targetWriter = writable.getWriter();
+  let trackedController: WritableStreamDefaultController | undefined;
+  const tracked = new WritableStreamConstructor(
+    {
+      start(controller) {
+        trackedController = controller;
+      },
+      write(chunk) {
+        const write = targetWriter.write(chunk);
+        state.userWrite = write;
+        return write;
+      },
+      async close() {
+        state.userWritableClosing = true;
+        try {
+          await targetWriter.close();
+        } finally {
+          targetWriter.releaseLock();
+        }
+      },
+      async abort(reason) {
+        try {
+          await targetWriter.abort(reason);
+        } finally {
+          targetWriter.releaseLock();
+        }
+      },
+    },
+    {
+      highWaterMark: 1,
+      // A stream sizes each chunk inside `write()`, before it queues it. That
+      // makes this the one place that sees a write the moment the step asks
+      // for it, including writes the step does not await and ones queued
+      // behind a write still in progress.
+      size() {
+        state.producedFrames++;
+        return 1;
+      },
+    }
+  ) as WritableStream<T>;
+
+  // The pipe cancels its source when its sink fails. Forward that into the
+  // user-facing writable even while its producer is idle, so the next write
+  // rejects instead of queueing behind a pipe that no longer reads.
+  targetWriter.closed.catch((error) => {
+    try {
+      trackedController?.error(error);
+    } catch {
+      // Already closed or errored.
+    }
+  });
+
+  Object.defineProperty(tracked, FLUSHABLE_STATE_SYMBOL, {
+    value: state,
+    writable: false,
+  });
+
+  state.settleWrites = async (): Promise<void> => {
+    if (!state.userWritableClosing) {
+      await drainFlushableSnapshot(state);
+      // A `close()` requested behind those writes reaches the writable's sink
+      // once the last of them has been handed to the pipe, which can be after
+      // the server confirmed it: serialization may still be returning.
+      await state.userWrite?.catch(() => {});
+      // The stream starts that close in a reaction to the same promise. The
+      // order of the two reactions is the stream implementation's choice, so
+      // yield a macrotask rather than depend on it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    // A closed writable takes no further writes: the pipe flushes what was
+    // written and closes the sink.
+    if (state.userWritableClosing) await state.pipeEnded;
+    // Chunks can carry streams of their own, each written to the server by a
+    // pipe that started when the chunk was serialized.
+    await Promise.all(
+      (state.nestedStreams ?? []).map((stream) => stream.settled())
+    );
+  };
+
+  return tracked;
+}
+
 /**
  * Creates a flushable pipe from a ReadableStream to a WritableStream.
  * Unlike pipeTo(), this resolves when:
@@ -216,6 +395,9 @@ export async function flushablePipe(
   const reader = source.getReader();
   const writer = sink.getWriter();
   let cancelReason: unknown;
+  const ended = withResolvers<void>();
+  ended.promise.catch(() => {});
+  state.pipeEnded = ended.promise;
 
   try {
     while (true) {
@@ -242,6 +424,7 @@ export async function flushablePipe(
         // Source stream completed - close sink and resolve
         state.streamEnded = true;
         await writer.close();
+        ended.resolve();
         // Resolve done promise if not already resolved
         if (!state.doneResolved) {
           state.doneResolved = true;
@@ -254,6 +437,7 @@ export async function flushablePipe(
       state.pendingOps++;
       try {
         await writer.write(readResult.value);
+        confirmFrame(state);
       } finally {
         state.pendingOps--;
       }
@@ -261,10 +445,17 @@ export async function flushablePipe(
   } catch (err) {
     state.streamEnded = true;
     cancelReason = err;
+    ended.reject(err);
     if (!state.doneResolved) {
       state.doneResolved = true;
       state.reject(err);
     }
+    // Error the sink too, as `pipeTo()` does. When the sink is the writable
+    // side of a transform, its readable side is what the consumer holds, and
+    // this is the only way a source failure reaches it: a sink that is merely
+    // abandoned leaves the consumer's `read()` pending forever. A sink that
+    // has already errored or closed ignores the call.
+    writer.abort(err).catch(() => {});
     // Propagate error through flushablePipe's own promise as well.
     // Callers that rely on the FlushableStreamState should use `state.promise`,
     // while other callers may depend on this rejection. Some known callers
@@ -279,5 +470,8 @@ export async function flushablePipe(
     reader.cancel(cancelReason).catch(() => {});
     reader.releaseLock();
     writer.releaseLock();
+    // Drains race their waiter against `pipeEnded`: settle it on every exit.
+    ended.resolve();
+    state.frameWaiters = [];
   }
 }

@@ -61,6 +61,88 @@ async function follow(
   };
 }
 
+type WriterMessage = { status: string; message?: string };
+
+/**
+ * Forks a writer process and reads what it reports, in order. A writer that
+ * ends without reporting, as one that failed to start does, fails the read
+ * with how it ended and what it wrote to stderr, rather than leave the test
+ * waiting for a message that never comes. `describe()` tells how far the
+ * writer got and when, for a test that failed or ran out of time.
+ */
+function forkWriter(script: string, args: string[], tag: string) {
+  const forkedAt = Date.now();
+  const sinceFork = () => `${Date.now() - forkedAt}ms`;
+  const proc = fork(script, args, {
+    // Node's own type stripping, nothing inherited from the test runner.
+    execArgv: [],
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+  });
+  onTestFinished(() => {
+    proc.kill();
+  });
+  const said: WriterMessage[] = [];
+  const waiting: {
+    resolve: (message: WriterMessage) => void;
+    reject: (error: Error) => void;
+  }[] = [];
+  // What the writer reported, and when.
+  const reported: string[] = [];
+  let stderr = '';
+  let ended: string | undefined;
+  let closed = false;
+  // The channel disconnects once every message the writer sent was read.
+  let disconnected = false;
+  let gone: Error | undefined;
+  const fail = () => {
+    gone = new Error(
+      `writer ${tag} ${ended} before it reported${stderr ? `:\n${stderr}` : ''}`
+    );
+    for (const { reject } of waiting.splice(0)) reject(gone);
+  };
+  proc.stderr?.setEncoding('utf8').on('data', (text: string) => {
+    stderr += text;
+  });
+  proc.on('message', (message) => {
+    const { status } = message as WriterMessage;
+    reported.push(`${status} after ${sinceFork()}`);
+    const next = waiting.shift();
+    if (next) next.resolve(message as WriterMessage);
+    else said.push(message as WriterMessage);
+  });
+  proc.once('error', (error) => {
+    ended = `failed after ${sinceFork()} (${error.message})`;
+    fail();
+  });
+  proc.once('disconnect', () => {
+    disconnected = true;
+    if (closed) fail();
+  });
+  // After the process ended and its stderr was read to the end.
+  proc.once('close', (code, signal) => {
+    ended ??= `${
+      signal ? `was killed by ${signal}` : `exited with code ${code}`
+    } after ${sinceFork()}`;
+    closed = true;
+    if (disconnected) fail();
+  });
+  return {
+    proc,
+    next: () =>
+      new Promise<WriterMessage>((resolve, reject) => {
+        const queued = said.shift();
+        if (queued) resolve(queued);
+        else if (gone) reject(gone);
+        else waiting.push({ resolve, reject });
+      }),
+    describe: () =>
+      [
+        `${tag}: ${reported.join(', ') || 'reported nothing'}`,
+        ended ?? `still running after ${sinceFork()}`,
+      ].join(', ') + (stderr ? `\n${stderr.trimEnd()}` : ''),
+  };
+}
+
 const realLink = fs.link.bind(fs);
 const realRename = fs.rename.bind(fs);
 const textOf = async (file: unknown) =>
@@ -179,45 +261,53 @@ describe('where a stream chunk lands', () => {
     const child = fileURLToPath(
       new URL('./stream-chunk-place.child.mjs', import.meta.url)
     );
-    const writers = ['w0', 'w1', 'w2', 'w3'].map((tag) => {
-      const proc = fork(child, [dir, TEST_RUN_ID, name, tag, '40'], {
-        // Node's own type stripping, nothing inherited from the test runner.
-        execArgv: [],
-        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-      });
-      const said: { status: string; message?: string }[] = [];
-      const waiting: ((message: { status: string }) => void)[] = [];
-      proc.on('message', (message) => {
-        const said_ = message as { status: string };
-        const next = waiting.shift();
-        if (next) next(said_);
-        else said.push(said_);
-      });
-      const next = () =>
-        new Promise<{ status: string; message?: string }>((resolve) => {
-          const queued = said.shift();
-          if (queued) resolve(queued);
-          else waiting.push(resolve);
-        });
-      return { proc, next };
+    const tags = ['w0', 'w1', 'w2', 'w3'];
+    const each = 40;
+    // Every writer's chunks, and the one the reader wrote to open the stream.
+    const total = tags.length * each + 1;
+    const writers = tags.map((tag) =>
+      forkWriter(child, [dir, TEST_RUN_ID, name, tag, String(each)], tag)
+    );
+    let live: Awaited<ReturnType<typeof follow>> | undefined;
+    // Registered after the writers, so it runs before they are killed. A
+    // test that ran out of time says nothing of where: this tells a writer
+    // that never started from writes that were slow from a reader that
+    // missed chunks.
+    onTestFinished(async (ctx) => {
+      if (!ctx.task.result?.errors?.length) return;
+      const landed = await fs.readdir(path.join(dir, 'streams', 'chunks')).then(
+        (files) => files.filter((file) => file.endsWith('.bin')).length,
+        () => 0
+      );
+      console.error(
+        [
+          'The writers racing for one stream, when the test failed:',
+          ...writers.map((writer) => writer.describe()),
+          `${landed} of ${total} chunks landed; the reader ${
+            live ? `had ${live.chunks.length}` : 'had not opened the stream'
+          }`,
+        ].join('\n')
+      );
     });
     for (const writer of writers) {
-      expect((await writer.next()).status).toBe('ready');
+      expect(await writer.next()).toEqual({ status: 'ready' });
     }
-    const live = await follow(reader, name);
+    live = await follow(reader, name);
     for (const writer of writers) writer.proc.send('go');
     for (const writer of writers) {
       expect(await writer.next()).toEqual({ status: 'done' });
     }
-    await live.until(161);
+    await live.until(total);
     await live.stop();
     const replay = await replayOf(reader, name);
-    expect(replay).toHaveLength(161);
-    expect(new Set(replay).size).toBe(161);
+    expect(replay).toHaveLength(total);
+    expect(new Set(replay).size).toBe(total);
     expect(live.chunks).toEqual(replay);
-    for (const tag of ['w0', 'w1', 'w2', 'w3']) {
+    for (const tag of tags) {
       const own = replay.filter((text) => text.startsWith(`${tag}-`));
-      expect(own).toEqual(own.map((_, index) => `${tag}-${index}\n`));
+      expect(own).toEqual(
+        Array.from({ length: each }, (_, index) => `${tag}-${index}\n`)
+      );
     }
   }, 30_000);
 

@@ -1088,3 +1088,129 @@ describe('step-handler unserializable-argument placeholder recovery', () => {
     expect(mockStepFn).toHaveBeenCalledWith(UNSERIALIZABLE_STEP_INPUT_MARKER);
   });
 });
+
+describe('step-handler stream writes before completion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    vi.mocked(getErrorName).mockReturnValue('Error');
+    vi.mocked(getErrorStack).mockReturnValue('');
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockQueueMessage.mockReset().mockResolvedValue(undefined);
+    vi.mocked(getWorld).mockReturnValue({
+      events: { create: mockEventsCreate },
+      queue: mockQueue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    mockEventsCreate.mockReset().mockResolvedValue({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 1,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(hydrateStepArguments)
+      .mockReset()
+      .mockResolvedValue({
+        args: [],
+        thisVal: null,
+        closureVars: undefined,
+      } as any);
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Hydrates a step whose arguments carry one server-bound writable, the way
+   * `hydrateStepArguments` reports it: by adding the writable's state to the
+   * list the handler passes in.
+   */
+  function hydrateWithStream(settleWrites: () => Promise<void>) {
+    vi.mocked(hydrateStepArguments).mockImplementation((async (
+      ...args: unknown[]
+    ) => {
+      const streamStates = args[7] as Array<{
+        settleWrites: () => Promise<void>;
+      }>;
+      streamStates.push({ settleWrites });
+      return { args: [], thisVal: null, closureVars: undefined };
+    }) as any);
+  }
+
+  const eventTypes = () =>
+    mockEventsCreate.mock.calls.map(
+      ([, event]: [string, { eventType: string }]) => event.eventType
+    );
+
+  it('writes step_completed only once the step stream writes are on the server', async () => {
+    let finishWrite!: () => void;
+    const settleWrites = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        })
+    );
+    hydrateWithStream(settleWrites);
+
+    const handled = capturedHandler(createMessage(), createMetadata('myStep'));
+    await vi.waitFor(() => expect(settleWrites).toHaveBeenCalled());
+    // The step body has returned and its stream write is still in flight.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockStepFn).toHaveBeenCalledOnce();
+    expect(eventTypes()).not.toContain('step_completed');
+
+    finishWrite();
+    await handled;
+    expect(eventTypes()).toContain('step_completed');
+  });
+
+  it('completes the step and reports a stream write that failed', async () => {
+    hydrateWithStream(() => Promise.reject(new Error('stream PUT failed')));
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    expect(eventTypes()).toContain('step_completed');
+    expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      'Failed to drain step stream writes before completing the step',
+      expect.objectContaining({
+        workflowRunId: 'wrun_test123',
+        stepId: 'step_abc',
+        error: 'stream PUT failed',
+      })
+    );
+  });
+
+  it('waits for the stream writes of a step that threw before failing it', async () => {
+    let finishWrite!: () => void;
+    const settleWrites = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        })
+    );
+    hydrateWithStream(settleWrites);
+    mockStepFn.mockReset().mockRejectedValue(new FatalError('step blew up'));
+
+    const handled = capturedHandler(createMessage(), createMetadata('myStep'));
+    await vi.waitFor(() => expect(settleWrites).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(eventTypes()).not.toContain('step_failed');
+
+    finishWrite();
+    await handled;
+    expect(eventTypes()).toContain('step_failed');
+  });
+});
