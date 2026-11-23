@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CryptoKey } from '../encryption.js';
+import type { FlushableStreamState } from '../flushable-stream.js';
 import type { WorkflowMetadata } from '../workflow/get-workflow-metadata.js';
 import type { StepMetadata } from './get-step-metadata.js';
 
@@ -9,6 +10,8 @@ export type StepContext = {
   /** Deployment that owns the current workflow run, used for forwarded streams. */
   workflowDeploymentId?: string;
   ops: Promise<void>[];
+  /** Server-bound stream pipes the step handler settles when the step ends. */
+  streamStates?: FlushableStreamState[];
   closureVars?: Record<string, any>;
   encryptionKey?: CryptoKey;
 };

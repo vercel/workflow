@@ -19,6 +19,7 @@ import {
 } from '@workflow/world';
 import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
+import type { FlushableStreamState } from '../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
@@ -51,6 +52,7 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
+import { settleStepStreams } from './step-streams.js';
 import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 import { safeWaitUntil } from './wait-until.js';
 import { getWorld, getWorldHandlers } from './world.js';
@@ -526,6 +528,29 @@ const stepHandler = createQueueHandler(
           // operations (e.g., stream loading) are added to `ops` and executed later
           // via Promise.all(ops) - their timing is not included in this measurement.
           const ops: Promise<void>[] = [];
+          // Server-bound stream pipes opened for this step: writables among
+          // its arguments and those it gets from `getWritable()`.
+          const streamStates: FlushableStreamState[] = [];
+          // Wait for the stream writes the step has finished to reach the
+          // server before the step's terminal event lets the workflow move
+          // on: the server does not create streams for a run that has
+          // finished, so a write still in flight when the last step completes
+          // would be refused and lost. A write that fails is logged and does
+          // not fail the step.
+          const settleStepStreamWrites = async () => {
+            try {
+              await settleStepStreams(streamStates);
+            } catch (err) {
+              runtimeLogger.warn(
+                'Failed to drain step stream writes before completing the step',
+                {
+                  workflowRunId,
+                  stepId,
+                  error: err instanceof Error ? err.message : String(err),
+                }
+              );
+            }
+          };
           const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
           const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
           const hydratedInput = await trace(
@@ -540,7 +565,8 @@ const stepHandler = createQueueHandler(
                 ops,
                 globalThis,
                 {},
-                process.env.VERCEL_DEPLOYMENT_ID
+                process.env.VERCEL_DEPLOYMENT_ID,
+                streamStates
               );
               const durationMs = Date.now() - startTime;
               hydrateSpan?.setAttributes({
@@ -601,6 +627,7 @@ const stepHandler = createQueueHandler(
                   },
                   workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                   ops,
+                  streamStates,
                   closureVars: hydratedInput.closureVars,
                   encryptionKey,
                 },
@@ -620,6 +647,9 @@ const stepHandler = createQueueHandler(
           // --- Handle user code errors ---
           if (userCodeFailed) {
             const err = userCodeError;
+
+            // What the step wrote before it threw is still part of its output.
+            await settleStepStreamWrites();
 
             // Infrastructure errors that somehow surfaced through user code
             // should propagate to the queue handler for retry, not consume
@@ -908,6 +938,8 @@ const stepHandler = createQueueHandler(
               error: err instanceof Error ? err.message : String(err),
             });
           });
+
+          await settleStepStreamWrites();
 
           // Run step_completed and trace serialization concurrently;
           // the trace carrier is used in the final queueMessage call below
