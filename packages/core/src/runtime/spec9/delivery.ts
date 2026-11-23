@@ -4797,14 +4797,15 @@ async function runDelivery(
                 // Turbo: optimistic for a step's first
                 // attempt while turbo still allows it.
                 forceOptimisticStart: optimistic && step.attempt === 1,
-                ...(runReadyBarrier || step.writeBarrier
+                ...(step.writeBarrier
                   ? {
-                      runReadyBarrier: Promise.all([
-                        runReadyBarrier,
-                        step.writeBarrier,
-                      ]),
+                      runReadyBarrier: observed(
+                        Promise.all([runReadyBarrier, step.writeBarrier])
+                      ),
                     }
-                  : {}),
+                  : runReadyBarrier
+                    ? { runReadyBarrier }
+                    : {}),
                 ...(step.startAfter ? { startAfter: step.startAfter } : {}),
                 beforeBody: () => writer.assertActive(),
                 // A conditional run-ahead names exact positions: the slot a
