@@ -29,9 +29,19 @@ Currently, most eve boundaries have three active counters:
 
 ## eve abort behavior
 
-1. **The abort controllers are in-band only.** Steps only receive `controller.signal` (`turn.ts`: `abortSignal: turn.signal`, `steeringSignal: turn.steeringSignal`), which lets a step see an abort but not trigger one. Only workflow code calls `abort()`. When called, the orchestrator is what writes the `hook_received` in band. Nothing outside the orchestrator can write to these hooks, the same reasoning `out-of-band-observation.ts` uses to treat waits as safe ("no writer other than the orchestrator completes a wait"). The risky case is any step that receives the controller itself, but this is never true for eve.
-2. **eve tolerates steering and cancellation after a step starts.** Per eve's execution model, steering that arrives before assistant output begins stops the pending model generation and applies within the same turn. After output starts, it applies at the next step boundary. Cancel interrupts the turn. So if a message lands while the next step has started speculatively, discarding that step and re-deciding with the message is consistent with what eve does today. The hazard run-ahead guards against is log consistency on replay, not eve's semantics: a `hook_received` committing between the speculative writes.
-3. **The sandbox idle wait is ignored mid-turn.** The only code that awaits it runs between turns, in `stopSandboxOnceIdle`. eve disables the `idleWindow` when a turn starts, so if the wait fires mid-turn, nothing is listening.
+eve's signals and hooks behave in constrained ways:
+
+### 1. The abort controllers are in-band only
+
+Steps only receive `controller.signal` (`turn.ts`: `abortSignal: turn.signal`, `steeringSignal: turn.steeringSignal`), which lets a step see an abort but not trigger one. Only workflow code calls `abort()`. When called, the orchestrator is what writes the `hook_received` in band. Nothing outside the orchestrator can write to these hooks, the same reasoning `out-of-band-observation.ts` uses to treat waits as safe ("no writer other than the orchestrator completes a wait"). The risky case is any step that receives the controller itself, but this is never true for eve.
+
+### 2. eve tolerates steering and cancellation after a step starts
+
+Per eve's execution model, steering that arrives before assistant output begins stops the pending model generation and applies within the same turn. After output starts, it applies at the next step boundary. Cancel interrupts the turn. So if a message lands while the next step has started speculatively, discarding that step and re-deciding with the message is consistent with what eve does today. The hazard run-ahead guards against is log consistency on replay, not eve's semantics: a `hook_received` committing between the speculative writes.
+
+### 3. The sandbox idle wait is ignored mid-turn
+
+The only code that awaits it runs between turns, in `stopSandboxOnceIdle`. eve disables the `idleWindow` when a turn starts, so if the wait fires mid-turn, nothing is listening.
 
 ## Proposed Workflow changes
 
