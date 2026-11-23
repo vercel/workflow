@@ -5,4 +5,4 @@
 "@workflow/world-vercel": minor
 ---
 
-New runs on the Vercel, Local and Postgres Worlds use spec 10 (the single orchestrator, with `experimental_rateLimit()`) by default; `WORKFLOW_SPEC_VERSION=8` opts out. Third-party Worlds create spec 9 runs if they implement only the in-band fence, and spec 8 runs otherwise.
+New runs on the Vercel, Local and Postgres Worlds now use a new execution engine that supports speculative execution, and vastly reduces engine overhead. `WORKFLOW_SPEC_VERSION=8` opts out. Runs on third-party worlds use the old engine (spec 8) unless they implement the prerequisites.

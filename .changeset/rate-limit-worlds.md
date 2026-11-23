@@ -4,4 +4,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Support `experimental_rateLimit()` by reserving rate limit slots, and create spec 10 runs by default.
+Support the new `experimental_rateLimit()` feature. See [rate limit docs](https://workflow-sdk.dev/docs/api-reference/workflow/rate-limit)
