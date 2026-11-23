@@ -1,5 +1,16 @@
 # @workflow/cli
 
+## 4.3.22
+
+### Patch Changes
+
+- [#5672](https://github.com/vercel/workflow/pull/5672) [`0acc0dd`](https://github.com/vercel/workflow/commit/0acc0ddf57624c1a7075194e7d27c12880d4e924) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The web UI only accepts requests addressed to `localhost` or an IP address unless more host names are allowed with `--webAllowedHosts` or `WORKFLOW_WEB_ALLOWED_HOSTS`.
+
+- Updated dependencies [[`0acc0dd`](https://github.com/vercel/workflow/commit/0acc0ddf57624c1a7075194e7d27c12880d4e924)]:
+  - @workflow/web@4.1.34
+  - @workflow/core@4.8.18
+  - @workflow/builders@4.1.23
+
 ## 4.3.21
 
 ### Patch Changes
