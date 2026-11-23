@@ -364,8 +364,8 @@ export class InBandWriter {
    * It keeps the outcome of a write of its own: a refusal of it rejects this
    * call with the World's error and leaves the writer as it was (see
    * {@link sendGroup}), as a refused {@link create} does, except a refusal
-   * that says nothing was reserved or committed for it
-   * ({@link RATE_RESEND_ERRORS}), which sends it again in the next group.
+   * that says nothing was committed for it ({@link RATE_RESEND_ERRORS}),
+   * which sends it again in the next group.
    * Positions are counted as for any batch: the World seals a refused item's
    * position, or reports `allocated`.
    */
@@ -801,7 +801,8 @@ export class InBandWriter {
 
       let offset = 0;
       let failed: unknown;
-      for (const [index, write] of group.entries()) {
+      let reportOwed = true;
+      for (const write of group) {
         const count = write.events.length;
         const slice = result.results
           .slice(offset, offset + count)
@@ -827,16 +828,17 @@ export class InBandWriter {
           continue;
         }
         // The skipped-slot report covers what lies below the whole block,
-        // so it belongs to the group's first write.
-        const report =
-          index === 0
-            ? {
-                ...(result.events !== undefined
-                  ? { events: result.events }
-                  : {}),
-                ...(result.hasMore ? { hasMore: true as const } : {}),
-              }
-            : {};
+        // so it goes to the first write of the group that gets an answer.
+        // That is the group's first write unless it is a rate limit call's
+        // write that was refused or is sent again: its caller never sees
+        // this batch's answer, while `noteComplete` has already counted the
+        // report as delivered, so the World would not send it again.
+        const report = reportOwed
+          ? {
+              ...(result.events !== undefined ? { events: result.events } : {}),
+              ...(result.hasMore ? { hasMore: true as const } : {}),
+            }
+          : {};
         try {
           let answer: EventResult | EventBatchResult;
           if (write.kind === 'single') {
@@ -861,8 +863,8 @@ export class InBandWriter {
                   'Rate limit write refused before it was decided, sending it again',
                   rateLog
                 );
-                // Nothing was reserved or committed for it: sent again, in
-                // the next group, with the others sent again beside it.
+                // Nothing was committed for it: sent again, in the next
+                // group, with the others sent again beside it.
                 this.writeRate(
                   write.events[0]!.event,
                   write.params as CreateEventParams,
@@ -889,12 +891,14 @@ export class InBandWriter {
             }
             answer = { event: item.event, ...report } as EventResult;
           } else {
+            // A batch write always gets an answer, refused items included.
             answer = {
               results: slice,
               ...report,
               allocated: count,
             } as EventBatchResult;
           }
+          reportOwed = false;
           write.verify(answer);
           write.resolve(answer);
         } catch (error) {
@@ -1254,15 +1258,22 @@ export function withWrittenEventData<E extends Event>(
 
 /**
  * Refusals of a rate limit call's write in a batch that say nothing was
- * reserved or committed for it, so the writer sends it again
+ * committed for it, so the writer sends it again
  * ({@link InBandWriter.writeRate}) rather than failing the call:
  *
- * - `rate-batch-deferred` (503): the batch ran out of time to decide it;
+ * - `rate-batch-deferred` (503): the batch ran out of time to decide it,
+ *   and reserved nothing;
  * - `rate-decision-failed` (503): the World could not decide its key's
  *   calls in this batch;
  * - `batch-earlier-position-failed` (409): an earlier in-band item of the
- *   batch was refused, such as another call's `rate_acquired` before its
- *   slot.
+ *   batch was refused or did not commit, such as another call's
+ *   `rate_acquired` before its slot.
+ *
+ * The last two can leave a slot reserved for the call (a key's write that
+ * applied before it failed, an item decided before the one ahead of it
+ * failed to commit). The call recorded nothing, so sending it again
+ * reserves another: that slot is wasted, and the key is never
+ * over-admitted.
  */
 const RATE_RESEND_ERRORS: ReadonlySet<string> = new Set([
   'rate-batch-deferred',
