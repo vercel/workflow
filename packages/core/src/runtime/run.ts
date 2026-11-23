@@ -43,6 +43,7 @@ import {
   wakeRunAfterOutOfBandWrite,
   wakeUpRun,
 } from './runs.js';
+import { transientReadRetryDelayMs } from './transient-read-retry.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
 
@@ -809,6 +810,7 @@ export class Run<TResult> {
     // `RETURN_VALUE_MAX_LONG_POLLS`. Never a reason to stop awaiting.
     let longPolls = 0;
     const maxLongPolls = getReturnValueMaxLongPolls();
+    let transientRetries = 0;
 
     // NOTE: when this poll runs inside a step (e.g. the step that a parent
     // workflow uses to await a child workflow's `returnValue`), it blocks
@@ -851,6 +853,7 @@ export class Run<TResult> {
         throw new WorkflowRunNotCompletedError(this.runId, runMetadata.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
+          transientRetries = 0;
           // Space consecutive non-terminal observations at least one poll
           // interval apart. On the plain-poll path that is the familiar fixed
           // sleep; on the long-poll path the wait has usually already
@@ -873,6 +876,16 @@ export class Run<TResult> {
           const delay = NOT_FOUND_RETRY_DELAYS[notFoundRetries]!;
           notFoundRetries++;
           await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        const retryDelayMs = transientReadRetryDelayMs(
+          error,
+          transientRetries,
+          getReturnValuePollIntervalMs()
+        );
+        if (retryDelayMs !== undefined) {
+          transientRetries++;
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
           continue;
         }
         throw error;
