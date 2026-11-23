@@ -928,6 +928,12 @@ async function runDelivery(
   const ownSlots = new Set<number>();
   let passConsumedSlot = 0;
   /**
+   * {@link InBandWriter.foreignSlotsSeen} when the pass that produced the
+   * suspension started: the positions of other writers its workflow view can
+   * hold (proof of concept).
+   */
+  let foreignSlotsAtPassStart = 0;
+  /**
    * Folds an accepted in-band write into the loaded log: its
    * skipped-slot report, then its own event, in position
    * order. Nothing out-of-band can sit between the two except
@@ -3632,6 +3638,7 @@ async function runDelivery(
             log.events
           );
           passConsumedSlot = indexOf(log.events).maxSlot() ?? 0;
+          foreignSlotsAtPassStart = writer.foreignSlotsSeen;
           const rebase = pendingRebase;
           pendingRebase = undefined;
           let workflowResult: WorkflowResumeResult = session
@@ -3932,17 +3939,27 @@ async function runDelivery(
       // concept). An inert boundary behind strict writes still in flight is
       // conditional too: if one is refused, the writes decided after it are
       // refused with it, so their bodies must not have started.
+      // Only while the writer learned of nothing another writer appended
+      // since the workflow's view was fixed; an inert boundary behind strict
+      // writes drains otherwise.
+      const behindStrict =
+        world.capabilities?.strictEventCount === true &&
+        writer.supportsBatch &&
+        strictSpeculations > 0;
       const conditionalBoundary =
         world.capabilities?.strictEventCount === true &&
         writer.supportsBatch &&
+        writer.foreignSlotsSeen === foreignSlotsAtPassStart &&
         (observation.inert
-          ? strictSpeculations > 0
+          ? behindStrict
           : observation.observedHookCount > 0 &&
             observation.unknownHookCount === 0 &&
             observation.abortSignalHookCount === 0 &&
             observation.externalStepCount === 0 &&
             !observation.waitDue &&
             !(log && hasUnconsumedForeignEvent(log.events)));
+      const runsAhead =
+        conditionalBoundary || (observation.inert && !behindStrict);
       let boundaryRunAhead: RunAheadContext | undefined;
       if (schedulesInline) {
         if (observation.inert) {
@@ -3965,7 +3982,7 @@ async function runDelivery(
           }
           if (observation.waitDue) outOfBandBoundaries.waitDue++;
         }
-        if (runAheadDepth > 0 && (observation.inert || conditionalBoundary)) {
+        if (runAheadDepth > 0 && runsAhead) {
           runAheadStats.runAhead++;
           boundaryRunAhead = runAheadContextFor({
             observation,
@@ -3977,7 +3994,7 @@ async function runDelivery(
           });
           if (conditionalBoundary) {
             boundaryRunAhead.conditional = true;
-            boundaryRunAhead.foreignSlotsAtDecision = writer.foreignSlotsSeen;
+            boundaryRunAhead.foreignSlotsAtDecision = foreignSlotsAtPassStart;
           }
         } else if (runAheadDepth > 0) {
           runAheadStats.drained++;
@@ -3988,7 +4005,7 @@ async function runDelivery(
       // `strictEventCount`: a strict write cannot commit with an event
       // below it that the workflow has not seen.
       if (
-        !observation.inert &&
+        (!observation.inert || !runsAhead) &&
         (runAheadRepair ||
           (conditionalBoundary
             ? nonStrictSpeculations > 0
