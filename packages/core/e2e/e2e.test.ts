@@ -816,6 +816,16 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  // The steps live in a file whose every `"use step"` shares its line with
+  // other code. Discovery used to miss that file, so the steps bundle left
+  // them out and the first call failed with "Step ... is not registered in
+  // the current deployment".
+  test('importedOneLineStepsWorkflow', { timeout: 60_000 }, async () => {
+    const run = await start(await e2e('importedOneLineStepsWorkflow'), [5]);
+    const returnValue = await run.returnValue;
+    expect(returnValue).toEqual({ doubled: 10, tripled: 30, squared: 900 });
+  });
+
   test('readableStreamWorkflow', { timeout: 120_000 }, async () => {
     const run = await start(await e2e('readableStreamWorkflow'), []);
     const returnValue = await run.returnValue;
