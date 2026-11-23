@@ -101,6 +101,15 @@ export const cliFlags = {
     helpValue: 'WEB_PORT',
     env: 'WORKFLOW_WEB_PORT',
   }),
+  webAllowedHosts: Flags.string({
+    description:
+      'Comma-separated host names the local web UI accepts, besides localhost and IP addresses (".example.com" matches subdomains, "*" any host)',
+    required: false,
+    helpGroup: 'Output',
+    helpLabel: '--webAllowedHosts',
+    helpValue: 'HOSTS',
+    env: 'WORKFLOW_WEB_ALLOWED_HOSTS',
+  }),
   noBrowser: Flags.boolean({
     description: 'Disable automatic browser opening when launching web UI',
     required: false,
