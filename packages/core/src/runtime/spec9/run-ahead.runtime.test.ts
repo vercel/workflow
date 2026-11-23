@@ -254,6 +254,18 @@ const withSleep = (duration: string) => `const inc = ${step};
     return n;
   }${registerWorkflow()}`;
 
+// Steps until an unawaited sleep completes, then `after` more.
+const stepsPastSleep = (duration: string) => `const inc = ${step};
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow(after) {
+    let woke = false;
+    sleep(${JSON.stringify(duration)}).then(() => { woke = true; });
+    let n = 0;
+    while (!woke && n < 5000) n = await inc(n);
+    for (let i = 0; i < after; i++) n = await inc(n);
+    return n;
+  }${registerWorkflow()}`;
+
 const sleepThenStep = `const inc = ${step};
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
@@ -1427,6 +1439,62 @@ describe.each([
     await far.world.deliver(far.start);
     expect(eventsOf(far.world, 'step_completed')).toHaveLength(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+  });
+
+  it('runs ahead with a wait due inside the inline window but past the skew allowance', async () => {
+    const { world, start } = await run(withSleep('90s'), [STEPS]);
+    await world.deliver(start);
+    expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);
+    expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+  });
+
+  it('drains once a wait comes due mid-run-ahead, runs ahead again after it completes, and a replay decides the same', async () => {
+    // The allowance is floored at MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS (1 s), so
+    // the 2.5 s wait starts 1.5 s outside it. The loop runs until the wait
+    // completes, however fast the engine steps.
+    vi.stubEnv('WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS', '50');
+    const info = vi.spyOn(runtimeLogger, 'info');
+    // The run's logger prints errors through `console.error`.
+    const error = vi.spyOn(console, 'error');
+    const source = stepsPastSleep('2500ms');
+    const after = 20;
+    const { world } = await run(source, [after]);
+    await world.runUntilIdle();
+    const steps = eventsOf(world, 'step_completed').length;
+    expect(await runResult(world)).toBe(steps);
+
+    const waitAt = world.events.findIndex(
+      (e) => e.eventType === 'wait_completed'
+    );
+    expect(waitAt).toBeGreaterThan(0);
+    const completedBefore = world.events
+      .slice(0, waitAt)
+      .filter((e) => e.eventType === 'step_completed').length;
+    // The wait completed partway through the run.
+    expect(completedBefore).toBeGreaterThan(0);
+    expect(steps - completedBefore).toBeGreaterThanOrEqual(after);
+    // Run-ahead before the wait came due, a drained boundary once it was,
+    // and run-ahead again after it completed.
+    const firstAhead = unconfirmedAtStart.findIndex((n) => n > 0);
+    expect(firstAhead).toBeGreaterThanOrEqual(0);
+    const drained = unconfirmedAtStart.indexOf(0, firstAhead);
+    expect(drained).toBeGreaterThan(firstAhead);
+    expect(
+      Math.max(...unconfirmedAtStart.slice(Math.max(drained, completedBefore)))
+    ).toBeGreaterThan(0);
+    expect(
+      info.mock.calls.some(([message]) =>
+        String(message).includes('Run-ahead stopped')
+      )
+    ).toBe(false);
+    expect(
+      error.mock.calls.some(([line]) =>
+        String(line).includes('possibleLogCorruption')
+      )
+    ).toBe(false);
+
+    const cold = await coldReplay(world, source);
+    expect(cold.result).toBe(steps);
   });
 
   it('stops with no orphan writes when the fence refuses a speculative write, and the redelivery completes', async () => {
