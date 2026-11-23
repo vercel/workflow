@@ -1,5 +1,7 @@
 # @workflow/core
 
+## 4.8.18
+
 ## 4.8.17
 
 ### Patch Changes
