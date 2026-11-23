@@ -59,6 +59,25 @@ export function hasWorkflowPlugin(swcrcContent: string): boolean {
 }
 
 /**
+ * The path of the workflow plugin entry in a `.swcrc`, or `null` when it has
+ * none or can't be parsed.
+ */
+export function workflowPluginPath(swcrcContent: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(swcrcContent);
+    if (!isRecord(parsed) || !isRecord(parsed.jsc)) return null;
+    const experimental = parsed.jsc.experimental;
+    if (!isRecord(experimental) || !Array.isArray(experimental.plugins)) {
+      return null;
+    }
+    const entry = experimental.plugins.find(isWorkflowPluginEntry);
+    return entry ? (entry[0] as string) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Merge the settings the workflow transform requires into an existing `.swcrc`.
  *
  * Only the keys the transform needs are touched:
