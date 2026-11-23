@@ -192,6 +192,19 @@ describe('Run.returnValue on a transient World error', () => {
     await assertion;
   });
 
+  it('gives up after ten transient failures in a row', async () => {
+    const get = vi.fn().mockRejectedValue(serverError());
+    setWorld(createWorld({ get }));
+
+    const assertion = expect(new Run(RUN_ID).returnValue).rejects.toThrow(
+      'Internal Server Error'
+    );
+
+    await vi.advanceTimersByTimeAsync(181_000);
+    await assertion;
+    expect(get).toHaveBeenCalledTimes(11);
+  });
+
   it('still rejects on a permanent World error', async () => {
     const forbidden = new WorkflowWorldError('Forbidden', { status: 403 });
     const get = vi.fn().mockRejectedValue(forbidden);
@@ -225,8 +238,9 @@ describe('transientReadRetryDelayMs', () => {
 
   it('caps the backoff', () => {
     expect(transientReadRetryDelayMs(timedOut(), 3, 1_000)).toBe(8_000);
-    expect(transientReadRetryDelayMs(timedOut(), 2_000, 1_000)).toBe(30_000);
-    expect(transientReadRetryDelayMs(timedOut(), 2_000, 60_000)).toBe(60_000);
+    expect(transientReadRetryDelayMs(timedOut(), 9, 1_000)).toBe(30_000);
+    expect(transientReadRetryDelayMs(timedOut(), 9, 60_000)).toBe(60_000);
+    expect(transientReadRetryDelayMs(timedOut(), 10, 1_000)).toBeUndefined();
   });
 
   it('never waits less than the backoff, whatever retryAfter says', () => {
@@ -237,8 +251,6 @@ describe('transientReadRetryDelayMs', () => {
     expect(transientReadRetryDelayMs(throttled(Number.NaN), 0, 1_000)).toBe(
       1_000
     );
-    expect(transientReadRetryDelayMs(throttled(1e9), 0, 1_000)).toBe(
-      2 ** 31 - 1
-    );
+    expect(transientReadRetryDelayMs(throttled(1e9), 0, 1_000)).toBe(300_000);
   });
 });
