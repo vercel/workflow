@@ -9,7 +9,7 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { loadWorkflowRunEventsFrom } from '../../test-support/load-events.js';
 import {
@@ -864,18 +864,26 @@ describe('a rate limit write beside run-ahead writes', () => {
     expect(world.events.at(-1)?.correlationId).toBe('next');
   });
 
-  it("hands the batch's skipped-slot report to the first write that is answered", async () => {
+  it.each([
+    { status: 503, error: 'rate-batch-deferred', sentAgain: true },
+    { status: 503, error: 'rate-decision-failed', sentAgain: true },
+    { status: 400, error: 'invalid-rate-call', sentAgain: false },
+  ])("hands the batch's skipped-slot report to the first write that is answered ($error)", async ({
+    status,
+    error,
+    sentAgain,
+  }) => {
     const refused = new Set<string>();
     const world = seeded({
       runSpecVersion: SPEC_VERSION_RATE_LIMITS,
       rateEventsInBatch: true,
-      // The group's first write is deferred once: its caller never sees
-      // this batch's answer.
+      // The group's first write is refused once: its caller never sees this
+      // batch's answer, whether it is sent again or fails.
       refuseBatchedRate: (event) => {
         const cid = event.correlationId ?? '';
         if (cid !== 'rate_1' || refused.has(cid)) return undefined;
         refused.add(cid);
-        return { status: 503, error: 'rate-batch-deferred' };
+        return { status, error };
       },
     });
     const writer = new InBandWriter(world.asWorld(), RUN);
@@ -892,7 +900,7 @@ describe('a rate limit write beside run-ahead writes', () => {
       correlationId: 'hook_other',
       eventData: { payload: new Uint8Array() },
     } as never);
-    const [first, second] = await Promise.all(
+    const [first, second] = await Promise.allSettled(
       ['rate_1', 'rate_2'].map((cid) =>
         writer.create(rateCreated(cid), { eventCount: 1 })
       )
@@ -901,9 +909,18 @@ describe('a rate limit write beside run-ahead writes', () => {
     expect(world.batches).toEqual([['rate_created', 'rate_created']]);
     // The batch counted the report as delivered (later writes name a
     // position above it), so the write it answered carries it.
-    expect(second?.events?.map((e) => e.eventId)).toEqual([foreign.eventId]);
-    expect(first?.events ?? []).toEqual([]);
-    expect(first?.event?.correlationId).toBe('rate_1');
+    assert(second?.status === 'fulfilled');
+    expect(second.value.events?.map((e) => e.eventId)).toEqual([
+      foreign.eventId,
+    ]);
+    if (sentAgain) {
+      assert(first?.status === 'fulfilled');
+      expect(first.value.events ?? []).toEqual([]);
+      expect(first.value.event?.correlationId).toBe('rate_1');
+    } else {
+      expect(first?.status).toBe('rejected');
+    }
+    expect(writer.isStopped).toBe(false);
   });
 
   it('fails a rate write the World keeps refusing before deciding it', async () => {
