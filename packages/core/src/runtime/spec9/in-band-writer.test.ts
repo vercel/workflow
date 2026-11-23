@@ -626,4 +626,46 @@ describe('InBandWriter', () => {
       expect(world.events.some((e) => e.correlationId === 'after')).toBe(false);
     });
   });
+
+  it('never sends an ordinary write in a strict group', async () => {
+    const world = seeded({ strictEventCount: true });
+    const base = world.asWorld();
+    const sent: { strict: boolean; count: number }[] = [];
+    const wrapped = {
+      ...base,
+      events: {
+        ...base.events,
+        createBatch: (async (runId, batch, params) => {
+          sent.push({
+            strict: params?.strictEventCount === true,
+            count: batch.length,
+          });
+          return base.events.createBatch!(runId, batch, params);
+        }) as typeof base.events.createBatch,
+        create: (async (runId, data, params) => {
+          sent.push({ strict: params?.strictEventCount === true, count: 1 });
+          return base.events.create(runId, data, params);
+        }) as typeof base.events.create,
+      },
+    };
+    const writer = new InBandWriter(wrapped, RUN);
+    const log = await loadWorkflowRunEventsFrom(wrapped, RUN);
+    writer.adoptSnapshot(requireLoadSnapshot(RUN, log));
+    const strict = writer.createAhead(waitCreated('strict_1'), {}, () => {}, {
+      eventCount: world.events.length,
+      foreignSlotsAtDecision: writer.foreignSlotsSeen,
+      mayStillWrite: () => true,
+    });
+    const ordinary = writer.createBatchAhead(
+      [{ event: waitCreated('ordinary_1') }],
+      {},
+      () => {}
+    );
+    await Promise.all([strict, ordinary]);
+    expect(sent).toEqual([
+      { strict: true, count: 1 },
+      { strict: false, count: 1 },
+    ]);
+    expect(world.strictRefusals).toEqual([]);
+  });
 });

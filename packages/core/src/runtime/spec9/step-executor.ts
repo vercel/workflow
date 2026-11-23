@@ -16,6 +16,7 @@ import {
 import type {
   CreateEventParams,
   CreateEventRequest,
+  Event,
   EventResult,
   SerializedData,
   World,
@@ -190,6 +191,8 @@ export interface StepExecutorParams {
    * a body.
    */
   beforeBody?: () => void;
+  /** Told of each event the body writes to the World directly (see `StepContext`). */
+  onDirectWrite?: (event: Event) => void;
   /**
    * Start the body before this attempt's `step_started` commits (optimistic
    * start), for a step that allows retries (see {@link mayRunBeforeItsStart}).
@@ -747,9 +750,10 @@ export async function executeStep(
             {},
             params.workflowDeploymentId,
             streamStates,
-            // A workflow-created writable passed into an optimistic step can
-            // emit chunks before run_started lands, just like getWritable().
-            optimisticStart ? params.runReadyBarrier : undefined,
+            // A workflow-created writable passed into a step that starts before
+            // its start or the run's is durable can emit chunks early, just
+            // like getWritable(): gate it on the barrier.
+            params.runReadyBarrier,
             stateContext
           );
           // The step writes its output through the layer the hydrated input
@@ -875,6 +879,9 @@ export async function executeStep(
               // undefined outside turbo and already settled once it landed.
               runReadyBarrier: params.runReadyBarrier,
               runSpecVersion: params.runSpecVersion,
+              ...(params.onDirectWrite
+                ? { onDirectWrite: params.onDirectWrite }
+                : {}),
             },
             () => {
               // The last instant before user code: T7 of the resume window.
@@ -931,9 +938,8 @@ export async function executeStep(
           false,
           compression,
           // A returned stream is piped to the World after the body, within
-          // this step's op flush: gate its first write on the run-ready
-          // barrier. Undefined on the awaited path.
-          optimisticStart ? params.runReadyBarrier : undefined,
+          // this step's op flush: gate its first write on the barrier.
+          params.runReadyBarrier,
           ops,
           // Step-initiated aborts are read by this deployment's runtime.
           true,

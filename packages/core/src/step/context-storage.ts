@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Event } from '@workflow/world';
 import type { FlushableStreamState } from '../flushable-stream.js';
 import type { PayloadKey } from '../serialization/encryption.js';
 import type { WorkflowMetadata } from '../workflow/get-workflow-metadata.js';
@@ -73,6 +74,12 @@ export type StepContext = {
   runReadyBarrier?: Promise<unknown>;
   /** The run's spec version, which a step body's direct writes are stamped with. */
   runSpecVersion?: number;
+  /**
+   * Told of each event a step body writes to the World directly
+   * (`setAttributes`), so an inline step's orchestrator knows the slot it
+   * took (proof of concept).
+   */
+  onDirectWrite?: (event: Event) => void;
 };
 
 /**

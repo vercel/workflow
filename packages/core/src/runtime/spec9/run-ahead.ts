@@ -19,6 +19,20 @@ export interface RunAheadContext {
   sensitiveHookIds: ReadonlySet<string>;
   /** Steps this delivery runs inline: only it writes their events. */
   selfStepIds: ReadonlySet<string>;
+  /**
+   * The boundary is not inert only because workflow code waits on a hook, and
+   * the World honors `strictEventCount` (proof of concept). Its speculative
+   * writes are sent strict, at exactly the position they were decided at, so
+   * a payload landing first refuses them instead of committing below them.
+   * New steps' bodies start only once their creation has committed.
+   */
+  conditional?: true;
+  /**
+   * With {@link conditional}: the writer's count of positions other writers
+   * took (`InBandWriter.foreignSlotsSeen`) when the boundary was classified.
+   * A strict write is refused locally once it moved.
+   */
+  foreignSlotsAtDecision?: number;
 }
 
 /**

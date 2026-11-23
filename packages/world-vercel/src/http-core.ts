@@ -21,6 +21,8 @@ import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  EVENT_SLOT_TAKEN_CODE,
+  EventSlotTakenError,
   HookConflictError,
   HookForceClaimedError,
   IN_BAND_SUPERSEDED_CODE,
@@ -554,6 +556,12 @@ export function errorForResponse(
       seq: inBandCounter(counters?.seq),
       seqInBand: inBandCounter(counters?.seqInBand),
     });
+  }
+  if (status === 412 && code === EVENT_SLOT_TAKEN_CODE) {
+    // A `strictEventCount` write whose slot another writer took first
+    // (proof of concept). Nothing was allocated; the runtime restarts from
+    // the log.
+    return new EventSlotTakenError(message);
   }
   if (status === 412)
     return new PreconditionFailedError(message, { retryAfter, details });

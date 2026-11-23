@@ -1013,6 +1013,21 @@ export interface CreateEventParams {
    */
   eventCount?: number;
   /**
+   * Commit only at slot `eventCount + 1` (proof of concept), or past
+   * `attr_set` events only: when every event after `eventCount` is an
+   * `attr_set`, commit at the next free slot and report them, as for any
+   * write. Otherwise refuse with `EventSlotTakenError` and allocate nothing,
+   * instead of bumping to the next free slot and reporting what was skipped.
+   * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
+   * and only with {@link eventCount}. The World checks the in-band fence
+   * first: a stale writer gets `InBandSupersededError`, never
+   * `EventSlotTakenError`. A retry of a strict write the World already
+   * committed (the same request after a lost answer) may be refused with
+   * `EventSlotTakenError` or answered with the original result; it is never
+   * committed twice.
+   */
+  strictEventCount?: true;
+  /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
    * when the backing service accepted or stored the event.
@@ -1316,6 +1331,21 @@ export interface CreateEventBatchParams {
    * {@link EventBatchResult}).
    */
   eventCount?: number;
+  /**
+   * Commit only at slot `eventCount + 1` (proof of concept), or past
+   * `attr_set` events only: when every event after `eventCount` is an
+   * `attr_set`, commit at the next free slot and report them, as for any
+   * write. Otherwise refuse with `EventSlotTakenError` and allocate nothing,
+   * instead of bumping to the next free slot and reporting what was skipped.
+   * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
+   * and only with {@link eventCount}, for the whole block. The World checks the in-band fence
+   * first: a stale writer gets `InBandSupersededError`, never
+   * `EventSlotTakenError`. A retry of a strict write the World already
+   * committed (the same request after a lost answer) may be refused with
+   * `EventSlotTakenError` or answered with the original result; it is never
+   * committed twice.
+   */
+  strictEventCount?: true;
 }
 
 /**

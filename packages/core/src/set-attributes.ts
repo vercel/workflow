@@ -53,7 +53,7 @@ export async function setAttributes(
   // runs inside a step body, which holds no replay snapshot, so there is no
   // event log to compare against and nothing a precondition could fence. It is
   // a genuinely out-of-band write from the event log's point of view.
-  await world.events.create(
+  const written = await world.events.create(
     runId,
     {
       eventType: 'attr_set',
@@ -68,4 +68,5 @@ export async function setAttributes(
     },
     { inBand: false }
   );
+  if (written.event) store.onDirectWrite?.(written.event);
 }

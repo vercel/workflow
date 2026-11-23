@@ -928,6 +928,12 @@ async function runDelivery(
   const ownSlots = new Set<number>();
   let passConsumedSlot = 0;
   /**
+   * {@link InBandWriter.foreignSlotsSeen} when the pass that produced the
+   * suspension started: the positions of other writers its workflow view can
+   * hold (proof of concept).
+   */
+  let foreignSlotsAtPassStart = 0;
+  /**
    * Folds an accepted in-band write into the loaded log: its
    * skipped-slot report, then its own event, in position
    * order. Nothing out-of-band can sit between the two except
@@ -2648,6 +2654,18 @@ async function runDelivery(
       return steps.size <= runAheadDepth;
     };
     const speculationsBySlot = new Map<number, Speculation>();
+    /**
+     * Speculative writes in flight that were sent without `strictEventCount`.
+     * A conditional boundary drains these first (proof of concept).
+     */
+    let nonStrictSpeculations = 0;
+    /** Speculative writes in flight sent with `strictEventCount`. */
+    let strictSpeculations = 0;
+    /**
+     * Whether the last speculative creation batch committed. A conditional
+     * boundary starts its bodies only once it has (proof of concept).
+     */
+    let creationCommitted: Promise<boolean> | undefined;
     /** Set when a speculative write failed; the delivery stops. */
     let runAheadFailure: unknown;
     /**
@@ -2813,7 +2831,12 @@ async function runDelivery(
      * the cold replay that follows reads them.
      */
     function checkRunAheadHazard(event: Event, source: string): void {
-      if (speculationsBySlot.size === 0) return;
+      if (
+        speculationsBySlot.size === 0 ||
+        (writer.strictRefused && nonStrictSpeculations === 0)
+      ) {
+        return;
+      }
       // Every step this delivery runs inline writes its own
       // events, until a retry moves it to its own message; the
       // hooks are those any boundary still in flight was
@@ -3083,6 +3106,9 @@ async function runDelivery(
       speculativeEvents.add(event);
       everSpeculative.add(event);
       const releaseContext = noteRunAheadContext(context);
+      const strict = context.conditional === true;
+      if (strict) strictSpeculations++;
+      else nonStrictSpeculations++;
       const commit = writer.createAhead(
         data,
         {
@@ -3110,11 +3136,20 @@ async function runDelivery(
             repairAliases.set(event.eventId, committed.eventId);
             markRunAheadRepair('outcome');
           }
-        }
+        },
+        strict
+          ? {
+              eventCount: slot - 1,
+              foreignSlotsAtDecision: context.foreignSlotsAtDecision ?? -1,
+              mayStillWrite: mayStillWriteAfterHazard,
+            }
+          : undefined
       );
       const settled = commit.then(
         (result) => {
           releaseContext();
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculativeSlots.delete(slot);
           speculationsBySlot.delete(slot);
           if (!runAheadRepair) {
@@ -3127,6 +3162,8 @@ async function runDelivery(
         },
         (error: unknown) => {
           releaseContext();
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculationsBySlot.delete(slot);
           if (runAheadFailure === undefined) {
             runAheadStats.failureStops++;
@@ -3164,6 +3201,9 @@ async function runDelivery(
           }) as Event
       );
       const releaseContext = noteRunAheadContext(context);
+      const strict = context.conditional === true;
+      if (strict) strictSpeculations++;
+      else nonStrictSpeculations++;
       const postSentAtMs = Date.now();
       const verifyCreation = (result: EventBatchResult) => {
         for (const below of result.events ?? []) {
@@ -3209,11 +3249,24 @@ async function runDelivery(
           ...slotSnapshot(),
           ...(requestId ? { requestId } : {}),
         },
-        verifyCreation
+        verifyCreation,
+        strict
+          ? {
+              eventCount: first - 1,
+              foreignSlotsAtDecision: context.foreignSlotsAtDecision ?? -1,
+              mayStillWrite: mayStillWriteAfterHazard,
+            }
+          : undefined
+      );
+      creationCommitted = commit.then(
+        () => true,
+        () => false
       );
       const settled = commit.then(
         (result) => {
           releaseContext();
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculative.forEach((_, index) => {
             speculativeSlots.delete(first + index);
             speculationsBySlot.delete(first + index);
@@ -3247,6 +3300,8 @@ async function runDelivery(
         },
         (error: unknown) => {
           releaseContext();
+          if (strict) strictSpeculations--;
+          else nonStrictSpeculations--;
           speculative.forEach((_, index) => {
             speculationsBySlot.delete(first + index);
           });
@@ -3582,6 +3637,7 @@ async function runDelivery(
             log.events
           );
           passConsumedSlot = indexOf(log.events).maxSlot() ?? 0;
+          foreignSlotsAtPassStart = writer.foreignSlotsSeen;
           const rebase = pendingRebase;
           pendingRebase = undefined;
           let workflowResult: WorkflowResumeResult = session
@@ -3876,6 +3932,33 @@ async function runDelivery(
               +new Date(item.resumeAt) <= waitWindowEndMs
           ),
       });
+      // Not inert only because workflow code waits on a hook, on a World
+      // that refuses a write whose slot another writer took first
+      // (`strictEventCount`): run ahead with strict writes (proof of
+      // concept). An inert boundary behind strict writes still in flight is
+      // conditional too: if one is refused, the writes decided after it are
+      // refused with it, so their bodies must not have started.
+      // Only while the writer learned of nothing another writer appended
+      // since the workflow's view was fixed; an inert boundary behind strict
+      // writes drains otherwise.
+      const behindStrict =
+        world.capabilities?.strictEventCount === true &&
+        writer.supportsBatch &&
+        strictSpeculations > 0;
+      const conditionalBoundary =
+        world.capabilities?.strictEventCount === true &&
+        writer.supportsBatch &&
+        writer.foreignSlotsSeen === foreignSlotsAtPassStart &&
+        (observation.inert
+          ? behindStrict
+          : observation.observedHookCount > 0 &&
+            observation.unknownHookCount === 0 &&
+            observation.abortSignalHookCount === 0 &&
+            observation.externalStepCount === 0 &&
+            !observation.waitDue &&
+            !(log && hasUnconsumedForeignEvent(log.events)));
+      const runsAhead =
+        conditionalBoundary || (observation.inert && !behindStrict);
       let boundaryRunAhead: RunAheadContext | undefined;
       if (schedulesInline) {
         if (observation.inert) {
@@ -3898,7 +3981,7 @@ async function runDelivery(
           }
           if (observation.waitDue) outOfBandBoundaries.waitDue++;
         }
-        if (runAheadDepth > 0 && observation.inert) {
+        if (runAheadDepth > 0 && runsAhead) {
           runAheadStats.runAhead++;
           boundaryRunAhead = runAheadContextFor({
             observation,
@@ -3908,14 +3991,24 @@ async function runDelivery(
             observedHookIds: suspension.observedHookIds,
             selfStepIds,
           });
+          if (conditionalBoundary) {
+            boundaryRunAhead.conditional = true;
+            boundaryRunAhead.foreignSlotsAtDecision = foreignSlotsAtPassStart;
+          }
         } else if (runAheadDepth > 0) {
           runAheadStats.drained++;
         }
         recordRunAheadSpan();
       }
+      // A conditional boundary only drains writes sent without
+      // `strictEventCount`: a strict write cannot commit with an event
+      // below it that the workflow has not seen.
       if (
-        !observation.inert &&
-        (speculationsBySlot.size > 0 || runAheadRepair)
+        (!observation.inert || !runsAhead) &&
+        (runAheadRepair ||
+          (conditionalBoundary
+            ? nonStrictSpeculations > 0
+            : speculationsBySlot.size > 0))
       ) {
         if ((await drainRunAhead()) === 'repair') {
           await repairRunAhead();
@@ -4113,6 +4206,8 @@ async function runDelivery(
       let newInline: Array<
         Omit<CreatedStep, 'event'> & {
           started?: StartedInBatch;
+          /** What the body's stream and attribute writes wait for. */
+          writeBarrier?: Promise<unknown>;
         }
       >;
       let creationGate: Promise<Map<string, CreatedStep>> | undefined;
@@ -4146,7 +4241,36 @@ async function runDelivery(
           plan.steps.slice(1).map((step) => step.correlationId)
         );
       if (speculativeCreation && boundaryRunAhead) {
+        // One conditional creation in flight at a time: a refusal then
+        // leaves at most this batch's bodies run without a record.
+        if (boundaryRunAhead.conditional && creationCommitted) {
+          if (!(await creationCommitted)) {
+            throw RunAheadStopError.is(writer.stopCause)
+              ? writer.stopCause
+              : (runAheadFailure ??
+                  new RunAheadStopError(
+                    'a conditional speculative creation did not commit'
+                  ));
+          }
+        }
         const starts = writeCreationAhead(plan.events, boundaryRunAhead);
+        // At a conditional boundary a refusal is expected, not a
+        // classification gap (proof of concept). Every step here allows
+        // retries (`startsAhead`), so it starts at once, as at an inert
+        // boundary, and its stream and attribute writes wait for its
+        // creation: a refused body is an attempt nothing records, and leaves
+        // no writes behind.
+        let creationBarrier: Promise<unknown> | undefined;
+        if (boundaryRunAhead.conditional && creationCommitted) {
+          creationBarrier = creationCommitted.then((ok) => {
+            if (!ok) {
+              throw new RunAheadStopError(
+                'a conditional speculative creation did not commit'
+              );
+            }
+          });
+          creationBarrier.catch(() => {});
+        }
         created = {
           createdSteps: [],
           failedStepCorrelationIds: new Set(),
@@ -4156,7 +4280,11 @@ async function runDelivery(
         };
         newInline = plan.steps.map((step) => {
           const started = starts.get(step.correlationId);
-          return started ? { ...step, started } : step;
+          return {
+            ...step,
+            ...(started ? { started } : {}),
+            ...(creationBarrier ? { writeBarrier: creationBarrier } : {}),
+          };
         });
       } else if (optimisticCreation) {
         deferAbsorbs = true;
@@ -4369,6 +4497,7 @@ async function runDelivery(
             attempt: 1,
             ...(started ? { started } : {}),
             ...(step.startRefusal ? { startRefusal: step.startRefusal } : {}),
+            ...(step.writeBarrier ? { writeBarrier: step.writeBarrier } : {}),
             ...(gate
               ? {
                   // The creation-bearing start once the
@@ -4668,9 +4797,29 @@ async function runDelivery(
                 // Turbo: optimistic for a step's first
                 // attempt while turbo still allows it.
                 forceOptimisticStart: optimistic && step.attempt === 1,
-                ...(runReadyBarrier ? { runReadyBarrier } : {}),
+                ...(step.writeBarrier
+                  ? {
+                      runReadyBarrier: observed(
+                        Promise.all([runReadyBarrier, step.writeBarrier])
+                      ),
+                    }
+                  : runReadyBarrier
+                    ? { runReadyBarrier }
+                    : {}),
                 ...(step.startAfter ? { startAfter: step.startAfter } : {}),
                 beforeBody: () => writer.assertActive(),
+                // A conditional run-ahead names exact positions: the slot a
+                // body's `attr_set` takes must be known before the next
+                // write is placed (proof of concept).
+                ...(step.writeBarrier
+                  ? {
+                      onDirectWrite: (event: Event) => {
+                        writer.observeEvent(event);
+                        pendingFeedEvents.push(event);
+                        notifyProgress();
+                      },
+                    }
+                  : {}),
                 // A retry moves the step to a message of its
                 // own, sent once the retry is written, with a
                 // step message's retention: a retry that would

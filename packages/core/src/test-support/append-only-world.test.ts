@@ -1,3 +1,4 @@
+import { EventSlotTakenError, InBandSupersededError } from '@workflow/errors';
 import type { WorkflowRun } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -119,5 +120,61 @@ describe('AppendOnlyWorld key dedupe window', () => {
     vi.setSystemTime(Date.now() + 365 * 24 * 60 * 60 * 1000);
     expect((await send()).messageId).toBeNull();
     expect(world.held).toHaveLength(1);
+  });
+});
+
+describe('AppendOnlyWorld strictEventCount', () => {
+  const strict = (eventCount: number, expectedSeqInBand: number) =>
+    ({
+      inBand: true,
+      expectedSeqInBand,
+      eventCount,
+      strictEventCount: true,
+    }) as never;
+
+  async function worldWithOneEvent() {
+    const world = seededWorld({ strictEventCount: true });
+    await world.asWorld().events.createBatch!(
+      runId,
+      [stepItem(0)] as never,
+      undefined as never
+    );
+    return world;
+  }
+
+  it('checks the fence before the slot', async () => {
+    const world = await worldWithOneEvent();
+    const before = world.events.length;
+    await expect(
+      world.asWorld().events.createBatch!(
+        runId,
+        [stepItem(1)] as never,
+        strict(0, 7)
+      )
+    ).rejects.toSatisfy((error) => InBandSupersededError.is(error));
+    expect(world.events).toHaveLength(before);
+  });
+
+  it('refuses a taken slot without moving the log or the fence', async () => {
+    const world = await worldWithOneEvent();
+    const before = world.events.length;
+    const fence = world.seqInBand;
+    await expect(
+      world.asWorld().events.createBatch!(
+        runId,
+        [stepItem(1)] as never,
+        strict(before - 1, fence)
+      )
+    ).rejects.toSatisfy((error) => EventSlotTakenError.is(error));
+    expect(world.events).toHaveLength(before);
+    expect(world.seqInBand).toBe(fence);
+    await expect(
+      world.asWorld().events.createBatch!(
+        runId,
+        [stepItem(1)] as never,
+        strict(before, fence)
+      )
+    ).resolves.toBeDefined();
+    expect(world.events).toHaveLength(before + 1);
   });
 });
