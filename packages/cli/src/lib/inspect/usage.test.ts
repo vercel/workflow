@@ -190,7 +190,7 @@ describe('formatRunUsageText', () => {
     expect(formatRunUsageText(usageOf(), { pricing: true })).toContain(pricing);
   });
 
-  it('prints a billed run from analytics with pricing, when it was counted, and what storage leaves out', () => {
+  it('prints a billed run from analytics with pricing, when it was counted, and what storage does not include', () => {
     const asOf = '2026-11-20T17:10:00.000Z';
     const text = formatRunUsageText(usageOf({ billed: true, asOf }), {
       pricing: true,
@@ -200,7 +200,7 @@ describe('formatRunUsageText', () => {
       `Counted as of ${asOf}. Analytics can lag, so the newest events may be missing.`
     );
     expect(text).toContain(
-      "Doesn't include QuickJS VM snapshots or a dynamic workflow's code yet, which are billed."
+      "It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
     );
     // The as-of line sits with the run, above the numbers it qualifies.
     const lines = text.split('\n');

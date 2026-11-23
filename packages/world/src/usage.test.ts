@@ -301,14 +301,14 @@ describe('usage formatting', () => {
     );
   });
 
-  it('says what billed storage leaves out, and keeps the local note for local runs', () => {
+  it('says what billed storage does not include, and keeps the local note for local runs', () => {
     const local = buildRunUsage(aggregates({}));
     const billed = buildRunUsage(aggregates({ billed: true }));
     expect(formatDataWrittenNote(local)).toBe(
       formatLocalDataWrittenNote(local)
     );
     expect(formatDataWrittenNote(billed)).toBe(
-      "Doesn't include QuickJS VM snapshots or a dynamic workflow's code yet, which are billed."
+      "It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
     );
     // The web's helper is unchanged: still nothing on a billed run.
     expect(formatLocalDataWrittenNote(billed)).toBeNull();

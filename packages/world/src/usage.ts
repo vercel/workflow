@@ -633,12 +633,12 @@ export function formatLocalDataWrittenNote(usage: RunUsage): string | null {
 
 /**
  * What a run's storage counts, for local and billed runs alike: the local
- * note on a local run; on a billed run, what it leaves out that Vercel
- * bills. {@link formatLocalDataWrittenNote} stays as it is for the web UI.
+ * note on a local run; on a billed run, what it doesn't include, in the same
+ * words. {@link formatLocalDataWrittenNote} stays as it is for the web UI.
  */
 export function formatDataWrittenNote(usage: RunUsage): string {
   return usage.billed
-    ? "Doesn't include QuickJS VM snapshots or a dynamic workflow's code yet, which are billed."
+    ? "It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
     : (formatLocalDataWrittenNote(usage) as string);
 }
 
