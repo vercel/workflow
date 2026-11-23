@@ -62,12 +62,13 @@ import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
  * within run-ahead's wait window (`getRunAheadWaitWindowEndMs`: now plus the
  * clock-skew allowance, at least `MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS`, capped at
  * the inline deadline plus that allowance) counts as path-changing. One due
- * later is completed by the orchestrator in-band at the top of a later pass,
- * after the writes in flight; a boundary classified once it falls in the
- * window drains first. Past the inline deadline the window stops moving, so
- * a wait due after its end is not counted, as before (proof of concept, spec
- * 9 only: spec 8 still ends the window at the inline deadline plus the
- * allowance). The
+ * later is completed in-band at the top of a later pass, after the writes in
+ * flight, or by its timer's delivery, which the in-band fence orders against
+ * this one; a boundary classified once it falls in the window drains first.
+ * On spec 9 the window therefore decides cost, not correctness. Past the
+ * inline deadline the window stops moving, so a wait due after its end is not
+ * counted, as before (proof of concept, spec 9 only: spec 8 still ends the
+ * window at the inline deadline plus the allowance). The
  * caller computes this from both the log and the suspension's own queue,
  * because either can hold a wait the other lacks.
  *
