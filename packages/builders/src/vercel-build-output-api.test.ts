@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DiscoveredEntries } from './base-builder.js';
@@ -339,11 +339,31 @@ export async function inlineWorkflow() {
   );
 });
 
+/**
+ * A directory for a temp project on the same drive as this checkout. The
+ * project below reaches `@workflow/core` through a link into the checkout, and
+ * the builder imports such a file by a path relative to the project, which
+ * cannot exist across Windows drives (a GitHub Windows runner keeps its temp
+ * directory on C: and the checkout on D:). When the drives differ it uses the
+ * checkout's parent directory: the project sits beside the checkout rather
+ * than inside it, so the checkout's own `node_modules` are not on the paths
+ * the project resolves packages from.
+ */
+function tempRootOnCheckoutDrive(): string {
+  const temp = realpathSync(tmpdir());
+  const checkout = realpathSync(join(import.meta.dirname, '../../..'));
+  return parse(temp).root.toLowerCase() === parse(checkout).root.toLowerCase()
+    ? temp
+    : dirname(checkout);
+}
+
 describe('VercelBuildOutputAPIBuilder SDK steps', () => {
   let workingDir: string;
 
   beforeEach(() => {
-    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+    workingDir = mkdtempSync(
+      join(tempRootOnCheckoutDrive(), 'workflow-vercel-')
+    );
   });
 
   afterEach(() => {
