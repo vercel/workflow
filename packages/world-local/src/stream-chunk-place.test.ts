@@ -219,7 +219,9 @@ describe('where a stream chunk lands', () => {
       const own = replay.filter((text) => text.startsWith(`${tag}-`));
       expect(own).toEqual(own.map((_, index) => `${tag}-${index}\n`));
     }
-  }, 30_000);
+    // Four forked Node processes and 160 contended writes: 2 to 8 seconds on
+    // a Windows runner as a rule, and past 30 when the runner is loaded.
+  }, 120_000);
 
   it("one streamer's writes to a stream land in the order they were called", async () => {
     const dir = await tempDir();

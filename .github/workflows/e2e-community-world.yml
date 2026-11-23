@@ -124,6 +124,10 @@ jobs:
           echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
 
       - name: Run E2E Tests
+        # Below the job's timeout on purpose. A step that times out fails, and
+        # continue-on-error absorbs it; a job that times out is cancelled, and
+        # that turns the whole Tests run's conclusion into `cancelled`.
+        timeout-minutes: 15
         run: |
           export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-$APP_NAME-$WORLD_ID.log"
           (cd "workbench/$APP_NAME" && pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
