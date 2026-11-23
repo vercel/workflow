@@ -69,6 +69,12 @@ Whichever way they are resolved, the CLI ends up building a Vercel World from an
 - Default: `3456`
 - Port for the local web UI server.
 
+### `--webAllowedHosts`
+
+- Environment variable: `WORKFLOW_WEB_ALLOWED_HOSTS`
+- Default: none
+- Comma-separated host names the local web UI accepts in the `Host` header, in addition to `localhost`, `*.localhost`, and IP addresses, which are always accepted. An entry starting with a dot (`.example.com`) matches the domain and all of its subdomains; `*` accepts any host name. Requests under any other host name are rejected with `403`, which protects the UI from DNS rebinding by web pages you visit. Set this when you reach the UI under a domain name, for example behind a reverse proxy or through a hostname on your network.
+
 ### `--noBrowser`
 
 - Environment variable: `WORKFLOW_DISABLE_BROWSER_OPEN`

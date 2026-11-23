@@ -13,6 +13,7 @@
     "registry.js",
     "registry.d.ts",
     "static.js",
+    "host-guard.js",
     "package.json"
   ],
   "exports": {
