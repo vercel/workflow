@@ -804,8 +804,8 @@ export interface WorldCapabilities {
   /**
    * The World honors `strictEventCount` on in-band creates and batches
    * (proof of concept): it commits such a write only at slot
-   * `eventCount + 1`, and otherwise refuses it with `EventSlotTakenError`,
-   * allocating nothing. Spec 9 run-ahead then runs ahead at boundaries where
+   * `eventCount + 1`, or past `attr_set` events only, and otherwise refuses
+   * it with `EventSlotTakenError`, allocating nothing. Spec 9 run-ahead then runs ahead at boundaries where
    * workflow code waits on a hook: a payload landing first refuses the
    * speculative write instead of committing below it.
    */

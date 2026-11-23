@@ -1301,8 +1301,8 @@ export const EVENT_SLOT_TAKEN_CODE = 'event-slot-taken';
 
 /**
  * Thrown when a World refuses a write sent with `strictEventCount: true`
- * because the slot after its `eventCount` is already taken (HTTP 412,
- * `event-slot-taken`). The World writes and allocates nothing for the refused
+ * because an event other than an `attr_set` was appended after its
+ * `eventCount` (HTTP 412, `event-slot-taken`). The World writes and allocates nothing for the refused
  * request. A retry of a request the World already committed may be refused
  * too (see `strictEventCount`): the earlier attempt's write stands.
  *

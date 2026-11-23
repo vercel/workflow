@@ -1013,8 +1013,10 @@ export interface CreateEventParams {
    */
   eventCount?: number;
   /**
-   * Commit only at slot `eventCount + 1` (proof of concept). When that slot is
-   * already taken, refuse with `EventSlotTakenError` and allocate nothing,
+   * Commit only at slot `eventCount + 1` (proof of concept), or past
+   * `attr_set` events only: when every event after `eventCount` is an
+   * `attr_set`, commit at the next free slot and report them, as for any
+   * write. Otherwise refuse with `EventSlotTakenError` and allocate nothing,
    * instead of bumping to the next free slot and reporting what was skipped.
    * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
    * and only with {@link eventCount}. The World checks the in-band fence
@@ -1330,8 +1332,10 @@ export interface CreateEventBatchParams {
    */
   eventCount?: number;
   /**
-   * Commit only at slot `eventCount + 1` (proof of concept). When that slot is
-   * already taken, refuse with `EventSlotTakenError` and allocate nothing,
+   * Commit only at slot `eventCount + 1` (proof of concept), or past
+   * `attr_set` events only: when every event after `eventCount` is an
+   * `attr_set`, commit at the next free slot and report them, as for any
+   * write. Otherwise refuse with `EventSlotTakenError` and allocate nothing,
    * instead of bumping to the next free slot and reporting what was skipped.
    * Only sent to a World that declares `WorldCapabilities.strictEventCount`,
    * and only with {@link eventCount}, for the whole block. The World checks the in-band fence

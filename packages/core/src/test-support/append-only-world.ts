@@ -551,7 +551,13 @@ export class AppendOnlyWorld {
       !this.options.strictEventCount ||
       params?.strictEventCount !== true ||
       params.eventCount === undefined ||
-      params.eventCount === this.seq
+      params.eventCount === this.seq ||
+      // Only attribute writes since: the write commits at the next free slot,
+      // and the World reports them as for any write.
+      (params.eventCount < this.seq &&
+        this.events
+          .slice(params.eventCount)
+          .every((event) => event.eventType === 'attr_set'))
     ) {
       return;
     }

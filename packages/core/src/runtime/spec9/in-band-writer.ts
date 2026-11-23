@@ -412,7 +412,9 @@ export class InBandWriter {
           )
         : -1;
     if (!sending || at === -1) {
-      this.foreignSlots++;
+      // An attribute write cannot change a decision: it takes its slot
+      // without counting as another writer's (proof of concept).
+      if (event.eventType !== 'attr_set') this.foreignSlots++;
       return;
     }
     sending.unechoed.splice(at, 1);
@@ -523,6 +525,7 @@ export class InBandWriter {
           ...fence,
         });
         this.noteComplete(position, written, [written.event]);
+        this.observeReport(written.events);
         const inferred = this.allocatedBy([written.event], knownAtSend);
         this.answerSend();
         const allocated = written.allocated ?? inferred;
@@ -640,7 +643,6 @@ export class InBandWriter {
         this.openGroup !== undefined &&
         this.openGroup.some((write) => write.strict !== undefined) ===
           (member.strict !== undefined);
-      if (!sameKind) this.releaseHeld?.();
       if (
         this.openGroup &&
         sameKind &&
@@ -649,23 +651,10 @@ export class InBandWriter {
           MAX_IN_BAND_CREATION_BATCH_BYTES
       ) {
         this.openGroup.push(member);
-        // A held strict outcome goes out once the next step's creation
-        // joins it (proof of concept).
-        if (member.kind === 'batch') this.releaseHeld?.();
         return;
       }
       const group = [member];
-      const hold =
-        member.strict?.coalesce === true ? this.holdForCoalescing() : undefined;
-      this.serialize(
-        0,
-        hold
-          ? async () => {
-              await hold;
-              return this.sendGroup(group);
-            }
-          : () => this.sendGroup(group)
-      ).catch(() => {});
+      this.serialize(0, () => this.sendGroup(group)).catch(() => {});
       this.openGroup = group;
     });
   }
@@ -786,6 +775,7 @@ export class InBandWriter {
           item.error === undefined ? item.event : undefined
         )
       );
+      this.observeReport(result.events);
       // Allocation as for any batch (see writeBatch).
       const fresh = result.results.map(
         (item) =>
@@ -975,6 +965,7 @@ export class InBandWriter {
             item.error === undefined ? item.event : undefined
           )
         );
+        this.observeReport(result.events);
         // Without a reported count: the block was allocated whole (a
         // per-item failure leaves a hole the World seals, and that position
         // still counts), except items answered with an event at a slot this
@@ -1094,6 +1085,15 @@ export class InBandWriter {
    * reported everything below it: the write named a position, and its
    * skipped-slot report is neither incomplete nor truncated.
    */
+  /**
+   * Takes in the events a write's answer reports below it (its skipped-slot
+   * report), so their slots are known before the write's own is noted and
+   * are not taken for a gap.
+   */
+  private observeReport(events: readonly Event[] | undefined): void {
+    for (const event of events ?? []) this.observeEvent(event);
+  }
+
   private noteComplete(
     position: Pick<CreateEventParams, 'eventCount'>,
     response: { hasMore?: boolean },
@@ -1204,27 +1204,6 @@ export class InBandWriter {
     return this.refusedStrict;
   }
 
-  /** Releases the strict outcome held for coalescing, if one is. */
-  private releaseHeld: (() => void) | undefined;
-
-  /**
-   * Holds a strict outcome's group open until the next step's creation joins
-   * it, or {@link COALESCE_HOLD_MS} passes, so the outcome and the creation
-   * commit in one batch and the next body starts only after it (proof of
-   * concept).
-   */
-  private holdForCoalescing(): Promise<void> {
-    return new Promise((resolve) => {
-      const release = () => {
-        clearTimeout(timer);
-        if (this.releaseHeld === release) this.releaseHeld = undefined;
-        resolve();
-      };
-      const timer = setTimeout(release, COALESCE_HOLD_MS);
-      this.releaseHeld = release;
-    });
-  }
-
   /** Positions of the writes queued in this writer and not yet settled. */
   private pendingPositions = 0;
 
@@ -1280,17 +1259,12 @@ function groupBytes(group: AheadWrite[]): number {
   return bytes;
 }
 
-/** How long a strict outcome waits for the next creation to join it. */
-const COALESCE_HOLD_MS = 5;
-
 /** A strict run-ahead write (proof of concept). */
 export interface StrictAhead {
   /** The exact position the write was decided at: its predicted slot - 1. */
   eventCount: number;
   /** {@link InBandWriter.foreignSlotsSeen} when its boundary was classified. */
   foreignSlotsAtDecision: number;
-  /** Hold the write open for the next creation to join it. */
-  coalesce?: boolean;
   /**
    * What the writer may still send once a strict write is refused: the
    * delivery's rule for writes after a hazard stop.

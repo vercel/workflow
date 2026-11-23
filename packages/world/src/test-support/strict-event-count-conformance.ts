@@ -14,7 +14,8 @@ import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
  * declares `capabilities.strictEventCount` (see
  * `CreateEventParams.strictEventCount`):
  *
- * - A strict in-band write commits only at slot `eventCount + 1`.
+ * - A strict in-band write commits only at slot `eventCount + 1`, or at the
+ *   next free slot when every event after `eventCount` is an `attr_set`.
  * - When that slot is taken, it is refused with `EventSlotTakenError` (412,
  *   `event-slot-taken`) and allocates nothing: the log and the counts are
  *   unchanged, and the next accepted write takes the very next slot.
@@ -188,6 +189,25 @@ export function strictEventCountConformance(
         strict(2, atRunCreation + 1) as never
       );
       expect((await load(events, runId)).slots).toEqual([1, 2, 3, 4]);
+    });
+
+    test('commits a strict write past attribute writes, at the next free slot', async () => {
+      const events = options.events();
+      const runId = await createRun(events);
+      await (events.create as CreateAny)(runId, {
+        eventType: 'attr_set',
+        specVersion: SPEC,
+        eventData: {
+          changes: [{ key: 'k', value: 'v' }],
+          writer: { type: 'step', stepId: 'step_conformance', attempt: 1 },
+        },
+      } as AnyEventRequest);
+      const result = await (events.create as CreateAny)(
+        runId,
+        waitCreated(),
+        strict(1, atRunCreation)
+      );
+      expect(eventIdToSlot(result.event!.eventId)).toBe(3);
     });
 
     test('refuses a strict write naming a slot an out-of-band write took', async () => {

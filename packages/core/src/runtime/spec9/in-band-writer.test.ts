@@ -654,7 +654,6 @@ describe('InBandWriter', () => {
     const strict = writer.createAhead(waitCreated('strict_1'), {}, () => {}, {
       eventCount: world.events.length,
       foreignSlotsAtDecision: writer.foreignSlotsSeen,
-      coalesce: true,
       mayStillWrite: () => true,
     });
     const ordinary = writer.createBatchAhead(

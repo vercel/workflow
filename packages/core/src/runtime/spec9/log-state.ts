@@ -49,6 +49,11 @@ export interface InlineStepSpec {
   /** The World's refusal of that creation-bearing start. */
   startRefusal?: Error;
   /**
+   * What the body's stream and attribute writes wait for, beside the run's
+   * start: a conditional run-ahead's creation commit (proof of concept).
+   */
+  writeBarrier?: Promise<unknown>;
+  /**
    * Settles once the step's creation committed, when the body starts while
    * that commit is in flight (turbo), with its creation-bearing start.
    * Otherwise its `step_started` waits for it.

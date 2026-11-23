@@ -12,6 +12,8 @@ import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
+import { setAttributes } from '../../set-attributes.js';
+import { getStepMetadata } from '../../step/get-step-metadata.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   creationsOf,
@@ -44,11 +46,22 @@ vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 // the next step's body can start while the previous step_completed is still
 // in flight.
 
-/** Each step started once, and ran one body. */
-function expectOneBodyPerStep(world: AppendOnlyWorld): void {
+/**
+ * Each step started once in the log. A body beyond that is an attempt a
+ * refused conditional creation left unrecorded: at most one per stop.
+ */
+function expectStartsOnce(world: AppendOnlyWorld, stops: number): void {
   const starts = eventsOf(world, 'step_started').map((e) => e.correlationId);
   expect(new Set(starts).size).toBe(starts.length);
-  expect(bodiesStarted).toBe(starts.length);
+  expect(bodiesStarted).toBeGreaterThanOrEqual(starts.length);
+  expect(bodiesStarted - starts.length).toBeLessThanOrEqual(stops);
+}
+
+/** How many times run-ahead stopped, from the `info` log. */
+function runAheadStops(info: { mock: { calls: unknown[][] } }): number {
+  return info.mock.calls.filter(([message]) =>
+    String(message).includes('Run-ahead stopped')
+  ).length;
 }
 
 let currentWorld: AppendOnlyWorld | undefined;
@@ -75,6 +88,46 @@ registerStepFunction('ra_inc', async (n: number) => {
   bodiesFinished++;
   return n + 1;
 });
+
+// Writes an attribute from the body, as eve's usage write does.
+registerStepFunction('ra_inc_attr', async (n: number) => {
+  noteBodyStart();
+  await setAttributes({ usage: String(n) });
+  return n + 1;
+});
+
+/** Per body start of `ra_inc_no_retry`: whether its own start had committed. */
+let ownStartCommitted: boolean[] = [];
+registerStepFunction(
+  'ra_inc_no_retry',
+  Object.assign(
+    async (n: number) => {
+      noteBodyStart();
+      const id = getStepMetadata().stepId;
+      ownStartCommitted.push(
+        currentWorld !== undefined &&
+          eventsOf(currentWorld, 'step_started').some(
+            (event) => event.correlationId === id
+          )
+      );
+      return n + 1;
+    },
+    { maxRetries: 0 }
+  )
+);
+
+// A loop over `stepName` while workflow code awaits a hook.
+const awaitedHookLoop = (
+  stepName: string
+) => `const inc = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(stepName)});
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow(steps) {
+    const hook = createHook({ token: "ra-observed" });
+    hook.then(() => {});
+    let n = 0;
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return n;
+  }${registerWorkflow()}`;
 
 const step = `globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_inc")`;
 
@@ -1167,9 +1220,8 @@ describe.each([
           String(line).includes('possibleLogCorruption')
         )
       ).toBe(false);
-      // Every body that ran has its step_started committed, and no step
-      // ran twice: a refused outcome is still written.
-      expectOneBodyPerStep(world);
+      // Each step started once; a refused creation's body may have run.
+      expectStartsOnce(world, runAheadStops(info));
       const live = await runResult(world);
       const cold = await coldReplay(world, observedHook);
       expect(cold.result).toEqual(live);
@@ -1233,10 +1285,97 @@ describe.each([
           String(line).includes('possibleLogCorruption')
         )
       ).toBe(false);
-      expectOneBodyPerStep(world);
+      expectStartsOnce(world, runAheadStops(info));
       const live = await runResult(world);
       const cold = await coldReplay(world, observedHookWithSleeps);
       expect(cold.result).toEqual(live);
+    }
+  );
+
+  // Proof of concept: an `attr_set` a step body writes cannot change a
+  // decision, so a strict World lets the next strict write past it, and the
+  // orchestrator knows the slot it took.
+  it.runIf(vm === 'node')(
+    'runs ahead past steps that write attributes on a strict World',
+    async () => {
+      const info = vi.spyOn(runtimeLogger, 'info');
+      const source = awaitedHookLoop('ra_inc_attr');
+      const { world } = await run(source, [STEPS], {
+        ...slowOutcomes,
+        strictEventCount: true,
+      });
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(STEPS);
+      expect(world.strictRefusals).toEqual([]);
+      expect(runAheadStops(info)).toBe(0);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      expect(eventsOf(world, 'attr_set')).toHaveLength(STEPS);
+      const cold = await coldReplay(world, source);
+      expect(cold.result).toBe(STEPS);
+    }
+  );
+
+  // A refused creation's body ran (it allows retries), but its attribute
+  // write waited for the creation and never landed.
+  it.runIf(vm === 'node')(
+    'writes nothing from a body whose conditional creation was refused',
+    async () => {
+      const info = vi.spyOn(runtimeLogger, 'info');
+      const source = awaitedHookLoop('ra_inc_attr');
+      let outcomes = 0;
+      const { world, runId } = await run(source, [STEPS], {
+        ...slowOutcomes,
+        strictEventCount: true,
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (data.eventType === 'step_completed' && ++outcomes === 2) {
+            const hookId = eventsOf(world, 'hook_created')[0]?.correlationId;
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: hookId,
+              eventData: {
+                token: 'ra-observed',
+                payload: await dehydrateStepReturnValue(
+                  { ok: true },
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(STEPS);
+      expect(runAheadStops(info)).toBeGreaterThan(0);
+      const started = new Set(
+        eventsOf(world, 'step_started').map((e) => e.correlationId)
+      );
+      const attrSteps = eventsOf(world, 'attr_set').map(
+        (e) => (e.eventData as { writer: { stepId: string } }).writer.stepId
+      );
+      expect(new Set(attrSteps).size).toBe(attrSteps.length);
+      expect(attrSteps.every((id) => started.has(id))).toBe(true);
+      expectStartsOnce(world, runAheadStops(info));
+      const cold = await coldReplay(world, source);
+      expect(cold.result).toBe(STEPS);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    'starts a step that allows no retries only once its conditional creation committed',
+    async () => {
+      ownStartCommitted = [];
+      const source = awaitedHookLoop('ra_inc_no_retry');
+      const { world } = await run(source, [STEPS], {
+        ...slowOutcomes,
+        strictEventCount: true,
+      });
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(STEPS);
+      expect(ownStartCommitted).toHaveLength(STEPS);
+      expect(ownStartCommitted.every(Boolean)).toBe(true);
     }
   );
 

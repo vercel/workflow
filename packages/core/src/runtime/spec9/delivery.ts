@@ -3141,7 +3141,6 @@ async function runDelivery(
           ? {
               eventCount: slot - 1,
               foreignSlotsAtDecision: context.foreignSlotsAtDecision ?? -1,
-              coalesce: true,
               mayStillWrite: mayStillWriteAfterHazard,
             }
           : undefined
@@ -4207,6 +4206,8 @@ async function runDelivery(
       let newInline: Array<
         Omit<CreatedStep, 'event'> & {
           started?: StartedInBatch;
+          /** What the body's stream and attribute writes wait for. */
+          writeBarrier?: Promise<unknown>;
         }
       >;
       let creationGate: Promise<Map<string, CreatedStep>> | undefined;
@@ -4240,17 +4241,35 @@ async function runDelivery(
           plan.steps.slice(1).map((step) => step.correlationId)
         );
       if (speculativeCreation && boundaryRunAhead) {
+        // One conditional creation in flight at a time: a refusal then
+        // leaves at most this batch's bodies run without a record.
+        if (boundaryRunAhead.conditional && creationCommitted) {
+          if (!(await creationCommitted)) {
+            throw RunAheadStopError.is(writer.stopCause)
+              ? writer.stopCause
+              : (runAheadFailure ??
+                  new RunAheadStopError(
+                    'a conditional speculative creation did not commit'
+                  ));
+          }
+        }
         const starts = writeCreationAhead(plan.events, boundaryRunAhead);
         // At a conditional boundary a refusal is expected, not a
-        // classification gap: no body starts before its creation commits,
-        // so a refused one leaves no side effects behind (proof of concept).
-        if (boundaryRunAhead.conditional && !(await creationCommitted)) {
-          throw RunAheadStopError.is(writer.stopCause)
-            ? writer.stopCause
-            : (runAheadFailure ??
-                new RunAheadStopError(
-                  'a conditional speculative creation did not commit'
-                ));
+        // classification gap (proof of concept). Every step here allows
+        // retries (`startsAhead`), so it starts at once, as at an inert
+        // boundary, and its stream and attribute writes wait for its
+        // creation: a refused body is an attempt nothing records, and leaves
+        // no writes behind.
+        let creationBarrier: Promise<unknown> | undefined;
+        if (boundaryRunAhead.conditional && creationCommitted) {
+          creationBarrier = creationCommitted.then((ok) => {
+            if (!ok) {
+              throw new RunAheadStopError(
+                'a conditional speculative creation did not commit'
+              );
+            }
+          });
+          creationBarrier.catch(() => {});
         }
         created = {
           createdSteps: [],
@@ -4261,7 +4280,11 @@ async function runDelivery(
         };
         newInline = plan.steps.map((step) => {
           const started = starts.get(step.correlationId);
-          return started ? { ...step, started } : step;
+          return {
+            ...step,
+            ...(started ? { started } : {}),
+            ...(creationBarrier ? { writeBarrier: creationBarrier } : {}),
+          };
         });
       } else if (optimisticCreation) {
         deferAbsorbs = true;
@@ -4474,6 +4497,7 @@ async function runDelivery(
             attempt: 1,
             ...(started ? { started } : {}),
             ...(step.startRefusal ? { startRefusal: step.startRefusal } : {}),
+            ...(step.writeBarrier ? { writeBarrier: step.writeBarrier } : {}),
             ...(gate
               ? {
                   // The creation-bearing start once the
@@ -4773,9 +4797,28 @@ async function runDelivery(
                 // Turbo: optimistic for a step's first
                 // attempt while turbo still allows it.
                 forceOptimisticStart: optimistic && step.attempt === 1,
-                ...(runReadyBarrier ? { runReadyBarrier } : {}),
+                ...(runReadyBarrier || step.writeBarrier
+                  ? {
+                      runReadyBarrier: Promise.all([
+                        runReadyBarrier,
+                        step.writeBarrier,
+                      ]),
+                    }
+                  : {}),
                 ...(step.startAfter ? { startAfter: step.startAfter } : {}),
                 beforeBody: () => writer.assertActive(),
+                // A conditional run-ahead names exact positions: the slot a
+                // body's `attr_set` takes must be known before the next
+                // write is placed (proof of concept).
+                ...(step.writeBarrier
+                  ? {
+                      onDirectWrite: (event: Event) => {
+                        writer.observeEvent(event);
+                        pendingFeedEvents.push(event);
+                        notifyProgress();
+                      },
+                    }
+                  : {}),
                 // A retry moves the step to a message of its
                 // own, sent once the retry is written, with a
                 // step message's retention: a retry that would
