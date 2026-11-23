@@ -480,7 +480,7 @@ Because those PRs have no deployment of their own, CI treats them specially: the
   - `@workflow/world-vercel` joined the group at 5.0.0. `@workflow/core` already depended on it (`"@workflow/world-vercel": "workspace:*"`, published as an exact pin), so a world-vercel release always dragged core along; nothing pulled the other way, and the adapter drifted five betas behind by 5.0.0. Since the adapter reports its own version to the backend (`WorkflowClientVersion` in `packages/world-vercel/src/events-v4.ts`), that drift made the reported version ambiguous.
   - The other worlds (`@workflow/world`, `@workflow/world-postgres`, `@workflow/world-local`) are deliberately **not** in the group. They version independently and are expected to drift from the SDK version.
 - Every PR requires a changeset to be included before it will be merged
-- To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
+- Use `pnpm changeset status --since=main` to inspect the release plan; a successful status command does not waive the every-PR changeset requirement.
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
   - Never list a package from the `ignore` array in `.changeset/config.json` (private workbench and simulation packages such as `@workflow/world-sim`), even when the PR changes it. Changesets rejects a changeset that mixes ignored and published packages, and the failure only surfaces in the Release job on `main`. `node scripts/check-changesets.mjs` runs that validation locally; CI runs it in `lint.yml`.
