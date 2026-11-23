@@ -10,6 +10,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  getRunQueueNamespace,
   HOOK_RESUME_DEDUP_VERSION,
   type HookResumeContext,
   HookSchema,
@@ -160,6 +161,7 @@ function resumeContextFromRun(run: WorkflowRunWithoutData): HookResumeContext {
     workflowCoreVersion:
       typeof coreVersion === 'string' ? coreVersion : undefined,
     nodeVersion: typeof nodeVersion === 'string' ? nodeVersion : undefined,
+    queueNamespace: getRunQueueNamespace(run.executionContext),
     traceCarrier:
       traceCarrier && typeof traceCarrier === 'object'
         ? (traceCarrier as HookResumeContext['traceCarrier'])
@@ -941,7 +943,10 @@ async function resumeHookAttempt<T = any>(
       span?.addLink?.(originLink);
     }
 
-    const queueName = getWorkflowQueueName(resumeContext.workflowName);
+    const queueName = getWorkflowQueueName(
+      resumeContext.workflowName,
+      getRunQueueNamespace({ queueNamespace: resumeContext.queueNamespace })
+    );
     // `specVersion` picks the queue transport, so an unknown version takes
     // the legacy one every deployment reads. The routing hint on the payload
     // is left off instead: a guessed version would route the wake to the

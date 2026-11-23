@@ -53,6 +53,7 @@ import {
   getEventDataRefFields,
   getMaxEventsForRun,
   getMaxEventsPerRun,
+  getRunQueueNamespace,
   IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
@@ -1426,6 +1427,7 @@ export function createEventsStorage(
           workflowName?: string;
           deploymentId?: string;
           runSpecVersion?: number;
+          queueNamespace?: string;
         }
       | undefined;
     const owner = store.getTokenOwner(hookData.token);
@@ -1470,6 +1472,7 @@ export function createEventsStorage(
             workflowName: victim.run.workflowName,
             deploymentId: victim.run.deploymentId,
             runSpecVersion: victim.run.specVersion,
+            queueNamespace: getRunQueueNamespace(victim.run.executionContext),
           }),
         };
         store.insertDisposal(owner.hookId, owner.runId, { runId, hookId });
