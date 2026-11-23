@@ -54,6 +54,7 @@ import {
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
+  getRunQueueNamespace,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -3593,6 +3594,8 @@ function createUnfencedEventsStorage(
                     workflowName: Schema.runs.workflowName,
                     deploymentId: Schema.runs.deploymentId,
                     specVersion: Schema.runs.specVersion,
+                    executionContext: Schema.runs.executionContext,
+                    executionContextJson: Schema.runs.executionContextJson,
                   })
                   .from(Schema.runs)
                   .where(eq(Schema.runs.runId, candidate.runId))
@@ -3635,6 +3638,12 @@ function createUnfencedEventsStorage(
                 // running: a finished one has no row to read and nothing to
                 // wake, and an invoke of a completed run can race its own
                 // terminal write. Without them the runtime skips the wake.
+                const victimQueueNamespace = victimRunning
+                  ? getRunQueueNamespace(
+                      victimRun.executionContext ??
+                        victimRun.executionContextJson
+                    )
+                  : undefined;
                 const claimedFrom: NonNullable<Hook['claimedFrom']> = {
                   runId: victim.runId,
                   hookId: victim.hookId,
@@ -3643,6 +3652,9 @@ function createUnfencedEventsStorage(
                     deploymentId: victimRun.deploymentId,
                     ...(victimRun.specVersion !== null && {
                       runSpecVersion: victimRun.specVersion,
+                    }),
+                    ...(victimQueueNamespace !== undefined && {
+                      queueNamespace: victimQueueNamespace,
                     }),
                   }),
                 };

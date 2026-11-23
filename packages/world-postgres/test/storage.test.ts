@@ -2645,6 +2645,40 @@ describe('Storage (Postgres integration)', () => {
       });
     });
 
+    it("names the victim run's recorded queue namespace in claimedFrom, and omits it for a victim that recorded none", async () => {
+      const claim = async (executionContext?: Record<string, unknown>) => {
+        const token = `force-namespace-${ulid()}`;
+        const victim = await createRun(events, {
+          deploymentId: 'dpl_victim',
+          workflowName: 'victim',
+          input: new Uint8Array(),
+          executionContext,
+        });
+        await updateRun(events, victim.runId, 'run_started');
+        await createHook(events, victim.runId, {
+          hookId: 'hook_victim',
+          token,
+        });
+        const claimer = await createRun(events, {
+          deploymentId: 'dpl_claimer',
+          workflowName: 'claimer',
+          input: new Uint8Array(),
+        });
+        await updateRun(events, claimer.runId, 'run_started');
+        const result = await events.create(claimer.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_claimer',
+          eventData: { token, force: true },
+        });
+        return result.hook?.claimedFrom;
+      };
+
+      expect(await claim({ queueNamespace: 'agent' })).toMatchObject({
+        queueNamespace: 'agent',
+      });
+      expect(await claim({})).not.toHaveProperty('queueNamespace');
+    });
+
     it('answers a delivery to a taken-over hook with a redirect naming the current owner, and a stale self-disposed hook with not-found', async () => {
       const token = `force-redirect-${ulid()}`;
       const running = async (name: string) => {
