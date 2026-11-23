@@ -41,7 +41,7 @@ If steering arrives before agent output begins, eve stops model generation and a
 
 ### 3. The sandbox idle wait is ignored mid-turn
 
-The only code that awaits it runs between turns, in `stopSandboxOnceIdle`. eve disables the `idleWindow` when a turn starts, so if the wait fires mid-turn, nothing is listening.
+The only code that awaits the sandbox idle runs between turns, in `stopSandboxOnceIdle`. eve disables the `idleWindow` when a turn starts, so even if the wait fires mid-turn, this does not affect turn execution.
 
 ## Proposed Workflow changes
 
