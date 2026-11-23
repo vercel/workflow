@@ -2,7 +2,7 @@
 
 ## Summary
 
-Spec 9 run-ahead introduces the notion of an "inert boundary" (`out-of-band-observation.ts`, #4683): a step boundary where nothing outside the orchestrator can append an event that would change the decision of the workflow state machine. At an inert boundary, run-ahead delivers the outcome of an inline step to the workflow before the `step_completed` for that step commits, and can start the body of the next inline step before its creation commits. Because no other writer can append a path-changing event in between, replay makes the same decisions the speculative run made, even if other events land in between.
+Spec 9 run-ahead introduces the notion of an "inert boundary" (`out-of-band-observation.ts`, #4683): a step boundary where nothing outside the orchestrator can append an event that would affect the workflow state machine. At an inert boundary, run-ahead delivers the outcome of an inline step to the workflow before the `step_completed` for that step commits, and can start the body of the next inline step before its creation commits. Because no other writer can append a path-changing event in between, replay makes the same decisions the speculative run made, even if other events land in between.
 
 eve's turn steps are never marked inert, because every boundary has open steering and cancel hooks. eve is unable to get the speed benefits of run-ahead: each step must wait for `step_completed` to commit, and then for the `step_started` of the next step to commit. These serial writes inflate eve's tool hop by ~80ms, far more than competing frameworks.
 
