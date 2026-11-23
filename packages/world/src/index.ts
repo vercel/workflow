@@ -270,7 +270,6 @@ export {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
-  formatDataWrittenNote,
   formatLocalDataWrittenNote,
   formatOtherSteps,
   formatRunEventsLine,

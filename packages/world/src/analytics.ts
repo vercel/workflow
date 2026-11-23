@@ -72,6 +72,12 @@ const UsageCountSchema = z.number().int().nonnegative();
  * other event type (as `RunUsageEventGroup` says). A response that lists a
  * `step_*` type in `eventGroups` is rejected, since it would count those
  * events twice.
+ *
+ * Bytes are the Data Written the backend bills, attributed by event type.
+ * `RunUsage` reports them under four entities: `step_*` and `hook_*` bytes
+ * under their own, stream bytes under `stream`, and every other type
+ * (`run_*`, sleeps, attribute writes) under `run`. What the backend bills to
+ * the run itself goes in that group's `run_*` bytes.
  */
 export const AnalyticsRunUsageSchema = z.object({
   asOf: z.string(),

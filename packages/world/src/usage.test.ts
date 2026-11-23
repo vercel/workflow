@@ -4,7 +4,6 @@ import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
-  formatDataWrittenNote,
   formatLocalDataWrittenNote,
   formatOtherSteps,
   formatRunEventsLine,
@@ -301,17 +300,13 @@ describe('usage formatting', () => {
     );
   });
 
-  it('says what billed storage does not include, and keeps the local note for local runs', () => {
-    const local = buildRunUsage(aggregates({}));
-    const billed = buildRunUsage(aggregates({ billed: true }));
-    expect(formatDataWrittenNote(local)).toBe(
-      formatLocalDataWrittenNote(local)
+  it('keeps the local storage note for local runs only', () => {
+    expect(formatLocalDataWrittenNote(buildRunUsage(aggregates({})))).toMatch(
+      /^The bytes of the run's payloads/
     );
-    expect(formatDataWrittenNote(billed)).toBe(
-      "It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
-    );
-    // The web's helper is unchanged: still nothing on a billed run.
-    expect(formatLocalDataWrittenNote(billed)).toBeNull();
+    expect(
+      formatLocalDataWrittenNote(buildRunUsage(aggregates({ billed: true })))
+    ).toBeNull();
   });
 
   it('carries asOf only when the backend sets it', () => {

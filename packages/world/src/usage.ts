@@ -631,17 +631,6 @@ export function formatLocalDataWrittenNote(usage: RunUsage): string | null {
   return "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code.";
 }
 
-/**
- * What a run's storage counts, for local and billed runs alike: the local
- * note on a local run; on a billed run, what it doesn't include, in the same
- * words. {@link formatLocalDataWrittenNote} stays as it is for the web UI.
- */
-export function formatDataWrittenNote(usage: RunUsage): string {
-  return usage.billed
-    ? "It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
-    : (formatLocalDataWrittenNote(usage) as string);
-}
-
 /** When the counts were taken, for usage read from analytics; else `null`. */
 export function formatUsageAsOf(usage: RunUsage): string | null {
   if (!usage.asOf) return null;

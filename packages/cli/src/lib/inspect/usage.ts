@@ -3,7 +3,6 @@ import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
-  formatDataWrittenNote,
   formatUsageAsOf,
   formatUsageBytes,
   formatUsageFooter,
@@ -291,9 +290,6 @@ export function formatRunUsageText(
   });
   const purged = formatDataPurgedNote(usage);
   if (purged) lines.push(c.dim(purged));
-  // What a billed run's storage doesn't include. Not printed for a local run,
-  // whose output stays as the docs show it.
-  if (usage.billed) lines.push(c.dim(formatDataWrittenNote(usage)));
   if (usage.dataRetained) {
     lines.push(
       `Data retained: ${formatUsageBytes(usage.dataRetained.byteMonths)}-months (${usage.dataRetained.retentionMonths} month retention)`

@@ -190,7 +190,7 @@ describe('formatRunUsageText', () => {
     expect(formatRunUsageText(usageOf(), { pricing: true })).toContain(pricing);
   });
 
-  it('prints a billed run from analytics with pricing, when it was counted, and what storage does not include', () => {
+  it('prints a billed run from analytics with pricing and when it was counted', () => {
     const asOf = '2026-11-20T17:10:00.000Z';
     const text = formatRunUsageText(usageOf({ billed: true, asOf }), {
       pricing: true,
@@ -199,9 +199,9 @@ describe('formatRunUsageText', () => {
     expect(text).toContain(
       `Counted as of ${asOf}. Analytics can lag, so the newest events may be missing.`
     );
-    expect(text).toContain(
-      "It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
-    );
+    // What the backend's storage includes is the backend's to say: no
+    // note about it is printed for a billed run.
+    expect(text).not.toContain('QuickJS');
     // The as-of line sits with the run, above the numbers it qualifies.
     const lines = text.split('\n');
     expect(
@@ -213,6 +213,21 @@ describe('formatRunUsageText', () => {
     const text = formatRunUsageText(usageOf());
     expect(text).not.toContain('Counted as of');
     expect(text).not.toContain('QuickJS');
+  });
+
+  it('says a running billed run can still grow and may be missing its newest events', () => {
+    const text = formatRunUsageText(
+      usageOf({
+        billed: true,
+        status: 'running',
+        asOf: '2026-11-20T17:10:00.000Z',
+      })
+    );
+    const lines = text.split('\n');
+    expect(lines[1]).toBe(
+      'This run has not finished; its usage can still grow.'
+    );
+    expect(lines[2]).toMatch(/^Counted as of 2026-11-20T17:10:00\.000Z\./);
   });
 
   it('escapes control characters in an as-of time from the backend', () => {

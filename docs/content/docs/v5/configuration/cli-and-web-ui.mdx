@@ -195,7 +195,7 @@ per flag.
 - Command: `workflow inspect run <run-id>`
 - Default: disabled
 - Prints the run's [usage](/docs/observability/usage) instead of the run: its events by type, and its storage. With `--json`, prints the same numbers as JSON.
-- Only the Local World counts usage; on other backends the command fails rather than printing the run.
+- The Local World counts usage. On the Vercel backend it is experimental and off unless [`WORKFLOW_EXPERIMENTAL_VERCEL_USAGE`](/docs/configuration/runtime-tuning#workflow_experimental_vercel_usage) is set. On other backends the command fails rather than printing the run.
 - Cannot be combined with `--url`/`--web`, `--withData`, or `--decrypt`.
 - Prints in color only to a terminal; output is plain text when piped, with `NO_COLOR` set, or with `TERM=dumb`.
 
