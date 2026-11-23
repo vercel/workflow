@@ -52,7 +52,7 @@ let bodiesFinished = 0;
 /** Per body start: how many step outcomes had committed. */
 let completedAtStart: number[] = [];
 
-registerStepFunction('ra_inc', async (n: number) => {
+function noteBodyStart(): void {
   bodiesStarted++;
   const world = currentWorld;
   if (world) {
@@ -61,11 +61,23 @@ registerStepFunction('ra_inc', async (n: number) => {
     // Every step before this one is `bodiesStarted - 1`.
     unconfirmedAtStart.push(bodiesStarted - 1 - outcomes);
   }
+}
+
+registerStepFunction('ra_inc', async (n: number) => {
+  noteBodyStart();
   bodiesFinished++;
   return n + 1;
 });
 
 const step = `globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_inc")`;
+
+registerStepFunction(
+  'ra_inc_signal',
+  async (n: number, signal: AbortSignal) => {
+    noteBodyStart();
+    return n + (signal.aborted ? 100 : 1);
+  }
+);
 
 /** Holds `ra_gate`'s body until released; `entered` settles once it runs. */
 let gate = withResolvers<void>();
@@ -205,6 +217,19 @@ const withInBandOnlyAbort = (
       n = await inc(controller.signal.aborted ? n + 100 : n);
     }
     return n + (await fromListener);
+  }${registerWorkflow()}`;
+
+// eve's pattern: an in-band-only controller's signal passed to every step,
+// aborted halfway by workflow code.
+const signalIntoSteps = `const inc = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_inc_signal");
+  async function workflow(steps) {
+    const controller = new AbortController({ inBandOnly: true });
+    let n = 0;
+    for (let i = 0; i < steps; i++) {
+      if (i === Math.floor(steps / 2)) controller.abort("halfway");
+      n = await inc(n, controller.signal);
+    }
+    return n;
   }${registerWorkflow()}`;
 
 // The child-run completion system hook (`child-run-completion.ts`), kept
@@ -1221,6 +1246,61 @@ describe.each([
 
       const cold = await coldReplay(world, source);
       expect(cold.result).toBe(expected);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    'runs ahead with an in-band-only signal passed to every step, aborted halfway',
+    async () => {
+      const half = Math.floor(STEPS / 2);
+      const expected = half + (STEPS - half) * 100;
+      const { world } = await run(signalIntoSteps, [STEPS]);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(expected);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      const cold = await coldReplay(world, signalIntoSteps);
+      expect(cold.result).toBe(expected);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    "reports another writer's hook_received on an in-band-only abort hook as a hazard",
+    async () => {
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let outcomes = 0;
+      const { world, runId } = await run(withInBandOnlyAbort(false), [STEPS], {
+        ...slowOutcomes,
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (data.eventType === 'step_completed' && ++outcomes === 2) {
+            const hook = eventsOf(world, 'hook_created')[0];
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: hook?.correlationId,
+              eventData: {
+                token: (hook?.eventData as { token?: string } | undefined)
+                  ?.token,
+                payload: await dehydrateStepReturnValue(
+                  { aborted: true, reason: 'from elsewhere' },
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'hook_received')).toHaveLength(1);
+      expect(
+        errors.mock.calls.some(
+          ([line]) =>
+            String(line).includes('Run-ahead stopped: an event') &&
+            String(line).includes('hook_received')
+        )
+      ).toBe(true);
+      errors.mockRestore();
     }
   );
 

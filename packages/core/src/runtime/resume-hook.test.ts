@@ -1158,3 +1158,14 @@ describe('a by-token lookup', () => {
     expect(span['workflow.hook.lookup_result']).toBe('not_found');
   });
 });
+
+describe('resumeHook on an in-band-only abort hook', () => {
+  it('refuses before looking the hook up', async () => {
+    const getByToken = vi.fn();
+    setWorld({ hooks: { getByToken } } as never);
+    await expect(
+      resumeHook('abrt_inband_01ARZ3NDEKTSV4RRFFQ69G5FAV', { aborted: true })
+    ).rejects.toThrow(/inBandOnly/);
+    expect(getByToken).not.toHaveBeenCalled();
+  });
+});
