@@ -1,3 +1,7 @@
+// Built as `swc_workflow_swc116` by ../transform-swc-1.16; same API.
+#[cfg(feature = "swc-116")]
+extern crate swc_workflow_swc116 as swc_workflow;
+
 use std::path::PathBuf;
 use swc_core::ecma::{
     transforms::testing::{test_fixture, FixtureTestConfig},
@@ -13,8 +17,8 @@ fn syntax_for(input: &PathBuf) -> Syntax {
     }
 }
 
-#[testing::fixture("tests/fixture/**/input.js")]
-#[testing::fixture("tests/fixture/**/input.ts")]
+#[testing::fixture("../transform/tests/fixture/**/input.js")]
+#[testing::fixture("../transform/tests/fixture/**/input.ts")]
 fn step_mode(input: PathBuf) {
     let step_output = input.parent().unwrap().join("output-step.js");
     test_fixture(
@@ -35,8 +39,8 @@ fn step_mode(input: PathBuf) {
     );
 }
 
-#[testing::fixture("tests/fixture/**/input.js")]
-#[testing::fixture("tests/fixture/**/input.ts")]
+#[testing::fixture("../transform/tests/fixture/**/input.js")]
+#[testing::fixture("../transform/tests/fixture/**/input.ts")]
 fn workflow_mode(input: PathBuf) {
     let workflow_output = input.parent().unwrap().join("output-workflow.js");
     test_fixture(
@@ -57,8 +61,8 @@ fn workflow_mode(input: PathBuf) {
     );
 }
 
-#[testing::fixture("tests/fixture/object-property-step/input.js")]
-#[testing::fixture("tests/fixture/nested-step-block-scope-collision/input.js")]
+#[testing::fixture("../transform/tests/fixture/object-property-step/input.js")]
+#[testing::fixture("../transform/tests/fixture/nested-step-block-scope-collision/input.js")]
 fn detect_mode_object_property_step(input: PathBuf) {
     let detect_output = input.parent().unwrap().join("output-detect.js");
     test_fixture(

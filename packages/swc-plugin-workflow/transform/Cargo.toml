@@ -18,3 +18,7 @@ swc_core    = { workspace = true, features = ["ecma_plugin_transform"] }
 [dev-dependencies]
 swc_ecma_parser = { workspace = true }
 testing         = { workspace = true }
+# `swc-116` is the feature `../transform-swc-1.16` builds this source with; it
+# is not a feature of this package.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("swc-116"))'] }

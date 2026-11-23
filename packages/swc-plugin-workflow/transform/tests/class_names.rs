@@ -1,3 +1,7 @@
+// Built as `swc_workflow_swc116` by ../transform-swc-1.16; same API.
+#[cfg(feature = "swc-116")]
+extern crate swc_workflow_swc116 as swc_workflow;
+
 use std::process::Command;
 use swc_core::ecma::{transforms::testing::Tester, visit::visit_mut_pass};
 use swc_workflow::{StepTransform, TransformMode};
