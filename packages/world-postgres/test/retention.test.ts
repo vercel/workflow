@@ -724,7 +724,22 @@ describe('Retention ($retention: 0)', () => {
           .finally(() => {
             settled = true;
           });
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // Until the insert is seen waiting for a lock, rather than for a
+        // fixed time: a write that never blocks fails the wait.
+        await expect
+          .poll(
+            async () =>
+              (
+                await pool.query(
+                  `SELECT count(*)::int AS n FROM pg_stat_activity
+                    WHERE wait_event_type = 'Lock'
+                      AND query LIKE '%workflow_stream_chunks%'
+                      AND pid <> pg_backend_pid()`
+                )
+              ).rows[0].n,
+            { timeout: 10_000, interval: 20 }
+          )
+          .toBe(1);
         expect(settled).toBe(false);
 
         await deleting.query('COMMIT');

@@ -139,13 +139,16 @@ export async function purgeRunUserData(
     // finished run is never resumed from it, and a snapshot load does not
     // check the run's `expired_at`, so the row goes.
     await tx.delete(snapshots).where(eq(snapshots.runId, runId));
-    // Not the database default: a statement under REPEATABLE READ or
-    // SERIALIZABLE would read the transaction's first snapshot, taken before
-    // the run update waited out a stream insert, and miss its chunks.
   }, PURGE_TRANSACTION);
 }
 
-/** Isolation for {@link purgeRunUserData}; see the end of its transaction. */
+/**
+ * Isolation for {@link purgeRunUserData}, set rather than left to the
+ * database default: a statement under REPEATABLE READ or SERIALIZABLE would
+ * read the transaction's first snapshot, taken before the run update waited
+ * out a stream insert, and miss its chunks (`Var_RepeatableRead` in
+ * `tla/StreamPurge.tla`).
+ */
 const PURGE_TRANSACTION = { isolationLevel: 'read committed' } as const;
 
 /**

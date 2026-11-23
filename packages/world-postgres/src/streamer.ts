@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { debugLog } from '@workflow/utils';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
@@ -370,6 +371,11 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
    * moment. The lock is shared, so concurrent stream writes to one run do not
    * wait on each other; they wait only for a transaction that updates or
    * exclusively locks the run row, and such a transaction waits for them.
+   * Postgres lets a new shared locker in ahead of a waiting updater, so
+   * writes that overlap without a gap keep that updater waiting.
+   *
+   * `tla/StreamPurge.tla` models this interlock and the variants that break
+   * it; `test/stream-deletion-race.test.ts` races it against real Postgres.
    */
   const insertDataChunks = async (
     runId: string,
@@ -394,7 +400,13 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
          FOR SHARE),
         false
       )`);
-    return (result.rowCount ?? 0) > 0;
+    if ((result.rowCount ?? 0) > 0) return true;
+    // The caller's write resolves either way, so this is the only trace of
+    // the dropped chunks. No stream name: it can carry user data.
+    debugLog(
+      `[world-postgres] dropped ${chunks.length} stream chunk(s) written after the data of run "${runId}" was deleted`
+    );
+    return false;
   };
 
   return {
