@@ -8,6 +8,7 @@
     "build",
     "server.js",
     "server.d.ts",
+    "host-guard.js",
     "package.json"
   ],
   "exports": {

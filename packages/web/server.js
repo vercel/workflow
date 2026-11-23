@@ -11,11 +11,12 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import express from 'express';
+import { checkRequest, normalizeAllowedHosts } from './host-guard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const buildDir = path.resolve(__dirname, 'build');
 
-async function createApp() {
+async function createApp(allowedHosts) {
   // Import the compiled server build, which exports { app } (an Express app
   // with the React Router request handler already mounted by server/app.ts)
   const { app } = await import(
@@ -25,6 +26,20 @@ async function createApp() {
   // Add static file serving in front of the React Router handler.
   // We create a wrapper app so static middleware runs first.
   const server = express();
+
+  // Reject DNS-rebound and cross-site requests before anything else runs. The
+  // guard reads only the method and the raw `Host`/`Origin` headers.
+  server.use(async (req, res, next) => {
+    const rejection = checkRequest(
+      { method: req.method, headers: { get: (name) => req.get(name) } },
+      allowedHosts
+    );
+    if (!rejection) return next();
+    res
+      .status(rejection.status)
+      .type('text/plain')
+      .send(await rejection.text());
+  });
 
   // Serve immutable assets with long-lived cache
   server.use(
@@ -48,11 +63,21 @@ async function createApp() {
  * Start the production HTTP server.
  *
  * @param {number} [port] - Port to listen on. Defaults to PORT env or 3000.
+ * @param {object} [options]
+ * @param {string | string[] | true} [options.allowedHosts] - Host names,
+ *   besides `localhost`, `*.localhost` and IP literals, that requests may
+ *   address the server by: an array, or a comma-separated string in the format
+ *   of `WORKFLOW_WEB_ALLOWED_HOSTS`, which is the default. `.example.com`
+ *   matches the domain and its subdomains; `true` or `"*"` disables the check.
  * @returns {Promise<import("http").Server>} The HTTP server instance.
  */
-export async function startServer(port) {
+export async function startServer(port, options = {}) {
   const resolvedPort = port ?? parseInt(process.env.PORT || '3000', 10);
-  const app = await createApp();
+  const app = await createApp(
+    normalizeAllowedHosts(
+      options.allowedHosts ?? process.env.WORKFLOW_WEB_ALLOWED_HOSTS
+    )
+  );
 
   return new Promise((resolve, reject) => {
     const server = app.listen(resolvedPort, () => {
