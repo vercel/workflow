@@ -510,6 +510,14 @@ export function getRunAheadDepth(): number {
  * single-orchestrator run it does so by naming them on an orchestrator
  * message, and the orchestrator writes `wait_completed` in-band. An open wait
  * is therefore only path-changing through its own timer.
+ *
+ * For spec 9 run-ahead the window decides cost, not correctness. Only an
+ * orchestrator writes `wait_completed`, in-band: a wait that comes due while
+ * this delivery runs ahead is completed by it at the top of a later pass,
+ * after the writes in flight, or by its timer's delivery, which the in-band
+ * fence orders against this one (one of them is refused and redelivered).
+ * Draining near a due wait avoids that redelivery and completes the wait on
+ * time.
  */
 export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
 
@@ -531,7 +539,9 @@ export function getOpenWaitClockSkewMs(): number {
 /**
  * The smallest allowance run-ahead's wait check uses, whatever
  * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` says (proof of concept): a few round
- * trips, so a wait coming due while the writes in flight commit always counts.
+ * trips, so a wait about to come due drains the boundary instead of costing a
+ * fenced redelivery or completing a pass late. Correctness does not depend on
+ * it (see {@link OPEN_WAIT_CLOCK_SKEW_MS}).
  */
 export const MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS = 1_000;
 
