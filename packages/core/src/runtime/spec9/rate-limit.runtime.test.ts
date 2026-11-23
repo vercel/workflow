@@ -13,6 +13,7 @@ import {
   slotToEventId,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
 import type { HeldMessage } from '../../test-support/append-only-world.js';
 import {
@@ -631,5 +632,154 @@ describe.each(
     const failed = eventsOf(world, 'run_failed');
     expect(failed).toHaveLength(1);
     expect(eventsOf(world, 'rate_created')).toHaveLength(0);
+  }, 60_000);
+});
+
+/** `n` calls at once on one key at two per second. */
+const fanOut = `${header}
+  async function workflow(n) {
+    await Promise.all(
+      Array.from({ length: n }, () =>
+        rateLimit({ key: "fan", limit: 2, period: "1s" })
+      )
+    );
+    return n;
+  }${registerWorkflow()}`;
+
+/** Two calls at once on each of two keys at one per second. */
+const fanOutTwoKeys = `${header}
+  async function workflow() {
+    await Promise.all(
+      ["a", "a", "b", "b"].map((key) =>
+        rateLimit({ key, limit: 1, period: "1s" })
+      )
+    );
+    return 4;
+  }${registerWorkflow()}`;
+
+/** Two calls at once on each of five keys at one per second. */
+const fanOutFiveKeys = `${header}
+  async function workflow() {
+    await Promise.all(
+      ["a", "a", "b", "b", "c", "c", "d", "d", "e", "e"].map((key) =>
+        rateLimit({ key, limit: 1, period: "1s" })
+      )
+    );
+    return 10;
+  }${registerWorkflow()}`;
+
+describe.each(ENGINES)('rate limit calls made at once (%s)', (engine) => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    setWorld(undefined);
+  });
+
+  it('writes every call in one batch, each slot one interval after the last', async () => {
+    const { world } = await setupOrchestratorRun(
+      fanOut,
+      [4],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+        rateEventsInBatch: true,
+      },
+      engine
+    );
+    await world.runOnClock();
+
+    expect(await runResult(world)).toBe(4);
+    expect(world.batches).toContainEqual([
+      'rate_created',
+      'rate_created',
+      'rate_created',
+      'rate_created',
+    ]);
+    const acquired = eventsOf(world, 'rate_acquired');
+    expect(acquired).toHaveLength(4);
+    const slots = acquired
+      .map((event) => new Date(dataOf(event)?.acquireAt as Date).getTime())
+      .sort((a, b) => a - b);
+    expect(slots.slice(1).map((slot, i) => slot - slots[i]!)).toEqual([
+      500, 500, 500,
+    ]);
+  }, 60_000);
+
+  it('writes the wakes due together in one batch', async () => {
+    const { world } = await setupOrchestratorRun(
+      fanOutTwoKeys,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+        rateEventsInBatch: true,
+      },
+      engine
+    );
+    await world.runOnClock();
+
+    expect(await runResult(world)).toBe(4);
+    // One call per key went at once; the other per key waited one second,
+    // both to the same slot.
+    expect(eventsOf(world, 'rate_created')).toHaveLength(2);
+    expect(eventsOf(world, 'rate_acquired')).toHaveLength(4);
+    expect(world.batches).toContainEqual(['rate_acquired', 'rate_acquired']);
+  }, 60_000);
+
+  it('gets every call through when the first wake of each batch is too early', async () => {
+    // Five wakes are due together. The World refuses the first rate_acquired
+    // of each batch as too early (its clock a little behind), and every item
+    // after it as behind a refused outcome: each call is sent again until it
+    // lands, and none is taken for already acquired.
+    let refused = 0;
+    const debug = vi.spyOn(runtimeLogger, 'debug');
+    const { world } = await setupOrchestratorRun(
+      fanOutFiveKeys,
+      [],
+      {
+        runSpecVersion: SPEC_VERSION_RATE_LIMITS,
+        rateEventsInBatch: true,
+        refuseBatchedRate: (event, index) => {
+          if (event.eventType !== 'rate_acquired' || index !== 0) {
+            return undefined;
+          }
+          refused++;
+          return { status: 425, error: 'rate-acquire-too-early' };
+        },
+      },
+      engine
+    );
+    await world.runOnClock();
+
+    expect(await runResult(world)).toBe(10);
+    expect(refused).toBeGreaterThan(0);
+    expect(
+      world.batches.some(
+        (batch) => batch.filter((type) => type === 'rate_acquired').length > 1
+      )
+    ).toBe(true);
+    // No call ran out of resends behind the others' refusals, which would
+    // fail it as a conflict (as if already acquired).
+    expect(
+      debug.mock.calls.filter(([message]) =>
+        String(message).includes('out of resends')
+      )
+    ).toEqual([]);
+    // Each call went ahead exactly once.
+    const acquired = eventsOf(world, 'rate_acquired');
+    expect(acquired).toHaveLength(10);
+    expect(new Set(acquired.map((event) => event.correlationId)).size).toBe(10);
+  }, 60_000);
+
+  it('writes each call on its own turn on a World without the capability', async () => {
+    const { world } = await setupOrchestratorRun(
+      fanOut,
+      [3],
+      { runSpecVersion: SPEC_VERSION_RATE_LIMITS },
+      engine
+    );
+    await world.runOnClock();
+
+    expect(await runResult(world)).toBe(3);
+    expect(world.batches.flat()).not.toContain('rate_created');
+    expect(eventsOf(world, 'rate_acquired')).toHaveLength(3);
   }, 60_000);
 });
