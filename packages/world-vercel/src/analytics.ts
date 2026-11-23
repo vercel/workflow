@@ -1,4 +1,4 @@
-import { WorkflowWorldError } from '@workflow/errors';
+import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   ANALYTICS_EVENTS_GET_MANY_LIMIT,
   ANALYTICS_MAX_ATTRIBUTE_FILTERS,
@@ -10,14 +10,17 @@ import {
   AnalyticsHookSchema,
   type AnalyticsListAttributesParams,
   AnalyticsRunSchema,
+  AnalyticsRunWithUsageSchema,
   AnalyticsStepSchema,
   AnalyticsWaitSchema,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_VALUE_MAX_BYTES,
   AttributeKeySchema,
   AttributeValueSchema,
+  buildRunUsage,
   PaginatedResponseSchema,
   type PaginationOptions,
+  type RunUsage,
 } from '@workflow/world';
 import type { APIConfig } from './utils.js';
 import { makeRequest } from './utils.js';
@@ -317,6 +320,56 @@ function appendAttributeListParams(
     params.pagination,
     ANALYTICS_PAGE_LIMIT
   );
+}
+
+/**
+ * Error code for a backend that has the run but returns no usage for it:
+ * one that predates `include=usage`. Not retryable.
+ */
+export const USAGE_UNAVAILABLE = 'USAGE_UNAVAILABLE';
+
+/**
+ * A run's usage (`world.experimental_usage.getRun`), built from the per-run
+ * aggregates `GET /v2/analytics/runs/:runId?include=usage` returns, with the
+ * same `buildRunUsage` world-local uses. One request; the run's log is never
+ * paged through. Rejects with `WorkflowRunNotFoundError` on a `404`, and with
+ * a `USAGE_UNAVAILABLE` error when the backend sends the run without usage.
+ */
+export async function getRunUsage(
+  runId: string,
+  config?: APIConfig
+): Promise<RunUsage> {
+  assertRunId('experimental_usage.getRun', runId);
+  let run: Awaited<ReturnType<typeof AnalyticsRunWithUsageSchema.parse>>;
+  try {
+    run = await makeRequest({
+      endpoint: `/v2/analytics/runs/${encodeURIComponent(runId)}?include=usage`,
+      config,
+      schema: AnalyticsRunWithUsageSchema,
+    });
+  } catch (error) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
+      throw new WorkflowRunNotFoundError(runId);
+    }
+    throw error;
+  }
+  if (!run.usage) {
+    throw new WorkflowWorldError(
+      "Run usage isn't available from this backend yet.",
+      { code: USAGE_UNAVAILABLE }
+    );
+  }
+  const { asOf, hookGroups, ...usage } = run.usage;
+  return buildRunUsage({
+    runId: run.runId,
+    status: run.status,
+    workflowName: run.workflowName,
+    ...usage,
+    // Analytics carries no hook tokens, so a hook is named by its id.
+    hookGroups: hookGroups?.map((group) => ({ ...group, token: null })),
+    billed: true,
+    asOf,
+  });
 }
 
 export function createAnalytics(config?: APIConfig): Analytics {

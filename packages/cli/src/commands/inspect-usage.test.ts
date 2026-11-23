@@ -426,6 +426,23 @@ describe('workflow inspect run <id> --usage', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('names the experimental flag on the Vercel backend without usage', async () => {
+    const runId = await seedRun();
+    const { experimental_usage: _omit, ...withoutUsage } = world;
+    state.world = withoutUsage as World;
+    const { stdout, stderr } = await runInspect([
+      'run',
+      runId,
+      '--usage',
+      '--backend',
+      'vercel',
+    ]);
+    expect(stderr).toContain('WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1');
+    expect(stderr).not.toContain('only available for the local backend');
+    expect(stdout).toBe('');
+    expect(process.exitCode).toBe(1);
+  });
+
   it.each([
     [['runs', '--usage'], 'shows one run'],
     [

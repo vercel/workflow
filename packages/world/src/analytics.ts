@@ -55,6 +55,66 @@ export const AnalyticsRunSchema = z.object({
   workflowEncryptionEnabled: NullableBooleanSchema,
 });
 
+const UsageCountSchema = z.number().int().nonnegative();
+
+/**
+ * A run's usage aggregates, returned by `GET /v2/analytics/runs/:runId`
+ * with `include=usage`: `RunUsageAggregates` without the fields the run
+ * itself carries (`runId`, `status`, `workflowName`) and without the
+ * world-local fields for runs whose data was deleted. Experimental, read
+ * only behind `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1`.
+ *
+ * Metadata only, like the rest of this namespace: hook groups carry no
+ * token (a token resumes its hook), so hooks are labelled by their id.
+ * `asOf` is when the counts were taken; ingestion can lag behind it.
+ *
+ * Step events are counted once, in `stepGroups`; `eventGroups` holds every
+ * other event type (as `RunUsageEventGroup` says). A response that lists a
+ * `step_*` type in `eventGroups` is rejected, since it would count those
+ * events twice.
+ */
+export const AnalyticsRunUsageSchema = z.object({
+  asOf: z.string(),
+  eventGroups: z.array(
+    z.object({
+      eventType: z.string().refine((type) => !type.startsWith('step_'), {
+        message: 'step events belong in stepGroups, not eventGroups',
+      }),
+      events: UsageCountSchema,
+      bytes: UsageCountSchema,
+    })
+  ),
+  stepGroups: z.array(
+    z.object({
+      stepName: z.string().nullable(),
+      steps: UsageCountSchema,
+      events: UsageCountSchema,
+      created: UsageCountSchema,
+      started: UsageCountSchema,
+      completed: UsageCountSchema,
+      failed: UsageCountSchema,
+      retries: UsageCountSchema,
+      restarts: UsageCountSchema,
+      bytes: UsageCountSchema,
+    })
+  ),
+  hookGroups: z
+    .array(z.object({ hookId: z.string(), events: UsageCountSchema }))
+    .optional(),
+  streamBytes: UsageCountSchema,
+  dataRetained: z
+    .object({
+      byteMonths: z.number().nonnegative(),
+      retentionMonths: z.number().nonnegative(),
+    })
+    .nullable(),
+});
+
+/** {@link AnalyticsRunSchema} plus `usage`, absent from a backend without it. */
+export const AnalyticsRunWithUsageSchema = AnalyticsRunSchema.extend({
+  usage: AnalyticsRunUsageSchema.optional(),
+});
+
 export const AnalyticsStepSchema = z.object({
   runId: z.string(),
   stepId: z.string(),
@@ -133,6 +193,7 @@ export const AnalyticsAttributeKeySchema = z.object({
 });
 
 export type AnalyticsRun = z.infer<typeof AnalyticsRunSchema>;
+export type AnalyticsRunUsage = z.infer<typeof AnalyticsRunUsageSchema>;
 export type AnalyticsStep = z.infer<typeof AnalyticsStepSchema>;
 export type AnalyticsEvent = z.infer<typeof AnalyticsEventSchema>;
 export type AnalyticsHook = z.infer<typeof AnalyticsHookSchema>;

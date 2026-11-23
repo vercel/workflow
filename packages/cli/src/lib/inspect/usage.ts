@@ -3,6 +3,8 @@ import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
+  formatDataWrittenNote,
+  formatUsageAsOf,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
@@ -146,6 +148,9 @@ export function formatRunUsageText(
   if (usage.inProgress) {
     lines.push(c.dim('This run has not finished; its usage can still grow.'));
   }
+  // Usage read from analytics, which can lag (absent on a local run).
+  const asOf = formatUsageAsOf(usage);
+  if (asOf) lines.push(c.dim(escapeControlChars(asOf)));
   lines.push('');
 
   // Summary block. Retries are on the step rows.
@@ -286,6 +291,9 @@ export function formatRunUsageText(
   });
   const purged = formatDataPurgedNote(usage);
   if (purged) lines.push(c.dim(purged));
+  // What a billed run's storage leaves out. Not printed for a local run,
+  // whose output stays as the docs show it.
+  if (usage.billed) lines.push(c.dim(formatDataWrittenNote(usage)));
   if (usage.dataRetained) {
     lines.push(
       `Data retained: ${formatUsageBytes(usage.dataRetained.byteMonths)}-months (${usage.dataRetained.retentionMonths} month retention)`

@@ -242,6 +242,13 @@ What a snapshot contains, and how it is protected:
 - Dynamic source runs with the full privileges of the deployment's functions. Enable it only on deployments whose dynamic source you trust as much as your own code.
 - When disabled, `start()` with source throws before writing anything, and a delivered dynamic run fails instead of executing.
 
+## Run usage
+
+### `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE`
+
+- Default: disabled
+- Set `1` to read a run's [usage](/docs/observability/usage) from the Vercel backend, for `workflow inspect run <id> --usage --backend vercel`. Experimental: it needs backend support, and its output may change.
+
 ## Compression and tracing
 
 ### `WORKFLOW_DISABLE_COMPRESSION`

@@ -1,6 +1,6 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
-import { createAnalytics } from './analytics.js';
+import { createAnalytics, getRunUsage } from './analytics.js';
 import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -141,6 +141,16 @@ export function createWorld(config?: APIConfig): World {
     ...createQueue(config),
     ...createStorage(config),
     analytics: createAnalytics(config),
+    // Experimental and off by default: the web UI and the CLI show usage
+    // whenever this exists, and the backend half (`include=usage`) is not
+    // available everywhere yet.
+    ...(process.env.WORKFLOW_EXPERIMENTAL_VERCEL_USAGE === '1'
+      ? {
+          experimental_usage: instrumentObject('world.experimental_usage', {
+            getRun: (runId: string) => getRunUsage(runId, config),
+          }),
+        }
+      : {}),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     regionForRunId,

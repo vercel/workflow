@@ -4,9 +4,11 @@ import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
+  formatDataWrittenNote,
   formatLocalDataWrittenNote,
   formatOtherSteps,
   formatRunEventsLine,
+  formatUsageAsOf,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
@@ -296,6 +298,32 @@ describe('usage formatting', () => {
     expect(formatDataWrittenHeading(usage)).toBe('Storage (local)');
     expect(formatLocalDataWrittenNote(usage)).toBe(
       "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
+    );
+  });
+
+  it('says what billed storage leaves out, and keeps the local note for local runs', () => {
+    const local = buildRunUsage(aggregates({}));
+    const billed = buildRunUsage(aggregates({ billed: true }));
+    expect(formatDataWrittenNote(local)).toBe(
+      formatLocalDataWrittenNote(local)
+    );
+    expect(formatDataWrittenNote(billed)).toBe(
+      "Doesn't include QuickJS VM snapshots or a dynamic workflow's code yet, which are billed."
+    );
+    // The web's helper is unchanged: still nothing on a billed run.
+    expect(formatLocalDataWrittenNote(billed)).toBeNull();
+  });
+
+  it('carries asOf only when the backend sets it', () => {
+    const local = buildRunUsage(aggregates({}));
+    expect('asOf' in local).toBe(false);
+    expect(formatUsageAsOf(local)).toBeNull();
+    const fromAnalytics = buildRunUsage(
+      aggregates({ billed: true, asOf: '2026-11-20T17:10:00.000Z' })
+    );
+    expect(fromAnalytics.asOf).toBe('2026-11-20T17:10:00.000Z');
+    expect(formatUsageAsOf(fromAnalytics)).toBe(
+      'Counted as of 2026-11-20T17:10:00.000Z. Analytics can lag, so the newest events may be missing.'
     );
   });
 
