@@ -2,12 +2,12 @@
 // .github/workflows/e2e-community-world.yml before the dev server starts.
 //
 // The shipped workbench intentionally has no instrumentation file so it matches
-// the Next.js getting-started docs (removed in #1959/#1963). The community world
-// adapters (e.g. MongoDB, Redis), however, dispatch created runs from an
-// in-process queue worker that only runs once `getWorld().start()` is called.
-// Without this kickstart every run stays `pending` and the E2E suite hangs until
-// the job timeout. This restores the previous workbench instrumentation for the
-// community-world E2E lane only.
+// the Next.js getting-started docs. The community world adapters (MongoDB,
+// Redis, Turso) store a queued message and deliver it from an in-process worker
+// that only runs once `getWorld().start()` is called. Without this kickstart
+// every run stays `pending` and each test waits out its deadline. The lane
+// copies this file for every community world; `start?.()` leaves a world
+// without a `start` unaffected.
 import { registerOTel } from '@vercel/otel';
 
 registerOTel({ serviceName: 'example-nextjs-workflow' });

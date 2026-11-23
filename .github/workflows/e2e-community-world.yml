@@ -39,23 +39,32 @@ on:
         required: false
         type: string
         default: ''
+      test-name-pattern:
+        description: 'vitest --testNamePattern for the E2E suite, built by scripts/create-community-worlds-matrix.mjs from the knownGaps of the world'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   e2e:
     name: E2E ${{ inputs.world-name }}
     runs-on: ubuntu-latest
-    # continue-on-error: community worlds are third-party packages installed
-    # unpinned from npm, excluded from e2e-required-check in tests.yml, and all
-    # of them are currently incompatible with the SDK at HEAD (e.g. the
-    # @workflow-worlds/* packages were last published 2026-02; Turso fails with
-    # "no such table: workflow_runs"). A red job here carries no signal about
-    # the change under test — it only turns every run's conclusion red.
-    # Failures still surface via the ⚠️ warning in the PR comment summary and
-    # the uploaded result artifacts.
+    # continue-on-error: this lane is a compatibility report, not a gate. The
+    # community worlds are third-party packages installed unpinned from npm and
+    # excluded from e2e-required-check in tests.yml. The @workflow-worlds/*
+    # packages implement the World contract as of @workflow/world 4.1.0-beta.2,
+    # so the tests for anything added to it since fail (getStreamInfo and
+    # getStreamChunks do not exist, a createHook() hook is resumable through the
+    # public webhook endpoint, a run is not created from run_started alone). Those
+    # failures are the report: they surface via the ⚠️ warning in the PR comment
+    # summary and the uploaded result artifacts without turning the run red.
     continue-on-error: true
-    # Successful community runs historically finish in ~12-15 min. Cap at 20 so a
-    # regression can't burn 30 min; the preflight below fails much faster than this.
-    timeout-minutes: 20
+    # A job that reaches this timeout is cancelled, and a cancelled job turns the
+    # whole Tests run's conclusion into `cancelled`, which continue-on-error does
+    # not absorb. The "Run E2E Tests" step therefore carries its own, shorter
+    # timeout; this one only has to leave room around it for the setup steps
+    # (about 3 minutes) and the `always()` summary and upload steps.
+    timeout-minutes: 25
 
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -69,15 +78,33 @@ jobs:
       - name: Start MongoDB
         if: ${{ inputs.service-type == 'mongodb' }}
         run: |
-          docker run -d --name mongodb -p 27017:27017 mongo:7
+          # A single-node replica set, not a standalone server. The world
+          # notifies stream readers in other processes through a change stream,
+          # which only a replica set provides; on a standalone server it falls
+          # back to in-process events, and the test process never sees a chunk
+          # or a close written by the app process.
+          docker run -d --name mongodb -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
           echo "Waiting for MongoDB to be ready..."
           for i in {1..30}; do
-            if docker exec mongodb mongosh --eval 'db.runCommand({ ping: 1 })' &>/dev/null; then
+            if docker exec mongodb mongosh --quiet --eval 'db.runCommand({ ping: 1 })' &>/dev/null; then
               echo "MongoDB is ready"
               break
             fi
             sleep 2
           done
+          # The member is named by the address clients connect to, so the
+          # driver's topology discovery keeps using localhost:27017.
+          docker exec mongodb mongosh --quiet --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] })'
+          echo "Waiting for the replica set to elect a primary..."
+          for i in {1..30}; do
+            if docker exec mongodb mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true; then
+              echo "MongoDB replica set is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::MongoDB replica set did not elect a primary"
+          exit 1
 
       - name: Start Redis
         if: ${{ inputs.service-type == 'redis' }}
@@ -100,6 +127,20 @@ jobs:
       - name: Install ${{ inputs.world-name }} World
         run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
 
+      # Three processes open the world: the setup command and the dev server run
+      # in the app directory, vitest at the repository root. A relative `file:`
+      # URL (Turso's SQLite database) would name a different file for each
+      # working directory, so the tests would query an empty database next to
+      # the migrated one. Anchor such values to the app directory before any of
+      # them starts. Absolute paths and `file::memory:` are left as they are.
+      - name: Set environment variables
+        run: |
+          echo "$ENV_VARS" | jq -r --arg dir "$GITHUB_WORKSPACE/workbench/$APP_NAME" \
+            'to_entries[] | "\(.key)=\(.value | if test("^file:[^/:]") then "file:\($dir)/\(ltrimstr("file:"))" else . end)"' >> "$GITHUB_ENV"
+        env:
+          ENV_VARS: ${{ inputs.env-vars }}
+          APP_NAME: ${{ inputs.app-name }}
+
       - name: Run setup command
         if: ${{ inputs.setup-command != '' }}
         run: ${{ inputs.setup-command }}
@@ -108,25 +149,23 @@ jobs:
       - name: Resolve symlinks
         run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
 
-      # Adapters with an in-process queue worker (mongodb, redis) only dispatch
-      # created runs once `getWorld().start()` has been called. The shipped
-      # workbench has no instrumentation file (matches the getting-started docs,
-      # #1959), so start the world here for the E2E lane only. Without this, runs
-      # stay `pending` and the suite hangs until the job timeout. Worlds that
-      # dispatch without an explicit start (e.g. turso) don't get this — adding it
-      # changes their setup/init and is unnecessary.
+      # The community worlds store a queued message and deliver it from an
+      # in-process worker that only runs once `getWorld().start()` has been
+      # called. The shipped workbench has no instrumentation file (matches the
+      # getting-started docs, #1959), so start the world here for the E2E lane
+      # only. Without this, runs stay `pending` and every test waits out its
+      # deadline. The fixture calls `start?.()`, so a world without one is
+      # unaffected.
       - name: Restore world kickstart (CI only)
-        if: ${{ inputs.service-type == 'mongodb' || inputs.service-type == 'redis' }}
         run: cp .github/fixtures/community-world-instrumentation.ts "workbench/${{ inputs.app-name }}/instrumentation.ts"
-
-      - name: Set environment variables
-        run: |
-          echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
 
       - name: Run E2E Tests
         # Below the job's timeout on purpose. A step that times out fails, and
-        # continue-on-error absorbs it; a job that times out is cancelled, and
-        # that turns the whole Tests run's conclusion into `cancelled`.
+        # continue-on-error absorbs it; a job that times out is cancelled. A
+        # complete suite takes about 6 minutes: every test carries its own
+        # deadline, the preflight catches a world that dispatches nothing, and
+        # tests that could only wait out their deadline are left out through
+        # test-name-pattern.
         timeout-minutes: 15
         run: |
           export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-$APP_NAME-$WORLD_ID.log"
@@ -134,22 +173,20 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           echo "Waiting for dev server to start..." && sleep 15
 
-          # Fast-fail preflight (worlds with an in-process worker only). When such
-          # a world isn't dispatching, runs stay `pending` and every test burns its
-          # full timeout, so the suite would hang for the entire job timeout. Run
-          # one representative set under a short wall-clock cap and bail only if it
-          # *times out* (exit 124 — the hang signature). Ordinary test failures
-          # don't abort; they're left to the full suite below.
-          if [[ "$SERVICE_TYPE" == "mongodb" || "$SERVICE_TYPE" == "redis" ]]; then
-            echo "Running community-world dispatch preflight ($WORLD_ID)..."
-            rc=0
-            timeout 150 pnpm vitest run packages/core/e2e/e2e.test.ts -t "addTenWorkflow" --reporter=default || rc=$?
-            if [[ $rc -eq 124 ]]; then
-              echo "::error::Community world '$WORLD_ID' preflight timed out — workflow runs are not being dispatched. Aborting before the job timeout."
-              exit 1
-            fi
-            echo "Preflight finished without hanging (exit $rc); continuing to full suite."
+          # Fast-fail preflight. When a world isn't dispatching, runs stay
+          # `pending` and every test burns its full timeout, so the suite would
+          # hang for the entire job timeout. Run one representative set under a
+          # short wall-clock cap and bail only if it *times out* (exit 124 — the
+          # hang signature). Ordinary test failures don't abort; they're left to
+          # the full suite below.
+          echo "Running community-world dispatch preflight ($WORLD_ID)..."
+          rc=0
+          timeout 150 pnpm vitest run packages/core/e2e/e2e.test.ts -t "addTenWorkflow" --reporter=default || rc=$?
+          if [[ $rc -eq 124 ]]; then
+            echo "::error::Community world '$WORLD_ID' preflight timed out — workflow runs are not being dispatched. Aborting before the job timeout."
+            exit 1
           fi
+          echo "Preflight finished without hanging (exit $rc); continuing to full suite."
 
           # Run both suites regardless of individual outcomes (so both result
           # artifacts are produced for the summary), then fail the step if either
@@ -158,19 +195,36 @@ jobs:
           fail=0
           pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || fail=1
           sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || fail=1
+          # Tests the pattern leaves out are reported as skipped.
+          name_filter=()
+          if [[ -n "$TEST_NAME_PATTERN" ]]; then
+            name_filter=(-t "$TEST_NAME_PATTERN")
+          fi
+          pnpm vitest run packages/core/e2e/e2e.test.ts "${name_filter[@]}" --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || fail=1
           exit $fail
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ inputs.app-name }}
-          SERVICE_TYPE: ${{ inputs.service-type }}
           WORLD_ID: ${{ inputs.world-id }}
+          TEST_NAME_PATTERN: ${{ inputs.test-name-pattern }}
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","supportsDeferredStepCopies":false}'
 
       - name: Generate E2E summary
         if: always()
         run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests (${{ inputs.world-name }})" >> $GITHUB_STEP_SUMMARY || true
+
+      # The tests left out through test-name-pattern show up in the table above
+      # as skipped. Name the gaps behind them so the count explains itself.
+      - name: Report known gaps
+        if: always()
+        run: |
+          gaps=$(jq -r --arg id "$WORLD_ID" '.worlds[] | select(.id == $id) | .knownGaps // [] | join(", ")' worlds-manifest.json || true)
+          if [[ -n "$gaps" ]]; then
+            echo "Tests blocked by this world's known gaps are skipped: $gaps (\`knownGaps\` in worlds-manifest.json; the tests per gap are listed in scripts/create-community-worlds-matrix.mjs)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          WORLD_ID: ${{ inputs.world-id }}
 
       - name: Upload E2E results
         uses: actions/upload-artifact@v7
