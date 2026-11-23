@@ -13,7 +13,7 @@ import {
   ABORT_IN_BAND_ONLY,
   ABORT_STREAM_NAME,
 } from '../symbols.js';
-import { getAbortStreamId } from '../util.js';
+import { getAbortStreamId, IN_BAND_ONLY_ABORT_ID_PREFIX } from '../util.js';
 
 /**
  * A lightweight AbortSignal implementation for the workflow VM context.
@@ -126,7 +126,10 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
      * controller itself (rather than its `signal`) to a step throws.
      */
     constructor(options?: { inBandOnly?: boolean }) {
-      const id = ctx.generateUlid();
+      const id =
+        options?.inBandOnly === true
+          ? `${IN_BAND_ONLY_ABORT_ID_PREFIX}${ctx.generateUlid()}`
+          : ctx.generateUlid();
       const streamName = getAbortStreamId(id);
       const hookToken = `abrt_${id}`;
 

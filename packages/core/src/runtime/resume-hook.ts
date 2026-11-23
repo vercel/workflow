@@ -39,6 +39,7 @@ import {
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
+import { isInBandOnlyAbortToken } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { publishHookWakeWithRetry } from './hook-wake.js';
@@ -510,9 +511,14 @@ async function resumeHookImpl<T = any>(
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
-      const world = worldOverride ?? (await getWorldLazy());
       const token =
         typeof tokenOrHook === 'string' ? tokenOrHook : tokenOrHook.token;
+      if (isInBandOnlyAbortToken(token)) {
+        throw new WorkflowRuntimeError(
+          'This hook belongs to an AbortController created with { inBandOnly: true }: only workflow code may abort it.'
+        );
+      }
+      const world = worldOverride ?? (await getWorldLazy());
 
       // The hook's token can change hands while this resume is in flight
       // (`createHook({ experimental_force: true })` in another run). The
