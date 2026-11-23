@@ -208,6 +208,16 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: true,
     reason: 'conditional delete (exists) → 409, no duplicate row',
   },
+  // Rate limit calls are in-band only: a retry whose original landed carries
+  // a stale fence count, so the backend refuses it (412) before it reserves.
+  rate_created: {
+    retryable: true,
+    reason: 'in-band fence → 412 before reserving, no duplicate row or slot',
+  },
+  rate_acquired: {
+    retryable: true,
+    reason: 'in-band fence → 412, or already-acquired guard → 409',
+  },
   // True idempotency via a correlationId constraint that reuses the eventId.
   attr_set: {
     retryable: true,
@@ -232,6 +242,11 @@ export const EVENT_RETRY_ELIGIBILITY = {
   },
   // Server-originated; the SDK never POSTs it.
   hook_conflict: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
+  // Server-originated: committed in place of a rate_created past its deadline.
+  rate_failed: {
     retryable: false,
     reason: 'server-originated; never POSTed by the SDK',
   },

@@ -5,7 +5,7 @@ import type { RawDatabase } from './driver.js';
  * how many have run. Append; never edit a shipped migration.
  *
  * Conventions:
- * - Times are epoch milliseconds (INTEGER).
+ * - Times are epoch milliseconds (INTEGER), except `rate_limits.tat_us`.
  * - `doc` columns hold the entity or event as written by `codec.encode`; the
  *   other columns are what the rows are looked up and ordered by.
  * - `tag` is the World's `tag` option (test isolation), NULL when untagged.
@@ -124,6 +124,17 @@ const MIGRATIONS: string[] = [
     run_id TEXT PRIMARY KEY,
     envelope BLOB NOT NULL
   );
+  `,
+  `
+  -- experimental_rateLimit(): each key's next free slot (GCRA's tat), in
+  -- epoch microseconds. Keys are scoped to the World's tag ('' untagged),
+  -- like everything else a tagged World sees.
+  CREATE TABLE rate_limits (
+    tag TEXT NOT NULL,
+    key TEXT NOT NULL,
+    tat_us INTEGER NOT NULL,
+    PRIMARY KEY (tag, key)
+  ) WITHOUT ROWID;
   `,
 ];
 

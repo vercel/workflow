@@ -279,6 +279,22 @@ export const eventSlots = schema.table('workflow_event_slots', {
 });
 
 /**
+ * `experimental_rateLimit()`: each key's next free slot (GCRA's `tat`), in
+ * epoch microseconds, per app (`scope`, the World's base `jobPrefix`).
+ * NULL is an idle key. Reserved in the `rate_created` write's transaction,
+ * under this row's lock (see `reserveRateSlot` in storage.ts).
+ */
+export const rateLimits = schema.table(
+  'workflow_rate_limits',
+  {
+    scope: varchar('scope').notNull(),
+    key: varchar('key').notNull(),
+    tatUs: bigint('tat_us', { mode: 'number' }),
+  },
+  (tb) => [primaryKey({ columns: [tb.scope, tb.key] })]
+);
+
+/**
  * One immutable `start({ experimental_hook })` admission decision per candidate run (see
  * `start-hook.ts` in @workflow/world, and `../start-hook.ts` here).
  *

@@ -264,6 +264,45 @@ describe('v4 create-event response schemas', () => {
       )
     );
   });
+
+  it('accepts what a rate limit write commits in its place', async () => {
+    const call = { key: 'k', limit: 1, periodMs: 1_000, expiresAt: CREATED_AT };
+    const acquired = responseBody('rate_acquired', {
+      ...call,
+      acquireAt: CREATED_AT,
+    });
+    const waiting = responseBody('rate_created', {
+      ...call,
+      acquireAt: CREATED_AT,
+      lateWakes: 1,
+    });
+    const failed = responseBody('rate_failed', {
+      ...call,
+      reason: 'max_wait',
+      lateWakes: 2,
+    });
+
+    // A rate_created is answered with what its reservation decided.
+    for (const body of [acquired, waiting, failed]) {
+      const result = await postEvent('rate_created', body);
+      expect(result.event.eventType).toBe(body.event.eventType);
+    }
+    // A late rate_acquired is reserved again: a new rate_created, or
+    // rate_failed past its deadline.
+    for (const body of [acquired, waiting, failed]) {
+      const result = await postEvent('rate_acquired', body);
+      expect(result.event.eventType).toBe(body.event.eventType);
+    }
+    // Nothing else stands in for one.
+    await expect(
+      postEvent('rate_acquired', responseBody('wait_completed', {}))
+    ).rejects.toSatisfy((error: unknown) =>
+      issuePaths(error).some(
+        (path) =>
+          path.length === 2 && path[0] === 'event' && path[1] === 'eventType'
+      )
+    );
+  });
 });
 
 describe('response schema boundaries', () => {
