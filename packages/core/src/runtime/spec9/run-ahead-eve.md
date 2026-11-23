@@ -37,7 +37,7 @@ Steps only receive `controller.signal` (`turn.ts`: `abortSignal: turn.signal`, `
 
 ### 2. eve tolerates steering and cancellation after a step starts
 
-Per eve's execution model, steering that arrives before assistant output begins stops the pending model generation and applies within the same turn. After output starts, it applies at the next step boundary. Cancel interrupts the turn. So if a message lands while the next step has started speculatively, discarding that step and re-deciding with the message is consistent with what eve does today. The hazard run-ahead guards against is log consistency on replay, not eve's semantics: a `hook_received` committing between the speculative writes.
+If steering arrives before agent output begins, eve stops model generation and applies the steering within the same turn. After output starts, it applies at the next step boundary. Cancel interrupts the turn. So if a message lands while the next step has started speculatively, discarding that step and re-deciding with the message is consistent with what eve does today. This is separate from the case that Workflow's run-ahead guards were meant to address - eve's case retains log consistency on replay.
 
 ### 3. The sandbox idle wait is ignored mid-turn
 
