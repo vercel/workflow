@@ -143,12 +143,17 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     // The per-run in-band count is a column of the run's row, checked and
     // advanced in the write's transaction.
     inBandFence: true,
+    // `experimental_rateLimit()`: each key's next free slot is a row of the
+    // database, reserved in the `rate_created` write's transaction.
+    rateLimits: true,
   } satisfies WorldCapabilities;
   return {
-    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
-    // the in-band fence declared above; spec 8 otherwise.
+    // Spec 9 or 10 runs only on request (`WORKFLOW_SPEC_VERSION`), which
+    // need the in-band fence and rate limits declared above; spec 8
+    // otherwise.
     specVersion: mintedSpecVersion(process.env, {
       inBandFence: capabilities.inBandFence,
+      rateLimits: capabilities.rateLimits,
     }),
     capabilities,
     // The queue, its handlers and `queueAuthMode: 'loopback'`; `close()` is

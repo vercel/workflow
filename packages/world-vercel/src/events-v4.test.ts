@@ -2107,6 +2107,56 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
     expect(wireMeta.encryptionPublicKey).toBe(key);
   });
 
+  it('carries a rate limit call, burst included, on rate_created', async () => {
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'rate_created',
+      specVersion: 10,
+      correlationId: 'rate_01M7TV42E3D71ZYRJNTZ91XWA1',
+      eventData: {
+        key: 'openai',
+        limit: 60,
+        periodMs: 60_000,
+        burst: 60,
+        expiresAt: new Date('2026-12-01T00:00:00.000Z'),
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    expect(meta).toMatchObject({
+      rateKey: 'openai',
+      rateLimit: 60,
+      ratePeriodMs: 60_000,
+      rateBurst: 60,
+    });
+    expect(wireMeta).toMatchObject({
+      rateKey: 'openai',
+      rateLimit: 60,
+      ratePeriodMs: 60_000,
+      rateBurst: 60,
+    });
+  });
+
+  it('carries the reserved-key opt-in on rate_created, and nothing without it', async () => {
+    const request = (extra: Record<string, unknown>) =>
+      ({
+        eventType: 'rate_created',
+        specVersion: 10,
+        correlationId: 'rate_01M7TV42E3D71ZYRJNTZ91XWA1',
+        eventData: {
+          key: '$sdk.internal',
+          limit: 1,
+          periodMs: 1_000,
+          expiresAt: new Date('2026-12-01T00:00:00.000Z'),
+          ...extra,
+        },
+      }) as unknown as Parameters<typeof splitEventDataForV4>[0];
+    const allowed = await postAndCaptureMeta(
+      request({ allowReservedKey: true })
+    );
+    expect(allowed.wireMeta).toMatchObject({ rateAllowReservedKey: true });
+    const plain = await postAndCaptureMeta(request({}));
+    expect(plain.wireMeta).not.toHaveProperty('rateAllowReservedKey');
+  });
+
   // Generic guard: whatever the splitter decides belongs in the frame meta must
   // actually reach the wire. This fails for ANY field a future change adds to
   // the splitter but forgets in buildPostFrameMeta, not just this one.

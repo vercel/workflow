@@ -43,6 +43,31 @@ export function waitTimerHopAtMs(params: {
 }
 
 /**
+ * The last hop's delay, in whole seconds, of a wait's timer sent `remainingMs`
+ * before the wait is due.
+ *
+ * A sleep's timer is due with the wait, so its delay rounds up. A rate limit
+ * call (`kind: 'rate'`) further out than the in-process window (`windowMs`,
+ * `getOrchestratorRateWaitMs`) wakes early instead, in the last window before
+ * its slot: the delivery it wakes finds the slot within the window and waits
+ * the rest in process, so the call goes ahead at its slot rather than up to
+ * a second of rounding plus the queue's latency after it. That delivery
+ * re-arms the timer before it waits (an early timer's re-arm), so a process
+ * that dies in the wait still has the run woken.
+ */
+export function waitTimerDelaySeconds(params: {
+  kind?: 'wait' | 'rate';
+  remainingMs: number;
+  windowMs: number;
+}): number {
+  const { kind, remainingMs, windowMs } = params;
+  if (kind === 'rate' && windowMs > 0 && remainingMs > windowMs) {
+    return Math.max(1, Math.ceil((remainingMs - windowMs) / 1000));
+  }
+  return Math.max(0, Math.ceil(remainingMs / 1000));
+}
+
+/**
  * The timer message of a spec 9 wait, and its idempotency key.
  *
  * A wait longer than one queue delay is reached in hops

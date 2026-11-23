@@ -446,9 +446,20 @@ interface CreateEventV4InputBase {
   expectedSeqInBand?: number;
   /** step_created: whether the orchestrator may run the step in-process. */
   inline?: boolean;
-  /** step_created / wait_created: queue message id of the orchestrator
-   *  delivery that wrote the event. */
+  /** step_created / wait_created / rate_created: queue message id of the
+   *  orchestrator delivery that wrote the event. */
   creatorMessageId?: string;
+  /** rate_created (spec >= 10): the call's key, limit, period and deadline. */
+  rateKey?: string;
+  rateLimit?: number;
+  ratePeriodMs?: number;
+  /** rate_created: how many calls may go at once. Absent for no burst. */
+  rateBurst?: number;
+  rateExpiresAt?: Date;
+  /** rate_acquired after a wait: the log slot of the call's rate_created. */
+  rateCreatedSlot?: number;
+  /** rate_created: the call opted in to a reserved `$` key. */
+  rateAllowReservedKey?: boolean;
   /** Content digest of the serialized resume payload. Forwarded alongside
    *  `resumeId` so the direct write and the queue re-ensure record an identical
    *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
@@ -623,6 +634,9 @@ const CreateEventV4BodySchemas: {
   hook_conflict: CreateEventV4BodySchema,
   wait_created: CreateEventV4BodySchema,
   wait_completed: CreateEventV4BodySchema,
+  rate_created: CreateEventV4BodySchema,
+  rate_acquired: CreateEventV4BodySchema,
+  rate_failed: CreateEventV4BodySchema,
   // Never POSTed by the SDK (server-originated sealed-log filler); present
   // only because the map is exhaustive over EventType.
   noop: CreateEventV4BodySchema,
@@ -865,6 +879,19 @@ function buildPostFrameMeta(
   if (input.inline !== undefined) meta.inline = input.inline;
   if (input.creatorMessageId !== undefined) {
     meta.creatorMessageId = input.creatorMessageId;
+  }
+  if (input.rateKey !== undefined) meta.rateKey = input.rateKey;
+  if (input.rateLimit !== undefined) meta.rateLimit = input.rateLimit;
+  if (input.ratePeriodMs !== undefined) meta.ratePeriodMs = input.ratePeriodMs;
+  if (input.rateBurst !== undefined) meta.rateBurst = input.rateBurst;
+  if (input.rateExpiresAt !== undefined) {
+    meta.rateExpiresAt = input.rateExpiresAt;
+  }
+  if (input.rateCreatedSlot !== undefined) {
+    meta.rateCreatedSlot = input.rateCreatedSlot;
+  }
+  if (input.rateAllowReservedKey !== undefined) {
+    meta.rateAllowReservedKey = input.rateAllowReservedKey;
   }
   return meta;
 }
@@ -1296,13 +1323,35 @@ const createEventResponseSchemas = new Map<
   z.ZodType<EventResult & { event: Event }>
 >();
 
+/**
+ * Whether a write of `requested` may commit `committed` in its place: the
+ * event type itself, or what the World decides instead of the request.
+ * Shared by the single write and the batch, so both accept the same answers.
+ */
+export function commitsInPlaceOf(
+  requested: EventType,
+  committed: string
+): boolean {
+  return (
+    committed === requested ||
+    (requested === 'hook_created' && committed === 'hook_conflict') ||
+    // The World commits what a rate_created's reservation decided in its
+    // place (see the rate events in @workflow/world).
+    (requested === 'rate_created' &&
+      (committed === 'rate_acquired' || committed === 'rate_failed')) ||
+    // A rate_acquired woken past its grace window is reserved again, and
+    // what that decided is committed in its place: a new rate_created (the
+    // call waits again) or rate_failed (past its deadline).
+    (requested === 'rate_acquired' &&
+      (committed === 'rate_created' || committed === 'rate_failed'))
+  );
+}
+
 export function createEventResponseSchema<T extends EventType>(
   eventType: T
 ): z.ZodType<EventResult<T> & { event: Event }> {
   return CreateEventV4BodySchemas[eventType].refine(
-    ({ event }) =>
-      event.eventType === eventType ||
-      (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
+    ({ event }) => commitsInPlaceOf(eventType, event.eventType),
     { path: ['event', 'eventType'] }
   );
 }
@@ -1640,8 +1689,9 @@ export async function createWorkflowRunEventsBatchV4(
       }
       // Results are consumed positionally; an item whose committed event is
       // of a different type than the frame submitted at this index is a
-      // server protocol violation, same as a wrong-length results array.
-      if (parsed.data.event.eventType !== eventType) {
+      // server protocol violation, same as a wrong-length results array,
+      // unless the World commits it in the request's place (a rate event).
+      if (!commitsInPlaceOf(eventType, parsed.data.event.eventType)) {
         throw new WorkflowWorldError(
           `v4 createEventBatch: result at index ${index} carries a ` +
             `${parsed.data.event.eventType} event, expected ${eventType}`,
