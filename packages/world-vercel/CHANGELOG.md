@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+## 5.7.2
+
+### Patch Changes
+
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world@5.3.1
+  - @workflow/errors@5.1.6
+
 ## 5.7.1
 
 ### Patch Changes
