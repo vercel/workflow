@@ -44,6 +44,6 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nuxt": "4.6.3",
-    "vite": "8.3.5"
+    "vite": "8.3.8"
   }
 }
