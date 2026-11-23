@@ -6,6 +6,7 @@ import { createHooksStorage } from './hooks-storage.js';
 import { createRunsStorage, type LocalRunsStorage } from './runs-storage.js';
 import { createSnapshotsStorage } from './snapshots-storage.js';
 import { createStepsStorage } from './steps-storage.js';
+import { createUsageStorage } from './usage-storage.js';
 
 /**
  * Storage shape used inside world-local: identical to `Storage`, but `runs`
@@ -31,6 +32,7 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
   const events = createEventsStorage(db, tag);
   const hooks = createHooksStorage(db, tag);
   const snapshots = createSnapshotsStorage(db);
+  const usage = createUsageStorage(db, tag);
 
   // NOTE: Span names are lowercase per OTEL semantic conventions
   return {
@@ -42,6 +44,7 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
       'world.experimental_snapshots',
       snapshots
     ),
+    experimental_usage: instrumentObject('world.experimental_usage', usage),
     clearCache: () => {},
   };
 }

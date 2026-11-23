@@ -2247,8 +2247,9 @@ async function runDelivery(
   //
   // A refusal to execute stored code (opt-in off, a marker
   // that does not match the run, missing or undecodable code)
-  // is a WorkflowRuntimeError and fails the run: every
-  // redelivery would reach the same verdict.
+  // fails the run: every redelivery would reach the same
+  // verdict. The opt-in is recorded as USER_ERROR, the rest
+  // as RUNTIME_ERROR (see `getWorkflowSetupErrorCode`).
   let resolvedWorkflowCode: ResolvedWorkflowCode;
   try {
     resolvedWorkflowCode = await resolveWorkflowCodeForRun(

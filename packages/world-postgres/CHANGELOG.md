@@ -1,5 +1,28 @@
 # @workflow/world-postgres
 
+## 5.4.2
+
+### Patch Changes
+
+- [#5649](https://github.com/vercel/workflow/pull/5649) [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `invoke()` timing out when several invocations were submitted to one run while a delivery held it
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world@5.3.1
+  - @workflow/world-local@5.5.2
+  - @workflow/errors@5.1.6
+
+## 5.4.1
+
+### Patch Changes
+
+- [#5618](https://github.com/vercel/workflow/pull/5618) [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The invoke executor's wake and delivery check use the configured `GRAPHILE_WORKER_SCHEMA` instead of always `graphile_worker`, as the rest of the World does.
+
+- [#5618](https://github.com/vercel/workflow/pull/5618) [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - A zero-retention run's data is purged after its terminal write commits, so a race's loser settling at the same moment can no longer deadlock the purge. A backstop job committed with the terminal write retries the purge if the process stops first or the purge fails; any deployment's workers run it, and Kubernetes scaling and pruning keep the run's version until it has run.
+
+- [#5626](https://github.com/vercel/workflow/pull/5626) [`7d710a5`](https://github.com/vercel/workflow/commit/7d710a5aeca7581b6b941715486f804a3433c75b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `skipWorkers` (`WORKFLOW_POSTGRES_SKIP_WORKERS=1`): a process that starts the World without running workers. It can still start runs, resume hooks, cancel runs and read them. Processes with workers on the same database, `jobPrefix` and `deploymentId` (when one is set) execute those runs, and recover the ones it didn't enqueue the next time they start.
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62)]:
+  - @workflow/errors@5.1.5
+  - @workflow/world-local@5.5.1
+
 ## 5.4.0
 
 ### Minor Changes

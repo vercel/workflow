@@ -1,5 +1,18 @@
 # @workflow/errors
 
+## 5.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world@5.3.1
+
+## 5.1.5
+
+### Patch Changes
+
+- [#5502](https://github.com/vercel/workflow/pull/5502) [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `DynamicWorkflowsNotEnabledError`, a fatal, non-runtime error whose message says how to enable dynamic workflows with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`.
+
 ## 5.1.4
 
 ### Patch Changes

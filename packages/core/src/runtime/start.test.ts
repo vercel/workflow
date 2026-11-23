@@ -1,4 +1,5 @@
 import {
+  DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   FatalError,
   ThrottleError,
@@ -119,9 +120,18 @@ describe('start', () => {
           },
         }).catch((err: unknown) => err);
 
-        expect(WorkflowRuntimeError.is(error)).toBe(true);
-        expect((error as Error).message).toMatch(
-          /Dynamic workflows are disabled on this deployment.*WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1/
+        // The project's configuration, not an SDK failure: its own class,
+        // deliberately not a WorkflowRuntimeError, so a run it fails is
+        // classified USER_ERROR.
+        expect(DynamicWorkflowsNotEnabledError.is(error)).toBe(true);
+        expect(WorkflowRuntimeError.is(error)).toBe(false);
+        expect(FatalError.is(error)).toBe(true);
+        expect((error as Error).message).toBe(
+          [
+            'Dynamic workflows are not enabled for this project, so start() did not create a run for the given workflow source.',
+            '├▶ hint: Set the WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 environment variable on your project, then redeploy (or restart your dev server) so the new value takes effect.',
+            '╰▶ docs: https://workflow-sdk.dev/docs/advanced/dynamic-workflows#enabling-dynamic-workflows',
+          ].join('\n')
         );
         expect(world.getDeploymentId).not.toHaveBeenCalled();
         expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
@@ -660,14 +670,6 @@ async function workflow() {
 
       it.each<[string, () => Promise<unknown>, RegExp]>([
         [
-          'the opt-in is off',
-          () => {
-            vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
-            return start(source, { experimental_dynamic: { steps } });
-          },
-          /Dynamic workflows are disabled on this deployment/,
-        ],
-        [
           'experimental_dynamic is missing',
           () => start(source as never, []),
           /no `experimental_dynamic` options/,
@@ -722,7 +724,8 @@ async function workflow() {
         const error = await startIt().catch((err: unknown) => err);
 
         // Same type and message as before; `fatal` is what makes a step that
-        // calls `start()` fail instead of retrying a refusal.
+        // calls `start()` fail instead of retrying a refusal. (The opt-in
+        // refusal has its own class; see 'deployment opt-in' above.)
         expect(WorkflowRuntimeError.is(error)).toBe(true);
         expect((error as Error).message).toMatch(message);
         expect(FatalError.is(error)).toBe(true);

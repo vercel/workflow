@@ -447,6 +447,30 @@ export function createQueue(
    * deployment switches `enableInvoke`.
    */
   const executorTask = () => `${getJobQueueName()}_executor`;
+  /**
+   * The query that adds an executor wake for a run: a job on the executor
+   * task whose delivery reads the run's invocation mailbox. No job_key:
+   * every invoke (including a completed request's retry) gets a wake.
+   */
+  const addExecutorWake = (
+    queueId: string,
+    runId: string
+  ): [text: string, values: unknown[]] => [
+    `SELECT ${graphileSchemaIdentifier()}.add_job(identifier => $1, payload => $2::json,
+          max_attempts => $3)`,
+    [
+      executorTask(),
+      JSON.stringify(
+        MessageData.encode({
+          id: queueId,
+          data: transport.serialize({ runId }) as Buffer,
+          messageId: MessageId.parse(`msg_${generateMessageId()}`),
+          attempt: 1,
+        })
+      ),
+      MAX_GRAPHILE_JOB_ATTEMPTS,
+    ],
+  ];
 
   const createQueueHandler: Queue['createQueueHandler'] = (
     prefix,
@@ -568,6 +592,22 @@ export function createQueue(
                 input.runId,
                 pending.id,
                 outcome
+              );
+            },
+            async () => {
+              // Intake has stopped. An invocation still in the mailbox was
+              // not delivered, and this delivery may be the only wake it
+              // had: the wakes of invocations submitted while the run's
+              // lease was held collapse into one (see `run-lease.ts`). Leave
+              // a wake for it. One submitted during this delivery has a wake
+              // of its own, and a second one costs a delivery that finds
+              // nothing to do.
+              if ((await invocations.pending(input.runId)).length === 0) return;
+              await pool.query(
+                ...addExecutorWake(
+                  parseQueueName(metadata.queueName).id,
+                  input.runId
+                )
               );
             }
           );
@@ -1173,19 +1213,8 @@ export function createQueue(
       payload,
       options,
       async (client, _id, run) => {
-        const wake = MessageData.encode({
-          id: run.workflowName,
-          data: transport.serialize({ runId }) as Buffer,
-          messageId: MessageId.parse(`msg_${generateMessageId()}`),
-          attempt: 1,
-        });
-        // The mailbox insertion and wake share this transaction. No job_key:
-        // every invoke (including a completed request's retry) gets a wake.
-        await client.query(
-          `SELECT ${graphileSchemaIdentifier()}.add_job(identifier => $1, payload => $2::json,
-          max_attempts => $3)`,
-          [executorTask(), JSON.stringify(wake), MAX_GRAPHILE_JOB_ATTEMPTS]
-        );
+        // The mailbox insertion and wake share this transaction.
+        await client.query(...addExecutorWake(run.workflowName, runId));
       }
     );
   };

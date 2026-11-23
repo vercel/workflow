@@ -73,8 +73,8 @@ WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1
 
 Only `1` or `true` (case-insensitive) enables them; any other value, or no value, leaves them off. The runtime reads the variable where workflows execute, when it needs it, so set it on the deployment or dev server rather than at build time. It controls three things:
 
-- **Starting.** `start()` with source throws before it contacts the World, creates a run, or enqueues anything unless this process has opted in.
-- **Delivery.** When a dynamic run reaches a deployment that has not opted in, the runtime does not execute its stored code. It fails the run with a `RUNTIME_ERROR` rather than retrying it.
+- **Starting.** `start()` with source throws [`DynamicWorkflowsNotEnabledError`](/docs/api-reference/workflow-errors/dynamic-workflows-not-enabled-error) before it contacts the World, creates a run, or enqueues anything unless this process has opted in. The error is fatal, so a step that calls `start()` fails without retrying, and a run that fails on it is recorded as `USER_ERROR`.
+- **Delivery.** When a dynamic run reaches a deployment that has not opted in, the runtime does not execute its stored code. It fails the run with `DynamicWorkflowsNotEnabledError` and a `USER_ERROR` code rather than retrying it.
 - **Health check.** A deployment advertises dynamic support in its [health check](/docs/api-reference/workflow-runtime/health-check) only when it has opted in.
 
 ### Same deployment only
