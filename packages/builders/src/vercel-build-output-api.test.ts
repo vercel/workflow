@@ -358,13 +358,52 @@ describe('VercelBuildOutputAPIBuilder SDK steps', () => {
       // `@workflow/core` is reachable from `workflow`, not from the project.
       // The workflow bundle reaches `Run`'s steps through `workflow`'s
       // `workflow` export condition, so the steps bundle has to as well.
-      const workflowPackage = realpathSync(
-        join(import.meta.dirname, '../../workflow')
+      //
+      // The `workflow` package here is a stand-in whose `workflow` condition
+      // re-exports `@workflow/core/_workflow`, as the real one does, over the
+      // real `@workflow/core`. Linking `packages/workflow` itself would need
+      // its `dist/`, which the unit test job does not build: `workflow`
+      // depends on `@workflow/builders` (through `@workflow/cli`, `@workflow/next`
+      // and others), so `@workflow/builders` cannot depend on it.
+      const workflowPackage = join(workingDir, 'node_modules/workflow');
+      await write(
+        join(workflowPackage, 'package.json'),
+        JSON.stringify({
+          name: 'workflow',
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            '.': { workflow: './workflow.js', default: './index.js' },
+            './api': './api.js',
+            './internal/builtins': './internal/builtins.js',
+            './runtime': './runtime.js',
+          },
+        })
       );
-      await mkdir(join(workingDir, 'node_modules'), { recursive: true });
+      await write(
+        join(workflowPackage, 'workflow.js'),
+        "export * from '@workflow/core/_workflow';\n"
+      );
+      await write(
+        join(workflowPackage, 'index.js'),
+        "export * from '@workflow/core';\n"
+      );
+      await write(
+        join(workflowPackage, 'internal/builtins.js'),
+        'export const __workflow_builtins = true;\n'
+      );
+      for (const entry of ['api.js', 'runtime.js']) {
+        await write(
+          join(workflowPackage, entry),
+          "export * from '@workflow/core/runtime';\n"
+        );
+      }
+      await mkdir(join(workflowPackage, 'node_modules/@workflow'), {
+        recursive: true,
+      });
       symlinkSync(
-        workflowPackage,
-        join(workingDir, 'node_modules/workflow'),
+        realpathSync(join(import.meta.dirname, '../../core')),
+        join(workflowPackage, 'node_modules/@workflow/core'),
         'junction'
       );
       await write(
