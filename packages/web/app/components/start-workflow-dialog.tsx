@@ -118,9 +118,10 @@ export function StartWorkflowButton({
           <AlertDialogHeader>
             <AlertDialogTitle>Start {workflowName}</AlertDialogTitle>
             <AlertDialogDescription>
-              Inputs as a JSON array, one item per workflow argument. Streams
-              and class instances aren't supported here; start those from your
-              code with <code>start()</code>.
+              Inputs as a JSON array, one item per workflow argument. Only plain
+              JSON works here: text, numbers, true/false, null, lists and
+              objects. Dates, Maps, streams, class instances and other values
+              need <code>start()</code> in your code.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2">
