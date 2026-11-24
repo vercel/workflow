@@ -1,0 +1,83 @@
+---
+title: Usage
+description: See where a run's events come from and how much it stores.
+type: reference
+summary: See a run's events, by step and hook, and its storage, counted the way Vercel bills them.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability
+  - /docs/observability/retention
+---
+
+A run's usage shows where its events come from (which steps and hooks drive them) and how much it stores, counted the way Vercel bills them, so you can estimate a workflow's cost before you deploy it. Usage is available on the Local World.
+
+## See a run's usage
+
+```bash
+npx workflow inspect run <run_id> --usage
+```
+
+```
+processOrder  wrun_01M7V5GYES4PYRWR5STNZ6G5ME  ● completed
+
+Events           19
+Storage (local)  3.52 KB
+
+TYPE    NAME                              EVENTS  SHARE
+Steps   3 calls  ↻ 1 retry                    11    58%  ██████░░░░
+        ├─ sendEmail  2 calls                  6    32%  ███░░░░░░░
+        └─ chargeCard  1 call  ↻ 1 retry       5    26%  ███░░░░░░░
+Hooks   1 hook                                 3    16%  ██░░░░░░░░
+        └─ approval:order-1042                 3    16%  ██░░░░░░░░
+Sleeps  1 sleep                                2    11%  █░░░░░░░░░
+Run                                            3    16%  ██░░░░░░░░
+TOTAL                                         19   100%
+
+How usage is counted: https://workflow-sdk.dev/docs/observability/usage
+
+STORAGE (LOCAL)     SIZE
+Run                500 B
+Steps            2.82 KB
+Hooks              200 B
+TOTAL            3.52 KB
+
+Local runs aren't billed. Counted from this run's log in your local data directory.
+Machine-readable: --json
+```
+
+In the web UI, a run's header shows its **Events** and **Storage (local)**. Select either one, or the run's **Usage** tab, to open its Usage page (`/run/<run_id>/usage`), which shows the same table.
+
+`--json` prints the same numbers as JSON. Its shape is experimental and may change.
+
+The output includes hook tokens, and a token resumes its hook. Share it, `--json` included, only where you would share the run's data.
+
+## What's counted
+
+### Events
+
+Every event in the run's log counts once. [Event sourcing](/docs/how-it-works/event-sourcing) describes which events a run, its steps, hooks and sleeps write.
+
+### Storage
+
+**Storage (local)** counts the bytes of the run's payloads as the SDK sent them (compressed when that saves space, and encrypted when encryption is on): run inputs and outputs, step inputs and results, errors, and hook metadata and payloads. It adds the bytes the run wrote to its streams. Event metadata, such as ids and timestamps, isn't counted. A run started with `experimental_retention: 0` reports what it wrote before its data was deleted.
+
+When a run's data is deleted, its sizes stay in the local data directory, so usage can still report them.
+
+Two kinds of data aren't counted locally:
+
+- **QuickJS VM snapshots.**
+- **A dynamic workflow's code.**
+
+The numbers describe this run. The same workflow can record a different number of events on another run, for example with more or fewer retries.
+
+## On Vercel
+
+A run's events are its Workflow Events, and **Storage (local)** is counted the way Data Written is, except that Data Written also includes QuickJS VM snapshots and a dynamic workflow's code. Usage doesn't show Data Retained, function compute, or queues; see [Workflow pricing](https://vercel.com/docs/workflows/pricing), and open a run on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard) for what it was billed.
+
+## Reduce a run's usage
+
+- [Batching](/cookbook/common-patterns/batching)
+- [Child workflows](/cookbook/advanced/child-workflows)
+- [QuickJS runtime](/docs/advanced/quickjs-runtime)
+- [Data retention](/docs/observability/retention)

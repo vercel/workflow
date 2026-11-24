@@ -428,15 +428,42 @@ describe.each([
     // arrive first. The position must be counted once: counted as both seen
     // and still pending, every later speculative event is placed past the
     // slot it takes.
+    //
+    // The order is fixed, not timed. The write that commits the second
+    // step's start is echoed, and its answer is held until the third step's
+    // body runs. By then the second outcome settled (the echo is taken in
+    // there) and the third step's start was placed, with that write still
+    // unanswered. The second start rather than the first: the feed starts
+    // once the first step runs, so it offers every write from then on.
     const debug = vi
       .spyOn(runtimeLogger, 'debug')
       .mockImplementation(() => undefined);
+    let starts = 0;
+    let held = false;
+    let heldUntilThirdBody = false;
     const { world } = await run(sequential, [STEPS], {
       subscribe: true,
-      createDelayMs: 15,
+      async afterCommit(committed) {
+        starts += committed.filter(
+          (event) => event.eventType === 'step_started'
+        ).length;
+        if (held || starts < 2) return;
+        held = true;
+        // Bounded, so an engine that waits for the answer before it starts
+        // the next body fails the assertions below instead of hanging. The
+        // bound never ends the hold in a passing run, however slow.
+        const deadline = Date.now() + 10_000;
+        while (bodiesStarted < 3 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        heldUntilThirdBody = bodiesStarted >= 3;
+      },
     });
     await world.runUntilIdle();
 
+    expect(held).toBe(true);
+    // The third body started with that answer still held.
+    expect(heldUntilThirdBody).toBe(true);
     expect(await runResult(world)).toBe(STEPS);
     expect(world.deliveries).toHaveLength(1);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
@@ -999,6 +1026,7 @@ describe.each([
     'snapshots a VM that ran ahead only from a confirmed log, and the restored VM runs ahead again',
     async () => {
       vi.stubEnv('WORKFLOW_SNAPSHOT_THRESHOLD', '1');
+      vi.stubEnv('WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED', '1');
       vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '0');
       let stored: { data: Uint8Array; metadata: SnapshotMetadata } | undefined;
       const saves: SnapshotMetadata[] = [];

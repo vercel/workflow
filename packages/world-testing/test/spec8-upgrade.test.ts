@@ -2,19 +2,19 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
 } from '@workflow/world';
 import { expect, onTestFinished, test, vi } from 'vitest';
 import { createFetcher, startServer } from '../src/util.mjs';
 import type { Hook } from '../workflows/hooks.ts';
 
-const SPEC_9 = String(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+const SPEC_8 = String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
 
 /**
  * Starts a Local World server on `dataDir` that mints `specVersion`
  * (`undefined` leaves `WORKFLOW_SPEC_VERSION` unset, so the server mints the
- * default, spec 8).
+ * default, spec 10).
  */
 async function serverAt(dataDir: string, specVersion: string | undefined) {
   return createFetcher(
@@ -82,20 +82,20 @@ function tempDataDir() {
   });
 }
 
-// Opting in: a Local World that created a spec 8 run at the default is
-// restarted with `WORKFLOW_SPEC_VERSION=9` while the run waits on a hook. The
-// restarted server keeps driving the run with the spec 8 orchestrator, and its
-// new runs are spec 9.
+// The upgrade users do: a Local World that created a spec 8 run (an earlier
+// release, here `WORKFLOW_SPEC_VERSION=8`) is restarted with the variable
+// unset while the run waits on a hook. The restarted server keeps driving the
+// run with the spec 8 orchestrator, and its new runs are spec 10, the default.
 test(
-  'a spec 8 run in flight finishes after its World opts in to spec 9',
+  'a spec 8 run in flight finishes after its World upgrades to the spec 10 default',
   { timeout: 60_000 },
   async () => {
     const dataDir = await tempDataDir();
-    const before = await serverAt(dataDir, undefined);
+    const before = await serverAt(dataDir, SPEC_8);
     const token = `upgrade-${Date.now().toString(36)}`;
     const runId = await parkOnHook(before, token);
 
-    const after = await serverAt(dataDir, SPEC_9);
+    const after = await serverAt(dataDir, undefined);
     await after.resumeHook<typeof Hook>(token, { data: 'last', done: true });
 
     const run = await completedRun(after, runId);
@@ -104,32 +104,31 @@ test(
     // `step_created`), so the spec 8 orchestrator drove it.
     expect(await stepCreatedAfterResume(after, runId)).toBe(true);
 
-    expect(await freshRunSpecVersion(after)).toBe(
-      SPEC_VERSION_SINGLE_ORCHESTRATOR
-    );
+    expect(await freshRunSpecVersion(after)).toBe(SPEC_VERSION_RATE_LIMITS);
   }
 );
 
-// Opting out: a Local World that created a spec 9 run with
-// `WORKFLOW_SPEC_VERSION=9` is restarted with the variable unset while the run
-// waits on a hook. The restarted server keeps driving the run with the spec 9
-// orchestrator, and its new runs are spec 8, the default.
+// The documented opt-out: a Local World that created a spec 10 run at the
+// default is restarted with `WORKFLOW_SPEC_VERSION=8` while the run waits on
+// a hook. The restarted server keeps driving the run with the single
+// orchestrator, and its new runs are spec 8.
 test(
-  'a spec 9 run in flight finishes after its World unsets WORKFLOW_SPEC_VERSION',
+  'a spec 10 run in flight finishes after its World opts out with WORKFLOW_SPEC_VERSION=8',
   { timeout: 60_000 },
   async () => {
     const dataDir = await tempDataDir();
-    const before = await serverAt(dataDir, SPEC_9);
+    const before = await serverAt(dataDir, undefined);
     const token = `opt-out-${Date.now().toString(36)}`;
     const runId = await parkOnHook(before, token);
 
-    const after = await serverAt(dataDir, undefined);
+    const after = await serverAt(dataDir, SPEC_8);
     await after.resumeHook<typeof Hook>(token, { data: 'last', done: true });
 
     const run = await completedRun(after, runId);
-    expect(run.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
-    // A spec 9 inline step is created by its `step_started` alone, so no
-    // `step_created` after the resume shows the spec 9 orchestrator drove it.
+    expect(run.specVersion).toBe(SPEC_VERSION_RATE_LIMITS);
+    // A single-orchestrator inline step is created by its `step_started`
+    // alone, so no `step_created` after the resume shows that orchestrator
+    // drove it.
     expect(await stepCreatedAfterResume(after, runId)).toBe(false);
 
     expect(await freshRunSpecVersion(after)).toBe(

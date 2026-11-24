@@ -1,0 +1,114 @@
+---
+title: experimental_rateLimit
+description: Wait for a slot under a rate limit shared by every run of a project.
+type: reference
+summary: Use experimental_rateLimit to keep calls to a shared upstream under its rate limit across all workflow runs.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/rate-limits
+  - /docs/api-reference/workflow/sleep
+  - /docs/errors/rate-limit-max-wait
+---
+
+Waits for a slot under a rate limit that every run of the project shares. Calls with the same `key` get slots at most `limit` per `period`, each at least `period / limit` after the one before. A call whose slot is now resolves at once; otherwise the run sleeps until its slot, like [`sleep()`](/docs/api-reference/workflow/sleep), and resolves then. A call that wakes late can go ahead a little after its slot (see [Calls that wake late](#calls-that-wake-late)), so keep handling the upstream's own rate limit errors. For when and how to use rate limits, see [Rate Limits](/docs/foundations/rate-limits).
+
+<Callout type="warn">
+Experimental, and available in `workflow` 5.8.0 and later on the Vercel, Local and Postgres Worlds. It needs a spec 10 run, which those Worlds create by default. On a custom World that does not declare rate limits (`capabilities.rateLimits`), or with [`WORKFLOW_SPEC_VERSION`](/docs/configuration/runtime-tuning#workflow_spec_version) set below `10`, a run that calls it fails.
+</Callout>
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow";
+declare function callModel(doc: string): Promise<void>; // @setup
+
+export async function summarize(docs: string[]) {
+  "use workflow";
+  for (const doc of docs) {
+    await experimental_rateLimit({ key: "openai", limit: 60, period: "1m" }); // [!code highlight]
+    await callModel(doc);
+  }
+}
+```
+
+## API signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { experimental_rateLimit } from "workflow";
+export default experimental_rateLimit;`}
+showSections={['parameters']}
+/>
+
+#### RateLimitOptions
+
+<TSDoc
+definition={`
+import type { RateLimitOptions } from "workflow";
+export default RateLimitOptions;`}
+/>
+
+## Behavior
+
+- Calls on one key share it across runs, so they are admitted in the order the World receives them. Use the same `limit`, `period` and `burst` everywhere you use a key (see [One key with different settings](#one-key-with-different-settings)).
+- On Vercel, the rate is per project and environment: preview and production deployments have separate budgets for the same key. On the Local World it is per data directory, and on the Postgres World per [`jobPrefix`](/worlds/postgres).
+- A `key` is 1 character to 512 bytes (UTF-8). Keys are stored as-is in the run's event log. Don't put personal data in them.
+- Keys that start with `$` are reserved for Workflow SDK libraries, and a call with one throws. Don't use them in your own code: the `allowReservedKey` option that permits them exists only for those libraries, and a workflow that shares their keys can starve them or be starved by them.
+- A `period` can be at most 24 hours.
+- `burst` lets an idle key admit up to that many calls at once, and then refill one every `period / limit`, like a token bucket of that size. The default, 1, is no burst. It can be larger than `limit`, saving up to 24 hours of the rate: `limit: 1, period: "1s", burst: 60` lets a key that was idle for a minute send 60 calls at once. The long-run rate is still `limit` per `period`, but a rolling `period` can see up to `limit + burst - 1` calls. Set it to an upstream's published burst size, or keep `limit + burst - 1` under the most it allows in a window.
+- A call that cannot get a slot within its `maxWait` rejects at once with [`RateLimitMaxWaitError`](/docs/errors/rate-limit-max-wait) and uses up none of the key's capacity. Without a `maxWait`, a call waits up to 30 days, which is also the longest a `maxWait` can be.
+- A run that is cancelled or fails while a call waits keeps that call's slot: the next calls on the key still go after it.
+
+## One key with different settings
+
+A key keeps only its next free slot, and each call moves that slot on by its own `period / limit`. Nothing records a limit for the key, so the settings of each call apply to that call alone:
+
+- **Changing a limit in a new deployment** applies only to runs on the new deployment, and takes effect after the slots that calls at the old limit already reserved. Runs still on the old deployment keep calling with the settings they were deployed with, so the key sees both until those runs finish. If you raise one per minute to one per second while calls are queued, the first call at the new limit waits behind them, and calls after it go one per second.
+- **Using one key with different settings in different call sites** mixes them. A call at `limit: 1, period: "24h"` waits its turn like any other, but then takes a whole day of the key, so every call after it on that key waits a day or fails its `maxWait`. A call with a larger `burst` can go ahead of calls already waiting with a smaller one.
+
+There is rarely a reason to do either. Give each upstream limit one key, set it in one place, and use a new key when the limit changes.
+
+## Calls that wake late
+
+A waiting call goes ahead when its run wakes, which is normally at its slot. When the run wakes late (a queue delay, a cold start), the call still goes ahead if it is within a grace of its slot: 10% of the `period`, at least 5 seconds and at most 60 seconds. So in any window of length `W`, up to `(W + grace) / (period / limit) + 1` calls can go ahead: for `limit: 10, period: "1s"`, a 5-second stall can let about 50 waiting calls through at once.
+
+A call that wakes later than its grace is given a new slot behind the calls already queued, and each time that happens its grace doubles, up to 4 times the first. A call that has been given a new slot twice goes ahead if it is at most its largest grace plus one `period` late. If it is that late and also past its `maxWait`, it rejects with `RateLimitMaxWaitError`. Its slot was reserved, so that call does use up capacity.
+
+## Examples
+
+### Giving up when the wait is too long
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow";
+import { RateLimitMaxWaitError } from "workflow/errors";
+declare function sendSms(userId: string): Promise<void>; // @setup
+
+export async function notify(userId: string) {
+  "use workflow";
+  try {
+    await experimental_rateLimit({ key: "sms", limit: 10, period: "1s", maxWait: "30s" }); // [!code highlight]
+  } catch (error) {
+    if (RateLimitMaxWaitError.is(error)) return "skipped";
+    throw error;
+  }
+  await sendSms(userId);
+  return "sent";
+}
+```
+
+### Letting a burst through at once
+
+```typescript lineNumbers
+import { experimental_rateLimit } from "workflow";
+declare function fetchPage(url: string): Promise<void>; // @setup
+
+export async function crawl(urls: string[]) {
+  "use workflow";
+  for (const url of urls) {
+    // The first 100 go at once; after that, one every 600 ms.
+    await experimental_rateLimit({ key: "crawler", limit: 100, period: "1m", burst: 100 }); // [!code highlight]
+    await fetchPage(url);
+  }
+}
+```

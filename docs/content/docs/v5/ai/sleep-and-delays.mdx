@@ -159,7 +159,7 @@ Aside from providing `sleep()` as a tool, there are other use cases for Agents t
 
 ### Rate limiting
 
-When hitting API rate limits, use `RetryableError` with a delay:
+To keep an agent's tool or model calls under a provider's rate limit across every run, call [`experimental_rateLimit()`](/docs/foundations/rate-limits) before the step that makes the call. When the provider still answers 429, use `RetryableError` with a delay:
 
 ```typescript lineNumbers
 import { RetryableError } from "workflow";

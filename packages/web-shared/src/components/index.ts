@@ -22,6 +22,7 @@ export type {
 export { type StreamChunk, StreamViewer } from './stream-viewer';
 export { StreamViewerSkeleton } from './stream-viewer-skeleton';
 export { TraceViewer } from './trace-viewer';
+export { ResourceIcon } from './trace-viewer/components/event-list';
 export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 export { Button, type ButtonProps, buttonVariants } from './ui/button';
 export { CopyButton, type CopyButtonProps } from './ui/copy-button';

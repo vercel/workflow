@@ -1,5 +1,30 @@
 # @workflow/web
 
+## 5.3.3
+
+### Patch Changes
+
+- [#5676](https://github.com/vercel/workflow/pull/5676) [`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump dev dependency `vite` to patched releases (7.3.8, 8.3.8) to pick up a security fix.
+- Updated dependencies [[`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/world-local@5.6.0
+
+## 5.3.2
+
+### Patch Changes
+
+- [#5586](https://github.com/vercel/workflow/pull/5586) [`f717314`](https://github.com/vercel/workflow/commit/f717314b6fa8e91d653f56f90b9a1facf36a5f38) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - On the Local World, a run's page gets a Usage tab and page (`/run/<runId>/usage`) that lists its events by type and its storage, the same table as `workflow inspect run <id> --usage`. `@workflow/web-shared` exports the trace's `ResourceIcon` for it.
+
+- [#5671](https://github.com/vercel/workflow/pull/5671) [`c989836`](https://github.com/vercel/workflow/commit/c989836f14d9f4e9b59d151ce706db94a064cc60) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The web UI (standalone and embedded at `/_workflow`) only accepts requests addressed to `localhost` or an IP address; if you reach it under another host name, such as behind a reverse proxy, allow it with `--webAllowedHosts`, `WORKFLOW_WEB_ALLOWED_HOSTS`, or Nitro's `dashboard.allowedHosts`.
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world-local@5.5.2
+
+## 5.3.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/world-local@5.5.1
+
 ## 5.3.0
 
 ### Patch Changes

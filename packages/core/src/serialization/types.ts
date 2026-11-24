@@ -110,6 +110,13 @@ export interface SerializableSpecial {
     claimedByRunId: string;
     claimedByHookId?: string;
   };
+  RateLimitMaxWaitError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    key: string;
+    wouldAcquireAt?: Date;
+  };
   WorkflowStartError: {
     message: string;
     stack?: string;
