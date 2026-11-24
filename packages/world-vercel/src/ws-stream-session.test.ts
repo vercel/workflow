@@ -1969,4 +1969,13 @@ describe('v1 stream WebSocket reuse across writers', () => {
     expect(socket.closed).toContainEqual([1000, 'stream closed']);
     await expectHttpWriter();
   });
+
+  it('closes over HTTP when close is the first operation, retiring the idle socket', async () => {
+    const { socket } = await releasedWriter();
+    const second = makeSession(undefined, true, { id: otherWriterId });
+    await second.session.close();
+    expect(second.closeHttp).toHaveBeenCalledTimes(1);
+    expect(socket.sent).toHaveLength(1);
+    expect(socket.closed).toContainEqual([1000, 'stream closed']);
+  });
 });

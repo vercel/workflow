@@ -500,12 +500,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
   close(): Promise<void> {
     return this.enqueue(async () => {
       this.assertUsable();
-      // A socket for a closed stream is no use to the next writer.
+      // A socket for a closed stream is no use to the next writer. A writer
+      // whose first operation is close does not take an idle socket either:
+      // an HTTP close measured faster than a close over the socket.
       this.abandonParkOnOpen('stream closed');
-      if (this.mode === 'deferred') {
-        await this.adoptIdleSocket();
-        this.assertUsable();
-      }
       if (
         this.mode === 'deferred' ||
         this.mode === 'waiting_to_connect' ||
