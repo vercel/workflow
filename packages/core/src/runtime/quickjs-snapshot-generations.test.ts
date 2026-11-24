@@ -62,7 +62,7 @@ const hookWorkflow = (hooks: number) => `
   globalThis.__private_workflows.set("${workflowName}", workflow);
 `;
 
-function makeWorld(snapshotThreshold = 1) {
+function makeWorld(snapshotThreshold = 1, encrypted = true) {
   const startedAt = new Date('2025-01-01T00:00:00Z');
   const run: WorkflowRun = {
     runId,
@@ -165,7 +165,9 @@ function makeWorld(snapshotThreshold = 1) {
     },
     runs: { get: vi.fn(async () => run) },
     queue: vi.fn().mockResolvedValue({ messageId: 'msg' }),
-    getEncryptionKeyForRun: vi.fn().mockResolvedValue(rawKey),
+    getEncryptionKeyForRun: vi
+      .fn()
+      .mockResolvedValue(encrypted ? rawKey : undefined),
     experimental_snapshots: {
       save: vi.fn(
         async (id: string, data: Uint8Array, metadata: SnapshotMetadata) => {
@@ -236,12 +238,18 @@ async function runToCompletion(options: {
   threshold: number;
   hooks: number;
   holdSaveAt?: number;
+  /** Whether the World provides a run encryption key. Default: true. */
+  encrypted?: boolean;
+  /** Which runtime's QuickJS entrypoint to drive. Default: spec 9. */
+  spec?: 8 | 9;
 }) {
-  const env = makeWorld(options.threshold);
+  const encrypted = options.encrypted ?? true;
+  const env = makeWorld(options.threshold, encrypted);
   setWorld(env.world);
-  const { runWorkflowWithQuickJS } = await import(
-    './spec9/quickjs-entrypoint.js'
-  );
+  const { runWorkflowWithQuickJS } =
+    options.spec === 8
+      ? await import('./spec8/quickjs-entrypoint.js')
+      : await import('./spec9/quickjs-entrypoint.js');
   let heldFrom: number | undefined;
   for (let invocation = 0; invocation < options.hooks + 5; invocation++) {
     if (invocation === options.holdSaveAt) env.holdNextSave();
@@ -277,7 +285,12 @@ async function runToCompletion(options: {
   const output = (completed as { eventData: { output: Uint8Array } }).eventData
     .output;
   const result = deserialize(
-    (await decrypt(output, await deriveRunPayloadKeys(rawKey))) as Uint8Array
+    encrypted
+      ? ((await decrypt(
+          output,
+          await deriveRunPayloadKeys(rawKey)
+        )) as Uint8Array)
+      : output
   );
   return {
     result,
@@ -298,9 +311,40 @@ describe('QuickJS snapshots across many generations', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     setWorld(undefined);
     vi.clearAllMocks();
   });
+
+  // A snapshot holds the VM's copy of `process.env`, so a run without an
+  // encryption key would store the handler's environment in plaintext.
+  for (const spec of [8, 9] as const) {
+    it(`never saves a snapshot for a run without an encryption key unless opted in (spec ${spec})`, async () => {
+      const hooks = 4;
+      vi.stubEnv('WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED', '');
+      const keyless = await runToCompletion({
+        threshold: 1,
+        hooks,
+        encrypted: false,
+        spec,
+      });
+      expect(keyless.result).toBe(2 * hooks);
+      expect(keyless.saves).toHaveLength(0);
+      expect(keyless.restores).toBe(0);
+
+      vi.clearAllMocks();
+      vi.stubEnv('WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED', '1');
+      const optedIn = await runToCompletion({
+        threshold: 1,
+        hooks,
+        encrypted: false,
+        spec,
+      });
+      expect(optedIn.result).toBe(2 * hooks);
+      expect(optedIn.saves.length).toBeGreaterThan(0);
+      expect(optedIn.snapshotsLeft).toBe(0);
+    });
+  }
 
   it('enforces the event limit exactly and saves cursors that match their event counts', async () => {
     const { world, run, log, append, saves, loads } = makeWorld();

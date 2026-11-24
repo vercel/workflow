@@ -1052,6 +1052,8 @@ jobs:
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
+          # Local worlds have no run encryption keys; snapshot legs opt in.
+          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
           # Snapshot legs log each restore so the check below can count them.
           DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
 
@@ -1169,6 +1171,8 @@ jobs:
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
+          # Local worlds have no run encryption keys; snapshot legs opt in.
+          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
           # Snapshot legs log each restore so the check below can count them.
           DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
 
@@ -1453,6 +1457,8 @@ jobs:
           # The server above opts in, so a dynamic E2E opt-in refusal fails.
           WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
+          # Local worlds have no run encryption keys; snapshot legs opt in.
+          WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
           # Snapshot legs log each restore so the check below can count them.
           DEBUG: ${{ matrix.app.snapshotThreshold && 'workflow:runtime:info' || '' }}
 

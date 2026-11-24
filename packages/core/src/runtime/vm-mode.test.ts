@@ -8,6 +8,8 @@ import {
   getSnapshotThresholdForStart,
   getSnapshotThresholdFromEnv,
   getWorkflowVmFromEnv,
+  isSnapshotThresholdConfigured,
+  isUnencryptedSnapshottingAllowed,
   useQuickJSVm,
   WORKFLOW_VMS,
 } from './vm-mode.js';
@@ -170,14 +172,19 @@ describe('getSnapshotThreshold', () => {
   it('defaults to DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD (1000)', () => {
     expect(DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD).toBe(1000);
     expect(getSnapshotThreshold(makeRun())).toBe(1000);
+    expect(isSnapshotThresholdConfigured(makeRun())).toBe(false);
   });
 
   it('WORKFLOW_SNAPSHOT_THRESHOLD=0 explicitly opts out', () => {
     process.env.WORKFLOW_SNAPSHOT_THRESHOLD = '0';
     expect(getSnapshotThreshold(makeRun())).toBe(0);
+    expect(isSnapshotThresholdConfigured(makeRun())).toBe(true);
   });
 
-  it('honors a stamped policy', () => {
+  it('treats a stamped policy as configured', () => {
+    expect(
+      isSnapshotThresholdConfigured(makeRun({ snapshotThreshold: 0 }))
+    ).toBe(true);
     expect(getSnapshotThreshold(makeRun({ snapshotThreshold: 0 }))).toBe(0);
   });
 
@@ -190,6 +197,17 @@ describe('getSnapshotThreshold', () => {
     process.env.WORKFLOW_SNAPSHOT_THRESHOLD = '100';
     expect(getSnapshotThreshold(makeRun({ snapshotThreshold: 5 }))).toBe(5);
     expect(getSnapshotThreshold(makeRun({ snapshotThreshold: 0 }))).toBe(0);
+  });
+
+  it('treats a stamped default as unconfigured (start() stamps it for QuickJS runs)', () => {
+    const run = makeRun({
+      snapshotThreshold: DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD,
+    });
+    expect(isSnapshotThresholdConfigured(run)).toBe(false);
+    process.env.WORKFLOW_SNAPSHOT_THRESHOLD = String(
+      DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD
+    );
+    expect(isSnapshotThresholdConfigured(run)).toBe(true);
   });
 
   it('throws on invalid stamped values', () => {
@@ -249,5 +267,21 @@ describe('getSnapshotThresholdForHandler', () => {
     expect(warnings).toEqual([
       expect.stringContaining('Invalid WORKFLOW_SNAPSHOT_THRESHOLD'),
     ]);
+  });
+});
+
+describe('isUnencryptedSnapshottingAllowed', () => {
+  it('is off unless explicitly enabled', () => {
+    expect(isUnencryptedSnapshottingAllowed({})).toBe(false);
+    expect(
+      isUnencryptedSnapshottingAllowed({
+        WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: '0',
+      })
+    ).toBe(false);
+    expect(
+      isUnencryptedSnapshottingAllowed({
+        WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: '1',
+      })
+    ).toBe(true);
   });
 });
