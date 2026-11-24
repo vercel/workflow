@@ -8,9 +8,26 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { World } from '@workflow/world';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-// No mocks: the real Local World and the real `start()`. No app is running,
+// The real createWorld, observed so the test can close the World it made:
+// it holds the data directory's database open, and Windows refuses to
+// delete an open file.
+const { worlds } = vi.hoisted(() => ({ worlds: [] as World[] }));
+vi.mock('@workflow/world-local', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@workflow/world-local')>();
+  return {
+    ...actual,
+    createWorld: vi.fn((...args: Parameters<typeof actual.createWorld>) => {
+      const world = actual.createWorld(...args);
+      worlds.push(world);
+      return world;
+    }),
+  };
+});
+
+// No fakes: the real Local World and the real `start()`. No app is running,
 // so the run stays pending and its deliveries fail in the background; what
 // this checks is the run the web UI writes into the app's data directory.
 describe('startWorkflowRun on a real Local World', () => {
@@ -30,7 +47,9 @@ describe('startWorkflowRun on a real Local World', () => {
     actions = await import('./workflow-server-actions.server');
   }, 120_000);
 
-  afterAll(() => {
+  afterAll(async () => {
+    // Also stops the background retries of the deliveries no app receives.
+    await Promise.all(worlds.map((world) => world.close?.()));
     vi.unstubAllEnvs();
     rmSync(project, { recursive: true, force: true });
   });
