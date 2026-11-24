@@ -384,6 +384,51 @@ export const WorkflowNoopCheckSkipped = SemanticConvention<boolean>(
   'workflow.noop_check_skipped'
 );
 
+/** The delivery resumed a VM an earlier delivery in this process parked. */
+export const WorkflowParkedSessionResumed = SemanticConvention<boolean>(
+  'workflow.parked_session.resumed'
+);
+
+/** The delivery parked its VM for the run's next delivery in this process. */
+export const WorkflowParkedSessionParked = SemanticConvention<boolean>(
+  'workflow.parked_session.parked'
+);
+
+/**
+ * Why a delivery that suspended parked no VM: `not_retained` kept none to
+ * park, `superseded` lost its fence, `disabled` is
+ * `WORKFLOW_PARKED_VM_MAX_BYTES=0`, `too_large` would take over half that
+ * budget, and `newer_parked` found the run's entry further along.
+ */
+export const WorkflowParkedSessionSkipReason = SemanticConvention<
+  'not_retained' | 'superseded' | 'disabled' | 'too_large' | 'newer_parked'
+>('workflow.parked_session.skip_reason');
+
+/** The estimated memory of the VM the delivery parked or declined to. */
+export const WorkflowParkedSessionBytes = SemanticConvention<number>(
+  'workflow.parked_session.bytes'
+);
+
+/** Entries parking evicted, oldest first, to stay within the entry and byte limits. */
+export const WorkflowParkedSessionEvicted = SemanticConvention<number>(
+  'workflow.parked_session.evicted'
+);
+
+/**
+ * What became of the parked VM a delivery took: `resume` read on from its
+ * cursor, `stale` found another orchestrator's in-band writes, `reloaded`
+ * had its cursor refused and read the whole log, and `dropped` was a
+ * delivery (a start, a timer, a `wakeUp()`) that does not resume one.
+ */
+export const WorkflowParkedSessionRead = SemanticConvention<
+  'resume' | 'stale' | 'reloaded' | 'dropped'
+>('workflow.parked_session.read');
+
+/** How long the VM the delivery took had been parked, in milliseconds. */
+export const WorkflowParkedSessionAgeMs = SemanticConvention<number>(
+  'workflow.parked_session.age_ms'
+);
+
 /** The in-band fence refused this orchestrator delivery's write. */
 export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'

@@ -176,7 +176,21 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Node.js VM engine only. Keeps the suspended workflow VM alive across inline steps within one invocation, so each iteration of the inline loop appends only the newly written events instead of replaying the whole event log in a fresh VM. QuickJS manages its own retained inline loop independently of this setting.
 - A step- or attribute-driven suspension can keep the VM retained even when hooks or waits are open or created at the same boundary. Hook- or wait-only suspensions park the invocation because nothing in the current delivery can advance them, with one exception: when the hook's own create is what the workflow is waiting on (a `hook.getConflict()` awaiter, or a create whose token is already claimed), the invocation resumes the retained VM over the committed `hook_created` or `hook_conflict` instead of re-invoking through the queue, and runs the steps started at that same boundary on the pass after it. Any replay divergence falls back to a full replay.
 - Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, `RegExp`, typed arrays, `ArrayBuffer`, `URL`, `Headers`) keep the VM retained. Patching or polyfilling built-in prototypes doesn't change that because serialization never calls them. A boundary falls back to a full replay only when serializing its arguments runs code the workflow controls, such as a getter, a proxy, or a custom class serializer, or computes an `Error`'s stack trace.
-- Set `0` or `false` to replay the Node.js workflow from scratch in a fresh VM on every iteration.
+- With `WORKFLOW_PARKED_VM_MAX_BYTES` set, a delivery of a spec 9 run that suspends cleanly also parks its VM in process memory, together with the log it read, until the run's next delivery. When that delivery lands in the same process, it reads only the events since and resumes the VM instead of loading and replaying the whole log.
+- Set `0` or `false` to replay the Node.js workflow from scratch in a fresh VM on every iteration. This also turns off parking between deliveries.
+
+### `WORKFLOW_PARKED_VM_MAX_BYTES`
+
+- Default: `0` (parking is off)
+- Node.js VM engine and spec 9 runs only. Set a budget, such as `8388608` (8 MiB), to park VMs between a run's deliveries (see `WORKFLOW_RETAINED_VM`). It is the estimated memory a process may hold in parked VMs, per World instance. Each parked VM holds the run's history about three times over (the event log, its decrypted payloads, and the workflow's state), so the estimate is 256 KiB plus three times the size of the run's serialized event data. For a run with an encryption key, those decrypted payloads stay in the process's memory until the run's next delivery takes the VM or the entry expires.
+- A run whose estimate is over half the budget isn't parked, and its next delivery loads and replays the log as usual. Parking evicts the oldest parked VMs to stay within the budget. At most 64 VMs are parked, each for up to `WORKFLOW_PARKED_VM_MAX_AGE_MS`.
+- `0` keeps VM retention within one invocation.
+
+### `WORKFLOW_PARKED_VM_MAX_AGE_MS`
+
+- Default: `600000` (10 minutes)
+- How long a process keeps a VM parked between a run's deliveries (see `WORKFLOW_PARKED_VM_MAX_BYTES`). A run whose next delivery arrives later loads and replays the log as usual.
+- Must be a positive integer.
 
 ### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`
 
