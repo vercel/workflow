@@ -416,17 +416,26 @@ export const WorkflowParkedSessionEvicted = SemanticConvention<number>(
 
 /**
  * What became of the parked VM a delivery took: `resume` read on from its
- * cursor, `stale` found another orchestrator's in-band writes, `reloaded`
- * had its cursor refused and read the whole log, and `dropped` was a
- * delivery (a start, a timer, a `wakeUp()`) that does not resume one.
+ * cursor, `crossed` did too over another orchestrator's in-band writes,
+ * `reloaded` had its cursor refused and read the whole log, `unread` got no
+ * snapshot, and `dropped` was a delivery (a start, a timer, a `wakeUp()`)
+ * that does not resume one.
  */
 export const WorkflowParkedSessionRead = SemanticConvention<
-  'resume' | 'stale' | 'reloaded' | 'dropped'
+  'resume' | 'crossed' | 'reloaded' | 'unread' | 'dropped'
 >('workflow.parked_session.read');
 
 /** How long the VM the delivery took had been parked, in milliseconds. */
 export const WorkflowParkedSessionAgeMs = SemanticConvention<number>(
   'workflow.parked_session.age_ms'
+);
+
+/**
+ * The VM this delivery resumed from a park diverged from the log on its first
+ * pass, and the delivery replayed it from cold instead.
+ */
+export const WorkflowParkedSessionDiverged = SemanticConvention<boolean>(
+  'workflow.parked_session_diverged'
 );
 
 /** The in-band fence refused this orchestrator delivery's write. */
