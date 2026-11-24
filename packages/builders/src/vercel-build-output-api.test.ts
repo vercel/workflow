@@ -597,7 +597,7 @@ export async function orderWorkflow() {
 
 describe('VercelBuildOutputAPIBuilder steps in packages discovery skips', () => {
   // The workflow bundle compiles every step in a file the workflow imports,
-  // called or not. A package discovery does not read keeps its steps out of
+  // called or not. A package discovery does not scan keeps its steps out of
   // the steps bundle on purpose, so a workflow that uses only a helper from
   // it must still build. These builds passed before the unregistered-step
   // check, and failed with it before it told these steps apart.
@@ -663,7 +663,7 @@ export async function orderWorkflow(n: number) {
       });
       const warnings = await buildAndCollectWarnings(createConfig(workingDir));
       expect(warnings).toMatch(
-        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not read this file/
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not scan this file for steps/
       );
     }
   );
@@ -694,7 +694,8 @@ export async function orderWorkflow(n: number) {
     async () => {
       // The app lives in apps/web and the package in the root node_modules,
       // as npm, yarn and pnpm workspaces install it. The manifest records the
-      // file as node_modules/helper-lib/index.js, relative to neither.
+      // file as node_modules/helper-lib/index.js: its path from the app with
+      // the ../ parts dropped, which does not lead to the file from the app.
       await writeHelperLib({
         name: 'helper-lib',
         version: '1.0.0',
@@ -721,7 +722,7 @@ export async function orderWorkflow(n: number) {
       );
       const warnings = await buildAndCollectWarnings(createConfig(appDir));
       expect(warnings).toMatch(
-        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not read this file/
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not scan this file for steps/
       );
     }
   );
@@ -769,7 +770,7 @@ export async function orderWorkflow(n: number) {
       );
       const warnings = await buildAndCollectWarnings(createConfig(workingDir));
       expect(warnings).toMatch(
-        /unusedStep in .*internal-lib\/index\.js .*: discovery did not read this file/
+        /unusedStep in .*internal-lib\/index\.js .*: discovery did not scan this file for steps/
       );
       expect(warnings).not.toMatch(/Workflow SDK bug/);
     }
@@ -828,7 +829,7 @@ export async function orderWorkflow(n: number) {
       );
       const warnings = await buildAndCollectWarnings(createConfig(workingDir));
       expect(warnings).toMatch(
-        /unusedStep in node_modules\/chain-b\/index\.js .*: discovery did not read this file/
+        /unusedStep in node_modules\/chain-b\/index\.js .*: discovery did not scan this file for steps/
       );
     }
   );

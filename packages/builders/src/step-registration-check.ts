@@ -65,13 +65,13 @@ export function findUnregisteredSteps({
 
 /**
  * What discovery did in this build, which tells a step discovery missed (a
- * bug) apart from a step in a file discovery never reads.
+ * bug) apart from a step in a file discovery does not scan for steps.
  */
 export interface DiscoveryFacts {
   /** The file each workflow manifest `steps` key was compiled from. */
   stepFilePaths: ReadonlyMap<string, string>;
   /**
-   * The files discovery read. Without it every unregistered step fails the
+   * The files discovery scanned for steps (`discoveredFiles`). Without it every unregistered step fails the
    * build, as it cannot be told apart.
    */
   discoveredFiles?: ReadonlySet<string>;
@@ -80,15 +80,17 @@ export interface DiscoveryFacts {
 }
 
 /**
- * Why discovery did not read the file a step is in:
+ * Why discovery did not scan the file a step is in for steps:
  *
  * - `node-modules-discovery-disabled`: the file is under `node_modules`, or
  *   in the SDK, while discovery does not descend into `node_modules`
  *   (`WORKFLOW_DISCOVER_NODE_MODULES=0` or `discoverWorkflowsInNodeModules:
  *   false`).
- * - `not-reached`: discovery reads a package only when it depends on
- *   `workflow` or an `@workflow/*` package, so a file reached only through a
- *   package that does not, wherever it is installed, is never read.
+ * - `not-reached`: discovery follows imports into a package only when it
+ *   depends on `workflow` or an `@workflow/*` package, so it does not scan a
+ *   file it reaches only through a package that does not, wherever the file
+ *   is installed. (It may still read the one file such an import resolves to,
+ *   for serde classes only.)
  */
 export type SkippedStepReason =
   | 'node-modules-discovery-disabled'
@@ -113,7 +115,11 @@ function tryRealpath(filePath: string): string | undefined {
   }
 }
 
-/** Whether the nearest `package.json` above `filePath` is the SDK's. */
+/**
+ * Whether the nearest `package.json` above `filePath` is the SDK's. A nested
+ * `package.json` without a name (such as `dist/package.json` setting only
+ * `type`) would hide the SDK's; no SDK package ships one today.
+ */
 function isSdkFile(filePath: string): boolean {
   let currentDir = dirname(filePath);
   while (currentDir && currentDir !== dirname(currentDir)) {
@@ -133,7 +139,7 @@ function isSdkFile(filePath: string): boolean {
 }
 
 /**
- * Returns a check for whether discovery read a file. Paths are compared as
+ * Returns a check for whether discovery scanned a file for steps. Paths are compared as
  * given first, then by their real paths, so a file discovery reached through
  * a symlink still counts as read. The real paths are only computed when the
  * first comparison misses.
@@ -163,10 +169,10 @@ function createDiscoveredFileCheck(discoveredFiles: ReadonlySet<string>) {
 
 /**
  * Splits unregistered steps into the ones discovery missed, which fail the
- * build, and the ones in files discovery did not read on purpose, which only
- * warn. A step counts as missed when discovery read its file, when its file
+ * build, and the ones in files discovery did not scan for steps on purpose, which only
+ * warn. A step counts as missed when discovery scanned its file, when its file
  * is in the SDK while discovery descends into `node_modules` (discovery
- * always reads the SDK then), or when the facts to tell are not there.
+ * follows imports into the SDK then), or when the facts to tell are not there.
  */
 export function classifyUnregisteredSteps(
   steps: UnregisteredStep[],
@@ -217,7 +223,7 @@ export function formatUnregisteredStepsMessage(
 const SKIPPED_REASON_TEXT: Record<SkippedStepReason, string> = {
   'node-modules-discovery-disabled': 'node_modules discovery is off',
   'not-reached':
-    'discovery did not read this file, which it reads only through packages that depend on workflow or an @workflow/* package',
+    'discovery did not scan this file for steps, as it only follows imports into packages that depend on workflow or an @workflow/* package',
 };
 
 export function formatSkippedStepsMessage(
@@ -225,7 +231,7 @@ export function formatSkippedStepsMessage(
 ): string {
   const count = steps.length;
   const lines = [
-    `Workflow code can call ${count} ${count === 1 ? 'step' : 'steps'} that ${count === 1 ? 'is' : 'are'} not registered because discovery does not read ${count === 1 ? 'its file' : 'their files'}. A call to one fails at runtime with "Step ... is not registered in the current deployment":`,
+    `Workflow code can call ${count} ${count === 1 ? 'step' : 'steps'} that ${count === 1 ? 'is' : 'are'} not registered because discovery does not scan ${count === 1 ? 'its file' : 'their files'} for steps. A call to one fails at runtime with "Step ... is not registered in the current deployment":`,
   ];
   for (const step of steps.slice(0, MAX_REPORTED)) {
     lines.push(
@@ -248,7 +254,7 @@ function buildHint(): string {
 
 function buildSkippedHint(): string {
   return [
-    'Discovery reads a package only when it depends on workflow or an @workflow/* package, and reads nothing under node_modules while node_modules discovery is off (WORKFLOW_DISCOVER_NODE_MODULES, or the discoverWorkflowsInNodeModules option).',
+    'Discovery follows imports into a package only when it depends on workflow or an @workflow/* package, and does not follow imports from your code into node_modules while node_modules discovery is off (WORKFLOW_DISCOVER_NODE_MODULES, or the discoverWorkflowsInNodeModules option).',
     'Nothing breaks unless workflow code calls one of these steps. If it does, turn node_modules discovery back on, or add the dependency to the package that contains the step and to each package that imports it on the way.',
     `See ${DOCS_URL}`,
   ].join(' ');
@@ -259,7 +265,7 @@ function buildSkippedHint(): string {
  * bundle does not register.
  *
  * The workflow bundle compiles every step in a file it imports, called or
- * not, while discovery does not read some files on purpose. A step in such a
+ * not, while discovery does not scan some files for steps on purpose. A step in such a
  * file only produces a warning, as failing on it would fail builds where
  * nothing calls the step. See `classifyUnregisteredSteps`. Without
  * `discovery`, every unregistered step fails the build.

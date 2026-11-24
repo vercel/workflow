@@ -188,12 +188,12 @@ describe('assertWorkflowStepsAreRegistered', () => {
   });
 });
 
-describe('steps in files discovery did not read', () => {
+describe('steps in files discovery did not scan', () => {
   // The workflow bundle compiles every step in a file it imports, called or
-  // not, while discovery does not read some files on purpose. A step in a
-  // file discovery never read is not a discovery bug, so it warns instead of
+  // not, while discovery does not scan some files for steps on purpose. A step
+  // in a file discovery never scanned is not a discovery bug, so it warns instead of
   // failing a build where nothing may call it. Each case is decided by what
-  // discovery read, not by where the file is installed.
+  // discovery scanned, not by where the file is installed.
   let root: string;
 
   const file = (relativePath: string, packageJson?: object) => {
@@ -252,7 +252,7 @@ describe('steps in files discovery did not read', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('fails the build for an application file discovery read', () => {
+  it('fails the build for an application file discovery scanned', () => {
     const path = file('app/workflows/a.ts');
     const { error } = check({
       key: 'workflows/a.ts',
@@ -262,7 +262,7 @@ describe('steps in files discovery did not read', () => {
     expect(error).toBeInstanceOf(WorkflowBuildError);
   });
 
-  it('fails the build for a package file discovery read', () => {
+  it('fails the build for a package file discovery scanned', () => {
     const path = file('app/node_modules/lib/index.js', {
       name: 'lib',
       dependencies: { workflow: '*' },
@@ -275,7 +275,7 @@ describe('steps in files discovery did not read', () => {
     expect(error).toBeInstanceOf(WorkflowBuildError);
   });
 
-  it('counts a file discovery read through a symlink as read', () => {
+  it('counts a file discovery scanned through a symlink as scanned', () => {
     const path = file('packages/lib/index.js', { name: 'lib' });
     mkdirSync(join(root, 'app/node_modules'), { recursive: true });
     symlinkSync(
@@ -291,9 +291,9 @@ describe('steps in files discovery did not read', () => {
     expect(error).toBeInstanceOf(WorkflowBuildError);
   });
 
-  it('fails the build for an SDK file discovery did not read', () => {
-    // Discovery always reads the SDK while it descends into node_modules, so
-    // an SDK step it did not read (Run's, when @workflow/core cannot be
+  it('fails the build for an SDK file discovery did not scan', () => {
+    // Discovery follows imports into the SDK while it descends into
+    // node_modules, so an SDK step it did not scan (Run's, when @workflow/core cannot be
     // resolved) is a discovery bug.
     const path = file('app/node_modules/@workflow/core/dist/runtime/run.js', {
       name: '@workflow/core',
@@ -313,9 +313,9 @@ describe('steps in files discovery did not read', () => {
       'node_modules/lib/index.js',
     ],
     ['in a package elsewhere in the repository', 'packages/lib/index.js'],
-  ])('warns for a step %s that discovery did not read', (_label, relativePath) => {
+  ])('warns for a step %s that discovery did not scan', (_label, relativePath) => {
     // The package depends on workflow, so neither its location nor its own
-    // manifest says discovery skipped it: only what discovery read does
+    // manifest says discovery skipped it: only what discovery scanned does
     // (here, it was reached through a package that does not depend on
     // workflow).
     const path = file(relativePath, {
@@ -329,13 +329,13 @@ describe('steps in files discovery did not read', () => {
     });
     expect(error).toBeUndefined();
     expect(warning).toMatch(
-      /unusedStep in node_modules\/lib\/index\.js .*: discovery did not read this file/
+      /unusedStep in node_modules\/lib\/index\.js .*: discovery did not scan this file for steps/
     );
     expect(warning).not.toMatch(/Workflow SDK bug/);
   });
 
   it('warns for an SDK step while node_modules discovery is off', () => {
-    // With node_modules discovery off the SDK is not read either, so its
+    // With node_modules discovery off the SDK is not scanned either, so its
     // steps (fetch in workflow/stdlib) cannot be registered. That is the
     // opt-out working, not a bug.
     const path = file('app/node_modules/workflow/dist/stdlib.js', {

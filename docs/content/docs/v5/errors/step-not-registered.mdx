@@ -39,7 +39,7 @@ The workflow bundle compiled the function as a step, but its file was not discov
 
 As a last resort, set `WORKFLOW_ALLOW_UNREGISTERED_STEPS=1` to downgrade the build failure to a warning. Calls to the listed steps still fail at runtime.
 
-A step in a file that discovery did not read is reported as a warning instead, and the build continues. Discovery reads a package only when it depends on `workflow` or an `@workflow/*` package, so it does not read a package that does not, or one it reaches only through such a package, wherever it is installed. It reads nothing under `node_modules` while [node_modules discovery](/docs/configuration/build-and-diagnostics#workflow_discover_node_modules) is off. Nothing fails unless workflow code calls one of the listed steps. If it does, turn node_modules discovery on, or add the dependency to the package that contains the step and to each package that imports it on the way.
+A step in a file that discovery did not scan for steps is reported as a warning instead, and the build continues. Discovery follows imports into a package only when the package depends on `workflow` or an `@workflow/*` package, so it does not scan a package that does not, or a package it reaches only through one that does not, wherever it is installed. While [node_modules discovery](/docs/configuration/build-and-diagnostics#workflow_discover_node_modules) is off, it does not follow imports from your code into `node_modules`. Nothing fails unless workflow code calls one of the listed steps. If it does, turn node_modules discovery on, or add the dependency to the package that contains the step and to each package that imports it on the way.
 
 ## Common causes
 
