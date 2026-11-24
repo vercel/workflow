@@ -53,7 +53,15 @@ class StepDiscoveryMissBuilder extends VercelBuildOutputAPIBuilder {
   constructor(
     workingDir: string,
     private readonly skippedStepFile: string,
-    private readonly options: { watch?: boolean; rejectDispose?: boolean } = {}
+    private readonly options: {
+      watch?: boolean;
+      rejectDispose?: boolean;
+      /**
+       * Also leave the file out of the files discovery scanned, as when it
+       * cannot read the import that reaches the file.
+       */
+      unscanned?: boolean;
+    } = {}
   ) {
     super({ ...createConfig(workingDir), watch: options.watch });
   }
@@ -79,6 +87,9 @@ class StepDiscoveryMissBuilder extends VercelBuildOutputAPIBuilder {
       );
     }
     discovered.discoveredSteps.delete(skipped[0]);
+    if (this.options.unscanned) {
+      discovered.discoveredFiles?.delete(skipped[0]);
+    }
     return discovered;
   }
 
@@ -548,6 +559,25 @@ export async function orderWorkflow() {
   );
 
   it(
+    'fails the build when discovery could not read the import that reaches a step file',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // An application file is never declined, so a step file the workflow
+      // bundle reaches that discovery never scanned is a miss.
+      const builder = new StepDiscoveryMissBuilder(
+        workingDir,
+        'src/lib/payments.ts',
+        {
+          unscanned: true,
+        }
+      );
+      await expect(builder.build()).rejects.toThrow(
+        /can call 1 step that is not registered[\s\S]*chargeCard in src\/lib\/payments\.ts/
+      );
+    }
+  );
+
+  it(
     'builds with a warning behind the escape hatch',
     { timeout: BUILD_TIMEOUT },
     async () => {
@@ -663,7 +693,7 @@ export async function orderWorkflow(n: number) {
       });
       const warnings = await buildAndCollectWarnings(createConfig(workingDir));
       expect(warnings).toMatch(
-        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not scan this file for steps/
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: it is only reached through a package that does not depend on workflow/
       );
     }
   );
@@ -722,7 +752,7 @@ export async function orderWorkflow(n: number) {
       );
       const warnings = await buildAndCollectWarnings(createConfig(appDir));
       expect(warnings).toMatch(
-        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not scan this file for steps/
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: it is only reached through a package that does not depend on workflow/
       );
     }
   );
@@ -770,7 +800,7 @@ export async function orderWorkflow(n: number) {
       );
       const warnings = await buildAndCollectWarnings(createConfig(workingDir));
       expect(warnings).toMatch(
-        /unusedStep in .*internal-lib\/index\.js .*: discovery did not scan this file for steps/
+        /unusedStep in .*internal-lib\/index\.js .*: it is only reached through a package that does not depend on workflow/
       );
       expect(warnings).not.toMatch(/Workflow SDK bug/);
     }
@@ -829,8 +859,53 @@ export async function orderWorkflow(n: number) {
       );
       const warnings = await buildAndCollectWarnings(createConfig(workingDir));
       expect(warnings).toMatch(
-        /unusedStep in node_modules\/chain-b\/index\.js .*: discovery did not scan this file for steps/
+        /unusedStep in node_modules\/chain-b\/index\.js .*: it is only reached through a package that does not depend on workflow/
       );
+    }
+  );
+
+  it(
+    'registers and runs a step that a minified package imports without spaces',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // `import{charge}from"./steps.js"`: discovery used to require a space
+      // after `from`, so it never reached steps.js, which the workflow calls.
+      const dir = join(workingDir, 'node_modules/minlib');
+      await write(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'minlib',
+          version: '1.0.0',
+          type: 'module',
+          main: 'index.js',
+          dependencies: { workflow: '*' },
+        })
+      );
+      await write(
+        join(dir, 'index.js'),
+        'import{charge}from"./steps.js";export{charge};'
+      );
+      await write(
+        join(dir, 'steps.js'),
+        `export async function charge() {
+  'use step';
+  return 'charged';
+}
+`
+      );
+      await write(
+        join(workingDir, 'src/workflows/order.ts'),
+        `import { charge } from 'minlib';
+
+export async function orderWorkflow() {
+  'use workflow';
+  return charge();
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).not.toContain('not registered');
+      expect(executeStep(workingDir, 'charge')).toBe('charged');
     }
   );
 

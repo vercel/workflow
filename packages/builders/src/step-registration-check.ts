@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { ERROR_SLUGS, WorkflowBuildError } from '@workflow/errors';
+import type { Metafile } from 'esbuild';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { isNodeModulesPath } from './fast-discovery.js';
 
@@ -65,36 +66,46 @@ export function findUnregisteredSteps({
 
 /**
  * What discovery did in this build, which tells a step discovery missed (a
- * bug) apart from a step in a file discovery does not scan for steps.
+ * bug) apart from a step in a file discovery declined to scan on purpose.
  */
 export interface DiscoveryFacts {
-  /** The file each workflow manifest `steps` key was compiled from. */
-  stepFilePaths: ReadonlyMap<string, string>;
+  /** The files each step ID in the workflow manifest was compiled from. */
+  stepFilePaths: ReadonlyMap<string, ReadonlySet<string>>;
   /**
-   * The files discovery scanned for steps (`discoveredFiles`). Without it every unregistered step fails the
-   * build, as it cannot be told apart.
+   * The files discovery scanned for steps (`discoveredFiles`). Without it
+   * every unregistered step fails the build, as it cannot be told apart.
    */
   discoveredFiles?: ReadonlySet<string>;
+  /** Roots of the packages discovery declined to walk (`declinedPackageRoots`). */
+  declinedPackageRoots?: ReadonlySet<string>;
+  /**
+   * The workflow bundle's import graph. A file reachable from its entry
+   * without entering a declined package is one discovery should have
+   * scanned; without the graph, a file counts as declined only when it is
+   * inside a declined package.
+   */
+  workflowBundleGraph?: { metafile: Metafile; workingDir: string };
+  /** The project directory. A declined root that contains it is ignored. */
+  workingDir?: string;
   /** Whether discovery descended into `node_modules`. */
   discoverWorkflowsInNodeModules: boolean;
 }
 
 /**
- * Why discovery did not scan the file a step is in for steps:
+ * Why discovery did not scan the file a step is in for steps, on purpose:
  *
- * - `node-modules-discovery-disabled`: the file is under `node_modules`, or
- *   in the SDK, while discovery does not descend into `node_modules`
+ * - `node-modules-discovery-disabled`: the file is only reached through an
+ *   import from application code into `node_modules`, which discovery does
+ *   not follow while node_modules discovery is off
  *   (`WORKFLOW_DISCOVER_NODE_MODULES=0` or `discoverWorkflowsInNodeModules:
  *   false`).
- * - `not-reached`: discovery follows imports into a package only when it
- *   depends on `workflow` or an `@workflow/*` package, so it does not scan a
- *   file it reaches only through a package that does not, wherever the file
- *   is installed. (It may still read the one file such an import resolves to,
- *   for serde classes only.)
+ * - `declined-package`: the file is only reached through a package that does
+ *   not depend on `workflow` or an `@workflow/*` package, which discovery
+ *   does not walk, wherever it is installed.
  */
 export type SkippedStepReason =
   | 'node-modules-discovery-disabled'
-  | 'not-reached';
+  | 'declined-package';
 
 export interface SkippedUnregisteredStep extends UnregisteredStep {
   reason: SkippedStepReason;
@@ -103,7 +114,7 @@ export interface SkippedUnregisteredStep extends UnregisteredStep {
 const isWindows = process.platform === 'win32';
 
 const normalizeForComparison = (filePath: string) => {
-  const normalized = filePath.replace(/\\/g, '/');
+  const normalized = filePath.replace(/\\/g, '/').replace(/\/+$/, '');
   return isWindows ? normalized.toLowerCase() : normalized;
 };
 
@@ -113,6 +124,34 @@ function tryRealpath(filePath: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The path, and its real path when it differs, normalized for comparison. */
+function comparablePaths(filePath: string): string[] {
+  const paths = [normalizeForComparison(filePath)];
+  const real = tryRealpath(filePath);
+  if (real !== undefined) {
+    const normalizedReal = normalizeForComparison(real);
+    if (normalizedReal !== paths[0]) paths.push(normalizedReal);
+  }
+  return paths;
+}
+
+const isInside = (filePath: string, root: string) =>
+  filePath === root || filePath.startsWith(`${root}/`);
+
+/**
+ * Whether `filePath` is the SDK file that defines `Run` and its steps.
+ * Discovery seeds it whether or not node_modules discovery is on, so a step
+ * in it that is not registered is always a discovery bug.
+ */
+function isSeededRuntimeFile(filePath: string): boolean {
+  const normalized = normalizeForComparison(filePath);
+  return (
+    /\/runtime\/run\.[cm]?js$/.test(normalized) &&
+    /(^|\/)(@workflow\/core|core)\//.test(normalized) &&
+    isSdkFile(filePath)
+  );
 }
 
 /**
@@ -139,40 +178,77 @@ function isSdkFile(filePath: string): boolean {
 }
 
 /**
- * Returns a check for whether discovery scanned a file for steps. Paths are compared as
- * given first, then by their real paths, so a file discovery reached through
- * a symlink still counts as read. The real paths are only computed when the
- * first comparison misses.
+ * The files of the workflow bundle reachable from its entry without entering
+ * a declined package, and, while node_modules discovery is off, without an
+ * import from application code into node_modules. Discovery should have
+ * scanned every one of them, so a step in one that it did not register is a
+ * miss.
  */
-function createDiscoveredFileCheck(discoveredFiles: ReadonlySet<string>) {
-  const discovered = new Set(
-    [...discoveredFiles].map((file) => normalizeForComparison(file))
+/** Inputs nothing imports: the entry points of the bundle. */
+function findRootInputs(metafile: Metafile): string[] {
+  const imported = new Set<string>();
+  for (const info of Object.values(metafile.inputs)) {
+    for (const { path } of info.imports) imported.add(path);
+  }
+  return Object.keys(metafile.inputs).filter((input) => !imported.has(input));
+}
+
+function findNormallyReachableFiles({
+  metafile,
+  workingDir,
+  isDeclined,
+  discoverWorkflowsInNodeModules,
+}: {
+  metafile: Metafile;
+  workingDir: string;
+  isDeclined: (filePath: string) => boolean;
+  discoverWorkflowsInNodeModules: boolean;
+}): Set<string> {
+  // esbuild names synthetic inputs `<runtime>`, `<stdin>`.
+  const toPath = (input: string) =>
+    input.startsWith('<') && input.endsWith('>')
+      ? undefined
+      : normalizeForComparison(resolve(workingDir, input));
+  // Mirrors the imports discovery declines to follow.
+  const isFollowed = (from: string | undefined, to: string | undefined) =>
+    to === undefined ||
+    (!isDeclined(to) &&
+      (discoverWorkflowsInNodeModules ||
+        from === undefined ||
+        isNodeModulesPath(from) ||
+        !isNodeModulesPath(to)));
+
+  const queue = findRootInputs(metafile).filter((input) =>
+    isFollowed(undefined, toPath(input))
   );
-  let discoveredRealpaths: Set<string> | undefined;
-  return (filePath: string) => {
-    if (discovered.has(normalizeForComparison(filePath))) {
-      return true;
+  const seen = new Set(queue);
+  const reachable = new Set<string>();
+  while (queue.length > 0) {
+    const input = queue.shift() as string;
+    const from = toPath(input);
+    if (from !== undefined) reachable.add(from);
+    for (const { path: next } of metafile.inputs[input]?.imports ?? []) {
+      if (seen.has(next) || !metafile.inputs[next]) continue;
+      if (!isFollowed(from, toPath(next))) continue;
+      seen.add(next);
+      queue.push(next);
     }
-    discoveredRealpaths ??= new Set(
-      [...discoveredFiles].flatMap((file) => {
-        const real = tryRealpath(file);
-        return real ? [normalizeForComparison(real)] : [];
-      })
-    );
-    const real = tryRealpath(filePath);
-    return (
-      real !== undefined &&
-      discoveredRealpaths.has(normalizeForComparison(real))
-    );
-  };
+  }
+  return reachable;
 }
 
 /**
  * Splits unregistered steps into the ones discovery missed, which fail the
- * build, and the ones in files discovery did not scan for steps on purpose, which only
- * warn. A step counts as missed when discovery scanned its file, when its file
- * is in the SDK while discovery descends into `node_modules` (discovery
- * follows imports into the SDK then), or when the facts to tell are not there.
+ * build, and the ones in files discovery declined to scan on purpose, which
+ * only warn.
+ *
+ * A step is declined only when every file it was compiled from is reached
+ * solely through a package discovery declined (or, while node_modules
+ * discovery is off, solely through an import from application code into
+ * node_modules). It counts as missed when discovery scanned one of its files,
+ * when one of them is reachable without such a package (an import discovery
+ * could not read, for example), when it is in the SDK's seeded runtime file,
+ * or when the facts to tell are not there.
  */
 export function classifyUnregisteredSteps(
   steps: UnregisteredStep[],
@@ -183,23 +259,65 @@ export function classifyUnregisteredSteps(
   if (!discovery?.discoveredFiles) {
     return { missed: steps, skipped };
   }
-  const wasRead = createDiscoveredFileCheck(discovery.discoveredFiles);
+
+  const scanned = new Set<string>();
+  for (const file of discovery.discoveredFiles) {
+    for (const path of comparablePaths(file)) scanned.add(path);
+  }
+  const workingDirPaths = discovery.workingDir
+    ? comparablePaths(discovery.workingDir)
+    : [];
+  // A declined root that contains the project would make every file of it
+  // count as declined, so it is ignored.
+  const declinedRoots = [...(discovery.declinedPackageRoots ?? [])]
+    .flatMap((root) => comparablePaths(root))
+    .filter((root) => !workingDirPaths.some((dir) => isInside(dir, root)));
+  const isDeclined = (path: string) =>
+    declinedRoots.some((root) => isInside(path, root));
+
+  let reachable: Set<string> | undefined;
+  const isNormallyReachable = (paths: string[]) => {
+    if (!discovery.workflowBundleGraph) return false;
+    reachable ??= findNormallyReachableFiles({
+      ...discovery.workflowBundleGraph,
+      isDeclined,
+      discoverWorkflowsInNodeModules: discovery.discoverWorkflowsInNodeModules,
+    });
+    const reachableFiles = reachable;
+    return paths.some((path) => reachableFiles.has(path));
+  };
+
   for (const step of steps) {
-    const filePath = discovery.stepFilePaths.get(step.file);
-    if (filePath === undefined || wasRead(filePath)) {
+    const files = [...(discovery.stepFilePaths.get(step.stepId) ?? [])];
+    const paths = files.map((file) => comparablePaths(file));
+    const isMissed =
+      files.length === 0 ||
+      paths.some((filePaths) => filePaths.some((path) => scanned.has(path))) ||
+      files.some((file) => isSeededRuntimeFile(file)) ||
+      paths.some((filePaths) => isNormallyReachable(filePaths)) ||
+      (!discovery.workflowBundleGraph &&
+        !paths.every((filePaths) =>
+          filePaths.some(
+            (path) =>
+              isDeclined(path) ||
+              (!discovery.discoverWorkflowsInNodeModules &&
+                isNodeModulesPath(path))
+          )
+        ));
+    if (isMissed) {
       missed.push(step);
       continue;
     }
-    if (!discovery.discoverWorkflowsInNodeModules) {
-      if (isSdkFile(filePath) || isNodeModulesPath(filePath)) {
-        skipped.push({ ...step, reason: 'node-modules-discovery-disabled' });
-        continue;
-      }
-    } else if (isSdkFile(filePath)) {
-      missed.push(step);
-      continue;
-    }
-    skipped.push({ ...step, reason: 'not-reached' });
+    const inDeclinedPackage = paths.some((filePaths) =>
+      filePaths.some((path) => isDeclined(path))
+    );
+    skipped.push({
+      ...step,
+      reason:
+        !discovery.discoverWorkflowsInNodeModules && !inDeclinedPackage
+          ? 'node-modules-discovery-disabled'
+          : 'declined-package',
+    });
   }
   return { missed, skipped };
 }
@@ -222,8 +340,8 @@ export function formatUnregisteredStepsMessage(
 
 const SKIPPED_REASON_TEXT: Record<SkippedStepReason, string> = {
   'node-modules-discovery-disabled': 'node_modules discovery is off',
-  'not-reached':
-    'discovery did not scan this file for steps, as it only follows imports into packages that depend on workflow or an @workflow/* package',
+  'declined-package':
+    'it is only reached through a package that does not depend on workflow or an @workflow/* package, which discovery does not scan',
 };
 
 export function formatSkippedStepsMessage(

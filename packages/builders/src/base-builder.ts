@@ -541,6 +541,7 @@ export abstract class BaseBuilder {
       discoveredWorkflows: new Set(),
       discoveredSerdeFiles: new Set(),
       discoveredFiles: new Set(),
+      declinedPackageRoots: new Set(),
     };
 
     const discoverStart = Date.now();
@@ -1340,11 +1341,12 @@ export const __steps_registered = ${stepsRegistered};
     /** The initial workflow VM build graph. */
     interimBundleMetafile?: esbuild.Metafile;
     /**
-     * The file each `manifest.steps` key was compiled from. Manifest keys are
+     * The files each step ID was compiled from. Manifest file keys are
      * relative and drop `../` for files outside the working directory, so
-     * they cannot be resolved back to a file on their own.
+     * they cannot be resolved back to a file, and two copies of a package can
+     * share one key. A step ID can come from more than one copy.
      */
-    stepFilePaths: Map<string, string>;
+    stepFilePaths: Map<string, Set<string>>;
   }> {
     const discovered =
       discoveredEntries ??
@@ -1424,10 +1426,19 @@ export const __steps_registered = ${stepsRegistered};
 
     const bundleStartTime = Date.now();
     const workflowManifest: WorkflowManifest = {};
-    const stepFilePaths = new Map<string, string>();
+    const stepFilePaths = new Map<string, Set<string>>();
     const recordStepFilePaths: WorkflowAfterTransformHook = async (result) => {
-      for (const file of Object.keys(result.workflowManifest.steps ?? {})) {
-        stepFilePaths.set(file, result.absolutePath);
+      for (const fileSteps of Object.values(
+        result.workflowManifest.steps ?? {}
+      )) {
+        for (const { stepId } of Object.values(fileSteps)) {
+          let files = stepFilePaths.get(stepId);
+          if (!files) {
+            files = new Set();
+            stepFilePaths.set(stepId, files);
+          }
+          files.add(result.absolutePath);
+        }
       }
       await this.config.onAfterTransform?.(result);
     };
@@ -1845,6 +1856,12 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         discovery: {
           stepFilePaths: workflowsResult.stepFilePaths,
           discoveredFiles: effectiveDiscoveredEntries.discoveredFiles,
+          declinedPackageRoots: effectiveDiscoveredEntries.declinedPackageRoots,
+          workflowBundleGraph: workflowsResult.interimBundleMetafile && {
+            metafile: workflowsResult.interimBundleMetafile,
+            workingDir: this.config.workingDir,
+          },
+          workingDir: this.config.workingDir,
           discoverWorkflowsInNodeModules:
             this.resolveDiscoverWorkflowsInNodeModules(),
         },

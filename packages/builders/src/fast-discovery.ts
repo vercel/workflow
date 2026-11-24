@@ -45,8 +45,10 @@ const NODE_BUILTIN_SPECIFIERS = new Set([
   ...builtinModules.map((moduleName) => `node:${moduleName}`),
 ]);
 const IMPORT_SPECIFIER_PATTERNS = [
-  /\bfrom\s+['"]([^'"]+)['"]/g,
-  /(?:^|[;\n])\s*import\s+['"]([^'"]+)['"]/g,
+  // `\s*`, not `\s+`: minified code writes `import{a}from"./a.js"` and
+  // `export*from"./a.js"`.
+  /\bfrom\s*['"]([^'"]+)['"]/g,
+  /(?:^|[;\n])\s*import\s*['"]([^'"]+)['"]/g,
   /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
@@ -61,6 +63,14 @@ export interface DiscoveredEntries {
    * unrelated application file edits.
    */
   discoveredFiles?: Set<string>;
+  /**
+   * Roots of the packages discovery declined to walk while node_modules
+   * discovery is on: a package an import resolves to that does not depend on
+   * `workflow` or an `@workflow/*` package, and a package under node_modules
+   * whose files' imports discovery does not follow for that reason. Files
+   * reached only through these packages are not scanned for steps on purpose.
+   */
+  declinedPackageRoots?: Set<string>;
   /**
    * Paths an import in the graph would resolve to if the file existed, for
    * relative and tsconfig-alias imports that did not resolve. An import can be
@@ -863,6 +873,15 @@ export async function fastDiscoverEntries({
     return packageInfo?.hasWorkflowDependency === true;
   };
 
+  const declinedPackageRoots = new Set<string>();
+  /** Records the package `filePath` belongs to as one discovery declined. */
+  const recordDeclinedPackage = async (filePath: string): Promise<void> => {
+    const packageInfo = await findPackageInfo(filePath, packageInfoCache);
+    if (packageInfo) {
+      declinedPackageRoots.add(packageInfo.root);
+    }
+  };
+
   /**
    * Discovery does not walk packages with no `workflow` dependency, but such a
    * package can still define serde classes. AI SDK providers mark their models
@@ -899,6 +918,9 @@ export async function fastDiscoverEntries({
       const resolved = await resolveLimit(() =>
         resolveBareSpecifier(importer, specifier)
       );
+      if (resolved) {
+        await recordDeclinedPackage(resolved);
+      }
       if (
         !resolved ||
         !isJsTsFile(resolved) ||
@@ -995,6 +1017,7 @@ export async function fastDiscoverEntries({
       forceFollowImports
     );
     if (!shouldFollow) {
+      await recordDeclinedPackage(filePath);
       return;
     }
 
@@ -1039,5 +1062,6 @@ export async function fastDiscoverEntries({
   }
 
   state.discoveredFiles = processedFiles;
+  state.declinedPackageRoots = declinedPackageRoots;
   state.unresolvedImportCandidates = unresolvedImportCandidates;
 }
