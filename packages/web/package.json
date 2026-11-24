@@ -84,7 +84,7 @@
     "tailwind-merge": "3.5.0",
     "tailwindcss": "4",
     "typescript": "catalog:",
-    "vite": "^6",
+    "vite": "^7.3.8",
     "vitest": "^3",
     "jsdom": "^26"
   }
