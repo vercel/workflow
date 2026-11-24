@@ -269,11 +269,22 @@ describe(`createWorld with ${FLAG}`, () => {
 
   it.each([
     '0',
-    'true',
+    'false',
+    'yes',
+    ' 1',
     '',
   ])('has no experimental_usage when it is %j', (value) => {
     process.env[FLAG] = value;
     expect(createWorld().experimental_usage).toBeUndefined();
+  });
+
+  it.each([
+    'true',
+    'TRUE',
+    'True',
+  ])('has experimental_usage when it is %j', (value) => {
+    process.env[FLAG] = value;
+    expect(typeof createWorld().experimental_usage?.getRun).toBe('function');
   });
 
   it('reads usage through experimental_usage when it is 1', async () => {

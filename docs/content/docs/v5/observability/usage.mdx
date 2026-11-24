@@ -10,7 +10,7 @@ related:
   - /docs/observability/retention
 ---
 
-A run's usage shows where its events come from (which steps and hooks drive them) and how much it stores, counted the way Vercel bills them, so you can estimate a workflow's cost before you deploy it. Usage is available on the Local World.
+A run's usage shows where its events come from (which steps and hooks drive them) and how much it stores, counted the way Vercel bills them, so you can estimate a workflow's cost before you deploy it. Usage is available on the Local World, and experimentally on the [Vercel backend](#see-a-vercel-runs-usage-experimental).
 
 ## See a run's usage
 
@@ -73,7 +73,17 @@ The numbers describe this run. The same workflow can record a different number o
 
 ## On Vercel
 
-A run's events are its Workflow Events, and **Storage (local)** is counted the way Data Written is, except that Data Written also includes QuickJS VM snapshots and a dynamic workflow's code. Usage doesn't show Data Retained, function compute, or queues; see [Workflow pricing](https://vercel.com/docs/workflows/pricing), and open a run on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard) for what it was billed.
+A run's events are its Workflow Events, and **Storage (local)** is counted the way Data Written is, except that Data Written also includes QuickJS VM snapshots and a dynamic workflow's code. Local usage doesn't show Data Retained, and usage never shows function compute or queues; see [Workflow pricing](https://vercel.com/docs/workflows/pricing), and open a run on the Workflows page in the [Vercel dashboard](https://vercel.com/dashboard) for what it was billed.
+
+### See a Vercel run's usage (experimental)
+
+Set [`WORKFLOW_EXPERIMENTAL_VERCEL_USAGE`](/docs/configuration/runtime-tuning#workflow_experimental_vercel_usage) to `1` to see a Vercel run's usage:
+
+```bash
+WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1 npx workflow inspect run <run_id> --usage --backend vercel
+```
+
+The counts come from the backend's analytics. **Storage** is the Workflow Data Written Vercel bills for the run, and **Data retained** is shown when the backend reports it. The output says when the counts were taken: analytics can lag, so the newest events may be missing. Hooks are listed by id rather than by token. It needs backend support, and until the backend has it the command says usage isn't available. Its output may change.
 
 ## Reduce a run's usage
 

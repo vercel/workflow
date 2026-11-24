@@ -247,7 +247,7 @@ What a snapshot contains, and how it is protected:
 ### `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE`
 
 - Default: disabled
-- Set `1` to read a run's [usage](/docs/observability/usage) from the Vercel backend, for `workflow inspect run <id> --usage --backend vercel`. Any other value leaves it disabled. Experimental: it needs backend support, and its output may change.
+- Set `1` or `true` (case-insensitive) to read a run's [usage](/docs/observability/usage) from the Vercel backend, for `workflow inspect run <id> --usage --backend vercel`. Any other value leaves it disabled. Experimental: it needs backend support, and its output may change.
 - It also turns on the web UI's Usage page for Vercel runs, which shows the same counts without the time they were taken or the pricing link.
 
 ## Compression and tracing

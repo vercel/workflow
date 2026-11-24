@@ -39,6 +39,17 @@ export type { APIConfig } from './utils.js';
  */
 export { openWsChannel as openEventsChannel } from './ws-transport.js';
 
+/**
+ * `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE` is `1` or `true` (any case), the same
+ * values `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` accepts. Read when the
+ * World is created.
+ */
+function isVercelUsageEnabled(): boolean {
+  const raw = process.env.WORKFLOW_EXPERIMENTAL_VERCEL_USAGE;
+  if (raw === undefined) return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
@@ -144,7 +155,7 @@ export function createWorld(config?: APIConfig): World {
     // Experimental and off by default: the web UI and the CLI show usage
     // whenever this exists, and the backend half (`include=usage`) is not
     // available everywhere yet.
-    ...(process.env.WORKFLOW_EXPERIMENTAL_VERCEL_USAGE === '1'
+    ...(isVercelUsageEnabled()
       ? {
           experimental_usage: instrumentObject('world.experimental_usage', {
             getRun: (runId: string) => getRunUsage(runId, config),
