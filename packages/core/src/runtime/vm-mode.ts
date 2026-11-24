@@ -190,6 +190,29 @@ export function getConfiguredSnapshotThreshold(
 }
 
 /**
+ * Whether the run's snapshot threshold was explicitly configured rather
+ * than falling back to {@link DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD}. Never
+ * throws: an invalid value counts as configured.
+ *
+ * `start()` stamps the default into QuickJS runs (see
+ * {@link getSnapshotThresholdForStart}), so a stamped value equal to the
+ * default is treated as unconfigured unless `WORKFLOW_SNAPSHOT_THRESHOLD`
+ * is also set on the handler.
+ */
+export function isSnapshotThresholdConfigured(
+  workflowRun: WorkflowRun
+): boolean {
+  try {
+    const configured = getConfiguredSnapshotThreshold(workflowRun);
+    if (configured === undefined) return false;
+    if (configured !== DEFAULT_QUICKJS_SNAPSHOT_THRESHOLD) return true;
+    return getSnapshotThresholdFromEnv() !== undefined;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * {@link getSnapshotThreshold} for the workflow handler: an invalid value
  * disables snapshotting (with a warning through `onInvalid`) instead of
  * throwing. Snapshotting is an optimization, and a throw here would fail
@@ -207,4 +230,18 @@ export function getSnapshotThresholdForHandler(
     onInvalid((err as Error).message);
     return 0;
   }
+}
+
+/**
+ * Whether `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED` opts the handler into
+ * persisting VM snapshots for runs without an encryption key. A snapshot is
+ * executable VM state that also holds the run's in-memory data, so by
+ * default the runtime only snapshots runs whose World supplies an
+ * encryption key (which also authenticates the snapshot on restore).
+ */
+export function isUnencryptedSnapshottingAllowed(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const raw = env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
+  return raw === '1' || raw === 'true';
 }

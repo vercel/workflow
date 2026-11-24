@@ -1,5 +1,21 @@
 # @workflow/world-postgres
 
+## 5.5.0
+
+### Minor Changes
+
+- [#5622](https://github.com/vercel/workflow/pull/5622) [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Support the new `experimental_rateLimit()` feature. See [rate limit docs](https://workflow-sdk.dev/docs/api-reference/workflow/rate-limit)
+
+- [#5622](https://github.com/vercel/workflow/pull/5622) [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - New runs on the Vercel, Local and Postgres Worlds now use a new execution engine that supports speculative execution, and vastly reduces engine overhead. `WORKFLOW_SPEC_VERSION=8` opts out. Runs on third-party worlds use the old engine (spec 8) unless they implement the prerequisites.
+
+### Patch Changes
+
+- [#5687](https://github.com/vercel/workflow/pull/5687) [`6b90990`](https://github.com/vercel/workflow/commit/6b90990b8ab1846da8fd0457e6e9cbc1a6a507f1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a race where a stream write in flight while a run finished could commit after the run's data was deleted, and stop serving stream bytes for a run whose data is deleted.
+- Updated dependencies [[`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/world@5.4.0
+  - @workflow/world-local@5.6.0
+  - @workflow/errors@5.2.0
+
 ## 5.4.2
 
 ### Patch Changes
