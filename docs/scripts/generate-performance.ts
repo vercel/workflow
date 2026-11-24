@@ -14,6 +14,8 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
+  agentLoop,
+  agentLoopMeasuredOn,
   change,
   count,
   figuresPath,
@@ -120,6 +122,79 @@ const streams = [
   `The agent produced its ${count(recording.chunks)}-chunk response over ${sec(recording.ms)}. On ${OLD} the writer step manages about ${Math.round(S.v4.writerChunksPerSec)} chunks per second, so the response takes ${sec(S.v4.wall.p50)} to reach the reader. ${NEW} writes streams over a WebSocket by default, keeps up at about ${Math.round(S.next.writerChunksPerSec)} chunks per second, and delivers the response in ${sec(S.next.wall.p50)}.`,
   `At p75, a chunk reaches the reader in ${ms(S.next.ctt.p75)} on ${NEW} against ${ms(S.v4.ctt.p75)} on ${OLD}. ${NEW} had a chunk delayed by over 1 s in ${S.next.stalledRuns} of ${S.next.runs} runs, against ${S.v4.stalledRuns} of ${S.v4.runs} on ${OLD}.`,
 ].join('\n\n');
+
+// --- Agent loop -----------------------------------------------------------------------
+
+// The agent loop has its own sweep: three releases, oldest first, measured on their own date.
+const [AL_OLD, AL_PREV, AL_NEW] = agentLoop.versions;
+const AL = agentLoop.results as Record<
+  string,
+  Record<
+    'stream' | 'noStream',
+    {
+      runs: number;
+      overhead: { n: number; p50: number; p75: number };
+      firstStep: { n: number; p50: number; p75: number };
+      modelToTools: { n: number; p50: number; p75: number };
+    }
+  >
+>;
+const alOld = `v${AL_OLD}`;
+const alPrev = `v${AL_PREV}`;
+const alNew = `v${AL_NEW}`;
+
+const agentLoopText = [
+  `Measured ${agentLoopMeasuredOn} on ${alOld}, ${alPrev} and ${alNew}, which ran at the same time, separately from the results above. Each version ran the loop ${AL[AL_NEW].stream.runs} times with streaming and ${AL[AL_NEW].noStream.runs} times without.`,
+  `At p75, the five-turn loop that streams its tokens adds ${ms(AL[AL_NEW].stream.overhead.p75)} on ${alNew}, against ${ms(AL[AL_PREV].stream.overhead.p75)} on ${alPrev} and ${ms(AL[AL_OLD].stream.overhead.p75)} on ${alOld}. Without streaming, ${alNew} adds ${ms(AL[AL_NEW].noStream.overhead.p75)}, most of it the time to reach the first step (${ms(AL[AL_NEW].noStream.firstStep.p75)} at p75), against ${ms(AL[AL_PREV].noStream.overhead.p75)} on ${alPrev} and ${ms(AL[AL_OLD].noStream.overhead.p75)} on ${alOld}.`,
+  `On ${alNew}, most of the streaming loop's overhead is the wait after each model step until its last tokens are stored: the tools start ${ms(AL[AL_NEW].stream.modelToTools.p75)} after the model step at p75, against ${ms(AL[AL_NEW].noStream.modelToTools.p75)} without streaming.`,
+].join('\n\n');
+
+const alRow = (
+  label: string,
+  pick: (lane: (typeof AL)[string]) => number,
+  n: string
+) => {
+  const [a, b, c] = [AL_OLD, AL_PREV, AL_NEW].map((v) => pick(AL[v]));
+  return `| ${label} | ${ms(a)} | ${ms(b)} | ${ms(c)} | ${change(b, c)} | ${n} |`;
+};
+const alGroup = (title: string) => `| **${title}** | | | | | |`;
+
+const agentLoopTable = [
+  `| Metric | ${alOld} | ${alPrev} | ${alNew} | ${alNew} vs ${alPrev} | Samples per version |`,
+  '| --- | --: | --: | --: | --: | --: |',
+  alGroup(`Streaming tokens, ${AL[AL_NEW].stream.runs} runs`),
+  alRow(
+    'Overhead, p50',
+    (l) => l.stream.overhead.p50,
+    `${count(AL[AL_NEW].stream.overhead.n)} runs`
+  ),
+  alRow(
+    'Overhead, p75',
+    (l) => l.stream.overhead.p75,
+    `${count(AL[AL_NEW].stream.overhead.n)} runs`
+  ),
+  alRow(
+    'Model step to tools, p75',
+    (l) => l.stream.modelToTools.p75,
+    `${count(AL[AL_NEW].stream.modelToTools.n)} turns`
+  ),
+  alGroup(`Without streaming, ${AL[AL_NEW].noStream.runs} runs`),
+  alRow(
+    'Overhead, p50',
+    (l) => l.noStream.overhead.p50,
+    `${count(AL[AL_NEW].noStream.overhead.n)} runs`
+  ),
+  alRow(
+    'Overhead, p75',
+    (l) => l.noStream.overhead.p75,
+    `${count(AL[AL_NEW].noStream.overhead.n)} runs`
+  ),
+  alRow(
+    'Model step to tools, p75',
+    (l) => l.noStream.modelToTools.p75,
+    `${count(AL[AL_NEW].noStream.modelToTools.n)} turns`
+  ),
+].join('\n');
 
 // --- Results table --------------------------------------------------------------------
 
@@ -307,6 +382,8 @@ const regions: Record<string, string> = {
   fanout,
   resume,
   streams,
+  'agent-loop': agentLoopText,
+  'agent-loop-table': agentLoopTable,
   table,
 };
 
