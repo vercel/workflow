@@ -211,7 +211,7 @@ Unlike an in-process restart, which re-reads immediately, a re-invocation only h
 | [`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms) | derived from the runtime deadline (`120000`-`600000` ms) | Wall-clock guard for the inline replay loop |
 | [`WORKFLOW_MAX_INLINE_STEPS`](#workflow_max_inline_steps) | `3` | New steps one invocation runs inline in parallel |
 | [`WORKFLOW_TURBO`](#workflow_turbo) | enabled | Fast path for a run's first delivery |
-| [`WORKFLOW_OPTIMISTIC_INLINE_START`](#workflow_optimistic_inline_start) | disabled | Starts inline step bodies before `step_started` is confirmed |
+| [`WORKFLOW_OPTIMISTIC_INLINE_START`](#workflow_optimistic_inline_start) | disabled on spec 8 | Starts inline step bodies before `step_started` is confirmed; on spec 9 and 10, `0` only turns it off |
 | [`WORKFLOW_RETAINED_VM`](#workflow_retained_vm) | enabled | Keeps the Node.js workflow VM alive across inline steps |
 | [`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`](#workflow_inline_ownership_lease_seconds) | `860` s | How long an inline step's owner is assumed to still be running it |
 
@@ -227,7 +227,7 @@ The default comes from `World.getRuntimeDeadline()`, so raising a function's `ma
 
 - Default: `3`
 
-Number of newly-created steps one invocation runs inline in parallel before queueing the rest. Values above `16` are clamped to `16`; `0`, a negative value, or a non-integer uses the default.
+Number of newly-created steps one invocation runs inline in parallel before queueing the rest. Values above `16` are clamped to `16`; a negative value or a non-integer uses the default. `0` enqueues every step on [spec 9 and 10 runs](#spec-9), which new runs are by default, and uses the default on spec 8 runs.
 
 Steps started beside an awaited hook registration (`hook.getConflict()`) count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
 
@@ -245,11 +245,13 @@ A run started with `start({ experimental_hook })` never runs steps before `run_s
 
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
 
-- Default: disabled
+- Default: disabled on spec 8 runs (see below for spec 9 and 10)
 
-Starts inline step bodies before their `step_started` event is confirmed. Set `1` or `true` to enable it. Use only when step side effects are idempotent.
+Starts inline step bodies before their `step_started` event is confirmed. On spec 8 runs, set `1` or `true` to enable it. Use only when step side effects are idempotent.
 
 Set `0` or `false` to force it off, including the first-delivery fast path used by `WORKFLOW_TURBO`.
+
+On [spec 9 and 10 runs](#spec-9), which new runs are by default, only `0` or `false` has an effect: it makes inline step bodies wait for their start to commit on turbo's first delivery, under run-ahead, and under [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start). `1` and `true` do nothing there.
 
 ### `WORKFLOW_RETAINED_VM`
 
@@ -422,7 +424,7 @@ The Vercel World's own transport settings (HTTP/2 multiplexing and the queue cli
 
 Makes the Vercel and Local Worlds issue their HTTP requests through Node's built-in `node:http` and `node:https` modules, instead of the HTTP client library those Worlds normally use. Set `1` to switch to Node's modules.
 
-Change it when: that library is not an option: a bundler that mangles it, a runtime that does not ship a working copy of it, or a transport-level fault you want to rule out. It is not reached by way of `fetch()` either, so a runtime whose `fetch()` is built on the same library is still covered. Read the trade-offs below first: they cost throughput on every deployment, which is why this is opt-in.
+Change it when: that library is not an option, such as with a bundler that mangles it, a runtime that does not ship a working copy of it, or a transport-level fault you want to rule out. It is not reached by way of `fetch()` either, so a runtime whose `fetch()` is built on the same library is still covered. Read the trade-offs below first: they cost throughput on every deployment, which is why this is opt-in.
 
 Node's own modules do less than the client they replace, so enabling this drops the per-call-site tuning the Worlds configure:
 
