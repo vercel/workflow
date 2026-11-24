@@ -750,6 +750,9 @@ importers:
       supports-color:
         specifier: 10.2.2
         version: 10.2.2
+      swc-core-1-16:
+        specifier: npm:@swc/core@1.16.22
+        version: '@swc/core@1.16.22(@swc/helpers@0.5.23)'
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -953,6 +956,15 @@ importers:
       '@swc/core':
         specifier: 'catalog:'
         version: 1.15.3(@swc/helpers@0.5.23)
+      next:
+        specifier: 16.4.5
+        version: 16.4.5(@babel/core@7.29.13(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.21)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
+      react-dom:
+        specifier: 19.3.1
+        version: 19.3.1(react@19.3.1)
       swc-core-1-15-0:
         specifier: npm:@swc/core@1.15.0
         version: '@swc/core@1.15.0(@swc/helpers@0.5.23)'

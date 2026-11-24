@@ -39,6 +39,9 @@
   "preferUnplugged": true,
   "devDependencies": {
     "@swc/core": "catalog:",
+    "next": "16.4.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "swc-core-1-15-0": "npm:@swc/core@1.15.0",
     "swc-core-1-16": "npm:@swc/core@1.16.22",
     "swc-core-1-16-0": "npm:@swc/core@1.16.0",

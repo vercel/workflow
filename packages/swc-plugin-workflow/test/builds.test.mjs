@@ -101,3 +101,31 @@ describe.each(['step', 'workflow', 'detect'])('%s mode', (mode) => {
     expect(onSwc116.code).toBe(onSwc115.code);
   });
 });
+
+// Next.js compiles with its own swc, which since 16.4 runs the 1.16 build
+// and not the 1.15 one; the 1.16 build has to print there what it prints on
+// @swc/core 1.16.
+describe('in the swc Next.js ships', () => {
+  const nextSwc = require('next/dist/build/swc');
+  const nextVersion = require('next/package.json').version;
+
+  it(`rejects the 1.15 build (next ${nextVersion})`, async () => {
+    await nextSwc.loadBindings();
+    await expect(
+      transform(nextSwc, plugin115, 'step', inputs[0][1])
+    ).rejects.toThrow(/failed to invoke plugin/);
+  });
+
+  describe.each(['step', 'workflow', 'detect'])('%s mode', (mode) => {
+    it.each(
+      inputs
+    )('%s: the 1.16 build prints what it prints on @swc/core 1.16', async (_, file) => {
+      await nextSwc.loadBindings();
+      const [inNext, onSwc116] = await Promise.all([
+        transform(nextSwc, plugin116, mode, file),
+        transform(swc116, plugin116, mode, file),
+      ]);
+      expect(inNext.code).toBe(onSwc116.code);
+    });
+  });
+});
