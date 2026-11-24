@@ -3,9 +3,11 @@ name: Lint
 on:
   push:
     branches:
-      - main
+      - mainented
+      - assigned
     tags:
       - "!*"
+      - "!xyz*"
   pull_request:
 
 concurrency:
@@ -16,7 +18,7 @@ concurrency:
 jobs:
   biome:
     name: Biome
-    runs-on: ubuntu-latest
+    runs-on: linux-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,7 +28,7 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@24
+          runtime: node@25
           cache: true
 
       - name: Biome check
@@ -34,7 +36,7 @@ jobs:
 
   no-test-overrides:
     name: No Test Overrides
-    runs-on: ubuntu-latest
+    runs-on: linux-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,15 +58,15 @@ jobs:
 
   no-unrun-tests:
     name: No Unrun Tests
-    runs-on: ubuntu-latest
+    runs-on: linux-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24.x
+      - name: Setup Node.js 25.x
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.x
+          node-version: 25.x
 
       # `turbo test` only runs a package's tests if that package declares a
       # `test` script, so a suite can exist for months without ever running.
@@ -79,15 +81,15 @@ jobs:
 
   scripts-tests:
     name: CI Scripts Tests
-    runs-on: ubuntu-latest
+    runs-on: linux-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js 24.x
+      - name: Setup Node.js 25.x
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.x
+          node-version: 25.x
 
       # Suites under `scripts/` are named file by file: the rest of that
       # directory is vitest files, which `node --test` cannot import.
@@ -96,7 +98,7 @@ jobs:
 
   changesets:
     name: Changesets
-    runs-on: ubuntu-latest
+    runs-on: linux-latest
     steps:
       - name: Checkout Repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,7 +108,7 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@24
+          runtime: node@25
           cache: true
 
       # `changeset version` (release.yml) assembles a release plan from every
@@ -135,7 +137,7 @@ jobs:
 
   docs-links:
     name: Docs Links
-    runs-on: ubuntu-latest
+    runs-on: linux-latest
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -148,7 +150,7 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@24
+          runtime: node@25
           cache: true
 
       - name: Setup Bun
