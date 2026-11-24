@@ -1,0 +1,136 @@
+{
+  "convention": "nearest-rank, index ceil(p/100*n)-1, pooled across runs",
+  "measuredOn": "2026-11-24",
+  "versions": ["4.8.18", "5.2.0", "5.8.0"],
+  "workload": {
+    "turns": 5,
+    "modelMs": 100,
+    "toolMs": 100,
+    "toolsPerTurn": 2,
+    "tokensPerTurn": 10,
+    "payloadBytes": 1024,
+    "criticalPathWorkMs": 900
+  },
+  "results": {
+    "4.8.18": {
+      "stream": {
+        "runs": 15,
+        "overhead": {
+          "n": 15,
+          "p50": 9450,
+          "p75": 9745,
+          "p99": 10440
+        },
+        "modelToTools": {
+          "n": 60,
+          "p50": 663,
+          "p75": 725
+        },
+        "firstStep": {
+          "n": 15,
+          "p50": 560,
+          "p75": 641
+        }
+      },
+      "noStream": {
+        "runs": 15,
+        "overhead": {
+          "n": 15,
+          "p50": 7058,
+          "p75": 7569,
+          "p99": 7879
+        },
+        "modelToTools": {
+          "n": 60,
+          "p50": 696,
+          "p75": 761
+        },
+        "firstStep": {
+          "n": 15,
+          "p50": 576,
+          "p75": 688
+        }
+      }
+    },
+    "5.2.0": {
+      "stream": {
+        "runs": 15,
+        "overhead": {
+          "n": 15,
+          "p50": 2777,
+          "p75": 3023,
+          "p99": 5234
+        },
+        "modelToTools": {
+          "n": 60,
+          "p50": 383,
+          "p75": 492
+        },
+        "firstStep": {
+          "n": 15,
+          "p50": 164,
+          "p75": 184
+        }
+      },
+      "noStream": {
+        "runs": 15,
+        "overhead": {
+          "n": 15,
+          "p50": 2214,
+          "p75": 2450,
+          "p99": 2710
+        },
+        "modelToTools": {
+          "n": 60,
+          "p50": 226,
+          "p75": 339
+        },
+        "firstStep": {
+          "n": 15,
+          "p50": 140,
+          "p75": 165
+        }
+      }
+    },
+    "5.8.0": {
+      "stream": {
+        "runs": 15,
+        "overhead": {
+          "n": 15,
+          "p50": 738,
+          "p75": 912,
+          "p99": 1245
+        },
+        "modelToTools": {
+          "n": 60,
+          "p50": 79,
+          "p75": 130
+        },
+        "firstStep": {
+          "n": 15,
+          "p50": 172,
+          "p75": 222
+        }
+      },
+      "noStream": {
+        "runs": 15,
+        "overhead": {
+          "n": 15,
+          "p50": 215,
+          "p75": 257,
+          "p99": 678
+        },
+        "modelToTools": {
+          "n": 60,
+          "p50": 5,
+          "p75": 5
+        },
+        "firstStep": {
+          "n": 15,
+          "p50": 152,
+          "p75": 173
+        }
+      }
+    }
+  }
+}
