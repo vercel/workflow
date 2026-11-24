@@ -1,4 +1,9 @@
-import type { Event, World } from '@workflow/world';
+import type {
+  Event,
+  WorkflowRun,
+  WorkflowRunWithoutData,
+  World,
+} from '@workflow/world';
 import type { ReplayPayloadCache } from '../../replay-payload-cache.js';
 import type { WorkflowSession } from '../../workflow.js';
 import { getParkedVmMaxAgeMs, getParkedVmMaxBytes } from '../constants.js';
@@ -18,6 +23,12 @@ import { getParkedVmMaxAgeMs, getParkedVmMaxBytes } from '../constants.js';
  * and the VM replays that like any read event. `expectedSeqInBand` says
  * whether it did. The VM still holds the parking delivery's end-of-run
  * drain, so the resuming delivery hands it its own (`WorkflowSession.resume`).
+ *
+ * An event this process writes for the run while it is parked (the
+ * `hook_received` of a `resumeHook()` here) is kept with it
+ * ({@link noteParkedRunWrite}). When those events continue the log from
+ * `tailSlot`, the resuming delivery takes them as its read and does not read
+ * the log at all.
  */
 export interface ParkedSession {
   readonly session: WorkflowSession;
@@ -34,6 +45,18 @@ export interface ParkedSession {
    * state containers live in it, so a step input built from them reads it.
    */
   readonly replayPayloadCache: ReplayPayloadCache;
+  /**
+   * The run's event ceiling as the parking delivery's log reads reported it,
+   * for a resume that reads nothing.
+   */
+  readonly maxEventsLimit?: number;
+  /** The run as the parking delivery last read it. */
+  readonly run?: WorkflowRun | WorkflowRunWithoutData;
+  /**
+   * Events this process wrote for the run since the park, in slot order
+   * (see {@link noteParkedRunWrite}).
+   */
+  readonly written?: readonly Event[];
 }
 
 /** A parked session as a delivery takes it. */
@@ -42,8 +65,13 @@ export interface TakenParkedSession extends ParkedSession {
 }
 
 interface Entry extends TakenParkedSession {
-  /** {@link estimateParkedBytes} of `events`. */
+  /** {@link estimateParkedBytes} of `events`, plus what `written` adds. */
   readonly bytes: number;
+  /**
+   * More than {@link MAX_WRITTEN_EVENTS} were written while parked: none is
+   * kept any more, since the resume reads the log anyway.
+   */
+  readonly writesDropped?: true;
 }
 
 interface ParkedSessions {
@@ -80,15 +108,19 @@ const BYTES_PER_PAYLOAD_BYTE = 3;
  * lives in its events' serialized fields, so their sizes track it.
  */
 export function estimateParkedBytes(events: readonly Event[]): number {
-  let payloadBytes = 0;
+  return ENTRY_BASE_BYTES + BYTES_PER_PAYLOAD_BYTE * payloadBytesOf(events);
+}
+
+function payloadBytesOf(events: readonly Event[]): number {
+  let bytes = 0;
   for (const event of events) {
     const data = (event as { eventData?: unknown }).eventData;
     if (typeof data !== 'object' || data === null) continue;
     for (const value of Object.values(data)) {
-      if (ArrayBuffer.isView(value)) payloadBytes += value.byteLength;
+      if (ArrayBuffer.isView(value)) bytes += value.byteLength;
     }
   }
-  return ENTRY_BASE_BYTES + BYTES_PER_PAYLOAD_BYTE * payloadBytes;
+  return bytes;
 }
 
 /** Why {@link parkSession} kept no entry. */
@@ -175,7 +207,10 @@ export function parkSession(
   parked: ParkedSession,
   nowMs = Date.now()
 ): ParkResult {
-  const bytes = estimateParkedBytes(parked.events);
+  // A no-op wake puts back the entry it took, events written since included.
+  const bytes =
+    estimateParkedBytes(parked.events) +
+    BYTES_PER_PAYLOAD_BYTE * payloadBytesOf(parked.written ?? []);
   const budget = getParkedVmMaxBytes();
   if (budget === 0) return { parked: false, bytes, reason: 'disabled' };
   const sessions = sessionsFor(world);
@@ -217,4 +252,69 @@ export function takeParkedSession(
   const sessions = sessionsFor(world);
   dropExpired(sessions, nowMs);
   return drop(sessions, runId);
+}
+
+/**
+ * At most this many events written while parked are kept per entry. A run
+ * that takes more writes than this between two deliveries has its kept
+ * events dropped, and the delivery that resumes it reads the log instead.
+ */
+export const MAX_WRITTEN_EVENTS = 16;
+
+/** What {@link noteParkedRunWrite} did with the event. */
+export type NoteWriteResult =
+  /** The run has no entry here. */
+  | 'none'
+  | 'kept'
+  /** Over {@link MAX_WRITTEN_EVENTS}: the entry's kept events were dropped. */
+  | 'too_many'
+  /** The entry would take over half the budget with it, so it was dropped. */
+  | 'too_large';
+
+/**
+ * Keeps an event this process just wrote for a run whose session is parked
+ * here, so the delivery that resumes the session can take it without reading
+ * the log. A no-op when nothing is parked for the run. Callers pass the event
+ * as a log read would return it, payload included.
+ *
+ * The event counts against the byte budget at once, as a park does: an entry
+ * it takes over half the budget is dropped, and the oldest other entries are
+ * evicted to keep the total within it.
+ */
+export function noteParkedRunWrite(
+  world: World,
+  runId: string,
+  event: Event
+): NoteWriteResult {
+  const sessions = sessionsFor(world);
+  const entry = sessions.entries.get(runId);
+  if (!entry) return 'none';
+  if (entry.writesDropped) return 'too_many';
+  const kept = entry.written ?? [];
+  if (kept.length >= MAX_WRITTEN_EVENTS) {
+    // The resume reads the log; the entry keeps the VM.
+    const keptBytes = BYTES_PER_PAYLOAD_BYTE * payloadBytesOf(kept);
+    sessions.bytes -= keptBytes;
+    sessions.entries.set(runId, {
+      ...entry,
+      written: undefined,
+      writesDropped: true,
+      bytes: entry.bytes - keptBytes,
+    });
+    return 'too_many';
+  }
+  const added = BYTES_PER_PAYLOAD_BYTE * payloadBytesOf([event]);
+  const bytes = entry.bytes + added;
+  const budget = getParkedVmMaxBytes();
+  if (bytes > budget / 2) {
+    drop(sessions, runId);
+    return 'too_large';
+  }
+  sessions.bytes += added;
+  sessions.entries.set(runId, { ...entry, written: [...kept, event], bytes });
+  for (const [oldest] of sessions.entries) {
+    if (sessions.bytes <= budget) break;
+    if (oldest !== runId) drop(sessions, oldest);
+  }
+  return 'kept';
 }
