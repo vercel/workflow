@@ -124,6 +124,9 @@ vi.mock('./http-core.js', async (importOriginal) => {
 });
 
 const { createStreamWriteSession } = await import('./ws-stream-session.js');
+const { STREAM_WS_IDLE_REUSE_MS, resetIdleStreamSocketsForTest } = await import(
+  './ws-stream-pool.js'
+);
 const { DEFAULT_WS_MAX_MESSAGE_BYTES, MIN_WS_MAX_MESSAGE_BYTES } = await import(
   './ws-parts.js'
 );
@@ -156,13 +159,15 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const session of activeSessions.splice(0)) session.dispose?.();
+  resetIdleStreamSocketsForTest();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 function makeSession(
   config: APIConfig | undefined = { token: 'token' },
-  connectAfterFirstWrite = false
+  connectAfterFirstWrite = false,
+  { name = 'stream/1', id = writerId } = {}
 ) {
   const writeHttp = vi.fn(
     async (
@@ -176,8 +181,8 @@ function makeSession(
   const closeHttp = vi.fn().mockResolvedValue(undefined);
   const session = createStreamWriteSession(
     'wrun_1',
-    'stream/1',
-    writerId,
+    name,
+    id,
     config,
     writeHttp,
     closeHttp,
@@ -991,7 +996,7 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(0);
   });
 
-  it('releases an acknowledged socket without closing the stream or reconnecting', async () => {
+  it('parks an acknowledged socket on release without closing the stream or reconnecting', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session, writeHttp, closeHttp } = makeSession();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -1006,7 +1011,7 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     );
     await writing;
     await releasing;
-    expect(socket.closed).toContainEqual([1000, 'stream writer released']);
+    expect(socket.closed).toHaveLength(0);
     socket.emit('error', new Error('released socket reset'));
     socket.emit('close', 1000);
     await session.write(1, ['two']);
@@ -1018,7 +1023,7 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(closeHttp).toHaveBeenCalledTimes(1);
   });
 
-  it('retires a provisional upgrade on release, including a late OPEN', async () => {
+  it('keeps a released writer on HTTP while its provisional upgrade opens for the next writer', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session, writeHttp } = makeSession(undefined, true);
     await session.write(0, ['one']);
@@ -1029,7 +1034,7 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await session.write(2, ['three']);
     expect(writeHttp).toHaveBeenCalledTimes(3);
     expect(sockets[0].sent).toHaveLength(0);
-    expect(sockets[0].closed).toContainEqual([1000, 'HTTP fallback selected']);
+    expect(sockets[0].closed).toHaveLength(0);
     expect(sockets).toHaveLength(1);
   });
 
@@ -1095,7 +1100,7 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     );
     await writing;
     await releasing;
-    expect(replacement.closed).toContainEqual([1000, 'stream writer released']);
+    expect(replacement.closed).toHaveLength(0);
     expect(writeHttp).not.toHaveBeenCalled();
     await session.write(1, ['two']);
     expect(writeHttp).toHaveBeenCalledWith(['two']);
@@ -1701,5 +1706,267 @@ describe('v1 stream WebSocket message byte budget', () => {
       expect(chunk).toBe(chunks[index]);
     });
     expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
+  });
+});
+
+describe('v1 stream WebSocket reuse across writers', () => {
+  const otherWriterId = 'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAW';
+
+  function ack(
+    socket: InstanceType<typeof FakeWebSocket>,
+    reqId: number,
+    type = 'write_ack'
+  ): void {
+    socket.reply(encodeFrame({ type, reqId }, new Uint8Array()));
+  }
+
+  /** A writer that wrote one group over an open socket, then released it. */
+  async function releasedWriter() {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writing = first.session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    ack(socket, 1);
+    await writing;
+    await first.session.release?.();
+    expect(socket.closed).toHaveLength(0);
+    return { first, socket };
+  }
+
+  async function expectHttpWriter(
+    options: Parameters<typeof makeSession> = [undefined, true]
+  ) {
+    const next = makeSession(...options);
+    await next.session.write(0, ['next']);
+    expect(next.writeHttp).toHaveBeenCalledTimes(1);
+    return next;
+  }
+
+  it("sends the next writer's first group and close over the released socket", async () => {
+    const { socket } = await releasedWriter();
+    const second = makeSession(undefined, true, { id: otherWriterId });
+
+    const writing = second.session.write(0, ['two']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    expect((await decodeOne(socket.sent[1])).meta).toMatchObject({
+      type: 'write',
+      reqId: 2,
+      chunkSeq: 0,
+      numChunks: 1,
+    });
+    ack(socket, 2);
+    await writing;
+    expect(second.writeHttp).not.toHaveBeenCalled();
+    expect(sockets).toHaveLength(1);
+    expect(writeSpans.at(-1)).toMatchObject({
+      'workflow.stream.ws.session_first_write': true,
+      'workflow.stream.ws.connection_first_write': true,
+      'workflow.stream.ws.connection_reused': true,
+    });
+
+    const closing = second.session.close();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect((await decodeOne(socket.sent[2])).meta).toMatchObject({
+      type: 'close',
+      reqId: 3,
+    });
+    ack(socket, 3, 'close_ack');
+    await closing;
+    expect(second.closeHttp).not.toHaveBeenCalled();
+    expect(socket.closed).toContainEqual([1000, 'stream closed']);
+    // A closed stream's socket is not offered again.
+    await expectHttpWriter();
+  });
+
+  it('lets a connecting writer take the idle socket instead of opening another', async () => {
+    const { socket } = await releasedWriter();
+    const second = makeSession();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const writing = second.session.write(0, ['two']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    ack(socket, 2);
+    await writing;
+    expect(second.writeHttp).not.toHaveBeenCalled();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('hands a provisional upgrade that opens after release to the next writer', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession(undefined, true);
+    await first.session.write(0, ['one']);
+    await first.session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await first.session.release?.();
+    sockets[0].open();
+
+    const second = makeSession(undefined, true, { id: otherWriterId });
+    const writing = second.session.write(0, ['three']);
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    ack(sockets[0], 1);
+    await writing;
+    expect(second.writeHttp).not.toHaveBeenCalled();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('never shares a socket with a writer while another writer owns it', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writing = first.session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    await expectHttpWriter([undefined, true, { id: otherWriterId }]);
+    expect(socket.sent).toHaveLength(1);
+    ack(socket, 1);
+    await writing;
+  });
+
+  it('keeps a socket to the run and stream it was opened for', async () => {
+    const { socket } = await releasedWriter();
+    await expectHttpWriter([undefined, true, { name: 'stream/2' }]);
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  it('does not reuse a socket opened with a different bearer', async () => {
+    const { socket } = await releasedWriter();
+    await expectHttpWriter([{ token: 'other-token' }, true]);
+    expect(socket.closed).toContainEqual([
+      1000,
+      'stream socket bearer changed',
+    ]);
+  });
+
+  it('closes an idle socket when the reuse window ends', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writing = first.session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    ack(socket, 1);
+    await writing;
+    vi.useFakeTimers();
+    await first.session.release?.();
+    vi.advanceTimersByTime(STREAM_WS_IDLE_REUSE_MS - 1);
+    expect(socket.closed).toHaveLength(0);
+    vi.advanceTimersByTime(1);
+    expect(socket.closed).toContainEqual([1000, 'stream socket idle']);
+    vi.useRealTimers();
+    await expectHttpWriter();
+  });
+
+  it('does not reuse an idle socket the process slept past the window', async () => {
+    const { socket } = await releasedWriter();
+    const parkedAt = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(
+      parkedAt + STREAM_WS_IDLE_REUSE_MS + 1
+    );
+    await expectHttpWriter();
+    expect(socket.closed).toContainEqual([1000, 'stream socket idle']);
+  });
+
+  it('retires an idle socket that receives a drain', async () => {
+    const { socket } = await releasedWriter();
+    socket.reply(
+      encodeFrame(
+        { type: 'drain', reason: 'auth_expiry', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    expect(socket.closed).toContainEqual([1000, 'stream socket idle message']);
+    await expectHttpWriter();
+  });
+
+  it('retires an idle socket the server closes', async () => {
+    const { socket } = await releasedWriter();
+    socket.emit('close', 1001);
+    socket.emit('error', new Error('reset after close'));
+    await expectHttpWriter();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('does not park a socket released while draining', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    socket.reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await first.session.release?.();
+    expect(socket.closed).toContainEqual([1000, 'stream writer released']);
+    await expectHttpWriter();
+  });
+
+  it('does not park a poisoned socket', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writing = first.session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    socket.reply(
+      encodeFrame(
+        { type: 'error', reqId: 1, status: 503, message: 'rejected' },
+        new Uint8Array()
+      )
+    );
+    await expect(writing).rejects.toThrow('rejected');
+    await first.session.release?.();
+    expect(socket.closed).toContainEqual([1011, 'stream request failed']);
+    await expectHttpWriter();
+  });
+
+  it('confines an unknown outcome on a reused socket to the writer that sent it', async () => {
+    const { first, socket } = await releasedWriter();
+    const second = makeSession(undefined, true, { id: otherWriterId });
+    const writing = second.session.write(0, ['two']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    socket.emit('close', 1006);
+
+    await expect(writing).rejects.toThrow('closed before reply');
+    await expect(second.session.write(1, ['three'])).rejects.toThrow(
+      'closed before reply'
+    );
+    expect(second.writeHttp).not.toHaveBeenCalled();
+    // The writer that released the socket keeps writing over HTTP.
+    await first.session.write(1, ['four']);
+    expect(first.writeHttp).toHaveBeenCalledWith(['four']);
+    await expectHttpWriter();
+  });
+
+  it('abandons a provisional upgrade when its writer then closes the stream', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession(undefined, true);
+    await first.session.write(0, ['one']);
+    await first.session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await first.session.release?.();
+    await first.session.close();
+    expect(first.closeHttp).toHaveBeenCalledTimes(1);
+    expect(sockets[0].closed).toContainEqual([1000, 'stream closed']);
+    sockets[0].open();
+    await expectHttpWriter();
+  });
+
+  it('closes an idle socket when a released writer closes the stream over HTTP', async () => {
+    const { first, socket } = await releasedWriter();
+    await first.session.close();
+    expect(first.closeHttp).toHaveBeenCalledTimes(1);
+    expect(socket.closed).toContainEqual([1000, 'stream closed']);
+    await expectHttpWriter();
   });
 });

@@ -23,13 +23,21 @@ import {
 } from './stream-ws-protocol-v1.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import type { APIConfig } from './utils.js';
-import { getHttpConfig } from './utils.js';
+import { getHttpConfig, getHttpUrl } from './utils.js';
 import { wsMaxMessageBytes } from './ws-parts.js';
 import {
   beginNormalWsClose,
   STREAM_WS_INITIAL_CONNECT_TIMEOUT_MS,
   STREAM_WS_RECONNECT_BUDGET_MS,
 } from './ws-stream-connect.js';
+import {
+  discardIdleStreamSocket,
+  hasIdleStreamSocket,
+  type IdleStreamSocket,
+  parkIdleStreamSocket,
+  streamSocketPoolKey,
+  takeIdleStreamSocket,
+} from './ws-stream-pool.js';
 import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
 type Mode =
@@ -56,6 +64,8 @@ type ConnectionTiming = {
   socketStartedAt?: number;
   openedAt?: number;
   firstWriteSent: boolean;
+  /** Taken open from an earlier writer of the same stream. */
+  reused?: boolean;
 };
 type Operation = 'write' | 'close';
 type PendingRequest = {
@@ -84,6 +94,7 @@ function firstWriteAttributes(
     'workflow.stream.ws.connection_first_write':
       connection?.firstWriteSent === false,
     'workflow.stream.ws.connection_attempt': connection?.attempt ?? 0,
+    'workflow.stream.ws.connection_reused': connection?.reused === true,
     'workflow.stream.ws.session_to_write_ms':
       write.startedAt - sessionCreatedAt,
   };
@@ -160,6 +171,12 @@ function recordFirstWriteReply(
 }
 const OIDC_FORCE_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Kept on every socket for its whole life. A socket changes owners (writer,
+ * idle pool, next writer), and `ws` throws an `error` emitted with no listener.
+ */
+function ignoreSocketError(): void {}
+
 function readAuthorization(headers: Headers): string | null {
   return headers.get('authorization');
 }
@@ -212,6 +229,15 @@ function asBytes(raw: unknown): Uint8Array {
  * than being replayed over HTTP or another socket. Serialization is also what
  * makes a correlated 429 retryable: v1 permits a resend only when no other
  * request was outstanding when the rejection arrived, which always holds here.
+ *
+ * A socket outlives the writer that opened it. On release, an open socket with
+ * nothing outstanding goes to the process-wide idle pool (`ws-stream-pool.ts`),
+ * and so does an initial upgrade that is still opening; the next writer of the
+ * same run and stream takes it and writes its first group over it. v1 binds a
+ * connection to a run and stream only: `writerId` and `chunkSeq` are
+ * observational, so successive writers may share one connection. A writer owns
+ * the socket exclusively until it releases it, so requests from two writers
+ * never interleave on one connection.
  */
 class VercelStreamWriteSession implements StreamWriteSession {
   private mode: Mode = 'connecting';
@@ -238,6 +264,13 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private sessionHasWrite = false;
   private connectionAttempt = 0;
   private connectionTiming: ConnectionTiming | undefined;
+  /** Removes this writer's listeners from `socket` before handing it on. */
+  private detachSocket: (() => void) | undefined;
+  /**
+   * Released while the initial upgrade was still opening: when it opens, the
+   * socket goes to the idle pool for the next writer of this stream.
+   */
+  private parkOnOpen = false;
 
   constructor(
     private readonly runId: string,
@@ -274,7 +307,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
     timing: WriteTiming
   ): Promise<void> {
     this.assertUsable();
-    if (this.mode === 'deferred') {
+    if (this.mode === 'deferred' && !(await this.adoptIdleSocket())) {
+      this.assertUsable();
       await this.writeFirstGroup(chunks, timing);
       return;
     }
@@ -430,7 +464,20 @@ class VercelStreamWriteSession implements StreamWriteSession {
     return this.enqueue(async () => {
       if (this.mode === 'closed' || this.mode === 'poisoned') return;
       // A released handle remains usable over HTTP with the same sequence
-      // space, without retaining or reconnecting its idle socket.
+      // space. It never reconnects; its socket goes to the next writer.
+      if (this.mode === 'ws' && this.parkSocket()) return;
+      if (
+        this.mode === 'connecting' &&
+        this.connectionAttempt === 1 &&
+        !this.parkOnOpen
+      ) {
+        // Let the initial upgrade finish for the next writer rather than
+        // discarding a handshake that is already paid for.
+        this.parkOnOpen = true;
+        this.mode = 'http';
+        this.transportDecision = Promise.resolve();
+        return;
+      }
       this.fallbackToHttpBeforeSend('stream writer released');
     });
   }
@@ -438,6 +485,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
   dispose(): void {
     if (this.mode === 'closed') return;
     this.mode = 'closed';
+    this.parkOnOpen = false;
     this.terminated.abort();
     this.finishDrainWait();
     const pending = this.pending;
@@ -452,6 +500,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
   close(): Promise<void> {
     return this.enqueue(async () => {
       this.assertUsable();
+      // A socket for a closed stream is no use to the next writer.
+      this.abandonParkOnOpen('stream closed');
+      if (this.mode === 'deferred') {
+        await this.adoptIdleSocket();
+        this.assertUsable();
+      }
       if (
         this.mode === 'deferred' ||
         this.mode === 'waiting_to_connect' ||
@@ -459,7 +513,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
           this.mode === 'connecting' &&
           this.connectionAttempt === 1)
       ) {
-        await this.closeHttp();
+        await this.closeStreamOverHttp();
         this.mode = 'closed';
         this.socket?.close(1000, 'stream closed over HTTP');
         return;
@@ -467,12 +521,22 @@ class VercelStreamWriteSession implements StreamWriteSession {
       await this.transportDecision;
       this.assertUsable();
       if (this.mode === 'http') {
-        await this.closeHttp();
+        await this.closeStreamOverHttp();
         this.mode = 'closed';
         return;
       }
       await this.closeOverWs();
     });
+  }
+
+  /** An idle socket for a closed stream would only fail the next writer. */
+  private async closeStreamOverHttp(): Promise<void> {
+    await this.closeHttp();
+    const { baseUrl } = getHttpUrl(this.config);
+    discardIdleStreamSocket(
+      streamSocketPoolKey(baseUrl, this.runId, this.name),
+      'stream closed'
+    );
   }
 
   private async closeOverWs(): Promise<void> {
@@ -488,7 +552,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       if (!httpRetry) throw error;
       // Idempotent: a retriable close failure already switched to HTTP.
       this.fallbackToHttpBeforeSend();
-      await this.closeHttp();
+      await this.closeStreamOverHttp();
       this.mode = 'closed';
       return;
     }
@@ -534,6 +598,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
             this.mode = 'http';
             this.socket?.close(1000, 'connect budget expired');
           }
+          this.abandonParkOnOpen('connect budget expired');
           decide();
         },
         reconnecting
@@ -557,7 +622,142 @@ class VercelStreamWriteSession implements StreamWriteSession {
       // Every failure before OPEN is a safe, session-long HTTP fallback. The
       // HTTP request itself still surfaces auth/configuration errors normally.
       if (this.mode === 'connecting') this.mode = 'http';
+      this.parkOnOpen = false;
     });
+  }
+
+  /** Whether an in-flight connect should still produce a socket. */
+  private wantsSocket(): boolean {
+    return (
+      this.mode === 'connecting' || (this.parkOnOpen && this.mode === 'http')
+    );
+  }
+
+  private abandonParkOnOpen(reason: string): void {
+    if (!this.parkOnOpen) return;
+    this.parkOnOpen = false;
+    const socket = this.socket;
+    this.socket = undefined;
+    socket?.close(1000, reason);
+  }
+
+  /**
+   * Takes an idle socket for this stream before the first group, so a writer
+   * that follows another one in the same process skips both the HTTP-first
+   * groups and the handshake. Free when the pool has nothing for this stream.
+   */
+  private async adoptIdleSocket(): Promise<boolean> {
+    if (!isWsStreamsTransportEnabled()) return false;
+    const { baseUrl, usingProxy } = getHttpUrl(this.config);
+    if (usingProxy) return false;
+    const key = streamSocketPoolKey(baseUrl, this.runId, this.name);
+    if (!hasIdleStreamSocket(key)) return false;
+    let authorization: string | null;
+    try {
+      authorization = readAuthorization(
+        (await getHttpConfig(this.config)).headers
+      );
+    } catch {
+      return false;
+    }
+    if (this.mode !== 'deferred') return false;
+    const idle = takeIdleStreamSocket(key, authorization);
+    if (!idle) return false;
+    const at = now();
+    const timing: ConnectionTiming = {
+      attempt: ++this.connectionAttempt,
+      configStartedAt: at,
+      configFinishedAt: at,
+      firstWriteSent: false,
+    };
+    this.connectionTiming = timing;
+    this.adopt(idle, timing);
+    return true;
+  }
+
+  private adopt(idle: IdleStreamSocket, timing: ConnectionTiming): void {
+    timing.reused = true;
+    timing.openedAt = now();
+    this.socket = idle.ws;
+    this.wsUrl = idle.wsUrl;
+    this.lastAuthorization = idle.authorization;
+    this.nextReqId = Math.max(this.nextReqId, idle.nextReqId);
+    this.mode = 'ws';
+    this.transportDecision = Promise.resolve();
+    this.attachSocket(idle.ws);
+  }
+
+  /**
+   * Hands an open socket with nothing outstanding to the idle pool. A draining
+   * or throttled socket is not reusable and takes the HTTP fallback instead.
+   */
+  private parkSocket(): boolean {
+    const ws = this.socket;
+    if (
+      !ws ||
+      ws.readyState !== 1 ||
+      this.pending ||
+      this.throttledSocket ||
+      this.closeAcknowledged
+    ) {
+      return false;
+    }
+    this.socket = undefined;
+    this.mode = 'http';
+    this.transportDecision = Promise.resolve();
+    this.park(ws);
+    return true;
+  }
+
+  private park(ws: WebSocket): void {
+    this.detachSocket?.();
+    this.detachSocket = undefined;
+    const { baseUrl } = getHttpUrl(this.config);
+    parkIdleStreamSocket(streamSocketPoolKey(baseUrl, this.runId, this.name), {
+      ws,
+      wsUrl: this.wsUrl ?? ws.url,
+      authorization: this.lastAuthorization,
+      nextReqId: this.nextReqId,
+    });
+  }
+
+  /** This writer's listeners for an open socket it owns. */
+  private attachSocket(ws: WebSocket): void {
+    const onError = (error: unknown) => {
+      // Like close, let an already-delivered reply finish decoding so a
+      // reset right behind a 429 sees the throttled state.
+      void this.inbound.then(() => {
+        // A released/replaced socket no longer owns this writer. Its teardown
+        // error must not poison later HTTP writes.
+        if (ws !== this.socket) return;
+        if (this.isIdleThrottledSocket(ws)) {
+          this.leaveThrottledSocketForHttp();
+          return;
+        }
+        this.failUnknown(error);
+      });
+    };
+    const onClose = (code: unknown) => {
+      // A server may queue close immediately after its terminal reply. Let
+      // the already-delivered message finish decoding first. Pass the socket
+      // so a late close from a forced drain cannot retire its replacement.
+      void this.inbound.then(() => this.handleSocketClose(Number(code), ws));
+    };
+    const onMessage = (raw: unknown) => {
+      const receivedAt = now();
+      this.inbound = this.inbound.then(() =>
+        this.handleMessage(asBytes(raw), receivedAt)
+      );
+    };
+    ws.on('error', onError);
+    ws.on('close', onClose);
+    ws.on('message', onMessage);
+    this.detachSocket?.();
+    this.detachSocket = () => {
+      ws.off('error', onError);
+      ws.off('close', onClose);
+      ws.off('message', onMessage);
+    };
   }
 
   private async connectSocket(
@@ -586,7 +786,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       import('ws'),
       httpPromise,
     ]);
-    if (this.mode !== 'connecting') return;
+    if (!this.wantsSocket()) return;
     if (
       forceRefresh &&
       readAuthorization(http.headers) === this.lastAuthorization
@@ -601,7 +801,17 @@ class VercelStreamWriteSession implements StreamWriteSession {
       this.mode = 'http';
       return;
     }
-    if (this.mode !== 'connecting') return;
+    if (!this.wantsSocket()) return;
+    if (!forceRefresh && this.mode === 'connecting') {
+      const idle = takeIdleStreamSocket(
+        streamSocketPoolKey(http.baseUrl, this.runId, this.name),
+        this.lastAuthorization
+      );
+      if (idle) {
+        this.adopt(idle, timing);
+        return;
+      }
+    }
     const url = getStreamWsProtocolV1Url(
       http.baseUrl,
       this.runId,
@@ -618,33 +828,54 @@ class VercelStreamWriteSession implements StreamWriteSession {
       },
       async () => {
         await injectTraceContextIntoHeaders(http.headers);
-        if (this.mode !== 'connecting') return;
+        if (!this.wantsSocket()) return;
         timing.socketStartedAt = now();
         const ws = new WebSocketImpl(url, {
           headers: headersToRecord(http.headers),
         });
         this.socket = ws;
         ws.binaryType = 'nodebuffer';
+        ws.on('error', ignoreSocketError);
 
         await new Promise<void>((resolve) => {
-          let opened = false;
-          const fallback = () => {
-            if (opened) return;
-            if (this.mode === 'connecting') this.mode = 'http';
+          let settled = false;
+          const settle = () => {
+            settled = true;
+            ws.off('open', onOpen);
+            ws.off('unexpected-response', onDeclined);
+            ws.off('error', onFailed);
+            ws.off('close', onFailed);
             resolve();
           };
-          ws.once('open', () => {
-            opened = true;
-            timing.openedAt = now();
-            if (this.mode !== 'connecting') {
-              ws.close(1000, 'HTTP fallback selected');
-              resolve();
-              return;
+          const onFailed = () => {
+            if (settled) return;
+            if (this.mode === 'connecting') this.mode = 'http';
+            if (this.parkOnOpen && ws === this.socket) {
+              this.parkOnOpen = false;
+              this.socket = undefined;
             }
-            this.mode = 'ws';
-            resolve();
-          });
-          ws.once('unexpected-response', (_request, response) => {
+            settle();
+          };
+          const onOpen = () => {
+            if (settled) return;
+            timing.openedAt = now();
+            if (this.mode === 'connecting') {
+              this.mode = 'ws';
+              this.attachSocket(ws);
+            } else if (
+              this.parkOnOpen &&
+              this.mode === 'http' &&
+              ws === this.socket
+            ) {
+              this.parkOnOpen = false;
+              this.socket = undefined;
+              this.park(ws);
+            } else {
+              ws.close(1000, 'HTTP fallback selected');
+            }
+            settle();
+          };
+          const onDeclined = (_request: unknown, response: unknown) => {
             // Listening transfers response cleanup responsibility from `ws`
             // to us. Drain when possible, then destroy the declined upgrade.
             const res = response as {
@@ -654,45 +885,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
             res.resume?.();
             res.destroy?.();
             ws.close(1000, 'upgrade declined');
-            fallback();
-          });
-          ws.once('error', (error) => {
-            if (!opened) {
-              fallback();
-              return;
-            }
-            // Like close, let an already-delivered reply finish decoding so
-            // a reset right behind a 429 sees the throttled state.
-            void this.inbound.then(() => {
-              // A released/replaced socket no longer owns this writer. Its
-              // teardown error must not poison later HTTP writes.
-              if (ws !== this.socket) return;
-              if (this.isIdleThrottledSocket(ws)) {
-                this.leaveThrottledSocketForHttp();
-                return;
-              }
-              this.failUnknown(error);
-            });
-          });
-          ws.once('close', (code) => {
-            if (!opened) {
-              fallback();
-              return;
-            }
-            // A server may queue close immediately after its terminal reply.
-            // Let the already-delivered message finish decoding first. Pass the
-            // socket so a late close from a forced drain cannot retire its
-            // replacement.
-            void this.inbound.then(() =>
-              this.handleSocketClose(Number(code), ws)
-            );
-          });
-          ws.on('message', (raw) => {
-            const receivedAt = now();
-            this.inbound = this.inbound.then(() =>
-              this.handleMessage(asBytes(raw), receivedAt)
-            );
-          });
+            onFailed();
+          };
+          ws.on('open', onOpen);
+          ws.on('unexpected-response', onDeclined);
+          ws.on('error', onFailed);
+          ws.on('close', onFailed);
         });
       }
     );

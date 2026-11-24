@@ -75,9 +75,12 @@ Stream writes upgrade to a WebSocket by default; set
 write groups go over HTTP while the socket opens in the background, and a writer
 whose upgrade the server declines stays on HTTP.
 
-Releasing a writer after its writes drain retires its socket without closing
-the shared stream. Reacquiring that handle continues over HTTP; a new step's
-writer can upgrade independently. Released writers do not keep idle WebSockets or reconnect them in the background.
+Releasing a writer after its writes drain hands its socket, without closing the
+shared stream, to the next writer of the same run and stream in the process,
+which then writes its first group over it with no handshake. An idle socket is
+closed after 5 seconds, or as soon as the server drains or closes it.
+Reacquiring the released handle continues over HTTP, and released writers never
+reconnect in the background.
 
 Step-local `getWritable()` handles release their transport at step completion,
 not between acquire/write/release cycles within the step. External
