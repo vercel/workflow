@@ -14,6 +14,12 @@ No World in this repository throws it. A stale replay does not need to be refuse
 
 A World rejects only on evidence and accepts the creation whenever it cannot decide. This error always means the snapshot was stale, but not receiving it does not prove the snapshot was current.
 
+A run's orchestrator writes behind the in-band fence, which has no precondition guard: the fence refuses a write only from a superseded invocation, with [`InBandSupersededError`](/docs/api-reference/workflow-errors/in-band-superseded-error).
+
+<Spec8Note>
+a World may refuse a write with this error, and the runtime handles it as described below.
+</Spec8Note>
+
 <Callout>
 The Workflow runtime handles this error by restarting the replay in the same invocation from a corrected event log. It re-invokes the run for a fresh replay only after spending its in-process restart budget. It never retries the rejected creation as-is because a replay working from a corrected log derives different events. You will only encounter it when interacting with World storage APIs directly.
 </Callout>
