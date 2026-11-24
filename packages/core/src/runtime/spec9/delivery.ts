@@ -94,6 +94,7 @@ import {
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_RUN_AHEAD_RESTARTS,
+  WAIT_TIMER_SEND_CONCURRENCY,
 } from '../constants.js';
 import {
   clampMaxEvents,
@@ -140,6 +141,7 @@ import {
 } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import { runBounded } from '../settle-all.js';
 import { resolveRunStartHook } from '../start-hook-binding.js';
 import {
   ackRefusedStartHookCandidate,
@@ -3563,20 +3565,35 @@ async function runDelivery(
           // failure after the commit would leave the redelivery not
           // knowing this delivery completed the wait.
           if (due.length > 0) {
-            for (const next of chainTimersBeforeCompletion({
-              openWaits: openWaits(log.events),
-              completing: due.map((wait) => wait.correlationId),
-            })) {
-              if (!timedWaits.has(next.correlationId)) {
-                await sendWaitTimer(next);
+            await sendWaitTimers(
+              chainTimersBeforeCompletion({
+                openWaits: openWaits(log.events),
+                completing: due.map((wait) => wait.correlationId),
+              }).filter((next) => !timedWaits.has(next.correlationId))
+            );
+          }
+          // Consecutive due rate calls write their `rate_acquired` at once,
+          // so the writer sends them in one batch (see
+          // `InBandWriter.create`); each is still consumed in order.
+          const acquiring = new Map<
+            OpenWait,
+            Promise<EventResult | undefined>
+          >();
+          for (const [index, wait] of due.entries()) {
+            if (wait.kind === 'rate' && !acquiring.has(wait)) {
+              for (const next of due.slice(index)) {
+                if (next.kind !== 'rate') break;
+                wakeUpWaits.delete(next.correlationId);
+                const acquired = acquireRate(next);
+                // Awaited in order below; a later one may settle first.
+                acquired.catch(() => {});
+                acquiring.set(next, acquired);
               }
             }
-          }
-          for (const wait of due) {
             wakeUpWaits.delete(wait.correlationId);
             const completed =
               wait.kind === 'rate'
-                ? await acquireRate(wait)
+                ? await acquiring.get(wait)
                 : await createEvent(
                     {
                       eventType: 'wait_completed' as const,
@@ -5096,13 +5113,13 @@ async function runDelivery(
           (wait.event !== undefined &&
             waitCreatorMessageId(wait.event) !== creatorMessageId)
       );
-      for (const wait of waitTimersToArm(
-        owned,
-        creatorMessageId,
-        waitContinuation?.correlationId
-      )) {
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
-      }
+      await sendWaitTimers(
+        waitTimersToArm(
+          owned,
+          creatorMessageId,
+          waitContinuation?.correlationId
+        ).filter((wait) => !timedWaits.has(wait.correlationId))
+      );
     }
 
     /**
@@ -5136,14 +5153,15 @@ async function runDelivery(
       const ownChain = openWaits(knownEvents()).filter(
         (wait) => waitCreatorMessageId(wait.event) === creatorMessageId
       );
-      for (const wait of waitTimersToArm(
-        [...ownChain, ...created],
-        creatorMessageId,
-        undefined
-      )) {
-        if ('event' in wait) continue;
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
-      }
+      await sendWaitTimers(
+        waitTimersToArm(
+          [...ownChain, ...created],
+          creatorMessageId,
+          undefined
+        ).filter(
+          (wait) => !('event' in wait) && !timedWaits.has(wait.correlationId)
+        )
+      );
     }
 
     /**
@@ -5182,18 +5200,13 @@ async function runDelivery(
           (waitCreatorMessageId(wait.event) ?? creatorMessageId) ===
           creatorMessageId
       );
-      for (const wait of waitTimersToArm(
-        ownChain,
-        creatorMessageId,
-        undefined
-      )) {
-        if (
-          ownOpenWaits.has(wait.correlationId) &&
-          !timedWaits.has(wait.correlationId)
-        ) {
-          await sendWaitTimer(wait);
-        }
-      }
+      await sendWaitTimers(
+        waitTimersToArm(ownChain, creatorMessageId, undefined).filter(
+          (wait) =>
+            ownOpenWaits.has(wait.correlationId) &&
+            !timedWaits.has(wait.correlationId)
+        )
+      );
     }
 
     /**
@@ -5207,12 +5220,41 @@ async function runDelivery(
     async function armNearDueTimers(events: Event[]): Promise<void> {
       if (!mayHoldCoalescedTimer) return;
       const horizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
-      for (const wait of openWaits(events)) {
-        if (wait.resumeAtMs > horizonMs) continue;
-        if (!timedWaits.has(wait.correlationId)) {
-          await sendWaitTimer(wait, { nearDue: true });
+      await sendWaitTimers(
+        openWaits(events).filter(
+          (wait) =>
+            wait.resumeAtMs <= horizonMs && !timedWaits.has(wait.correlationId)
+        ),
+        { nearDue: true }
+      );
+    }
+
+    /**
+     * Sends the timers of `waits` at once rather than one after another, at
+     * most {@link WAIT_TIMER_SEND_CONCURRENCY} in flight: a run with many open
+     * waits (rate limit calls made at once each have one) otherwise held the
+     * delivery a queue round trip per wait before it could wait in process or
+     * hand off. Every wait is marked timed before any send starts, so no
+     * other arming path sends a second timer for one still queued here.
+     * Resolves once every send has settled, so each timer is out before the
+     * caller goes on, and throws the first failure in list order.
+     */
+    async function sendWaitTimers(
+      waits: readonly Parameters<typeof sendWaitTimer>[0][],
+      options?: Parameters<typeof sendWaitTimer>[1]
+    ): Promise<void> {
+      // The first of a repeated wait, as the loops kept it.
+      const unique = new Map<string, (typeof waits)[number]>();
+      for (const wait of waits) {
+        if (!unique.has(wait.correlationId)) {
+          unique.set(wait.correlationId, wait);
         }
       }
+      for (const id of unique.keys()) timedWaits.add(id);
+      await runBounded(
+        [...unique.values()].map((wait) => () => sendWaitTimer(wait, options)),
+        WAIT_TIMER_SEND_CONCURRENCY
+      );
     }
 
     /**

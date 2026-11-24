@@ -4,6 +4,7 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
+  experimental_rateLimit,
   FatalError,
   fetch,
   getStepMetadata,
@@ -15,7 +16,11 @@ import {
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
-import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
+import {
+  HookConflictError,
+  HookForceClaimedError,
+  RateLimitMaxWaitError,
+} from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
 import { oneLineDouble, oneLineSteps, oneLineTriple } from './_one_line_steps';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
@@ -4759,4 +4764,144 @@ export async function stateRefsWorkflow(
     last: chat.history.at(-2)?.content.slice(0, 7),
     fan,
   };
+}
+
+//////////////////////////////////////////////////////////
+// experimental_rateLimit()
+//
+// Every fixture takes its key from the test, which makes one up per test:
+// a key's rate is shared by every run of the project and environment, so a
+// fixed key would couple concurrent tests, and CI runs, to each other.
+
+type RateLimitFixtureOptions = {
+  limit: number;
+  periodMs: number;
+  burst?: number;
+};
+
+/** Wall-clock time, from a step: the workflow's own clock is deterministic. */
+async function rateLimitNow() {
+  'use step';
+  return Date.now();
+}
+
+/**
+ * Calls `experimental_rateLimit()` `calls` times on one key, one after the
+ * other, and reports when the run got past each call.
+ */
+export async function rateLimitSequentialWorkflow(
+  key: string,
+  calls: number,
+  options: RateLimitFixtureOptions
+) {
+  'use workflow';
+  const startedAt = await rateLimitNow();
+  const passedAt: number[] = [];
+  for (let i = 0; i < calls; i++) {
+    await experimental_rateLimit({
+      key,
+      limit: options.limit,
+      period: options.periodMs,
+      ...(options.burst !== undefined && { burst: options.burst }),
+    });
+    passedAt.push(await rateLimitNow());
+  }
+  return { startedAt, passedAt };
+}
+
+/**
+ * Calls `experimental_rateLimit()` `calls` times on one key at once, so the
+ * calls reach the World together, and reports when each branch got past its
+ * call.
+ */
+export async function rateLimitParallelWorkflow(
+  key: string,
+  calls: number,
+  options: RateLimitFixtureOptions
+) {
+  'use workflow';
+  const startedAt = await rateLimitNow();
+  const passedAt = await Promise.all(
+    Array.from({ length: calls }, async () => {
+      await experimental_rateLimit({
+        key,
+        limit: options.limit,
+        period: options.periodMs,
+        ...(options.burst !== undefined && { burst: options.burst }),
+      });
+      return rateLimitNow();
+    })
+  );
+  return { startedAt, passedAt };
+}
+
+/**
+ * Takes the key's slot, then calls again with a `maxWait` shorter than the
+ * wait for the next slot and catches the rejection, then calls a third time
+ * without one: a rejected call reserves nothing, so the third call gets the
+ * slot the second was refused.
+ */
+export async function rateLimitMaxWaitWorkflow(
+  key: string,
+  options: RateLimitFixtureOptions,
+  maxWaitMs: number
+) {
+  'use workflow';
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+  });
+  const firstPassedAt = await rateLimitNow();
+
+  let rejected:
+    | { isRateLimitMaxWaitError: boolean; name: string; key?: string }
+    | undefined;
+  try {
+    await experimental_rateLimit({
+      key,
+      limit: options.limit,
+      period: options.periodMs,
+      maxWait: maxWaitMs,
+    });
+  } catch (error) {
+    rejected = {
+      isRateLimitMaxWaitError: RateLimitMaxWaitError.is(error),
+      name: (error as Error).name,
+      key: RateLimitMaxWaitError.is(error) ? error.key : undefined,
+    };
+  }
+  const rejectedAt = await rateLimitNow();
+
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+  });
+  const thirdPassedAt = await rateLimitNow();
+  return { firstPassedAt, rejected, rejectedAt, thirdPassedAt };
+}
+
+/**
+ * Calls with a `maxWait` that cannot be met and lets the rejection escape,
+ * so the run fails with it.
+ */
+export async function rateLimitMaxWaitUncaughtWorkflow(
+  key: string,
+  options: RateLimitFixtureOptions,
+  maxWaitMs: number
+) {
+  'use workflow';
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+  });
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+    maxWait: maxWaitMs,
+  });
+  return 'unreachable';
 }

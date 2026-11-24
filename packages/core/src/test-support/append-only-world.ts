@@ -8,6 +8,7 @@ import {
 import {
   type BatchEventRequest,
   type CreateEventParams,
+  type CreateEventRequest,
   decideRateLimit,
   decideRateWake,
   type Event,
@@ -135,6 +136,18 @@ export class AppendOnlyWorld {
   readonly events: Event[] = [];
   readonly creates: RecordedCreate[] = [];
   readonly queueCalls: RecordedQueueCall[] = [];
+  /** `queue` calls in flight, with {@link options.queueDelayMs}. */
+  queueInFlight = 0;
+  /** The most `queue` calls in flight at once, with `queueDelayMs`. */
+  maxQueueInFlight = 0;
+  /**
+   * `queue` calls still in flight as each delivery ended, with
+   * `queueDelayMs`: a delivery acknowledges or hands off only once every
+   * message it owes is out.
+   */
+  readonly queueInFlightAtDeliveryEnd: number[] = [];
+  /** Wait timer messages whose `queue` call has returned: out in the queue. */
+  waitTimersOut = 0;
   /** Messages enqueued and not yet acknowledged. */
   readonly held: HeldMessage[] = [];
   readonly deliveries: RecordedDelivery[] = [];
@@ -237,6 +250,12 @@ export class AppendOnlyWorld {
        */
       createDelayMs?: number;
       /**
+       * Answer every `queue` call this many milliseconds late, as a remote
+       * queue's round trip. {@link AppendOnlyWorld.maxQueueInFlight} records
+       * how many overlapped.
+       */
+      queueDelayMs?: number;
+      /**
        * Push each event to the live feed this many milliseconds after it
        * committed (in commit order), as on a World whose push travels apart
        * from a write's answer and can arrive well after it. Without it the
@@ -265,6 +284,16 @@ export class AppendOnlyWorld {
        * refused whole, as a World without the capability refuses it.
        */
       rateEventsInBatch?: boolean;
+      /**
+       * Refuses a rate event in a batch before deciding it, reserving
+       * nothing, when this returns a refusal: as the backend answers one it
+       * had no time to decide (503 `rate-batch-deferred`), or one too early
+       * by its clock (425). `index` is the item's position in the batch.
+       */
+      refuseBatchedRate?: (
+        event: CreateEventRequest,
+        index: number
+      ) => { status: number; error: string } | undefined;
       /**
        * Honor `resolveData: 'skip-step-inputs'` on replay pages (list pages
        * and skipped-slot reports): `step_created` and `step_started` are
@@ -924,6 +953,7 @@ export class AppendOnlyWorld {
       if (key !== undefined && acknowledged) this.acknowledgedKeys.add(key);
       return result;
     } finally {
+      this.queueInFlightAtDeliveryEnd.push(this.queueInFlight);
       if (key !== undefined) {
         const left = (this.deliveringKeys.get(key) ?? 1) - 1;
         if (left > 0) this.deliveringKeys.set(key, left);
@@ -1101,10 +1131,26 @@ export class AppendOnlyWorld {
         : undefined;
     };
     const refusedEntities = new Set<string>();
+    // An in-band batch's barrier, as the backend keeps it: once a
+    // `rate_acquired` is refused, every later item is refused unput.
+    let refusedOutcome = false;
+    const inBand = (params as CreateEventParams | undefined)?.inBand === true;
+    const refuseOutcome = <R>(eventType: string, result: R): R => {
+      if (inBand && eventType === 'rate_acquired') refusedOutcome = true;
+      return result;
+    };
     return {
       ...this.report(params as CreateEventParams, firstSlot),
       results: batch.map(({ event: data }, index) => {
         const entity = (data as { correlationId?: string }).correlationId;
+        if (refusedOutcome) {
+          this.append({ eventType: 'noop' } as Partial<Event>);
+          return {
+            status: 409,
+            error: 'batch-earlier-position-failed',
+            message: 'An earlier outcome in this batch was refused',
+          };
+        }
         if (entity !== undefined && refusedEntities.has(entity)) {
           this.append({ eventType: 'noop' } as Partial<Event>);
           return {
@@ -1132,6 +1178,14 @@ export class AppendOnlyWorld {
           data.eventType === 'rate_created' ||
           data.eventType === 'rate_acquired'
         ) {
+          const refusal = this.options.refuseBatchedRate?.(data, index);
+          if (refusal) {
+            this.append({ eventType: 'noop' } as Partial<Event>);
+            return refuseOutcome(data.eventType, {
+              ...refusal,
+              message: 'refused before it was decided',
+            });
+          }
           try {
             const rate = this.committedRate(data as Partial<Event>);
             rate.reserve?.();
@@ -1144,11 +1198,11 @@ export class AppendOnlyWorld {
               : TooEarlyError.is(error)
                 ? 425
                 : ((error as { status?: number }).status ?? 400);
-            return {
+            return refuseOutcome(data.eventType, {
               status,
               error: (error as Error).name,
               message: (error as Error).message,
-            };
+            });
           }
         }
         const event = this.append(committed, undefined, occurredAt(index));
@@ -1354,6 +1408,25 @@ export class AppendOnlyWorld {
         },
       },
       async queue(queueName: string, message: unknown, opts?: object) {
+        // Counted once the call returns: the timer is out in the queue.
+        const out = <R>(result: R): R => {
+          if ((message as { waitContinuation?: unknown }).waitContinuation) {
+            self.waitTimersOut++;
+          }
+          return result;
+        };
+        if (self.options.queueDelayMs) {
+          self.queueInFlight++;
+          self.maxQueueInFlight = Math.max(
+            self.maxQueueInFlight,
+            self.queueInFlight
+          );
+          try {
+            await new Promise((r) => setTimeout(r, self.options.queueDelayMs));
+          } finally {
+            self.queueInFlight--;
+          }
+        }
         const options = opts as Record<string, unknown> | undefined;
         self.queueCalls.push({ queueName, message, opts: options });
         const messageId = `msg_${self.queueCalls.length}`;
@@ -1367,7 +1440,7 @@ export class AppendOnlyWorld {
         ) {
           self.activeOrchestrator.coalesced++;
           self.coalescedMessages++;
-          return { messageId };
+          return out({ messageId });
         }
         const key = options?.idempotencyKey as string | undefined;
         // Deduplicate like a queue does while the keyed message exists
@@ -1386,7 +1459,7 @@ export class AppendOnlyWorld {
             self.deliveringKeys.has(key) ||
             self.acknowledgedKeys.has(key))
         ) {
-          return { messageId: null };
+          return out({ messageId: null });
         }
         if (key !== undefined) self.keySentAtMs.set(key, Date.now());
         const delaySeconds = (options?.delaySeconds as number | undefined) ?? 0;
@@ -1399,7 +1472,7 @@ export class AppendOnlyWorld {
           dueAtMs: Date.now() + Math.max(0, delaySeconds) * 1000,
           opts: options,
         });
-        return { messageId };
+        return out({ messageId });
       },
       createQueueHandler(
         _prefix: string,

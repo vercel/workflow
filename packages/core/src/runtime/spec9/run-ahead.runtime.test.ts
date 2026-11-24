@@ -1026,6 +1026,7 @@ describe.each([
     'snapshots a VM that ran ahead only from a confirmed log, and the restored VM runs ahead again',
     async () => {
       vi.stubEnv('WORKFLOW_SNAPSHOT_THRESHOLD', '1');
+      vi.stubEnv('WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED', '1');
       vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '0');
       let stored: { data: Uint8Array; metadata: SnapshotMetadata } | undefined;
       const saves: SnapshotMetadata[] = [];

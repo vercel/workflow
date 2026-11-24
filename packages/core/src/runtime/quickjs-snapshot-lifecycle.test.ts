@@ -211,6 +211,7 @@ describe('QuickJS snapshot lifecycle', () => {
   });
 
   afterEach(() => {
+    delete process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED;
     setWorld(undefined);
     vi.clearAllMocks();
   });
@@ -337,15 +338,24 @@ describe('QuickJS snapshot lifecycle', () => {
     expect(restoredFrom).toEqual([undefined]);
   });
 
-  it('restores an unencrypted snapshot for a run without an encryption key', async () => {
+  it('restores an unencrypted snapshot only when opted in', async () => {
     const heap = new Uint8Array(2048).fill(3);
-    const { load, restoredFrom } = await invoke({
+    const withoutOptIn = await invoke({
       log: makeLog(3),
       threshold: 1,
       withKey: false,
       stored: await sealed(snapshotMetadata(), undefined, heap),
     });
-    expect(load).toHaveBeenCalledTimes(1);
-    expect(restoredFrom[0]?.data).toEqual(heap);
+    expect(withoutOptIn.load).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED = '1';
+    const optedIn = await invoke({
+      log: makeLog(3),
+      threshold: 1,
+      withKey: false,
+      stored: await sealed(snapshotMetadata(), undefined, heap),
+    });
+    expect(optedIn.restoredFrom[0]?.data).toEqual(heap);
   });
 });
