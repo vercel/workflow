@@ -1,6 +1,6 @@
 //! The places where the swc_core API differs between the two builds of this
 //! transform: `swc_workflow` (swc_core 49, for `@swc/core` 1.15) and
-//! `swc_workflow_swc116` (the `swc-116` feature, for `@swc/core` 1.16 and later).
+//! `swc_workflow_swc116` (the `swc-116` feature, for `@swc/core` 1.16.x).
 //! Everything else in `lib.rs` compiles against both unchanged.
 //!
 //! swc_core 77 gave function bodies their own node, `FunctionBody` (no syntax

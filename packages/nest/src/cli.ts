@@ -63,9 +63,9 @@ Build options:
 
 'init' writes the .swcrc settings the Workflow SWC plugin needs, preserving any
 other configuration already in the file, and warns when @swc/cli or @swc/core
-is missing or @swc/core is not 1.15.x. 'build' generates the workflow bundles
-for local dev, and on Vercel (or with --vercel) the full Build Output including
-the queue-consumer function VQS discovers.
+is missing or @swc/core is not 1.15.x or 1.16.x. 'build' generates the workflow
+bundles for local dev, and on Vercel (or with --vercel) the full Build Output
+including the queue-consumer function VQS discovers.
 `);
 }
 

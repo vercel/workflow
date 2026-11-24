@@ -346,6 +346,45 @@ describe('runInit', () => {
     expect(readFileSync(join(appDir, '.swcrc'), 'utf-8')).toBe('{}');
   });
 
+  it('warns and writes the 1.15 build when the 1.16 build cannot be resolved', () => {
+    // An @workflow/swc-plugin without the swc-1.16 export (an older version
+    // pinned by an override): init must not stop the prebuild script.
+    createApp({ cli: '0.8.2', core: '1.16.22' });
+    const lines: string[] = [];
+    const code = runInit({
+      workingDir: appDir,
+      moduleType: 'es6',
+      force: false,
+      pluginPath: (specifier) => {
+        if (specifier === '@workflow/swc-plugin/swc-1.16') {
+          throw new Error("Package subpath './swc-1.16' is not defined");
+        }
+        return resolvePlugin(specifier);
+      },
+      log: (message) => lines.push(message),
+    });
+    expect(code).toBe(0);
+    expect(swcrcPluginPath()).toBe(PLUGIN_PATH);
+    expect(lines.join('\n')).toContain(
+      'Could not resolve @workflow/swc-plugin/swc-1.16'
+    );
+  });
+
+  it('still throws when the 1.15 build itself cannot be resolved', () => {
+    createApp({ cli: '0.8.2', core: '1.15.47' });
+    expect(() =>
+      runInit({
+        workingDir: appDir,
+        moduleType: 'es6',
+        force: false,
+        pluginPath: () => {
+          throw new Error("Cannot find module '@workflow/swc-plugin'");
+        },
+        log: () => {},
+      })
+    ).toThrow("Cannot find module '@workflow/swc-plugin'");
+  });
+
   it('falls back to the 1.15 build when the SWC package check throws', () => {
     // Without the check there is no installed version to match, so init
     // writes what it wrote before there were two builds.

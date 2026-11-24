@@ -52,6 +52,35 @@ function pluginBuildFor(status: SwcBuilderStatus | null): SwcPluginBuild {
   return swcPluginBuildFor(status.core.version) ?? DEFAULT_SWC_PLUGIN_BUILD;
 }
 
+/**
+ * The path of `build` for `.swcrc`. When a build other than the default can't
+ * be resolved (an `@workflow/swc-plugin` older than this `@workflow/nest`,
+ * pinned by an override, say), warn and write the default one instead of
+ * failing `init`, which runs as `prebuild`. A default build that can't be
+ * resolved still throws, as it always has.
+ */
+function resolvePluginPath(
+  options: InitOptions,
+  build: SwcPluginBuild,
+  log: (message: string) => void
+): string {
+  if (build === DEFAULT_SWC_PLUGIN_BUILD) {
+    return options.pluginPath(build.specifier);
+  }
+  try {
+    return options.pluginPath(build.specifier);
+  } catch {
+    log(
+      `⚠ Could not resolve ${build.specifier}, the Workflow SWC plugin ` +
+        `built for @swc/core ${build.line}.x, so .swcrc gets the ` +
+        `${DEFAULT_SWC_PLUGIN_BUILD.line}.x build and \`nest build\` fails ` +
+        'with "failed to invoke plugin". Install the @workflow/swc-plugin ' +
+        'version @workflow/nest depends on.'
+    );
+    return options.pluginPath(DEFAULT_SWC_PLUGIN_BUILD.specifier);
+  }
+}
+
 /** Warn about SWC builder packages that would make `nest build` fail. */
 function warnAboutSwcBuilderPackages(
   workingDir: string,
@@ -126,7 +155,7 @@ export function runInit(options: InitOptions): number {
     return 1;
   }
 
-  const pluginPath = options.pluginPath(pluginBuildFor(status).specifier);
+  const pluginPath = resolvePluginPath(options, pluginBuildFor(status), log);
   const { config, merged } = mergeSwcrc(
     existingContent,
     pluginPath,
