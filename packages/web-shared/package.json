@@ -42,6 +42,8 @@
     "@radix-ui/react-tooltip": "1.4.1",
     "@tailwindcss/postcss": "4",
     "@tootallnate/zstd-wasm": "0.0.2",
+    "@ui-sdk/core": "0.1.0-beta.10",
+    "@ui-sdk/react": "0.1.0-beta.10",
     "@workflow/core": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
