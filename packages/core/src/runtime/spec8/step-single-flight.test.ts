@@ -46,6 +46,34 @@ describe('runStepSingleFlight', () => {
     }
   });
 
+  // workflow#4545: a queued step delivery (default level) that loses to a
+  // fresh inline claim (`debug`) is an ordinary wake race, not a lease
+  // problem, so it must not warn.
+  it.each([
+    { winnerLevel: 'debug', expected: 'silent' },
+    { winnerLevel: 'warn', expected: 'warn' },
+  ] as const)('a default-level loser to a $winnerLevel winner: $expected', async ({
+    winnerLevel,
+    expected,
+  }) => {
+    vi.stubEnv('DEBUG', '');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const debugLog = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const { promise, resolve } = withResolvers<StepExecutionResult>();
+    const execute = vi.fn(() => promise);
+    const inline = runStepSingleFlight(RUN, STEP, execute, {
+      logLevel: winnerLevel,
+    });
+    const queued = runStepSingleFlight(RUN, STEP, execute);
+
+    resolve({ type: 'completed' });
+    await expect(inline).resolves.toEqual({ type: 'completed' });
+    await expect(queued).resolves.toEqual({ type: 'skipped' });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledTimes(expected === 'warn' ? 1 : 0);
+    expect(debugLog).not.toHaveBeenCalled();
+  });
+
   it('executes when nothing is in flight and returns the result', async () => {
     let calls = 0;
     const result = await runStepSingleFlight(RUN, STEP, async () => {

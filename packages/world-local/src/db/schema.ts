@@ -5,12 +5,16 @@ import type { RawDatabase } from './driver.js';
  * how many have run. Append; never edit a shipped migration.
  *
  * Conventions:
- * - Times are epoch milliseconds (INTEGER).
+ * - Times are epoch milliseconds (INTEGER), except `rate_limits.tat_us`.
  * - `doc` columns hold the entity or event as written by `codec.encode`; the
  *   other columns are what the rows are looked up and ordered by.
  * - `tag` is the World's `tag` option (test isolation), NULL when untagged.
  *   Steps, waits and events belong to their run's tag.
  */
+// `run_usage_purged` is not here: it is created on first use, outside the
+// migrations (see storage/purged-usage.ts), so `user_version` does not change
+// and an older world-local still opens the database. A future migration must
+// not create or drop it blindly.
 const MIGRATIONS: string[] = [
   `
   CREATE TABLE runs (
@@ -37,6 +41,7 @@ const MIGRATIONS: string[] = [
     doc TEXT NOT NULL,
     PRIMARY KEY (run_id, seq)
   ) WITHOUT ROWID;
+  -- Named by INDEXED BY in storage/store.ts: dropping or renaming it breaks correlation lookups.
   CREATE INDEX events_by_correlation ON events (run_id, correlation_id, seq);
 
   CREATE TABLE steps (
@@ -119,6 +124,17 @@ const MIGRATIONS: string[] = [
     run_id TEXT PRIMARY KEY,
     envelope BLOB NOT NULL
   );
+  `,
+  `
+  -- experimental_rateLimit(): each key's next free slot (GCRA's tat), in
+  -- epoch microseconds. Keys are scoped to the World's tag ('' untagged),
+  -- like everything else a tagged World sees.
+  CREATE TABLE rate_limits (
+    tag TEXT NOT NULL,
+    key TEXT NOT NULL,
+    tat_us INTEGER NOT NULL,
+    PRIMARY KEY (tag, key)
+  ) WITHOUT ROWID;
   `,
 ];
 

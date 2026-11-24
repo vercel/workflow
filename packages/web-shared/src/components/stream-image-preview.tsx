@@ -26,7 +26,7 @@ export function StreamImagePreview({ data }: { data: Uint8Array }) {
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-label-12 text-gray-900">Image Preview</span>
         {url ? (
-          <Button asChild size="tiny" variant="secondary">
+          <Button asChild size="small" variant="secondary">
             <a href={url} download={`workflow-stream.${type?.split('/')[1]}`}>
               Download Image
             </a>

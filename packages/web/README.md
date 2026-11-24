@@ -11,55 +11,32 @@ Observability Web UI Package bundled in the [Workflow SDK](https://workflow-sdk.
 
 While this UI is bundled with the Workflow CLI, you can also self-host it.
 
-There are multiple approaches:
+There are two approaches:
 
 1. Run `npx workflow web --noBrowser` on a server
-2. Clone this repo and deploy as a normal Next.js app
-3. Deploy the published `@workflow/web` package
+2. Run the published `@workflow/web` package's server directly
 
 All options require the environment to be configured with the right environment variables for the World you're using.
+
+### Allowed host names
+
+To protect against DNS rebinding, the server rejects requests whose `Host` header is not `localhost`, a `*.localhost` name, or an IP address. If you reach the UI under a domain name (for example behind a reverse proxy), list it in `WORKFLOW_WEB_ALLOWED_HOSTS` or pass `--webAllowedHosts` to the CLI: comma-separated, `.example.com` matches the domain and its subdomains, and `*` disables the check. Cross-origin `POST` requests are rejected as well, unless their origin is one of these names.
 
 ### Option 1: Run with the CLI
 
 ```bash
-npx workflow web --noBrowser
+npx workflow web --noBrowser --webAllowedHosts workflow.example.com
 ```
 
 This will start the web UI on the default port `3456`.
 
-### Option 2: Clone and deploy
+### Option 2: Run the published `@workflow/web` package
 
-- Build and deploy like any Next.js app.
-- Configure the backend via environment variables (same variables the CLI writes).
-
-### Option 3: Deploy the published `@workflow/web` package
-
-The published `@workflow/web` package contains a prebuilt `.next` directory and `package.json`.
-You can install it and run `next start` from the package directory.
-
-Example (Node server / container):
+The published `@workflow/web` package contains a prebuilt `build/` directory and a standalone server entry point, `server.js`.
 
 ```bash
-mkdir workflow-observability-ui
-cd workflow-observability-ui
-
-npm init -y
-# You must provide React runtime dependencies in your host project.
-npm i @workflow/web react react-dom
-
-# Run Next.js from the installed package (it contains the .next output)
-cd node_modules/@workflow/web
-npx --yes next start -p "${PORT:-3456}"
-```
-
-If you prefer, you can set a `start` script in your host `package.json` like:
-
-```json
-{
-  "scripts": {
-    "start": "cd node_modules/@workflow/web && next start -p $PORT"
-  }
-}
+npm i @workflow/web
+PORT=3456 WORKFLOW_WEB_ALLOWED_HOSTS=workflow.example.com node node_modules/@workflow/web/server.js
 ```
 
 ### Configuration (environment variables)

@@ -235,9 +235,13 @@ Steps started beside an awaited hook registration (`hook.getConflict()`) count a
 
 - Default: enabled
 
-Fast path for a run's first delivery. Set `0` or `false` to disable.
+Fast path for a run's first delivery. Set `0` or `false` to disable, including for runs started with `start({ experimental_hook })`.
+
+Applies only while that delivery's queue message is at most 15 seconds old. An older one, such as a platform re-running a crashed invocation, loads the event log first.
 
 It stops forcing optimistic inline step start once the run creates a hook or wait.
+
+A run started with `start({ experimental_hook })` never runs steps before `run_started` returns, but its first delivery still writes `run_started` without loading the event log first.
 
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
 
@@ -337,7 +341,7 @@ What a snapshot contains, and how it is protected:
 
 - A snapshot is the workflow VM's memory: the workflow's code and in-memory state, including step results and hook payloads it holds, and the copy of `process.env` the VM exposes. It is executable state, so write access to snapshot storage is equivalent to running code in the workflow VM.
 - Snapshots are compressed and then encrypted with the run's encryption key. The encryption also authenticates the snapshot: on restore, the runtime rejects any snapshot that isn't encrypted with the run's key, or whose stored metadata doesn't match the metadata sealed inside it.
-- By default, runs without an encryption key are never snapshotted. Only world-vercel provides run encryption keys. On world-local and world-postgres, set `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` on the workflow handler to snapshot anyway. Those snapshots are stored in plaintext (in `.workflow-data/snapshots/` or the `workflow_snapshots` table) and are not authenticated, so only enable this where snapshot storage is as trusted as your deployment.
+- By default, runs without an encryption key are never snapshotted. world-local and world-postgres provide no run encryption keys. Set `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` on the workflow handler to snapshot those runs anyway. Their snapshots are stored in plaintext (in `.workflow-data/snapshots/` or the `workflow_snapshots` table) and are not authenticated. Because a snapshot holds the VM's copy of `process.env`, anyone who can read snapshot storage can read the handler's environment variables, including credentials your workflows never use. Only enable this where snapshot storage is as trusted as the deployment's environment.
 - A restored run sees `process.env` as of the current invocation, the same as a full replay.
 - Snapshots are deleted after the run reaches a terminal state. world-local and world-postgres have no separate retention for them, so a snapshot of a run that ends without any invocation observing it (for example, one cancelled externally) stays until you remove it.
 
@@ -345,7 +349,7 @@ What a snapshot contains, and how it is protected:
 
 - Default: disabled
 
-Whether the QuickJS engine persists VM snapshots for runs without an encryption key. Set `1` or `true` on the workflow handler to allow it.
+Whether the QuickJS engine persists VM snapshots for runs without an encryption key. Set `1` or `true` on the workflow handler to allow it. Those snapshots include the handler's environment variables in plaintext.
 
 See [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold) for what that stores.
 
@@ -569,17 +573,19 @@ The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,
 
 QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
 
-## Spec 9 (experimental)
+## Spec 9
 
-Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below.
+Everything above describes spec 8 runs. New runs are spec 10 by default on the Vercel, Local and Postgres Worlds, and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8. Spec 10 runs are spec 9 runs that may call [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit), and everything in this section applies to both. Spec 9 runs read some of the settings above differently, and add the settings below.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| [`WORKFLOW_SPEC_VERSION`](#workflow_spec_version) | unset (spec 8) | Spec version of new runs |
+| [`WORKFLOW_SPEC_VERSION`](#workflow_spec_version) | unset (spec 10 on the Vercel, Local and Postgres Worlds) | Spec version of new runs |
+| [`WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`](#workflow_orchestrator_rate_wait_ms) | `5000` ms | How far ahead of a rate limit slot the orchestrator waits in the same invocation |
 | [`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`](#workflow_orchestrator_poll_interval_ms) | `2000` ms | Log-tail poll interval without a live event feed |
 | [`WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`](#workflow_orchestrator_feed_poll_interval_ms) | `10000` ms | Log-tail poll interval while the live event feed is up |
-| [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms) | `30000` ms | How long an idle orchestrator stays live while a background step runs |
+| [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms) | `5000` ms | How long an idle orchestrator stays live while a background step runs |
 | [`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`](#workflow_orchestrator_hook_linger_ms) | `5000` ms, capped at `WORKFLOW_ORCHESTRATOR_LINGER_MS` | How long an idle orchestrator stays live on open hooks only |
+| [`WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`](#workflow_orchestrator_wait_linger_ms) | `WORKFLOW_ORCHESTRATOR_LINGER_MS` (`5000` ms), capped at it | How far ahead a `sleep()` may end for an idle orchestrator to stay live until it does |
 | [`WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`](#workflow_orchestrator_read_timeout_ms) | `5000` ms | Deadline for one incremental event-log read |
 | [`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`](#workflow_inline_step_deadline_margin_ms) | `60000` ms | When the orchestrator stops starting inline steps |
 | [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start) | unset | Starts background step bodies before `step_started` commits |
@@ -587,13 +593,21 @@ Everything above describes spec 8 runs, the default. The experimental spec 9 run
 
 ### `WORKFLOW_SPEC_VERSION`
 
-- Default: unset. New runs use spec version 8.
+- Default: unset. New runs use spec version 10 on a World that declares the in-band fence and reserves rate limit slots (the Vercel, Local and Postgres Worlds do), 9 on a World that declares only the fence, and 8 on one without the fence.
 
-Spec version of runs created by this process. `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
+Spec version of runs created by this process. `8` keeps new runs on spec 8. `6` to `10` select that version; `9` or `10` on a World without the fence creates spec 8 runs, and `10` on a World with the fence but no rate limits creates spec 9 runs. Any other value is ignored with a one-time warning and creates spec 8 runs, so a typo in an opt-out never creates spec 9 or 10 runs. A run keeps the version it was created with.
 
 `6` creates new runs on the scheme from before the [sealed log](/docs/how-it-works/event-sourcing), where each event position is allocated by the write that occupies it. Use it in an environment shared with a runtime that cannot read sealed logs yet, such as one that pins its own accepted spec range (the Python runtime). Runs below `8` cannot have their hook tokens taken over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds): a forced hook in another run gets `HookConflictError` instead.
 
-Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist.
+Upgrade every deployment and process that shares the World together, setting `8` on the upgraded ones until all of them run this release, and do not roll back below this release once spec 9 or 10 runs exist.
+
+### `WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`
+
+- Default: `5000`
+
+How far ahead, in milliseconds, of an [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) call's slot the orchestrator waits for it in the same invocation. `0` turns it off, and a waiting call is woken by the queue at its slot.
+
+A call whose slot is further out is woken this far before it and waits the rest the same way, so it goes ahead at its slot instead of a second or more after. A queued wake for the slot itself is still scheduled, in case the invocation ends first. Each wait can keep an invocation idle for up to this long.
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 
@@ -609,9 +623,11 @@ Log-tail poll interval, in milliseconds, while the World's live event feed is up
 
 ### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
 
-- Default: `30000`
+- Default: `5000`
 
-How long, in milliseconds, an orchestrator with nothing left to run stays live on the event feed while the run waits on a background step. `0` turns it off, for hooks too.
+How long, in milliseconds, an orchestrator with nothing left to run stays live on the event feed while the run waits on a background step. `0` turns it off, for hooks and sleeps too.
+
+A step that takes longer ends the invocation, and its outcome starts a new one.
 
 ### `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`
 
@@ -619,7 +635,17 @@ How long, in milliseconds, an orchestrator with nothing left to run stays live o
 
 How long, in milliseconds, an orchestrator with nothing left to run stays live on the event feed while the run waits only on open hooks. `0` turns it off.
 
+Change it when: you want background steps on a longer window than hooks. Set it below `WORKFLOW_ORCHESTRATOR_LINGER_MS`.
+
 Any hook that is created and not disposed counts, however rarely it is resumed.
+
+### `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`
+
+- Default: [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms) (`5000`), and never more than it
+
+How far ahead, in milliseconds, a `sleep()` may end for an orchestrator with nothing left to run to stay live on the event feed until it does, instead of ending the invocation and starting a new one when the sleep's timer fires. `0` turns it off.
+
+A sleep up to 1 second longer than this still counts, so a sleep as long as the window lingers despite small clock differences. Only for a sleep that ends before the invocation's inline window less [`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`](#workflow_inline_step_deadline_margin_ms), and only on a World with a live event feed (such as world-vercel and world-postgres; world-local has none, so it never lingers). On those Worlds, a `run.wakeUp()` sent during such a sleep is not applied, so the sleep runs its full length.
 
 ### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
 

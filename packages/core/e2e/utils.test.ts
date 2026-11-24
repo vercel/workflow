@@ -1,8 +1,12 @@
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { dehydrateRunError } from '../src/serialization';
 import {
+  cliInspectJson,
   createPerTestState,
   describeRunError,
   fetchManifest,
@@ -15,6 +19,11 @@ import {
   waitForRunPickup,
   warmDeployment,
 } from './utils';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -484,5 +493,60 @@ describe('fetchManifest', () => {
       fetchManifest(server.url, { forceRefresh: true })
     ).rejects.toThrow(/Failed to fetch manifest from .*: 404 unavailable/);
     expect(server.requests()).toBe(1);
+  });
+});
+
+describe('CLI failure reports', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test.each([
+    1, 0,
+  ])('redacts captured output before serializing a failure (exit %s)', async (code) => {
+    process.env.APP_NAME = 'nextjs-turbopack';
+    process.env.DEPLOYMENT_URL = 'https://preview.invalid';
+    process.env.DEBUG = '*';
+    const backend = 'https://private-backend.invalid';
+    process.env.VERCEL_WORKFLOW_SERVER_URL = backend;
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        // Split across chunks: redacting each chunk alone would miss the URL.
+        child.stderr.write(`request failed: ${backend.slice(0, 15)}`);
+        child.stderr.write(backend.slice(15));
+        if (code !== 0) child.stdout.write(`backend=${backend}`);
+        child.emit('close', code, null);
+      });
+      return child as ReturnType<typeof spawn>;
+    });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const error = await cliInspectJson(
+      'event evnt_test --runId wrun_test'
+    ).catch((error: Error) => error);
+    expect(error).toBeInstanceOf(Error);
+    const report = JSON.stringify(error, Object.getOwnPropertyNames(error));
+    expect(report).not.toContain(backend);
+    expect(report).toContain('[REDACTED]');
+    expect(report).toContain('request failed');
+    expect(
+      JSON.stringify(vi.mocked(process.stdout.write).mock.calls)
+    ).not.toContain(backend);
+    expect(
+      JSON.stringify(vi.mocked(process.stderr.write).mock.calls)
+    ).not.toContain(backend);
+    expect(spawn).toHaveBeenLastCalledWith(
+      'node',
+      expect.not.arrayContaining(['--verbose']),
+      expect.objectContaining({
+        env: expect.objectContaining({ DEBUG: '' }),
+      })
+    );
   });
 });

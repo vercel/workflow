@@ -316,9 +316,9 @@ export function httpLog(
 
 /**
  * On a failed request with `DEBUG` set, print a copy-pasteable `curl` that
- * reproduces it (authorization header stripped). Separate from
- * HTTP_DEBUG_ENABLED so any DEBUG value opts in, matching the original v3
- * behavior.
+ * reproduces it (authorization and private backend headers stripped). Separate
+ * from HTTP_DEBUG_ENABLED so any DEBUG value opts in, matching the original
+ * v3 behavior.
  */
 export function logCurlRepro(
   method: string,
@@ -327,7 +327,10 @@ export function logCurlRepro(
 ): void {
   if (!process.env.DEBUG) return;
   const stringifiedHeaders = Array.from(headers.entries())
-    .filter(([key]) => key.toLowerCase() !== 'authorization')
+    .filter(([key]) => {
+      const name = key.toLowerCase();
+      return name !== 'authorization' && name !== 'x-vercel-workflow-api-url';
+    })
     .map(([key, value]) => `-H "${key}: ${value}"`)
     .join(' ');
   console.error(
@@ -502,7 +505,14 @@ export function errorForResponse(
       code: START_HOOK_CANDIDATE_CANCELLED,
     });
   }
-  if (status === 409) return new EntityConflictError(message);
+  // The code (e.g. `run-already-started`) is the only thing that tells one
+  // conflict from another, so it is kept for the caller.
+  if (status === 409) {
+    return new EntityConflictError(message, {
+      ...(code !== undefined ? { code } : {}),
+      ...(url !== undefined ? { url } : {}),
+    });
+  }
   if (status === 410) {
     if (code === 'stream-expired') {
       const streamDetails =

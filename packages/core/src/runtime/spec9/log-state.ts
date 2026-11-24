@@ -246,43 +246,88 @@ export function awaitsExternalWork(
   return externalWorkOf(events, observedHookIds) !== undefined;
 }
 
-/** An open wait: created and not completed. */
+/**
+ * An open wait: created and not completed.
+ *
+ * Two kinds share the timer machinery. A `sleep()` is open from its
+ * `wait_created` until its `wait_completed`. An `experimental_rateLimit()`
+ * call that has to wait is open from its committed `rate_created`, which
+ * carries the reserved `acquireAt`, until its `rate_acquired` (or a
+ * `rate_failed`, which only a World writes): its `resumeAt` is that
+ * `acquireAt`, and the orchestrator that completes it writes `rate_acquired`
+ * naming the `rate_created`'s slot instead of `wait_completed`.
+ */
 export interface OpenWait {
+  kind: 'wait' | 'rate';
   correlationId: string;
   resumeAt: Date;
   resumeAtMs: number;
+  /** The `wait_created`, or the `rate_created` of a rate call. */
   event: Event;
 }
 
 export function openWaits(events: readonly Event[]): OpenWait[] {
   const completed = new Set<string>();
   for (const event of events) {
-    if (event.eventType === 'wait_completed' && event.correlationId) {
+    if (!event.correlationId) continue;
+    if (
+      event.eventType === 'wait_completed' ||
+      event.eventType === 'rate_acquired' ||
+      event.eventType === 'rate_failed'
+    ) {
       completed.add(event.correlationId);
     }
   }
   const seen = new Set<string>();
   const out: OpenWait[] = [];
   for (const event of events) {
-    if (event.eventType !== 'wait_created' || !event.correlationId) continue;
-    if (completed.has(event.correlationId) || seen.has(event.correlationId)) {
+    if (!event.correlationId) continue;
+    let kind: OpenWait['kind'];
+    let resumeAt: Date;
+    if (event.eventType === 'wait_created') {
+      kind = 'wait';
+      resumeAt = new Date(event.eventData.resumeAt);
+    } else if (
+      event.eventType === 'rate_created' &&
+      event.eventData.acquireAt !== undefined
+    ) {
+      kind = 'rate';
+      resumeAt = new Date(event.eventData.acquireAt);
+    } else {
       continue;
     }
-    seen.add(event.correlationId);
-    const resumeAt = new Date(event.eventData.resumeAt);
-    out.push({
+    if (completed.has(event.correlationId)) continue;
+    const open: OpenWait = {
+      kind,
       correlationId: event.correlationId,
       resumeAt,
       resumeAtMs: resumeAt.getTime(),
       event,
-    });
+    };
+    if (seen.has(event.correlationId)) {
+      // A rate call woken past its grace window is reserved again: the World
+      // commits a new `rate_created` in place of its `rate_acquired`, and the
+      // call waits for the newest one's slot. A repeated `wait_created` keeps
+      // the first.
+      if (kind === 'rate') {
+        const at = out.findIndex(
+          (wait) => wait.correlationId === event.correlationId
+        );
+        out[at] = open;
+      }
+      continue;
+    }
+    seen.add(event.correlationId);
+    out.push(open);
   }
   return out;
 }
 
 /**
  * Open waits whose deadline has passed, and open waits named in `wakeUp`
- * (`run.wakeUp()`), whatever their deadline.
+ * (`run.wakeUp()`), whatever their deadline. A rate call is never woken
+ * early: its slot is the World's to keep, and the World refuses a
+ * `rate_acquired` before it.
  */
 export function dueWaits(
   events: readonly Event[],
@@ -290,7 +335,9 @@ export function dueWaits(
   wakeUp?: ReadonlySet<string>
 ): OpenWait[] {
   return openWaits(events).filter(
-    (wait) => wait.resumeAtMs <= nowMs || wakeUp?.has(wait.correlationId)
+    (wait) =>
+      wait.resumeAtMs <= nowMs ||
+      (wait.kind === 'wait' && wakeUp?.has(wait.correlationId))
   );
 }
 

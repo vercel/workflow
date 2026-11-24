@@ -1247,12 +1247,19 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
     const own = { resumeRequestedAtMs: 1, queuePublishRequestedAtMs: 2 };
     const absorbed = { resumeRequestedAtMs: 10, queuePublishRequestedAtMs: 20 };
     const traceCarrier = { traceparent: '00-abc-def-01' };
-    await localQueue.queue(QUEUE, spec9('run_a', { hookResumeTiming: own }));
+    await localQueue.queue(
+      QUEUE,
+      spec9('run_a', { hookResumeTiming: own, wakeEventId: 'evnt_own' })
+    );
     await vi.waitFor(() => expect(seen).toHaveLength(1));
     await localQueue.queue(QUEUE, spec9('run_a'));
     await localQueue.queue(
       QUEUE,
-      spec9('run_a', { hookResumeTiming: absorbed, traceCarrier })
+      spec9('run_a', {
+        hookResumeTiming: absorbed,
+        traceCarrier,
+        wakeEventId: 'evnt_absorbed',
+      })
     );
     release();
     await vi.waitFor(() => expect(seen).toHaveLength(2));
@@ -1260,6 +1267,7 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
     expect(seen[1]?.body).toMatchObject({
       hookResumeTiming: absorbed,
       traceCarrier,
+      wakeEventId: 'evnt_absorbed',
     });
   });
 
@@ -1272,6 +1280,7 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
           resumeRequestedAtMs: 1,
           queuePublishRequestedAtMs: 2,
         },
+        wakeEventId: 'evnt_own',
       })
     );
     await vi.waitFor(() => expect(seen).toHaveLength(1));
@@ -1279,6 +1288,7 @@ describe('coalescing a spec 9 run’s orchestrator messages', () => {
     release();
     await vi.waitFor(() => expect(seen).toHaveLength(2));
     expect(seen[1]?.body).not.toHaveProperty('hookResumeTiming');
+    expect(seen[1]?.body).not.toHaveProperty('wakeEventId');
   });
 
   it('leaves a start message, a legacy hook resume, a wake-up and an invocation to their own deliveries', async () => {

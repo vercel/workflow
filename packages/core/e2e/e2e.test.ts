@@ -14,7 +14,10 @@ import {
 } from '@workflow/errors';
 import { createWorkflowUrl } from '@workflow/utils';
 import {
+  isRateEventType,
+  mintedSpecVersion,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   startHookId,
@@ -470,18 +473,163 @@ async function allEvents(
   );
 }
 
+type StepStateFromEvents = {
+  stepId: string;
+  stepName: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+};
+
 /**
- * Every step of a run, across pages and without step payloads, read from the
- * World's primary storage.
+ * Every step of a run with its state, derived from the run's event log rather
+ * than read from `world.steps.list()`.
  *
- * Assertions on a run's steps read here rather than through
- * `workflow inspect steps`, whose listing prefers the World's eventually
- * ingested `analytics` namespace and can return a page missing the freshest
- * rows. Storage can still trail a just-finished run (on world-vercel a
- * single-orchestrator run's step list lags its events), so a read moments
- * after `returnValue` settles may not have converged yet: poll with
- * `readUntil`.
+ * The event log is the source of truth for a step's state. A World's step
+ * listing is a view over it that is allowed to trail it: on a spec 9 run
+ * world-vercel's `steps.list` "can lag the log (a step written moments ago
+ * can be missing or behind)" (see "Steps on world-vercel" in
+ * packages/core/src/runtime/spec9/README.md), with no bound on how long. CI
+ * saw a finished run whose log held every step's terminal event while the
+ * listing still showed a step `running`, `pending` or missing 30 s later, so
+ * assertions about which steps ran and how they ended read the log.
+ *
+ * State follows the replay rules: a step's first terminal event
+ * (`step_completed` / `step_failed`) settles it and every later event for the
+ * same step is inert. The name comes from the first event that carries one
+ * (`step_created`, or a spec 9 inline step's creation-bearing `step_started`).
+ * Event metadata only (`resolveData: 'none'`), which keeps `stepName`.
  */
+async function stepsFromEvents(runId: string): Promise<StepStateFromEvents[]> {
+  const world = await getWorld();
+  const events = await allPages((cursor) =>
+    world.events.list({
+      runId,
+      resolveData: 'none',
+      pagination: { limit: 100, cursor, sortOrder: 'asc' },
+    })
+  );
+  const steps = new Map<string, StepStateFromEvents>();
+  for (const event of events) {
+    if (!event.eventType.startsWith('step_')) continue;
+    const stepId = (event as { correlationId?: string }).correlationId;
+    if (!stepId) continue;
+    let step = steps.get(stepId);
+    if (!step) {
+      step = { stepId, stepName: '', status: 'pending' };
+      steps.set(stepId, step);
+    }
+    const stepName = (event as { eventData?: { stepName?: unknown } }).eventData
+      ?.stepName;
+    if (!step.stepName && typeof stepName === 'string') {
+      step.stepName = stepName;
+    }
+    if (step.status === 'completed' || step.status === 'failed') continue;
+    switch (event.eventType) {
+      case 'step_started':
+        step.status = 'running';
+        break;
+      case 'step_retrying':
+        step.status = 'pending';
+        break;
+      case 'step_completed':
+        step.status = 'completed';
+        break;
+      case 'step_failed':
+        step.status = 'failed';
+        break;
+    }
+  }
+  return [...steps.values()];
+}
+
+const RATE_LIMIT_SKIP =
+  'this lane does not create spec 10 runs, which experimental_rateLimit() needs';
+
+/**
+ * Whether the runs this lane creates can call `experimental_rateLimit()`:
+ * the runner's World stamps them, and it mints spec 10 only when it declares
+ * the in-band fence and rate limits and `WORKFLOW_SPEC_VERSION` allows it.
+ */
+async function runsSupportRateLimits(): Promise<boolean> {
+  const world = await getWorld();
+  return (
+    (world.specVersion ?? 0) >= SPEC_VERSION_RATE_LIMITS &&
+    world.capabilities?.rateLimits === true
+  );
+}
+
+/**
+ * A rate limit key no other test, lane or CI run uses. A key's rate is
+ * shared by every run of the project and environment, and the Vercel lanes
+ * of concurrent CI runs share both.
+ */
+function rateLimitKey(label: string): string {
+  return `e2e:${label}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+type RateLimitCallFromEvents = {
+  correlationId: string;
+  key: string | undefined;
+  /** How the call settled, or `pending` while it waits for its slot. */
+  outcome: 'acquired' | 'failed' | 'pending';
+  /** Whether the call held a `rate_created`, so the run slept for its slot. */
+  waited: boolean;
+  /** The first reservation, before any late-wake re-reservation. */
+  initialSlotMs: number;
+  /** The slot the World gave (or, for a failed call, would have given). */
+  slotMs: number;
+  reason: string | undefined;
+};
+
+/**
+ * A run's `experimental_rateLimit()` calls, in the order the run made them,
+ * read from its event log: one call is one `rate_<ulid>` correlation id.
+ */
+async function rateLimitCallsOf(
+  runId: string
+): Promise<RateLimitCallFromEvents[]> {
+  const calls = new Map<string, RateLimitCallFromEvents>();
+  for (const event of await allEvents(runId)) {
+    if (!isRateEventType(event.eventType) || !event.correlationId) continue;
+    const data = (event as { eventData?: Record<string, unknown> }).eventData;
+    const call = calls.get(event.correlationId) ?? {
+      correlationId: event.correlationId,
+      key: undefined,
+      outcome: 'pending' as const,
+      waited: false,
+      initialSlotMs: Number.NaN,
+      slotMs: Number.NaN,
+      reason: undefined,
+    };
+    calls.set(event.correlationId, call);
+    if (typeof data?.key === 'string') call.key = data.key;
+    if (data?.acquireAt !== undefined) {
+      call.slotMs = new Date(data.acquireAt as string | Date).getTime();
+      if (Number.isNaN(call.initialSlotMs)) call.initialSlotMs = call.slotMs;
+    }
+    if (event.eventType === 'rate_created') call.waited = true;
+    if (event.eventType === 'rate_acquired') call.outcome = 'acquired';
+    if (event.eventType === 'rate_failed') {
+      call.outcome = 'failed';
+      call.reason = data?.reason as string | undefined;
+    }
+  }
+  // Correlation ids are `rate_<ulid>` from the run's deterministic ULID
+  // generator, so they sort in call order whatever order the events landed.
+  return [...calls.values()].sort((a, b) =>
+    a.correlationId < b.correlationId ? -1 : 1
+  );
+}
+
+/** Slots on one key, in any order, are at least `intervalMs` apart. */
+function expectSlotsSpaced(slots: number[], intervalMs: number) {
+  const sorted = [...slots].sort((a, b) => a - b);
+  for (const slot of sorted) expect(slot).not.toBeNaN();
+  for (let i = 1; i < sorted.length; i++) {
+    expect(sorted[i] - sorted[i - 1]).toBeGreaterThanOrEqual(intervalMs);
+  }
+}
+
+/** Every step of a run, from the World's step listing. */
 async function allSteps(runId: string) {
   const world = await getWorld();
   return allPages((cursor) =>
@@ -491,6 +639,26 @@ async function allSteps(runId: string) {
       pagination: { limit: 100, cursor },
     })
   );
+}
+
+/**
+ * The steps a test asserts on: the World's step listing, except on lanes
+ * that run at spec 9 or later (what the runner's World mints: spec 10 is the
+ * default on a World with the in-band fence and rate limits), where the listing on world-vercel can lag the
+ * event log (see `stepsFromEvents`) and the steps are read from the log
+ * instead. The spec 8 lanes keep checking that the listing reaches every
+ * step's final state.
+ */
+async function stepsOf(runId: string): Promise<StepStateFromEvents[]> {
+  return (await getWorld()).specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ? stepsFromEvents(runId)
+    : allSteps(runId).then((steps) =>
+        steps.map(({ stepId, stepName, status }) => ({
+          stepId,
+          stepName,
+          status: status as StepStateFromEvents['status'],
+        }))
+      );
 }
 
 /** The `hook_created` events of a parent's child-run completion hook. */
@@ -617,26 +785,27 @@ describe.concurrent('e2e', () => {
     }
   );
 
-  // Spec 9 is opt-in: the spec 9 lane sets `WORKFLOW_SPEC_VERSION=9` on its
-  // deployment and on this runner (a cross-deployment start stamps the lower
-  // of the two), and every other lane runs the default. Fails loudly when the
-  // setting stops reaching either side, which would otherwise leave the
-  // spec 9 lane silently testing spec 8.
+  // New runs are spec 10 on a World with the in-band fence and rate limits
+  // (local, Postgres, Vercel), spec 9 on one with only the fence, and spec 8
+  // on one without. The spec 8 lanes pin
+  // `WORKFLOW_SPEC_VERSION=8` on their deployment and on this runner (a
+  // cross-deployment start stamps the lower of the two). Fails loudly when
+  // the default or the setting stops reaching this runner, which would
+  // otherwise leave a lane silently testing another spec version.
   testJsOnly(
-    'stamps the spec version the lane opts in to',
+    'stamps the spec version the lane runs at',
     { timeout: 60_000 },
     async () => {
       const run = await start(await e2e('addTenWorkflow'), [123]);
       expect(await run.returnValue).toBe(133);
-      const row = await (await getWorld()).runs.get(run.runId);
-      if (
-        process.env.WORKFLOW_SPEC_VERSION?.trim() ===
-        String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
-      ) {
-        expect(row.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
-      } else {
-        expect(row.specVersion).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
-      }
+      const world = await getWorld();
+      const row = await world.runs.get(run.runId);
+      expect(row.specVersion).toBe(
+        mintedSpecVersion(process.env, {
+          inBandFence: world.capabilities?.inBandFence === true,
+          rateLimits: world.capabilities?.rateLimits === true,
+        })
+      );
     }
   );
 
@@ -1086,6 +1255,247 @@ describe.concurrent('e2e', () => {
     const returnValue = await run.returnValue;
     expect(returnValue.winner).toBe('step');
   });
+
+  // ---------------------------------------------------------------------
+  // experimental_rateLimit()
+  //
+  // Needs a spec 10 run, which a World that declares the in-band fence and
+  // rate limits (Vercel, Local, Postgres) creates by default. The spec 8
+  // lanes, and Worlds without rate limits, skip these and run the one test
+  // below them that pins what a call does there instead.
+  //
+  // The assertions read each call's slot from the run's own events
+  // (`acquireAt`, set by the World) rather than timing the run from outside:
+  // the World's slots are the contract, and they do not move with cold
+  // starts or queue latency. Wall-clock checks only ever assert a lower
+  // bound (no call got past before its slot), never an upper one.
+
+  test(
+    'experimental_rateLimit: calls on one key in a run are spaced period / limit apart',
+    { timeout: 120_000 },
+    async (ctx) => {
+      if (!(await runsSupportRateLimits())) return ctx.skip(RATE_LIMIT_SKIP);
+      const intervalMs = 4_000;
+      const key = rateLimitKey('sequential');
+      const run = await start(await e2e('rateLimitSequentialWorkflow'), [
+        key,
+        3,
+        { limit: 1, periodMs: intervalMs },
+      ]);
+      const { startedAt, passedAt } = await run.returnValue;
+      expect(passedAt).toHaveLength(3);
+
+      const calls = await rateLimitCallsOf(run.runId);
+      expect(calls).toHaveLength(3);
+      for (const call of calls) {
+        expect(call.key).toBe(key);
+        expect(call.outcome).toBe('acquired');
+      }
+      const slots = calls.map((call) => call.slotMs);
+      expectSlotsSpaced(slots, intervalMs);
+      // No call went ahead before its slot.
+      slots.forEach((slot, i) => {
+        expectElapsedAtLeast(passedAt[i] - slot, 0);
+      });
+      // Three calls at one per 4s take at least two intervals.
+      expectElapsedAtLeast(passedAt[2] - startedAt, 2 * intervalMs);
+    }
+  );
+
+  test(
+    'experimental_rateLimit: calls made at once in a run each get their own slot',
+    { timeout: 120_000 },
+    async (ctx) => {
+      if (!(await runsSupportRateLimits())) return ctx.skip(RATE_LIMIT_SKIP);
+      const intervalMs = 4_000;
+      const key = rateLimitKey('parallel');
+      const run = await start(await e2e('rateLimitParallelWorkflow'), [
+        key,
+        3,
+        { limit: 1, periodMs: intervalMs },
+      ]);
+      const { startedAt, passedAt } = await run.returnValue;
+      expect(passedAt).toHaveLength(3);
+
+      const calls = await rateLimitCallsOf(run.runId);
+      expect(calls).toHaveLength(3);
+      expect(calls.map((call) => call.outcome)).toEqual([
+        'acquired',
+        'acquired',
+        'acquired',
+      ]);
+      // The key was idle, so one call's slot was now and the World committed
+      // its `rate_acquired` in place of the request. The other two were
+      // given later slots and the run slept until each.
+      expect(calls.filter((call) => call.waited)).toHaveLength(2);
+      expectSlotsSpaced(
+        calls.map((call) => call.slotMs),
+        intervalMs
+      );
+      expectElapsedAtLeast(Math.max(...passedAt) - startedAt, 2 * intervalMs);
+    }
+  );
+
+  test(
+    'experimental_rateLimit: runs calling one key share its rate',
+    { timeout: 120_000 },
+    async (ctx) => {
+      if (!(await runsSupportRateLimits())) return ctx.skip(RATE_LIMIT_SKIP);
+      const intervalMs = 3_000;
+      const key = rateLimitKey('shared');
+      const workflow = await e2e('rateLimitSequentialWorkflow');
+      const runs = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          start(workflow, [key, 1, { limit: 1, periodMs: intervalMs }])
+        )
+      );
+      const results = await Promise.all(runs.map((run) => run.returnValue));
+      const calls = (
+        await Promise.all(runs.map((run) => rateLimitCallsOf(run.runId)))
+      ).flat();
+      expect(calls).toHaveLength(4);
+      for (const call of calls) {
+        expect(call.key).toBe(key);
+        expect(call.outcome).toBe('acquired');
+      }
+      // Four runs, one call each: were the rate per run, every slot would be
+      // "now". Shared, the four slots are an interval apart whatever order
+      // the World received the calls in.
+      expectSlotsSpaced(
+        calls.map((call) => call.slotMs),
+        intervalMs
+      );
+      const firstStart = Math.min(...results.map((r) => r.startedAt));
+      const lastPass = Math.max(...results.map((r) => r.passedAt[0]));
+      expectElapsedAtLeast(lastPass - firstStart, 3 * intervalMs);
+    }
+  );
+
+  test(
+    'experimental_rateLimit: burst lets an idle key admit that many calls at once',
+    { timeout: 120_000 },
+    async (ctx) => {
+      if (!(await runsSupportRateLimits())) return ctx.skip(RATE_LIMIT_SKIP);
+      const intervalMs = 6_000;
+      const key = rateLimitKey('burst');
+      const run = await start(await e2e('rateLimitParallelWorkflow'), [
+        key,
+        4,
+        { limit: 1, periodMs: intervalMs, burst: 3 },
+      ]);
+      const { startedAt, passedAt } = await run.returnValue;
+      expect(passedAt).toHaveLength(4);
+
+      const calls = await rateLimitCallsOf(run.runId);
+      expect(calls).toHaveLength(4);
+      for (const call of calls) expect(call.outcome).toBe('acquired');
+      // Three go at once on the idle key; the fourth waits for the first
+      // refill, one interval after the burst.
+      const waited = calls.filter((call) => call.waited);
+      expect(waited).toHaveLength(1);
+      const burstSlots = calls
+        .filter((call) => !call.waited)
+        .map((call) => call.slotMs);
+      expect(waited[0].slotMs - Math.min(...burstSlots)).toBeGreaterThanOrEqual(
+        intervalMs
+      );
+      // Check the initial reservation: a late wake may reserve it again.
+      expect(waited[0].initialSlotMs - Math.max(...burstSlots)).toBeLessThan(
+        2 * intervalMs
+      );
+      expectElapsedAtLeast(Math.max(...passedAt) - startedAt, intervalMs);
+    }
+  );
+
+  test(
+    'experimental_rateLimit: a call past its maxWait rejects with RateLimitMaxWaitError and reserves nothing',
+    { timeout: 120_000 },
+    async (ctx) => {
+      if (!(await runsSupportRateLimits())) return ctx.skip(RATE_LIMIT_SKIP);
+      const intervalMs = 10_000;
+      const key = rateLimitKey('max-wait');
+      const run = await start(await e2e('rateLimitMaxWaitWorkflow'), [
+        key,
+        { limit: 1, periodMs: intervalMs },
+        1_000,
+      ]);
+      const { firstPassedAt, rejected, thirdPassedAt } = await run.returnValue;
+      expect(rejected).toEqual({
+        isRateLimitMaxWaitError: true,
+        name: 'RateLimitMaxWaitError',
+        key,
+      });
+
+      const calls = await rateLimitCallsOf(run.runId);
+      expect(calls.map((call) => call.outcome)).toEqual([
+        'acquired',
+        'failed',
+        'acquired',
+      ]);
+      const [first, refused, third] = calls;
+      // The World committed `rate_failed` in place of the request: the call
+      // never held a `rate_created`.
+      expect(refused.waited).toBe(false);
+      expect(refused.reason).toBe('max_wait');
+      // The slot the refused call would have had is the third call's: had
+      // the refusal reserved it, the third would be a further interval out.
+      expect(third.slotMs - first.slotMs).toBeGreaterThanOrEqual(intervalMs);
+      expect(third.initialSlotMs - first.slotMs).toBeLessThan(2 * intervalMs);
+      expectElapsedAtLeast(thirdPassedAt - firstPassedAt, 0);
+      expectElapsedAtLeast(thirdPassedAt - third.slotMs, 0);
+    }
+  );
+
+  test(
+    'experimental_rateLimit: an uncaught RateLimitMaxWaitError fails the run',
+    { timeout: 120_000 },
+    async (ctx) => {
+      if (!(await runsSupportRateLimits())) return ctx.skip(RATE_LIMIT_SKIP);
+      const key = rateLimitKey('max-wait-uncaught');
+      const run = await start(await e2e('rateLimitMaxWaitUncaughtWorkflow'), [
+        key,
+        { limit: 1, periodMs: 60_000 },
+        1_000,
+      ]);
+      const error = await run.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunFailedError.is(error)).toBe(true);
+      assert(WorkflowRunFailedError.is(error));
+      assert(error.cause instanceof Error);
+      expect(error.cause.name).toBe('RateLimitMaxWaitError');
+      expect(error.cause.message).toContain(
+        `Rate limit "${key}" has no slot within the call's maxWait`
+      );
+
+      const calls = await rateLimitCallsOf(run.runId);
+      expect(calls.map((call) => call.outcome)).toEqual(['acquired', 'failed']);
+    }
+  );
+
+  // The other half of the gate above: on a lane whose runs are below the
+  // single orchestrator (the spec 8 lanes, and Worlds without the in-band
+  // fence), a call fails the run and says which version it needs.
+  test(
+    'experimental_rateLimit: fails a run created below spec 10',
+    { timeout: 60_000 },
+    async (ctx) => {
+      if ((await getWorld()).specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        return ctx.skip('this lane creates single-orchestrator runs');
+      }
+      const run = await start(await e2e('rateLimitSequentialWorkflow'), [
+        rateLimitKey('below-spec-10'),
+        1,
+        { limit: 1, periodMs: 1_000 },
+      ]);
+      const error = await run.returnValue.catch((e: unknown) => e);
+      expect(WorkflowRunFailedError.is(error)).toBe(true);
+      assert(WorkflowRunFailedError.is(error));
+      expect(String((error.cause as Error | undefined)?.message)).toContain(
+        `experimental_rateLimit() needs a run at spec version ${SPEC_VERSION_RATE_LIMITS} or later`
+      );
+      // Nothing was recorded for the call.
+      expect(await rateLimitCallsOf(run.runId)).toEqual([]);
+    }
+  );
 
   // vercel/workflow#4457. Early advance is implemented by the Node.js VM
   // engine's inline loop only, and needs
@@ -1979,7 +2389,7 @@ describe.concurrent('e2e', () => {
 
           // … and the step itself is recorded as failed.
           const steps = await readUntil(
-            () => allSteps(run.runId),
+            () => stepsOf(run.runId),
             (steps) =>
               steps.some(
                 (s) =>
@@ -2110,7 +2520,7 @@ describe.concurrent('e2e', () => {
 
           // Verify the step itself failed
           const steps = await readUntil(
-            () => allSteps(run.runId),
+            () => stepsOf(run.runId),
             (steps) =>
               steps.some(
                 (s) =>
@@ -4164,12 +4574,11 @@ describe.concurrent('e2e', () => {
       async (ctx) => {
         await skipUnlessForceClaimSupported(ctx);
         // The victim has to be a run below the force-claim spec version,
-        // executed by this deployment. The spec 9 lane skips it, since its
-        // point is the spec 9 runtime; the default lanes run it, and the
-        // refusal is also covered by the backend's tests.
+        // executed by this deployment. Lanes that run at spec 9 skip it,
+        // since their point is the spec 9 runtime; the spec 8 lanes run it,
+        // and the refusal is also covered by the backend's tests.
         if (
-          process.env.WORKFLOW_SPEC_VERSION?.trim() ===
-          String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+          (await getWorld()).specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
         ) {
           ctx.skip();
           return;
@@ -5037,7 +5446,7 @@ describe.concurrent('e2e', () => {
       // - 1 invokeAdderFromStep wrapper (which itself triggers another
       //   makeAdder arrow step inside it)
       const steps = await readUntil(
-        () => allSteps(run.runId),
+        () => stepsOf(run.runId),
         (steps) => {
           const byName = (needle: string) =>
             steps.filter((s) => s.stepName.includes(needle));
@@ -6629,10 +7038,13 @@ describe.concurrent('e2e', () => {
   // setAttributes
   // ==========================================================================
 
+  // These tests await `run.returnValue`, whose single wait call can block for
+  // up to 50s before it re-checks, so they use the suite's usual 60s budget:
+  // a 30s budget turns one missed completion wake into a timeout.
   describe('setAttributes', () => {
     test(
       'start: initial attributes are seeded on run creation',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesWorkflow'), [2], {
           attributes: { sourceAtStart: 'api' },
@@ -6650,7 +7062,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'start: reserved-prefix initial attributes are seeded with allowReservedAttributes',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesWorkflow'), [2], {
           attributes: { $seededByFramework: 'e2e', tenant: 't1' },
@@ -6673,7 +7085,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'setAttributesWorkflow: workflow-body calls append native attr_set events and merge correctly',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesWorkflow'), [7]);
         const output = await run.returnValue;
@@ -6698,7 +7110,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'setAttributesInsideStepWorkflow: step-body calls append attributed native events',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesInsideStepWorkflow'),
@@ -6728,7 +7140,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'fire-and-forget: void setAttributes lands without awaiting',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesFireAndForgetWorkflow'),
@@ -6746,7 +7158,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'Promise.all of disjoint-key writes: every key lands',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('setAttributesParallelWorkflow'), []);
         const output = await run.returnValue;
@@ -6763,7 +7175,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'workflow throws after awaited setAttributes: attribute still persists on the failed run',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesThrowsAfterWorkflow'),
@@ -6790,7 +7202,7 @@ describe.concurrent('e2e', () => {
 
     test(
       'validation DX: invalid writes throw catchable FatalErrors naming rule and limit',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const run = await start(
           await e2e('setAttributesValidationWorkflow'),
@@ -6933,22 +7345,78 @@ describe.concurrent('e2e', () => {
           });
 
           // Step payloads go with it, not just the run's own input/output.
-          const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId} --withData`,
-            (json) =>
-              Array.isArray(json) &&
-              json.length > 0 &&
-              json.every((step: any) => step.output === EXPIRED_DATA_JSON),
-            { timeoutMs: 60_000, intervalMs: 5_000 }
+          // The step listing renders a purged payload as "<data expired>".
+          // On a spec 9 run world-vercel builds that listing from the event
+          // log and, with payloads requested, can leave out a step it cannot
+          // settle from the log (see "Steps on world-vercel" in
+          // packages/core/src/runtime/spec9/README.md); CI saw an empty
+          // listing for a purged run for over 60s. A spec 9 run also passes
+          // when each of its `step_completed` events, read on its own, no
+          // longer carries its result: world-vercel drops a purged result
+          // from the event rather than marking it, while an unpurged one
+          // comes back in full.
+          const world = await getWorld();
+          const stepEvents = (
+            await allPages((cursor) =>
+              world.events.list({
+                runId: run.runId,
+                resolveData: 'none',
+                pagination: { limit: 100, cursor, sortOrder: 'asc' },
+              })
+            )
+          ).filter((event) => event.eventType.startsWith('step_'));
+          const completions = stepEvents.filter(
+            (event) => event.eventType === 'step_completed'
           );
-          expect(steps.length).toBeGreaterThan(0);
-          for (const step of steps) {
-            expect(step.output).toBe(EXPIRED_DATA_JSON);
+          expect(completions.length).toBeGreaterThan(0);
+          const singleOrchestrator = stepEvents.some(
+            (event) =>
+              (event.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+          );
+          const resultsPurged = async () => {
+            for (const completion of completions) {
+              const { json } = await cliInspectJson(
+                `event ${completion.eventId} --runId ${run.runId}`
+              );
+              const result = json?.eventData?.result;
+              if (result !== undefined && result !== EXPIRED_DATA_JSON) {
+                return false;
+              }
+            }
+            return true;
+          };
+          const purged = await readUntil(
+            async () => {
+              const { json: steps } = await cliInspectJson(
+                `steps --runId ${run.runId} --withData`
+              );
+              const listed =
+                Array.isArray(steps) &&
+                steps.length > 0 &&
+                steps.every((step: any) => step.output === EXPIRED_DATA_JSON);
+              return {
+                steps,
+                listed,
+                logged:
+                  singleOrchestrator && !listed && (await resultsPurged()),
+              };
+            },
+            ({ listed, logged }) => listed || logged,
+            {
+              timeoutMs: 60_000,
+              intervalMs: 5_000,
+              attemptTimeoutMs: 120_000,
+            }
+          );
+          if (!purged.logged) {
+            expect(purged.steps.length).toBeGreaterThan(0);
+            for (const step of purged.steps) {
+              expect(step.output).toBe(EXPIRED_DATA_JSON);
+            }
           }
 
           // And the run carries the marker the CLI and web UI gate their
           // "<data expired>" rendering on: an `expiredAt` in the past.
-          const world = await getWorld();
           const persisted = await world.runs.get(run.runId);
           expect(persisted.expiredAt).toBeInstanceOf(Date);
           expect(persisted.expiredAt?.getTime()).toBeLessThanOrEqual(

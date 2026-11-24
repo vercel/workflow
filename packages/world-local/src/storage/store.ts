@@ -22,6 +22,9 @@ import type { Database } from '../db/index.js';
 /** Rows one batch of a capped `listEvents` page reads (see `maxBytes`). */
 const EVENT_READ_BATCH = 64;
 
+/** Pins correlation lookups to `events_by_correlation`: world-local collects no planner stats, so SQLite would scan the run by primary key. */
+export const EVENTS_BY_CORRELATION = 'events INDEXED BY events_by_correlation';
+
 export interface RunRow {
   run: WorkflowRun;
   tag: string | null;
@@ -74,6 +77,16 @@ export class Store {
       seq: Number(row.seq),
       seqInBand: Number(row.seq_in_band),
     };
+  }
+
+  /** A run's status alone, without decoding its document. */
+  getRunStatus(runId: string): WorkflowRun['status'] | null {
+    const row = this.db.get<{ status: WorkflowRun['status'] }>(
+      `SELECT status FROM runs WHERE run_id = ? AND ${tagClause('tag', this.tag)}`,
+      runId,
+      ...tagParams(this.tag)
+    );
+    return row?.status ?? null;
   }
 
   /** A run regardless of tag: the owner of a hook token can be any run. */
@@ -187,7 +200,8 @@ export class Store {
     eventType: string
   ): Event | null {
     const row = this.db.get<{ doc: string }>(
-      `SELECT doc FROM events WHERE run_id = ? AND correlation_id = ? AND event_type = ?
+      `SELECT doc FROM ${EVENTS_BY_CORRELATION}
+       WHERE run_id = ? AND correlation_id = ? AND event_type = ?
        ORDER BY seq LIMIT 1`,
       runId,
       correlationId,
@@ -220,6 +234,8 @@ export class Store {
     const sortOrder = options.sortOrder ?? 'asc';
     const limit = Math.max(1, options.limit ?? 20);
     const after = parseEventCursor(options.cursor);
+    const source =
+      options.correlationId === undefined ? 'events' : EVENTS_BY_CORRELATION;
     const query = (from: number | null, take: number) => {
       const clauses = ['run_id = ?'];
       const params: unknown[] = [runId];
@@ -232,7 +248,7 @@ export class Store {
         params.push(from);
       }
       return this.db.all<{ seq: number; doc: string }>(
-        `SELECT seq, doc FROM events WHERE ${clauses.join(' AND ')}
+        `SELECT seq, doc FROM ${source} WHERE ${clauses.join(' AND ')}
          ORDER BY seq ${sortOrder === 'asc' ? 'ASC' : 'DESC'} LIMIT ?`,
         ...params,
         take
@@ -295,6 +311,7 @@ export class Store {
       .map((row) => decode<Event>(row.doc));
   }
 
+  // A caller that rewrites a live run's events makes the usage cache stale (see usage-storage.ts).
   rewriteEvent(event: Event): void {
     const seq = eventIdToSlot(event.eventId);
     if (seq === null) return;
@@ -362,6 +379,46 @@ export class Store {
       encode(wait),
       wait.runId,
       correlationId
+    );
+  }
+
+  // --------------------------------------------------------- rate limits
+
+  /** Whether `correlationId` has an event in `runId`'s log after `seq`. */
+  hasCorrelationEventAfter(
+    runId: string,
+    correlationId: string,
+    seq: number
+  ): boolean {
+    return (
+      this.db.get<{ seq: number }>(
+        `SELECT seq FROM ${EVENTS_BY_CORRELATION}
+         WHERE run_id = ? AND correlation_id = ? AND seq > ?
+         LIMIT 1`,
+        runId,
+        correlationId,
+        seq
+      ) !== undefined
+    );
+  }
+
+  /** A rate limit key's next free slot (epoch µs), or undefined if idle. */
+  getRateTat(key: string): number | undefined {
+    const row = this.db.get<{ tat_us: number }>(
+      'SELECT tat_us FROM rate_limits WHERE tag = ? AND key = ?',
+      this.tag ?? '',
+      key
+    );
+    return row?.tat_us;
+  }
+
+  setRateTat(key: string, tatUs: number): void {
+    this.db.run(
+      `INSERT INTO rate_limits (tag, key, tat_us) VALUES (?, ?, ?)
+       ON CONFLICT (tag, key) DO UPDATE SET tat_us = excluded.tat_us`,
+      this.tag ?? '',
+      key,
+      tatUs
     );
   }
 

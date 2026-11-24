@@ -1,5 +1,42 @@
 # @workflow/vite
 
+## 5.0.15
+
+### Patch Changes
+
+- [#5676](https://github.com/vercel/workflow/pull/5676) [`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump dev dependency `vite` to patched releases (7.3.8, 8.3.8) to pick up a security fix.
+- Updated dependencies []:
+  - @workflow/builders@5.1.6
+
+## 5.0.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.5
+
+## 5.0.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.4
+
+## 5.0.12
+
+### Patch Changes
+
+- Updated dependencies [[`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc)]:
+  - @workflow/builders@5.1.3
+
+## 5.0.11
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f)]:
+  - @workflow/builders@5.1.2
+
 ## 5.0.10
 
 ### Patch Changes
