@@ -211,7 +211,7 @@ Unlike an in-process restart, which re-reads immediately, a re-invocation only h
 | [`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms) | derived from the runtime deadline (`120000`-`600000` ms) | Wall-clock guard for the inline replay loop |
 | [`WORKFLOW_MAX_INLINE_STEPS`](#workflow_max_inline_steps) | `3` | New steps one invocation runs inline in parallel |
 | [`WORKFLOW_TURBO`](#workflow_turbo) | enabled | Fast path for a run's first delivery |
-| [`WORKFLOW_OPTIMISTIC_INLINE_START`](#workflow_optimistic_inline_start) | disabled on spec 8 | Starts inline step bodies before `step_started` is confirmed; on spec 9 and 10, `0` only turns it off |
+| [`WORKFLOW_OPTIMISTIC_INLINE_START`](#workflow_optimistic_inline_start) | disabled on spec 8 | Starts inline step bodies before `step_started` is confirmed; on spec 9 and 10, only `0` has an effect |
 | [`WORKFLOW_RETAINED_VM`](#workflow_retained_vm) | enabled | Keeps the Node.js workflow VM alive across inline steps |
 | [`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`](#workflow_inline_ownership_lease_seconds) | `860` s | How long an inline step's owner is assumed to still be running it |
 
