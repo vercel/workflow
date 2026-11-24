@@ -5,12 +5,13 @@ import { beginNormalWsClose } from './ws-stream-connect.js';
 
 /**
  * How long a released stream socket stays available to the next writer of the
- * same run and stream in this process. Each open socket holds a server
+ * same run and stream in this process. Each open socket holds a backend
  * connection, so the window only needs to span the gap between consecutive
- * steps that write to one stream (an agent's model step and the step after it),
- * not a suspension.
+ * steps that write to one stream (an agent's model step and the step after it).
+ * A parked socket also holds its invocation open through `waitUntil` until it
+ * is taken or retired, so the window bounds that too.
  */
-export const STREAM_WS_IDLE_REUSE_MS = 5_000;
+export const STREAM_WS_IDLE_REUSE_MS = 2_000;
 
 /** An open, authenticated v1 stream socket that no writer currently owns. */
 export interface IdleStreamSocket {
@@ -28,6 +29,8 @@ interface IdleEntry extends IdleStreamSocket {
   parkedAt: number;
   timer: ReturnType<typeof setTimeout>;
   detach: () => void;
+  /** Ends the `waitUntil` hold on the invocation that parked the socket. */
+  settle: () => void;
 }
 
 /**
@@ -62,6 +65,22 @@ function retire(key: string, entry: IdleEntry, reason?: string): void {
   clearTimeout(entry.timer);
   entry.detach();
   if (reason) beginNormalWsClose(entry.ws, reason);
+  entry.settle();
+}
+
+/**
+ * Keeps the invocation that parked a socket alive until the socket is taken or
+ * retired. The backend has no idle timeout of its own, so a socket parked by an
+ * instance that is then suspended would hold its connection until the platform
+ * closes it for inactivity, minutes later. With the hold, the idle timer always
+ * fires in a live process.
+ */
+function holdInvocation(held: Promise<void>): void {
+  // Kept off the module-evaluation path, as in `beginNormalWsClose`. Outside
+  // a Vercel request context `waitUntil` is a no-op.
+  void import('@vercel/functions')
+    .then(({ waitUntil }) => waitUntil(held))
+    .catch(() => {});
 }
 
 /**
@@ -84,6 +103,10 @@ export function parkIdleStreamSocket(
   if (previous) retire(key, previous, 'replaced by a newer idle stream socket');
   const onMessage = () => retire(key, entry, 'stream socket idle message');
   const onEnded = () => retire(key, entry);
+  let settle = () => {};
+  const held = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
   const entry: IdleEntry = {
     ...socket,
     parkedAt: Date.now(),
@@ -96,12 +119,14 @@ export function parkIdleStreamSocket(
       ws.off('close', onEnded);
       ws.off('error', onEnded);
     },
+    settle: () => settle(),
   };
   entry.timer.unref?.();
   ws.on('message', onMessage);
   ws.on('close', onEnded);
   ws.on('error', onEnded);
   poolState.idle.set(key, entry);
+  holdInvocation(held);
 }
 
 /**

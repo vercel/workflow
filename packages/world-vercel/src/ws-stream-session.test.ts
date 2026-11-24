@@ -84,7 +84,12 @@ const { batchEndOverride } = vi.hoisted(() => ({
   },
 }));
 
+const { waitUntil } = vi.hoisted(() => ({
+  waitUntil: vi.fn((_promise: Promise<unknown>) => {}),
+}));
+
 vi.mock('@vercel/oidc', () => ({ getVercelOidcToken }));
+vi.mock('@vercel/functions', () => ({ waitUntil }));
 vi.mock('./stream-ws-protocol-v1.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('./stream-ws-protocol-v1.js')>();
@@ -151,6 +156,7 @@ beforeEach(() => {
   getVercelOidcToken.mockReset().mockResolvedValue(undefined);
   injectTraceContextIntoHeaders.mockClear();
   writeSpans.length = 0;
+  waitUntil.mockClear();
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
   delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
@@ -1765,6 +1771,8 @@ describe('v1 stream WebSocket reuse across writers', () => {
       'workflow.stream.ws.session_first_write': true,
       'workflow.stream.ws.connection_first_write': true,
       'workflow.stream.ws.connection_reused': true,
+      'workflow.stream.ws.writer_id': otherWriterId,
+      'workflow.stream.ws.connection_writer_id': writerId,
     });
 
     const closing = second.session.close();
@@ -1977,5 +1985,70 @@ describe('v1 stream WebSocket reuse across writers', () => {
     expect(second.closeHttp).toHaveBeenCalledTimes(1);
     expect(socket.sent).toHaveLength(1);
     expect(socket.closed).toContainEqual([1000, 'stream closed']);
+  });
+
+  it('keeps handing off a still-opening upgrade when released twice', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const first = makeSession(undefined, true);
+    await first.session.write(0, ['one']);
+    await first.session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await first.session.release?.();
+    await first.session.release?.();
+    expect(sockets[0].closed).toHaveLength(0);
+    sockets[0].open();
+    expect(sockets[0].closed).toHaveLength(0);
+
+    const second = makeSession(undefined, true, { id: otherWriterId });
+    const writing = second.session.write(0, ['three']);
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    ack(sockets[0], 1);
+    await writing;
+    expect(second.writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('does not open a socket for the pool when it already holds one for the stream', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const late = makeSession(undefined, true, { id: otherWriterId });
+    await late.session.write(0, ['one']);
+    // Hold the late writer's connect at token resolution, before any socket.
+    let resolveToken: ((token: undefined) => void) | undefined;
+    getVercelOidcToken.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          resolveToken = resolve;
+        })
+    );
+    await late.session.write(1, ['two']);
+    await vi.waitFor(() => expect(resolveToken).toBeDefined());
+    await late.session.release?.();
+
+    const { socket } = await releasedWriter();
+    resolveToken?.(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The late writer abandoned its upgrade instead of replacing the idle one.
+    expect(sockets).toEqual([socket]);
+    expect(socket.closed).toHaveLength(0);
+  });
+
+  it('holds the invocation open while a socket is parked', async () => {
+    const settled = new Set<Promise<unknown>>();
+    const track = () =>
+      waitUntil.mock.calls.map(([promise]) => {
+        void promise.then(() => settled.add(promise));
+        return promise;
+      });
+    await releasedWriter();
+    await vi.waitFor(() => expect(waitUntil).toHaveBeenCalled());
+    const holds = track();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const pending = holds.filter((promise) => !settled.has(promise));
+    expect(pending).toHaveLength(1);
+
+    const second = makeSession(undefined, true, { id: otherWriterId });
+    const writing = second.session.write(0, ['two']);
+    await vi.waitFor(() => expect(settled.has(pending[0])).toBe(true));
+    ack(sockets[0], 2);
+    await writing;
   });
 });

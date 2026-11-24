@@ -271,6 +271,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
    * socket goes to the idle pool for the next writer of this stream.
    */
   private parkOnOpen = false;
+  /**
+   * The `writerId` in the URL `socket` was opened with. It differs from this
+   * writer's own id on a socket taken from an earlier writer, and it is the id
+   * the backend attributes every request on that connection to.
+   */
+  private connectionWriterId: string | undefined;
 
   constructor(
     private readonly runId: string,
@@ -463,6 +469,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
   release(): Promise<void> {
     return this.enqueue(async () => {
       if (this.mode === 'closed' || this.mode === 'poisoned') return;
+      // Already released while its upgrade opens: keep the hand-off.
+      if (this.parkOnOpen) return;
       // A released handle remains usable over HTTP with the same sequence
       // space. It never reconnects; its socket goes to the next writer.
       if (this.mode === 'ws' && this.parkSocket()) return;
@@ -678,6 +686,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
     timing.openedAt = now();
     this.socket = idle.ws;
     this.wsUrl = idle.wsUrl;
+    this.connectionWriterId =
+      new URL(idle.wsUrl).searchParams.get('writerId') ?? undefined;
     this.lastAuthorization = idle.authorization;
     this.nextReqId = Math.max(this.nextReqId, idle.nextReqId);
     this.mode = 'ws';
@@ -800,15 +810,18 @@ class VercelStreamWriteSession implements StreamWriteSession {
       return;
     }
     if (!this.wantsSocket()) return;
+    const poolKey = streamSocketPoolKey(http.baseUrl, this.runId, this.name);
     if (!forceRefresh && this.mode === 'connecting') {
-      const idle = takeIdleStreamSocket(
-        streamSocketPoolKey(http.baseUrl, this.runId, this.name),
-        this.lastAuthorization
-      );
+      const idle = takeIdleStreamSocket(poolKey, this.lastAuthorization);
       if (idle) {
         this.adopt(idle, timing);
         return;
       }
+    }
+    if (this.parkOnOpen && hasIdleStreamSocket(poolKey)) {
+      // Released, and the next writer already has a socket to take.
+      this.parkOnOpen = false;
+      return;
     }
     const url = getStreamWsProtocolV1Url(
       http.baseUrl,
@@ -817,6 +830,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       this.writerId
     );
     this.wsUrl = url.toString();
+    this.connectionWriterId = this.writerId;
     await withHttpClientSpan(
       {
         method: 'GET',
@@ -1078,6 +1092,14 @@ class VercelStreamWriteSession implements StreamWriteSession {
         attributes: {
           'workflow.stream.transport': 'ws',
           'workflow.stream.ws.req_id': reqId,
+          'workflow.stream.ws.writer_id': this.writerId,
+          ...(this.connectionWriterId &&
+          this.connectionWriterId !== this.writerId
+            ? {
+                'workflow.stream.ws.connection_writer_id':
+                  this.connectionWriterId,
+              }
+            : {}),
           ...(writeMetadata
             ? {
                 'workflow.stream.ws.chunk_seq': writeMetadata.chunkSeq,
