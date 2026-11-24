@@ -1,6 +1,6 @@
 import { Button } from '@workflow/web-shared';
 import { Play } from 'lucide-react';
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import {
@@ -60,6 +60,7 @@ export function StartWorkflowButton({
   const [input, setInput] = useState(DEFAULT_INPUT);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const handleOpenChange = (next: boolean) => {
     if (starting) return;
@@ -79,16 +80,23 @@ export function StartWorkflowButton({
     setError(null);
     setStarting(true);
     try {
-      const newRunId = await startWorkflowRun(
+      const { runId, appReachable } = await startWorkflowRun(
         EMPTY_ENV,
         workflowId,
         parsed.args
       );
-      toast.success('New run started', {
-        description: `Run ID: ${newRunId}`,
-      });
+      if (appReachable) {
+        toast.success('New run started', { description: `Run ID: ${runId}` });
+      } else {
+        // The run is created, and this web UI's queue keeps retrying its
+        // first delivery for as long as it runs.
+        toast.warning("Run created, but your app didn't respond", {
+          description:
+            'It starts when the app is reachable, as long as this web UI keeps running.',
+        });
+      }
       setOpen(false);
-      navigate(`/run/${newRunId}`);
+      navigate(`/run/${runId}`);
     } catch (err) {
       toast.error('Failed to start run', {
         description: err instanceof Error ? err.message : 'Unknown error',
@@ -109,12 +117,19 @@ export function StartWorkflowButton({
         variant="secondary"
         size="small"
         prefix={<Play />}
+        aria-label={`Start ${workflowName}`}
         onClick={() => setOpen(true)}
       >
         Start
       </Button>
       <AlertDialog open={open} onOpenChange={handleOpenChange}>
-        <AlertDialogContent>
+        <AlertDialogContent
+          onOpenAutoFocus={(e) => {
+            // Focus the inputs, not the first button, so typing starts there.
+            e.preventDefault();
+            inputRef.current?.focus();
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>Start {workflowName}</AlertDialogTitle>
             <AlertDialogDescription>
@@ -129,6 +144,7 @@ export function StartWorkflowButton({
               Inputs
             </label>
             <textarea
+              ref={inputRef}
               id={inputId}
               value={input}
               onChange={(e) => {

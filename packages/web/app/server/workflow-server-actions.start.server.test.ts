@@ -36,8 +36,10 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@workflow/world-local')>();
   return {
     ...actual,
-    createWorld: vi.fn(() => {
-      dataDirsAtCreate.push(process.env.WORKFLOW_LOCAL_DATA_DIR);
+    // Records the data directory the web UI passes, not the environment:
+    // world-local memoizes its environment-derived config on first use.
+    createWorld: vi.fn((config?: { dataDir?: string }) => {
+      dataDirsAtCreate.push(config?.dataDir);
       return fakeWorld;
     }),
   };
@@ -72,7 +74,10 @@ describe('startWorkflowRun', () => {
       { qty: 2 },
     ]);
 
-    expect(result).toEqual({ success: true, data: 'wrun_new' });
+    expect(result).toEqual({
+      success: true,
+      data: { runId: 'wrun_new', appReachable: true },
+    });
     expect(healthCheck).toHaveBeenCalledWith(fakeWorld, {
       deploymentId: 'dpl_local',
       timeout: 10_000,
@@ -86,13 +91,16 @@ describe('startWorkflowRun', () => {
     );
   });
 
-  it('leaves the spec version to start() when the health check fails', async () => {
+  it('leaves the spec version to start() and reports the app unreachable when the health check fails', async () => {
     healthCheck.mockRejectedValue(new Error('timed out'));
     start.mockResolvedValue({ runId: 'wrun_new' });
 
     const result = await startWorkflowRun({}, 'wf', []);
 
-    expect(result).toEqual({ success: true, data: 'wrun_new' });
+    expect(result).toEqual({
+      success: true,
+      data: { runId: 'wrun_new', appReachable: false },
+    });
     expect(start).toHaveBeenCalledWith({ workflowId: 'wf' }, [], {
       deploymentId: 'dpl_local',
       specVersion: undefined,
@@ -115,6 +123,31 @@ describe('startWorkflowRun', () => {
       'only supported on the local backend'
     );
     expect(result.error.request?.params).toEqual({ workflowId: 'wf' });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it('reports the app unreachable when the health check says unhealthy', async () => {
+    healthCheck.mockResolvedValue({ healthy: false });
+    start.mockResolvedValue({ runId: 'wrun_new' });
+
+    const result = await startWorkflowRun({}, 'wf', []);
+
+    expect(result).toEqual({
+      success: true,
+      data: { runId: 'wrun_new', appReachable: false },
+    });
+  });
+
+  it.each([
+    ['an empty', ''],
+    ['a blank', '   '],
+    ['a non-string', 42 as unknown as string],
+  ])('refuses %s workflow ID without starting a run', async (_, workflowId) => {
+    const result = await startWorkflowRun({}, workflowId, []);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.message).toContain('A workflow ID is required');
     expect(start).not.toHaveBeenCalled();
   });
 
@@ -180,7 +213,10 @@ describe('startWorkflowRun', () => {
 
       const result = await startWorkflowRun({}, 'wf', []);
 
-      expect(result).toEqual({ success: true, data: 'wrun_new' });
+      expect(result).toEqual({
+        success: true,
+        data: { runId: 'wrun_new', appReachable: true },
+      });
       expect(dataDirsAtCreate.at(-1)).toBe(appDataDir);
       expect(process.env.WORKFLOW_LOCAL_DATA_DIR).toBe(appDataDir);
     });
@@ -191,7 +227,10 @@ describe('startWorkflowRun', () => {
 
       const result = await startWorkflowRun({}, 'wf', []);
 
-      expect(result).toEqual({ success: true, data: 'wrun_new' });
+      expect(result).toEqual({
+        success: true,
+        data: { runId: 'wrun_new', appReachable: true },
+      });
       expect(dataDirsAtCreate.at(-1)).toBe(userDir);
     });
   });

@@ -30,7 +30,11 @@ import type {
 } from '@workflow/world';
 import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { createWorld as createVercelBackendWorld } from '@workflow/world-vercel';
-import type { HookListItem, HookTokenResult } from '~/lib/types';
+import type {
+  HookListItem,
+  HookTokenResult,
+  StartWorkflowRunResult,
+} from '~/lib/types';
 
 /**
  * Environment variable map for world configuration.
@@ -141,14 +145,44 @@ async function ensureLocalWorldDataDirEnv(): Promise<void> {
 
   // Prefer a discovered workflow-data directory (e.g. `.next/workflow-data`).
   if (info.dataDir) {
+    const leftFallback = fallbackLocalDataDir;
     process.env.WORKFLOW_LOCAL_DATA_DIR = info.dataDir;
     fallbackLocalDataDir = undefined;
+    if (leftFallback) await closeCachedWorldsOn(leftFallback);
     return;
   }
 
   // Fall back to a canonical location under the target project directory.
   fallbackLocalDataDir = path.resolve(cwd, '.workflow-data');
   process.env.WORKFLOW_LOCAL_DATA_DIR = fallbackLocalDataDir;
+}
+
+/**
+ * Close and forget the cached Worlds on `dataDir`, so a World left behind on
+ * the fallback does not keep its queue and database open next to the one on
+ * the app's directory.
+ */
+async function closeCachedWorldsOn(dataDir: string): Promise<void> {
+  const stale: World[] = [];
+  for (const [key, world] of worldCache) {
+    let env: Record<string, string | undefined>;
+    try {
+      env = JSON.parse(key);
+    } catch {
+      continue;
+    }
+    if (env.WORKFLOW_LOCAL_DATA_DIR === dataDir) {
+      worldCache.delete(key);
+      stale.push(world);
+    }
+  }
+  await Promise.all(
+    stale.map((world) =>
+      world.close?.().catch((error) => {
+        console.error('[web-api] closing the fallback World failed:', error);
+      })
+    )
+  );
 }
 
 /** Whether the Local World would use the fallback, not a real data directory. */
@@ -517,7 +551,14 @@ async function createWorldForBackend(backendId: string): Promise<World> {
     // Read the key the running app wrote to its data directory, never
     // replace it: the web UI acts on that app (cancel, recreate, re-enqueue,
     // wake-up), and a new key would be one the app's routes do not hold.
-    return createLocalWorld({ queueAuthKey: 'read' });
+    // Pass the data directory explicitly: world-local memoizes the one it
+    // reads from the environment on first use, so a World created after
+    // ensureLocalWorldDataDirEnv() moves off the fallback would otherwise
+    // still use the fallback. Unset means world-local's own default.
+    return createLocalWorld({
+      dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
+      queueAuthKey: 'read',
+    });
   }
 
   const cwd = getObservabilityCwd();
@@ -1089,13 +1130,16 @@ export async function startWorkflowRun(
   worldEnv: EnvMap,
   workflowId: string,
   args: unknown[]
-): Promise<ServerActionResult<string>> {
+): Promise<ServerActionResult<StartWorkflowRunResult>> {
   try {
     const backendId = getEffectiveBackendId();
     if (backendId !== 'local' && backendId !== '@workflow/world-local') {
       throw new Error(
         `Starting a workflow from the web UI is only supported on the local backend (current backend: ${backendId}).`
       );
+    }
+    if (typeof workflowId !== 'string' || workflowId.trim() === '') {
+      throw new Error('A workflow ID is required to start a run.');
     }
     if (!Array.isArray(args)) {
       throw new Error('Workflow arguments must be an array.');
@@ -1119,10 +1163,13 @@ export async function startWorkflowRun(
       : await world.getDeploymentId();
 
     // Probe the deployment's spec version, as the CLI does. If the health
-    // check fails, leave it unset and let `start()` decide.
+    // check fails, leave it unset and let `start()` decide, and tell the
+    // caller the app did not answer: the run is created either way.
     let specVersion: number | undefined;
+    let appReachable = false;
     try {
       const hc = await healthCheck(world, { deploymentId, timeout: 10_000 });
+      appReachable = hc.healthy;
       if (
         hc.healthy &&
         typeof hc.specVersion === 'number' &&
@@ -1140,11 +1187,13 @@ export async function startWorkflowRun(
       specVersion,
       world,
     });
-    return createResponse(run.runId);
+    return createResponse({ runId: run.runId, appReachable });
   } catch (error) {
-    return createServerActionError<string>(error, 'startWorkflowRun', {
-      workflowId,
-    });
+    return createServerActionError<StartWorkflowRunResult>(
+      error,
+      'startWorkflowRun',
+      { workflowId }
+    );
   }
 }
 

@@ -46,7 +46,10 @@ describe("the web UI's Local World", () => {
       // Fails (no such run), after creating the World.
       await reenqueueRun({}, 'wrun_01M6MV000000000000000000000');
 
-      expect(createWorld).toHaveBeenCalledWith({ queueAuthKey: 'read' });
+      expect(createWorld).toHaveBeenCalledWith({
+        dataDir: path.join(base, '.workflow-data'),
+        queueAuthKey: 'read',
+      });
       expect(existsSync(path.join(base, '.workflow-data'))).toBe(false);
     }
   );

@@ -13,7 +13,7 @@ import { WorkflowsList } from './workflows-list';
 const { navigate, startWorkflowRun, toast } = vi.hoisted(() => ({
   navigate: vi.fn(),
   startWorkflowRun: vi.fn(),
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
 vi.mock('react-router', async (importOriginal) => {
@@ -60,7 +60,9 @@ afterEach(cleanup);
 function openStartDialog(workflowName: string) {
   const row = screen.getByText(workflowName).closest('tr');
   if (!row) throw new Error(`no row for ${workflowName}`);
-  fireEvent.click(within(row).getByRole('button', { name: 'Start' }));
+  fireEvent.click(
+    within(row).getByRole('button', { name: `Start ${workflowName}` })
+  );
   return screen.getByRole('alertdialog');
 }
 
@@ -78,7 +80,9 @@ describe('WorkflowsList Start button', () => {
       const row = screen.getByText(name).closest('tr');
       expect(row).not.toBeNull();
       expect(
-        within(row as HTMLElement).getByRole('button', { name: 'Start' })
+        within(row as HTMLElement).getByRole('button', {
+          name: `Start ${name}`,
+        })
       ).toBeTruthy();
     }
   });
@@ -118,7 +122,10 @@ describe('WorkflowsList Start button', () => {
   });
 
   it('starts the run and navigates to it', async () => {
-    startWorkflowRun.mockResolvedValue('wrun_new');
+    startWorkflowRun.mockResolvedValue({
+      runId: 'wrun_new',
+      appReachable: true,
+    });
     render(<WorkflowsList />);
     const dialog = openStartDialog('processOrder');
     submit(dialog, '["order_123"]');
@@ -132,6 +139,33 @@ describe('WorkflowsList Start button', () => {
     expect(toast.success).toHaveBeenCalledWith('New run started', {
       description: 'Run ID: wrun_new',
     });
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("warns, and still opens the run, when the app didn't answer", async () => {
+    startWorkflowRun.mockResolvedValue({
+      runId: 'wrun_new',
+      appReachable: false,
+    });
+    render(<WorkflowsList />);
+    submit(openStartDialog('processOrder'), '[]');
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/run/wrun_new'));
+    expect(toast.warning).toHaveBeenCalledWith(
+      "Run created, but your app didn't respond",
+      expect.objectContaining({
+        description: expect.stringContaining('when the app is reachable'),
+      })
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('puts the cursor in the inputs when the dialog opens', () => {
+    render(<WorkflowsList />);
+    const dialog = openStartDialog('processOrder');
+    expect(document.activeElement).toBe(
+      within(dialog).getByLabelText('Inputs')
+    );
   });
 
   it('shows the server error in a toast and stays on the page', async () => {
@@ -150,9 +184,10 @@ describe('WorkflowsList Start button', () => {
   });
 
   it('shows Starting... and disables the button while the start is in flight', async () => {
-    let resolve: (runId: string) => void = () => {};
+    let resolve: (result: { runId: string; appReachable: boolean }) => void =
+      () => {};
     startWorkflowRun.mockReturnValue(
-      new Promise<string>((r) => {
+      new Promise((r) => {
         resolve = r;
       })
     );
@@ -164,7 +199,7 @@ describe('WorkflowsList Start button', () => {
       name: 'Starting...',
     });
     expect((button as HTMLButtonElement).disabled).toBe(true);
-    resolve('wrun_new');
+    resolve({ runId: 'wrun_new', appReachable: true });
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/run/wrun_new'));
   });
 
@@ -172,7 +207,9 @@ describe('WorkflowsList Start button', () => {
     render(<WorkflowsList />);
     fireEvent.click(screen.getByText('sendMail'));
     const sheet = screen.getByRole('dialog');
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Start' }));
+    fireEvent.click(
+      within(sheet).getByRole('button', { name: 'Start sendMail' })
+    );
     expect(
       within(screen.getByRole('alertdialog')).getByText('Start sendMail')
     ).toBeTruthy();

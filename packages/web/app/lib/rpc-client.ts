@@ -25,6 +25,7 @@ import type {
   PaginatedResult,
   ResumeHookResult,
   ServerActionResult,
+  StartWorkflowRunResult,
   StopSleepOptions,
   StopSleepResult,
 } from '~/lib/types';
@@ -198,7 +199,7 @@ export async function startWorkflowRun(
   worldEnv: EnvMap,
   workflowId: string,
   args: unknown[]
-): Promise<ServerActionResult<string>> {
+): Promise<ServerActionResult<StartWorkflowRunResult>> {
   return rpc('startWorkflowRun', { worldEnv, workflowId, args });
 }
 

@@ -67,11 +67,13 @@ describe('startWorkflowRun on a real Local World', () => {
       expect(started.success).toBe(true);
       if (!started.success) return;
 
-      const fetched = await actions.fetchRun({}, started.data, 'none');
+      // No app answers the health check here.
+      expect(started.data.appReachable).toBe(false);
+      const fetched = await actions.fetchRun({}, started.data.runId, 'none');
       expect(fetched.success).toBe(true);
       if (!fetched.success) return;
       expect(fetched.data).toMatchObject({
-        runId: started.data,
+        runId: started.data.runId,
         workflowName: workflowId,
         status: 'pending',
       });

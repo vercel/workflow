@@ -12,6 +12,7 @@ import {
 import type {
   EnvMap,
   ResumeHookResult,
+  StartWorkflowRunResult,
   StopSleepOptions,
   StopSleepResult,
 } from '~/lib/types';
@@ -40,7 +41,7 @@ export async function startWorkflowRun(
   env: EnvMap,
   workflowId: string,
   args: unknown[]
-): Promise<string> {
+): Promise<StartWorkflowRunResult> {
   return unwrapOrThrow(startWorkflowRunServerAction(env, workflowId, args));
 }
 
