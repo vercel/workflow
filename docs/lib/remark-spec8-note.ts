@@ -6,12 +6,12 @@
  * behaves differently, a page says so with:
  *
  *   <Spec8Note>
- *   this setting is not read.
+ *   the runtime ignores this setting.
  *   </Spec8Note>
  *
- * which renders as a callout reading "For runs started before v5.8.0, on
- * third-party Worlds without spec version 9 support, or with
- * `WORKFLOW_SPEC_VERSION=8`, this setting is not read." The children continue
+ * which renders as a callout reading "For runs started before v5.8.0, on Worlds
+ * without spec version 9, or with `WORKFLOW_SPEC_VERSION=8`, the runtime
+ * ignores this setting." The children continue
  * the lead's sentence, so start them in lowercase.
  *
  * This runs in the remark stage rather than as a React component so the
@@ -41,14 +41,14 @@ function lead(trailing: string): Node[] {
   return [
     {
       type: 'text',
-      value: 'For runs started before v5.8.0, on third-party Worlds without ',
+      value: 'For runs started before v5.8.0, on Worlds without ',
     },
     {
       type: 'link',
       url: SPEC8_NOTE_WORLD_SUPPORT_URL,
       children: [{ type: 'text', value: 'spec version 9' }],
     },
-    { type: 'text', value: ' support, or with ' },
+    { type: 'text', value: ', or with ' },
     {
       type: 'link',
       url: SPEC8_NOTE_SPEC_VERSION_URL,

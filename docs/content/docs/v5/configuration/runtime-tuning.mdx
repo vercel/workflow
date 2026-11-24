@@ -65,7 +65,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_MAX_QUEUE_DELIVERIES`
 
 - Default: `48`
-- Delivery attempts of a run's orchestrator messages before the run is failed gracefully. A delivery the [in-band fence](/docs/api-reference/workflow-errors/in-band-superseded-error) refuses counts, so a run whose every write is refused fails instead of looping.
+- Delivery attempts of a run's [orchestrator](#orchestrator) messages before the run is failed gracefully. A delivery the [in-band fence](/docs/api-reference/workflow-errors/in-band-superseded-error) refuses counts, so a run whose every write is refused fails instead of looping.
 - A step's queue message retries in place and is bounded by the step's `maxRetries` instead. Past this cap, a step that shows no activity for an hour (every delivery fails before the step starts, for example because its input cannot be read) fails with a catchable `FatalError` naming `MAX_DELIVERIES_EXCEEDED`.
 - Can only be lowered. Workflow calibrates the default to record failure before the queue expires the message.
 
@@ -137,10 +137,10 @@ every queue delivery replays the run and writes its own decisions, and a World *
 Two runtime behaviors follow from the properties above rather than from any fence. The per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) stays active while the run has an open hook: a `hook_received` event missed by the delta window is observed one iteration later, and the next write brings it back. While a hook is open, inline steps take the await-then-run path even when optimistic inline start is enabled. Several invocations race for one step's claim there, and awaiting it means the body runs only for the writer that won.
 </Spec8Note>
 
-The three settings below have no effect on runs that use the in-band fence.
+The `WORKFLOW_PRECONDITION_*` settings below have no effect on runs that use the in-band fence.
 
 <Spec8Note>
-the runtime reads them when a World refuses a stale write.
+the runtime reads the `WORKFLOW_PRECONDITION_*` settings when a World refuses a stale write.
 </Spec8Note>
 
 ### `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`
@@ -179,7 +179,7 @@ the runtime reads them when a World refuses a stale write.
 - A step runs inline at most once: its retry runs from its own queue message.
 
 <Spec8Note>
-the clamp is `1` to `16` and `0` is read as unset. Steps started beside an awaited hook registration count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
+the clamp is `1` to `16`, and the runtime treats `0` as unset. Steps started beside an awaited hook registration count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
 </Spec8Note>
 
 ### `WORKFLOW_TURBO`
@@ -198,7 +198,7 @@ the queue message's age is not checked.
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
 
 - Default: unset
-- Inline step bodies start before their `step_started` event is confirmed only on a run's first delivery under `WORKFLOW_TURBO`, and while the orchestrator [runs ahead](#workflow_run_ahead_depth) of its writes. No other delivery is known to have no other writer.
+- Inline step bodies start before their `step_started` event is confirmed only on a run's first delivery under `WORKFLOW_TURBO`, and while the orchestrator [runs ahead](#workflow_run_ahead_depth) of its writes. Those are the only cases where the runtime knows no other writer can change the run.
 - Set `0` or `false` to make those bodies wait for their start to commit, and to override [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start). No other value has an effect.
 
 <Spec8Note>
@@ -212,7 +212,7 @@ the queue message's age is not checked.
 - Steps with `maxRetries: 0` and redeliveries always wait for their start to commit.
 
 <Spec8Note>
-this setting is not read.
+the runtime ignores this setting.
 </Spec8Note>
 
 ### `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`
@@ -221,18 +221,19 @@ this setting is not read.
 - How long before the inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms)) ends the orchestrator stops starting inline steps. Steps created inside the margin are queued.
 
 <Spec8Note>
-this setting is not read.
+the runtime ignores this setting.
 </Spec8Note>
 
 ### `WORKFLOW_RUN_AHEAD_DEPTH`
 
 - Default: `10`
 - Clamp: `0` to `16`
-- Node.js VM engine only. When no other writer could change what the workflow does next (no awaited hook, no `AbortController`, no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits. This sets how many inline step outcomes may be unconfirmed at once. Writes still land in order.
+- Maximum number of inline step outcomes that may be unconfirmed at once while the orchestrator runs ahead of its writes. Node.js VM engine only.
+- When no other writer could change what the workflow does next (no awaited hook, no `AbortController`, no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits. Writes still land in order.
 - `0` disables run-ahead.
 
 <Spec8Note>
-the orchestrator never runs ahead of its writes, and this setting is not read.
+the orchestrator never runs ahead of its writes, and the runtime ignores this setting.
 </Spec8Note>
 
 ### `WORKFLOW_RETAINED_VM`
@@ -251,7 +252,7 @@ the orchestrator never runs ahead of its writes, and this setting is not read.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
 
 <Spec8Note>
-only these runs read this setting. Other runs have no backstop messages: an inline step belongs to the orchestrator invocation that created it.
+the runtime reads this setting only for these runs. Runs that use the in-band fence have no backstop messages, because an inline step belongs to the orchestrator invocation that created it.
 </Spec8Note>
 
 ## Workflow VM engine
@@ -456,7 +457,7 @@ These variables are primarily for tests, debugging, or unusual deployments.
 One orchestrator invocation at a time drives each run: it replays the run, runs inline steps, and writes every decision. A background step's own invocation only runs its body and reports the outcome. These settings tune how the orchestrator picks up events that other writers commit, and how long it stays live waiting for them.
 
 <Spec8Note>
-none of the settings in this section are read: every queue delivery replays the run and writes its own decisions.
+the runtime ignores the settings in this section, because every queue delivery replays the run and writes its own decisions.
 </Spec8Note>
 
 ### `WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`
