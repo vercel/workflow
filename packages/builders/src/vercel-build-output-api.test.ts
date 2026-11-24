@@ -594,3 +594,113 @@ export async function orderWorkflow() {
     }
   );
 });
+
+describe('VercelBuildOutputAPIBuilder steps in packages discovery skips', () => {
+  // The workflow bundle compiles every step in a file the workflow imports,
+  // called or not. A package discovery does not read keeps its steps out of
+  // the steps bundle on purpose, so a workflow that uses only a helper from
+  // it must still build. These builds passed before the unregistered-step
+  // check, and failed with it before it told these steps apart.
+  let workingDir: string;
+
+  const writeHelperLib = async (packageJson: object) => {
+    const dir = join(workingDir, 'node_modules/helper-lib');
+    await write(join(dir, 'package.json'), JSON.stringify(packageJson));
+    await write(
+      join(dir, 'index.js'),
+      `export function format(n) {
+  return '#' + n;
+}
+
+export async function unusedStep() {
+  'use step';
+  return 'registered';
+}
+`
+    );
+  };
+
+  const buildAndCollectWarnings = async (
+    config: VercelBuildOutputConfig
+  ): Promise<string> => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await new VercelBuildOutputAPIBuilder(config).build();
+      return warnSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  };
+
+  beforeEach(async () => {
+    delete process.env[ALLOW_UNREGISTERED_STEPS_ENV];
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+    await writeWorkflowRuntimeStub(workingDir);
+    await write(
+      join(workingDir, 'src/workflows/order.ts'),
+      `import { format } from 'helper-lib';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+    );
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    'builds, with a warning, when the package does not depend on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+      });
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: its package does not depend on workflow/
+      );
+    }
+  );
+
+  it(
+    'builds, with a warning, when node_modules discovery is off',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+        dependencies: { workflow: '*' },
+      });
+      const warnings = await buildAndCollectWarnings({
+        ...createConfig(workingDir),
+        discoverWorkflowsInNodeModules: false,
+      });
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: node_modules discovery is off/
+      );
+    }
+  );
+
+  it(
+    'registers the step without a warning when the package depends on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+        dependencies: { workflow: '*' },
+      });
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).not.toContain('not registered');
+      expect(executeStep(workingDir, 'unusedStep')).toBe('registered');
+    }
+  );
+});

@@ -1824,6 +1824,9 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       assertWorkflowStepsAreRegistered({
         workflowsManifest: workflowsResult.manifest,
         stepsManifest,
+        workingDir: this.config.workingDir,
+        discoverWorkflowsInNodeModules:
+          this.resolveDiscoverWorkflowsInNodeModules(),
         warn: (message) => console.warn(chalk.yellow(message)),
       });
     } catch (error) {

@@ -246,7 +246,7 @@ function isGeneratedBuildArtifactPath(filePath: string): boolean {
   );
 }
 
-function isNodeModulesPath(filePath: string): boolean {
+export function isNodeModulesPath(filePath: string): boolean {
   const normalizedPath = normalizePath(filePath);
   return (
     normalizedPath.includes('/node_modules/') ||
@@ -287,6 +287,35 @@ function extractImportSpecifiers(source: string): string[] {
   }
 
   return Array.from(specifiers);
+}
+
+/**
+ * Whether a parsed `package.json` belongs to a package that discovery walks
+ * under `node_modules`: the SDK itself, or a package that lists `workflow` or
+ * an `@workflow/*` package among its dependencies of any kind. Discovery
+ * reads nothing else in such a package for steps or workflows.
+ *
+ * @param packageName - The name to use when the manifest has none.
+ */
+export function packageDeclaresWorkflow(
+  parsed: {
+    name?: unknown;
+    dependencies?: unknown;
+    peerDependencies?: unknown;
+    optionalDependencies?: unknown;
+    devDependencies?: unknown;
+  },
+  packageName = ''
+): boolean {
+  const name = typeof parsed.name === 'string' ? parsed.name : packageName;
+  return (
+    name === 'workflow' ||
+    name.startsWith('@workflow/') ||
+    hasWorkflowDependency(parsed.dependencies) ||
+    hasWorkflowDependency(parsed.peerDependencies) ||
+    hasWorkflowDependency(parsed.optionalDependencies) ||
+    hasWorkflowDependency(parsed.devDependencies)
+  );
 }
 
 function hasWorkflowDependency(dependencies: unknown): boolean {
@@ -471,16 +500,9 @@ async function findPackageInfo(
           optionalDependencies?: unknown;
           devDependencies?: unknown;
         };
-        const packageName = typeof parsed.name === 'string' ? parsed.name : '';
         return {
           root: normalizePath(currentDir),
-          hasWorkflowDependency:
-            packageName === 'workflow' ||
-            packageName.startsWith('@workflow/') ||
-            hasWorkflowDependency(parsed.dependencies) ||
-            hasWorkflowDependency(parsed.peerDependencies) ||
-            hasWorkflowDependency(parsed.optionalDependencies) ||
-            hasWorkflowDependency(parsed.devDependencies),
+          hasWorkflowDependency: packageDeclaresWorkflow(parsed),
         };
       })
       .catch(() => null);
@@ -733,17 +755,9 @@ export async function fastDiscoverEntries({
           optionalDependencies?: unknown;
           devDependencies?: unknown;
         };
-        const parsedPackageName =
-          typeof parsed.name === 'string' ? parsed.name : packageName;
         return {
           root: normalizePath(dirname(packageJsonPath)),
-          hasWorkflowDependency:
-            parsedPackageName === 'workflow' ||
-            parsedPackageName.startsWith('@workflow/') ||
-            hasWorkflowDependency(parsed.dependencies) ||
-            hasWorkflowDependency(parsed.peerDependencies) ||
-            hasWorkflowDependency(parsed.optionalDependencies) ||
-            hasWorkflowDependency(parsed.devDependencies),
+          hasWorkflowDependency: packageDeclaresWorkflow(parsed, packageName),
         };
       } catch {
         return null;
