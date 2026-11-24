@@ -42,7 +42,10 @@ export interface ModuleOptions {
    * process, with no separate server or port.
    *
    * - `true` / `false`: force the dashboard on or off.
-   * - `{ enabled, path }`: toggle and/or change the mount path.
+   * - `{ enabled, path, allowedHosts }`: toggle and/or change the mount path,
+   *   and list host names (besides `localhost`, `*.localhost` and IP
+   *   addresses) the dashboard accepts in the `Host` header. Defaults to
+   *   `WORKFLOW_WEB_ALLOWED_HOSTS`; `true` accepts any host.
    *
    * Defaults to **on in dev, off in production builds**. When disabled the
    * route is never registered, so production bundles carry no `@workflow/web`
@@ -51,7 +54,9 @@ export interface ModuleOptions {
    *
    * @default nitro.options.dev
    */
-  dashboard?: boolean | { enabled?: boolean; path?: string };
+  dashboard?:
+    | boolean
+    | { enabled?: boolean; path?: string; allowedHosts?: string[] | true };
 }
 
 declare module 'nitro/types' {

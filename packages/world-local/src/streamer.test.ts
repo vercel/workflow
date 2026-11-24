@@ -94,6 +94,18 @@ function trackIntervals() {
 const setIntervalOriginal = globalThis.setInterval;
 const clearIntervalOriginal = globalThis.clearInterval;
 
+/**
+ * Opens the data directory's database before intervals are tracked, so the
+ * connection's own idle sweep (an interval started with the process's first
+ * connection, and stopped once it has none) is not counted as the reader's.
+ * A read does not do it: without the file it reads an empty database and
+ * opens nothing, and the first write, mid-test, would start the sweep
+ * whenever no earlier test's connection kept it running.
+ */
+function openDatabase(testDir: string) {
+  databaseFor(testDir).transact(() => {});
+}
+
 /** Listeners on the streamer's in-process wake-up signal, across all streams. */
 function signalListeners() {
   const signals = (globalThis as Record<symbol, unknown>)[
@@ -648,10 +660,9 @@ describe('streamer', () => {
 
   describe('reader lifecycle (vercel/workflow#2795, #2797)', () => {
     it('tears down signal listeners and the poll interval on cancel', async () => {
-      const { streamer } = await setupStreamer();
+      const { streamer, testDir } = await setupStreamer();
       const streamName = 'teardown-stream';
-      // Open the database first so its own timers are counted in `before`.
-      await streamer.streams.getInfo(TEST_RUN_ID, streamName);
+      openDatabase(testDir);
       const intervals = trackIntervals();
       onTestFinished(() => intervals.restore());
       const listenersBefore = signalListeners();
@@ -678,9 +689,9 @@ describe('streamer', () => {
     });
 
     it('tears down signal listeners and the poll interval at the end of the stream', async () => {
-      const { streamer } = await setupStreamer();
+      const { streamer, testDir } = await setupStreamer();
       const streamName = 'teardown-at-end';
-      await streamer.streams.getInfo(TEST_RUN_ID, streamName);
+      openDatabase(testDir);
       const intervals = trackIntervals();
       onTestFinished(() => intervals.restore());
       const listenersBefore = signalListeners();

@@ -172,6 +172,22 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
+    // RateLimitMaxWaitError carries the key and the slot it would have had;
+    // mirror the host-side common.ts reducer.
+    RateLimitMaxWaitError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'RateLimitMaxWaitError')
+        return false;
+      const reduced: SerializableSpecial['RateLimitMaxWaitError'] = {
+        message: value.message,
+        stack: value.stack,
+        key: (value as any).key,
+      };
+      if ((value as any).wouldAcquireAt !== undefined) {
+        reduced.wouldAcquireAt = (value as any).wouldAcquireAt;
+      }
+      if ('cause' in value) reduced.cause = (value as any).cause;
+      return reduced;
+    },
     // WorkflowStartError: mirror the host-side common.ts reducer.
     WorkflowStartError: (value) => {
       if (!(value instanceof Error) || value.name !== 'WorkflowStartError')
@@ -487,6 +503,26 @@ export function getCommonRevivers(): Partial<Revivers> {
         (error as any).claimedByRunId = value.claimedByRunId;
         if (value.claimedByHookId !== undefined) {
           (error as any).claimedByHookId = value.claimedByHookId;
+        }
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) (error as any).cause = (value as any).cause;
+      return error;
+    },
+    RateLimitMaxWaitError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//RateLimitMaxWaitError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.key, value.wouldAcquireAt);
+        error.message = value.message;
+      } else {
+        error = new Error(value.message);
+        error.name = 'RateLimitMaxWaitError';
+        (error as any).key = value.key;
+        if (value.wouldAcquireAt !== undefined) {
+          (error as any).wouldAcquireAt = value.wouldAcquireAt;
         }
       }
       if (value.stack !== undefined) error.stack = value.stack;

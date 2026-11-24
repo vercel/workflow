@@ -20,6 +20,7 @@
 
 import {
   EntityConflictError,
+  FatalError,
   HookNotFoundError,
   RunExpiredError,
   ThrottleError,
@@ -30,11 +31,13 @@ import {
   type CreateEventRequest,
   type EventBatchResult,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
 
 import { runtimeLogger } from './../logger.js';
+import { publishLocalAbort } from '../serialization/abort-local.js';
 import { frameAbortStreamPayload } from '../serialization/abort-stream.js';
 
 import {
@@ -46,7 +49,9 @@ import {
   dehydrateStepError,
 } from './../serialization.js';
 
+import { rateLimitSpecVersionMessage } from '../workflow/rate-limit-call.js';
 import { getWorkflowQueueName, queueMessage } from './helpers.js';
+import { isWorldValidationFailure } from './hook-creation.js';
 import { publishForceClaimVictimWake } from './hook-wake.js';
 
 import type { EventCreator } from './quickjs-delivery-shared.js';
@@ -56,6 +61,7 @@ import type {
   PendingHook,
   PendingHookDispose,
   PendingOperation,
+  PendingRate,
   PendingStep,
   PendingWait,
 } from './quickjs-runtime.js';
@@ -167,6 +173,11 @@ export async function dispatchPendingOps(params: {
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
+  /**
+   * `experimental_rateLimit()` calls whose `rate_created` the World answered
+   * at once, with `rate_acquired` or `rate_failed`.
+   */
+  resolvedRateCorrelationIds: Set<string>;
   createdGetConflictHook: boolean;
   /**
    * A hook create committed a `hook_conflict` instead of a `hook_created`.
@@ -222,6 +233,9 @@ export async function dispatchPendingOps(params: {
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
   const opsPromises: Promise<void>[] = [];
+  // Rate limit calls the World answered at once (`rate_acquired` or
+  // `rate_failed`): the VM settles them off the committed event.
+  const resolvedRateCorrelationIds = new Set<string>();
   const hooksNeedingCreation = pendingOperations.filter(
     (op) => op.type === 'hook' && !op.hasCreatedEvent
   ).length;
@@ -366,6 +380,11 @@ export async function dispatchPendingOps(params: {
       // (`abrt_{id}` → `strm_{id}_system_abort`).
       if (hook.token.startsWith('abrt_') && abortPayload) {
         const streamName = `strm_${hook.token.slice('abrt_'.length)}_system_abort`;
+        // An inline step running in this process gets the abort without
+        // the stream, which a zero-retention run clears when it finishes,
+        // possibly before the step reads it (see
+        // serialization/abort-local.ts).
+        publishLocalAbort(runId, streamName, abortPayload);
         try {
           await world.streams.write(
             runId,
@@ -719,6 +738,61 @@ export async function dispatchPendingOps(params: {
         })()
       );
     } else if (
+      op.type === 'rate' &&
+      !op.hasCreatedEvent &&
+      !params.writtenOpIds?.has(op.correlationId)
+    ) {
+      // experimental_rateLimit(): the World reserves the call's slot and
+      // commits what it decided in place of this request (see the rate
+      // events in `@workflow/world`). `creatorMessageId` makes this
+      // delivery's message the one that arms the wait's timer, as for a
+      // wait. Never batched: what a `rate_created` commits settles the call.
+      const rate = op as PendingRate;
+      params.writtenOpIds?.add(op.correlationId);
+      opsPromises.push(
+        (async () => {
+          try {
+            const result = await createEvent({
+              eventType: 'rate_created',
+              specVersion: SPEC_VERSION_RATE_LIMITS,
+              correlationId: rate.correlationId,
+              eventData: {
+                key: rate.key,
+                limit: rate.limit,
+                periodMs: rate.periodMs,
+                ...(rate.burst !== undefined && { burst: rate.burst }),
+                expiresAt: new Date(rate.expiresAt),
+                ...(rate.allowReservedKey === true && {
+                  allowReservedKey: true as const,
+                }),
+                ...(creatorMessageId ? { creatorMessageId } : {}),
+              },
+            });
+            const committed = result.event?.eventType;
+            if (committed === 'rate_acquired' || committed === 'rate_failed') {
+              resolvedRateCorrelationIds.add(rate.correlationId);
+            }
+          } catch (err) {
+            if (EntityConflictError.is(err)) return;
+            if (isWorldValidationFailure(err)) {
+              // The call is checked before it is written, so this is a
+              // limit only the World knows, such as a run stamped below
+              // spec 10. Every replay writes the same request, so the run
+              // fails, as on the node:vm engine.
+              const message = err instanceof Error ? err.message : String(err);
+              const fatal = new FatalError(
+                /spec[ -]?(version )?10/i.test(message)
+                  ? `${rateLimitSpecVersionMessage(workflowRun.specVersion)} (The World refused it: ${message})`
+                  : `experimental_rateLimit() failed World validation: ${message}`
+              );
+              fatal.cause = err;
+              throw fatal;
+            }
+            throw err;
+          }
+        })()
+      );
+    } else if (
       op.type === 'wait' &&
       !op.hasCreatedEvent &&
       !params.writtenOpIds?.has(op.correlationId)
@@ -767,6 +841,7 @@ export async function dispatchPendingOps(params: {
 
   return {
     createdAttributeEvent,
+    resolvedRateCorrelationIds,
     createdGetConflictHook,
     createdHookConflict,
     failedSerializationStepCids,

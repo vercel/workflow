@@ -26,6 +26,16 @@ export const MessageData = z.object({
    */
   createdAt: z.iso.datetime().optional(),
   idempotencyKey: z.string().optional(),
+  /**
+   * The Graphile job key the message was published under in place of its
+   * idempotency key or message id (startup recovery's
+   * `startup-recovery:<runId>`). The jobs that continue it (a reschedule, a
+   * run lease's re-add, a move to another task) keep it, so a later boot's
+   * recovery job for the run replaces a waiting one instead of adding
+   * another. Unlike `idempotencyKey`, it does not deduplicate the delivery as
+   * a completed message.
+   */
+  jobKey: z.string().optional(),
   headers: z.record(z.string(), z.string()).optional(),
   id: z
     .string()

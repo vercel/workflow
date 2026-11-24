@@ -5,6 +5,7 @@ import {
   rearmsCoalescableTimer,
   SENT_NEAR_DUE_TIMER_KEYS_LIMIT,
   sendNearDueTimerOnce,
+  waitTimerDelaySeconds,
   waitTimerHopAtMs,
   waitTimerIdempotencyKey,
   waitTimerMessage,
@@ -182,5 +183,62 @@ describe('sendNearDueTimerOnce', () => {
     }
     const send = vi.fn(async () => {});
     expect(await sendNearDueTimerOnce(first, send)).toBe(true);
+  });
+});
+
+describe('waitTimerDelaySeconds', () => {
+  it('rounds a sleep up to its deadline', () => {
+    expect(waitTimerDelaySeconds({ remainingMs: 2_500, windowMs: 2_000 })).toBe(
+      3
+    );
+    expect(
+      waitTimerDelaySeconds({
+        kind: 'wait',
+        remainingMs: 9_000,
+        windowMs: 2_000,
+      })
+    ).toBe(9);
+  });
+
+  it('wakes a rate limit call in the last window before its slot', () => {
+    // 2.5s out: woken after 1s, with 1.5s left for the in-process wait.
+    expect(
+      waitTimerDelaySeconds({
+        kind: 'rate',
+        remainingMs: 2_500,
+        windowMs: 2_000,
+      })
+    ).toBe(1);
+    // 10s out: woken after 8s, with 2s left.
+    expect(
+      waitTimerDelaySeconds({
+        kind: 'rate',
+        remainingMs: 10_000,
+        windowMs: 2_000,
+      })
+    ).toBe(8);
+    // Never earlier than the window: at most one window left on waking.
+    for (let remainingMs = 2_001; remainingMs < 60_000; remainingMs += 337) {
+      const seconds = waitTimerDelaySeconds({
+        kind: 'rate',
+        remainingMs,
+        windowMs: 2_000,
+      });
+      expect(remainingMs - seconds * 1_000).toBeLessThanOrEqual(2_000);
+      expect(remainingMs - seconds * 1_000).toBeGreaterThan(1_000);
+    }
+  });
+
+  it('rounds up as before when the call is within the window, or it is off', () => {
+    expect(
+      waitTimerDelaySeconds({
+        kind: 'rate',
+        remainingMs: 1_500,
+        windowMs: 2_000,
+      })
+    ).toBe(2);
+    expect(
+      waitTimerDelaySeconds({ kind: 'rate', remainingMs: 2_500, windowMs: 0 })
+    ).toBe(3);
   });
 });

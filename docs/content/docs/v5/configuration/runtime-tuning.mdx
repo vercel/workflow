@@ -193,7 +193,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Values: `node` or `quickjs`
 - Selects the sandboxed VM engine that executes workflow functions (`"use workflow"`). Step functions are unaffected and always run with full Node.js access.
 - `node` (default) runs workflow code in a [`node:vm`](https://nodejs.org/api/vm.html) context. Every resume replays the run's full event log, so resume cost grows with the log, and runs are subject to the World's default [per-run event limit](/docs/errors/max-events-exceeded).
-- `quickjs` runs workflow code in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM compiled to WebAssembly (via [`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi)). **Use it for long-running workflows**: agents, chat sessions, and loops that wait on hooks or sleeps, or any run with many steps. With snapshotting (on by default, see [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold)), a run resumes from a VM-memory snapshot and replays only the events recorded since, so resume cost stays roughly flat as the log grows, and the run is exempt from the default per-run event limit on the Local and Vercel Worlds. It also runs on platforms that do not implement `node:vm`.
+- `quickjs` runs workflow code in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM compiled to WebAssembly (via [`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi)). **Use it for long-running workflows**: agents, chat sessions, and loops that wait on hooks or sleeps, or any run with many steps. With snapshotting (on by default for encrypted runs, see [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold); on world-local and world-postgres also set [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED`](#workflow_snapshot_allow_unencrypted)), a run resumes from a VM-memory snapshot and replays only the events recorded since, so resume cost stays roughly flat as the log grows, and the run is exempt from the default per-run event limit on the Local and Vercel Worlds. It also runs on platforms that do not implement `node:vm`.
 - Both engines implement the same event-replay execution model (seeded PRNG, deterministic clock, and correlation-ID sequences are identical), so workflow code that sticks to plain JavaScript and the Workflow APIs runs unchanged. To switch, set `WORKFLOW_VM=quickjs` in the environment that starts runs, and runs started after that use QuickJS. The few globals QuickJS does not provide in workflow functions are listed below.
 - Global-surface differences under `quickjs` apply to workflow functions only. Step functions always have full Node.js, so the fix for each is to move that call into a step:
   - `crypto.getRandomValues()` and `crypto.randomUUID()` are provided and deterministic (seeded like the node engine's). All `crypto.subtle.*` methods, including `digest`, throw with guidance to move to a step function. The node engine supports `digest`.
@@ -228,10 +228,15 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 What a snapshot contains, and how it is protected:
 
 - A snapshot is the workflow VM's memory: the workflow's code and in-memory state, including step results and hook payloads it holds, and the copy of `process.env` the VM exposes. It is executable state, so write access to snapshot storage is equivalent to running code in the workflow VM.
-- When the run has an encryption key, its snapshots are compressed and then encrypted with that key. The encryption also authenticates the snapshot: on restore, the runtime rejects any snapshot that isn't encrypted with the run's key, or whose stored metadata doesn't match the metadata sealed inside it.
-- Runs without an encryption key (world-local, world-postgres, and any World that doesn't implement `getEncryptionKeyForRun()`) are snapshotted in plaintext, the same as their event log and payloads (in `.workflow-data/snapshots/` or the `workflow_snapshots` table). Those snapshots are not authenticated, so snapshot storage needs the same protection as the rest of the World's storage.
+- Snapshots are compressed and then encrypted with the run's encryption key. The encryption also authenticates the snapshot: on restore, the runtime rejects any snapshot that isn't encrypted with the run's key, or whose stored metadata doesn't match the metadata sealed inside it.
+- By default, runs without an encryption key are never snapshotted. world-local and world-postgres provide no run encryption keys. Set `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` on the workflow handler to snapshot those runs anyway. Their snapshots are stored in plaintext (in `.workflow-data/snapshots/` or the `workflow_snapshots` table) and are not authenticated. Because a snapshot holds the VM's copy of `process.env`, anyone who can read snapshot storage can read the handler's environment variables, including credentials your workflows never use. Only enable this where snapshot storage is as trusted as the deployment's environment.
 - A restored run sees `process.env` as of the current invocation, the same as a full replay.
 - Snapshots are deleted after the run reaches a terminal state. world-local and world-postgres have no separate retention for them, so a snapshot of a run that ends without any invocation observing it (for example, one cancelled externally) stays until you remove it.
+
+### `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED`
+
+- Default: disabled
+- Set `1` or `true` on the workflow handler to let the QuickJS engine persist VM snapshots for runs without an encryption key. Those snapshots include the handler's environment variables in plaintext. See [`WORKFLOW_SNAPSHOT_THRESHOLD`](#workflow_snapshot_threshold) for what that stores.
 
 ## Dynamic workflows
 
@@ -377,16 +382,21 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
 - QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
 
-## Spec 9 (experimental)
+## Spec 9
 
-Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below.
+Everything above describes spec 8 runs. New runs are spec 10 by default on the Vercel, Local and Postgres Worlds, and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8. Spec 10 runs are spec 9 runs that may call [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit), and everything in this section applies to both. Spec 9 runs read some of the settings above differently, and add the settings below.
 
 ### `WORKFLOW_SPEC_VERSION`
 
-- Default: unset. New runs use spec version 8.
-- `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
+- Default: unset. New runs use spec version 10 on a World that declares the in-band fence and reserves rate limit slots (the Vercel, Local and Postgres Worlds do), 9 on a World that declares only the fence, and 8 on one without the fence.
+- `8` keeps new runs on spec 8. `6` to `10` select that version; `9` or `10` on a World without the fence creates spec 8 runs, and `10` on a World with the fence but no rate limits creates spec 9 runs. Any other value is ignored with a one-time warning and creates spec 8 runs, so a typo in an opt-out never creates spec 9 or 10 runs. A run keeps the version it was created with.
 - `6` creates new runs on the scheme from before the [sealed log](/docs/how-it-works/event-sourcing), where each event position is allocated by the write that occupies it. Use it in an environment shared with a runtime that cannot read sealed logs yet, such as one that pins its own accepted spec range (the Python runtime). Runs below `8` cannot have their hook tokens taken over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds): a forced hook in another run gets `HookConflictError` instead.
-- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist.
+- Upgrade every deployment and process that shares the World together, setting `8` on the upgraded ones until all of them run this release, and do not roll back below this release once spec 9 or 10 runs exist.
+
+### `WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`
+
+- Default: `5000`
+- How far ahead of an [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit) call's slot the orchestrator waits for it in the same invocation. A call whose slot is further out is woken this far before it and waits the rest the same way, so it goes ahead at its slot instead of a second or more after. A queued wake for the slot itself is still scheduled, in case the invocation ends first. Each wait can keep an invocation idle for up to this long. `0` turns it off, and a waiting call is woken by the queue at its slot.
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 

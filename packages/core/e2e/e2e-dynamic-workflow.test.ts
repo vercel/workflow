@@ -103,8 +103,9 @@ const UNSUPPORTED_DEPLOYMENT: readonly {
   optIn?: true;
 }[] = [
   {
-    // The deployment has not set WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
-    pattern: /Dynamic workflows are disabled on this deployment/,
+    // The deployment has not set WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS
+    // (`DynamicWorkflowsNotEnabledError`).
+    pattern: /Dynamic workflows are not enabled for this project/,
     reason: 'this deployment has not opted in to dynamic workflows',
     optIn: true,
   },

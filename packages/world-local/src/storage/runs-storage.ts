@@ -109,7 +109,9 @@ export function createRunsStorage(
     // An already deleted run keeps its first `expiredAt`; anything an
     // earlier pass left behind is scrubbed again either way.
     if (!alreadyDeleted) store.updateRun(withRunPayloadsPurged(run, now));
-    purgeRunData(db, runId);
+    // A run already deleted (at its finish or on demand) has its rows
+    // scrubbed: they are not what it wrote, so no sizes are saved from them.
+    purgeRunData(db, runId, { purgedBefore: alreadyDeleted });
     return { runId, outcome: alreadyDeleted ? 'already_deleted' : 'deleted' };
   }
 

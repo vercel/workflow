@@ -33,7 +33,7 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
-Runs default to spec 8. The opt-in spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`, a single orchestrator per run behind the World's in-band fence) lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
+New runs default to spec 10 (a single orchestrator per run behind the World's in-band fence, plus `experimental_rateLimit()`) on Worlds that declare both the fence and rate limits (Vercel, Local, Postgres), to spec 9 on Worlds that declare only the fence, and to spec 8 on Worlds without it; `WORKFLOW_SPEC_VERSION=8` opts out. Spec 10 is capability-only on top of spec 9, so it runs on the spec 9 runtime. The spec 9 runtime lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
 
 Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
 
@@ -186,8 +186,9 @@ them with an exclusive `link(2)` against a directory that two processes (the app
 and the harness) both write to. A slot race a transaction closes is not
 automatically closed by a filesystem.
 
-Export `WORKFLOW_SPEC_VERSION=9` to race the single orchestrator; CI runs both
-worlds at the default spec and at spec 9. Read the world-local spec 9 cell with
+Both worlds race the single orchestrator (spec 10) by default; export
+`WORKFLOW_SPEC_VERSION=8` to race the spec 8 one. CI runs both worlds at the
+default spec and at spec 8. Read the world-local default (spec 10) cell with
 one difference in mind: its run gate is in-process, and the harness calls
 `start()` and `resumeHook()` from its own process, so those messages reach the
 app through the harness' queue and overlap the app's own deliveries of the run.
@@ -409,7 +410,7 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - README.md files in each package must accurately reflect the current functionality and purpose of that package
 - READMEs should not contain outdated or incorrect information about package capabilities
 - When modifying package functionality, ensure corresponding README updates are included
-- Document every user-configurable environment variable in the docs. Settings of an experimental opt-in runtime or run format (such as spec 9) go only in their own section of `configuration/runtime-tuning.mdx`. Other pages under `docs/content/docs/` describe the default runtime: no "Spec N (experimental)" sections or caveats. How an experimental runtime behaves lives in its design note (for spec 9, `packages/core/src/runtime/spec9/README.md`); `docs/content/worlds/` may describe what a World implements to support it.
+- Document every user-configurable environment variable in the docs. Settings that only one spec version reads (spec 9's orchestrator settings, for example) go in that version's section of `configuration/runtime-tuning.mdx`; settings both versions read stay in the general sections. Other pages under `docs/content/docs/` describe behaviour users see whatever the spec version, with no per-version sections or caveats. How each runtime works inside lives in its design note (for spec 9, `packages/core/src/runtime/spec9/README.md`); `docs/content/worlds/` may describe what a World implements to support it.
 - Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
 - Docs pages never reference or link to source files in this repository. Design notes for maintainers live as markdown next to the code they describe (see [Workflow execution model](#workflow-execution-model)) and are referenced from source comments.
 - The docs site is public: everything under `docs/content/` is published on workflow-sdk.dev, indexed by search engines, and served to agents through site search, `llms.txt` and the docs MCP. Write it only for people who use the SDK or build a World. Design notes, RFCs, implementation references and anything else aimed at maintainers go next to the code, never into a docs page. There is no `/docs/changelog` section; release notes come from changesets (rendered at `/changelog`).

@@ -65,6 +65,22 @@ export interface WaitInvocationQueueItem {
   hasCreatedEvent?: boolean;
 }
 
+/** One `experimental_rateLimit()` call (`rate_<ulid>`). */
+export interface RateInvocationQueueItem {
+  type: 'rate';
+  correlationId: string;
+  key: string;
+  limit: number;
+  periodMs: number;
+  /** How many calls may go at once on an idle key. Absent for no burst. */
+  burst?: number;
+  /** The call's deadline: past it, the call fails instead of waiting. */
+  expiresAt: Date;
+  /** The call opted in to a key in the reserved `$` namespace. */
+  allowReservedKey?: true;
+  hasCreatedEvent?: boolean;
+}
+
 export interface AttributeInvocationQueueItem {
   type: 'attribute';
   correlationId: string;
@@ -76,6 +92,7 @@ export type QueueItem =
   | StepInvocationQueueItem
   | HookInvocationQueueItem
   | WaitInvocationQueueItem
+  | RateInvocationQueueItem
   | AttributeInvocationQueueItem;
 
 /**
@@ -92,6 +109,7 @@ export class WorkflowSuspension extends Error {
   stepCount: number;
   hookCount: number;
   waitCount: number;
+  rateCount: number;
   attributeCount: number;
   hookDisposedCount: number;
   abortCount: number;
@@ -114,6 +132,7 @@ export class WorkflowSuspension extends Error {
     let stepCount = 0;
     let hookCount = 0;
     let waitCount = 0;
+    let rateCount = 0;
     let attributeCount = 0;
     let hookDisposedCount = 0;
     let abortCount = 0;
@@ -124,6 +143,7 @@ export class WorkflowSuspension extends Error {
         else if (item.abortRequested) abortCount++;
         else hookCount++;
       } else if (item.type === 'wait') waitCount++;
+      else if (item.type === 'rate') rateCount++;
       else if (item.type === 'attribute') attributeCount++;
     }
 
@@ -138,6 +158,11 @@ export class WorkflowSuspension extends Error {
     if (waitCount > 0) {
       parts.push(`${waitCount} ${pluralize('wait', 'waits', waitCount)}`);
     }
+    if (rateCount > 0) {
+      parts.push(
+        `${rateCount} ${pluralize('rate limit call', 'rate limit calls', rateCount)}`
+      );
+    }
     if (attributeCount > 0) {
       parts.push(
         `${attributeCount} ${pluralize('attribute write', 'attribute writes', attributeCount)}`
@@ -151,13 +176,19 @@ export class WorkflowSuspension extends Error {
 
     // Determine verb (has/have) and action (run/created/received)
     const totalCount =
-      stepCount + hookCount + waitCount + attributeCount + hookDisposedCount;
+      stepCount +
+      hookCount +
+      waitCount +
+      rateCount +
+      attributeCount +
+      hookDisposedCount;
     const hasOrHave = pluralize('has', 'have', totalCount);
     // Pick action verb: use "processed" when mixed types are present
     const typeCount =
       (stepCount > 0 ? 1 : 0) +
       (hookCount > 0 ? 1 : 0) +
       (waitCount > 0 ? 1 : 0) +
+      (rateCount > 0 ? 1 : 0) +
       (attributeCount > 0 ? 1 : 0) +
       (hookDisposedCount > 0 ? 1 : 0);
     let action: string;
@@ -169,6 +200,8 @@ export class WorkflowSuspension extends Error {
       action = 'created';
     } else if (waitCount > 0) {
       action = 'created';
+    } else if (rateCount > 0) {
+      action = 'made';
     } else if (attributeCount > 0) {
       action = 'written';
     } else if (hookDisposedCount > 0) {
@@ -189,6 +222,7 @@ export class WorkflowSuspension extends Error {
     this.stepCount = stepCount;
     this.hookCount = hookCount;
     this.waitCount = waitCount;
+    this.rateCount = rateCount;
     this.attributeCount = attributeCount;
     this.hookDisposedCount = hookDisposedCount;
     this.abortCount = abortCount;

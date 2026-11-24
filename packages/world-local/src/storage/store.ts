@@ -23,7 +23,7 @@ import type { Database } from '../db/index.js';
 const EVENT_READ_BATCH = 64;
 
 /** Pins correlation lookups to `events_by_correlation`: world-local collects no planner stats, so SQLite would scan the run by primary key. */
-const EVENTS_BY_CORRELATION = 'events INDEXED BY events_by_correlation';
+export const EVENTS_BY_CORRELATION = 'events INDEXED BY events_by_correlation';
 
 export interface RunRow {
   run: WorkflowRun;
@@ -311,6 +311,7 @@ export class Store {
       .map((row) => decode<Event>(row.doc));
   }
 
+  // A caller that rewrites a live run's events makes the usage cache stale (see usage-storage.ts).
   rewriteEvent(event: Event): void {
     const seq = eventIdToSlot(event.eventId);
     if (seq === null) return;
@@ -378,6 +379,46 @@ export class Store {
       encode(wait),
       wait.runId,
       correlationId
+    );
+  }
+
+  // --------------------------------------------------------- rate limits
+
+  /** Whether `correlationId` has an event in `runId`'s log after `seq`. */
+  hasCorrelationEventAfter(
+    runId: string,
+    correlationId: string,
+    seq: number
+  ): boolean {
+    return (
+      this.db.get<{ seq: number }>(
+        `SELECT seq FROM ${EVENTS_BY_CORRELATION}
+         WHERE run_id = ? AND correlation_id = ? AND seq > ?
+         LIMIT 1`,
+        runId,
+        correlationId,
+        seq
+      ) !== undefined
+    );
+  }
+
+  /** A rate limit key's next free slot (epoch µs), or undefined if idle. */
+  getRateTat(key: string): number | undefined {
+    const row = this.db.get<{ tat_us: number }>(
+      'SELECT tat_us FROM rate_limits WHERE tag = ? AND key = ?',
+      this.tag ?? '',
+      key
+    );
+    return row?.tat_us;
+  }
+
+  setRateTat(key: string, tatUs: number): void {
+    this.db.run(
+      `INSERT INTO rate_limits (tag, key, tat_us) VALUES (?, ?, ?)
+       ON CONFLICT (tag, key) DO UPDATE SET tat_us = excluded.tat_us`,
+      this.tag ?? '',
+      key,
+      tatUs
     );
   }
 

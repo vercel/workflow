@@ -1,5 +1,61 @@
 # @workflow/web-shared
 
+## 5.3.3
+
+### Patch Changes
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Show `RateLimitMaxWaitError` values with their key and slot in the observability UI.
+- Updated dependencies [[`40f340a`](https://github.com/vercel/workflow/commit/40f340a9ffae5385beab8eac778ce81e73583348), [`1b0f72b`](https://github.com/vercel/workflow/commit/1b0f72b6f27373e38a2b2fac0c34e1eeeba35d23), [`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/core@5.8.0
+  - @workflow/world@5.4.0
+
+## 5.3.2
+
+### Patch Changes
+
+- [#5653](https://github.com/vercel/workflow/pull/5653) [`3e799a4`](https://github.com/vercel/workflow/commit/3e799a40de88fa372de229733a92b0d2af5f7cd4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Show "in X minutes" instead of "X minutes ago" in timestamp hover cards for future dates
+
+- [#5586](https://github.com/vercel/workflow/pull/5586) [`f717314`](https://github.com/vercel/workflow/commit/f717314b6fa8e91d653f56f90b9a1facf36a5f38) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - On the Local World, a run's page gets a Usage tab and page (`/run/<runId>/usage`) that lists its events by type and its storage, the same table as `workflow inspect run <id> --usage`. `@workflow/web-shared` exports the trace's `ResourceIcon` for it.
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a), [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992)]:
+  - @workflow/world@5.3.1
+  - @workflow/core@5.7.2
+
+## 5.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03), [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c), [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6)]:
+  - @workflow/core@5.7.1
+
+## 5.3.0
+
+### Minor Changes
+
+- [#5522](https://github.com/vercel/workflow/pull/5522) [`5edc5b2`](https://github.com/vercel/workflow/commit/5edc5b2b768272512a7a65a84979ce71bd29c55c) Thanks [@mitul-s](https://github.com/mitul-s)! - Build `DecryptButton` and the app's loading buttons and spinners on `Button`, which gains `loading`, `prefix` and `suffix` props and drops `size="tiny"` (use `small`), and on `Spinner`, which takes named sizes from `sm` to `4xl` (default `lg`).
+
+- [#5575](https://github.com/vercel/workflow/pull/5575) [`0a497dc`](https://github.com/vercel/workflow/commit/0a497dc857056740038a6650757b12c993412fcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add `CopyButton` and use it for every copy button in the observability UI.
+
+- [#5518](https://github.com/vercel/workflow/pull/5518) [`46dff1c`](https://github.com/vercel/workflow/commit/46dff1c9b2130835f3b26752d1d3f030dd62dced) Thanks [@mitul-s](https://github.com/mitul-s)! - Export `cn` from `@workflow/web-shared` and use it in the web UI, so Geist type classes such as `text-label-14` are no longer dropped when merged with a text colour class.
+
+- [#5542](https://github.com/vercel/workflow/pull/5542) [`8fb5ba8`](https://github.com/vercel/workflow/commit/8fb5ba8ad56f4ec0dc668f114ebe4cc065da6901) Thanks [@mitul-s](https://github.com/mitul-s)! - Remove dead code, every export that nothing imports, and the unused `@workflow/web-shared/components` entry point (import from the package root instead). Removed exports include `hydrateResourceIOWithKey` (use `hydrateResourceIOAsync`), `MenuDropdown`, the `materialize*` helpers, `shouldShowReenqueueButton`, `hasPendingStepsFromEvents`, `hasPendingHooksFromEvents`, `isTerminalStatus`, `identifyStreamSteps`, `looksLikeWorkflowIdSearchInput`, the ref helpers re-exported from `@workflow/core/serialization-format`, and internal components and hooks such as `Kbd`, `IconButton`, `LoadMoreButton` and `useToast`.
+
+### Patch Changes
+
+- [#5517](https://github.com/vercel/workflow/pull/5517) [`9d086e1`](https://github.com/vercel/workflow/commit/9d086e1426ef1bb3c664055dbd893c6d626f576a) Thanks [@debojyoti10CC](https://github.com/debojyoti10CC)! - Fix the copy button putting `[object Object]` on the clipboard for payloads that contain a BigInt; BigInt values are now copied as decimal strings in valid JSON.
+
+- [#5524](https://github.com/vercel/workflow/pull/5524) [`bace5ef`](https://github.com/vercel/workflow/commit/bace5ef5d554711f6eea9d02cee95ab0b4c34e39) Thanks [@mitul-s](https://github.com/mitul-s)! - Align the design tokens with the Vercel dashboard: `styles.css` now carries the full palette, shadows, focus ring, z-index, motion and popover tokens plus a `hocus` variant, and `dark:` follows the theme class. The theme no longer applies under `[data-theme="dark"]`, and the `dark-theme:`/`light-theme:` variants no longer match `.dark`/`.light`; use `dark:` instead.
+
+- [#5544](https://github.com/vercel/workflow/pull/5544) [`d7053a8`](https://github.com/vercel/workflow/commit/d7053a82a561f0a78f8832fbb2df34a73799377a) Thanks [@mitul-s](https://github.com/mitul-s)! - Show the Events search hint under the search box once typing pauses, give a failed search an error state with Try again, and report an ID that does not exist as not found.
+
+- [#5594](https://github.com/vercel/workflow/pull/5594) [`e0fa212`](https://github.com/vercel/workflow/commit/e0fa2124edf5a976f2d4181bb719d60bf6f5d11e) Thanks [@mitul-s](https://github.com/mitul-s)! - Events tab: selecting an event tints its entity's rows blue, mutes the rest and drops the zebra stripes, with a clickable glow at the list edge when related events are out of view. The Name column moves left of Event and widens.
+
+- [#5537](https://github.com/vercel/workflow/pull/5537) [`44d4b95`](https://github.com/vercel/workflow/commit/44d4b95df03bc23b9b47d03361fedda3262c434b) Thanks [@mitul-s](https://github.com/mitul-s)! - Replace emoji and glyph icons in the observability UI with icons: the tool call and tool result labels, the stream reference badge, the decoded-bytes disclosure, the agent, tool and conditional flow-graph nodes, and the retry and duration badges.
+
+- [#5525](https://github.com/vercel/workflow/pull/5525) [`3671902`](https://github.com/vercel/workflow/commit/367190219322f3cbb8fc0606989f59473354f6ca) Thanks [@mitul-s](https://github.com/mitul-s)! - Share one search bar between the trace viewer and the Events tab, with a visible keyboard focus outline, a labelled clear button at every width, and the ellipsis character in the placeholder.
+- Updated dependencies [[`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997), [`b074e75`](https://github.com/vercel/workflow/commit/b074e7590b099ad80bca0979e309a32ffc159598), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`036e1a8`](https://github.com/vercel/workflow/commit/036e1a855ef5424663f7f1cdac3e3a083bb81f92), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8), [`5699483`](https://github.com/vercel/workflow/commit/569948318c7ae642cc2a2a554912ff5dd883eed3), [`4890ea9`](https://github.com/vercel/workflow/commit/4890ea98976e14e0754c9992faeb708e1320ab9b), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`5df0437`](https://github.com/vercel/workflow/commit/5df043770f41bd38435fa02ea80ead7ab7a03d05), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087)]:
+  - @workflow/world@5.3.0
+  - @workflow/core@5.7.0
+
 ## 5.2.0
 
 ### Minor Changes

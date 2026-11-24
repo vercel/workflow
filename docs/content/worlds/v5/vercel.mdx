@@ -137,6 +137,8 @@ Retention for the Vercel World is documented in the [Vercel Workflows docs](http
 
 To delete a run's payloads as soon as it finishes, start it with [`experimental_retention: 0`](/docs/observability/retention).
 
+To delete the payloads of runs that have already finished, call [`run.delete()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data) or [`deleteRuns()`](/docs/api-reference/workflow-api/delete-runs), run [`workflow delete`](/docs/configuration/cli-and-web-ui#delete), or select **Delete Data** in the Vercel dashboard.
+
 ## Queue consumers other than the Workflow SDK
 
 The Vercel World delivers each queue message to the functions subscribed to its topic, not to a fixed path. The Workflow SDK's build integration subscribes the generated flow route to `__wkf_workflow_*` (or `__{namespace}_wkf_workflow_*`). A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix and subscribes its own route to that prefix's topics:

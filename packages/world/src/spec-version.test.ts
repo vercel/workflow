@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { _resetEnvWarnCacheForTests } from './env-config.js';
 import * as specVersions from './spec-version.js';
 import {
   CAPABILITY_ONLY_SPEC_VERSIONS,
@@ -8,8 +9,11 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_DEFAULT_MINTED,
+  SPEC_VERSION_DEFAULT_MINTED_FENCED,
+  SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -23,7 +27,8 @@ describe('spec version classification', () => {
   const versionConstants = Object.entries(specVersions).filter(
     ([name]) =>
       name.startsWith('SPEC_VERSION_SUPPORTS_') ||
-      name === 'SPEC_VERSION_SINGLE_ORCHESTRATOR'
+      name === 'SPEC_VERSION_SINGLE_ORCHESTRATOR' ||
+      name === 'SPEC_VERSION_RATE_LIMITS'
   ) as [string, number][];
 
   it.each(
@@ -57,6 +62,18 @@ describe('spec version classification', () => {
     ).toBe(true);
   });
 
+  it('lets a spec 9 run be raised to rate limits', () => {
+    expect(CAPABILITY_ONLY_SPEC_VERSIONS.has(SPEC_VERSION_RATE_LIMITS)).toBe(
+      true
+    );
+    expect(
+      crossesStructuralSpecVersion(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        SPEC_VERSION_RATE_LIMITS
+      )
+    ).toBe(false);
+  });
+
   it('lets capability-only versions be crossed', () => {
     expect(crossesStructuralSpecVersion(3, 5)).toBe(false);
     expect(crossesStructuralSpecVersion(7, 8)).toBe(false);
@@ -81,20 +98,72 @@ describe('spec version constants', () => {
     expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBe(9);
     expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
     expect(SPEC_VERSION_DEFAULT_MINTED).toBe(SPEC_VERSION_CURRENT);
-    // Spec 9 is opt-in: the default stays below the readable ceiling.
+    expect(SPEC_VERSION_DEFAULT_MINTED_FENCED).toBe(
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
+    expect(SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS).toBe(
+      SPEC_VERSION_RATE_LIMITS
+    );
+    // Spec 9 is structural, so the version assumed for a run that reports
+    // none stays below it; only a fenced World mints it.
     expect(SPEC_VERSION_CURRENT).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
   });
 
   describe('mintedSpecVersion', () => {
-    it('stamps the current version by default', () => {
+    it('stamps the current version by default for a World without the fence', () => {
       expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
+      expect(mintedSpecVersion({}, { inBandFence: false })).toBe(
+        SPEC_VERSION_CURRENT
+      );
       expect(mintedSpecVersion({})).toBeGreaterThanOrEqual(
         SPEC_VERSION_SUPPORTS_SEALED_LOG
       );
     });
 
-    it('stamps any supported version WORKFLOW_SPEC_VERSION names', () => {
+    it('stamps the rate limits version by default for a World with the fence and rate limits', () => {
+      const full = { inBandFence: true, rateLimits: true };
+      expect(mintedSpecVersion({}, full)).toBe(SPEC_VERSION_RATE_LIMITS);
+      expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ' ' }, full)).toBe(
+        SPEC_VERSION_RATE_LIMITS
+      );
+      // Spec 9 and spec 8 stay one setting away.
+      for (const v of [
+        SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      ]) {
+        expect(
+          mintedSpecVersion({ WORKFLOW_SPEC_VERSION: String(v) }, full)
+        ).toBe(v);
+      }
+      // Rate limits without the fence can't mint spec 9 or later.
+      expect(mintedSpecVersion({}, { rateLimits: true })).toBe(
+        SPEC_VERSION_DEFAULT_MINTED
+      );
+    });
+
+    it('stamps the single-orchestrator version by default for a fenced World without rate limits', () => {
       const fenced = { inBandFence: true };
+      expect(mintedSpecVersion({}, fenced)).toBe(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      );
+      expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '' }, fenced)).toBe(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      );
+      // Spec 8 stays one setting away.
+      expect(
+        mintedSpecVersion(
+          {
+            WORKFLOW_SPEC_VERSION: String(
+              SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+            ),
+          },
+          fenced
+        )
+      ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    });
+
+    it('stamps any supported version WORKFLOW_SPEC_VERSION names', () => {
+      const fenced = { inBandFence: true, rateLimits: true };
       for (
         let v = SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
         v <= SPEC_VERSION_MAX_SUPPORTED;
@@ -112,6 +181,29 @@ describe('spec version constants', () => {
           WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM),
         })
       ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    });
+
+    it('stamps spec 10 only for a World that reserves rate limit slots', () => {
+      _resetEnvWarnCacheForTests();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const env = { WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_RATE_LIMITS) };
+        expect(
+          mintedSpecVersion(env, { inBandFence: true, rateLimits: true })
+        ).toBe(SPEC_VERSION_RATE_LIMITS);
+        // Fenced but no reservations: the closest it can do is spec 9.
+        expect(mintedSpecVersion(env, { inBandFence: true })).toBe(
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
+        // No fence at all: the default, as for spec 9.
+        expect(mintedSpecVersion(env, { rateLimits: true })).toBe(
+          SPEC_VERSION_DEFAULT_MINTED
+        );
+        expect(warn).toHaveBeenCalledTimes(2);
+      } finally {
+        warn.mockRestore();
+        _resetEnvWarnCacheForTests();
+      }
     });
 
     it('ignores an unrecognised WORKFLOW_SPEC_VERSION, and warns once per value', () => {
@@ -144,6 +236,36 @@ describe('spec version constants', () => {
       }
     });
 
+    it('falls back to spec 8 on a fenced World when the value is set but not understood', () => {
+      // The variable is usually set to opt out of spec 9 during a rolling
+      // upgrade, so a typo in it must not create spec 9 runs.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const fenced = { inBandFence: true, rateLimits: true };
+        const typos = ['8.0', 'v8', 'spec8', 'eight-fenced', '99'];
+        for (const raw of typos) {
+          expect(
+            mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw }, fenced)
+          ).toBe(SPEC_VERSION_DEFAULT_MINTED);
+        }
+        expect(warn).toHaveBeenCalledTimes(typos.length);
+        for (const [message] of warn.mock.calls) {
+          expect(String(message)).toContain(
+            `so new runs use spec ${SPEC_VERSION_DEFAULT_MINTED}`
+          );
+        }
+        // Unset or empty still takes the fenced default.
+        expect(mintedSpecVersion({}, fenced)).toBe(
+          SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS
+        );
+        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ' ' }, fenced)).toBe(
+          SPEC_VERSION_DEFAULT_MINTED_RATE_LIMITS
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('stamps the single-orchestrator version only for a fenced World', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
@@ -168,8 +290,8 @@ describe('spec version constants', () => {
       }
     });
 
-    it('never stamps the single-orchestrator version unless asked to', () => {
-      expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThan(
+    it('never stamps the single-orchestrator version for a World without the fence', () => {
+      expect(mintedSpecVersion({})).toBeLessThan(
         SPEC_VERSION_SINGLE_ORCHESTRATOR
       );
     });
@@ -178,6 +300,12 @@ describe('spec version constants', () => {
       expect(mintedSpecVersion({})).toBeLessThanOrEqual(
         SPEC_VERSION_MAX_SUPPORTED
       );
+      expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThanOrEqual(
+        SPEC_VERSION_MAX_SUPPORTED
+      );
+      expect(
+        mintedSpecVersion({}, { inBandFence: true, rateLimits: true })
+      ).toBeLessThanOrEqual(SPEC_VERSION_MAX_SUPPORTED);
     });
   });
 
@@ -185,7 +313,7 @@ describe('spec version constants', () => {
     // "What do we write?" and "what can we still read?" are separate dials,
     // and the ceiling must never sit below the default: an SDK that stamps a
     // version it cannot read back would reject its own runs.
-    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_RATE_LIMITS);
     expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
       SPEC_VERSION_CURRENT
     );
