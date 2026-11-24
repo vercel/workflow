@@ -116,6 +116,13 @@ function getObservabilityCwd(): string {
 }
 
 /**
+ * The data directory `ensureLocalWorldDataDirEnv()` fell back to because it
+ * found none, while it is still in use. The web UI is a single module graph
+ * (outside the World module-state rule), so a module variable is enough.
+ */
+let fallbackLocalDataDir: string | undefined;
+
+/**
  * Ensure local-world env is derived consistently when running `packages/web` directly.
  *
  * Without this, the UI may *display* a dataDir detected from WORKFLOW_OBSERVABILITY_CWD,
@@ -123,7 +130,11 @@ function getObservabilityCwd(): string {
  * under the web package cwd), resulting in "no runs" even though data exists.
  */
 async function ensureLocalWorldDataDirEnv(): Promise<void> {
-  if (process.env.WORKFLOW_LOCAL_DATA_DIR) return;
+  const current = process.env.WORKFLOW_LOCAL_DATA_DIR;
+  // Set by the user, or discovered earlier: keep it. A fallback is checked
+  // again, so the app's directory is used as soon as the app creates it,
+  // without restarting the web UI.
+  if (current && current !== fallbackLocalDataDir) return;
 
   const cwd = getObservabilityCwd();
   const info = await findWorkflowDataDir(cwd);
@@ -131,11 +142,21 @@ async function ensureLocalWorldDataDirEnv(): Promise<void> {
   // Prefer a discovered workflow-data directory (e.g. `.next/workflow-data`).
   if (info.dataDir) {
     process.env.WORKFLOW_LOCAL_DATA_DIR = info.dataDir;
+    fallbackLocalDataDir = undefined;
     return;
   }
 
   // Fall back to a canonical location under the target project directory.
-  process.env.WORKFLOW_LOCAL_DATA_DIR = path.resolve(cwd, '.workflow-data');
+  fallbackLocalDataDir = path.resolve(cwd, '.workflow-data');
+  process.env.WORKFLOW_LOCAL_DATA_DIR = fallbackLocalDataDir;
+}
+
+/** Whether the Local World would use the fallback, not a real data directory. */
+function isUsingFallbackLocalDataDir(): boolean {
+  return (
+    fallbackLocalDataDir !== undefined &&
+    process.env.WORKFLOW_LOCAL_DATA_DIR === fallbackLocalDataDir
+  );
 }
 
 /**
@@ -1051,6 +1072,79 @@ export async function recreateRun(
     return createResponse(newRunId);
   } catch (error) {
     return createServerActionError<string>(error, 'recreateRun', { runId });
+  }
+}
+
+/**
+ * Start a new run of a workflow by its ID, with JSON arguments.
+ *
+ * Local backend only: the Workflows tab that calls it is shown only there.
+ * Starts the run the way `workflow start <workflowName>` does in the CLI
+ * (`startRun()` in `packages/cli/src/lib/inspect/run.ts`): on the current
+ * deployment, with the spec version that deployment's health check reports,
+ * capped at this World's. The web package does not depend on the CLI, so
+ * this mirrors that logic rather than importing it.
+ */
+export async function startWorkflowRun(
+  worldEnv: EnvMap,
+  workflowId: string,
+  args: unknown[]
+): Promise<ServerActionResult<string>> {
+  try {
+    const backendId = getEffectiveBackendId();
+    if (backendId !== 'local' && backendId !== '@workflow/world-local') {
+      throw new Error(
+        `Starting a workflow from the web UI is only supported on the local backend (current backend: ${backendId}).`
+      );
+    }
+    if (!Array.isArray(args)) {
+      throw new Error('Workflow arguments must be an array.');
+    }
+    // Before the app has run any workflow it has no data directory, and the
+    // fallback is not the app's: a run written there is one the app never
+    // receives (its deliveries carry no key the app holds), so it would sit
+    // in pending with no error. Refuse instead.
+    await ensureLocalWorldDataDirEnv();
+    if (isUsingFallbackLocalDataDir()) {
+      throw new Error(
+        "Couldn't find your app's workflow data directory. Run any workflow in your app once so it creates one, then click Start again. If your app keeps its data somewhere else, set WORKFLOW_LOCAL_DATA_DIR when you start the web UI."
+      );
+    }
+    const world = await getWorldFromEnv({ ...worldEnv });
+
+    // `latest` on a World without atomic deployments (local) is its current
+    // deployment, as in the CLI's `resolveTargetDeploymentId()`.
+    const deploymentId = world.resolveLatestDeploymentId
+      ? await world.resolveLatestDeploymentId()
+      : await world.getDeploymentId();
+
+    // Probe the deployment's spec version, as the CLI does. If the health
+    // check fails, leave it unset and let `start()` decide.
+    let specVersion: number | undefined;
+    try {
+      const hc = await healthCheck(world, { deploymentId, timeout: 10_000 });
+      if (
+        hc.healthy &&
+        typeof hc.specVersion === 'number' &&
+        Number.isInteger(hc.specVersion) &&
+        hc.specVersion >= 1
+      ) {
+        specVersion = Math.min(hc.specVersion, world.specVersion);
+      }
+    } catch {
+      // Keep specVersion unset
+    }
+
+    const run = await workflowRunHelpers.start({ workflowId }, args, {
+      deploymentId,
+      specVersion,
+      world,
+    });
+    return createResponse(run.runId);
+  } catch (error) {
+    return createServerActionError<string>(error, 'startWorkflowRun', {
+      workflowId,
+    });
   }
 }
 

@@ -194,6 +194,14 @@ export async function recreateRun(
   return rpc('recreateRun', { worldEnv, runId, deploymentId });
 }
 
+export async function startWorkflowRun(
+  worldEnv: EnvMap,
+  workflowId: string,
+  args: unknown[]
+): Promise<ServerActionResult<string>> {
+  return rpc('startWorkflowRun', { worldEnv, workflowId, args });
+}
+
 export async function reenqueueRun(
   worldEnv: EnvMap,
   runId: string

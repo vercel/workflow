@@ -6,6 +6,7 @@ import {
   recreateRun as recreateRunServerAction,
   reenqueueRun as reenqueueRunServerAction,
   resumeHook as resumeHookServerAction,
+  startWorkflowRun as startWorkflowRunServerAction,
   wakeUpRun as wakeUpRunServerAction,
 } from '~/lib/rpc-client';
 import type {
@@ -32,6 +33,15 @@ export async function bulkCancelRuns(
 /** Start a new workflow run */
 export async function recreateRun(env: EnvMap, runId: string): Promise<string> {
   return unwrapOrThrow(recreateRunServerAction(env, runId));
+}
+
+/** Start a new run of a workflow with JSON arguments (local backend only) */
+export async function startWorkflowRun(
+  env: EnvMap,
+  workflowId: string,
+  args: unknown[]
+): Promise<string> {
+  return unwrapOrThrow(startWorkflowRunServerAction(env, workflowId, args));
 }
 
 /** Wake up a workflow run by re-enqueuing it */

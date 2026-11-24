@@ -49,6 +49,8 @@ In the runs table, select one or more runs and choose **Cancel** to cancel the b
 
 In a run's **Streams** tab, a byte stream that carries a PNG, JPEG, GIF, or WebP image is shown as an image preview, with a **Download Image** button for the original bytes.
 
+With the [Local World](/worlds/local), the **Workflows** tab lists your app's workflows. Choose **Start** on one and enter its arguments as a JSON array, such as `["order_123"]`, to start a new run without writing code. The app must have run a workflow once, so that its data directory exists. Arguments that are not plain JSON, such as streams or class instances, need [`start()`](/docs/api-reference/workflow-api/start) in your code.
+
 To share a link to a specific run without opening a browser, use the `--url`
 flag. It prints the dashboard deep link to stdout and exits (no browser, no
 local server), which is useful for scripts, PR comments, or automation. Add `--json` to
