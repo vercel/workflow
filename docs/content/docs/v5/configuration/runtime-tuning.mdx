@@ -72,7 +72,7 @@ Read by the deployment calling `start()` from a workflow. A child already marked
 | [`WORKFLOW_REPLAY_TIMEOUT_MS`](#workflow_replay_timeout_ms) | `240000` ms | Replay and orchestration time budget per handler invocation |
 | [`WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES`](#workflow_replay_timeout_max_retries) | `3` | Replay timeouts before the run fails with `REPLAY_TIMEOUT` |
 | [`WORKFLOW_MAX_QUEUE_DELIVERIES`](#workflow_max_queue_deliveries) | `48` | Delivery attempts before a run or step fails |
-| [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth) | `on` | Flow route accepts only the app's own deliveries |
+| [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth) | `on` | Local and loopback Worlds only: flow route accepts only the app's own deliveries |
 | [`WORKFLOW_MAX_EVENTS`](#workflow_max_events) | `25000` | Local World event limit and default `events.list()` page size |
 | [`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`](#workflow_replay_divergence_max_retries) | `3` | Recovery replays before replay divergence is recorded as corruption |
 | [`WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`](#workflow_deployment_mismatch_max_retries) | `3` | Re-routes to a run's pinned deployment before the run fails |
@@ -109,15 +109,15 @@ Can only be lowered. Workflow calibrates the default to record failure before th
 
 - Default: `on`
 
-Whether the Workflow SDK's flow route (`POST /.well-known/workflow/v1/flow`) accepts only deliveries sent by the app's own processes. Any value other than `off` leaves the check on.
+On the [Local World](/worlds/local) and any World that declares `queueAuthMode: 'loopback'`, whether the Workflow SDK's flow route (`POST /.well-known/workflow/v1/flow`) accepts only deliveries sent by the app's own processes. Other Worlds are not protected by it. Any value other than `off` leaves the check on.
 
-Change it when: a delivery comes from a process that cannot read the app's data directory. Set `off` on the app, and only then. `off` accepts unauthenticated deliveries, so use it only for local development or on a trusted network. The runtime logs a warning when a route starts with `off`.
-
-`off` is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`). Both variables are read on every delivery, so the check comes back on as soon as dynamic workflows are enabled.
-
-Applies to the [Local World](/worlds/local), and to any World that declares `queueAuthMode: 'loopback'`. A World that declares nothing is not checked; the runtime logs a warning when its flow route starts (once, then at most once a minute when routes restart). Worlds that declare `queueAuthMode: 'skip'` are not checked and are not affected. A queue consumer's own route (built with `world.createQueueHandler()` and registered with `registerRoute()`) is not checked; it must authenticate deliveries itself, or sit behind the network edge.
+A World that declares nothing is not checked; the runtime logs a warning when its flow route starts (once, then at most once a minute when routes restart). Worlds that declare `queueAuthMode: 'skip'` are not checked and are not affected. A queue consumer's own route (built with `world.createQueueHandler()` and registered with `registerRoute()`) is not checked; it must authenticate deliveries itself, or sit behind the network edge.
 
 The [Vercel World](/worlds/vercel) delivers to a route only Vercel Queues can trigger (see its [security section](/worlds/vercel#security)). The [Postgres World](/worlds/postgres) relies on its database credentials to control who can enqueue, and its flow route accepts any well-formed request, so protect that route at the network edge, as its [security section](/worlds/postgres#protect-the-queue-route) describes.
+
+Change it when: a process that cannot read the app's data directory has to send deliveries. If the sender is the CLI or the web UI, point it at the app's data directory (`WORKFLOW_LOCAL_DATA_DIR`) instead. Set `off` on the app only when that isn't possible. `off` accepts unauthenticated deliveries, so use it only for local development or on a trusted network. The runtime logs a warning when a route starts with `off`.
+
+`off` is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`). Both variables are read on every delivery, so the check comes back on as soon as dynamic workflows are enabled.
 
 Every delivery the Local World sends carries the app's queue key. The route refuses a request that does not carry the key with a `401`, before it reads the body, and does not touch any run. A request from outside the app therefore cannot start a run, fail a running one, re-trigger a step, or replay a delivery.
 
@@ -227,7 +227,7 @@ The default comes from `World.getRuntimeDeadline()`, so raising a function's `ma
 
 - Default: `3`
 
-Number of newly-created steps one invocation runs inline in parallel before queueing the rest. Values above `16` are clamped to `16`; a negative value or a non-integer uses the default. `0` enqueues every step on [spec 9 and 10 runs](#spec-9), which new runs are by default, and uses the default on spec 8 runs.
+Number of newly-created steps one invocation runs inline in parallel before queueing the rest. Values above `16` are clamped to `16`; a negative value or a non-integer uses the default. `0` enqueues every step on [spec 9 and 10 runs](#spec-9), which new runs are by default on the Vercel, Local and Postgres Worlds, and uses the default on spec 8 runs.
 
 Steps started beside an awaited hook registration (`hook.getConflict()`) count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
 
@@ -251,7 +251,7 @@ Starts inline step bodies before their `step_started` event is confirmed. On spe
 
 Set `0` or `false` to force it off, including the first-delivery fast path used by `WORKFLOW_TURBO`.
 
-On [spec 9 and 10 runs](#spec-9), which new runs are by default, only `0` or `false` has an effect: it makes inline step bodies wait for their start to commit on turbo's first delivery, under run-ahead, and under [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start). `1` and `true` do nothing there.
+On [spec 9 and 10 runs](#spec-9), which new runs are by default on the Vercel, Local and Postgres Worlds, only `0` or `false` has an effect: it makes step bodies wait for their start to commit on turbo's first delivery, under run-ahead, and under [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start). `1` and `true` do nothing there.
 
 ### `WORKFLOW_RETAINED_VM`
 
