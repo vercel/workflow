@@ -60,7 +60,7 @@ Accepted values:
 ### `WORKFLOW_ALLOW_UNREGISTERED_STEPS`
 
 - Default: disabled
-- The build fails when workflow code can call a step that the steps bundle does not register, listing up to 10 of them with their files and step IDs. A step in a package that discovery does not read (see `WORKFLOW_DISCOVER_NODE_MODULES`) is reported as a warning instead. See [`step-not-registered`](/docs/errors/step-not-registered#build-time-check).
+- The build fails when workflow code can call a step that the steps bundle does not register, listing up to 10 of them with their files and step IDs. A step in a file that discovery did not read (see `WORKFLOW_DISCOVER_NODE_MODULES`) is reported as a warning instead. See [`step-not-registered`](/docs/errors/step-not-registered#build-time-check).
 - Set `1` to log the failure as a warning and finish the build. Calls to the listed steps still fail at runtime.
 
 ## Testing

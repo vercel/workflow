@@ -1,6 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { WorkflowBuildError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowManifest } from './apply-swc-transform.js';
@@ -8,7 +15,6 @@ import {
   ALLOW_UNREGISTERED_STEPS_ENV,
   assertWorkflowStepsAreRegistered,
   findUnregisteredSteps,
-  getSkippedStepReason,
 } from './step-registration-check.js';
 
 const steps = (
@@ -182,143 +188,221 @@ describe('assertWorkflowStepsAreRegistered', () => {
   });
 });
 
-describe('steps in files discovery skips on purpose', () => {
+describe('steps in files discovery did not read', () => {
   // The workflow bundle compiles every step in a file it imports, called or
-  // not, while discovery skips some packages under node_modules on purpose.
-  // A step in such a file is not a discovery bug, so it warns instead of
-  // failing a build where nothing may call it.
-  let workingDir: string;
+  // not, while discovery does not read some files on purpose. A step in a
+  // file discovery never read is not a discovery bug, so it warns instead of
+  // failing a build where nothing may call it. Each case is decided by what
+  // discovery read, not by where the file is installed.
+  let root: string;
 
-  const writePackage = (name: string, packageJson: object) => {
-    const dir = join(workingDir, 'node_modules', name);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'package.json'), JSON.stringify(packageJson));
-    writeFileSync(join(dir, 'index.js'), '');
+  const file = (relativePath: string, packageJson?: object) => {
+    const path = join(root, relativePath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '');
+    if (packageJson) {
+      writeFileSync(
+        join(dirname(path), 'package.json'),
+        JSON.stringify(packageJson)
+      );
+    }
+    return path;
   };
-  const manifestFor = (file: string) =>
-    steps({ [file]: { unusedStep: `step//${file}//unusedStep` } });
-
-  beforeEach(() => {
-    delete process.env[ALLOW_UNREGISTERED_STEPS_ENV];
-    workingDir = mkdtempSync(join(tmpdir(), 'workflow-step-check-'));
-    writePackage('no-dep', { name: 'no-dep', version: '1.0.0' });
-    writePackage('with-dep', {
-      name: 'with-dep',
-      version: '1.0.0',
-      peerDependencies: { workflow: '*' },
-    });
-  });
-
-  afterEach(() => {
-    rmSync(workingDir, { recursive: true, force: true });
-  });
-
-  it.each([
-    ['an application file', 'workflows/a.ts', true, undefined],
-    [
-      'a package that depends on workflow',
-      'node_modules/with-dep/index.js',
-      true,
-      undefined,
-    ],
-    [
-      'a package that does not depend on workflow',
-      'node_modules/no-dep/index.js',
-      true,
-      'no-workflow-dependency',
-    ],
-    [
-      'any package while node_modules discovery is off',
-      'node_modules/with-dep/index.js',
-      false,
-      'node-modules-discovery-disabled',
-    ],
-    [
-      'an application file while node_modules discovery is off',
-      'workflows/a.ts',
-      false,
-      undefined,
-    ],
-  ] as const)('classifies %s', (_label, file, discoverWorkflowsInNodeModules, reason) => {
-    expect(
-      getSkippedStepReason({ file, workingDir, discoverWorkflowsInNodeModules })
-    ).toBe(reason);
-  });
-
-  it('warns, and builds, for a step in a package that does not depend on workflow', () => {
+  const check = ({
+    key,
+    path,
+    discoveredFiles,
+    discoverWorkflowsInNodeModules = true,
+  }: {
+    key: string;
+    path: string;
+    discoveredFiles: string[];
+    discoverWorkflowsInNodeModules?: boolean;
+  }) => {
     const warn = vi.fn();
-    const result = assertWorkflowStepsAreRegistered({
-      workflowsManifest: manifestFor('node_modules/no-dep/index.js'),
-      stepsManifest: {},
-      workingDir,
-      warn,
-    });
-    expect(result.map((step) => step.functionName)).toEqual(['unusedStep']);
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0][0]).toMatch(
-      /unusedStep in node_modules\/no-dep\/index\.js .*: its package does not depend on workflow/
-    );
-    expect(warn.mock.calls[0][0]).not.toMatch(/Workflow SDK bug/);
-  });
-
-  it('warns, and builds, for a step under node_modules while node_modules discovery is off', () => {
-    const warn = vi.fn();
-    assertWorkflowStepsAreRegistered({
-      workflowsManifest: manifestFor('node_modules/with-dep/index.js'),
-      stepsManifest: {},
-      workingDir,
-      discoverWorkflowsInNodeModules: false,
-      warn,
-    });
-    expect(warn.mock.calls[0][0]).toMatch(/node_modules discovery is off/);
-  });
-
-  it('still fails the build for a package discovery walks', () => {
-    expect(() =>
-      assertWorkflowStepsAreRegistered({
-        workflowsManifest: manifestFor('node_modules/with-dep/index.js'),
-        stepsManifest: {},
-        workingDir,
-      })
-    ).toThrow(WorkflowBuildError);
-  });
-
-  it('fails the build for the missed steps and warns for the skipped ones', () => {
-    const warn = vi.fn();
-    const workflowsManifest: WorkflowManifest = {
-      steps: {
-        ...manifestFor('node_modules/no-dep/index.js').steps,
-        ...steps({
-          'workflows/a.ts': { doWork: 'step//./workflows/a//doWork' },
-        }).steps,
-      },
-    };
     let error: unknown;
     try {
       assertWorkflowStepsAreRegistered({
-        workflowsManifest,
+        workflowsManifest: steps({
+          [key]: { unusedStep: `step//${key}//unusedStep` },
+        }),
         stepsManifest: {},
-        workingDir,
+        discovery: {
+          stepFilePaths: new Map([[key, path]]),
+          discoveredFiles: new Set(discoveredFiles),
+          discoverWorkflowsInNodeModules,
+        },
         warn,
       });
     } catch (caught) {
       error = caught;
     }
+    return {
+      error,
+      warning: warn.mock.calls.map((call) => call[0]).join('\n'),
+    };
+  };
+
+  beforeEach(() => {
+    delete process.env[ALLOW_UNREGISTERED_STEPS_ENV];
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'workflow-step-check-')));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('fails the build for an application file discovery read', () => {
+    const path = file('app/workflows/a.ts');
+    const { error } = check({
+      key: 'workflows/a.ts',
+      path,
+      discoveredFiles: [path],
+    });
     expect(error).toBeInstanceOf(WorkflowBuildError);
-    expect((error as Error).message).toMatch(
-      /can call 1 step[\s\S]*doWork in workflows\/a\.ts/
+  });
+
+  it('fails the build for a package file discovery read', () => {
+    const path = file('app/node_modules/lib/index.js', {
+      name: 'lib',
+      dependencies: { workflow: '*' },
+    });
+    const { error } = check({
+      key: 'node_modules/lib/index.js',
+      path,
+      discoveredFiles: [path],
+    });
+    expect(error).toBeInstanceOf(WorkflowBuildError);
+  });
+
+  it('counts a file discovery read through a symlink as read', () => {
+    const path = file('packages/lib/index.js', { name: 'lib' });
+    mkdirSync(join(root, 'app/node_modules'), { recursive: true });
+    symlinkSync(
+      join(root, 'packages/lib'),
+      join(root, 'app/node_modules/lib'),
+      'junction'
     );
-    expect((error as Error).message).not.toContain('unusedStep');
+    const { error } = check({
+      key: 'node_modules/lib/index.js',
+      path,
+      discoveredFiles: [join(root, 'app/node_modules/lib/index.js')],
+    });
+    expect(error).toBeInstanceOf(WorkflowBuildError);
+  });
+
+  it('fails the build for an SDK file discovery did not read', () => {
+    // Discovery always reads the SDK while it descends into node_modules, so
+    // an SDK step it did not read (Run's, when @workflow/core cannot be
+    // resolved) is a discovery bug.
+    const path = file('app/node_modules/@workflow/core/dist/runtime/run.js', {
+      name: '@workflow/core',
+    });
+    const { error } = check({
+      key: 'node_modules/@workflow/core/dist/runtime/run.js',
+      path,
+      discoveredFiles: [],
+    });
+    expect(error).toBeInstanceOf(WorkflowBuildError);
+  });
+
+  it.each([
+    ['in a package installed in the app', 'app/node_modules/lib/index.js'],
+    [
+      'in a package hoisted to the repository root',
+      'node_modules/lib/index.js',
+    ],
+    ['in a package elsewhere in the repository', 'packages/lib/index.js'],
+  ])('warns for a step %s that discovery did not read', (_label, relativePath) => {
+    // The package depends on workflow, so neither its location nor its own
+    // manifest says discovery skipped it: only what discovery read does
+    // (here, it was reached through a package that does not depend on
+    // workflow).
+    const path = file(relativePath, {
+      name: 'lib',
+      dependencies: { workflow: '*' },
+    });
+    const { error, warning } = check({
+      key: 'node_modules/lib/index.js',
+      path,
+      discoveredFiles: [],
+    });
+    expect(error).toBeUndefined();
+    expect(warning).toMatch(
+      /unusedStep in node_modules\/lib\/index\.js .*: discovery did not read this file/
+    );
+    expect(warning).not.toMatch(/Workflow SDK bug/);
+  });
+
+  it('warns for an SDK step while node_modules discovery is off', () => {
+    // With node_modules discovery off the SDK is not read either, so its
+    // steps (fetch in workflow/stdlib) cannot be registered. That is the
+    // opt-out working, not a bug.
+    const path = file('app/node_modules/workflow/dist/stdlib.js', {
+      name: 'workflow',
+    });
+    const { error, warning } = check({
+      key: 'node_modules/workflow/dist/stdlib.js',
+      path,
+      discoveredFiles: [],
+      discoverWorkflowsInNodeModules: false,
+    });
+    expect(error).toBeUndefined();
+    expect(warning).toMatch(/node_modules discovery is off/);
+  });
+
+  it('fails the build for the missed steps and warns for the skipped ones', () => {
+    const read = file('app/workflows/a.ts');
+    const unread = file('node_modules/lib/index.js', { name: 'lib' });
+    const warn = vi.fn();
+    expect(() =>
+      assertWorkflowStepsAreRegistered({
+        workflowsManifest: steps({
+          'workflows/a.ts': { doWork: 'step//./workflows/a//doWork' },
+          'node_modules/lib/index.js': {
+            unusedStep: 'step//lib@1.0.0//unusedStep',
+          },
+        }),
+        stepsManifest: {},
+        discovery: {
+          stepFilePaths: new Map([
+            ['workflows/a.ts', read],
+            ['node_modules/lib/index.js', unread],
+          ]),
+          discoveredFiles: new Set([read]),
+          discoverWorkflowsInNodeModules: true,
+        },
+        warn,
+      })
+    ).toThrow(/can call 1 step[\s\S]*doWork in workflows\/a\.ts/);
     expect(warn).toHaveBeenCalledOnce();
     expect(warn.mock.calls[0][0]).toContain(
-      'unusedStep in node_modules/no-dep/index.js'
+      'unusedStep in node_modules/lib/index.js'
     );
   });
 
-  it('treats every unregistered step as missed when it is not given the project directory', () => {
+  it('fails the build for a step whose file it does not know', () => {
     expect(() =>
       assertWorkflowStepsAreRegistered({
-        workflowsManifest: manifestFor('node_modules/no-dep/index.js'),
+        workflowsManifest: steps({
+          'workflows/a.ts': { doWork: 'step//./workflows/a//doWork' },
+        }),
+        stepsManifest: {},
+        discovery: {
+          stepFilePaths: new Map(),
+          discoveredFiles: new Set(),
+          discoverWorkflowsInNodeModules: true,
+        },
+      })
+    ).toThrow(WorkflowBuildError);
+  });
+
+  it('treats every unregistered step as missed without discovery facts', () => {
+    expect(() =>
+      assertWorkflowStepsAreRegistered({
+        workflowsManifest: steps({
+          'node_modules/lib/index.js': { unusedStep: 'step//lib//unusedStep' },
+        }),
         stepsManifest: {},
       })
     ).toThrow(WorkflowBuildError);

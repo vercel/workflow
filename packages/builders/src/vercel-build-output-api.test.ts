@@ -663,7 +663,7 @@ export async function orderWorkflow(n: number) {
       });
       const warnings = await buildAndCollectWarnings(createConfig(workingDir));
       expect(warnings).toMatch(
-        /unusedStep in node_modules\/helper-lib\/index\.js .*: its package does not depend on workflow/
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not read this file/
       );
     }
   );
@@ -684,6 +684,151 @@ export async function orderWorkflow(n: number) {
       });
       expect(warnings).toMatch(
         /unusedStep in node_modules\/helper-lib\/index\.js .*: node_modules discovery is off/
+      );
+    }
+  );
+
+  it(
+    'builds, with a warning, when a monorepo hoists the package to the repository root',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // The app lives in apps/web and the package in the root node_modules,
+      // as npm, yarn and pnpm workspaces install it. The manifest records the
+      // file as node_modules/helper-lib/index.js, relative to neither.
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+      });
+      const appDir = join(workingDir, 'apps/web');
+      await write(
+        join(appDir, 'package.json'),
+        JSON.stringify({
+          name: 'web',
+          private: true,
+          dependencies: { workflow: '*', 'helper-lib': '*' },
+        })
+      );
+      await write(
+        join(appDir, 'src/workflows/order.ts'),
+        `import { format } from 'helper-lib';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(appDir));
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: discovery did not read this file/
+      );
+    }
+  );
+
+  it(
+    'builds, with a warning, for a package in the repository that does not depend on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // A workspace package: linked into node_modules, its real path outside it.
+      const packageDir = join(workingDir, 'packages/internal-lib');
+      await write(
+        join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: 'internal-lib',
+          version: '1.0.0',
+          type: 'module',
+        })
+      );
+      await write(
+        join(packageDir, 'index.js'),
+        `export function format(n) {
+  return '#' + n;
+}
+
+export async function unusedStep() {
+  'use step';
+  return 'registered';
+}
+`
+      );
+      symlinkSync(
+        packageDir,
+        join(workingDir, 'node_modules/internal-lib'),
+        'junction'
+      );
+      await write(
+        join(workingDir, 'src/workflows/order.ts'),
+        `import { format } from 'internal-lib';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).toMatch(
+        /unusedStep in .*internal-lib\/index\.js .*: discovery did not read this file/
+      );
+      expect(warnings).not.toMatch(/Workflow SDK bug/);
+    }
+  );
+
+  it(
+    'builds, with a warning, when the package is reached through one that does not depend on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // chain-a re-exports chain-b. chain-b depends on workflow, but
+      // discovery stops at chain-a, which does not.
+      await write(
+        join(workingDir, 'node_modules/chain-a/package.json'),
+        JSON.stringify({
+          name: 'chain-a',
+          version: '1.0.0',
+          type: 'module',
+          main: 'index.js',
+        })
+      );
+      await write(
+        join(workingDir, 'node_modules/chain-a/index.js'),
+        "export { format } from 'chain-b';\n"
+      );
+      await write(
+        join(workingDir, 'node_modules/chain-b/package.json'),
+        JSON.stringify({
+          name: 'chain-b',
+          version: '1.0.0',
+          type: 'module',
+          main: 'index.js',
+          dependencies: { workflow: '*' },
+        })
+      );
+      await write(
+        join(workingDir, 'node_modules/chain-b/index.js'),
+        `export function format(n) {
+  return '#' + n;
+}
+
+export async function unusedStep() {
+  'use step';
+  return 'registered';
+}
+`
+      );
+      await write(
+        join(workingDir, 'src/workflows/order.ts'),
+        `import { format } from 'chain-a';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/chain-b\/index\.js .*: discovery did not read this file/
       );
     }
   );

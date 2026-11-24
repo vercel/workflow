@@ -1,11 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { ERROR_SLUGS, WorkflowBuildError } from '@workflow/errors';
 import type { WorkflowManifest } from './apply-swc-transform.js';
-import {
-  isNodeModulesPath,
-  packageDeclaresWorkflow,
-} from './fast-discovery.js';
+import { isNodeModulesPath } from './fast-discovery.js';
 
 /**
  * Escape hatch that downgrades the unregistered-step build failure to a
@@ -67,72 +64,138 @@ export function findUnregisteredSteps({
 }
 
 /**
- * Why discovery did not read a step's file on purpose, so the steps bundle
- * cannot register it:
+ * What discovery did in this build, which tells a step discovery missed (a
+ * bug) apart from a step in a file discovery never reads.
+ */
+export interface DiscoveryFacts {
+  /** The file each workflow manifest `steps` key was compiled from. */
+  stepFilePaths: ReadonlyMap<string, string>;
+  /**
+   * The files discovery read. Without it every unregistered step fails the
+   * build, as it cannot be told apart.
+   */
+  discoveredFiles?: ReadonlySet<string>;
+  /** Whether discovery descended into `node_modules`. */
+  discoverWorkflowsInNodeModules: boolean;
+}
+
+/**
+ * Why discovery did not read the file a step is in:
  *
- * - `node-modules-discovery-disabled`: the file is under `node_modules` and
- *   discovery does not descend into `node_modules`
+ * - `node-modules-discovery-disabled`: the file is under `node_modules`, or
+ *   in the SDK, while discovery does not descend into `node_modules`
  *   (`WORKFLOW_DISCOVER_NODE_MODULES=0` or `discoverWorkflowsInNodeModules:
  *   false`).
- * - `no-workflow-dependency`: the file belongs to a package under
- *   `node_modules` that lists neither `workflow` nor an `@workflow/*`
- *   package among its dependencies, which discovery does not walk.
+ * - `not-reached`: discovery reads a package only when it depends on
+ *   `workflow` or an `@workflow/*` package, so a file reached only through a
+ *   package that does not, wherever it is installed, is never read.
  */
 export type SkippedStepReason =
   | 'node-modules-discovery-disabled'
-  | 'no-workflow-dependency';
+  | 'not-reached';
 
 export interface SkippedUnregisteredStep extends UnregisteredStep {
   reason: SkippedStepReason;
 }
 
-/**
- * The nearest `package.json` above `filePath` that parses, read the way
- * discovery reads it (`findPackageInfo` in `fast-discovery.ts`), or
- * `undefined` when there is none.
- */
-function readNearestPackageJson(
-  filePath: string
-): Parameters<typeof packageDeclaresWorkflow>[0] | undefined {
+const isWindows = process.platform === 'win32';
+
+const normalizeForComparison = (filePath: string) => {
+  const normalized = filePath.replace(/\\/g, '/');
+  return isWindows ? normalized.toLowerCase() : normalized;
+};
+
+function tryRealpath(filePath: string): string | undefined {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether the nearest `package.json` above `filePath` is the SDK's. */
+function isSdkFile(filePath: string): boolean {
   let currentDir = dirname(filePath);
   while (currentDir && currentDir !== dirname(currentDir)) {
     try {
-      return JSON.parse(
+      const { name } = JSON.parse(
         readFileSync(resolve(currentDir, 'package.json'), 'utf8')
+      ) as { name?: unknown };
+      return (
+        typeof name === 'string' &&
+        (name === 'workflow' || name.startsWith('@workflow/'))
       );
     } catch {
       currentDir = dirname(currentDir);
     }
   }
-  return undefined;
+  return false;
 }
 
 /**
- * Why discovery skipped `file` on purpose, or `undefined` when discovery was
- * supposed to read it (an application file, or a package it walks). Only a
- * step in a file discovery was supposed to read points at a discovery bug.
+ * Returns a check for whether discovery read a file. Paths are compared as
+ * given first, then by their real paths, so a file discovery reached through
+ * a symlink still counts as read. The real paths are only computed when the
+ * first comparison misses.
  */
-export function getSkippedStepReason({
-  file,
-  workingDir,
-  discoverWorkflowsInNodeModules,
-}: {
-  file: string;
-  workingDir: string;
-  discoverWorkflowsInNodeModules: boolean;
-}): SkippedStepReason | undefined {
-  const absolutePath = resolve(workingDir, file);
-  if (!isNodeModulesPath(absolutePath)) {
-    return undefined;
+function createDiscoveredFileCheck(discoveredFiles: ReadonlySet<string>) {
+  const discovered = new Set(
+    [...discoveredFiles].map((file) => normalizeForComparison(file))
+  );
+  let discoveredRealpaths: Set<string> | undefined;
+  return (filePath: string) => {
+    if (discovered.has(normalizeForComparison(filePath))) {
+      return true;
+    }
+    discoveredRealpaths ??= new Set(
+      [...discoveredFiles].flatMap((file) => {
+        const real = tryRealpath(file);
+        return real ? [normalizeForComparison(real)] : [];
+      })
+    );
+    const real = tryRealpath(filePath);
+    return (
+      real !== undefined &&
+      discoveredRealpaths.has(normalizeForComparison(real))
+    );
+  };
+}
+
+/**
+ * Splits unregistered steps into the ones discovery missed, which fail the
+ * build, and the ones in files discovery did not read on purpose, which only
+ * warn. A step counts as missed when discovery read its file, when its file
+ * is in the SDK while discovery descends into `node_modules` (discovery
+ * always reads the SDK then), or when the facts to tell are not there.
+ */
+export function classifyUnregisteredSteps(
+  steps: UnregisteredStep[],
+  discovery: DiscoveryFacts | undefined
+): { missed: UnregisteredStep[]; skipped: SkippedUnregisteredStep[] } {
+  const missed: UnregisteredStep[] = [];
+  const skipped: SkippedUnregisteredStep[] = [];
+  if (!discovery?.discoveredFiles) {
+    return { missed: steps, skipped };
   }
-  if (!discoverWorkflowsInNodeModules) {
-    return 'node-modules-discovery-disabled';
+  const wasRead = createDiscoveredFileCheck(discovery.discoveredFiles);
+  for (const step of steps) {
+    const filePath = discovery.stepFilePaths.get(step.file);
+    if (filePath === undefined || wasRead(filePath)) {
+      missed.push(step);
+      continue;
+    }
+    if (!discovery.discoverWorkflowsInNodeModules) {
+      if (isSdkFile(filePath) || isNodeModulesPath(filePath)) {
+        skipped.push({ ...step, reason: 'node-modules-discovery-disabled' });
+        continue;
+      }
+    } else if (isSdkFile(filePath)) {
+      missed.push(step);
+      continue;
+    }
+    skipped.push({ ...step, reason: 'not-reached' });
   }
-  const packageJson = readNearestPackageJson(absolutePath);
-  if (packageJson && !packageDeclaresWorkflow(packageJson)) {
-    return 'no-workflow-dependency';
-  }
-  return undefined;
+  return { missed, skipped };
 }
 
 export function formatUnregisteredStepsMessage(
@@ -153,8 +216,8 @@ export function formatUnregisteredStepsMessage(
 
 const SKIPPED_REASON_TEXT: Record<SkippedStepReason, string> = {
   'node-modules-discovery-disabled': 'node_modules discovery is off',
-  'no-workflow-dependency':
-    'its package does not depend on workflow or an @workflow/* package',
+  'not-reached':
+    'discovery did not read this file, which it reads only through packages that depend on workflow or an @workflow/* package',
 };
 
 export function formatSkippedStepsMessage(
@@ -185,8 +248,8 @@ function buildHint(): string {
 
 function buildSkippedHint(): string {
   return [
-    'Discovery reads a package under node_modules only while node_modules discovery is on (WORKFLOW_DISCOVER_NODE_MODULES, or the discoverWorkflowsInNodeModules option), and only when the package depends on workflow or an @workflow/* package.',
-    'Nothing breaks unless workflow code calls one of these steps. If it does, turn node_modules discovery back on, or add the dependency to that package.',
+    'Discovery reads a package only when it depends on workflow or an @workflow/* package, and reads nothing under node_modules while node_modules discovery is off (WORKFLOW_DISCOVER_NODE_MODULES, or the discoverWorkflowsInNodeModules option).',
+    'Nothing breaks unless workflow code calls one of these steps. If it does, turn node_modules discovery back on, or add the dependency to the package that contains the step and to each package that imports it on the way.',
     `See ${DOCS_URL}`,
   ].join(' ');
 }
@@ -195,11 +258,11 @@ function buildSkippedHint(): string {
  * Fails the build when the workflow bundle can call a step that the steps
  * bundle does not register.
  *
- * A step whose file discovery skipped on purpose (see `SkippedStepReason`)
- * only produces a warning: the workflow bundle compiles every step in a file
- * it imports, called or not, so failing on those would fail builds where
- * nothing calls the step. They are told apart only when `workingDir` is
- * given; without it every unregistered step fails the build.
+ * The workflow bundle compiles every step in a file it imports, called or
+ * not, while discovery does not read some files on purpose. A step in such a
+ * file only produces a warning, as failing on it would fail builds where
+ * nothing calls the step. See `classifyUnregisteredSteps`. Without
+ * `discovery`, every unregistered step fails the build.
  *
  * @param warn - Sink for the warnings: skipped steps, and every unregistered
  * step when the escape hatch is set.
@@ -207,16 +270,12 @@ function buildSkippedHint(): string {
 export function assertWorkflowStepsAreRegistered({
   workflowsManifest,
   stepsManifest,
-  workingDir,
-  discoverWorkflowsInNodeModules = true,
+  discovery,
   warn = (message: string) => console.warn(message),
 }: {
   workflowsManifest: WorkflowManifest;
   stepsManifest: WorkflowManifest;
-  /** Directory the manifest file keys are relative to. */
-  workingDir?: string;
-  /** Whether discovery descended into `node_modules` for this build. */
-  discoverWorkflowsInNodeModules?: boolean;
+  discovery?: DiscoveryFacts;
   warn?: (message: string) => void;
 }): UnregisteredStep[] {
   const unregistered = findUnregisteredSteps({
@@ -225,24 +284,10 @@ export function assertWorkflowStepsAreRegistered({
   });
   if (unregistered.length === 0) return unregistered;
 
-  const missed: UnregisteredStep[] = [];
-  const skipped: SkippedUnregisteredStep[] = [];
-  for (const step of unregistered) {
-    const reason =
-      workingDir === undefined
-        ? undefined
-        : getSkippedStepReason({
-            file: step.file,
-            workingDir,
-            discoverWorkflowsInNodeModules,
-          });
-    if (reason) {
-      skipped.push({ ...step, reason });
-    } else {
-      missed.push(step);
-    }
-  }
-
+  const { missed, skipped } = classifyUnregisteredSteps(
+    unregistered,
+    discovery
+  );
   if (skipped.length > 0) {
     warn(`${formatSkippedStepsMessage(skipped)}\n${buildSkippedHint()}`);
   }

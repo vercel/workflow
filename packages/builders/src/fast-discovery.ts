@@ -297,7 +297,7 @@ function extractImportSpecifiers(source: string): string[] {
  *
  * @param packageName - The name to use when the manifest has none.
  */
-export function packageDeclaresWorkflow(
+function packageDeclaresWorkflow(
   parsed: {
     name?: unknown;
     dependencies?: unknown;

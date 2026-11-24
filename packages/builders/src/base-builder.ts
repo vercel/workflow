@@ -46,7 +46,10 @@ import {
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { assertWorkflowStepsAreRegistered } from './step-registration-check.js';
-import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import {
+  createSwcPlugin,
+  type WorkflowAfterTransformHook,
+} from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
@@ -1336,6 +1339,12 @@ export const __steps_registered = ${stepsRegistered};
     interimBundleText?: string;
     /** The initial workflow VM build graph. */
     interimBundleMetafile?: esbuild.Metafile;
+    /**
+     * The file each `manifest.steps` key was compiled from. Manifest keys are
+     * relative and drop `../` for files outside the working directory, so
+     * they cannot be resolved back to a file on their own.
+     */
+    stepFilePaths: Map<string, string>;
   }> {
     const discovered =
       discoveredEntries ??
@@ -1415,6 +1424,13 @@ export const __steps_registered = ${stepsRegistered};
 
     const bundleStartTime = Date.now();
     const workflowManifest: WorkflowManifest = {};
+    const stepFilePaths = new Map<string, string>();
+    const recordStepFilePaths: WorkflowAfterTransformHook = async (result) => {
+      for (const file of Object.keys(result.workflowManifest.steps ?? {})) {
+        stepFilePaths.set(file, result.absolutePath);
+      }
+      await this.config.onAfterTransform?.(result);
+    };
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
     const normalizedWorkflowSideEffectEntries = await withRealpaths([
@@ -1486,7 +1502,7 @@ export const __steps_registered = ${stepsRegistered};
           projectRoot: this.transformProjectRoot,
           moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
-          onAfterTransform: this.config.onAfterTransform,
+          onAfterTransform: recordStepFilePaths,
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
@@ -1692,12 +1708,14 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           bundleFinal,
           interimBundleText,
           interimBundleMetafile: interimBundle.metafile,
+          stepFilePaths,
         };
       }
       return {
         manifest: workflowManifest,
         interimBundleText,
         interimBundleMetafile: interimBundle.metafile,
+        stepFilePaths,
       };
     } catch (error) {
       shouldDisposeInterimBundleCtx = true;
@@ -1824,9 +1842,12 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       assertWorkflowStepsAreRegistered({
         workflowsManifest: workflowsResult.manifest,
         stepsManifest,
-        workingDir: this.config.workingDir,
-        discoverWorkflowsInNodeModules:
-          this.resolveDiscoverWorkflowsInNodeModules(),
+        discovery: {
+          stepFilePaths: workflowsResult.stepFilePaths,
+          discoveredFiles: effectiveDiscoveredEntries.discoveredFiles,
+          discoverWorkflowsInNodeModules:
+            this.resolveDiscoverWorkflowsInNodeModules(),
+        },
         warn: (message) => console.warn(chalk.yellow(message)),
       });
     } catch (error) {
