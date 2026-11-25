@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertCircle, ChevronDown } from 'lucide-react';
+import { ChevronDown, OctagonAlert } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '../../lib/cn';
 
@@ -28,23 +28,24 @@ export function ErrorCard({
     <div className="flex justify-center w-full">
       <div
         className={cn(
-          'rounded-lg border border-red-400 w-full max-w-[800px]',
+          'rounded-md border border-red-100 bg-red-200 w-full max-w-[800px]',
           className
         )}
-        style={{ background: 'var(--ds-red-100)' }}
       >
         <button
           type="button"
+          aria-expanded={isExpanded}
           onClick={() => setIsExpanded(!isExpanded)}
-          className="w-full px-4 py-3 flex items-center justify-between gap-2 text-left transition-colors"
-          style={{ color: 'var(--ds-red-900)' }}
+          className="w-full min-h-(--ds-size-medium) px-3 py-1.5 flex items-center justify-between gap-3 text-left text-red-900"
         >
-          <div className="flex items-center gap-2">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <span className="font-medium text-label-14">{title}</span>
+          <div className="flex items-center gap-3">
+            <OctagonAlert className="size-3.5 shrink-0" />
+            <span className="text-copy-14 font-semibold">{title}</span>
           </div>
           <div className="flex items-center gap-1.5 text-red-800">
-            <span className="text-label-12">Click to show details</span>
+            <span className="text-label-12">
+              {isExpanded ? 'Hide details' : 'Show details'}
+            </span>
             <ChevronDown
               className={cn(
                 'h-4 w-4 transition-transform duration-200',
@@ -55,17 +56,8 @@ export function ErrorCard({
         </button>
 
         {isExpanded && details && (
-          <div
-            className="px-4 pb-3"
-            style={{ borderTop: '1px solid var(--ds-red-400)' }}
-          >
-            <pre
-              className="mt-3 p-3 rounded-md text-label-12-mono whitespace-pre-wrap break-words overflow-auto"
-              style={{
-                background: 'var(--ds-red-200)',
-                color: 'var(--ds-red-900)',
-              }}
-            >
+          <div className="px-3 pb-3 border-t border-red-400">
+            <pre className="mt-3 p-3 rounded-md border border-red-400 bg-red-300 text-red-1000 text-label-12-mono whitespace-pre-wrap break-words overflow-auto">
               {details}
             </pre>
           </div>
