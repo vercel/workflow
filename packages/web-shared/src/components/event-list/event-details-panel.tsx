@@ -265,8 +265,6 @@ function EventDetailsBody({
 
   return (
     <div className="@container px-4 pb-8">
-      {/* The start time is already in the selected row; Timing adds
-          the step's breakdown, or the duration for other events. */}
       {timingTotal > 0 ? (
         <Collapsible
           defaultOpen

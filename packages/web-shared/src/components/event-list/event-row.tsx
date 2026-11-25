@@ -199,7 +199,6 @@ export interface EventRowProps {
   row: EventListRow;
   /** Position among events (not gap rows); drives zebra striping. */
   index: number;
-  /** Time since the listed event before this one; unset for the earliest. */
   sincePreviousMs?: number;
   isSelected: boolean;
   /** The one row Tab lands on (roving tabindex): the selection, else the first row. */

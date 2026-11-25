@@ -519,7 +519,6 @@ export type EventListItem =
       kind: 'event';
       row: EventListRow;
       index: number;
-      /** Time since the listed event before this one; unset for the earliest. */
       sincePreviousMs?: number;
     }
   | { kind: 'gap'; key: string; ms: number; reason: string };
@@ -541,8 +540,6 @@ export function buildListItems(
   options: { showGaps: boolean; hookNameMap: Map<string, string> }
 ): EventListItem[] {
   const items: EventListItem[] = [];
-  // The event before a row in time sits above it in an oldest-first list and
-  // below it in a newest-first one.
   const isNewestFirst =
     rows.length > 1 &&
     getEffectiveEventTime(rows[0].event) >
