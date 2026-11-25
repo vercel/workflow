@@ -701,7 +701,7 @@ export function RunDetailView({
                   <div className="text-xs text-muted-foreground">Queued</div>
                   {run.createdAt ? (
                     <div className="text-xs">
-                      <RelativeTime date={run.createdAt} hover="card" />
+                      <RelativeTime date={run.createdAt} />
                     </div>
                   ) : (
                     <Skeleton className="h-4" />
@@ -712,7 +712,7 @@ export function RunDetailView({
                   <div className="text-xs">
                     {run.runId ? (
                       run.startedAt ? (
-                        <RelativeTime date={run.startedAt} hover="card" />
+                        <RelativeTime date={run.startedAt} />
                       ) : (
                         '-'
                       )
@@ -726,7 +726,7 @@ export function RunDetailView({
                   <div className="text-xs">
                     {run.runId ? (
                       run.completedAt ? (
-                        <RelativeTime date={run.completedAt} hover="card" />
+                        <RelativeTime date={run.completedAt} />
                       ) : (
                         '-'
                       )
