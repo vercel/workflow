@@ -493,7 +493,7 @@ function RelatedHint({
 
 export function EventListView(props: EventsListProps) {
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider>
       <ContextCardProvider>
         <EventListViewInner {...props} />
       </ContextCardProvider>

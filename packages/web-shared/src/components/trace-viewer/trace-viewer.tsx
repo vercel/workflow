@@ -137,7 +137,7 @@ export function TraceViewer({
   initialSelectedSpanId,
 }: TraceViewerProps): ReactNode {
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider>
       <ActiveSpanProvider
         spans={trace.spans}
         initialSelectedSpanId={initialSelectedSpanId}
