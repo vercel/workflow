@@ -10,9 +10,8 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
-import { otelTimeToMs } from '../../../lib/time';
+import { formatDuration, otelTimeToMs } from '../../../lib/time';
 import type { Span } from '../types';
-import { formatDurationPrecise } from '../util/timing';
 import {
   clampViewportToRoot,
   isSpanCancelled,
@@ -518,11 +517,11 @@ export const Minimap = memo(function Minimap({
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={scrollPercent}
-        aria-valuetext={`Viewing ${formatDurationPrecise(
+        aria-valuetext={`Viewing ${formatDuration(
           viewport.start - rootStartMs
-        )} to ${formatDurationPrecise(
+        )} to ${formatDuration(
           viewport.end - rootStartMs
-        )} of ${formatDurationPrecise(rootDurationMs)}`}
+        )} of ${formatDuration(rootDurationMs)}`}
         aria-label="Timeline overview"
         tabIndex={0}
         onKeyDown={handleKeyDown}

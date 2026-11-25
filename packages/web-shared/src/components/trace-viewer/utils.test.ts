@@ -261,25 +261,44 @@ describe('computeTimeMarkers', () => {
     // A ~3s window drops the tick step to 500ms. Before the fix this rendered
     // duplicate "2s, 2s, 3s, 3s" labels; now each tick is distinct.
     const labels = computeTimeMarkers(3000, 0).map((m) => m.label);
-    expect(labels).toEqual(['0s', '500ms', '1s', '1.5s', '2s', '2.5s', '3s']);
+    expect(labels).toEqual(['0ms', '500ms', '1s', '1.5s', '2s', '2.5s', '3s']);
     expect(new Set(labels).size).toBe(labels.length);
   });
 
   it('keeps clean whole-second labels when the step is >=1s', () => {
     const labels = computeTimeMarkers(10_000, 0).map((m) => m.label);
-    expect(labels).toEqual(['0s', '2s', '4s', '6s', '8s', '10s']);
+    expect(labels).toEqual(['0ms', '2s', '4s', '6s', '8s', '10s']);
   });
 
   it('still reads in ms when super zoomed in', () => {
     const labels = computeTimeMarkers(120, 0).map((m) => m.label);
     expect(labels).toEqual([
-      '0s',
+      '0ms',
       '20ms',
       '40ms',
       '60ms',
       '80ms',
       '100ms',
       '120ms',
+    ]);
+  });
+
+  it('steps long windows by round units of time', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    expect(computeTimeMarkers(7 * DAY, 0).map((m) => m.label)).toEqual([
+      '0ms',
+      '2d',
+      '4d',
+      '6d',
+    ]);
+    expect(computeTimeMarkers(DAY / 16, 0).map((m) => m.label)).toEqual([
+      '0ms',
+      '15m',
+      '30m',
+      '45m',
+      '1h',
+      '1h 15m',
+      '1h 30m',
     ]);
   });
 });

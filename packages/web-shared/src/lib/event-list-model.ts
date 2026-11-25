@@ -16,16 +16,16 @@ import { DUPLICATE_EVENT_MESSAGE } from './duplicate-events';
 import type { ExactWorkflowSearchId } from './exact-event-search-id';
 import { isEncryptedMarker } from './hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from './sealed-events';
-import { formatTimestamp, getEventDate, parseDate } from './time';
-import { formatDurationPrecise } from './utils';
+import {
+  formatDuration,
+  formatTimestamp,
+  getEventDate,
+  parseDate,
+} from './time';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Time
 // ──────────────────────────────────────────────────────────────────────────
-
-export function formatElapsed(ms: number): string {
-  return ms <= 0 ? '0ms' : `+${formatDurationPrecise(ms)}`;
-}
 
 /** Sorts a copy of `events` by when each happened. */
 export function sortEventsByTime(
@@ -348,7 +348,7 @@ function getEventMessage(event: Event, queuedMs?: number): string {
   switch (event.eventType) {
     case 'step_started':
       if (attempt && attempt > 1) return `attempt ${attempt}`;
-      return queuedMs ? `queued ${formatDurationPrecise(queuedMs)}` : '';
+      return queuedMs ? `queued ${formatDuration(queuedMs)}` : '';
     case 'step_retrying': {
       const retryAt = parseDate(data.retryAfter);
       const head = attempt ? `attempt ${attempt} failed` : 'attempt failed';

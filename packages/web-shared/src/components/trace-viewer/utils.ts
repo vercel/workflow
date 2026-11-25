@@ -1,7 +1,6 @@
 import { isRunCreationEvent } from '@workflow/world';
-import { otelTimeToMs } from '../../lib/time';
+import { formatDuration, otelTimeToMs } from '../../lib/time';
 import type { Span, SpanEvent } from './types';
-import { formatDuration, formatDurationPrecise } from './util/timing';
 
 // ---------------------------------------------------------------------------
 // Root bounds
@@ -111,10 +110,11 @@ export interface TimeMarker {
 }
 
 const NICE_INTERVALS = [
-  1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000,
-  50_000, 100_000, 200_000, 500_000, 1_000_000, 2_000_000, 5_000_000,
-  10_000_000, 20_000_000, 50_000_000, 100_000_000, 200_000_000, 500_000_000,
-  1_000_000_000, 2_000_000_000, 5_000_000_000,
+  ...[1, 2, 5, 10, 20, 50, 100, 200, 500],
+  ...[1, 2, 5, 10, 15, 30].map((seconds) => seconds * 1_000),
+  ...[1, 2, 5, 10, 15, 30].map((minutes) => minutes * 60_000),
+  ...[1, 2, 3, 6, 12].map((hours) => hours * 3_600_000),
+  ...[1, 2, 5, 10, 20, 50, 100].map((days) => days * 86_400_000),
 ];
 
 const MAX_MARKERS = 8;
@@ -140,9 +140,9 @@ export function computeTimeMarkers(
   // Sub-second steps need fractional labels, or ticks past 1s collide as
   // duplicate whole seconds ("…1s, 2s, 2s, 3s"). Scale decimals to the step.
   const fractionDigits =
-    interval >= MS_IN_SECOND
-      ? 0
-      : Math.ceil(-Math.log10(interval / MS_IN_SECOND));
+    interval < MS_IN_SECOND
+      ? Math.ceil(-Math.log10(interval / MS_IN_SECOND))
+      : undefined;
 
   const firstTick = Math.ceil(offset / interval) * interval;
   const markers: TimeMarker[] = [];
@@ -152,10 +152,7 @@ export function computeTimeMarkers(
     if (position < -0.01 || position > 1.01) continue;
     markers.push({
       position: Math.min(Math.max(position, 0), 1),
-      label:
-        fractionDigits === 0
-          ? formatDuration(Math.abs(t), true)
-          : formatDurationPrecise(Math.abs(t), fractionDigits),
+      label: formatDuration(Math.abs(t), fractionDigits),
       value: t,
     });
     if (markers.length >= MAX_MARKERS) break;

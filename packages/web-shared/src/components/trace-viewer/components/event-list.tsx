@@ -1,6 +1,7 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
+import { formatDuration } from '../../../lib/time';
 import {
   TOOLTIP_DELAY_MS,
   Tooltip,
@@ -15,7 +16,6 @@ import {
 } from '../icons';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
-import { formatDurationPrecise } from '../util/timing';
 import { getSpanDurationMs, isSpanCancelled, isSpanErrored } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
@@ -130,7 +130,7 @@ const EventRow = ({
         </div>
         <div className="ml-2 shrink-0">
           <span className="text-label-14 text-gray-900 tabular-nums">
-            {formatDurationPrecise(durationMs)}
+            {formatDuration(durationMs)}
           </span>
         </div>
       </div>

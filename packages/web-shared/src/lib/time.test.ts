@@ -97,6 +97,14 @@ describe('formatDuration', () => {
     );
   });
 
+  it('carries rounding into the next unit', () => {
+    expect(formatDuration(999.5)).toBe('1s');
+    expect(formatDuration(59_995)).toBe('1m');
+    expect(formatDuration(119_999)).toBe('2m');
+    expect(formatDuration(3_659_999)).toBe('1h 1m');
+    expect(formatDuration(86_459_999)).toBe('1d 1m');
+  });
+
   it('uses the given number of decimals on the seconds', () => {
     expect(formatDuration(500, 1)).toBe('500ms');
     expect(formatDuration(1620, 1)).toBe('1.6s');

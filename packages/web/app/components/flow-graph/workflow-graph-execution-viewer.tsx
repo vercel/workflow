@@ -364,7 +364,7 @@ function renderNodeLabel(
             className="gap-1 text-xs px-1.5 py-0 bg-gray-alpha-200 border-0"
           >
             <Timer className="size-3" aria-hidden />
-            {formatDuration(latestExecution.duration, true)}
+            {formatDuration(latestExecution.duration)}
           </Badge>
         )}
       </div>
@@ -658,7 +658,7 @@ function convertToReactFlowEdges(
             </Badge>
             {avgTiming && avgTiming > 0 && (
               <span className="text-[10px] text-muted-foreground">
-                ~{formatDuration(avgTiming, true)}
+                ~{formatDuration(avgTiming)}
               </span>
             )}
           </div>
