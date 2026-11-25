@@ -3,4 +3,4 @@
 '@workflow/web': patch
 ---
 
-Relative times in the run header, the runs and hooks tables and "Last refreshed" open the time card on hover, and the card's header reads as one unit (`3 days ago`).
+Relative times in the run header, the runs and hooks tables and "Last refreshed" read as one unit (`3 days ago`) and open the time card on hover.

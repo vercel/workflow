@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
-import { formatRelativeTime, parseDate } from '../../lib/time';
+import { formatShortTimeAgo, formatTimeAgo, parseDate } from '../../lib/time';
 import {
   ContextCardProvider,
   ContextCardTrigger,
@@ -10,22 +10,19 @@ import {
   useHasContextCardProvider,
 } from './context-card';
 
-function RelativeTime({
-  date,
-  prefix,
-}: {
-  date: number;
-  prefix?: string;
-}): ReactNode {
+function useNow(intervalMs: number): number {
   const [now, setNow] = useState(Date.now);
 
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
     return () => clearInterval(timer);
-  }, []);
+  }, [intervalMs]);
 
-  const relativeTime = formatRelativeTime(date, now);
-  return prefix ? `${prefix} ${relativeTime}` : relativeTime;
+  return now;
+}
+
+function ShortTimeAgo({ date }: { date: number }): ReactNode {
+  return formatShortTimeAgo(date, useNow(60_000));
 }
 
 // ---------------------------------------------------------------------------
@@ -82,12 +79,13 @@ function ZoneDateTimeRow({
 
 function TimeCard({ date, prefix }: { date: number; prefix?: string }) {
   const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const timeAgo = formatTimeAgo(date, useNow(1000));
 
   return (
     <div className="flex flex-col gap-3 min-w-[300px]">
       <div className="flex flex-col gap-3">
         <span className="tabular-nums text-label-13 text-gray-900">
-          <RelativeTime date={date} prefix={prefix} />
+          {prefix ? `${prefix} ${timeAgo}` : timeAgo}
         </span>
       </div>
       <div className="flex flex-col gap-2">
@@ -133,7 +131,7 @@ export function TimestampTooltip({
     >
       {children ?? (
         <span>
-          <RelativeTime date={ts} />
+          <ShortTimeAgo date={ts} />
         </span>
       )}
     </ContextCardTrigger>

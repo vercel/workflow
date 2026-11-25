@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   formatDuration,
-  formatRelativeTime,
+  formatShortTimeAgo,
+  formatTimeAgo,
   formatTimestamp,
   formatTimestampParts,
   getEventDate,
@@ -114,27 +115,52 @@ describe('formatDuration', () => {
   });
 });
 
-describe('formatRelativeTime', () => {
+describe('formatTimeAgo', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('formats past dates with up to three units', () => {
+    expect(formatTimeAgo(NOW - (5 * MINUTE + 3 * SECOND), NOW)).toBe(
+      '5 minutes, 3 seconds ago'
+    );
+    expect(
+      formatTimeAgo(NOW - (7 * DAY + 18 * HOUR + 22 * MINUTE + 9 * SECOND), NOW)
+    ).toBe('7 days, 18 hours, 22 minutes ago');
+    expect(formatTimeAgo(NOW - (HOUR + SECOND), NOW)).toBe(
+      '1 hour, 0 minutes, 1 second ago'
+    );
+  });
+
+  it('formats future dates with "in"', () => {
+    expect(formatTimeAgo(NOW + (5 * MINUTE + 3 * SECOND), NOW)).toBe(
+      'in 5 minutes, 3 seconds'
+    );
+  });
+
+  it('reads sub-second differences as "Just now"', () => {
+    expect(formatTimeAgo(NOW, NOW)).toBe('Just now');
+    expect(formatTimeAgo(NOW + 500, NOW)).toBe('Just now');
+  });
+});
+
+describe('formatShortTimeAgo', () => {
   const NOW = 1_700_000_000_000;
 
   it('formats past dates in their largest unit', () => {
-    expect(formatRelativeTime(NOW - 5 * SECOND, NOW)).toBe('5 seconds ago');
-    expect(formatRelativeTime(NOW - (5 * MINUTE + 3 * SECOND), NOW)).toBe(
-      '5 minutes ago'
-    );
-    expect(formatRelativeTime(NOW - HOUR, NOW)).toBe('1 hour ago');
-    expect(formatRelativeTime(NOW - 3 * DAY, NOW)).toBe('3 days ago');
-    expect(formatRelativeTime(NOW - 70 * DAY, NOW)).toBe('2 months ago');
-    expect(formatRelativeTime(NOW - 800 * DAY, NOW)).toBe('2 years ago');
+    expect(formatShortTimeAgo(NOW - 7 * DAY, NOW)).toBe('7 days ago');
+    expect(formatShortTimeAgo(NOW - 400 * DAY, NOW)).toBe('400 days ago');
+    expect(formatShortTimeAgo(NOW - (DAY + 5 * HOUR), NOW)).toBe('1 day ago');
+    expect(formatShortTimeAgo(NOW - 5 * HOUR, NOW)).toBe('5 hours ago');
+    expect(formatShortTimeAgo(NOW - 3 * MINUTE, NOW)).toBe('3 minutes ago');
   });
 
-  it('formats future dates', () => {
-    expect(formatRelativeTime(NOW + 2 * HOUR, NOW)).toBe('in 2 hours');
+  it('formats future dates with "in"', () => {
+    expect(formatShortTimeAgo(NOW + 3 * DAY, NOW)).toBe('in 3 days');
+    expect(formatShortTimeAgo(NOW + HOUR, NOW)).toBe('in 1 hour');
   });
 
-  it('reads sub-second differences as now', () => {
-    expect(formatRelativeTime(NOW, NOW)).toBe('now');
-    expect(formatRelativeTime(NOW - 400, NOW)).toBe('now');
-    expect(formatRelativeTime(NOW + 400, NOW)).toBe('now');
+  it('reads differences under a minute as "Just now"', () => {
+    expect(formatShortTimeAgo(NOW, NOW)).toBe('Just now');
+    expect(formatShortTimeAgo(NOW - 59 * SECOND, NOW)).toBe('Just now');
+    expect(formatShortTimeAgo(NOW + 10 * SECOND, NOW)).toBe('Just now');
   });
 });

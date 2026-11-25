@@ -70,24 +70,50 @@ export function formatDuration(ms: number, fractionDigits?: number): string {
     .join(' ');
 }
 
-const relativeTimeFormat = new Intl.RelativeTimeFormat('en-US', {
-  numeric: 'auto',
-});
-
-const RELATIVE_TIME_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+const TIME_UNITS = [
   ['year', 365 * DAY],
-  ['month', 30 * DAY],
+  ['month', 2_628_000_000],
   ['day', DAY],
   ['hour', HOUR],
   ['minute', MINUTE],
-];
+  ['second', SECOND],
+] as const;
 
-export function formatRelativeTime(date: number, now: number): string {
-  const diff = date - now;
-  const [unit, size] = RELATIVE_TIME_UNITS.find(
-    ([, size]) => Math.abs(diff) >= size
-  ) ?? ['second', SECOND];
-  return relativeTimeFormat.format(Math.trunc(diff / size), unit);
+const relativeLabel = (diff: number, text: string): string =>
+  diff < 0 ? `in ${text}` : `${text} ago`;
+
+export function formatTimeAgo(date: number, now: number): string {
+  const diff = now - date;
+  let remaining = Math.abs(diff);
+  const parts: string[] = [];
+
+  for (const [unit, ms] of TIME_UNITS) {
+    const value = Math.floor(remaining / ms);
+    if (value > 0 || parts.length > 0) {
+      parts.push(`${value} ${unit}${value !== 1 ? 's' : ''}`);
+      remaining %= ms;
+    }
+    if (parts.length === 3) break;
+  }
+
+  return parts.length ? relativeLabel(diff, parts.join(', ')) : 'Just now';
+}
+
+export function formatShortTimeAgo(date: number, now: number): string {
+  const diff = now - date;
+
+  for (const [unit, ms] of [
+    ['day', DAY],
+    ['hour', HOUR],
+    ['minute', MINUTE],
+  ] as const) {
+    const value = Math.floor(Math.abs(diff) / ms);
+    if (value > 0) {
+      return relativeLabel(diff, `${value} ${unit}${value > 1 ? 's' : ''}`);
+    }
+  }
+
+  return 'Just now';
 }
 
 export function otelTimeToMs([seconds, nanoseconds]: [number, number]): number {
