@@ -7,7 +7,11 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { TooltipProvider } from '@workflow/web-shared';
-import { buildRunUsage, type RunUsage } from '@workflow/world';
+import {
+  buildRunUsage,
+  formatUsageBytes,
+  type RunUsage,
+} from '@workflow/world';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,10 +36,13 @@ const usage = (events: number, status: RunUsage['status'] = 'completed') =>
     runId: 'wrun_a',
     status,
     workflowName: 'workflow//./src/w//wf',
-    eventGroups: [{ eventType: 'run_created', events, bytes: 2000 }],
+    eventGroups: [{ eventType: 'run_created', events, bytes: events * 100 }],
     stepGroups: [],
     streamBytes: 0,
   });
+
+/** The header's storage figure for {@link usage}`(events)`. */
+const storage = (events: number) => formatUsageBytes(events * 100);
 
 /**
  * The run page's usage wiring, as run-detail-view.tsx has it: the same
@@ -60,7 +67,6 @@ function RunPageUsage({
             runId="wrun_a"
             usage={state.usage ?? undefined}
             error={state.error}
-            isLocalBackend={isLocalBackend}
             onUsagePage
           />
         </div>
@@ -121,11 +127,10 @@ describe('a failed first usage read on a finished run', () => {
     expect(fetchRunUsage).toHaveBeenCalledTimes(1);
     const header = screen.getByTestId('header');
     expect(skeletons(header)).toBe(0);
-    expect(screen.getByTestId('run-usage-events').textContent).toBe('—');
     expect(screen.getByTestId('run-usage-data-written').textContent).toBe('—');
-    expect(screen.getByTestId('run-usage-events').getAttribute('title')).toBe(
-      'Failed to read this run’s usage: database is locked'
-    );
+    expect(
+      screen.getByTestId('run-usage-data-written').getAttribute('title')
+    ).toBe('Failed to read this run’s usage: database is locked');
     // The Usage page has the full error and a way to read again.
     expect(screen.getByTestId('usage-tab').textContent).toContain(
       'Failed to read this run’s usage: database is locked'
@@ -143,7 +148,6 @@ describe('a failed first usage read on a finished run', () => {
           runId="wrun_a"
           usage={state.usage ?? undefined}
           error={state.error}
-          isLocalBackend
         />
       );
     }
@@ -151,11 +155,9 @@ describe('a failed first usage read on a finished run', () => {
     await waitFor(() =>
       expect(screen.getByTestId('run-usage-data-written').textContent).toBe('—')
     );
-    for (const testId of ['run-usage-events', 'run-usage-data-written']) {
-      const link = screen.getByTestId(testId);
-      expect(link.tagName).toBe('A');
-      expect(link.getAttribute('href')).toBe('/run/wrun_a/usage');
-    }
+    const link = screen.getByTestId('run-usage-data-written');
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe('/run/wrun_a/usage');
   });
 
   it('recovers with "Try again" in the header and the tab', async () => {
@@ -170,10 +172,9 @@ describe('a failed first usage read on a finished run', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByTestId('run-usage-events').textContent).toBe('1,234')
-    );
-    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
-      '2 KB'
+      expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+        storage(1234)
+      )
     );
     expect(screen.getByTestId('run-usage-types')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
@@ -202,7 +203,9 @@ describe('a failed first usage read on a finished run', () => {
       second.resolve(ok(usage(5)));
     });
     await waitFor(() =>
-      expect(screen.getByTestId('run-usage-events').textContent).toBe('5')
+      expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+        storage(5)
+      )
     );
   });
 });
@@ -219,12 +222,16 @@ describe('a run that finished before the page read it', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByTestId('run-usage-events').textContent).toBe('4');
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      storage(4)
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
-    expect(screen.getByTestId('run-usage-events').textContent).toBe('7');
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      storage(7)
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
@@ -260,11 +267,13 @@ describe('unchanged paths', () => {
     const first = pending();
     vi.mocked(fetchRunUsage).mockReturnValue(first.promise);
     render(<RunPageUsage live={false} />);
-    expect(skeletons(screen.getByTestId('header'))).toBe(2);
+    expect(skeletons(screen.getByTestId('header'))).toBe(1);
     expect(screen.queryByText('—')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     await act(async () => first.resolve(ok(usage(3))));
-    expect(screen.getByTestId('run-usage-events').textContent).toBe('3');
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      storage(3)
+    );
   });
 
   it('keeps the last numbers when a later poll of a live run fails', async () => {
@@ -276,15 +285,16 @@ describe('unchanged paths', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByTestId('run-usage-events').textContent).toBe('40');
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      storage(40)
+    );
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
     expect(fetchRunUsage).toHaveBeenCalledTimes(2);
-    expect(screen.getByTestId('run-usage-events').textContent).toBe('40');
     expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
-      '2 KB'
+      storage(40)
     );
     expect(screen.getByTestId('usage-tab').textContent).toContain(
       'Showing the last numbers read. Failed to refresh: database is locked'

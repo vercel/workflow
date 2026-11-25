@@ -18,7 +18,6 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  dataWrittenLabel,
   RunUsageHeaderStats,
   RunUsagePage,
   RunUsagePageSkeleton,
@@ -125,58 +124,42 @@ const childLabels = (type: string) =>
     .map((el) => el.textContent);
 
 describe('RunUsageHeaderStats', () => {
-  it("shows the whole run's events, without the retry count", () => {
+  it("shows the whole run's storage, and no event or retry count", () => {
     const usage = bigRun();
     expect(usage.retries.count).toBe(1);
-    render(
-      <RunUsageHeaderStats
-        runId="wrun_1"
-        usage={usage}
-        error={null}
-        isLocalBackend
-      />
+    render(<RunUsageHeaderStats runId="wrun_1" usage={usage} error={null} />);
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      '41.4 KB'
     );
-    expect(screen.getByTestId('run-usage-events').textContent).toBe(
-      usage.events.toLocaleString('en-US')
-    );
-    // Retries are on the step rows, not in the header.
+    // Events are on the Usage page, and retries on its step rows.
+    expect(screen.queryByTestId('run-usage-events')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/event/i);
     expect(document.body.textContent).not.toMatch(/retr/i);
     expect(document.body.textContent).not.toMatch(/billable/i);
   });
 
-  it('links both figures to the run’s Usage page', () => {
-    const usage = bigRun();
+  it('links the figure to the run’s Usage page', () => {
     render(
-      <RunUsageHeaderStats
-        runId="wrun_1"
-        usage={usage}
-        error={null}
-        isLocalBackend
-      />
+      <RunUsageHeaderStats runId="wrun_1" usage={bigRun()} error={null} />
     );
-    const events = screen.getByRole('link', {
-      name: `${usage.events.toLocaleString('en-US')} events, open usage`,
-    });
     const storage = screen.getByRole('link', {
-      name: '41.4 KB storage (local), open usage',
+      name: '41.4 KB storage, open usage',
     });
-    expect(events.getAttribute('href')).toBe('/run/wrun_1/usage');
     expect(storage.getAttribute('href')).toBe('/run/wrun_1/usage');
     expect(storage.textContent).toBe('41.4 KB');
   });
 
-  it('shows plain figures on the Usage page itself', () => {
+  it('shows a plain figure on the Usage page itself', () => {
     render(
       <RunUsageHeaderStats
         runId="wrun_1"
         usage={bigRun()}
         error={null}
-        isLocalBackend
         onUsagePage
       />
     );
-    // The figures aren't links to the page they're on; only the storage
-    // help link (to the docs) is.
+    // The figure isn't a link to the page it's on; only the storage label
+    // (to the docs) is.
     expect(
       screen.queryAllByRole('link').map((a) => a.getAttribute('href'))
     ).toEqual([STORAGE_DOCS_URL]);
@@ -184,28 +167,27 @@ describe('RunUsageHeaderStats', () => {
       '41.4 KB'
     );
   });
-  it('labels a local run’s figure “Storage (local)”', () => {
+
+  it('labels a local run’s figure plain “Storage”, with its note', () => {
     render(
-      <RunUsageHeaderStats
-        runId="wrun_1"
-        usage={bigRun()}
-        error={null}
-        isLocalBackend
-      />
+      <RunUsageHeaderStats runId="wrun_1" usage={bigRun()} error={null} />
     );
+    // The label is the link to the docs; the new tab is said out loud only.
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Storage (local)'
+      'Storage (opens in a new tab)'
     );
-    expect(document.body.textContent).not.toMatch(/data written/i);
+    expect(
+      screen.getByTestId('run-usage-data-help').querySelector('svg')
+    ).toBeNull();
+    expect(document.body.textContent).not.toMatch(/local|data written/i);
   });
 
-  it('labels a billed run’s figure plain “Storage”, with no local note', () => {
+  it('labels a billed run’s figure “Storage”, with no note', () => {
     render(
       <RunUsageHeaderStats
         runId="wrun_1"
         usage={bigRun({ billed: true })}
         error={null}
-        isLocalBackend={false}
       />
     );
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
@@ -214,24 +196,18 @@ describe('RunUsageHeaderStats', () => {
     expect(screen.queryByTestId('run-usage-data-help')).toBeNull();
   });
 
-  it('keeps “(local)” while the first read is pending on the Local World', () => {
+  it('shows a placeholder, and no note, while the first read is pending', () => {
     render(
-      <RunUsageHeaderStats
-        runId="wrun_1"
-        usage={undefined}
-        error={null}
-        isLocalBackend
-      />
+      <RunUsageHeaderStats runId="wrun_1" usage={undefined} error={null} />
     );
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Storage (local)'
+      'Storage'
     );
-    expect(screen.queryByTestId('run-usage-events')).toBeNull();
+    expect(screen.queryByTestId('run-usage-data-written')).toBeNull();
     expect(screen.queryByRole('link')).toBeNull();
-    expect(dataWrittenLabel(undefined, false)).toBe('Storage');
   });
 
-  it('says what storage counts in a tooltip, and links the docs section', async () => {
+  it('says what storage counts in the label’s tooltip, and links the docs section', async () => {
     // Radix measures the tooltip; jsdom has no ResizeObserver.
     vi.stubGlobal(
       'ResizeObserver',
@@ -242,15 +218,11 @@ describe('RunUsageHeaderStats', () => {
       }
     );
     render(
-      <RunUsageHeaderStats
-        runId="wrun_1"
-        usage={bigRun()}
-        error={null}
-        isLocalBackend
-      />
+      <RunUsageHeaderStats runId="wrun_1" usage={bigRun()} error={null} />
     );
+    // Named by its visible text; the note is its description.
     const help = screen.getByRole('link', {
-      name: 'How Storage (local) is counted (opens in a new tab)',
+      name: 'Storage (opens in a new tab)',
     });
     // The Usage page's storage section, in a new tab.
     expect(help.getAttribute('href')).toBe(STORAGE_DOCS_URL);
@@ -262,8 +234,7 @@ describe('RunUsageHeaderStats', () => {
     const tooltip = (await screen.findByRole('tooltip')).textContent ?? '';
     // The shared note, the same sentence the other surfaces read.
     expect(tooltip).toBe(formatLocalDataWrittenNote(bigRun()));
-    expect(tooltip).toContain('QuickJS VM snapshots');
-    expect(tooltip).toContain("dynamic workflow's code");
+    expect(help.getAttribute('aria-describedby')).toBeTruthy();
   });
 });
 

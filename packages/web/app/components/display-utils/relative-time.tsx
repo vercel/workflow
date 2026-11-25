@@ -1,4 +1,4 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
+import { TimestampTooltip } from '@workflow/web-shared';
 import { formatDistanceToNowStrict, formatRelative } from 'date-fns';
 import { useEffect, useState } from 'react';
 
@@ -8,6 +8,7 @@ interface RelativeTimeProps {
   type?: 'relative' | 'distance';
 }
 
+/** A relative time; hovering it shows the relative time card. */
 export function RelativeTime({
   date,
   className = '',
@@ -21,15 +22,6 @@ export function RelativeTime({
     type === 'relative'
       ? formatRelative(new Date(date), new Date())
       : formatDistanceToNowStrict(new Date(date), { addSuffix: true });
-  const absoluteTime = new Date(date).toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    timeZoneName: 'short',
-  });
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -39,15 +31,8 @@ export function RelativeTime({
   }, []);
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className={`${className} cursor-help border-b border-dotted`}>
-          {relativeTime}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent>
-        <p>{absoluteTime}</p>
-      </TooltipContent>
-    </Tooltip>
+    <TimestampTooltip date={date}>
+      <span className={className}>{relativeTime}</span>
+    </TimestampTooltip>
   );
 }

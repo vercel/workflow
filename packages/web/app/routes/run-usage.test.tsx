@@ -196,8 +196,8 @@ describe('the Usage route config', () => {
 describe('the Usage route', { timeout: 20_000 }, () => {
   it('opens from the run header, under the same header, without a second read', async () => {
     const router = renderAt('/run/wrun_1');
-    const events = await screen.findByRole('link', {
-      name: '8 events, open usage',
+    const storage = await screen.findByRole('link', {
+      name: /storage, open usage$/,
     });
     // The tabs, without a Usage tab.
     expect(screen.getByRole('tab', { name: 'Trace' })).toBeTruthy();
@@ -205,14 +205,16 @@ describe('the Usage route', { timeout: 20_000 }, () => {
     expect(screen.queryByTestId('run-usage-page')).toBeNull();
 
     await act(async () => {
-      fireEvent.click(events);
+      fireEvent.click(storage);
     });
     expect(router.state.location.pathname).toBe('/run/wrun_1/usage');
     await screen.findByTestId('run-usage-page');
     // The header stayed: its figures are text on their own page.
     expect(screen.getByRole('heading', { name: 'processOrder' })).toBeTruthy();
     expect(screen.queryByRole('link', { name: /open usage/ })).toBeNull();
-    expect(screen.getByTestId('run-usage-events').textContent).toBe('8');
+    expect(screen.getByTestId('run-usage-data-written').textContent).toBe(
+      storage.textContent
+    );
     // The tabs give way to the page.
     expect(screen.queryByRole('tab', { name: 'Trace' })).toBeNull();
     expect(screen.queryByTestId('trace-viewer')).toBeNull();
@@ -232,17 +234,6 @@ describe('the Usage route', { timeout: 20_000 }, () => {
     expect(fetchRunUsage).toHaveBeenCalledTimes(1);
   });
 
-  it('opens from Storage (local) too', async () => {
-    const router = renderAt('/run/wrun_1');
-    const data = await screen.findByRole('link', {
-      name: /storage \(local\), open usage$/,
-    });
-    await act(async () => {
-      fireEvent.click(data);
-    });
-    expect(router.state.location.pathname).toBe('/run/wrun_1/usage');
-  });
-
   it('opened directly, it renders the page with the header and the row', async () => {
     renderAt('/run/wrun_1/usage');
     await screen.findByTestId('run-usage-page');
@@ -252,7 +243,7 @@ describe('the Usage route', { timeout: 20_000 }, () => {
         .getAttribute('aria-current')
     ).toBe('page');
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Storage (local)'
+      'Storage (opens in a new tab)'
     );
   });
 
@@ -264,7 +255,7 @@ describe('the Usage route', { timeout: 20_000 }, () => {
     expect(page.textContent).toContain(
       'This page isn’t available for this backend.'
     );
-    expect(screen.queryByTestId('run-usage-events')).toBeNull();
+    expect(screen.queryByTestId('run-usage-data-written')).toBeNull();
     expect(
       screen.getByRole('link', { name: 'Back to run' }).getAttribute('href')
     ).toBe('/run/wrun_1');
@@ -294,7 +285,7 @@ describe('the Usage route', { timeout: 20_000 }, () => {
     await waitFor(() => expect(fetchRunUsage).toHaveBeenCalled());
     await act(async () => {});
     expect(screen.queryByRole('link', { name: 'Usage' })).toBeNull();
-    expect(screen.queryByTestId('run-usage-events')).toBeNull();
+    expect(screen.queryByTestId('run-usage-data-written')).toBeNull();
   });
 
   it('on the Usage page, marks Usage current and links the tabs back', async () => {

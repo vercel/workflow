@@ -614,11 +614,13 @@ export function formatDataWrittenHeading(usage: RunUsage): string {
 }
 
 /**
- * What a local run's storage counts; `null` on a billed run.
+ * The run header's tooltip on a local run's storage: what the figure stands
+ * for. The exclusions (QuickJS VM snapshots, a dynamic workflow's code) are
+ * on the docs page the label links to. `null` on a billed run.
  */
 export function formatLocalDataWrittenNote(usage: RunUsage): string | null {
   if (usage.billed) return null;
-  return "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code.";
+  return 'Estimates this run’s Data Written on Vercel from its payload and stream bytes';
 }
 
 /** The footer under the usage: not a bill, and how to read it. */
