@@ -1,0 +1,57 @@
+---
+title: DynamicWorkflowsNotEnabledError
+description: Thrown when a dynamic workflow is started or delivered on a deployment that has not enabled dynamic workflows.
+type: reference
+summary: Catch DynamicWorkflowsNotEnabledError when start() is given workflow source on a deployment without WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1.
+related:
+  - /docs/advanced/dynamic-workflows
+  - /docs/api-reference/workflow-api/start
+---
+
+`DynamicWorkflowsNotEnabledError` is thrown when your project has not enabled [dynamic workflows](/docs/advanced/dynamic-workflows):
+
+- `start()` is given workflow source on a deployment that has not opted in. No run is created.
+- A dynamic run is delivered to a deployment that has not opted in. Its stored code is not executed, and the run fails.
+
+This is a configuration problem in your project, not an SDK error, so a run that fails on it is recorded with the `USER_ERROR` code. The error is fatal: a step that calls `start()` fails on the first attempt instead of retrying.
+
+To fix it, set the `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1` environment variable on your project, then redeploy (or restart your dev server) so the new value takes effect. See [Enabling dynamic workflows](/docs/advanced/dynamic-workflows#enabling-dynamic-workflows).
+
+```typescript lineNumbers
+import { DynamicWorkflowsNotEnabledError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (DynamicWorkflowsNotEnabledError.is(error)) { // [!code highlight]
+  console.error("Dynamic workflows are not enabled:", error.message);
+}
+```
+
+## API signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface DynamicWorkflowsNotEnabledError {
+  /** Always true: retrying cannot succeed until the project opts in. */
+  fatal: true;
+  /** The error message, including how to enable dynamic workflows. */
+  message: string;
+}
+export default DynamicWorkflowsNotEnabledError;`}
+/>
+
+### Static methods
+
+#### `DynamicWorkflowsNotEnabledError.is(value)`
+
+Type-safe check for `DynamicWorkflowsNotEnabledError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
+
+```typescript
+import { DynamicWorkflowsNotEnabledError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (DynamicWorkflowsNotEnabledError.is(error)) {
+  // error is typed as DynamicWorkflowsNotEnabledError
+}
+```

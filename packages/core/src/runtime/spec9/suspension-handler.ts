@@ -8,21 +8,22 @@ import {
   type CreateEventParams,
   type CreateEventRequest,
   type SerializedData,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-
 import type {
   AttributeInvocationQueueItem,
   HookInvocationQueueItem,
+  RateInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
   WorkflowSuspension,
 } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
-
 import * as Attribute from '../../telemetry/semantic-conventions.js';
+import { rateLimitSpecVersionMessage } from '../../workflow/rate-limit-call.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
@@ -44,6 +45,12 @@ export interface SuspensionHandlerParams {
   run: WorkflowRun;
   span?: Span;
   requestId?: string;
+  /**
+   * The queue message id of the orchestrator delivery writing this
+   * suspension, recorded on each `rate_created` so its wait's timer is armed
+   * by the same message's deliveries (see `waitCreatorMessageId`).
+   */
+  creatorMessageId?: string;
   /**
    * The workflow is completing or failing. Its terminal event cleans up hooks,
    * so only dispose hooks needed to release a token early or for a later
@@ -120,6 +127,17 @@ export interface SuspensionHandlerResult {
    */
   hookConflictCorrelationIds: string[];
   /**
+   * Correlation ids of the `experimental_rateLimit()` calls whose
+   * `rate_created` the World answered at once: with `rate_acquired` (the
+   * slot is now) or `rate_failed` (it is past the call's timeout). The
+   * workflow goes on over the committed event in this delivery; a call that
+   * has to wait got a `rate_created` with `acquireAt` instead, and its timer
+   * is armed like a wait's.
+   *
+   * By id for the same reason as {@link awaitedHookCorrelationIds}.
+   */
+  resolvedRateCorrelationIds: string[];
+  /**
    * Wall-clock ms this suspension spent blocked on nothing but committing its
    * `hook_created` events (0 when it created none): the stretch the hook
    * writes outlasted every other write, since until then the suspension was
@@ -156,6 +174,7 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  creatorMessageId,
   eventLog,
   replayRecoveryReporter,
   forceClaimVictimWakes,
@@ -276,6 +295,15 @@ export async function handleSuspension({
   const attributeItems = suspension.items.filter(
     (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
+  // A finished run has nobody to wait for a slot, so the end-of-run drain
+  // reserves none.
+  const rateItems = terminalDrain
+    ? []
+    : suspension.items.filter(
+        (item): item is RateInvocationQueueItem =>
+          item.type === 'rate' && !item.hasCreatedEvent
+      );
+  const resolvedRateCorrelationIds: string[] = [];
 
   const hooksNeedingCreation = allHookItems.filter(
     (item) => !item.hasCreatedEvent
@@ -463,6 +491,66 @@ export async function handleSuspension({
     );
   }
 
+  for (const queueItem of rateItems) {
+    ops.push(
+      (async () => {
+        try {
+          // The World reserves the call's slot and commits what it decided
+          // in place of this request (see the rate events in
+          // `@workflow/world`). `creatorMessageId` makes this delivery's
+          // message the one that arms the wait's timer, as for a wait.
+          const result = await createGuarded(
+            {
+              eventType: 'rate_created',
+              specVersion: SPEC_VERSION_RATE_LIMITS,
+              correlationId: queueItem.correlationId,
+              eventData: {
+                key: queueItem.key,
+                limit: queueItem.limit,
+                periodMs: queueItem.periodMs,
+                ...(queueItem.burst !== undefined && {
+                  burst: queueItem.burst,
+                }),
+                expiresAt: queueItem.expiresAt,
+                ...(queueItem.allowReservedKey === true && {
+                  allowReservedKey: true as const,
+                }),
+                ...(creatorMessageId !== undefined && { creatorMessageId }),
+              },
+            },
+            { requestId }
+          );
+          const committed = result.event?.eventType;
+          if (committed === 'rate_acquired' || committed === 'rate_failed') {
+            resolvedRateCorrelationIds.push(queueItem.correlationId);
+          }
+        } catch (err) {
+          if (EntityConflictError.is(err)) {
+            runtimeLogger.info('Rate limit call already recorded, continuing', {
+              workflowRunId: runId,
+              correlationId: queueItem.correlationId,
+              message: err.message,
+            });
+          } else if (isWorldValidationFailure(err)) {
+            // The call is checked before it is written, so this is a limit
+            // only the World knows, such as a run stamped below spec 10 (see
+            // `createRateLimit`). Every replay writes the same request.
+            const message = err instanceof Error ? err.message : String(err);
+            const fatal = new FatalError(
+              /spec[ -]?(version )?10/i.test(message)
+                ? `${rateLimitSpecVersionMessage(run.specVersion)} (The World refused it: ${message})`
+                : `experimental_rateLimit() failed World validation: ${message}`
+            );
+            fatal.cause = err;
+            throw fatal;
+          } else {
+            throw err;
+          }
+        }
+      })()
+    );
+  }
+
   // Await the step_created / wait_created event creates before returning.
   // The caller (workflowEntrypoint) only enqueues the step-dispatch queue
   // messages AFTER handleSuspension resolves, and the queue handler acks
@@ -502,6 +590,7 @@ export async function handleSuspension({
   return {
     hookConflictCorrelationIds,
     awaitedHookCorrelationIds,
+    resolvedRateCorrelationIds,
     hookCreationMs,
     serializationBlockerCount: blockers.count,
     serializationBlockers: blockers.sample,

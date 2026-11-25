@@ -266,12 +266,14 @@ describe('dynamic workflow delivery', () => {
       storedCode: await encryptedCode(compiled.workflowCode),
     });
 
-    // Acked, not thrown: a redelivery would reach the same verdict.
+    // Acked, not thrown: a redelivery would reach the same verdict. The
+    // missing opt-in is the project's configuration, so it is USER_ERROR,
+    // not an SDK RUNTIME_ERROR.
     expect(response.status).toBe(204);
     expect(eventTypes).not.toContain('run_completed');
-    expect(runFailed?.eventData.errorCode).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+    expect(runFailed?.eventData.errorCode).toBe(RUN_ERROR_CODES.USER_ERROR);
     expect(failureMessages().join('\n')).toMatch(
-      /has not enabled dynamic workflows.*WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1/
+      /dynamic workflows are not enabled for this project on the deployment that received it[\s\S]*WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 environment variable on your project, then redeploy/
     );
     expect(
       exporter

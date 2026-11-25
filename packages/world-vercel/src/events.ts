@@ -221,9 +221,23 @@ interface SplitEventData {
     optimizations?: string[];
     /** step_created: the step's execution mode (spec >= 9). */
     inline?: boolean;
-    /** step_created / wait_created: the creating orchestrator delivery's
-     *  queue message id (spec >= 9). */
+    /** step_created / wait_created / rate_created: the creating
+     *  orchestrator delivery's queue message id (spec >= 9). */
     creatorMessageId?: string;
+    /** rate_created: the rate-limited key. */
+    rateKey?: string;
+    /** rate_created: how many calls the key admits per `ratePeriodMs`. */
+    rateLimit?: number;
+    ratePeriodMs?: number;
+    /** rate_created: how many calls may go at once. Absent for no burst. */
+    rateBurst?: number;
+    /** rate_created: the call's deadline. */
+    rateExpiresAt?: Date;
+    /** rate_acquired after a wait: the log slot of the call's rate_created. */
+    rateCreatedSlot?: number;
+    /** rate_created: the call opted in to a key in the reserved `$`
+     *  namespace. */
+    rateAllowReservedKey?: boolean;
   };
 }
 
@@ -274,7 +288,24 @@ type MetaSourceField =
   | 'finalSchedulingReplay'
   | 'optimizations'
   | 'inline'
-  | 'creatorMessageId';
+  | 'creatorMessageId'
+  // Rate limit calls (spec >= 10), renamed on the wire: `key` → `rateKey`,
+  // `limit` → `rateLimit`, `periodMs` → `ratePeriodMs`, `burst` →
+  // `rateBurst`, `expiresAt` → `rateExpiresAt`, `createdSlot` →
+  // `rateCreatedSlot`, `allowReservedKey` → `rateAllowReservedKey`.
+  | 'key'
+  | 'limit'
+  | 'periodMs'
+  | 'burst'
+  | 'expiresAt'
+  | 'createdSlot'
+  | 'allowReservedKey'
+  // World-written on the committed rate event (never sent by the SDK): the
+  // reserved slot, and the late wakes of a call reserved again. Listed so the
+  // exhaustiveness guard knows they are accounted for; `splitEventDataForV4`
+  // never puts them on the wire.
+  | 'acquireAt'
+  | 'lateWakes';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -512,6 +543,27 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.creatorMessageId === 'string') {
     meta.creatorMessageId = eventData.creatorMessageId;
+  }
+  // Rate limit calls (spec >= 10). Only these two event types carry them:
+  // `key`, `limit` and the rest are generic names.
+  if (data.eventType === 'rate_created') {
+    meta.rateKey = eventData.key as string;
+    meta.rateLimit = eventData.limit as number;
+    meta.ratePeriodMs = eventData.periodMs as number;
+    if (typeof eventData.burst === 'number') {
+      meta.rateBurst = eventData.burst;
+    }
+    if (eventData.allowReservedKey === true) {
+      meta.rateAllowReservedKey = true;
+    }
+    const expiresAt = eventData.expiresAt;
+    meta.rateExpiresAt =
+      expiresAt instanceof Date ? expiresAt : new Date(expiresAt as string);
+  } else if (
+    data.eventType === 'rate_acquired' &&
+    typeof eventData.createdSlot === 'number'
+  ) {
+    meta.rateCreatedSlot = eventData.createdSlot;
   }
 
   let payload: Uint8Array | undefined;
@@ -999,6 +1051,7 @@ async function createWorkflowRunEventInner(
       ? { expectedSeqInBand: params.expectedSeqInBand }
       : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
+    replayDivergenceEventIds: params?.replayDivergenceEventIds,
     // In-band writer fence. The backend refuses a stale in-band write with
     // 412 `in-band-superseded` (InBandSupersededError).
     ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),

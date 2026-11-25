@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import { graphileSchemaIdentifier } from './run-lease.js';
 
 /**
  * The stale window when neither `jobLockStaleSeconds` nor
@@ -326,11 +327,7 @@ export function createJobLeases(
   // have been swept yet, and has at least this long before it could be.
   const confirmWindowMs = staleMs / 2;
 
-  // The schema Graphile Worker itself resolves when no `schema` option is
-  // passed, which this World never passes.
-  const schema = escapeIdentifier(
-    process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
-  );
+  const schema = graphileSchemaIdentifier();
   const renewQuery = renewSql(schema);
   const sweepQuery =
     scope === 'all' ? sweepSql(schema) : runLeaseSweepSql(schema);
@@ -596,11 +593,6 @@ export function createJobLeases(
       await Promise.all([renewing, sweeping, ...registering]);
     },
   };
-}
-
-/** Quote an SQL identifier, as `pg`'s `escapeIdentifier` does. */
-function escapeIdentifier(identifier: string): string {
-  return `"${identifier.replace(/"/g, '""')}"`;
 }
 
 function jobIdentity(

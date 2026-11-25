@@ -18,7 +18,13 @@
  * are scrubbed (`purgeLateStepWrite`) or refused as they land (`ranPurge`).
  */
 
-import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
+import type {
+  Event,
+  Hook,
+  RunUsageEntity,
+  Step,
+  WorkflowRun,
+} from '@workflow/world';
 import {
   getEventDataRefFields,
   isTerminalWorkflowRunStatus,
@@ -27,6 +33,13 @@ import {
 } from '@workflow/world';
 import { decode, encode } from '../db/codec.js';
 import type { Database } from '../db/index.js';
+import {
+  EntityBytes,
+  measureStreamBytes,
+  PAYLOAD_BYTES_SQL,
+  readPurgedUsage,
+  savePurgedUsage,
+} from './purged-usage.js';
 
 export function purgesUserDataOnFinish(
   attributes: Record<string, string> | undefined
@@ -59,8 +72,31 @@ export function ranPurge(run: WorkflowRun | undefined): boolean {
   );
 }
 
-/** Scrubs a finished run's user data. Runs inside a transaction. */
-export function purgeRunData(db: Database, runId: string): void {
+/**
+ * Scrubs a finished run's user data. Runs inside a transaction: when a
+ * zero-retention run finishes, and when a finished run's data is deleted on
+ * demand (`runs.deleteDataMany`), which may be a run already deleted
+ * (`purgedBefore`).
+ *
+ * First it saves what the run wrote (`savePurgedUsage`): deleting the data
+ * saves on Data Retained, not Data Written. The event sizes come from the
+ * pass that scrubs the events (the rows are read before any is rewritten),
+ * so the only extra read is the run's stream bytes, from their index. A run
+ * with saved sizes has the rows written since the last save added to them,
+ * so the sizes never shrink. A run deleted before sizes were saved has its
+ * rows already scrubbed: it saves nothing and keeps reporting what is left.
+ *
+ * This is one of three paths that rewrite event rows in place, with
+ * `purgeLateStepWrite` below and the on-demand deletion that calls this.
+ * The usage cache (`usage-storage.ts`) counts only rows after the last
+ * position it counted and relies on that: a run whose data was deleted
+ * reports the sizes saved here, not its rows'.
+ */
+export function purgeRunData(
+  db: Database,
+  runId: string,
+  { purgedBefore = false }: { purgedBefore?: boolean } = {}
+): void {
   for (const row of db.all<{ step_id: string; doc: string }>(
     'SELECT step_id, doc FROM steps WHERE run_id = ?',
     runId
@@ -68,10 +104,37 @@ export function purgeRunData(db: Database, runId: string): void {
     writeScrubbedStep(db, runId, row.step_id, row.doc);
   }
 
-  for (const row of db.all<{ seq: number; doc: string }>(
-    'SELECT seq, doc FROM events WHERE run_id = ?',
+  const saved = readPurgedUsage(db, runId);
+  const written = new EntityBytes();
+  let lastSeq = 0;
+  const events = db.all<{
+    seq: number;
+    event_type: string;
+    doc: string;
+    bytes: number;
+  }>(
+    `SELECT seq, event_type, doc, ${PAYLOAD_BYTES_SQL} AS bytes
+     FROM events WHERE run_id = ?`,
     runId
-  )) {
+  );
+  for (const row of events) {
+    lastSeq = Math.max(lastSeq, Number(row.seq));
+    // Rows up to the last save are in its sizes, and already scrubbed.
+    if (saved && Number(row.seq) <= saved.seq) continue;
+    written.add(row.event_type, row.bytes);
+  }
+  // The earlier purge deleted the chunks it measured: these came after it.
+  written.byEntity.stream = measureStreamBytes(db, runId);
+  if (saved) {
+    savePurgedUsage(db, runId, {
+      seq: lastSeq,
+      byEntity: addBytes(saved.byEntity, written.byEntity),
+    });
+  } else if (!purgedBefore) {
+    savePurgedUsage(db, runId, { seq: lastSeq, byEntity: written.byEntity });
+  }
+
+  for (const row of events) {
     writeScrubbedEvent(db, runId, row.seq, row.doc);
   }
 
@@ -104,6 +167,11 @@ export function purgeRunData(db: Database, runId: string): void {
  * run was scrubbed by its purge (and stream writes are refused), so this
  * costs the same whatever the run's size, which matters when many steps were
  * running when the run ended. Runs inside a transaction.
+ *
+ * Before scrubbing, the rows since the run's saved sizes (usually only this
+ * one) are added to them and the saved position moves to `seq`, so the late
+ * payload counts in full in Data Written. A run with no saved sizes (deleted
+ * before they were kept) gets none: its earlier rows are already scrubbed.
  */
 export function purgeLateStepWrite(
   db: Database,
@@ -135,7 +203,37 @@ export function purgeLateStepWrite(
     runId,
     seq
   );
-  if (event) writeScrubbedEvent(db, runId, seq, event.doc);
+  if (!event) return;
+  const saved = readPurgedUsage(db, runId);
+  if (saved && seq > saved.seq) {
+    const written = new EntityBytes();
+    for (const row of db.all<{ event_type: string; bytes: number }>(
+      `SELECT event_type, ${PAYLOAD_BYTES_SQL} AS bytes
+       FROM events WHERE run_id = ? AND seq > ? AND seq <= ?`,
+      runId,
+      saved.seq,
+      seq
+    )) {
+      written.add(row.event_type, row.bytes);
+    }
+    savePurgedUsage(db, runId, {
+      seq,
+      byEntity: addBytes(saved.byEntity, written.byEntity),
+    });
+  }
+  writeScrubbedEvent(db, runId, seq, event.doc);
+}
+
+function addBytes(
+  a: Record<RunUsageEntity, number>,
+  b: Record<RunUsageEntity, number>
+): Record<RunUsageEntity, number> {
+  return {
+    run: a.run + b.run,
+    step: a.step + b.step,
+    hook: a.hook + b.hook,
+    stream: a.stream + b.stream,
+  };
 }
 
 function writeScrubbedStep(

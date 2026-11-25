@@ -18,6 +18,7 @@ import {
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RunExpiredError,
+  TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -39,6 +40,7 @@ import {
   isTerminalWorkflowRunStatus,
   type RunInput,
   type SerializedData,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   slotToEventId,
@@ -92,6 +94,7 @@ import {
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_RUN_AHEAD_RESTARTS,
+  WAIT_TIMER_SEND_CONCURRENCY,
 } from '../constants.js';
 import {
   clampMaxEvents,
@@ -132,9 +135,13 @@ import {
 } from '../helpers.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
-import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
+import {
+  ReplayRecoveryReporter,
+  reportedDivergenceEventIds,
+} from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import { runBounded } from '../settle-all.js';
 import { resolveRunStartHook } from '../start-hook-binding.js';
 import {
   ackRefusedStartHookCandidate,
@@ -186,10 +193,13 @@ import {
 import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
+  getOrchestratorRateWaitMs,
   LingerTimes,
   LiveLogFeed,
   lingerKindOf,
   orchestratorLingerUntil,
+  RATE_SLOT_MARGIN_MS,
+  RATE_TOO_EARLY_RETRY_MS,
 } from './live-feed.js';
 import { EventLogIndex } from './log-index.js';
 import {
@@ -198,6 +208,7 @@ import {
   externalWorkOf,
   type InlineStepSpec,
   nextTimerAt,
+  type OpenWait,
   openWaits,
   type StepMessageSpec,
   stepCreationOf,
@@ -215,6 +226,13 @@ import {
   runAheadContextFor,
   runAheadHazard,
 } from './run-ahead.js';
+import {
+  committedBelowPrediction,
+  displacesSpeculation,
+  foldReadEvents,
+  settledOutcomeFold,
+  speculativeSlotFor,
+} from './speculative-placement.js';
 import { executeStep, mayRunBeforeItsStart } from './step-executor.js';
 import { handleStepMessage } from './step-handler.js';
 import {
@@ -237,6 +255,7 @@ import {
   nearDueTimerIdempotencyKey,
   rearmsCoalescableTimer,
   sendNearDueTimerOnce,
+  waitTimerDelaySeconds,
   waitTimerMessage,
 } from './wait-timer.js';
 
@@ -636,12 +655,23 @@ async function runDelivery(
     ) {
       // A step with an outcome needs no message.
       unsentStepMessages.delete(id);
-    } else if (event.eventType === 'wait_created') {
+    } else if (
+      event.eventType === 'wait_created' ||
+      // A rate call that has to wait: open like a wait until its
+      // `rate_acquired` (see `openWaits`).
+      (event.eventType === 'rate_created' &&
+        event.eventData.acquireAt !== undefined)
+    ) {
       ownOpenWaits.set(id, event);
-    } else if (event.eventType === 'wait_completed') {
+    } else if (
+      event.eventType === 'wait_completed' ||
+      event.eventType === 'rate_acquired'
+    ) {
       ownOpenWaits.delete(id);
       completedWaits.add(id);
       recordCompletedWait(world, runId, id);
+    } else if (event.eventType === 'rate_failed') {
+      ownOpenWaits.delete(id);
     }
   };
   const noteStepMessageSent = (correlationId: string): void => {
@@ -856,6 +886,58 @@ async function runDelivery(
    * are not folded into the log meanwhile.
    */
   let runAheadRepair = false;
+  /**
+   * Every event a run-ahead write placed in the log before
+   * its commit, for as long as it is referenced: what tells
+   * a speculative copy of an event from its committed one.
+   */
+  const everSpeculative = new WeakSet<Event>();
+  /**
+   * The speculative event the log holds under `eventId`
+   * while its write is unconfirmed, if any. A handful of
+   * events at most (the run-ahead depth).
+   */
+  const speculativeEventAt = (eventId: string): Event | undefined => {
+    for (const event of speculativeEvents) {
+      if (event.eventId === eventId) return event;
+    }
+    return undefined;
+  };
+  /**
+   * Marks a run-ahead repair due because an event committed
+   * where another event's speculative copy sits, found in an
+   * answer, the live feed or an incremental load (replaced
+   * by the orchestrator loop, which counts repairs by cause).
+   */
+  let noteDisplacedSpeculation = (
+    _cause: 'response' | 'feed' | 'read'
+  ): void => {
+    runAheadRepair = true;
+  };
+  /**
+   * Folds events read outside this delivery's own answers
+   * (the live feed, an incremental load) into the log, by
+   * the one rule for a log that holds speculative events
+   * (`foldReadEvents`): a committed event is never dropped
+   * because a speculative copy holds its id. When one was
+   * displaced, a repair is due. Returns whether every event
+   * was folded: when one was left out, the caller must not
+   * move its read position past these events.
+   */
+  const foldReadIntoLog = (
+    events: readonly Event[],
+    cause: 'feed' | 'read'
+  ): boolean => {
+    assert(log, 'The event log is loaded to fold read events');
+    const { fold, displaced, complete } = foldReadEvents(
+      events,
+      speculativeEventAt
+    );
+    if (displaced) noteDisplacedSpeculation(cause);
+    for (const event of fold) prepareReplayEvent(event);
+    indexOf(log.events).merge(fold);
+    return complete;
+  };
   // Set when an accepted write could not be folded into the
   // log without leaving a hole; the next pass reads first.
   let logBehind = false;
@@ -906,6 +988,18 @@ async function runDelivery(
     const report = (result.events ?? []).filter(
       (event) => event.eventId !== own.eventId
     );
+    if (
+      [own, ...report].some((event) =>
+        displacesSpeculation(event, speculativeEventAt)
+      )
+    ) {
+      // A speculative event sits where this write, or
+      // something below it, committed. The repair rebuilds
+      // the log from the writes' responses, this one's too.
+      noteDisplacedSpeculation('response');
+      repairWrites.push(result);
+      return;
+    }
     const below = Math.max(
       indexOf(log.events).maxSlot() ?? 0,
       maxEventSlot(report) ?? 0
@@ -989,6 +1083,9 @@ async function runDelivery(
     }
     logBehind = false;
     log = { events: loaded.events, cursor: loaded.cursor };
+    // The load can hold events above the snapshot its first
+    // page carried.
+    writer.observeSlot(indexOf(log.events).maxSlot() ?? 0);
     return log;
   };
   /**
@@ -1022,11 +1119,22 @@ async function runDelivery(
         runId,
       }
     );
-    for (const event of page.events) {
-      prepareReplayEvent(event);
+    // The writer predicts speculative slots from the
+    // positions it knows are taken.
+    for (const event of page.events) writer.observeEvent(event);
+    // A page can bring an event to a slot the log holds a
+    // speculative event at, and that event is not folded:
+    // another writer's (the log would drop it, and a repair
+    // is due), or the speculative write's own commit, ahead
+    // of its answer. Either way the cursor stays put. The
+    // event reaches the log with the repair or the answer,
+    // but an answer whose report is incomplete is not
+    // merged, and then only a read from this cursor brings
+    // it. Reading the page again is harmless: the log
+    // keeps one event per id.
+    if (foldReadIntoLog(page.events, 'read')) {
+      log.cursor = page.cursor ?? log.cursor;
     }
-    indexOf(log.events).merge(page.events);
-    log.cursor = page.cursor ?? log.cursor;
     return log;
   };
 
@@ -2318,6 +2426,14 @@ async function runDelivery(
       return log?.events.some((e) => e.eventId === event.eventId) ?? false;
     };
     const settledInline: InlineSettled[] = [];
+    /**
+     * Outcomes of inline steps being written on the awaited
+     * path (a step started at a boundary that was not inert):
+     * sent, and not yet answered. The workflow consumes such
+     * an outcome only once it committed, at a slot below
+     * every speculative event placed while it is in flight.
+     */
+    let awaitedOutcomeWrites = 0;
     // Creation commits still in flight while the bodies they
     // create run (turbo's `optimisticCreation`), a fan-out's
     // later creation batches, and step dispatches sent next to
@@ -2381,33 +2497,28 @@ async function runDelivery(
       progressWaiter = undefined;
       waiter?.();
     };
+    /** Folds the buffered live feed events into the log. */
+    const flushFeedEvents = (): void => {
+      if (pendingFeedEvents.length === 0) return;
+      const events = pendingFeedEvents.splice(0);
+      for (const event of events) {
+        // The feed echoes this delivery's own writes too,
+        // some before their answers: the writer counts
+        // each position once (`observeEvent`).
+        writer.observeEvent(event);
+        checkRunAheadHazard(event, 'live feed');
+      }
+      // A speculative position is the delivery's own until
+      // its write confirms or repairs it (`foldReadEvents`).
+      // With a repair due nothing is folded: the repair
+      // rebuilds the log from what committed.
+      if (!runAheadRepair) foldReadIntoLog(events, 'feed');
+    };
     /** Folds buffered feed events and inline writes into the log. */
     const flushPending = (): void => {
       if (!log) return;
       if (turboStartLanded) absorbWrite(turboStartLanded);
-      if (pendingFeedEvents.length > 0) {
-        const events = pendingFeedEvents.splice(0).filter((event) => {
-          const slot = eventIdToSlot(event.eventId);
-          if (slot !== null) writer.observeSlot(slot);
-          checkRunAheadHazard(event, 'live feed');
-          // A speculative position is the delivery's own
-          // until its write confirms or repairs it.
-          if (slot !== null && speculativeSlots.has(slot)) {
-            const own = speculationsBySlot.get(slot);
-            if (
-              own &&
-              (own.event.eventType !== event.eventType ||
-                own.event.correlationId !== event.correlationId)
-            ) {
-              markRunAheadRepair('feed');
-            }
-            return false;
-          }
-          return !runAheadRepair;
-        });
-        for (const event of events) prepareReplayEvent(event);
-        indexOf(log.events).merge(events);
-      }
+      flushFeedEvents();
       if (pendingAbsorbs.length > 0) {
         const results = pendingAbsorbs.splice(0);
         results.sort(
@@ -2444,7 +2555,11 @@ async function runDelivery(
     const ensureLiveFeed = (): void => {
       if (liveFeed || !log) return;
       liveFeed = new LiveLogFeed(world, runId, {
-        afterSlot: indexOf(log.events).maxSlot() ?? 0,
+        // From the highest confirmed position: a speculative
+        // event sits at a predicted slot, and another
+        // writer's event that takes that slot must still be
+        // offered.
+        afterSlot: slotSnapshot().eventCount ?? 0,
         cursor: log.cursor,
         pollIntervalMs: getOrchestratorPollIntervalMs(),
         feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
@@ -2613,7 +2728,13 @@ async function runDelivery(
        * Counted once per repair, by what found it first.
        */
       repairs: 0,
-      repairsByCause: { feed: 0, outcome: 0, creation: 0 },
+      repairsByCause: {
+        feed: 0,
+        outcome: 0,
+        creation: 0,
+        response: 0,
+        read: 0,
+      },
       /** Wall time spent repairing, in milliseconds. */
       repairMs: 0,
       /** Repairs whose retained session survived them. */
@@ -2629,7 +2750,7 @@ async function runDelivery(
       contextsMax: 0,
     };
     const markRunAheadRepair = (
-      cause: 'feed' | 'outcome' | 'creation'
+      cause: 'feed' | 'outcome' | 'creation' | 'response' | 'read'
     ): void => {
       if (runAheadRepair) return;
       runAheadRepair = true;
@@ -2637,6 +2758,24 @@ async function runDelivery(
       runAheadStats.repairsByCause[cause]++;
       recordRunAheadSpan();
     };
+    noteDisplacedSpeculation = markRunAheadRepair;
+    /**
+     * The slot the next speculative write is placed at: the
+     * writer's prediction, and never at or below a position
+     * the log already holds or an unconfirmed speculative
+     * write was predicted at. Two events must not share an
+     * id (the log keeps one per id and would drop the
+     * second), and speculative events must sit in the order
+     * their writes were queued, which is the order they
+     * commit in and the order the workflow consumed them.
+     * When the prediction is exact this changes nothing.
+     */
+    const nextSpeculativeSlot = (): number =>
+      speculativeSlotFor({
+        predicted: writer.predictNextSlot(),
+        heldMaxSlot: log ? indexOf(log.events).maxSlot() : undefined,
+        unconfirmedSlots: speculativeSlots,
+      });
     const outOfBandBoundaries = {
       inert: 0,
       observedHook: 0,
@@ -2672,6 +2811,9 @@ async function runDelivery(
           runAheadStats.repairsByCause.outcome,
         'workflow.run_ahead.repairs.creation':
           runAheadStats.repairsByCause.creation,
+        'workflow.run_ahead.repairs.response':
+          runAheadStats.repairsByCause.response,
+        'workflow.run_ahead.repairs.read': runAheadStats.repairsByCause.read,
         'workflow.run_ahead.repair_ms': runAheadStats.repairMs,
         'workflow.run_ahead.repairs_retained': runAheadStats.repairsRetained,
         'workflow.run_ahead.repair_reads': runAheadStats.repairReads,
@@ -2850,7 +2992,13 @@ async function runDelivery(
       runAheadContexts.clear();
       return runAheadRepair ? 'repair' : 'clean';
     }
-    /** Replaces a repaired run-ahead's log with the World's. */
+    /** Repairs the log before a pass, when a repair is due. */
+    async function repairRunAheadIfDue(): Promise<void> {
+      if (!runAheadRepair) return;
+      await settleRunAhead();
+      if (runAheadFailure !== undefined) throw runAheadFailure;
+      await repairRunAhead();
+    }
     /**
      * Puts a repaired run-ahead's log right. Its speculative
      * events leave the log, and the responses of its writes
@@ -2907,6 +3055,12 @@ async function runDelivery(
         runAheadStats.repairReads++;
         await loadAfter();
       }
+      // A rebase covers speculative events shifted up, by
+      // what another writer placed below them. One that
+      // committed below its predicted slot was placed past
+      // the position it took; the session replays from cold
+      // over the rebuilt log instead.
+      if (committedBelowPrediction(repairAliases)) session = null;
       if (session) {
         const sensitive = new Set(runAheadSensitiveHookIds);
         pendingRebase = {
@@ -2938,7 +3092,7 @@ async function runDelivery(
       context: RunAheadContext
     ): EventResult {
       const occurredAt = new Date();
-      const slot = writer.predictNextSlot();
+      const slot = nextSpeculativeSlot();
       const event = {
         ...data,
         runId,
@@ -2947,6 +3101,7 @@ async function runDelivery(
       } as Event;
       speculativeSlots.add(slot);
       speculativeEvents.add(event);
+      everSpeculative.add(event);
       const releaseContext = noteRunAheadContext(context);
       const commit = writer.createAhead(
         data,
@@ -3018,7 +3173,7 @@ async function runDelivery(
     ): Map<string, StartedInBatch> {
       assert(log, 'The event log is loaded to run ahead');
       const occurredAt = new Date();
-      const first = writer.predictNextSlot();
+      const first = nextSpeculativeSlot();
       const speculative = events.map(
         (data, index) =>
           ({
@@ -3127,6 +3282,7 @@ async function runDelivery(
       speculative.forEach((event, index) => {
         speculativeSlots.add(first + index);
         speculativeEvents.add(event);
+        everSpeculative.add(event);
         speculationsBySlot.set(first + index, {
           event,
           settled,
@@ -3252,6 +3408,83 @@ async function runDelivery(
       return false;
     };
 
+    /**
+     * Waits in this delivery for the slot of the nearest rate limit call
+     * that is due within `getOrchestratorRateWaitMs` and before the inline
+     * deadline, so the call goes ahead at its slot instead of a queue delay
+     * later. Its timer is sent first: if this process dies while it waits,
+     * the queue still wakes the run, and a timer that arrives after the call
+     * went ahead finds it acquired and arms nothing. Resolves `true` once it
+     * waited, so the caller runs another pass, which completes the call.
+     *
+     * It stops early for anything the run should see first: another wait
+     * falling due (a `sleep()` the call races, due before the slot), or an
+     * event another writer appends (a hook payload, a background step's
+     * outcome). Otherwise the pass after the wait would record the call
+     * ahead of them, and a race would resolve the wrong way.
+     */
+    const waitForNearRateSlot = async (): Promise<boolean> => {
+      if (!log) return false;
+      const windowMs = getOrchestratorRateWaitMs();
+      if (windowMs <= 0) return false;
+      const now = Date.now();
+      const latestMs = Math.min(
+        now + windowMs,
+        inlineDeadlineMs - inlineMarginMs
+      );
+      const slots = openWaits(log.events)
+        .filter(
+          (wait) =>
+            wait.kind === 'rate' &&
+            wait.resumeAtMs > now &&
+            wait.resumeAtMs + RATE_SLOT_MARGIN_MS <= latestMs
+        )
+        .map((wait) => wait.resumeAtMs);
+      if (slots.length === 0) return false;
+      const untilMs = Math.min(...slots) + RATE_SLOT_MARGIN_MS;
+      await armNearDueTimers(log.events);
+      await armTimers(log.events);
+      if (world.events.subscribe) ensureLiveFeed();
+      runtimeLogger.debug('Waiting in process for a rate limit slot', {
+        workflowRunId: runId,
+        waitMs: untilMs - now,
+      });
+      // Waiting is not replay work.
+      replayBudget.pause();
+      try {
+        while (true) {
+          const remainingMs = untilMs - Date.now();
+          if (remainingMs <= 0) break;
+          let handle: ReturnType<typeof setTimeout> | undefined;
+          // Wakes on the slot's own timer too, so it is checked below.
+          await Promise.race([
+            waitForProgress(),
+            new Promise<void>((resolve) => {
+              handle = setTimeout(resolve, remainingMs);
+            }),
+          ]);
+          clearTimeout(handle);
+          progressWaiter = undefined;
+          const nowMs = Date.now();
+          if (
+            pendingFeedEvents.some((event) => !isOwnEvent(event)) ||
+            dueWaits(log.events, nowMs, wakeUpWaits).some(
+              (wait) => wait.kind !== 'rate'
+            )
+          ) {
+            runtimeLogger.debug('In-process rate limit wait ended early', {
+              workflowRunId: runId,
+              waitedMs: nowMs - now,
+            });
+            break;
+          }
+        }
+      } finally {
+        replayBudget.resume();
+      }
+      return true;
+    };
+
     /** Throws `MaxEventsExceededError` for a log at the run's ceiling. */
     const enforceEventLimit = (events: readonly Event[]): void => {
       if (maxEventsLimit === undefined) return;
@@ -3306,15 +3539,17 @@ async function runDelivery(
 
         let replayStart = 0;
         try {
-          if (runAheadRepair) {
-            await settleRunAhead();
-            if (runAheadFailure !== undefined) {
-              throw runAheadFailure;
-            }
-            await repairRunAhead();
-          }
+          await repairRunAheadIfDue();
           flushPending();
-          if (logBehind) await loadAfter();
+          // A write folded in just now can have committed where
+          // a speculative event was placed.
+          await repairRunAheadIfDue();
+          if (logBehind) {
+            await loadAfter();
+            // So can the page just read: the repair runs
+            // before a pass over a log that left an event out.
+            await repairRunAheadIfDue();
+          }
           assert(log, 'The event log is loaded in the loop');
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
             recordTerminalRun(world, runId);
@@ -3330,26 +3565,45 @@ async function runDelivery(
           // failure after the commit would leave the redelivery not
           // knowing this delivery completed the wait.
           if (due.length > 0) {
-            for (const next of chainTimersBeforeCompletion({
-              openWaits: openWaits(log.events),
-              completing: due.map((wait) => wait.correlationId),
-            })) {
-              if (!timedWaits.has(next.correlationId)) {
-                await sendWaitTimer(next);
+            await sendWaitTimers(
+              chainTimersBeforeCompletion({
+                openWaits: openWaits(log.events),
+                completing: due.map((wait) => wait.correlationId),
+              }).filter((next) => !timedWaits.has(next.correlationId))
+            );
+          }
+          // Consecutive due rate calls write their `rate_acquired` at once,
+          // so the writer sends them in one batch (see
+          // `InBandWriter.create`); each is still consumed in order.
+          const acquiring = new Map<
+            OpenWait,
+            Promise<EventResult | undefined>
+          >();
+          for (const [index, wait] of due.entries()) {
+            if (wait.kind === 'rate' && !acquiring.has(wait)) {
+              for (const next of due.slice(index)) {
+                if (next.kind !== 'rate') break;
+                wakeUpWaits.delete(next.correlationId);
+                const acquired = acquireRate(next);
+                // Awaited in order below; a later one may settle first.
+                acquired.catch(() => {});
+                acquiring.set(next, acquired);
               }
             }
-          }
-          for (const wait of due) {
             wakeUpWaits.delete(wait.correlationId);
-            const completed = await createEvent(
-              {
-                eventType: 'wait_completed' as const,
-                specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-                correlationId: wait.correlationId,
-                eventData: { resumeAt: wait.resumeAt },
-              },
-              { requestId }
-            );
+            const completed =
+              wait.kind === 'rate'
+                ? await acquiring.get(wait)
+                : await createEvent(
+                    {
+                      eventType: 'wait_completed' as const,
+                      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+                      correlationId: wait.correlationId,
+                      eventData: { resumeAt: wait.resumeAt },
+                    },
+                    { requestId }
+                  );
+            if (completed === undefined) continue;
             if (
               consumeOwnResolvingWrite(
                 indexOf(log.events),
@@ -3374,15 +3628,27 @@ async function runDelivery(
           // it). That is no hole: let the speculative writes
           // and everything queued before them commit, and
           // fold them in, before judging the log.
+          //
+          // The same holds, without a hole to show for it,
+          // while an inline step's outcome is being written on
+          // the awaited path: the workflow consumes it only
+          // once it committed, below every speculative event
+          // placed since it was sent. Another writer's event
+          // can take the slot it was expected at and make the
+          // log look dense, and a pass over that log would
+          // hand the workflow a later outcome first, which no
+          // replay of the committed log does.
           if (
             speculationsBySlot.size > 0 &&
-            indexOf(log.events).slotGap() !== undefined
+            (awaitedOutcomeWrites > 0 ||
+              indexOf(log.events).slotGap() !== undefined)
           ) {
             if ((await drainRunAhead()) === 'repair') {
               await repairRunAhead();
             }
             await writer.idle();
             flushPending();
+            await repairRunAheadIfDue();
           }
           // A dense log, which the index answers without a pass, has
           // nothing to settle.
@@ -3606,7 +3872,10 @@ async function runDelivery(
               return await failRun(
                 recovery.error,
                 effectiveWorkflowCode,
-                recovery.divergenceCount,
+                {
+                  count: recovery.divergenceCount,
+                  eventIds: recovery.divergenceEventIds,
+                },
                 recovery.logFields
               );
             }
@@ -3785,6 +4054,7 @@ async function runDelivery(
             run,
             span,
             requestId,
+            creatorMessageId,
             eventLog: loaded,
             replayRecoveryReporter,
             forceClaimVictimWakes,
@@ -3825,6 +4095,19 @@ async function runDelivery(
         continuation.exit = 'hook-conflict';
         await wakeSelf();
         return { type: 'return', result: undefined };
+      }
+      // A rate limit call the World answered at once (`rate_acquired`, or
+      // `rate_failed` past its timeout) settles its awaiter: the workflow
+      // goes on over the committed event, as after a hook conflict. A call
+      // that has to wait is a timer, armed at suspend.
+      if (hookResult && hookResult.resolvedRateCorrelationIds.length > 0) {
+        const fresh = hookResult.resolvedRateCorrelationIds.filter(
+          (id) => !continuedHookIds.has(id)
+        );
+        if (fresh.length > 0) {
+          for (const id of fresh) continuedHookIds.add(id);
+          return { type: 'continue', retainSession: true };
+        }
       }
       if (hasAttributes) {
         // The committed `attr_set` decides races against the
@@ -4370,6 +4653,11 @@ async function runDelivery(
       ) {
         return { type: 'continue', retainSession: false };
       }
+      // A rate limit slot due in a moment is waited for here
+      // rather than a whole-second queue delay later.
+      if (await waitForNearRateSlot()) {
+        return { type: 'continue', retainSession: retain };
+      }
       // Stay warm for what the run waits on instead of
       // leaving it to a queued wake.
       if (await lingerForExternalWork(suspension.observedHookIds)) {
@@ -4470,14 +4758,20 @@ async function runDelivery(
                       return writeOutcomeAhead(data, params, runAhead);
                     }
                   }
-                  const result = await writer.create(
-                    withRetryCreator(data, creatorMessageId),
-                    {
-                      ...params,
-                      ...slotSnapshot(),
-                      resolveData: REPLAY_RESOLVE_DATA,
-                    }
-                  );
+                  awaitedOutcomeWrites++;
+                  let result: Awaited<ReturnType<typeof writer.create>>;
+                  try {
+                    result = await writer.create(
+                      withRetryCreator(data, creatorMessageId),
+                      {
+                        ...params,
+                        ...slotSnapshot(),
+                        resolveData: REPLAY_RESOLVE_DATA,
+                      }
+                    );
+                  } finally {
+                    awaitedOutcomeWrites--;
+                  }
                   pendingAbsorbs.push(result);
                   return result;
                 },
@@ -4661,9 +4955,29 @@ async function runDelivery(
           pendingStreamOps = true;
         }
         assert(log, 'The event log is loaded after inline steps');
+        const outcomeEvent = result.result.event;
+        const outcomeFold = settledOutcomeFold({
+          writtenAhead:
+            outcomeEvent !== undefined && everSpeculative.has(outcomeEvent),
+          unconfirmed:
+            outcomeEvent !== undefined && speculativeEvents.has(outcomeEvent),
+          slotHeld:
+            outcomeEvent !== undefined &&
+            indexOf(log.events).has(outcomeEvent.eventId),
+        });
         if (runAheadRepair) {
           // Not folded: the log is reloaded once the
           // speculative writes settle.
+          reload = true;
+        } else if (outcomeFold === 'committed') {
+          // Written ahead, and its write settled before the
+          // body did: the committed event is in the log, and
+          // this copy is not folded on top of it.
+        } else if (outcomeFold === 'displaced') {
+          // The slot it was predicted at is taken: its write
+          // commits elsewhere, and the log is rebuilt from
+          // the writes' answers.
+          markRunAheadRepair('outcome');
           reload = true;
         } else if (
           consumeOwnResolvingWrite(
@@ -4799,13 +5113,13 @@ async function runDelivery(
           (wait.event !== undefined &&
             waitCreatorMessageId(wait.event) !== creatorMessageId)
       );
-      for (const wait of waitTimersToArm(
-        owned,
-        creatorMessageId,
-        waitContinuation?.correlationId
-      )) {
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
-      }
+      await sendWaitTimers(
+        waitTimersToArm(
+          owned,
+          creatorMessageId,
+          waitContinuation?.correlationId
+        ).filter((wait) => !timedWaits.has(wait.correlationId))
+      );
     }
 
     /**
@@ -4839,14 +5153,15 @@ async function runDelivery(
       const ownChain = openWaits(knownEvents()).filter(
         (wait) => waitCreatorMessageId(wait.event) === creatorMessageId
       );
-      for (const wait of waitTimersToArm(
-        [...ownChain, ...created],
-        creatorMessageId,
-        undefined
-      )) {
-        if ('event' in wait) continue;
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
-      }
+      await sendWaitTimers(
+        waitTimersToArm(
+          [...ownChain, ...created],
+          creatorMessageId,
+          undefined
+        ).filter(
+          (wait) => !('event' in wait) && !timedWaits.has(wait.correlationId)
+        )
+      );
     }
 
     /**
@@ -4885,18 +5200,13 @@ async function runDelivery(
           (waitCreatorMessageId(wait.event) ?? creatorMessageId) ===
           creatorMessageId
       );
-      for (const wait of waitTimersToArm(
-        ownChain,
-        creatorMessageId,
-        undefined
-      )) {
-        if (
-          ownOpenWaits.has(wait.correlationId) &&
-          !timedWaits.has(wait.correlationId)
-        ) {
-          await sendWaitTimer(wait);
-        }
-      }
+      await sendWaitTimers(
+        waitTimersToArm(ownChain, creatorMessageId, undefined).filter(
+          (wait) =>
+            ownOpenWaits.has(wait.correlationId) &&
+            !timedWaits.has(wait.correlationId)
+        )
+      );
     }
 
     /**
@@ -4910,12 +5220,119 @@ async function runDelivery(
     async function armNearDueTimers(events: Event[]): Promise<void> {
       if (!mayHoldCoalescedTimer) return;
       const horizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
-      for (const wait of openWaits(events)) {
-        if (wait.resumeAtMs > horizonMs) continue;
-        if (!timedWaits.has(wait.correlationId)) {
-          await sendWaitTimer(wait, { nearDue: true });
+      await sendWaitTimers(
+        openWaits(events).filter(
+          (wait) =>
+            wait.resumeAtMs <= horizonMs && !timedWaits.has(wait.correlationId)
+        ),
+        { nearDue: true }
+      );
+    }
+
+    /**
+     * Sends the timers of `waits` at once rather than one after another, at
+     * most {@link WAIT_TIMER_SEND_CONCURRENCY} in flight: a run with many open
+     * waits (rate limit calls made at once each have one) otherwise held the
+     * delivery a queue round trip per wait before it could wait in process or
+     * hand off. Every wait is marked timed before any send starts, so no
+     * other arming path sends a second timer for one still queued here.
+     * Resolves once every send has settled, so each timer is out before the
+     * caller goes on, and throws the first failure in list order.
+     */
+    async function sendWaitTimers(
+      waits: readonly Parameters<typeof sendWaitTimer>[0][],
+      options?: Parameters<typeof sendWaitTimer>[1]
+    ): Promise<void> {
+      // The first of a repeated wait, as the loops kept it.
+      const unique = new Map<string, (typeof waits)[number]>();
+      for (const wait of waits) {
+        if (!unique.has(wait.correlationId)) {
+          unique.set(wait.correlationId, wait);
         }
       }
+      for (const id of unique.keys()) timedWaits.add(id);
+      await runBounded(
+        [...unique.values()].map((wait) => () => sendWaitTimer(wait, options)),
+        WAIT_TIMER_SEND_CONCURRENCY
+      );
+    }
+
+    /**
+     * Records the end of a rate call's wait: the `rate_acquired` naming its
+     * `rate_created`'s slot (the World commits the `acquireAt` recorded
+     * there). Returns undefined when the World refused it and nothing was
+     * written:
+     *
+     * - too early by the World's clock (`TooEarlyError`, a clock a little
+     *   behind this one): retried in process a few times over about 150 ms
+     *   ({@link RATE_TOO_EARLY_RETRY_MS}), since a whole-second queue timer
+     *   would cost far more than the skew; then the call's timer is sent
+     *   again for what is left;
+     * - already acquired, or no such `rate_created` (`EntityConflictError`):
+     *   another delivery wrote it, so the log is read again.
+     */
+    async function acquireRate(
+      wait: OpenWait
+    ): Promise<EventResult | undefined> {
+      const createdSlot = eventIdToSlot(wait.event.eventId);
+      assert(createdSlot !== null, 'A rate_created has a slot id');
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await createEvent(
+            {
+              eventType: 'rate_acquired' as const,
+              specVersion: SPEC_VERSION_RATE_LIMITS,
+              correlationId: wait.correlationId,
+              eventData: { createdSlot },
+            },
+            { requestId }
+          );
+        } catch (error) {
+          const backoffMs = RATE_TOO_EARLY_RETRY_MS[attempt];
+          if (
+            TooEarlyError.is(error) &&
+            backoffMs !== undefined &&
+            getOrchestratorRateWaitMs() > 0 &&
+            Date.now() + backoffMs <= inlineDeadlineMs - inlineMarginMs
+          ) {
+            runtimeLogger.debug(
+              'Rate limit slot not due yet by the World clock, retrying',
+              {
+                workflowRunId: runId,
+                correlationId: wait.correlationId,
+                attempt: attempt + 1,
+                backoffMs,
+              }
+            );
+            await new Promise<void>((resolve) =>
+              setTimeout(resolve, backoffMs)
+            );
+            continue;
+          }
+          return await settleRateRefusal(wait, error);
+        }
+      }
+    }
+
+    /** What {@link acquireRate} does for a refused `rate_acquired`. */
+    async function settleRateRefusal(
+      wait: OpenWait,
+      error: unknown
+    ): Promise<undefined> {
+      if (TooEarlyError.is(error)) {
+        const retryAfterMs = Math.max(1, error.retryAfter ?? 1) * 1000;
+        await sendWaitTimer({
+          correlationId: wait.correlationId,
+          resumeAtMs: Math.max(wait.resumeAtMs, Date.now() + retryAfterMs),
+        });
+        return undefined;
+      }
+      if (EntityConflictError.is(error)) {
+        session = null;
+        await fullLoad();
+        return undefined;
+      }
+      throw error;
     }
 
     /** Sends the timer message of one wait (see `waitTimerMessage`). */
@@ -4923,6 +5340,7 @@ async function runDelivery(
       wait: {
         correlationId: string;
         resumeAtMs: number;
+        kind?: 'wait' | 'rate';
       },
       options: { nearDue?: boolean } = {}
     ): Promise<void> {
@@ -4938,7 +5356,11 @@ async function runDelivery(
       const timer = waitTimerMessage({
         correlationId: wait.correlationId,
         resumeAtMs: wait.resumeAtMs,
-        seconds: Math.max(0, Math.ceil((wait.resumeAtMs - now) / 1000)),
+        seconds: waitTimerDelaySeconds({
+          kind: wait.kind,
+          remainingMs: wait.resumeAtMs - now,
+          windowMs: getOrchestratorRateWaitMs(),
+        }),
         nowMs: now,
         attempt,
       });
@@ -5048,6 +5470,7 @@ async function runDelivery(
           type: 'fail';
           error: Error;
           divergenceCount: number;
+          divergenceEventIds: readonly string[];
           logFields: Record<string, unknown>;
         } {
       const priorDivergenceEventId = divergences.at(-1);
@@ -5076,12 +5499,16 @@ async function runDelivery(
           'Workflow replay diverged; replaying again from a fresh load before declaring the event log corrupted',
           { ...logFields, errorMessage: err.message }
         );
-        replayRecoveryReporter = new ReplayRecoveryReporter(divergenceCount);
+        replayRecoveryReporter = new ReplayRecoveryReporter(
+          divergenceCount,
+          divergenceEventIds
+        );
         return { type: 'recover' };
       }
       return {
         type: 'fail',
         divergenceCount,
+        divergenceEventIds,
         logFields,
         error: new CorruptedEventLogError(
           `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}; divergent event ids: ${divergenceEventIds.join(', ')}. Last divergence: ${err.message}`,
@@ -5108,7 +5535,8 @@ async function runDelivery(
   async function failRun(
     terminalError: unknown,
     effectiveWorkflowCode: string,
-    replayDivergenceCount?: number,
+    /** The divergence episode this failure ends, reported on the write. */
+    replayDivergence?: { count: number; eventIds: readonly string[] },
     extraLogFields: Record<string, unknown> = {}
   ): Promise<undefined> {
     if (terminalError instanceof Error) {
@@ -5156,8 +5584,11 @@ async function runDelivery(
         },
         {
           requestId,
-          ...(replayDivergenceCount !== undefined
-            ? { replayDivergenceCount }
+          ...(replayDivergence !== undefined
+            ? {
+                replayDivergenceCount: replayDivergence.count,
+                ...reportedDivergenceEventIds(replayDivergence.eventIds),
+              }
             : {}),
         }
       );

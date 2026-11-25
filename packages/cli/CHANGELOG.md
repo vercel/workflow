@@ -1,5 +1,64 @@
 # @workflow/cli
 
+## 5.3.3
+
+### Patch Changes
+
+- Updated dependencies [[`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15), [`40f340a`](https://github.com/vercel/workflow/commit/40f340a9ffae5385beab8eac778ce81e73583348), [`1b0f72b`](https://github.com/vercel/workflow/commit/1b0f72b6f27373e38a2b2fac0c34e1eeeba35d23), [`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/web@5.3.3
+  - @workflow/core@5.8.0
+  - @workflow/world@5.4.0
+  - @workflow/world-vercel@5.8.0
+  - @workflow/world-local@5.6.0
+  - @workflow/errors@5.2.0
+  - @workflow/builders@5.1.6
+
+## 5.3.2
+
+### Patch Changes
+
+- [#5446](https://github.com/vercel/workflow/pull/5446) [`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Count a run's usage on the Local World (its events by type, each step function and hook, and its storage, counted the way Vercel's Data Written counts it) and print it with `workflow inspect run <id> --usage`.
+
+- [#5671](https://github.com/vercel/workflow/pull/5671) [`c989836`](https://github.com/vercel/workflow/commit/c989836f14d9f4e9b59d151ce706db94a064cc60) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The web UI (standalone and embedded at `/_workflow`) only accepts requests addressed to `localhost` or an IP address; if you reach it under another host name, such as behind a reverse proxy, allow it with `--webAllowedHosts`, `WORKFLOW_WEB_ALLOWED_HOSTS`, or Nitro's `dashboard.allowedHosts`.
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a), [`f717314`](https://github.com/vercel/workflow/commit/f717314b6fa8e91d653f56f90b9a1facf36a5f38), [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992), [`c989836`](https://github.com/vercel/workflow/commit/c989836f14d9f4e9b59d151ce706db94a064cc60)]:
+  - @workflow/world@5.3.1
+  - @workflow/world-local@5.5.2
+  - @workflow/web@5.3.2
+  - @workflow/core@5.7.2
+  - @workflow/errors@5.1.6
+  - @workflow/world-vercel@5.7.2
+  - @workflow/builders@5.1.5
+
+## 5.3.1
+
+### Patch Changes
+
+- [#5635](https://github.com/vercel/workflow/pull/5635) [`004ee80`](https://github.com/vercel/workflow/commit/004ee801c82e9e03921fb4a4753f8a27c0bf3cbf) Thanks [@pranaygp](https://github.com/pranaygp)! - The CLI banner says "This is a beta release" only for beta versions (such as `5.0.0-beta.58`), not for stable 5.x releases. The update notice now suggests `workflow@latest` instead of `workflow@<@workflow/cli version>`, which could name an older `workflow` release than the one installed
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03), [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c), [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6)]:
+  - @workflow/core@5.7.1
+  - @workflow/errors@5.1.5
+  - @workflow/builders@5.1.4
+  - @workflow/web@5.3.1
+  - @workflow/world-local@5.5.1
+  - @workflow/world-vercel@5.7.1
+
+## 5.3.0
+
+### Minor Changes
+
+- [#5353](https://github.com/vercel/workflow/pull/5353) [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `runs.deleteDataMany` method to the World interface, which deletes the stored data (payloads, not metadata) of finished runs on demand, and implement it in the Vercel, Local and Postgres Worlds. Exposed as `run.delete()` and `deleteRuns()` (`workflow/api`), `deleteRuns(world, runIds)` (`@workflow/core/runtime`), and `pnpx workflow delete <runId>` in the CLI. `workflow cancel` and `workflow start` no longer accept listing flags they ignored, such as `--limit` on `start` or `--cursor` and `--sort` on either. `workflow delete`, `workflow cancel` and `workflow start` now print the error they fail with, such as an unknown flag, instead of exiting with no output.
+
+### Patch Changes
+
+- Updated dependencies [[`5edc5b2`](https://github.com/vercel/workflow/commit/5edc5b2b768272512a7a65a84979ce71bd29c55c), [`0a497dc`](https://github.com/vercel/workflow/commit/0a497dc857056740038a6650757b12c993412fcb), [`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f), [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`bace5ef`](https://github.com/vercel/workflow/commit/bace5ef5d554711f6eea9d02cee95ab0b4c34e39), [`d7053a8`](https://github.com/vercel/workflow/commit/d7053a82a561f0a78f8832fbb2df34a73799377a), [`10f35e3`](https://github.com/vercel/workflow/commit/10f35e334a16489916bf117f022c8e1ccdc61efd), [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997), [`b074e75`](https://github.com/vercel/workflow/commit/b074e7590b099ad80bca0979e309a32ffc159598), [`44d4b95`](https://github.com/vercel/workflow/commit/44d4b95df03bc23b9b47d03361fedda3262c434b), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc), [`3671902`](https://github.com/vercel/workflow/commit/367190219322f3cbb8fc0606989f59473354f6ca), [`46dff1c`](https://github.com/vercel/workflow/commit/46dff1c9b2130835f3b26752d1d3f030dd62dced), [`036e1a8`](https://github.com/vercel/workflow/commit/036e1a855ef5424663f7f1cdac3e3a083bb81f92), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8), [`5699483`](https://github.com/vercel/workflow/commit/569948318c7ae642cc2a2a554912ff5dd883eed3), [`4890ea9`](https://github.com/vercel/workflow/commit/4890ea98976e14e0754c9992faeb708e1320ab9b), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`5df0437`](https://github.com/vercel/workflow/commit/5df043770f41bd38435fa02ea80ead7ab7a03d05), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772)]:
+  - @workflow/web@5.3.0
+  - @workflow/world-local@5.5.0
+  - @workflow/world@5.3.0
+  - @workflow/world-vercel@5.7.0
+  - @workflow/core@5.7.0
+  - @workflow/builders@5.1.3
+  - @workflow/errors@5.1.4
+
 ## 5.2.0
 
 ### Minor Changes

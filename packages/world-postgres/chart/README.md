@@ -141,7 +141,7 @@ The chart refuses tags it can't use: longer than 40 characters, with characters 
 
 ## How long old versions run
 
-An old version keeps its workers until its last run finishes, with no time limit. Its pods scale to zero while nothing is due, including while its runs sleep or wait on a hook, and back up when a timer fires or a hook is resumed, even from a newer version.
+An old version keeps its workers until its last run finishes, with no time limit. A run started with `experimental_retention: 0` counts as unfinished until the check that its data was deleted has run, about a minute after it ends. Its pods scale to zero while nothing is due, including while its runs sleep or wait on a hook, and back up when a timer fires or a hook is resumed, even from a newer version.
 
 The prune job never deletes a version's workers unless all of these hold:
 - the version isn't the release's current version, and isn't the version of any of the main Deployment's ReplicaSets that still has pods (a rollout in progress, or a rollback);

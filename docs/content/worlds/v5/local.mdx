@@ -30,6 +30,8 @@ npx workflow inspect runs
 npx workflow web
 ```
 
+`npx workflow inspect run <run_id> --usage` shows where a run's events come from and how much it stores; see [Usage](/docs/observability/usage).
+
 Learn more in the [Observability](/docs/observability) documentation.
 
 ## Testing & compatibility
@@ -145,9 +147,13 @@ Whether pending and running runs found in the data directory are re-enqueued whe
 
 Change it when: several processes or workers run workflows on one data directory. Turn recovery off, or give each one its own `tag` (see [Programmatic configuration](#programmatic-configuration)).
 
-The Local World's queue is in memory, so a restart loses the messages runs had queued. Recovery re-enqueues each run, and that delivery re-arms the run's wait timers (a `sleep()` or a timeout): a spec 8 run suspends on its open waits again, and the recovery marker on the message makes a single-orchestrator (spec 9) delivery send the run's step messages and wait timers again. As a backstop, recovery also sends each recovered run a wake for every open wait due within about 24.8 days (the queue's longest timer), due when the wait is.
+The Local World's queue is in memory, so a restart loses the messages runs had queued. Recovery re-enqueues each run, and the recovery marker on the message makes that delivery send the run's step messages and wait timers (a `sleep()` or a timeout) again. As a backstop, recovery also sends each recovered run a wake for every open wait due within about 24.8 days (the queue's longest timer), due when the wait is.
 
-Recovery also hands back to the queue any step that was running inline when the previous process exited. The step runs again right away instead of after the inline-ownership lease (about 14 minutes), and the interrupted attempt counts toward its retries. A step with `maxRetries: 0` that was interrupted mid-body therefore fails on restart with an "exceeded max retries" error instead of running again once the lease expires, as it already does after a crash on the Vercel World.
+A step that was running inline when the previous process exited runs again on the recovered delivery, and the interrupted attempt counts toward its retries. A step with `maxRetries: 0` that was interrupted mid-body therefore fails instead of running again.
+
+<Spec8Note>
+the recovered delivery re-arms the run's wait timers by suspending on its open waits again. Recovery also hands back to the queue any step that was running inline when the previous process exited, so the step runs again right away instead of after the inline-ownership lease (about 14 minutes). A step with `maxRetries: 0` that was interrupted mid-body fails on restart with an "exceeded max retries" error.
+</Spec8Note>
 
 If you turn recovery off and re-enqueue runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it.
 

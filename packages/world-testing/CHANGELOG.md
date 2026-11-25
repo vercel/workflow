@@ -1,5 +1,51 @@
 # @workflow/world-testing
 
+## 5.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`40f340a`](https://github.com/vercel/workflow/commit/40f340a9ffae5385beab8eac778ce81e73583348), [`1b0f72b`](https://github.com/vercel/workflow/commit/1b0f72b6f27373e38a2b2fac0c34e1eeeba35d23), [`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/core@5.8.0
+  - @workflow/world@5.4.0
+  - @workflow/world-local@5.6.0
+  - workflow@5.8.0
+  - @workflow/cli@5.3.3
+
+## 5.1.5
+
+### Patch Changes
+
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a), [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992), [`c989836`](https://github.com/vercel/workflow/commit/c989836f14d9f4e9b59d151ce706db94a064cc60)]:
+  - @workflow/world@5.3.1
+  - @workflow/world-local@5.5.2
+  - @workflow/cli@5.3.2
+  - @workflow/core@5.7.2
+  - workflow@5.7.2
+
+## 5.1.4
+
+### Patch Changes
+
+- Updated dependencies [[`004ee80`](https://github.com/vercel/workflow/commit/004ee801c82e9e03921fb4a4753f8a27c0bf3cbf), [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03), [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c), [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6)]:
+  - @workflow/cli@5.3.1
+  - @workflow/core@5.7.1
+  - workflow@5.7.1
+  - @workflow/world-local@5.5.1
+
+## 5.1.3
+
+### Patch Changes
+
+- [#5601](https://github.com/vercel/workflow/pull/5601) [`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - On Windows, tagged `clear()`s running side by side no longer fail with `EPERM` while deleting the JSON data of an earlier release, and two clears of different tags no longer leave behind an empty directory each kept for the other's file. In the shared World tests, wait for the sleep's timer delivery before checking the sleep workflow's flow invocation count, and run the `wf` CLI without blocking the test process.
+
+- [#5323](https://github.com/vercel/workflow/pull/5323) [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The queue auth tests' parked run now also waits for the workflow's first step to end, so a spec 9 run whose inline step has not written its `step_started` yet is no longer read as parked.
+- Updated dependencies [[`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f), [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`10f35e3`](https://github.com/vercel/workflow/commit/10f35e334a16489916bf117f022c8e1ccdc61efd), [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997), [`b074e75`](https://github.com/vercel/workflow/commit/b074e7590b099ad80bca0979e309a32ffc159598), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`036e1a8`](https://github.com/vercel/workflow/commit/036e1a855ef5424663f7f1cdac3e3a083bb81f92), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8), [`5699483`](https://github.com/vercel/workflow/commit/569948318c7ae642cc2a2a554912ff5dd883eed3), [`4890ea9`](https://github.com/vercel/workflow/commit/4890ea98976e14e0754c9992faeb708e1320ab9b), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`5df0437`](https://github.com/vercel/workflow/commit/5df043770f41bd38435fa02ea80ead7ab7a03d05), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772)]:
+  - @workflow/world-local@5.5.0
+  - @workflow/world@5.3.0
+  - @workflow/core@5.7.0
+  - workflow@5.7.0
+  - @workflow/cli@5.3.0
+
 ## 5.1.2
 
 ### Patch Changes
