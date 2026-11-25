@@ -111,7 +111,7 @@ export function ConnectionStatus() {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{content}</TooltipTrigger>
-      <TooltipContent>
+      <TooltipContent className="max-w-none text-left">
         <div className="flex flex-col gap-2 max-w-[640px]">
           {showLocalMisconfigWarning && (
             <div className="mb-2">

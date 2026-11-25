@@ -46,7 +46,7 @@ const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
         {image ? (
           <StreamImagePreview data={image} />
         ) : typeof chunk.value === 'string' ? (
-          <span className="whitespace-pre-wrap break-words text-label-12 font-mono text-gray-1000">
+          <span className="whitespace-pre-wrap break-words text-label-12-mono text-gray-1000">
             {chunk.value}
           </span>
         ) : (

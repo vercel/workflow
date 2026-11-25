@@ -250,7 +250,7 @@ function BoundaryArrow({
 }): ReactNode {
   const Icon = direction === 'right' ? ArrowRight : ArrowLeft;
   return (
-    <div className="flex h-6 w-6 items-center justify-center rounded-[0.25rem]">
+    <div className="flex h-6 w-6 items-center justify-center rounded-sm">
       <Icon className="size-3 text-gray-900" />
     </div>
   );
@@ -265,10 +265,7 @@ function PlainBar({
 }): ReactNode {
   return (
     <div
-      className={cn(
-        'relative h-6 w-full min-w-1 rounded-[0.25rem] border',
-        className
-      )}
+      className={cn('relative h-6 w-full min-w-1 rounded-sm border', className)}
     >
       {label ? <DurationLabel label={label} /> : null}
     </div>
@@ -349,7 +346,7 @@ function SegmentBar({
           <div
             key={i}
             className={cn(
-              'absolute h-full min-w-px overflow-hidden rounded-[0.25rem]',
+              'absolute h-full min-w-px overflow-hidden rounded-sm',
               SEGMENT_CLASSES[seg.status]
             )}
             style={{
@@ -484,15 +481,13 @@ const TimelineBar = memo(function TimelineBar({
     >
       <div className="absolute inset-x-4 inset-y-0">
         <div
-          className="absolute top-1/2 h-6 -translate-y-1/2 overflow-hidden rounded-[0.25rem]"
+          className="absolute top-1/2 h-6 -translate-y-1/2 overflow-hidden rounded-sm"
           style={getBarPositionStyle(geometry)}
         >
           {geometry.mode.kind === 'arrow' ? (
             <BoundaryArrow direction={geometry.mode.direction} />
           ) : geometry.mode.kind === 'tiny' ? (
-            <div
-              className={cn('h-6 rounded-[0.25rem] border', fallbackClassName)}
-            />
+            <div className={cn('h-6 rounded-sm border', fallbackClassName)} />
           ) : segments.length > 0 ? (
             <SegmentBar segments={segments} showLabels={!hasMarkers} />
           ) : (
