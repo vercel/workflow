@@ -650,8 +650,11 @@ export function RunDetailView({
             </div>
 
             {/* Status and Timeline Row: wraps on narrow screens */}
+            {/* ponytail: skeletons take their column's width; the min widths fit
+                the widest status and a same-day time, so loading doesn't shift
+                the row. A "yesterday at …" time is wider and still does. */}
             <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[76px]">
                 <div className="text-xs text-muted-foreground">Status</div>
                 {run.status ? (
                   <StatusBadge
@@ -659,7 +662,7 @@ export function RunDetailView({
                     context={{ error: run.error, cancelReason }}
                   />
                 ) : (
-                  <Skeleton className="w-[55px] h-[24px]" />
+                  <Skeleton className="h-4" />
                 )}
               </div>
               <div className="flex flex-col gap-1">
@@ -691,31 +694,27 @@ export function RunDetailView({
                       '-'
                     )
                   ) : (
-                    <Skeleton className="w-[60px] h-[20px]" />
+                    <Skeleton className="h-4" />
                   )}
                 </div>
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Run ID</div>
-                {run.runId ? (
-                  <CopyableText text={run.runId}>
-                    <div className="text-xs mt-0.5 font-mono">{run.runId}</div>
-                  </CopyableText>
-                ) : (
-                  <Skeleton className="w-[280px] h-[20px]" />
-                )}
+                <CopyableText text={runId}>
+                  <div className="text-xs mt-0.5 font-mono">{runId}</div>
+                </CopyableText>
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[104px]">
                 <div className="text-xs text-muted-foreground">Queued</div>
                 {run.createdAt ? (
                   <div className="text-xs">
                     <RelativeTime date={run.createdAt} />
                   </div>
                 ) : (
-                  <Skeleton className="w-[110px] h-[20px]" />
+                  <Skeleton className="h-4" />
                 )}
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[104px]">
                 <div className="text-xs text-muted-foreground">Started</div>
                 <div className="text-xs">
                   {run.runId ? (
@@ -725,11 +724,11 @@ export function RunDetailView({
                       '-'
                     )
                   ) : (
-                    <Skeleton className="w-[110px] h-[20px]" />
+                    <Skeleton className="h-4" />
                   )}
                 </div>
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[104px]">
                 <div className="text-xs text-muted-foreground">Completed</div>
                 <div className="text-xs">
                   {run.runId ? (
@@ -739,7 +738,7 @@ export function RunDetailView({
                       '-'
                     )
                   ) : (
-                    <Skeleton className="w-[110px] h-[20px]" />
+                    <Skeleton className="h-4" />
                   )}
                 </div>
               </div>
