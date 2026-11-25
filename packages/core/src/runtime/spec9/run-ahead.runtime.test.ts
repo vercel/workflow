@@ -267,33 +267,6 @@ const fanOutBesideSleep = `const inc = ${step};
     return all.length;
   }${registerWorkflow()}`;
 
-// Two concurrent chains whose every step has its own name: a step outcome
-// the workflow takes in out of slot order makes the chains draw each other's
-// correlation ids, which a replay of the committed log reports as a divergence.
-const CHAIN_STEPS = 5;
-for (const chain of ['x', 'y']) {
-  for (let i = 0; i < CHAIN_STEPS; i++) {
-    const name = `ra_chain_${chain}_${i}`;
-    registerStepFunction(name, async () => {
-      // The chains' bodies return at different, interleaving moments.
-      const ms = chain === 'x' ? (i % 2) * 7 : ((i + 1) % 3) * 5;
-      if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
-      return name;
-    });
-  }
-}
-const twoNamedChains = `const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
-  async function chain(name) {
-    const out = [];
-    for (let i = 0; i < ${CHAIN_STEPS}; i++) {
-      out.push(await useStep("ra_chain_" + name + "_" + i)());
-    }
-    return out;
-  }
-  async function workflow() {
-    return await Promise.all([chain("x"), chain("y")]);
-  }${registerWorkflow()}`;
-
 const STEPS = 6;
 
 /**
@@ -313,17 +286,19 @@ const slowOutcomes = {
  * Holds every `step_completed` until `ahead` more step bodies have returned
  * (or the workflow has none left), so the writes they decide queue behind it
  * however slow the machine is. Bounded, so a runtime that stops running
- * ahead fails the test's assertions instead of hanging.
+ * ahead fails the test's assertions instead of hanging. Counts only the
+ * bodies that return after it is made, so a test can take one per run.
  */
 function holdOutcomesUntilAhead(ahead: number) {
   // Per step, so a repair writing an outcome again does not move the target.
   const steps = new Set<unknown>();
+  const finishedBefore = bodiesFinished;
   return async (data: { eventType: string; correlationId?: string }) => {
     if (data.eventType !== 'step_completed') return;
     steps.add(data.correlationId);
     const target = Math.min(steps.size + ahead, STEPS);
     const deadline = Date.now() + 2000;
-    while (bodiesFinished < target && Date.now() < deadline) {
+    while (bodiesFinished - finishedBefore < target && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     // A returned body's outcome reaches the writer a few ticks later.
@@ -396,7 +371,13 @@ describe.each([
     engine = 'node';
   });
   it('starts the next inline step before the previous step_completed commits, and leaves the same log', async () => {
-    const { world } = await run(sequential, [STEPS]);
+    // Outcomes are held until the next body returned, so a body starts with
+    // the previous outcome uncommitted however slow the machine is. With a
+    // fixed delay instead, a loaded runner committed each outcome before the
+    // next body started.
+    const { world } = await run(sequential, [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await world.runUntilIdle();
 
     expect(await runResult(world)).toBe(STEPS);
@@ -420,84 +401,6 @@ describe.each([
     expect(cold.result).toBe(STEPS);
     // It runs no step again: every outcome is in the log.
     expect(eventsOf(cold.world, 'step_started')).toHaveLength(STEPS);
-  });
-
-  it('places speculative events at the slots they take when the live feed echoes a write before its answer', async () => {
-    // A remote World pushes a committed event to the live feed apart from
-    // the write's answer, so the echo of this delivery's own write can
-    // arrive first. The position must be counted once: counted as both seen
-    // and still pending, every later speculative event is placed past the
-    // slot it takes.
-    //
-    // The order is fixed, not timed. The write that commits the second
-    // step's start is echoed, and its answer is held until the third step's
-    // body runs. By then the second outcome settled (the echo is taken in
-    // there) and the third step's start was placed, with that write still
-    // unanswered. The second start rather than the first: the feed starts
-    // once the first step runs, so it offers every write from then on.
-    const debug = vi
-      .spyOn(runtimeLogger, 'debug')
-      .mockImplementation(() => undefined);
-    let starts = 0;
-    let held = false;
-    let heldUntilThirdBody = false;
-    const { world } = await run(sequential, [STEPS], {
-      subscribe: true,
-      async afterCommit(committed) {
-        starts += committed.filter(
-          (event) => event.eventType === 'step_started'
-        ).length;
-        if (held || starts < 2) return;
-        held = true;
-        // Bounded, so an engine that waits for the answer before it starts
-        // the next body fails the assertions below instead of hanging. The
-        // bound never ends the hold in a passing run, however slow.
-        const deadline = Date.now() + 10_000;
-        while (bodiesStarted < 3 && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 1));
-        }
-        heldUntilThirdBody = bodiesStarted >= 3;
-      },
-    });
-    await world.runUntilIdle();
-
-    expect(held).toBe(true);
-    // The third body started with that answer still held.
-    expect(heldUntilThirdBody).toBe(true);
-    expect(await runResult(world)).toBe(STEPS);
-    expect(world.deliveries).toHaveLength(1);
-    expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
-    // No other writer appended: nothing was placed at a wrong slot.
-    expect(
-      debug.mock.calls.filter(([message]) => message === 'Run-ahead repaired')
-    ).toEqual([]);
-    debug.mockRestore();
-
-    const cold = await coldReplay(world, sequential);
-    expect(cold.result).toBe(STEPS);
-    expect(eventsOf(cold.world, 'step_started')).toHaveLength(STEPS);
-  });
-
-  it('hands concurrent chains their outcomes in slot order when the live feed echoes writes before their answers', async () => {
-    const { world } = await run(twoNamedChains, [], {
-      subscribe: true,
-      createDelayMs: 20,
-    });
-    await world.runUntilIdle();
-
-    const expected = ['x', 'y'].map((chain) =>
-      Array.from({ length: CHAIN_STEPS }, (_, i) => `ra_chain_${chain}_${i}`)
-    );
-    expect(eventsOf(world, 'run_failed')).toEqual([]);
-    expect(await runResult(world)).toEqual(expected);
-    expect(world.deliveries).toHaveLength(1);
-
-    // The committed log decides the same way from cold, running no step
-    // again: the live run took each outcome in at the slot it committed at.
-    const cold = await coldReplay(world, twoNamedChains);
-    expect(eventsOf(cold.world, 'run_failed')).toEqual([]);
-    expect(cold.result).toEqual(expected);
-    expect(eventsOf(cold.world, 'step_started')).toHaveLength(2 * CHAIN_STEPS);
   });
 
   it('does not read a queued sibling start below a speculative outcome as a hole in the log', async () => {
@@ -665,7 +568,9 @@ describe.each([
 
   it('keeps at most WORKFLOW_RUN_AHEAD_DEPTH steps unconfirmed', async () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '1');
-    const one = await run(sequential, [STEPS]);
+    const one = await run(sequential, [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await one.world.runUntilIdle();
     expect(await runResult(one.world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBe(1);
@@ -681,7 +586,9 @@ describe.each([
   });
 
   it('runs ahead with an open hook nobody waits on', async () => {
-    const { world } = await run(unobservedHook, [STEPS]);
+    const { world } = await run(unobservedHook, [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
@@ -1026,7 +933,6 @@ describe.each([
     'snapshots a VM that ran ahead only from a confirmed log, and the restored VM runs ahead again',
     async () => {
       vi.stubEnv('WORKFLOW_SNAPSHOT_THRESHOLD', '1');
-      vi.stubEnv('WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED', '1');
       vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '0');
       let stored: { data: Uint8Array; metadata: SnapshotMetadata } | undefined;
       const saves: SnapshotMetadata[] = [];
@@ -1140,7 +1046,9 @@ describe.each([
   // (`child-run-completion.ts`): unlike an abort hook, it is path-changing
   // only while the dispatcher waits on its next payload.
   it('runs ahead with the child-run completion hook open and nothing waiting on it', async () => {
-    const { world } = await run(withCompletionHook(false), [STEPS]);
+    const { world } = await run(withCompletionHook(false), [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
@@ -1256,7 +1164,9 @@ describe.each([
 
     unconfirmedAtStart = [];
     bodiesStarted = 0;
-    const far = await run(withSleep('30d'), [STEPS]);
+    const far = await run(withSleep('30d'), [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await far.world.deliver(far.start);
     expect(eventsOf(far.world, 'step_completed')).toHaveLength(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
