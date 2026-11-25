@@ -433,27 +433,7 @@ function getEventMessage(event: Event, queuedMs?: number): string {
 export interface EventListLookups {
   names: EventNames;
   timing: EventTiming;
-  /** Epoch ms the "Since start" column is measured from. */
-  runStartMs?: number;
   duplicateEventIds: ReadonlySet<string>;
-}
-
-/**
- * "Since start" is measured from the run, falling back to the earliest event
- * when the run record isn't available.
- */
-function getRunStartMs(
-  events: readonly Event[],
-  run: WorkflowRun | null
-): number | undefined {
-  const created = parseEventDate(run?.createdAt);
-  if (created) return created.getTime();
-  let min: number | undefined;
-  for (const event of events) {
-    const t = getEffectiveEventTime(event);
-    if (min === undefined || t < min) min = t;
-  }
-  return min;
 }
 
 /**
@@ -468,7 +448,6 @@ export function buildEventLookups(
   return {
     names: buildNameMaps(events, run),
     timing: buildEventTiming(events, duplicateEventIds),
-    runStartMs: getRunStartMs(events, run),
     duplicateEventIds,
   };
 }
@@ -487,7 +466,6 @@ export interface EventListRow {
   /** The step's queued, attempt and backoff breakdown; empty for other events. */
   segments: TimingSegment[];
   durationMs?: number;
-  sinceStartMs?: number;
 }
 
 export function buildEventRow(
@@ -526,10 +504,6 @@ export function buildEventRow(
     notice: ignored?.notice,
     segments,
     durationMs: lookups.timing.eventDurations.get(event.eventId),
-    sinceStartMs:
-      lookups.runStartMs === undefined
-        ? undefined
-        : getEffectiveEventTime(event) - lookups.runStartMs,
   };
 }
 

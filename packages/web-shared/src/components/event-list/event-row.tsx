@@ -17,6 +17,7 @@ import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Layout
@@ -28,7 +29,6 @@ const COL = {
   since: 'w-[100px] justify-end pr-4',
   event: 'w-[136px]',
   name: 'w-[280px]',
-  duration: 'w-[96px] justify-end',
 } as const;
 
 const CELL = 'flex h-full shrink-0 items-center overflow-hidden px-1.5';
@@ -158,11 +158,15 @@ export function EventListHeader({
       ) : (
         sortButton('Time')
       )}
-      <div
-        className={cn(CELL, COL.since)}
-        title="Time since the previous event"
-      >
-        Delta
+      <div className={cn(CELL, COL.since)}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>Delta</span>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            Time since the previous event
+          </TooltipContent>
+        </Tooltip>
       </div>
       <div className={cn(CELL, COL.name)}>Name</div>
       <div className={cn(CELL, COL.event)}>Event</div>
@@ -171,7 +175,6 @@ export function EventListHeader({
       >
         Message
       </div>
-      <div className={cn(CELL, COL.duration)}>Duration</div>
     </div>
   );
 }
@@ -261,14 +264,7 @@ export function EventRow({
           <div className={cn(CELL, COL.time, secondaryClass)}>—</div>
         ))}
       <TimestampCell date={displayedAt} secondaryClass={secondaryClass} />
-      <div
-        className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}
-        title={
-          row.sinceStartMs !== undefined
-            ? `${formatElapsed(row.sinceStartMs)} since the run started`
-            : undefined
-        }
-      >
+      <div className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}>
         {sincePreviousMs !== undefined ? formatElapsed(sincePreviousMs) : ''}
       </div>
       <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
@@ -308,11 +304,6 @@ export function EventRow({
         title={message || undefined}
       >
         <span className="truncate">{message}</span>
-      </div>
-      <div className={cn(CELL, COL.duration, 'tabular-nums')}>
-        {row.durationMs !== undefined
-          ? formatDurationPrecise(row.durationMs)
-          : ''}
       </div>
     </div>
   );
@@ -357,7 +348,6 @@ export function EventRowsSkeleton() {
               }}
             />
           </div>
-          <div className={cn(CELL, COL.duration)} />
         </div>
       ))}
     </div>
