@@ -1247,23 +1247,20 @@ export async function executeStep(
       // drain fails. The drain snapshots only frames produced by this step and
       // does not depend on writer-lock release.
       if (ops.length > 0) {
-        const { ops: stepOps, handled } = excuseHandledStreamFailures(
+        const stepOps = excuseHandledStreamFailures(
           ops,
-          streamStates
+          streamStates,
+          (error) => {
+            runtimeLogger.warn(
+              'Step body handled a stream write failure; completing the step',
+              {
+                workflowRunId,
+                stepId,
+                error: error instanceof Error ? error.message : String(error),
+              }
+            );
+          }
         );
-        for (const state of handled) {
-          runtimeLogger.warn(
-            'Step body handled a stream write failure; completing the step',
-            {
-              workflowRunId,
-              stepId,
-              error:
-                state.pipeError instanceof Error
-                  ? state.pipeError.message
-                  : String(state.pipeError),
-            }
-          );
-        }
         const opsPromise = Promise.all(stepOps);
         safeWaitUntil(opsPromise, (err) => {
           runtimeLogger.warn('Background flush of step stream ops failed', {

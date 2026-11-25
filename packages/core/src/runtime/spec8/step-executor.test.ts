@@ -811,6 +811,23 @@ describe('executeStep — a stream failure the step body handled', () => {
     expect(completed).toHaveLength(0);
   });
 
+  it('fails the step when the body caught an unrelated writer rejection', async () => {
+    let caught: unknown;
+    const { result, completed } = await runStep(async () => {
+      const writer = getWritable<string>().getWriter();
+      await writer.write('chunk');
+      writer.releaseLock();
+      // A released writer rejects with its own TypeError, not the stream's
+      // server failure, so the body has not seen that failure.
+      caught = await writer.write('late').catch((error: unknown) => error);
+      return 'done';
+    });
+
+    expect(result).toMatchObject({ type: 'retry' });
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(completed).toHaveLength(0);
+  });
+
   it('still fails the step for another stream whose failure the body never saw', async () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     const { result, completed } = await runStep(async () => {

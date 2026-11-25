@@ -36,7 +36,7 @@ export async function settleReleasedStepStreams(
               // streams written by the same step.
               if (
                 !isClientDisconnectError(error) &&
-                !state.failureDeliveredToStep
+                !state.failuresDeliveredToStep?.has(error)
               ) {
                 throw error;
               }
@@ -65,21 +65,30 @@ export async function settleReleasedStepStreams(
 }
 
 /**
- * The step's ops, with the completion of each stream whose failure was
- * delivered to the step body excused. Call it only after the body returned
- * normally: the body saw the failure and carried on, so it handled it.
+ * The step's ops, with each stream completion that rejects with a failure
+ * already delivered to the step body excused. Call it only after the body
+ * returned normally: the body saw that failure and carried on, so it handled
+ * it. `onExcused` runs for each excused failure.
  */
-export function excuseHandledStreamFailures(
-  ops: Promise<unknown>[],
-  states: FlushableStreamState[]
-): { ops: Promise<unknown>[]; handled: FlushableStreamState[] } {
-  const handled = states.filter((state) => state.failureDeliveredToStep);
-  if (handled.length === 0) return { ops, handled };
-  const excused = new Set<Promise<unknown>>(
-    handled.map((state) => state.promise)
-  );
-  return {
-    ops: ops.map((op) => (excused.has(op) ? op.catch(() => {}) : op)),
-    handled,
-  };
+export function excuseHandledStreamFailures<T>(
+  ops: Promise<T>[],
+  states: FlushableStreamState[],
+  onExcused: (error: unknown) => void
+): Promise<T | undefined>[] {
+  const delivered = new Map<Promise<unknown>, Set<unknown>>();
+  for (const state of states) {
+    if (state.failuresDeliveredToStep?.size) {
+      delivered.set(state.promise, state.failuresDeliveredToStep);
+    }
+  }
+  if (delivered.size === 0) return ops;
+  return ops.map((op) => {
+    const seen = delivered.get(op);
+    if (!seen) return op;
+    return op.catch((error: unknown) => {
+      if (!seen.has(error)) throw error;
+      onExcused(error);
+      return undefined;
+    });
+  });
 }

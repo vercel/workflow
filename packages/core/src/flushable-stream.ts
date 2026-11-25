@@ -138,11 +138,12 @@ export interface FlushableStreamState extends PromiseWithResolvers<void> {
   /** Whether the user-facing writable has begun a normal close. */
   userWritableClosing?: boolean;
   /**
-   * Whether a `write()` or `close()` on a writer of the user-facing writable
-   * rejected into step code. A step body that returns normally after that has
-   * handled the stream's failure, so the failure does not fail the step.
+   * Errors that a `write()` or `close()` on a writer of the user-facing
+   * writable rejected into step code. A step body that returns normally after
+   * seeing the stream's failure has handled it, so that failure does not fail
+   * the step. Any other failure, one the body never saw, still does.
    */
-  failureDeliveredToStep?: boolean;
+  failuresDeliveredToStep?: Set<unknown>;
   /** Step-end snapshot waiters blocked until their target reaches the sink. */
   frameWaiters: Array<{
     target: number;
@@ -353,7 +354,8 @@ export function trackFlushableWritable<T>(
   const acquireWriter = tracked.getWriter.bind(tracked);
   const deliverToStep = <R>(promise: Promise<R>): Promise<R> =>
     promise.catch((error: unknown) => {
-      state.failureDeliveredToStep = true;
+      state.failuresDeliveredToStep ??= new Set();
+      state.failuresDeliveredToStep.add(error);
       throw error;
     });
   tracked.getWriter = () => {

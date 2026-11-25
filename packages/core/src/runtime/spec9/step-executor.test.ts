@@ -830,6 +830,30 @@ describe('executeStep — a stream failure the step body handled', () => {
     ).toHaveLength(0);
   });
 
+  it('fails the step when the body caught an unrelated writer rejection', async () => {
+    const world = failingStreamWorld();
+    let caught: unknown;
+    const stepName = uniqueStepName();
+    registerStepFunction(stepName, async () => {
+      const writer = getWritable<string>().getWriter();
+      await writer.write('chunk');
+      writer.releaseLock();
+      // A released writer rejects with its own TypeError, not the stream's
+      // server failure, so the body has not seen that failure.
+      caught = await writer.write('late').catch((error: unknown) => error);
+      return 'done';
+    });
+    const { runId, stepId, params } = await setupStep(world, stepName);
+
+    await expect(executeStep(params)).resolves.toMatchObject({
+      type: 'retry',
+    });
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+  });
+
   it('still fails the step for another stream whose failure the body never saw', async () => {
     const world = failingStreamWorld();
     const stepName = uniqueStepName();
