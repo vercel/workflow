@@ -10,6 +10,7 @@ function ModalContent({
   className,
   children,
   onKeyDown,
+  onFocusCapture,
   onOpenAutoFocus,
   onCloseAutoFocus,
   ...props
@@ -33,16 +34,26 @@ function ModalContent({
           // modal from reaching them. Radix handles Escape and Tab before this.
           e.stopPropagation();
         }}
+        onFocusCapture={(e) => {
+          // A child's autoFocus can run before Radix's open autofocus event.
+          if (!openerRef.current && !e.currentTarget.contains(e.relatedTarget)) {
+            openerRef.current =
+              e.relatedTarget instanceof HTMLElement ? e.relatedTarget : null;
+          }
+          onFocusCapture?.(e);
+        }}
         onOpenAutoFocus={(e) => {
           const opener = document.activeElement;
-          openerRef.current = opener instanceof HTMLElement ? opener : null;
+          openerRef.current ??= opener instanceof HTMLElement ? opener : null;
           onOpenAutoFocus?.(e);
         }}
         onCloseAutoFocus={(e) => {
+          const opener = openerRef.current;
+          openerRef.current = null;
           onCloseAutoFocus?.(e);
           if (e.defaultPrevented) return;
           e.preventDefault();
-          openerRef.current?.focus();
+          opener?.focus();
         }}
         {...props}
       >
