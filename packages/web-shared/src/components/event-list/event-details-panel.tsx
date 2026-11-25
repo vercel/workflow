@@ -10,6 +10,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { hydrateResourceIOWithKey } from '../../lib/hydration';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -230,14 +231,12 @@ function EventDetailsBody({
   const [loading, setLoading] = useState(data === null && !!onLoadEventData);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Load (or reload once decryption is available) the full payload.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the event or key changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load once per event
   useEffect(() => {
-    if (!onLoadEventData || (inlineIsComplete && !encryptionKey)) return;
-    if (data !== null && !encryptionKey) return;
+    if (!onLoadEventData || inlineIsComplete || data !== null) return;
     let cancelled = false;
     setLoadError(null);
-    if (data === null) setLoading(true);
+    setLoading(true);
     onLoadEventData(event)
       .then((loaded) => {
         if (cancelled || loaded == null) return;
@@ -256,7 +255,22 @@ function EventDetailsBody({
     return () => {
       cancelled = true;
     };
-  }, [event.eventId, encryptionKey]);
+  }, [event.eventId]);
+
+  const encrypted = hasEncryptedValues(data);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opens the current payload once per key
+  useEffect(() => {
+    if (!encryptionKey || !encrypted) return;
+    let alive = true;
+    hydrateResourceIOWithKey({ ...event, eventData: data }, encryptionKey)
+      .then((hydrated) => {
+        if (alive) setData(hydrated.eventData);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [encryptionKey, encrypted]);
 
   const timingTotal = row.segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
@@ -296,7 +310,7 @@ function EventDetailsBody({
         <PayloadView
           data={data}
           eventType={event.eventType}
-          encrypted={!encryptionKey && hasEncryptedValues(data)}
+          encrypted={encrypted}
         />
       ) : loading || loadError ? (
         <Collapsible defaultOpen label="Payload">
