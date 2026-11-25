@@ -12,6 +12,7 @@ import {
 } from 'react';
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
+import { cn } from '../../lib/cn';
 import { IconButton } from '../ui/icon-button';
 import { SearchInput } from '../ui/search-input';
 import { Spinner } from '../ui/spinner';
@@ -31,6 +32,7 @@ import { useAltHeld } from './components/use-alt-held';
 import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
+import styles from './trace-viewer.module.css';
 import type { TraceWithMeta } from './types';
 import { formatDurationPrecise, getHighResInMs } from './util/timing';
 import {
@@ -137,7 +139,7 @@ export function TraceViewer({
   initialSelectedSpanId,
 }: TraceViewerProps): ReactNode {
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider>
       <ActiveSpanProvider
         spans={trace.spans}
         initialSelectedSpanId={initialSelectedSpanId}
@@ -483,8 +485,10 @@ function TraceViewerContent({
     >
       <div
         id="trace-parent"
-        data-span-landing={isLanding || undefined}
-        className="@container flex-1 min-w-0 grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
+        className={cn(
+          '@container flex-1 min-w-0 grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative bg-background-100',
+          isLanding && styles.landing
+        )}
       >
         <Minimap
           spans={trace.spans}
