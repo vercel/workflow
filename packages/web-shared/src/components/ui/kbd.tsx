@@ -8,7 +8,6 @@ const kbdVariants = cva(
     variants: {
       variant: {
         subtle: 'bg-background-100/20',
-        // A shadow ring rather than a border, so the box keeps its size.
         outline:
           'bg-background-100 font-medium text-gray-900 shadow-[0_0_0_1px_var(--ds-gray-alpha-400)]',
       },

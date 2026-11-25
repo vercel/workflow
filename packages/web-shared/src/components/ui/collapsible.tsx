@@ -111,7 +111,6 @@ export function CollapsibleTrigger({
         data-slot="collapsible-trigger"
         className={cn(
           'flex cursor-pointer list-none items-center gap-1.5 border-t border-gray-alpha-400 bg-background-200 px-3 py-4 hover:bg-gray-100 [&::-webkit-details-marker]:hidden',
-          // Inset, so the ring isn't clipped by the list around the card.
           'focus-visible:[outline:var(--ds-focus-ring-outline,2px_solid_var(--ds-focus-color))] focus-visible:-outline-offset-2',
           className
         )}
