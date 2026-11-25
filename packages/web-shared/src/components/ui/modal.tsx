@@ -1,7 +1,7 @@
 'use client';
 
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import type { ComponentProps } from 'react';
+import { type ComponentProps, useRef } from 'react';
 import { cn } from '../../lib/cn';
 
 const Modal = DialogPrimitive.Root;
@@ -10,8 +10,13 @@ function ModalContent({
   className,
   children,
   onKeyDown,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Content>) {
+  // Radix returns focus to its Trigger, and a modal opened through `open`
+  // has none, so return it to whatever had focus when the modal opened.
+  const openerRef = useRef<HTMLElement | null>(null);
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-[var(--ds-z-modal)] bg-[var(--ds-overlay-backdrop-color)] opacity-[var(--ds-overlay-backdrop-opacity)] transition-opacity duration-[var(--ds-motion-overlay-duration)] ease-[var(--ds-motion-overlay-timing)] starting:opacity-0 motion-reduce:transition-none" />
@@ -27,6 +32,17 @@ function ModalContent({
           // Page-level shortcuts listen on window; keep keys typed in the
           // modal from reaching them. Radix handles Escape and Tab before this.
           e.stopPropagation();
+        }}
+        onOpenAutoFocus={(e) => {
+          const opener = document.activeElement;
+          openerRef.current = opener instanceof HTMLElement ? opener : null;
+          onOpenAutoFocus?.(e);
+        }}
+        onCloseAutoFocus={(e) => {
+          onCloseAutoFocus?.(e);
+          if (e.defaultPrevented) return;
+          e.preventDefault();
+          openerRef.current?.focus();
         }}
         {...props}
       >
