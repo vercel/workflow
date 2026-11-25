@@ -1,0 +1,23 @@
+{
+  "name": "@workflow/world-sqlite-rust",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node binding for the Rust SQLite World",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "scripts": {
+    "build": "napi build --platform --esm -- --locked",
+    "test": "pnpm build && vitest run --config=../../vitest.config.ts test"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "3.10.12",
+    "@workflow/core": "workspace:*",
+    "vitest": "catalog:"
+  }
+}

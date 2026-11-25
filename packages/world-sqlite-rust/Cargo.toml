@@ -1,0 +1,18 @@
+[package]
+name = "workflow-world-sqlite-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Node binding for the Rust SQLite World"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = "~3.4.0"
+napi-derive = "~3.3.0"
+
+[build-dependencies]
+napi-build = "~2.2.4"
