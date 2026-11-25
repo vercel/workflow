@@ -243,7 +243,7 @@ describe('the Usage route', { timeout: 20_000 }, () => {
         .getAttribute('aria-current')
     ).toBe('page');
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Storage'
+      'Storage (opens in a new tab)'
     );
   });
 

@@ -53,6 +53,7 @@ function NewTabLink({
   className,
   children,
   label,
+  icon = true,
   testId,
   ...rest
 }: Omit<ComponentProps<'a'>, 'target' | 'rel'> & {
@@ -60,6 +61,8 @@ function NewTabLink({
   children: ReactNode;
   /** The accessible name, when the link has no text of its own. */
   label?: string;
+  /** Show the new-tab icon; without it the new tab is still said out loud. */
+  icon?: boolean;
   testId?: string;
 }) {
   return (
@@ -76,10 +79,12 @@ function NewTabLink({
       {children}
       {!label && (
         <>
-          <ArrowUpRight
-            className="ml-0.5 inline h-3.5 w-3.5 align-[-2px]"
-            aria-hidden="true"
-          />
+          {icon && (
+            <ArrowUpRight
+              className="ml-0.5 inline h-3.5 w-3.5 align-[-2px]"
+              aria-hidden="true"
+            />
+          )}
           <span className="sr-only"> (opens in a new tab)</span>
         </>
       )}
@@ -304,7 +309,7 @@ export function RunUsageHeaderStats({
               <NewTabLink
                 href={STORAGE_DOCS_URL}
                 className="rounded-sm underline decoration-dotted underline-offset-2 hover:text-gray-1000 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
-                label={`How ${label} is counted`}
+                icon={false}
                 testId="run-usage-data-help"
               >
                 {label}

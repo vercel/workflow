@@ -295,7 +295,7 @@ describe('usage formatting', () => {
     );
     expect(formatDataWrittenHeading(usage)).toBe('Storage (local)');
     expect(formatLocalDataWrittenNote(usage)).toBe(
-      "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
+      'Estimates this run’s Data Written on Vercel from its payload and stream bytes'
     );
   });
 

@@ -172,12 +172,13 @@ describe('RunUsageHeaderStats', () => {
     render(
       <RunUsageHeaderStats runId="wrun_1" usage={bigRun()} error={null} />
     );
+    // The label is the link to the docs; the new tab is said out loud only.
     expect(screen.getByTestId('run-usage-data-label').textContent).toBe(
-      'Storage'
+      'Storage (opens in a new tab)'
     );
-    expect(screen.getByTestId('run-usage-data-help').textContent).toBe(
-      'Storage'
-    );
+    expect(
+      screen.getByTestId('run-usage-data-help').querySelector('svg')
+    ).toBeNull();
     expect(document.body.textContent).not.toMatch(/local|data written/i);
   });
 
@@ -219,8 +220,9 @@ describe('RunUsageHeaderStats', () => {
     render(
       <RunUsageHeaderStats runId="wrun_1" usage={bigRun()} error={null} />
     );
+    // Named by its visible text; the note is its description.
     const help = screen.getByRole('link', {
-      name: 'How Storage is counted (opens in a new tab)',
+      name: 'Storage (opens in a new tab)',
     });
     // The Usage page's storage section, in a new tab.
     expect(help.getAttribute('href')).toBe(STORAGE_DOCS_URL);
@@ -232,8 +234,7 @@ describe('RunUsageHeaderStats', () => {
     const tooltip = (await screen.findByRole('tooltip')).textContent ?? '';
     // The shared note, the same sentence the other surfaces read.
     expect(tooltip).toBe(formatLocalDataWrittenNote(bigRun()));
-    expect(tooltip).toContain('QuickJS VM snapshots');
-    expect(tooltip).toContain("dynamic workflow's code");
+    expect(help.getAttribute('aria-describedby')).toBeTruthy();
   });
 });
 
