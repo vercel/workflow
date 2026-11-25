@@ -40,4 +40,4 @@ Use the same tokens as the Vercel dashboard:
 | Status text | the `-800` step of the scale: `text-red-800`, `text-amber-800`, `text-green-800` |
 | Text on an inverted surface (tooltip, selection bar) | inherit the surface's foreground. Don't add `text-foreground` / `text-muted-foreground`, which are meant for the light surface |
 
-Content inside the shared `Tooltip` renders on a `gray-1000` pill with `background-100` text. Use the standard single tooltip: plain content in one colour, with no colour or text-size overrides.
+Content inside the shared `Tooltip` renders on an `.invert-theme` pill: `background-100` with `gray-1000` text, both resolved in the inverted theme. Use the standard single tooltip: plain content in one colour, with no colour or text-size overrides.
