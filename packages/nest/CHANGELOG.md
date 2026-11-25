@@ -1,5 +1,34 @@
 # @workflow/nest
 
+## 5.1.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.6
+
+## 5.1.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.5
+
+## 5.1.11
+
+### Patch Changes
+
+- [#5438](https://github.com/vercel/workflow/pull/5438) [`5dc1c88`](https://github.com/vercel/workflow/commit/5dc1c88faaf5cbb3fc38f93b82a93a740b8f7b21) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - `workflow-nest init` warns when the `@swc/core` that `nest build` uses is missing or is not 1.15.x, and prints the install command for the project's package manager, run where `@nestjs/cli` is installed (the workspace root, in a monorepo that installs it there)
+- Updated dependencies []:
+  - @workflow/builders@5.1.4
+
+## 5.1.10
+
+### Patch Changes
+
+- Updated dependencies [[`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc)]:
+  - @workflow/builders@5.1.3
+
 ## 5.1.9
 
 ### Patch Changes

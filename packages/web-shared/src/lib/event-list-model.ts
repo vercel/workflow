@@ -63,7 +63,7 @@ function formatClock(value: unknown): string | null {
   return date ? formatTimestampParts(date).clock : null;
 }
 
-export function formatSinceStart(ms: number): string {
+export function formatElapsed(ms: number): string {
   return ms <= 0 ? '0ms' : `+${formatDurationPrecise(ms)}`;
 }
 
@@ -433,27 +433,7 @@ function getEventMessage(event: Event, queuedMs?: number): string {
 export interface EventListLookups {
   names: EventNames;
   timing: EventTiming;
-  /** Epoch ms the "Since start" column is measured from. */
-  runStartMs?: number;
   duplicateEventIds: ReadonlySet<string>;
-}
-
-/**
- * "Since start" is measured from the run, falling back to the earliest event
- * when the run record isn't available.
- */
-function getRunStartMs(
-  events: readonly Event[],
-  run: WorkflowRun | null
-): number | undefined {
-  const created = parseEventDate(run?.createdAt);
-  if (created) return created.getTime();
-  let min: number | undefined;
-  for (const event of events) {
-    const t = getEffectiveEventTime(event);
-    if (min === undefined || t < min) min = t;
-  }
-  return min;
 }
 
 /**
@@ -468,7 +448,6 @@ export function buildEventLookups(
   return {
     names: buildNameMaps(events, run),
     timing: buildEventTiming(events, duplicateEventIds),
-    runStartMs: getRunStartMs(events, run),
     duplicateEventIds,
   };
 }
@@ -487,7 +466,6 @@ export interface EventListRow {
   /** The step's queued, attempt and backoff breakdown; empty for other events. */
   segments: TimingSegment[];
   durationMs?: number;
-  sinceStartMs?: number;
 }
 
 export function buildEventRow(
@@ -526,10 +504,6 @@ export function buildEventRow(
     notice: ignored?.notice,
     segments,
     durationMs: lookups.timing.eventDurations.get(event.eventId),
-    sinceStartMs:
-      lookups.runStartMs === undefined
-        ? undefined
-        : getEffectiveEventTime(event) - lookups.runStartMs,
   };
 }
 
@@ -541,7 +515,12 @@ export function buildEventRow(
 const IDLE_GAP_MS = 30_000;
 
 export type EventListItem =
-  | { kind: 'event'; row: EventListRow; index: number }
+  | {
+      kind: 'event';
+      row: EventListRow;
+      index: number;
+      sincePreviousMs?: number;
+    }
   | { kind: 'gap'; key: string; ms: number; reason: string };
 
 function describeGap(later: Event, hookNameMap: Map<string, string>): string {
@@ -561,6 +540,11 @@ export function buildListItems(
   options: { showGaps: boolean; hookNameMap: Map<string, string> }
 ): EventListItem[] {
   const items: EventListItem[] = [];
+  const isNewestFirst =
+    rows.length > 1 &&
+    getEffectiveEventTime(rows[0].event) >
+      getEffectiveEventTime(rows[rows.length - 1].event);
+  const previousOffset = isNewestFirst ? 1 : -1;
   rows.forEach((row, index) => {
     if (options.showGaps && index > 0) {
       const prev = rows[index - 1].event;
@@ -578,7 +562,16 @@ export function buildListItems(
         });
       }
     }
-    items.push({ kind: 'event', row, index });
+    const previous = rows[index + previousOffset];
+    items.push({
+      kind: 'event',
+      row,
+      index,
+      sincePreviousMs: previous
+        ? getEffectiveEventTime(row.event) -
+          getEffectiveEventTime(previous.event)
+        : undefined,
+    });
   });
   return items;
 }
@@ -609,7 +602,7 @@ export type EventSearchState =
       status: 'error';
       query: string;
       id: ExactWorkflowSearchId;
-      message: string;
+      message?: string;
     };
 
 const NO_EVENTS: Event[] = [];
@@ -648,15 +641,20 @@ function countEvents(n: number): string {
 
 /** Shown in place of the list when it has no rows. */
 export function getEmptyMessage(search: EventSearchState): string {
+  return search.status === 'not_found'
+    ? `No events found for ${search.query}`
+    : 'No events found';
+}
+
+/** Shown under the search box while the query cannot be looked up. */
+export function getSearchHint(search: EventSearchState): string | null {
   switch (search.status) {
-    case 'not_found':
-      return `No events found for ${search.query}`;
-    case 'error':
-      return search.message;
+    case 'incomplete':
+      return 'Enter a full step, wait, hook, or event ID to search';
     case 'unavailable':
-      return 'Exact ID search is unavailable in this view.';
+      return 'Search isn’t available in this view';
     default:
-      return 'No events found';
+      return null;
   }
 }
 
@@ -667,17 +665,15 @@ export function getFooterLabel(
     total: number;
     hasMoreEvents: boolean;
   }
-): string {
+): string | null {
   const { total, hasMoreEvents } = counts;
   switch (search.status) {
     case 'ok':
       return `${countEvents(total)} for ${search.query}${search.truncated ? ' (results may be truncated)' : ''}`;
+    case 'loading':
     case 'not_found':
-      return `No events found for ${search.query}`;
     case 'error':
-      return search.message;
-    case 'incomplete':
-      return 'Enter a full step ID, wait ID, hook ID, or event ID';
+      return null;
     default:
       return `${countEvents(total)}${hasMoreEvents ? ' loaded' : ''}`;
   }

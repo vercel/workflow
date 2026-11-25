@@ -6,6 +6,7 @@
     "errors-and-retries",
     "hooks",
     "streaming",
+    "rate-limits",
     "cancellation",
     "serialization",
     "idempotency",

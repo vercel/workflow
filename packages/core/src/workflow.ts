@@ -49,6 +49,7 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_RATE_LIMIT,
   WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
@@ -71,6 +72,7 @@ import { createSetAttributes } from './workflow/attribute-dispatcher.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
+import { createRateLimit } from './workflow/rate-limit.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
@@ -716,6 +718,7 @@ async function createWorkflowSessionInner(
   const useStep = createUseStep(workflowContext);
   const createHook = createCreateHook(workflowContext);
   const sleep = createSleep(workflowContext);
+  const rateLimit = createRateLimit(workflowContext, workflowRun.specVersion);
   const setAttributes = createSetAttributes(workflowContext);
 
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
@@ -726,6 +729,8 @@ async function createWorkflowSessionInner(
   vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_SLEEP] = sleep;
+  // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+  vmGlobalThis[WORKFLOW_RATE_LIMIT] = rateLimit;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
     getWorkflowRunStreamId(workflowRun.runId, namespace);

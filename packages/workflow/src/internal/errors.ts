@@ -1,10 +1,12 @@
 export {
+  DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   HookConflictError,
   HookForceClaimedError,
   HookNotFoundError,
   InBandSupersededError,
   PreconditionFailedError,
+  RateLimitMaxWaitError,
   RunExpiredError,
   RunNotSupportedError,
   StepNotRegisteredError,

@@ -1,13 +1,11 @@
 import {
-  Button,
+  CopyButton,
   cn,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@workflow/web-shared';
 import type { Step, WorkflowRun } from '@workflow/world';
-import { Check, Copy } from 'lucide-react';
-import { useState } from 'react';
 import { getStatusColorClass } from '~/lib/status-colors';
 import { formatDuration } from '~/lib/utils';
 
@@ -95,19 +93,6 @@ function ErrorCodeBadge({
   content: React.ReactNode;
   errorCode: string;
 }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(errorCode);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard API can fail on unfocused pages or non-HTTPS contexts
-    }
-  };
-
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -116,20 +101,12 @@ function ErrorCodeBadge({
       <TooltipContent className="p-0">
         <div className="flex items-center gap-2 p-1.5">
           <span className="text-xs font-mono">{errorCode}</span>
-          <Button
-            variant="tertiary"
-            size="tiny"
-            shape="square"
-            className="h-5 w-5 shrink-0"
+          <CopyButton
+            textToCopy={errorCode}
             aria-label="Copy error code"
-            onClick={handleCopy}
-          >
-            {copied ? (
-              <Check className="h-2.5 w-2.5 text-muted-foreground" />
-            ) : (
-              <Copy className="h-2.5 w-2.5 text-muted-foreground" />
-            )}
-          </Button>
+            size="small"
+            className="-my-0.5 text-inherit enabled:hover:text-inherit focus-visible:text-inherit"
+          />
         </div>
       </TooltipContent>
     </Tooltip>

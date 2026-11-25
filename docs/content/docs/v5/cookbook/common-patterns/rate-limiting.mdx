@@ -1,6 +1,6 @@
 ---
 title: Rate Limiting & Retries
-description: Handle 429 responses and transient failures with RetryableError and exponential backoff.
+description: Stay under an API's rate limit with experimental_rateLimit(), and handle 429 responses and transient failures with RetryableError and exponential backoff.
 type: guide
 summary: When an external API returns 429, throw RetryableError with the Retry-After value so the workflow runtime automatically reschedules the step after the specified delay.
 ---
@@ -9,13 +9,37 @@ summary: When an external API returns 429, throw RetryableError with the Retry-A
   text="Add durable rate-limit handling to external API steps. Import `RetryableError`, `FatalError`, `getStepMetadata`, and `sleep` from `workflow` as needed. In each HTTP-calling &quot;use step&quot; helper, if the response status is 429, read the `Retry-After` header and throw `new RetryableError(&quot;Rate limited&quot;, { retryAfter })`. For transient 5xx/network failures, throw `RetryableError` with an exponential delay based on `getStepMetadata().attempt`. For permanent 4xx failures, throw `FatalError`. If the dependency is completely down, add a workflow-level circuit breaker that `await sleep(&quot;30s&quot;)` before probing again. Make requests idempotent with stable keys, and verify 429, 5xx, fatal 4xx, and circuit-breaker behavior."
 />
 
-Use this pattern when calling external APIs that enforce rate limits. Instead of writing manual retry loops, throw `RetryableError` with a `retryAfter` value and let the workflow runtime handle rescheduling.
+Use these patterns when calling external APIs that enforce rate limits. Call [`experimental_rateLimit()`](/docs/foundations/rate-limits) before the call to keep every run under the API's limit, and throw `RetryableError` with a `retryAfter` value for the 429s that still get through, instead of writing manual retry loops.
 
 ## When to use this
 
+- Calling an API with a published rate limit from many runs at once
 - Calling APIs that return 429 (Too Many Requests) with `Retry-After` headers
 - Any step that hits transient failures and needs backoff
 - Syncing data with third-party services (Stripe, CRMs, scrapers)
+
+## Pattern: stay under the limit with experimental_rateLimit()
+
+Call `experimental_rateLimit()` in the workflow before the step that calls the API. Every run that uses the same key shares its limit, and a run whose slot is later waits for it like a `sleep()`:
+
+```typescript
+import { experimental_rateLimit } from "workflow";
+
+declare function fetchFromCrm(contactId: string): Promise<unknown>; // @setup
+declare function upsertToWarehouse(contactId: string, contact: unknown): Promise<void>; // @setup
+
+export async function syncContact(contactId: string) {
+  "use workflow";
+
+  await experimental_rateLimit({ key: "crm", limit: 100, period: "1m" }); // [!code highlight]
+  const contact = await fetchFromCrm(contactId);
+  await upsertToWarehouse(contactId, contact);
+
+  return { contactId, status: "synced" };
+}
+```
+
+A step's retries don't wait for a new slot, so keep the 429 handling below in the step too. See [Rate Limits](/docs/foundations/rate-limits) for keys, `maxWait`, and `burst`.
 
 ## Pattern: RetryableError with Retry-After
 
@@ -224,6 +248,7 @@ export async function downloadWithRetry(url: string) {
 
 ## Key APIs
 
+- [`experimental_rateLimit()`](/docs/foundations/rate-limits) -- waits for a slot under a rate limit every run shares
 - [`"use workflow"`](/docs/foundations/workflows-and-steps) -- marks the orchestrator function
 - [`"use step"`](/docs/foundations/workflows-and-steps) -- marks functions that run with full Node.js access
 - [`RetryableError`](/docs/api-reference/workflow/retryable-error) -- signals the runtime to retry after a delay

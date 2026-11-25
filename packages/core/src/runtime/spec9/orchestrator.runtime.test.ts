@@ -1706,36 +1706,34 @@ describe.each([
   // timer delivery arms the next wait that message created once its own
   // wait completes, so every sleep of a Promise.all gets a timer.
   it('arms the next sleep of a Promise.all once the earlier one completes', async () => {
-    const { world } = await setup(
-      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-       async function workflow() { await Promise.all([sleep("1s"), sleep("2s")]); return "done"; }${transform('workflow')}`,
-      []
-    );
-    const timedWaits = () =>
-      new Set(
-        world.queueCalls.flatMap((call) => {
-          const continuation = (
-            call.message as { waitContinuation?: { correlationId: string } }
-          ).waitContinuation;
-          return continuation ? [continuation.correlationId] : [];
-        })
+    // On the queue's clock (a faked `Date`), so each timer is delivered when
+    // its own sleep is due. On the real clock, a loaded runner could reach
+    // the first sleep's timer only once the second sleep was due too: that
+    // delivery completes both, and the second never needs a timer.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { world } = await setup(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+         async function workflow() { await Promise.all([sleep("1s"), sleep("2s")]); return "done"; }${transform('workflow')}`,
+        []
       );
-    // The harness delivers a delayed message at once, and a timer that comes
-    // early re-arms itself, so deliver one message per tick until the later
-    // sleep is due on the real clock.
-    const deadline = Date.now() + 10_000;
-    while (
-      eventsOf(world, 'run_completed').length === 0 &&
-      Date.now() < deadline
-    ) {
-      const next = world.held[0];
-      if (next) await world.deliver(next);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      const timedWaits = () =>
+        new Set(
+          world.queueCalls.flatMap((call) => {
+            const continuation = (
+              call.message as { waitContinuation?: { correlationId: string } }
+            ).waitContinuation;
+            return continuation ? [continuation.correlationId] : [];
+          })
+        );
+      await world.runOnClock({ limit: 20 });
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const waits = eventsOf(world, 'wait_created').map((e) => e.correlationId);
+      expect(waits).toHaveLength(2);
+      expect(timedWaits()).toEqual(new Set(waits));
+    } finally {
+      vi.useRealTimers();
     }
-    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
-    expect(timedWaits()).toEqual(
-      new Set(eventsOf(world, 'wait_created').map((e) => e.correlationId))
-    );
   });
 
   // A redelivery of a message (a crash, or a rejected delivery) holds that
@@ -1810,6 +1808,52 @@ describe.each([
     listSpy.mockRestore();
     expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBeGreaterThan(0);
   });
+
+  // Node only: the QuickJS engine records no consumed position, so it never
+  // reads the tail and there is nothing for the wake to skip.
+  it.runIf(engine === 'node')(
+    'skips the tail read for a wake that names an event it has not consumed',
+    async () => {
+      const { world, runId } = await setup(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
+        []
+      );
+      await world.deliver(world.held[0]!);
+      world.held.length = 0;
+      // An out-of-band writer commits an event, then sends its wake naming it.
+      const written = world.appendOutOfBand({
+        eventType: 'noop',
+      } as Partial<Event>);
+      const tailReads = () =>
+        world.listCalls.filter(
+          (call) =>
+            (call.pagination as { sortOrder?: string } | undefined)
+              ?.sortOrder === 'desc'
+        ).length;
+      const before = tailReads();
+      const listsBefore = world.listCalls.length;
+      await world.deliver(
+        world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
+      );
+      expect(tailReads()).toBe(before);
+      // It loaded the log instead.
+      expect(world.listCalls.length).toBeGreaterThan(listsBefore);
+      // A wake naming an event it already consumed still reads the tail, and
+      // finds nothing new: the delivery above consumed the event.
+      const listsAfter = world.listCalls.length;
+      await world.deliver(
+        world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
+      );
+      expect(tailReads()).toBe(before + 1);
+      expect(world.listCalls.length).toBe(listsAfter + 1);
+      // A malformed or non-slot name is no hint: the delivery reads the tail.
+      for (const wakeEventId of [42, 'evnt_not-a-slot']) {
+        await world.deliver(world.enqueue(QUEUE, { runId, wakeEventId }));
+      }
+      expect(tailReads()).toBe(before + 3);
+    }
+  );
 
   describe('a delivery the fence refuses', () => {
     const fanOut = 2 * MAX_IN_BAND_CREATION_BATCH_EVENTS + 4;

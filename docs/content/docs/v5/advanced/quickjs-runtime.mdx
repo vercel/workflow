@@ -1,0 +1,77 @@
+---
+title: QuickJS Runtime
+description: Keep long-running workflows fast by resuming from a saved snapshot instead of replaying every event.
+type: guide
+summary: Run workflow functions on the QuickJS runtime with snapshotting so resume cost stays flat and runs are exempt from the per-run event limit.
+prerequisites:
+  - /docs/how-it-works/event-sourcing
+related:
+  - /docs/configuration/runtime-tuning#workflow_vm
+  - /docs/errors/max-events-exceeded
+  - /docs/errors/replay-timeout
+---
+
+Every time a workflow resumes, it re-executes from the top and replays its [event log](/docs/how-it-works/event-sourcing) to get back to where it left off. That takes milliseconds for most runs. For agents, chat sessions, and loops that run for days, the log keeps growing, so each resume gets slower and the run eventually fails with [`MAX_EVENTS_EXCEEDED`](/docs/errors/max-events-exceeded) or [`REPLAY_TIMEOUT`](/docs/errors/replay-timeout).
+
+The QuickJS runtime fixes this. It runs your workflow functions in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM instead of the default `node:vm` context and, once a run has processed 1,000 events, saves the VM's memory when the run suspends. The next resume restores that snapshot and replays only the events recorded since, so resume cost stays roughly flat however long the run gets. Runs on the QuickJS runtime with snapshotting are also exempt from the default per-run event limit.
+
+Step functions are not affected. They always run with full Node.js access.
+
+## Enable it
+
+Set `WORKFLOW_VM=quickjs` in the environment that starts runs, which is the process that calls [`start()`](/docs/api-reference/workflow-api/start):
+
+```bash
+WORKFLOW_VM=quickjs
+```
+
+On the Vercel World, snapshotting is on by default under QuickJS, so that is the only variable you need. On the Local and Postgres Worlds, see [World support](#world-support). See [Tuning](#tuning) to change how often a run snapshots.
+
+<Callout type="info">
+The exemption from the per-run event limit needs `workflow` 5.2.3 or later. Earlier versions snapshot the same way, but only record the snapshot policy on the run when you also set `WORKFLOW_SNAPSHOT_THRESHOLD`.
+</Callout>
+
+Only runs started after the change use the QuickJS runtime. A run keeps the VM and snapshot policy it started with, so runs already in progress are not changed, and a run that already failed is not revived. Start it again.
+
+The setting applies to every workflow the process starts.
+
+### World support
+
+Snapshots are stored by your World, next to the run's event log:
+
+| World | Snapshots | Notes |
+| --- | --- | --- |
+| Vercel World | Encrypted | Each run has an encryption key, and its snapshots are encrypted and authenticated with it. |
+| Local World, Postgres World | Off unless you opt in | Runs have no encryption key. Set [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted) on the workflow handler to store plaintext snapshots. A snapshot holds the handler's environment variables, so protect snapshot storage like the deployment's secrets. Without the opt-in, runs replay the full log on every resume. |
+| Other Worlds | Depends on the World | A World that implements snapshot storage and provides a run encryption key snapshots by default, encrypted with that key. Without a key, it snapshots only with the opt-in above. Without snapshot storage, runs still execute on QuickJS and replay the full log on every resume. |
+
+The exemption from the per-run event limit applies on the Local World and the Vercel World.
+
+## Check your workflow code first
+
+QuickJS does not provide a few globals inside workflow functions. If your workflow functions use any of these, move the call into a step:
+
+| Not available in workflow functions | What to do |
+| --- | --- |
+| `Intl.*`, and `toLocaleString()`-style methods called with an explicit locale | Format in a step |
+| `crypto.subtle.*`, including `digest` | Hash or sign in a step |
+| `WebAssembly`, `Atomics` | Use them in a step |
+
+`crypto.randomUUID()` and `crypto.getRandomValues()` still work and stay deterministic. See [`WORKFLOW_VM`](/docs/configuration/runtime-tuning#workflow_vm) for the full list.
+
+## Tuning
+
+Snapshotting needs no configuration on Worlds that provide run encryption keys. To change how often a run snapshots, set `WORKFLOW_SNAPSHOT_THRESHOLD`. This is the same entry as on the [Runtime tuning](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) page:
+
+<include>../configuration/runtime-tuning.mdx#workflow_snapshot_threshold</include>
+
+## On Vercel
+
+Add `WORKFLOW_VM=quickjs` to your project's environment variables, then redeploy. You can add it in two ways:
+
+- **From a run.** When a run fails at the event limit, times out while replaying, or passes 20,000 events, its page in the Workflows observability tab shows an **Optimize Long Runs** button. It adds the variable to Production and prompts you to redeploy.
+- **From project settings.** Open **Settings**, then **Environment Variables**, add the variable, and redeploy.
+
+Runs on Vercel keep executing on the deployment they started on, so the redeploy does not affect runs in progress.
+
+For every setting and what a snapshot contains, see [Runtime tuning](/docs/configuration/runtime-tuning#workflow-vm-engine).

@@ -5,6 +5,7 @@ import {
   type World,
 } from '@workflow/world';
 import { runtimeLogger } from '../../logger.js';
+import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { REPLAY_RESOLVE_DATA } from '../helpers.js';
 import type { ExternalWork } from './log-state.js';
 import {
@@ -88,10 +89,59 @@ export const ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR = 2;
 export const ORCHESTRATOR_POLL_MAX_INTERVAL_MS = 10_000;
 
 /** Default of {@link getOrchestratorLingerMs}, in milliseconds. */
-export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
+export const DEFAULT_ORCHESTRATOR_LINGER_MS = 5_000;
 
 /** Default of {@link getOrchestratorHookLingerMs}, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
+
+/**
+ * Default of {@link getOrchestratorRateWaitMs}: a call is woken about this
+ * long before its slot, which covers a queue delivery's latency (about 1.5 s
+ * at p99) and a cold start, and it waits the rest in process. It is what lets
+ * the World's grace stay near its 5-second floor.
+ */
+export const DEFAULT_ORCHESTRATOR_RATE_WAIT_MS = 5_000;
+
+/**
+ * How long past a rate limit call's slot an in-process wait ends
+ * (`waitForNearRateSlot` on the node engine): a World whose clock is a few milliseconds behind
+ * this one refuses a `rate_acquired` at the slot itself as too early, and
+ * that costs a whole-second queue timer.
+ */
+export const RATE_SLOT_MARGIN_MS = 15;
+
+/**
+ * The in-process backoffs (ms) of a `rate_acquired` the World refuses as too
+ * early (`acquireRate`, on either engine): its clock is behind this one by more than
+ * {@link RATE_SLOT_MARGIN_MS}. About 150 ms in all, after which the call's
+ * queue timer takes over. The World never grants a slot early, so these only
+ * trade latency, never correctness.
+ */
+export const RATE_TOO_EARLY_RETRY_MS = [10, 20, 40, 80] as const;
+
+/**
+ * How far ahead an `experimental_rateLimit()` call's slot may be for the
+ * orchestrator delivery that finds it waiting to wait for it in process
+ * (`WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`, default
+ * {@link DEFAULT_ORCHESTRATOR_RATE_WAIT_MS}), instead of suspending until a
+ * queued timer wakes the run. A queue delay is whole seconds and its delivery
+ * adds latency, so a call whose slot is half a second away would otherwise
+ * go ahead well over a second after it. The timer is still sent first, so a
+ * delivery that dies while it waits leaves the run woken all the same. Never
+ * past the delivery's inline deadline. `0` disables it.
+ */
+export function getOrchestratorRateWaitMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = env.WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_ORCHESTRATOR_RATE_WAIT_MS;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0
+    ? value
+    : DEFAULT_ORCHESTRATOR_RATE_WAIT_MS;
+}
 
 /**
  * How long an orchestrator delivery stays live after its last pass found
@@ -105,8 +155,10 @@ export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
  * World without one, a subscription that failed, or one that goes down
  * during the linger ends it, since waiting on the poll alone costs a
  * function held open for a poll's latency (`LiveLogFeed.isLive`). A run that
- * waits only on open hooks lingers for the shorter
- * {@link getOrchestratorHookLingerMs}. `0` disables both.
+ * waits only on open hooks lingers for {@link getOrchestratorHookLingerMs},
+ * which is never longer (the two defaults are equal); a step that takes
+ * longer than the window ends the delivery, and its outcome's wake starts the
+ * next one. `0` disables every linger.
  */
 export function getOrchestratorLingerMs(
   env: Record<string, string | undefined> = process.env
@@ -124,7 +176,8 @@ export function getOrchestratorLingerMs(
  * {@link getOrchestratorLingerMs}) when the run waits on open hooks and no
  * background step (`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`, default
  * {@link DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS}), and never longer than
- * `WORKFLOW_ORCHESTRATOR_LINGER_MS`. Any open hook is enough to take it (see
+ * `WORKFLOW_ORCHESTRATOR_LINGER_MS` (whose default it equals, so it is
+ * shorter only when either is set). Any open hook is enough to take it (see
  * `externalWorkOf`), however rarely it is resumed, so a run with a long-lived
  * approval or cancel hook beside a polling `sleep()` holds each of its
  * deliveries this long after its last pass; the short default keeps that
@@ -160,6 +213,126 @@ export function getOrchestratorLingerMsFor(
   if (work === 'step') return getOrchestratorLingerMs(env);
   if (work === 'hook') return getOrchestratorHookLingerMs(env);
   return 0;
+}
+
+/**
+ * How far ahead an open wait may be due for an orchestrator delivery with
+ * nothing left to run to stay live until it is, and complete it in process
+ * (`WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`, default
+ * `WORKFLOW_ORCHESTRATOR_LINGER_MS`, and never more than it). `0` disables
+ * it.
+ *
+ * The window compares with the wait's deadline less
+ * {@link ORCHESTRATOR_WAIT_LINGER_SLACK_MS}, inclusively, so a sleep as long as
+ * the window still lingers when the deadline the workflow computed runs a
+ * little ahead of this host's clock (the VM's clock follows event times the
+ * World stamped).
+ *
+ * Without it, a run that loops on a short `sleep()` ends its delivery at
+ * every sleep, and the wait's timer starts a new invocation, which loads the
+ * run's whole log again. Lingering keeps the replay session and reads only
+ * the events after it. The timer is armed before the delivery lingers, so a
+ * delivery that dies mid-sleep still has the run woken. It holds a function
+ * open for at most the sleep's length, which the full window bounds the same
+ * way it bounds the linger on a background step. Taken under the same
+ * conditions as that linger: only while the live feed is live, and only for
+ * a wait due before the invocation's inline deadline less its margin.
+ */
+export function getOrchestratorWaitLingerMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const lingerMs = getOrchestratorLingerMs(env);
+  const raw = env.WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS;
+  if (raw === undefined || raw === '') return lingerMs;
+  const value = Number(raw);
+  return Math.min(
+    Number.isFinite(value) && value >= 0 ? value : lingerMs,
+    lingerMs
+  );
+}
+
+/**
+ * How long a linger taken for a wait runs past the wait's deadline, so that a
+ * timer that fires a little before the deadline does not end it first, and
+ * how far past the wait window a wait may be due and still count (see
+ * {@link getOrchestratorWaitLingerMs}). The linger ends as soon as the wait
+ * is due; this only bounds it.
+ */
+export const ORCHESTRATOR_WAIT_LINGER_SLACK_MS = 1_000;
+
+/**
+ * When a delivery with nothing left to run stops lingering (epoch ms), or
+ * `undefined` when it does not linger: the later of the window for what the
+ * run waits on outside its orchestrator ({@link getOrchestratorLingerMsFor})
+ * and, when the earliest open wait is due within
+ * {@link getOrchestratorWaitLingerMs} (plus
+ * {@link ORCHESTRATOR_WAIT_LINGER_SLACK_MS}) and no later than `capMs`, that wait's
+ * deadline (plus {@link ORCHESTRATOR_WAIT_LINGER_SLACK_MS}). Never past
+ * `capMs`, the inline deadline less its margin. A wait due past the cap does
+ * not count: the delivery could not complete it, and its queued timer does.
+ */
+export function orchestratorLingerUntil(
+  params: {
+    work: ExternalWork | undefined;
+    /** The earliest open wait's deadline, epoch ms. */
+    nextWaitAtMs: number | undefined;
+    nowMs: number;
+    capMs: number;
+  },
+  env: Record<string, string | undefined> = process.env
+): { untilMs: number; forWait: boolean } | undefined {
+  const { work, nextWaitAtMs, nowMs, capMs } = params;
+  const externalMs = getOrchestratorLingerMsFor(work, env);
+  const waitWindowMs = getOrchestratorWaitLingerMs(env);
+  let untilMs = externalMs > 0 ? nowMs + externalMs : nowMs;
+  let forWait = false;
+  if (
+    nextWaitAtMs !== undefined &&
+    waitWindowMs > 0 &&
+    nextWaitAtMs <= capMs &&
+    nextWaitAtMs - ORCHESTRATOR_WAIT_LINGER_SLACK_MS - nowMs <= waitWindowMs
+  ) {
+    const waitUntilMs = nextWaitAtMs + ORCHESTRATOR_WAIT_LINGER_SLACK_MS;
+    if (waitUntilMs > untilMs) {
+      untilMs = waitUntilMs;
+      forWait = true;
+    }
+  }
+  untilMs = Math.min(untilMs, capMs);
+  return untilMs > nowMs ? { untilMs, forWait } : undefined;
+}
+
+/** What a linger was taken for: a wait due soon, or work done elsewhere. */
+export type LingerKind = 'wait' | ExternalWork;
+
+/** The kind of a linger {@link orchestratorLingerUntil} decided. */
+export function lingerKindOf(
+  linger: { forWait: boolean },
+  work: ExternalWork | undefined
+): LingerKind {
+  return linger.forWait || work === undefined ? 'wait' : work;
+}
+
+/**
+ * Time one delivery lingered, by kind, as span attributes. A delivery can
+ * linger several times and for different reasons, so each kind keeps its own
+ * total rather than the last linger overwriting one value.
+ */
+export class LingerTimes {
+  private readonly totals: Record<LingerKind, number> = {
+    wait: 0,
+    step: 0,
+    hook: 0,
+  };
+
+  add(kind: LingerKind, ms: number): Record<string, number> {
+    this.totals[kind] += ms;
+    return {
+      ...Attribute.WorkflowLingerWaitMs(this.totals.wait),
+      ...Attribute.WorkflowLingerStepMs(this.totals.step),
+      ...Attribute.WorkflowLingerHookMs(this.totals.hook),
+    };
+  }
 }
 
 /**
