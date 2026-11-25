@@ -1,113 +1,53 @@
-import { cn } from '@workflow/web-shared';
+import { Button } from '@workflow/web-shared';
 import { Link } from 'react-router';
-import { runPath, runUsagePath } from './run-usage';
-import { tabsListClassName, tabsTriggerClassName } from './ui/tabs';
-
-/** The run page's in-page tabs, in the row's order. */
-export const RUN_TABS = [
-  { value: 'trace', label: 'Trace' },
-  { value: 'events', label: 'Events' },
-  { value: 'streams', label: 'Streams' },
-] as const;
-
-export type RunTab = (typeof RUN_TABS)[number]['value'];
-
-/** An item of the row: a tab, or the Usage page. */
-export type RunViewItem = RunTab | 'usage';
+import { runUsagePath } from './run-usage';
 
 /**
- * Focuses the row's active item: after switching between the run page and
- * the Usage page, the row is a new element, and focus would otherwise drop
- * to the document. Only the item in its active state counts (the current
- * page's link, or the selected tab): while the navigation is pending, the
- * old row's inactive item of the same name is still in the document.
- * Returns whether it found the item.
+ * Where focus goes after moving between the run page and its Usage page:
+ * the Usage page's content, or the run page's selected tab.
  */
-export function focusRunViewItem(
-  root: ParentNode | null,
-  item: RunViewItem
-): boolean {
-  const target = root?.querySelector(
-    `[data-run-view-item="${item}"]:is([aria-current="page"], [data-state="active"])`
-  );
+export type RunView = 'usage' | 'tabs';
+
+const RUN_VIEW_FOCUS_TARGET: Record<RunView, string> = {
+  usage: '[data-run-view="usage"]',
+  tabs: '[role="tab"][data-state="active"]',
+};
+
+/**
+ * Focuses the view that a navigation landed on. The link that was followed
+ * is gone once the other page renders (the Usage link is not shown on its
+ * own page, and the run breadcrumb turns into text), so focus would
+ * otherwise drop to the document. Returns whether it found the target, so
+ * a caller can try again on the next render.
+ */
+export function focusRunView(root: ParentNode | null, view: RunView): boolean {
+  const target = root?.querySelector(RUN_VIEW_FOCUS_TARGET[view]);
   if (!(target instanceof HTMLElement)) return false;
   target.focus();
   return true;
 }
 
-/** A run tab's URL, for links from outside the run page. */
-export function runTabPath(runId: string, tab: RunTab): string {
-  return `${runPath(runId)}?tab=${tab}`;
-}
-
 /**
- * The row's Usage item: a link to the run's Usage page, styled like the
- * tabs beside it. It is navigation to another route, not a tab, so it sits
- * next to the tablist rather than inside it.
+ * The run header's link to the run's Usage page, beside the run's actions.
+ * Usage is a page of its own, not one of the run's tabs.
  */
-export function UsageNavLink({
+export function ViewUsageLink({
   runId,
-  current = false,
   onNavigate,
 }: {
   runId: string;
-  current?: boolean;
   /** Called when the link is followed, to move focus once the page renders. */
-  onNavigate?: (item: RunViewItem) => void;
+  onNavigate?: () => void;
 }) {
   return (
-    <Link
-      to={runUsagePath(runId)}
-      className={tabsTriggerClassName}
-      aria-current={current ? 'page' : undefined}
-      data-testid="run-usage-nav-link"
-      data-run-view-item="usage"
-      onClick={() => onNavigate?.('usage')}
-    >
-      Usage
-    </Link>
-  );
-}
-
-/** The pill the row's items sit in, tabs and links alike. */
-export const RUN_VIEW_ROW_CLASS = cn(
-  tabsListClassName,
-  'mb-4 max-w-full flex-none'
-);
-
-/**
- * The tab row on the Usage page. There are no in-page panels here, so every
- * item is a link: Trace, Events and Streams go back to the run page on that
- * tab (explicit paths, since this page is a child route), and Usage is the
- * current page.
- */
-export function RunViewNav({
-  runId,
-  showUsage,
-  onNavigate,
-}: {
-  runId: string;
-  /** Hidden where the World does not count usage, like the header fields. */
-  showUsage: boolean;
-  /** Called when an item is followed, to move focus once the page renders. */
-  onNavigate?: (item: RunViewItem) => void;
-}) {
-  return (
-    <nav aria-label="Run views" className={RUN_VIEW_ROW_CLASS}>
-      {RUN_TABS.map((tab) => (
-        <Link
-          key={tab.value}
-          to={runTabPath(runId, tab.value)}
-          className={tabsTriggerClassName}
-          data-run-view-item={tab.value}
-          onClick={() => onNavigate?.(tab.value)}
-        >
-          {tab.label}
-        </Link>
-      ))}
-      {showUsage && (
-        <UsageNavLink runId={runId} current onNavigate={onNavigate} />
-      )}
-    </nav>
+    <Button asChild variant="secondary" size="small">
+      <Link
+        to={runUsagePath(runId)}
+        data-testid="run-view-usage-link"
+        onClick={onNavigate}
+      >
+        View Usage
+      </Link>
+    </Button>
   );
 }
