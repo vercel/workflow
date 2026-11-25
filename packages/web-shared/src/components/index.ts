@@ -25,6 +25,7 @@ export { TraceViewer } from './trace-viewer';
 export { ResourceIcon } from './trace-viewer/components/event-list';
 export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 export { Button, type ButtonProps, buttonVariants } from './ui/button';
+export { ContextCardProvider } from './ui/context-card';
 export { CopyButton, type CopyButtonProps } from './ui/copy-button';
 export { DataInspector, type DataInspectorProps } from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
