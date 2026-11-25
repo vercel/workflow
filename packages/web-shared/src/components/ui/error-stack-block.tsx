@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertCircle } from 'lucide-react';
+import { OctagonAlert } from 'lucide-react';
 import { CopyButton } from './copy-button';
 
 export type StructuredErrorRecord = Record<string, unknown> & {
@@ -70,48 +70,24 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       : body;
 
   return (
-    <div
-      className="relative overflow-hidden rounded-md border"
-      style={{
-        borderColor: 'var(--ds-red-400)',
-        background: 'var(--ds-red-100)',
-      }}
-    >
+    <div className="relative overflow-hidden rounded-md border border-red-100 bg-red-200">
       <CopyButton
         textToCopy={copyText}
         aria-label="Copy error"
-        className="absolute right-2 top-2 border border-red-400 text-red-900 enabled:hover:bg-red-200 enabled:hover:text-red-900 focus-visible:text-red-900"
+        className="absolute right-1 top-1 border border-red-400 text-red-900 enabled:hover:bg-red-300 enabled:hover:text-red-900 focus-visible:text-red-900"
       />
 
       {title && (
-        <div
-          className="flex items-center gap-2 px-3 py-2.5 pr-10"
-          style={{
-            color: 'var(--ds-red-900)',
-            borderBottom: '1px solid var(--ds-red-400)',
-          }}
-        >
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          <p
-            className="text-label-12 font-semibold m-0 truncate"
-            // The full message or stack is in the body below; the header
-            // shows the first line, single-line, with overflow
-            // ellipsised so a long title doesn't push the copy button or
-            // wrap into the framed hint/docs lines.
-            title={message}
-          >
-            {title}
-          </p>
+        <div className="flex items-center gap-3 min-h-(--ds-size-small) px-2 py-1.5 pr-10 border-b border-red-400 text-red-900">
+          <OctagonAlert className="size-3.5 shrink-0" />
+          {/* The full message or stack is in the body below; the header
+              shows the first line, ellipsised so a long title doesn't push
+              the copy button or wrap into the framed hint/docs lines. */}
+          <p className="text-copy-13 font-semibold m-0 truncate">{title}</p>
         </div>
       )}
       {body && (
-        <pre
-          className="px-3 py-2.5 text-label-12-mono whitespace-pre-wrap break-words overflow-auto m-0"
-          style={{
-            color: 'var(--ds-red-900)',
-            background: 'var(--ds-red-200)',
-          }}
-        >
+        <pre className="px-2 py-2.5 bg-red-300 text-red-1000 text-label-12-mono whitespace-pre-wrap break-words overflow-auto m-0">
           {body}
         </pre>
       )}
