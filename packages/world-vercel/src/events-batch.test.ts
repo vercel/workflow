@@ -692,4 +692,63 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
       })
     ).rejects.toMatchObject({ code: 'SCHEMA_VALIDATION' });
   });
+  it('takes what the World committed in place of a batched rate event', async () => {
+    const call = {
+      key: 'k',
+      limit: 10,
+      periodMs: 1_000,
+      expiresAt: new Date(CREATED_AT),
+    };
+    const events: BatchEventRequest[] = [
+      {
+        event: {
+          eventType: 'rate_created',
+          specVersion: 10,
+          correlationId: 'rate_01M7TV42E3D71ZYRJNTZ91XWA1',
+          eventData: call,
+        } as never,
+      },
+    ];
+    const answer = (eventType: string) => ({
+      status: 200,
+      event: {
+        eventType,
+        specVersion: 10,
+        correlationId: 'rate_01M7TV42E3D71ZYRJNTZ91XWA1',
+        eventId: slotEventId(4),
+        runId: RUN_ID,
+        createdAt: CREATED_AT,
+        eventData: { ...call, acquireAt: CREATED_AT },
+      },
+    });
+    for (const committed of ['rate_acquired', 'rate_created']) {
+      const agent = mockAgent();
+      let frames: { meta: Record<string, unknown> }[] = [];
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v5/runs/${RUN_ID}/events/batch`,
+          method: 'POST',
+        })
+        .reply(
+          200,
+          (opts) => {
+            frames = decodeBatchFrames(
+              new Uint8Array(Buffer.from(opts.body as Uint8Array))
+            );
+            return encode({ results: [answer(committed)] });
+          },
+          { headers: { 'content-type': 'application/cbor' } }
+        );
+      const { results } = await createWorkflowRunEventBatch(
+        RUN_ID,
+        events,
+        undefined,
+        { token: 'test-token', dispatcher: agent }
+      );
+      expect(results[0]?.event?.eventType).toBe(committed);
+      // The call rides on the frame as on a single write.
+      expect(frames[0]?.meta).toMatchObject({ rateKey: 'k', rateLimit: 10 });
+    }
+  });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nuxt",
-  "version": "5.0.11",
+  "version": "5.0.15",
   "description": "Nuxt integration for Workflow SDK",
   "license": "Apache-2.0",
   "type": "module",
@@ -46,6 +46,6 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "nuxt": "4.6.4",
-    "vite": "8.3.5"
+    "vite": "8.3.8"
   }
 }

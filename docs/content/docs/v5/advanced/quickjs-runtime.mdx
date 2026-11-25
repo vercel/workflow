@@ -25,7 +25,7 @@ Set `WORKFLOW_VM=quickjs` in the environment that starts runs, which is the proc
 WORKFLOW_VM=quickjs
 ```
 
-Snapshotting is on by default under QuickJS, so that is the only variable you need. See [Tuning](#tuning) to change how often a run snapshots.
+On the Vercel World, snapshotting is on by default under QuickJS, so that is the only variable you need. On the Local and Postgres Worlds, see [World support](#world-support). See [Tuning](#tuning) to change how often a run snapshots.
 
 <Callout type="info">
 The exemption from the per-run event limit needs `workflow` 5.2.3 or later. Earlier versions snapshot the same way, but only record the snapshot policy on the run when you also set `WORKFLOW_SNAPSHOT_THRESHOLD`.
@@ -42,8 +42,8 @@ Snapshots are stored by your World, next to the run's event log:
 | World | Snapshots | Notes |
 | --- | --- | --- |
 | Vercel World | Encrypted | Each run has an encryption key, and its snapshots are encrypted and authenticated with it. |
-| Local World, Postgres World | Plaintext | Runs have no encryption key, so snapshots are stored the same way as the event log and payloads. Protect snapshot storage like the rest of the World's storage. |
-| Other Worlds | Depends on the World | A World that implements snapshot storage snapshots by default, encrypted when it provides a run encryption key. Without snapshot storage, runs still execute on QuickJS and replay the full log on every resume. |
+| Local World, Postgres World | Off unless you opt in | Runs have no encryption key. Set [`WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1`](/docs/configuration/runtime-tuning#workflow_snapshot_allow_unencrypted) on the workflow handler to store plaintext snapshots. A snapshot holds the handler's environment variables, so protect snapshot storage like the deployment's secrets. Without the opt-in, runs replay the full log on every resume. |
+| Other Worlds | Depends on the World | A World that implements snapshot storage and provides a run encryption key snapshots by default, encrypted with that key. Without a key, it snapshots only with the opt-in above. Without snapshot storage, runs still execute on QuickJS and replay the full log on every resume. |
 
 The exemption from the per-run event limit applies on the Local World and the Vercel World.
 
@@ -61,7 +61,7 @@ QuickJS does not provide a few globals inside workflow functions. If your workfl
 
 ## Tuning
 
-Snapshotting needs no configuration. To change how often a run snapshots, set `WORKFLOW_SNAPSHOT_THRESHOLD`. This is the same entry as on the [Runtime tuning](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) page:
+Snapshotting needs no configuration on Worlds that provide run encryption keys. To change how often a run snapshots, set `WORKFLOW_SNAPSHOT_THRESHOLD`. This is the same entry as on the [Runtime tuning](/docs/configuration/runtime-tuning#workflow_snapshot_threshold) page:
 
 <include>../configuration/runtime-tuning.mdx#workflow_snapshot_threshold</include>
 

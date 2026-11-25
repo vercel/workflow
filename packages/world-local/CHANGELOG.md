@@ -1,5 +1,58 @@
 # @workflow/world-local
 
+## 5.6.0
+
+### Minor Changes
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Add `burst` to `experimental_rateLimit()`: an idle key admits up to `burst` calls at once (default 1, and up to a day of the rate, so it may exceed `limit`), then refills one per interval, like a token bucket.
+
+- [#5622](https://github.com/vercel/workflow/pull/5622) [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Support the new `experimental_rateLimit()` feature. See [rate limit docs](https://workflow-sdk.dev/docs/api-reference/workflow/rate-limit)
+
+- [#5622](https://github.com/vercel/workflow/pull/5622) [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - New runs on the Vercel, Local and Postgres Worlds now use a new execution engine that supports speculative execution, and vastly reduces engine overhead. `WORKFLOW_SPEC_VERSION=8` opts out. Runs on third-party worlds use the old engine (spec 8) unless they implement the prerequisites.
+
+### Patch Changes
+
+- Updated dependencies [[`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/world@5.4.0
+  - @workflow/errors@5.2.0
+
+## 5.5.2
+
+### Patch Changes
+
+- [#5446](https://github.com/vercel/workflow/pull/5446) [`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Count a run's usage on the Local World (its events by type, each step function and hook, and its storage, counted the way Vercel's Data Written counts it) and print it with `workflow inspect run <id> --usage`.
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world@5.3.1
+  - @workflow/errors@5.1.6
+
+## 5.5.1
+
+### Patch Changes
+
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62)]:
+  - @workflow/errors@5.1.5
+
+## 5.5.0
+
+### Minor Changes
+
+- [#5353](https://github.com/vercel/workflow/pull/5353) [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `runs.deleteDataMany` method to the World interface, which deletes the stored data (payloads, not metadata) of finished runs on demand, and implement it in the Vercel, Local and Postgres Worlds. Exposed as `run.delete()` and `deleteRuns()` (`workflow/api`), `deleteRuns(world, runIds)` (`@workflow/core/runtime`), and `pnpx workflow delete <runId>` in the CLI. `workflow cancel` and `workflow start` no longer accept listing flags they ignored, such as `--limit` on `start` or `--cursor` and `--sort` on either. `workflow delete`, `workflow cancel` and `workflow start` now print the error they fail with, such as an unknown flag, instead of exiting with no output.
+
+### Patch Changes
+
+- [#5601](https://github.com/vercel/workflow/pull/5601) [`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - On Windows, tagged `clear()`s running side by side no longer fail with `EPERM` while deleting the JSON data of an earlier release, and two clears of different tags no longer leave behind an empty directory each kept for the other's file. In the shared World tests, wait for the sleep's timer delivery before checking the sleep workflow's flow invocation count, and run the `wf` CLI without blocking the test process.
+
+- [#5487](https://github.com/vercel/workflow/pull/5487) [`10f35e3`](https://github.com/vercel/workflow/commit/10f35e334a16489916bf117f022c8e1ccdc61efd) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - After a `experimental_retention: 0` run ends, immediately scrub any step that settles later.
+
+- [#5468](https://github.com/vercel/workflow/pull/5468) [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9) Thanks [@benpankow](https://github.com/benpankow)! - A `resumeHook()` wake names the `hook_received` it was sent for, so a spec 9 orchestrator delivery in a process that already consumed the run's log below that event skips the tail read that checks for a no-op wake.
+
+- [#5495](https://github.com/vercel/workflow/pull/5495) [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read a stream a bounded batch of chunks at a time, as its consumer asks for them, instead of loading every unread chunk when the reader opens. `clear()` also deletes the run data an earlier release left in the data directory (only the tag's files for a tagged World).
+
+- [#5495](https://github.com/vercel/workflow/pull/5495) [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep a run started with `experimental_retention: 0` free of data after it ends: the bundled Worlds clear what a step still running when the run ended (a `Promise.race` loser) writes to it, and write no stream chunks to it.
+- Updated dependencies [[`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9)]:
+  - @workflow/world@5.3.0
+  - @workflow/errors@5.1.4
+
 ## 5.4.1
 
 ### Patch Changes

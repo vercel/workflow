@@ -10,6 +10,7 @@ import type {
   BulkCancelWorkflowRunsResult,
   Event,
   Hook,
+  RunUsage,
   Step,
   WorkflowRun,
   WorkflowRunStatus,
@@ -84,6 +85,13 @@ export async function fetchRun(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<WorkflowRun>> {
   return rpc('fetchRun', { worldEnv, runId, resolveData });
+}
+
+export async function fetchRunUsage(
+  worldEnv: EnvMap,
+  runId: string
+): Promise<ServerActionResult<RunUsage | null>> {
+  return rpc('fetchRunUsage', { worldEnv, runId });
 }
 
 export async function fetchStep(
