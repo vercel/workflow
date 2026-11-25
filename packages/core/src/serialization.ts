@@ -2540,9 +2540,18 @@ export function getWorkflowReducers(
       }
       const signal = readProperty(value, 'signal');
       if (!signal) return false;
-      // Checked on the signal too: any object whose `signal` carries the
-      // abort symbol reduces as a controller here (a `{ signal, url }`
-      // included), and would revive with a working `abort()` in the step.
+      // Any object whose `signal` carries the abort symbol reduces as a
+      // controller here, and revives with a working `abort()` in the step.
+      // An object that is not a controller but carries an in-band-only
+      // signal (a `{ signal, url }`) is left to the plain-object path
+      // instead, so it revives as itself with a read-only signal.
+      if (
+        ownSymbol === undefined &&
+        !isNativeAbortController &&
+        isInBandOnlyAbort(undefined, signal)
+      ) {
+        return false;
+      }
       if (isInBandOnlyAbort(value, signal)) {
         throw new SerializationError(
           'An AbortController created with { inBandOnly: true } cannot leave workflow code.',

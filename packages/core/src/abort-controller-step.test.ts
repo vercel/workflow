@@ -728,7 +728,7 @@ describe('step-initiated abort: durable hook resume is committed before completi
 });
 
 describe('in-band-only signals through a step', () => {
-  it('keep refusing to leave as a controller after a round trip through a step', async () => {
+  it('keep their flag through a step and into a child run, and pass inside a plain object', async () => {
     // An in-band-only controller's signal, as workflow code holds it.
     const source = new AbortController();
     const signal = source.signal as any;
@@ -751,15 +751,24 @@ describe('in-band-only signals through a step', () => {
       'wrun_test',
       undefined
     );
-    const error = await dehydrateStepArguments(
-      [{ signal: back, url: 'https://example.test' }],
+    expect((back as any)[ABORT_IN_BAND_ONLY]).toBe(true);
+
+    // An object carrying it reaches the next step as itself, with a signal
+    // the step can read but not abort.
+    const [options] = (await hydrateStepArguments(
+      await dehydrateStepArguments(
+        [{ signal: back, url: 'https://example.test' }],
+        'wrun_test',
+        undefined
+      ),
       'wrun_test',
-      undefined
-    ).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).cause).toMatchObject({
-      message: expect.stringMatching(/inBandOnly/),
-    });
+      undefined,
+      ops
+    )) as [{ signal: AbortSignal; url: string; abort?: unknown }];
+    expect(options.url).toBe('https://example.test');
+    expect(options.signal.aborted).toBe(false);
+    expect((options.signal as any)[ABORT_IN_BAND_ONLY]).toBe(true);
+    expect(options.abort).toBeUndefined();
 
     // A child run started from the step gets it as an argument.
     const [inChild] = (await hydrateWorkflowArguments(
@@ -767,11 +776,6 @@ describe('in-band-only signals through a step', () => {
       'wrun_child',
       undefined
     )) as [AbortSignal];
-    const fromChild = await dehydrateStepArguments(
-      [{ signal: inChild, url: 'https://example.test' }],
-      'wrun_child',
-      undefined
-    ).catch((caught: unknown) => caught);
-    expect(fromChild).toBeInstanceOf(Error);
+    expect((inChild as any)[ABORT_IN_BAND_ONLY]).toBe(true);
   });
 });
