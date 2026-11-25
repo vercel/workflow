@@ -4,7 +4,6 @@ import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import * as React from 'react';
 import { cn } from '../../lib/cn';
 
-/** How long the pointer rests on a trigger before its tooltip opens. */
 export const TOOLTIP_DELAY_MS = 400;
 
 function TooltipProvider({
@@ -30,9 +29,8 @@ const TooltipContent = React.forwardRef<
       // Radix adds the arrow's height to the offset; either way the pill sits 10px from the trigger.
       sideOffset={sideOffset ?? (showArrow ? 4 : 10)}
       className={cn(
-        'invert-theme z-[var(--ds-z-tooltip)] max-w-[250px] select-none rounded-lg bg-background-100 px-2 py-1.5 text-center text-[13px] font-normal leading-[1.3] text-balance text-gray-1000 break-words whitespace-pre-line',
-        'transition-opacity duration-100 ease-[ease-in] starting:opacity-0',
-        'has-[kbd]:inline-flex has-[kbd]:items-center has-[kbd]:gap-1 has-[kbd]:pr-1.5 [&>kbd]:bg-gray-400! [&>kbd]:rounded-sm [&>kbd]:min-w-5! [&>kbd]:h-5! [&>kbd]:min-h-0! [&>kbd]:text-xs [&>kbd]:shadow-none!',
+        'invert-theme z-[var(--ds-z-tooltip)] flex max-w-[250px] select-none items-center gap-1 rounded-lg bg-background-100 px-2 py-1.5 text-center text-label-13 text-balance text-gray-1000 break-words whitespace-pre-line',
+        'transition-opacity duration-100 ease-in starting:opacity-0',
         className
       )}
       {...props}
