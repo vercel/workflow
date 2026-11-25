@@ -17,7 +17,7 @@ const sizeConfig = {
   },
   lg: {
     angleIncrement: 30,
-    lineDimensions: 'h-[2px] w-[5px]',
+    lineDimensions: 'h-0.5 w-[5px]',
     delays: [
       -1100, -1000, -900, -800, -700, -600, -500, -400, -300, -200, -100, 0,
     ],
