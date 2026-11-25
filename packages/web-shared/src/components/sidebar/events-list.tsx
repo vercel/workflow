@@ -131,7 +131,7 @@ function EventItem({
               {event.eventType}
             </span>
           </EventNoticeTooltip>
-          <span className="shrink-0 text-label-13 text-gray-900">
+          <span className="shrink-0 text-copy-13-mono text-gray-900">
             <TimestampTooltip date={displayedCreatedAt}>
               <span>{formatTimestamp(displayedCreatedAt)}</span>
             </TimestampTooltip>
@@ -145,7 +145,7 @@ function EventItem({
             <div className="flex items-center justify-between gap-2 py-2 px-3">
               <span className="text-label-12 text-gray-900">Occurred</span>
               <TimestampTooltip date={occurredAt}>
-                <span className="max-w-[70%] truncate text-right text-label-12-mono">
+                <span className="max-w-[70%] truncate text-right text-copy-13-mono">
                   {formatTimestamp(occurredAt)}
                 </span>
               </TimestampTooltip>
