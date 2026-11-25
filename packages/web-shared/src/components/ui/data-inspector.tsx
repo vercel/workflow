@@ -41,7 +41,7 @@ import {
   formatArrayBufferViewForDisplay,
 } from '../../lib/stream-display';
 import { Button } from './button';
-import { CLS, JSON_VIEW_STYLES } from './data-inspector.styles';
+import styles from './data-inspector.module.css';
 
 // ---------------------------------------------------------------------------
 // Decoded byte display (built by `collapseRefs`, rendered by `DataRender`)
@@ -421,27 +421,27 @@ function describeContainer(
 }
 
 function describePrimitive(value: unknown): { text: string; cls: string } {
-  if (value === null) return { text: 'null', cls: CLS.null };
-  if (value === undefined) return { text: 'undefined', cls: CLS.undefined };
+  if (value === null) return { text: 'null', cls: styles.null };
+  if (value === undefined) return { text: 'undefined', cls: styles.undefined };
   if (typeof value === 'string' || value instanceof String) {
-    return { text: `"${String(value)}"`, cls: CLS.string };
+    return { text: `"${String(value)}"`, cls: styles.string };
   }
   if (typeof value === 'boolean' || value instanceof Boolean) {
-    return { text: String(value), cls: CLS.boolean };
+    return { text: String(value), cls: styles.boolean };
   }
   if (typeof value === 'number' || value instanceof Number) {
-    return { text: String(value), cls: CLS.number };
+    return { text: String(value), cls: styles.number };
   }
   if (typeof value === 'bigint') {
-    return { text: `${value.toString()}n`, cls: CLS.number };
+    return { text: `${value.toString()}n`, cls: styles.number };
   }
-  return { text: String(value), cls: CLS.punctuation };
+  return { text: String(value), cls: styles.punctuation };
 }
 
 function Label({ field, clickable }: { field?: string; clickable?: boolean }) {
   if (field === undefined) return null;
   return (
-    <span className={clickable ? CLS.clickableLabel : CLS.label}>
+    <span className={clickable ? styles.clickableLabel : styles.label}>
       {`${formatField(field)}:`}
     </span>
   );
@@ -449,7 +449,7 @@ function Label({ field, clickable }: { field?: string; clickable?: boolean }) {
 
 function Comma({ isLast }: { isLast: boolean }) {
   if (isLast) return null;
-  return <span className={CLS.punctuation}>,</span>;
+  return <span className={styles.punctuation}>,</span>;
 }
 
 /** A non-expandable row: `field: <value>`. */
@@ -463,7 +463,7 @@ function LeafRow({
   children: ReactNode;
 }) {
   return (
-    <div className={CLS.child} role="treeitem" tabIndex={-1}>
+    <div className={styles.child} role="treeitem" tabIndex={-1}>
       <Label field={field} />
       {children}
       <Comma isLast={isLast} />
@@ -494,11 +494,11 @@ function EmptyContainer({
   isLast: boolean;
 }) {
   return (
-    <div className={CLS.child} role="treeitem" tabIndex={-1}>
+    <div className={styles.child} role="treeitem" tabIndex={-1}>
       <Label field={field} />
-      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
-      <span className={CLS.punctuation}>{open}</span>
-      <span className={CLS.punctuation}>{close}</span>
+      {prefix ? <span className={styles.className}>{prefix}</span> : null}
+      <span className={styles.punctuation}>{open}</span>
+      <span className={styles.punctuation}>{close}</span>
       <Comma isLast={isLast} />
     </div>
   );
@@ -610,7 +610,7 @@ function ExpandableContainer({
     // The treeitem row is the focusable, keyboard-operable control (roving
     // tabindex + arrow keys); the disclosure marker below is purely decorative.
     <div
-      className={CLS.child}
+      className={styles.child}
       role="treeitem"
       aria-expanded={expanded}
       aria-controls={expanded ? contentsId : undefined}
@@ -621,17 +621,19 @@ function ExpandableContainer({
       onKeyDown={onKeyDown}
     >
       <span
-        className={expanded ? CLS.collapseIcon : CLS.expandIcon}
+        className={expanded ? styles.collapseIcon : styles.expandIcon}
         aria-hidden="true"
       />
       {field !== undefined && (
-        <span className={CLS.clickableLabel}>{`${formatField(field)}:`}</span>
+        <span
+          className={styles.clickableLabel}
+        >{`${formatField(field)}:`}</span>
       )}
-      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
-      <span className={CLS.punctuation}>{open}</span>
+      {prefix ? <span className={styles.className}>{prefix}</span> : null}
+      <span className={styles.punctuation}>{open}</span>
       {expanded ? (
         // biome-ignore lint/a11y/useSemanticElements: ARIA tree group is the correct role here
-        <ul id={contentsId} className={CLS.childFields} role="group">
+        <ul id={contentsId} className={styles.childFields} role="group">
           {entries.map(([childField, childValue, entryKey], index) => (
             <DataRender
               key={entryKey ?? childField ?? index}
@@ -643,9 +645,9 @@ function ExpandableContainer({
           ))}
         </ul>
       ) : (
-        <span className={CLS.collapsedContent} aria-hidden="true" />
+        <span className={styles.collapsedContent} aria-hidden="true" />
       )}
-      <span className={CLS.punctuation}>{close}</span>
+      <span className={styles.punctuation}>{close}</span>
       <Comma isLast={isLast} />
     </div>
   );
@@ -690,14 +692,14 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
   if (value instanceof Date) {
     return (
       <LeafRow field={field} isLast={isLast}>
-        <span className={CLS.date}>{value.toISOString()}</span>
+        <span className={styles.date}>{value.toISOString()}</span>
       </LeafRow>
     );
   }
   if (value instanceof RegExp) {
     return (
       <LeafRow field={field} isLast={isLast}>
-        <span className={CLS.regexp}>{value.toString()}</span>
+        <span className={styles.regexp}>{value.toString()}</span>
       </LeafRow>
     );
   }
@@ -760,7 +762,7 @@ function ClassInstanceNode({
   const { text, cls } = describePrimitive(instance.data);
   return (
     <LeafRow field={field} isLast={isLast}>
-      <span className={CLS.className}>{instance.className}</span>
+      <span className={styles.className}>{instance.className}</span>
       <span className={cls}>{text}</span>
     </LeafRow>
   );
@@ -783,7 +785,7 @@ function JsonTree({
   return (
     <div
       ref={outerRef}
-      className={CLS.container}
+      className={styles.container}
       role="tree"
       aria-label="JSON view"
     >
@@ -911,14 +913,7 @@ export function DataInspector({
   const stableData = useStableInspectorData(collapsedData);
 
   let content: ReactNode = (
-    <>
-      {/* React 19 hoists & dedupes this <style> by href, so it is emitted once
-          regardless of how many inspectors are mounted. */}
-      <style href="wf-json-view" precedence="default">
-        {JSON_VIEW_STYLES}
-      </style>
-      <JsonTree data={stableData} name={name} expandLevel={expandLevel} />
-    </>
+    <JsonTree data={stableData} name={name} expandLevel={expandLevel} />
   );
 
   if (onStreamClick) {

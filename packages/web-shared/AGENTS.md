@@ -6,6 +6,15 @@ These rules apply to `packages/web-shared` and `packages/web` (which consumes it
 
 The design tokens are defined once, in `src/styles.css`. Don't tweak individual values, and don't redeclare the tokens anywhere else, including for `prefers-color-scheme`. The tokens flip with the theme class, so don't add `dark:` overrides for colours that already do.
 
+## How to apply styles
+
+Not every host loads `styles.css`. Some only scan this package for class names and define the same tokens themselves, so styling must work from class names and co-located CSS alone.
+
+- Use Tailwind classes with the tokens and typography utilities from `src/styles.css` for all static styling. Don't use arbitrary values where a token or standard utility exists, and don't use tokens that `styles.css` doesn't define.
+- Put what classes can't express (keyframes, pseudo-element `content`, complex selectors) in a `*.module.css` next to the component that uses it. The build copies every `src/**/*.module.css` into `dist`.
+- Use inline `style` only for values computed at runtime, such as positions, widths, transforms and per-item delays.
+- Keep `styles.css` to the tokens, the theme and shared utilities. Don't add component styles to it.
+
 ## Never use opacity to set a text colour
 
 Text colour always comes from a design token or the surface's inherited foreground. Don't make text lighter by fading it:
