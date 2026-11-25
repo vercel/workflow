@@ -79,7 +79,6 @@ export function ResourceIcon({
     label,
   } = getEventStyle(resource, isErrored, isCancelled);
   return (
-    // Hosts also render this icon outside the package's own TooltipProvider.
     <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
       <TooltipTrigger asChild>
         <span className={cn('shrink-0', className)}>

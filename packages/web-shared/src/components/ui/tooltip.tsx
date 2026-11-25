@@ -33,7 +33,6 @@ const TooltipContent = React.forwardRef<
   <TooltipPrimitive.Portal>
     <TooltipPrimitive.Content
       ref={ref}
-      // Radix adds the arrow's height to the offset; either way the pill sits 10px from the trigger.
       sideOffset={sideOffset ?? (showArrow ? 4 : 10)}
       className={cn(
         'invert-theme z-[var(--ds-z-tooltip)] flex max-w-[250px] select-none items-center gap-1 rounded-lg bg-background-100 px-2 py-1.5 text-center font-normal text-[13px] leading-[1.3] text-balance text-gray-1000 break-words whitespace-pre-line has-[kbd]:pr-1.5',
