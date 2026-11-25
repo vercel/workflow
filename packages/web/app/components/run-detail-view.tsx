@@ -19,7 +19,7 @@ import {
   isTerminalWorkflowRunStatus,
   type WorkflowRun,
 } from '@workflow/world';
-import { AlertCircle, GitBranch, HelpCircle, List, Lock } from 'lucide-react';
+import { AlertCircle, HelpCircle, Lock } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useOutlet } from 'react-router';
 import { toast } from 'sonner';
@@ -797,35 +797,17 @@ export function RunDetailView({
                   same row. */}
               <div className={RUN_VIEW_ROW_CLASS}>
                 <TabsList className="h-auto border-0 bg-transparent p-0">
-                  <TabsTrigger
-                    value="trace"
-                    className="gap-2"
-                    data-run-view-item="trace"
-                  >
-                    <List className="h-4 w-4" />
+                  <TabsTrigger value="trace" data-run-view-item="trace">
                     Trace
                   </TabsTrigger>
                   {/* Graph tab hidden for now */}
                   {false && isLocalBackend && (
-                    <TabsTrigger value="graph" className="gap-2">
-                      <GitBranch className="h-4 w-4" />
-                      Graph
-                    </TabsTrigger>
+                    <TabsTrigger value="graph">Graph</TabsTrigger>
                   )}
-                  <TabsTrigger
-                    value="events"
-                    className="gap-2"
-                    data-run-view-item="events"
-                  >
-                    <List className="h-4 w-4" />
+                  <TabsTrigger value="events" data-run-view-item="events">
                     Events
                   </TabsTrigger>
-                  <TabsTrigger
-                    value="streams"
-                    className="gap-2"
-                    data-run-view-item="streams"
-                  >
-                    <List className="h-4 w-4" />
+                  <TabsTrigger value="streams" data-run-view-item="streams">
                     Streams
                   </TabsTrigger>
                 </TabsList>
