@@ -86,7 +86,7 @@ Lazy inline step start, batched step claims, optimistic inline start outside tur
 
 ## Settings and behaviour on spec 9 runs
 
-The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9) lists the spec 9 settings briefly and links here.
+The public documentation describes spec 9 runs as the default, and marks what differs for spec 8 runs with a note. This section collects what differs for a spec 9 run in more depth. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#orchestrator) lists the orchestrator settings briefly.
 
 ### Runtime settings
 
@@ -1220,7 +1220,7 @@ flowchart TD
     D -->|"no"| F["Full load with fence snapshot"]
     E --> L
     F --> L
-    L["Loop top"] --> N{"Inline deadline or replay budget reached?"}
+    L["Loop top"] --> N{"Inline deadline with no inline step in flight, or replay budget reached?"}
     N -->|"yes"| HO["Hand off, or fail the run"]
     N -->|"no"| P["Fold buffered writes and feed events"]
     P --> Q2{"Run terminal?"}
@@ -1855,7 +1855,7 @@ A fan-out of `step(i); sleep('3s')` whose outcomes each wake the run in their ow
 
 #### Deadline handoff and the inline-start margin
 
-The inline deadline is 2, 5 or 10 minutes from the invocation's start, by the function's maximum duration, and no inline step starts within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` (60 seconds) of it. When a long inline step runs into the deadline, the next pass starts past it and hands off on the same message, not an attempt. When short inline steps reach the margin first, the next step is created as a background step and the run continues from its completion wake; that costs a step invocation and a queue hop where a handoff would cost a redelivery (see [Known limitations](#known-limitations)).
+The inline deadline is 2, 5 or 10 minutes from the invocation's start, by the function's maximum duration, and no inline step starts within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` (60 seconds) of it. When a long inline step runs into the deadline, the delivery keeps replaying while the step runs, since it cannot end before the step does, so an event that arrives meanwhile (say, a hook resume that aborts the step) reaches the workflow. The first pass past the deadline with no inline step in flight hands off on the same message, not an attempt. A step the workflow reaches past the deadline while another inline step is still running is created as a background step, as past the margin. When short inline steps reach the margin first, the next step is created as a background step and the run continues from its completion wake; that costs a step invocation and a queue hop where a handoff would cost a redelivery (see [Known limitations](#known-limitations)).
 
 #### Stream-flush handoff
 

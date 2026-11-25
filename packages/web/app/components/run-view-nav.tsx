@@ -1,5 +1,4 @@
 import { cn } from '@workflow/web-shared';
-import { BarChart3, List } from 'lucide-react';
 import { Link } from 'react-router';
 import { runPath, runUsagePath } from './run-usage';
 import { tabsListClassName, tabsTriggerClassName } from './ui/tabs';
@@ -59,25 +58,21 @@ export function UsageNavLink({
   return (
     <Link
       to={runUsagePath(runId)}
-      className={cn(tabsTriggerClassName, 'gap-2')}
+      className={tabsTriggerClassName}
       aria-current={current ? 'page' : undefined}
       data-testid="run-usage-nav-link"
       data-run-view-item="usage"
       onClick={() => onNavigate?.('usage')}
     >
-      <BarChart3 className="h-4 w-4" aria-hidden="true" />
       Usage
     </Link>
   );
 }
 
-/**
- * The pill the row's items sit in, tabs and links alike. Below `sm` the
- * icons go, so four items fit a phone's width without scrolling.
- */
+/** The pill the row's items sit in, tabs and links alike. */
 export const RUN_VIEW_ROW_CLASS = cn(
   tabsListClassName,
-  'mb-4 max-w-full flex-none max-sm:[&_svg]:hidden'
+  'mb-4 max-w-full flex-none'
 );
 
 /**
@@ -103,11 +98,10 @@ export function RunViewNav({
         <Link
           key={tab.value}
           to={runTabPath(runId, tab.value)}
-          className={cn(tabsTriggerClassName, 'gap-2')}
+          className={tabsTriggerClassName}
           data-run-view-item={tab.value}
           onClick={() => onNavigate?.(tab.value)}
         >
-          <List className="h-4 w-4" aria-hidden="true" />
           {tab.label}
         </Link>
       ))}

@@ -46,7 +46,7 @@ const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
         {image ? (
           <StreamImagePreview data={image} />
         ) : typeof chunk.value === 'string' ? (
-          <span className="whitespace-pre-wrap break-words text-label-12 font-mono text-gray-1000">
+          <span className="whitespace-pre-wrap break-words text-label-12-mono text-gray-1000">
             {chunk.value}
           </span>
         ) : (
@@ -119,7 +119,7 @@ export function StreamViewer({
           </div>
         ) : chunks.length === 0 ? (
           <div className="flex h-10 items-center border-b border-gray-alpha-400 bg-background-200 px-3 text-label-12 text-gray-900">
-            {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
+            {isLive ? 'Waiting for stream data…' : 'Stream is empty'}
           </div>
         ) : (
           <Virtuoso
