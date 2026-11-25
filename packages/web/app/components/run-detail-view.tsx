@@ -75,13 +75,7 @@ import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
 import { RunUsageHeaderStats, runPath, usageVisible } from './run-usage';
-import {
-  focusRunViewItem,
-  RUN_VIEW_ROW_CLASS,
-  type RunViewItem,
-  RunViewNav,
-  UsageNavLink,
-} from './run-view-nav';
+import { focusRunView, type RunView, ViewUsageLink } from './run-view-nav';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -426,18 +420,21 @@ export function RunDetailView({
   const usageContext: RunUsageOutletContext = { runId, usage: runUsageState };
   const usagePage = useOutlet(usageContext);
 
-  // Going between the run page and the Usage page from the tab row swaps
-  // the row for another element; put focus on the new page's active item
-  // instead of letting it drop to the document.
+  // Going between the run page and the Usage page removes the link that
+  // was followed (View Usage, or the run's breadcrumb); put focus on the
+  // page it opened instead of letting it drop to the document.
   const viewRootRef = useRef<HTMLDivElement>(null);
-  const pendingRowFocus = useRef<RunViewItem | null>(null);
-  const focusRowItemAfterNavigation = useCallback((item: RunViewItem) => {
-    pendingRowFocus.current = item;
+  const pendingViewFocus = useRef<RunView | null>(null);
+  const focusUsageAfterNavigation = useCallback(() => {
+    pendingViewFocus.current = 'usage';
+  }, []);
+  const focusTabsAfterNavigation = useCallback(() => {
+    pendingViewFocus.current = 'tabs';
   }, []);
   useEffect(() => {
-    const item = pendingRowFocus.current;
-    if (item && focusRunViewItem(viewRootRef.current, item)) {
-      pendingRowFocus.current = null;
+    const view = pendingViewFocus.current;
+    if (view && focusRunView(viewRootRef.current, view)) {
+      pendingViewFocus.current = null;
     }
   });
 
@@ -593,7 +590,11 @@ export function RunDetailView({
               <BreadcrumbItem>
                 {usagePage ? (
                   <BreadcrumbLink asChild>
-                    <Link to={runPath(runId)} className="font-mono text-xs">
+                    <Link
+                      to={runPath(runId)}
+                      className="font-mono text-xs"
+                      onClick={focusTabsAfterNavigation}
+                    >
                       {runId}
                     </Link>
                   </BreadcrumbLink>
@@ -628,8 +629,14 @@ export function RunDetailView({
                 </h1>
               </div>
 
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <LiveStatus hasError={hasError} errorMessage={errorMessage} />
+                {showUsage && !usagePage && (
+                  <ViewUsageLink
+                    runId={runId}
+                    onNavigate={focusUsageAfterNavigation}
+                  />
+                )}
                 <RunActionsButtons
                   env={env}
                   runId={runId}
@@ -775,16 +782,17 @@ export function RunDetailView({
         </div>
 
         {usagePage ? (
-          <div className="mt-4">
-            <RunViewNav
-              runId={runId}
-              showUsage={showUsage}
-              onNavigate={focusRowItemAfterNavigation}
-            />
+          // Focusable from script only: after View Usage, focus lands here.
+          <section
+            aria-label="Usage"
+            tabIndex={-1}
+            data-run-view="usage"
+            className="mt-4 outline-none"
+          >
             <ErrorBoundary title="Failed to load run usage">
               {usagePage}
             </ErrorBoundary>
-          </div>
+          </section>
         ) : (
           <div className="mt-4 flex-1 flex flex-col min-h-0">
             <Tabs
@@ -792,32 +800,15 @@ export function RunDetailView({
               onValueChange={(v) => setActiveTab(v as Tab)}
               className="flex-1 flex flex-col min-h-0"
             >
-              {/* The tabs, then the Usage page's link: a link to another
-                  route is not a tab, so it sits next to the tablist, in the
-                  same row. */}
-              <div className={RUN_VIEW_ROW_CLASS}>
-                <TabsList className="h-auto border-0 bg-transparent p-0">
-                  <TabsTrigger value="trace" data-run-view-item="trace">
-                    Trace
-                  </TabsTrigger>
-                  {/* Graph tab hidden for now */}
-                  {false && isLocalBackend && (
-                    <TabsTrigger value="graph">Graph</TabsTrigger>
-                  )}
-                  <TabsTrigger value="events" data-run-view-item="events">
-                    Events
-                  </TabsTrigger>
-                  <TabsTrigger value="streams" data-run-view-item="streams">
-                    Streams
-                  </TabsTrigger>
-                </TabsList>
-                {showUsage && (
-                  <UsageNavLink
-                    runId={runId}
-                    onNavigate={focusRowItemAfterNavigation}
-                  />
+              <TabsList className="mb-4 max-w-full flex-none">
+                <TabsTrigger value="trace">Trace</TabsTrigger>
+                {/* Graph tab hidden for now */}
+                {false && isLocalBackend && (
+                  <TabsTrigger value="graph">Graph</TabsTrigger>
                 )}
-              </div>
+                <TabsTrigger value="events">Events</TabsTrigger>
+                <TabsTrigger value="streams">Streams</TabsTrigger>
+              </TabsList>
 
               <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
                 <ErrorBoundary title="Failed to load trace viewer">
