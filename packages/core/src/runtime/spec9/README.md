@@ -86,7 +86,7 @@ Lazy inline step start, batched step claims, optimistic inline start outside tur
 
 ## Settings and behaviour on spec 9 runs
 
-The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9) lists the spec 9 settings briefly and links here.
+The public documentation describes spec 9 runs as the default, and marks what differs for spec 8 runs with a note. This section collects what differs for a spec 9 run in more depth. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#orchestrator) lists the orchestrator settings briefly.
 
 ### Runtime settings
 

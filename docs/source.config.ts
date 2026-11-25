@@ -5,6 +5,7 @@ import {
 } from '@vercel/geistdocs/source-config';
 import { defineDocs } from 'fumadocs-mdx/config';
 import { z } from 'zod';
+import { remarkSpec8Note } from './lib/remark-spec8-note';
 import { remarkStripSetupLines } from './lib/remark-strip-setup-lines';
 
 // You can customise Zod schemas for frontmatter and `meta.json` here
@@ -76,6 +77,8 @@ export default defineGeistdocsSourceConfig({
   mdxOptions: {
     // Drop `// @setup` type-check-only lines from code samples before they
     // are rendered or exported as markdown. See lib/remark-strip-setup-lines.ts.
-    remarkPlugins: [remarkStripSetupLines],
+    // Expand `<Spec8Note>` into a callout with its fixed lead, in the rendered
+    // page and the markdown export alike. See lib/remark-spec8-note.ts.
+    remarkPlugins: [remarkStripSetupLines, remarkSpec8Note],
   },
 });
