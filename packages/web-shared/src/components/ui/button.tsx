@@ -28,8 +28,6 @@ const buttonVariants = cva(
     // hover fill replaces it in both themes at once.
     'hover:bg-[var(--themed-hover-bg)]',
     'transition-all duration-150 ease-in-out',
-    // A single focus shadow utility; a variant changes the ring through
-    // --themed-focus-ring rather than a second, conflicting utility.
     'focus-visible:shadow-[var(--themed-focus-ring,_var(--ds-focus-ring))] focus-visible:transition-none',
     '[&_svg]:shrink-0',
     // Icons in the prefix and suffix slots use the decoration size. The
@@ -54,7 +52,6 @@ const buttonVariants = cva(
           '[--themed-border:_var(--ds-gray-400)]',
           '[--themed-hover-bg:_var(--ds-gray-100)]',
           'dark:[--themed-hover-bg:_var(--ds-gray-200)]',
-          // The focus ring keeps the 1px border inside it.
           '[--themed-focus-ring:_0_0_0_1px_var(--themed-border),0_0_0_2px_var(--ds-background-100),0_0_0_4px_var(--ds-focus-color)]',
         ],
         // Tertiary is the one variant allowed to go borderless when disabled;
