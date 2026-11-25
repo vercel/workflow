@@ -8,6 +8,7 @@ import {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from '../../lib/sealed-events';
+import { getEventDate, parseDate } from '../../lib/time';
 import {
   Collapsible,
   CollapsibleContent,
@@ -22,17 +23,6 @@ import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-
-const parseDateValue = (value: unknown): Date | null => {
-  if (value == null) return null;
-
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-};
-
-const getEffectiveEventDate = (
-  event: Pick<Event, 'createdAt' | 'occurredAt'>
-): Date => parseDateValue(event.occurredAt) ?? new Date(event.createdAt);
 
 const formatEventTimestamp = (date: Date): string =>
   date.toLocaleString(undefined, {
@@ -123,10 +113,10 @@ function EventItem({
       ? SEALED_EVENT_MESSAGE
       : undefined;
   const createdAt = new Date(event.createdAt);
-  const occurredAt = parseDateValue(event.occurredAt);
+  const occurredAt = parseDate(event.occurredAt);
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
-    : getEffectiveEventDate(event);
+    : getEventDate(event);
   const displayedCreatedAtTime = displayedCreatedAt.toLocaleTimeString(
     undefined,
     {
@@ -332,9 +322,7 @@ export function EventsList({
   const sortedEvents = useMemo(
     () =>
       [...events].sort(
-        (a, b) =>
-          getEffectiveEventDate(a).getTime() -
-          getEffectiveEventDate(b).getTime()
+        (a, b) => getEventDate(a).getTime() - getEventDate(b).getTime()
       ),
     [events]
   );

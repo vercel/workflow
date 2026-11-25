@@ -1,8 +1,8 @@
 import type { Event, EventType, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { analyzeEvents } from './event-analysis';
 import { findStartHookCreation } from './start-hook';
+import { otelTimeToMs } from './time';
 import { buildTrace } from './trace-builder';
 
 const RUN_ID = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';

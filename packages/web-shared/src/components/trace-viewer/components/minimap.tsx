@@ -10,8 +10,9 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
+import { otelTimeToMs } from '../../../lib/time';
 import type { Span } from '../types';
-import { formatDurationPrecise, getHighResInMs } from '../util/timing';
+import { formatDurationPrecise } from '../util/timing';
 import {
   clampViewportToRoot,
   isSpanCancelled,
@@ -87,8 +88,8 @@ function computeDensityLayout(
       : isSpanCancelled(span)
         ? '--ds-gray-600'
         : (RESOURCE_LINE_TOKENS[span.resource] ?? DEFAULT_LINE_TOKEN);
-    const startMs = getHighResInMs(span.startTime);
-    const endMs = getHighResInMs(span.endTime);
+    const startMs = otelTimeToMs(span.startTime);
+    const endMs = otelTimeToMs(span.endTime);
     const x =
       TIMELINE_PADDING_PX +
       ((startMs - rootStartMs) / rootDurationMs) * contentWidth;

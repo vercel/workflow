@@ -10,9 +10,13 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import type { StartHookCreation } from '../../lib/start-hook';
+import {
+  calculateDuration,
+  dateToOtelTime,
+  getEventDate,
+} from '../../lib/time';
 import type { Span, SpanEvent } from '../../lib/trace-types';
 import { shouldShowVerticalLine } from './event-colors';
-import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
 export const WORKFLOW_LIBRARY = {
   name: 'workflow-development-kit',
@@ -35,16 +39,6 @@ const MARKER_EVENT_TYPES: Set<Event['eventType']> = new Set([
   'attr_set',
 ]);
 
-export const getEventTimestamp = (
-  event: Event | undefined
-): Date | undefined => {
-  const value = event?.occurredAt ?? event?.createdAt;
-  if (!value) return undefined;
-
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date;
-};
-
 /**
  * Convert workflow events to span events
  * Only includes events that should be displayed as markers
@@ -61,9 +55,7 @@ function convertEventsToSpanEvents(
     .map((event) => ({
       name: event.eventType,
       timestamp: dateToOtelTime(
-        options.preferOccurredAt
-          ? (getEventTimestamp(event) ?? event.createdAt)
-          : event.createdAt
+        options.preferOccurredAt ? getEventDate(event) : event.createdAt
       ),
       attributes: {
         eventId: event.eventId,
@@ -94,11 +86,11 @@ export const waitEventsToWaitEntity = (
   return {
     waitId: startEvent.correlationId,
     runId: startEvent.runId,
-    createdAt: getEventTimestamp(startEvent) ?? startEvent.createdAt,
+    createdAt: getEventDate(startEvent),
     resumeAt: startEvent.eventData?.resumeAt
       ? new Date(startEvent.eventData.resumeAt)
       : undefined,
-    completedAt: getEventTimestamp(completedEvent),
+    completedAt: completedEvent && getEventDate(completedEvent),
   };
 };
 
@@ -198,16 +190,16 @@ export const stepEventsToStepEntity = (
       case 'step_started':
         status = 'running';
         attempt += 1;
-        if (!startedAt) startedAt = getEventTimestamp(e) ?? e.createdAt;
+        if (!startedAt) startedAt = getEventDate(e);
         completedAt = undefined;
         break;
       case 'step_completed':
         status = 'completed';
-        completedAt = getEventTimestamp(e) ?? e.createdAt;
+        completedAt = getEventDate(e);
         break;
       case 'step_failed':
         status = 'failed';
-        completedAt = getEventTimestamp(e) ?? e.createdAt;
+        completedAt = getEventDate(e);
         break;
       case 'step_retrying':
         status = 'pending';
@@ -230,11 +222,8 @@ export const stepEventsToStepEntity = (
       '',
     status,
     attempt,
-    createdAt: getEventTimestamp(anchorEvent) ?? anchorEvent.createdAt,
-    updatedAt:
-      getEventTimestamp(lastEvent) ??
-      lastEvent?.createdAt ??
-      anchorEvent.createdAt,
+    createdAt: getEventDate(anchorEvent),
+    updatedAt: getEventDate(lastEvent),
     startedAt,
     completedAt,
     specVersion: anchorEvent.specVersion,
@@ -280,15 +269,13 @@ export function stepToSpan(
   const spanStartEvent =
     stepEvents.find((event) => event.eventType === 'step_created') ??
     stepEvents[0];
-  const spanStartTime =
-    getEventTimestamp(spanStartEvent) ?? new Date(step.createdAt);
+  const spanStartTime = getEventDate(spanStartEvent);
   let activeStartTime = step.startedAt ? new Date(step.startedAt) : undefined;
   const firstStartEvent = stepEvents.find(
     (event) => event.eventType === 'step_started'
   );
   if (firstStartEvent) {
-    activeStartTime =
-      getEventTimestamp(firstStartEvent) ?? new Date(firstStartEvent.createdAt);
+    activeStartTime = getEventDate(firstStartEvent);
   }
 
   let endTime = new Date(maxEndTime);
@@ -297,7 +284,9 @@ export function stepToSpan(
       .slice()
       .reverse()
       .find((event) => isTerminalStepEventType(event.eventType));
-    endTime = getEventTimestamp(completedEvent) ?? new Date(step.completedAt);
+    endTime = completedEvent
+      ? getEventDate(completedEvent)
+      : new Date(step.completedAt);
   }
 
   return {
@@ -347,7 +336,7 @@ const hookEventsToHookEntity = (
         hookId: createdEvent.correlationId,
         runId: createdEvent.runId,
         token: createdEvent.eventData?.token,
-        createdAt: getEventTimestamp(createdEvent) ?? createdEvent.createdAt,
+        createdAt: getEventDate(createdEvent),
       }
     : startHook &&
         events.every((event) => event.correlationId === startHook.hookId)
@@ -363,14 +352,15 @@ const hookEventsToHookEntity = (
     (event) => event.eventType === 'hook_disposed'
   );
   const lastReceivedEvent = receivedEvents.at(-1);
+  const disposedEvent = disposedEvents.at(-1);
   return {
     hookId: creation.hookId,
     runId: creation.runId,
     token: creation.token,
     createdAt: creation.createdAt,
     receivedCount: receivedEvents.length,
-    lastReceivedAt: getEventTimestamp(lastReceivedEvent),
-    disposedAt: getEventTimestamp(disposedEvents.at(-1)),
+    lastReceivedAt: lastReceivedEvent && getEventDate(lastReceivedEvent),
+    disposedAt: disposedEvent && getEventDate(disposedEvent),
   };
 };
 
@@ -439,13 +429,17 @@ export function runToSpan(
         event.eventType === 'run_failed' ||
         event.eventType === 'run_cancelled'
     );
-  const spanStartTime =
-    getEventTimestamp(runCreatedEvent) ?? new Date(run.createdAt);
-  const activeStartTime =
-    getEventTimestamp(runStartedEvent) ??
-    (run.startedAt ? new Date(run.startedAt) : undefined);
-  const completedAt =
-    getEventTimestamp(terminalEvent) ?? run.completedAt ?? undefined;
+  const spanStartTime = runCreatedEvent
+    ? getEventDate(runCreatedEvent)
+    : new Date(run.createdAt);
+  const activeStartTime = runStartedEvent
+    ? getEventDate(runStartedEvent)
+    : run.startedAt
+      ? new Date(run.startedAt)
+      : undefined;
+  const completedAt = terminalEvent
+    ? getEventDate(terminalEvent)
+    : (run.completedAt ?? undefined);
   const endTime = completedAt ?? now;
   const wasCancelled =
     run.status === 'cancelled' || terminalEvent?.eventType === 'run_cancelled';

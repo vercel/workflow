@@ -13,6 +13,7 @@ import {
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { cn } from '../../lib/cn';
+import { otelTimeToMs } from '../../lib/time';
 import { IconButton } from '../ui/icon-button';
 import { SearchInput } from '../ui/search-input';
 import { Spinner } from '../ui/spinner';
@@ -34,7 +35,7 @@ import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
 import styles from './trace-viewer.module.css';
 import type { TraceWithMeta } from './types';
-import { formatDurationPrecise, getHighResInMs } from './util/timing';
+import { formatDurationPrecise } from './util/timing';
 import {
   clampViewportToRoot,
   computeRootBounds,
@@ -288,8 +289,8 @@ function TraceViewerContent({
       const span = trace.spans.find((s) => s.spanId === spanId);
       if (!span) return;
 
-      const spanStart = getHighResInMs(span.startTime);
-      const spanEnd = getHighResInMs(span.endTime);
+      const spanStart = otelTimeToMs(span.startTime);
+      const spanEnd = otelTimeToMs(span.endTime);
       const spanDuration = spanEnd - spanStart;
 
       if (spanDuration > root.duration * 0.8) {
