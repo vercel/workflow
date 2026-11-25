@@ -177,7 +177,7 @@ Transient or unknown queue publishing failures use normal queue redelivery and d
 
 Allowance for clock skew between the runtime and the wait timer, used when deciding whether a pending wait stops the orchestrator from [running ahead](#workflow_run_ahead_depth) of its writes. Must be a finite integer; `Infinity` is rejected and falls back to the default.
 
-A pending wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) stops run-ahead at a boundary only if its target time falls within this allowance of now (at least 1 second), and before the end of the invocation's inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms), which is otherwise derived from the platform's function deadline and tops out at 10 minutes) plus this allowance. A wait that comes due later is completed after the writes in flight. A `wait_created` whose target time cannot be read is treated as due now.
+A pending wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) stops run-ahead at a boundary only if its target time falls within this allowance of now (at least 1 second), and before the end of the invocation's inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms), which is otherwise derived from the platform's function deadline and tops out at 10 minutes) plus this allowance. A wait due later still completes on time; its `wait_completed` is written after the writes in flight. A `wait_created` whose target time cannot be read is treated as due now.
 
 Turbo's forced optimistic start is unaffected: any open wait keeps it off, whatever the target time.
 

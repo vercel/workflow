@@ -67,9 +67,8 @@ import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
  * this one; a boundary classified once it falls in the window drains first.
  * On spec 9 the window therefore decides cost, not correctness. Past the
  * inline deadline the window stops moving, so a wait due after its end is not
- * counted, as before (proof of concept, spec 9 only: spec 8 still ends the
- * window at the inline deadline plus the allowance). The
- * caller computes this from both the log and the suspension's own queue,
+ * counted. Spec 8 ends the window at the inline deadline plus the allowance.
+ * The caller computes this from both the log and the suspension's own queue,
  * because either can hold a wait the other lacks.
  *
  * `run.wakeUp()` completes waits regardless of `resumeAt`. On a

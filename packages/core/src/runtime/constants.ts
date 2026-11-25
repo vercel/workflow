@@ -538,19 +538,19 @@ export function getOpenWaitClockSkewMs(): number {
 
 /**
  * The smallest allowance run-ahead's wait check uses, whatever
- * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` says (proof of concept): a few round
- * trips, so a wait about to come due drains the boundary instead of costing a
- * fenced redelivery or completing a pass late. Correctness does not depend on
+ * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` says: a few round trips, so a wait about
+ * to come due drains the boundary instead of costing a fenced redelivery or
+ * completing a pass late. Correctness does not depend on
  * it (see {@link OPEN_WAIT_CLOCK_SKEW_MS}).
  */
 export const MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS = 1_000;
 
 /**
- * Where run-ahead's wait check ends (proof of concept): an open wait whose
- * `resumeAt` is at or before this makes a boundary path-changing. It is now
- * plus the allowance (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`, at least
+ * Where run-ahead's wait check ends: an open wait whose `resumeAt` is at or
+ * before this makes a boundary path-changing. It is now plus the allowance
+ * (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`, at least
  * {@link MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS}), capped at the inline deadline plus
- * that allowance, where the check used to end.
+ * that allowance.
  */
 export function getRunAheadWaitWindowEndMs(
   nowMs: number,
