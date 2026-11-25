@@ -313,17 +313,19 @@ const slowOutcomes = {
  * Holds every `step_completed` until `ahead` more step bodies have returned
  * (or the workflow has none left), so the writes they decide queue behind it
  * however slow the machine is. Bounded, so a runtime that stops running
- * ahead fails the test's assertions instead of hanging.
+ * ahead fails the test's assertions instead of hanging. Counts only the
+ * bodies that return after it is made, so a test can take one per run.
  */
 function holdOutcomesUntilAhead(ahead: number) {
   // Per step, so a repair writing an outcome again does not move the target.
   const steps = new Set<unknown>();
+  const finishedBefore = bodiesFinished;
   return async (data: { eventType: string; correlationId?: string }) => {
     if (data.eventType !== 'step_completed') return;
     steps.add(data.correlationId);
     const target = Math.min(steps.size + ahead, STEPS);
     const deadline = Date.now() + 2000;
-    while (bodiesFinished < target && Date.now() < deadline) {
+    while (bodiesFinished - finishedBefore < target && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     // A returned body's outcome reaches the writer a few ticks later.
@@ -396,7 +398,13 @@ describe.each([
     engine = 'node';
   });
   it('starts the next inline step before the previous step_completed commits, and leaves the same log', async () => {
-    const { world } = await run(sequential, [STEPS]);
+    // Outcomes are held until the next body returned, so a body starts with
+    // the previous outcome uncommitted however slow the machine is. With a
+    // fixed delay instead, a loaded runner committed each outcome before the
+    // next body started.
+    const { world } = await run(sequential, [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await world.runUntilIdle();
 
     expect(await runResult(world)).toBe(STEPS);
@@ -665,7 +673,9 @@ describe.each([
 
   it('keeps at most WORKFLOW_RUN_AHEAD_DEPTH steps unconfirmed', async () => {
     vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '1');
-    const one = await run(sequential, [STEPS]);
+    const one = await run(sequential, [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await one.world.runUntilIdle();
     expect(await runResult(one.world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBe(1);
@@ -681,7 +691,9 @@ describe.each([
   });
 
   it('runs ahead with an open hook nobody waits on', async () => {
-    const { world } = await run(unobservedHook, [STEPS]);
+    const { world } = await run(unobservedHook, [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
@@ -1140,7 +1152,9 @@ describe.each([
   // (`child-run-completion.ts`): unlike an abort hook, it is path-changing
   // only while the dispatcher waits on its next payload.
   it('runs ahead with the child-run completion hook open and nothing waiting on it', async () => {
-    const { world } = await run(withCompletionHook(false), [STEPS]);
+    const { world } = await run(withCompletionHook(false), [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
@@ -1256,7 +1270,9 @@ describe.each([
 
     unconfirmedAtStart = [];
     bodiesStarted = 0;
-    const far = await run(withSleep('30d'), [STEPS]);
+    const far = await run(withSleep('30d'), [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
     await far.world.deliver(far.start);
     expect(eventsOf(far.world, 'step_completed')).toHaveLength(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
