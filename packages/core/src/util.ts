@@ -79,9 +79,9 @@ export function getAbortStreamId(id: string) {
 const ABORT_TOKEN_PREFIX = 'abrt_';
 
 /**
- * The id prefix of an `AbortController` created with `{ inBandOnly: true }`
- * (proof of concept): its hook token is `abrt_inband_{ulid}`. A ULID is
- * uppercase, so no other abort token starts this way.
+ * The id prefix of an `AbortController` created with `{ inBandOnly: true }`:
+ * its hook token is `abrt_inband_{ulid}`. A ULID is uppercase, so no other
+ * abort token starts this way.
  */
 export const IN_BAND_ONLY_ABORT_ID_PREFIX = 'inband_';
 

@@ -128,7 +128,7 @@ export function runAheadContextFor(input: {
     if (hook.disposed) continue;
     // An in-band-only abort hook never makes a boundary path-changing, but
     // its `hook_received` is only ever this orchestrator's own: another
-    // writer's is a hazard (proof of concept).
+    // writer's is a hazard.
     if (
       hook.inBandOnly === true ||
       isAlwaysObservedHook(hook) ||

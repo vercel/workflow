@@ -470,7 +470,7 @@ export async function workflow() {
 }
 ```
 
-Passing the controller created in this way to a step throws a `SerializationError`.
+Passing the controller created in this way to a step throws a `SerializationError`. Under [`WORKFLOW_VM=quickjs`](/docs/configuration/runtime-tuning#workflow_vm) the option has no effect: the controller can be passed to a step, and an open one stops run-ahead.
 
 ## Related documentation
 

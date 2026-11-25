@@ -269,7 +269,7 @@ export interface SerializableSpecial {
     hookToken: string;
     aborted: boolean;
     reason?: unknown;
-    /** From an in-band-only controller (proof of concept). */
+    /** From an in-band-only controller. */
     inBandOnly?: true;
   };
   AbortSignal: {
@@ -277,7 +277,7 @@ export interface SerializableSpecial {
     hookToken: string;
     aborted: boolean;
     reason?: unknown;
-    /** From an in-band-only controller (proof of concept). */
+    /** From an in-band-only controller. */
     inBandOnly?: true;
   };
 }
