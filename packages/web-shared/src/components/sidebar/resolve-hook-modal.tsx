@@ -23,9 +23,6 @@ interface ResolveHookModalProps {
   isSubmitting?: boolean;
 }
 
-/**
- * Modal for resolving a hook by entering a JSON payload.
- */
 export function ResolveHookModal({
   isOpen,
   onClose,
