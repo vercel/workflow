@@ -43,25 +43,31 @@ Preserve opaque application payloads as bytes. Host conversions must distinguish
 
 ## Decisions before scaffolding
 
-Cargo crate boundaries require discussion and agreement before implementation. The following starting layout is a recommendation to review, with illustrative names and no reserved publication boundaries.
+Use backend-specific Node bindings with the directory and naming convention below. Confirm crate interfaces and packaging details before scaffolding each backend.
 
-| Crate | Responsibility | Introduce when |
+| Directory | Rust crate | Node package |
 | --- | --- | --- |
-| `workflow-world` | Host-independent contract types, errors and interfaces needed by consumers; no database drivers or binding runtimes. | SQLite scaffolding, with a small contract justified by the first operations. |
-| `workflow-world-sqlite` | SQLite World implementation: storage, streams, delivery/recovery and lifecycle, depending on the shared contract. | First backend. Grow it through tested slices. |
-| `workflow-world-node` | Node binding and host conversions; delegates to backend libraries and adapts callbacks, streams and lifecycle for the TS SDK. | The first integration probe; settle its interface before exposing a public package. |
-| `workflow-world-vercel` | Vercel platform client implementing the shared contract, with its own transports and authentication. | Second backend. |
-| `workflow-world-postgres` | Postgres storage and distributed delivery implementing the shared contract. | Third backend. |
+| `crates/world` | `workflow-world` | — |
+| `crates/world-sqlite` | `workflow-world-sqlite` | — |
+| `crates/world-vercel` | `workflow-world-vercel` | — |
+| `crates/world-postgres` | `workflow-world-postgres` | — |
+| `packages/world-sqlite-rust` | `workflow-world-sqlite-node` | `@workflow/world-sqlite-rust` |
+| `packages/world-vercel-rust` | `workflow-world-vercel-node` | `@workflow/world-vercel-rust` |
+| `packages/world-postgres-rust` | `workflow-world-postgres-node` | `@workflow/world-postgres-rust` |
+
+Pure Rust libraries live under `crates/`, without Node or binding-runtime dependencies. The shared contract owns the host-independent types, errors and interfaces needed by consumers, without database drivers. Backend libraries own their storage or platform transport, delivery, streams and lifecycle. Node bindings live in the corresponding npm package directories under `packages/`, adapting values, callbacks, streams and resource ownership for the TS SDK.
+
+The `-node` suffix identifies the Rust crate's host binding; `-rust` distinguishes the npm package from existing TypeScript implementations. Each binding depends on its corresponding backend library, beginning with `workflow-world-sqlite-node` → `workflow-world-sqlite`, so SQLite's native artifact and dependencies remain independently deliverable. Extract shared binding utilities when actual duplication warrants them.
 
 The dependency direction is host binding → backend → shared contract. Backend libraries also serve Rust consumers without loading Node. Introduce each backend crate when work on it starts; avoid empty placeholders. Keep the initial contract small and extract shared behavior when a second backend demonstrates the need, rather than introducing a generic SQL or transition-engine crate upfront.
 
-The structural discussion should confirm or revise this split, public interfaces and workspace placement. It must also settle how backend features and native artifacts are packaged so SQLite users need not install every backend. The binding crate does not predetermine npm package names or whether distribution uses separate backend artifacts. Python bindings and a Rust CLI can become separate consumers later.
+The structural discussion should settle public interfaces, backend features and native artifact packaging within this layout. Introduce each binding alongside its backend's integration probe; settle its interface before exposing the public npm package. Python bindings and a Rust CLI can become separate consumers later.
 
 [[Cargo.toml]] already defines the compiler workspace, dependency versions, minimum compiler and release profile. Decide how new crates join that workspace, how native profiles coexist with compiler builds, and which dependencies/features belong to each consumer. Preserve existing compiler targets and validate any toolchain or profile change separately.
 
 Settle the initial host-binding mechanism, resource ownership, supported platforms and native linkage in focused proposals or probes. Node integration serves the TS SDK first; additional language bindings can follow the same Rust APIs. After crate agreement, validate a small end-to-end host probe before expanding the backend: call Rust from Node, perform an isolated SQLite operation, return binary data or a typed error, and release resources. Choose development toolchain pins and MSRV deliberately rather than inheriting versions from the earlier experiment or another repository.
 
-The next executable slice is a small SQLite contract-fixture PR against the current TS implementation, while the crate proposal is discussed. Cover one accepted event with its projection, one refused mutation with its observable outcome, and one binary payload round trip. Record the reference revision and deterministic inputs; compare results and database state after reopening. This slice needs no new Cargo crates or public SDK selection.
+After crate agreement, the first implementation slice can be the minimal Node → Rust → SQLite probe above, with its own tests. Reuse or adapt existing World tests and conformance helpers as each slice lands, adding coverage where needed. A separate contract-fixture PR is optional; capture TS behavior upfront where an ambiguity would affect the Rust design. Useful examples include an accepted event with its projection, a refused mutation with its observable outcome, and a binary payload round trip. Record the reference revision and deterministic inputs; compare results and database state after reopening where applicable.
 
 ## Backend sequence
 
@@ -95,11 +101,11 @@ Document whether Rust and TS workers can share storage and queues, and test the 
 
 ## PR progression
 
-Each PR should establish one reviewable contract or capability with its own evidence. Apply the same progression to each backend, splitting further when a transition family or integration boundary is too large.
+Each PR should establish one reviewable contract or capability with its own evidence. The work units below guide each backend without requiring a separate PR for every row or a fixed sequence for contract examples.
 
 | Work unit | Review boundary |
 | --- | --- |
-| Contract examples | Capture current TS behavior in reusable fixtures or conformance tests, recording the reference revision and intentional differences. |
+| Contract examples | Reuse or adapt existing World tests and conformance helpers alongside each slice. Capture TS behavior upfront where design ambiguities require it, recording the reference revision and intentional differences. |
 | Structural proposal | Agree crate/binding boundaries, data-compatibility direction and supported host/artifact targets before implementing those decisions. |
 | Minimal scaffold and host probe | Add only the agreed components needed for one end-to-end operation, including error conversion and resource release through Node. |
 | Pure values and codecs | Test identities, timestamps, bytes and error conversions without introducing backend or host-runtime dependencies unnecessarily. |
