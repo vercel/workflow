@@ -80,9 +80,6 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       {title && (
         <div className="flex items-center gap-3 min-h-(--ds-size-small) px-2 py-1.5 pr-10 border-b border-red-400 text-red-900">
           <OctagonAlert className="size-3.5 shrink-0" />
-          {/* The full message or stack is in the body below; the header
-              shows the first line, ellipsised so a long title doesn't push
-              the copy button or wrap into the framed hint/docs lines. */}
           <p className="text-copy-13 font-semibold m-0 truncate">{title}</p>
         </div>
       )}
