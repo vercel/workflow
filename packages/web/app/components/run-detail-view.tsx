@@ -9,6 +9,7 @@ import {
   StreamViewer,
   StreamViewerSkeleton,
   stepEventsToStepEntity,
+  TimestampTooltip,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -71,7 +72,6 @@ import { useServerConfig } from '~/lib/world-config-context';
 import type { RunUsageOutletContext } from '~/routes/run-usage';
 import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
-import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
 import { RunActionsButtons } from './run-actions';
@@ -691,7 +691,7 @@ export function RunDetailView({
                 <div className="text-xs text-muted-foreground">Queued</div>
                 {run.createdAt ? (
                   <div className="text-xs">
-                    <RelativeTime date={run.createdAt} />
+                    <TimestampTooltip date={run.createdAt} />
                   </div>
                 ) : (
                   <Skeleton className="h-4" />
@@ -702,7 +702,7 @@ export function RunDetailView({
                 <div className="text-xs">
                   {run.runId ? (
                     run.startedAt ? (
-                      <RelativeTime date={run.startedAt} />
+                      <TimestampTooltip date={run.startedAt} />
                     ) : (
                       '-'
                     )
@@ -716,7 +716,7 @@ export function RunDetailView({
                 <div className="text-xs">
                   {run.runId ? (
                     run.completedAt ? (
-                      <RelativeTime date={run.completedAt} />
+                      <TimestampTooltip date={run.completedAt} />
                     ) : (
                       '-'
                     )
@@ -751,7 +751,7 @@ export function RunDetailView({
                     </TooltipContent>
                   </Tooltip>
                   <div className="text-xs">
-                    <RelativeTime date={run.expiredAt} />
+                    <TimestampTooltip date={run.expiredAt} />
                   </div>
                 </div>
               )}

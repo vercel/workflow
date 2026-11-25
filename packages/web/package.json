@@ -83,7 +83,6 @@
     "cbor-x": "^1",
     "class-variance-authority": "0.7.1",
     "cross-env": "^7.0.3",
-    "date-fns": "4.4.0",
     "geist": "^1.9.2",
     "isbot": "^5",
     "jsdom": "^26",

@@ -16,7 +16,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { GitBranch, RotateCw, Timer, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import { formatDuration, Spinner } from '@workflow/web-shared';
+import {
+  formatDuration,
+  formatTimestamp,
+  Spinner,
+  TimestampTooltip,
+} from '@workflow/web-shared';
 import { StatusBadge } from '~/components/display-utils/status-badge';
 import { Badge } from '~/components/ui/badge';
 import type {
@@ -796,9 +801,11 @@ function GraphNodeDetailPanel({
                   <span className="text-[11px] font-medium text-muted-foreground">
                     startedAt
                   </span>
-                  <span className="text-[11px] font-mono">
-                    {new Date(latestExecution.startedAt).toLocaleString()}
-                  </span>
+                  <TimestampTooltip date={latestExecution.startedAt}>
+                    <span className="text-[11px] font-mono">
+                      {formatTimestamp(new Date(latestExecution.startedAt))}
+                    </span>
+                  </TimestampTooltip>
                 </div>
               )}
               {latestExecution.completedAt && (
@@ -806,9 +813,11 @@ function GraphNodeDetailPanel({
                   <span className="text-[11px] font-medium text-muted-foreground">
                     completedAt
                   </span>
-                  <span className="text-[11px] font-mono">
-                    {new Date(latestExecution.completedAt).toLocaleString()}
-                  </span>
+                  <TimestampTooltip date={latestExecution.completedAt}>
+                    <span className="text-[11px] font-mono">
+                      {formatTimestamp(new Date(latestExecution.completedAt))}
+                    </span>
+                  </TimestampTooltip>
                 </div>
               )}
             </>

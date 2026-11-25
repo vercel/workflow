@@ -2,6 +2,7 @@ import {
   Button,
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
+  TimestampTooltip,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -44,7 +45,6 @@ import {
 } from '~/lib/workflow-api-client';
 import { CopyableText } from './display-utils/copyable-text';
 import { HookTokenCell } from './display-utils/hook-token-cell';
-import { RelativeTime } from './display-utils/relative-time';
 import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface HooksTableProps {
@@ -249,11 +249,9 @@ export function HooksTable({
         <div className="flex items-end gap-2">
           <p className="text-sm text-muted-foreground">Last refreshed</p>
           {lastRefreshTime && (
-            <RelativeTime
-              date={lastRefreshTime}
-              className="text-sm text-muted-foreground"
-              type="distance"
-            />
+            <span className="text-sm text-muted-foreground">
+              <TimestampTooltip date={lastRefreshTime} />
+            </span>
           )}
         </div>
         <div className="flex items-center gap-4">
@@ -340,7 +338,7 @@ export function HooksTable({
                       </TableCell>
                       <TableCell className="py-2 text-muted-foreground text-xs">
                         {hook.createdAt ? (
-                          <RelativeTime date={hook.createdAt} />
+                          <TimestampTooltip date={hook.createdAt} />
                         ) : (
                           '-'
                         )}

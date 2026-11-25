@@ -29,6 +29,7 @@ export { CopyButton, type CopyButtonProps } from './ui/copy-button';
 export { DataInspector, type DataInspectorProps } from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
 export { Spinner } from './ui/spinner';
+export { TimestampTooltip } from './ui/timestamp-tooltip';
 export {
   Tooltip,
   TooltipContent,
