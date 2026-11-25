@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FatalError, WorkflowWorldError } from '@workflow/errors';
+import { FatalError, StreamError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { ulid } from 'ulid';
@@ -720,6 +720,111 @@ describe('executeStep — stream durability barrier', () => {
     });
 
     await expect(execution).resolves.toMatchObject({ type: 'completed' });
+  });
+});
+
+describe('executeStep — a stream failure the step body handled', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.restoreAllMocks();
+    counter += 1;
+  });
+
+  /** Write until the stream's failure reaches the writer, then catch it. */
+  async function writeUntilRejected(
+    writer: WritableStreamDefaultWriter<string>
+  ): Promise<unknown> {
+    for (let i = 0; i < 50; i++) {
+      try {
+        await writer.write(`chunk ${i}`);
+      } catch (error) {
+        return error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('the stream failure never reached the writer');
+  }
+
+  async function runStep(body: () => Promise<unknown>) {
+    const world = makeWorld();
+    setWorld(world);
+    world.streams.write = vi.fn(async () => {
+      throw new StreamError('Stream write failed: HTTP 503', { status: 503 });
+    }) as typeof world.streams.write;
+    world.streams.writeMulti = world.streams.write as never;
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(stepName, body);
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    const completed = await eventsFor(world, runId, stepId, 'step_completed');
+    return { result, completed };
+  }
+
+  it('completes the step when the body caught the rejected write and returned', async () => {
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    let caught: unknown;
+    const { result, completed } = await runStep(async () => {
+      const writer = getWritable<string>().getWriter();
+      caught = await writeUntilRejected(writer);
+      writer.releaseLock();
+      return 'done';
+    });
+
+    expect(result).toMatchObject({ type: 'completed' });
+    expect(StreamError.is(caught)).toBe(true);
+    expect(completed).toHaveLength(1);
+  });
+
+  it('fails the step when the body re-throws the rejected write', async () => {
+    const { result, completed } = await runStep(async () => {
+      const writer = getWritable<string>().getWriter();
+      throw await writeUntilRejected(writer);
+    });
+
+    expect(result).toMatchObject({ type: 'retry' });
+    expect(completed).toHaveLength(0);
+  });
+
+  it('fails the step when the failure never reached the body', async () => {
+    const { result, completed } = await runStep(async () => {
+      const writer = getWritable<string>().getWriter();
+      // Accepted into the buffer; the server write fails after this resolves.
+      await writer.write('chunk');
+      writer.releaseLock();
+      return 'done';
+    });
+
+    expect(result).toMatchObject({ type: 'retry' });
+    expect(completed).toHaveLength(0);
+  });
+
+  it('still fails the step for another stream whose failure the body never saw', async () => {
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    const { result, completed } = await runStep(async () => {
+      const seen = getWritable<string>({ namespace: 'seen' }).getWriter();
+      const unseen = getWritable<string>({ namespace: 'unseen' }).getWriter();
+      await unseen.write('chunk');
+      unseen.releaseLock();
+      await writeUntilRejected(seen);
+      seen.releaseLock();
+      return 'done';
+    });
+
+    expect(result).toMatchObject({ type: 'retry' });
+    expect(completed).toHaveLength(0);
   });
 });
 

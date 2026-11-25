@@ -34,7 +34,12 @@ export async function settleReleasedStepStreams(
               // A disconnected client may abandon one response stream, but it
               // must not let that rejection bypass durability waits for other
               // streams written by the same step.
-              if (!isClientDisconnectError(error)) throw error;
+              if (
+                !isClientDisconnectError(error) &&
+                !state.failureDeliveredToStep
+              ) {
+                throw error;
+              }
               return false;
             }
           )
@@ -57,4 +62,24 @@ export async function settleReleasedStepStreams(
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
+}
+
+/**
+ * The step's ops, with the completion of each stream whose failure was
+ * delivered to the step body excused. Call it only after the body returned
+ * normally: the body saw the failure and carried on, so it handled it.
+ */
+export function excuseHandledStreamFailures(
+  ops: Promise<unknown>[],
+  states: FlushableStreamState[]
+): { ops: Promise<unknown>[]; handled: FlushableStreamState[] } {
+  const handled = states.filter((state) => state.failureDeliveredToStep);
+  if (handled.length === 0) return { ops, handled };
+  const excused = new Set<Promise<unknown>>(
+    handled.map((state) => state.promise)
+  );
+  return {
+    ops: ops.map((op) => (excused.has(op) ? op.catch(() => {}) : op)),
+    handled,
+  };
 }

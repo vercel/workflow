@@ -70,6 +70,7 @@ import {
   type StepLatencyTracking,
 } from '../step-latency.js';
 import {
+  excuseHandledStreamFailures,
   isClientDisconnectError,
   settleReleasedStepStreams,
 } from '../step-streams.js';
@@ -951,7 +952,24 @@ export async function executeStep(
       // Arm the background flush before the durability wait so lock-held
       // streams keep their lifecycle even if a drain fails.
       if (ops.length > 0) {
-        const opsPromise = Promise.all(ops);
+        const { ops: stepOps, handled } = excuseHandledStreamFailures(
+          ops,
+          streamStates
+        );
+        for (const state of handled) {
+          runtimeLogger.warn(
+            'Step body handled a stream write failure; completing the step',
+            {
+              workflowRunId,
+              stepId,
+              error:
+                state.pipeError instanceof Error
+                  ? state.pipeError.message
+                  : String(state.pipeError),
+            }
+          );
+        }
+        const opsPromise = Promise.all(stepOps);
         safeWaitUntil(opsPromise, (err) => {
           runtimeLogger.warn('Background flush of step stream ops failed', {
             workflowRunId,
