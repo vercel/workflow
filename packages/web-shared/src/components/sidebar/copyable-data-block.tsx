@@ -2,10 +2,9 @@
 
 import { Lock } from 'lucide-react';
 import { useContext } from 'react';
-import { CopyButton } from '../trace-viewer/components/copy-button';
 import { Button } from '../ui/button';
+import { CopyButton } from '../ui/copy-button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
-import { Spinner } from '../ui/spinner';
 
 const encryptedPlaceholderPreview = `{
   "input": "[encrypted]",
@@ -19,7 +18,7 @@ export function EncryptedDataBlock() {
     <div className="relative min-h-20 overflow-hidden rounded-md border border-gray-alpha-400 bg-background-100">
       <pre
         aria-hidden="true"
-        className="pointer-events-none m-0 select-none p-3 font-mono text-label-12 text-gray-900 blur-[4px]"
+        className="pointer-events-none m-0 select-none p-3 text-label-12-mono text-gray-900 blur-[4px]"
       >
         {encryptedPlaceholderPreview}
       </pre>
@@ -27,18 +26,15 @@ export function EncryptedDataBlock() {
         {ctx ? (
           <Button
             onClick={ctx.onDecrypt}
-            disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
+            loading={ctx.isDecrypting}
+            disabled={ctx.isDecryptDisabled}
             title={
               ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined
             }
-            size="tiny"
+            size="small"
+            prefix={<Lock />}
           >
-            {ctx.isDecrypting ? (
-              <Spinner size={10} />
-            ) : (
-              <Lock className="h-3 w-3" />
-            )}
-            <span>Decrypt</span>
+            Decrypt
           </Button>
         ) : (
           <span className="inline-flex items-center gap-1 rounded border border-gray-alpha-400 bg-gray-100 px-1.5 py-0.5 text-button-12 font-medium text-gray-700">
@@ -56,12 +52,19 @@ export const serializeForClipboard = (value: unknown): string => {
   if (
     typeof value === 'number' ||
     typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
     value === null
   ) {
     return String(value);
   }
   try {
-    return JSON.stringify(value, null, 2);
+    // Hydrated payloads can contain BigInt values, which JSON.stringify rejects.
+    // Write them as decimal strings, matching the CLI's `stringifyJSON`.
+    return JSON.stringify(
+      value,
+      (_key, v) => (typeof v === 'bigint' ? v.toString() : v),
+      2
+    );
   } catch {
     return String(value);
   }
@@ -71,9 +74,9 @@ export function CopyableDataBlock({ data }: { data: unknown }) {
   return (
     <div className="relative overflow-x-auto rounded-md border border-gray-alpha-400 p-3">
       <CopyButton
-        copyText={serializeForClipboard(data)}
-        ariaLabel="Copy data"
-        className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-gray-alpha-400 !bg-background-100 p-0 text-gray-900 transition-transform transition-colors duration-100 hover:bg-gray-200 active:scale-95 active:bg-gray-300"
+        textToCopy={serializeForClipboard(data)}
+        aria-label="Copy data"
+        className="absolute right-2 top-2 z-10 border border-gray-alpha-400 bg-background-100 enabled:hover:bg-gray-200"
       />
       <DataInspector data={data} />
     </div>

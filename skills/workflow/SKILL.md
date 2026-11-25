@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.18'
+  version: '1.22'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -115,21 +115,31 @@ When you need logic directly in a workflow function (not in a step), these restr
 
 | Limitation | Workaround |
 |------------|------------|
-| No `fetch()` | `import { fetch } from "workflow"` then `globalThis.fetch = fetch` |
+| No `fetch()` | Make the request (and AI SDK calls) in a step function |
 | No `setTimeout`/`setInterval` | Use `sleep("5s")` from `"workflow"` |
 | No Node.js modules (fs, crypto, etc.) | Move to a step function |
 
-**Example - Using fetch in workflow context:**
+**Example - AI SDK call in a workflow:**
 
 ```typescript
-import { fetch } from "workflow";
+import { generateText } from "ai";
 
-export async function myWorkflow() {
+async function summarize(text: string) {
+  "use step";
+  const { text: summary } = await generateText({
+    model: "spacexai/grok-4.6",
+    prompt: `Summarize: ${text}`,
+  });
+  return summary;
+}
+
+export async function myWorkflow(text: string) {
   "use workflow";
-  globalThis.fetch = fetch;  // Required for AI SDK and HTTP libraries
-  // Now generateText() and other libraries work
+  return await summarize(text);
 }
 ```
+
+For agents, use `WorkflowAgent` (below).
 
 **Note:** Plain `"provider/model"` strings use Vercel AI Gateway. Do not construct a direct provider instance unless the user explicitly needs a provider-only feature.
 
@@ -214,19 +224,21 @@ export async function parentWorkflow() {
 }
 ```
 
-`start()` returns after creating the child run and doesn't wait for it to complete. Use `childRun.returnValue` only when the parent should wait for the child; each `Run` property access or method call inside a workflow is a step.
+`start()` returns after creating the child run and doesn't wait for it to complete. Use `await childRun.returnValue` when the parent should wait for the child: the parent suspends on a system hook the child resumes when it finishes, so it does not poll and holds no worker while waiting. Don't hand-roll a completion hook for this. Other `Run` property accesses and method calls inside a workflow are steps.
 
 ## Run size & concurrency: know when to split
 
 Three things to size, and all three are capped. Do NOT treat any number you remember as authoritative — the current values are published under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits), which is the only source to quote.
 
-**Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), a retry records one or two more, and hooks, sleeps, and webhooks each record their own. Split into child workflows well before the ceiling — the pricing page recommends that past **a few thousand events**, because replay slows down long before the run fails.
+**Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), a retry records one or two more, and hooks, sleeps, and webhooks each record their own. Split into child workflows well before the ceiling — the pricing page recommends that past **a few thousand events**, because replay slows down long before the run fails. On the Local World, `npx workflow inspect run <run_id> --usage` shows which steps and hooks drive a run's events ([Usage](https://workflow-sdk.dev/docs/observability/usage)).
+
+**For long-running workflows, set `WORKFLOW_VM=quickjs`.** Agents, chat sessions, loops over hooks or sleeps, and anything with many steps should run on the QuickJS engine. Snapshotting is on by default on the Vercel World: a resume restores the VM from a snapshot and replays only the events recorded since, so replay cost stays flat as the log grows, and the run is exempt from the default per-run event limit on the Vercel and Local Worlds. Set it in the environment that starts runs (on Vercel, the project's env vars); only runs started after the change use it. On the Local and Postgres Worlds, also set `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` on the workflow handler: those Worlds have no run encryption keys, and unencrypted runs are not snapshotted without it. Workflow code runs unchanged unless the workflow function itself uses an `Intl.*` constructor, a `toLocaleString()`-style method with a locale, `crypto.subtle`, or `WebAssembly`; move those calls into a step, as you would any non-deterministic work. See `configuration/runtime-tuning.mdx` (`WORKFLOW_VM`, `WORKFLOW_SNAPSHOT_THRESHOLD`). Child workflows are still the right split when units of work are independent and deserve their own history and failure boundary.
 
 **Steps per run.** Capped separately from events, so a long sequential chain *is* bounded even though it stays narrow. Bundle several items into one step when a chain would otherwise reach five figures.
 
 **Concurrency.** A wide fan-out is throttled rather than rejected: event creation is rate-limited per run per second, so a flat `Promise.all` over a few thousand items spends much of its time backing off. Batch or bundle instead — process the list in chunks, or handle several items per step, so fewer and larger units run concurrently. Spawning one child run per item does not by itself narrow the fan-out; it bounds each child's log and isolates failures, which is worth doing for those reasons, but it is not a substitute for chunking.
 
-You cannot raise any of these yourself — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceilings are service-owned — but Vercel raises the per-run event and step limits on request, so a genuinely large run is a support question as well as a design one.
+Apart from running on QuickJS, you cannot raise any of these yourself — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceilings are service-owned — but Vercel raises the per-run event and step limits on request, so a genuinely large run is a support question as well as a design one.
 
 ```typescript
 const BATCH = 100;
@@ -556,6 +568,7 @@ npx workflow web <run_id>
 # CLI inspection (use --json for machine-readable output, --help for full usage)
 npx workflow inspect runs
 npx workflow inspect run <run_id>
+npx workflow inspect run <run_id> --usage  # Local World: events by step and hook, and storage (https://workflow-sdk.dev/docs/observability/usage)
 
 # For Vercel-deployed projects, specify backend and project
 npx workflow inspect runs --backend vercel --project <project-name> --team <team-slug>

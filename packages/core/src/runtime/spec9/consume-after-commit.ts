@@ -30,7 +30,8 @@ export type ConsumeAfterCommit =
   | { type: 'reload' };
 
 export function consumeOwnResolvingWrite(
-  log: Event[],
+  /** The log, or its incremental index (`EventLogIndex`), which merges in O(1). */
+  log: Event[] | { merge(events: readonly Event[]): number },
   result: EventResult
 ): ConsumeAfterCommit {
   if (result.hasMore === true) {
@@ -41,6 +42,9 @@ export function consumeOwnResolvingWrite(
   const reported = (result.events ?? []).filter(
     (event) => event.eventId !== own.eventId
   );
-  const added = mergeReportedEvents(log, [...reported, own]);
+  const merging = [...reported, own];
+  const added = Array.isArray(log)
+    ? mergeReportedEvents(log, merging)
+    : log.merge(merging);
   return { type: 'merged', added };
 }

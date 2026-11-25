@@ -1,72 +1,122 @@
-const KEYFRAMES = `@keyframes wf-spinner-fade{0%{opacity:1}100%{opacity:.15}}`;
+import { cva } from 'class-variance-authority';
+import type * as React from 'react';
+import { cn } from '../../lib/cn';
+
+const sizeConfig = {
+  sm: {
+    angleIncrement: 45,
+    lineDimensions: 'h-[1.5px] w-[3px]',
+    delays: [-875, -750, -625, -500, -375, -250, -125, 0],
+    duration: 1000,
+  },
+  md: {
+    angleIncrement: 36,
+    lineDimensions: 'h-[1.5px] w-1',
+    delays: [-900, -800, -700, -600, -500, -400, -300, -200, -100, 0],
+    duration: 1000,
+  },
+  lg: {
+    angleIncrement: 30,
+    lineDimensions: 'h-0.5 w-[5px]',
+    delays: [
+      -1100, -1000, -900, -800, -700, -600, -500, -400, -300, -200, -100, 0,
+    ],
+    duration: 1200,
+  },
+  xl: {
+    angleIncrement: 30,
+    lineDimensions: 'h-[2.5px] w-1.5',
+    delays: [
+      -1100, -1000, -900, -800, -700, -600, -500, -400, -300, -200, -100, 0,
+    ],
+    duration: 1200,
+  },
+  '2xl': {
+    angleIncrement: 24,
+    lineDimensions: 'h-[2.5px] w-2',
+    delays: [
+      -1120, -1040, -960, -880, -800, -720, -640, -560, -480, -400, -320, -240,
+      -160, -80, 0,
+    ],
+    duration: 1200,
+  },
+  '3xl': {
+    angleIncrement: 24,
+    lineDimensions: 'h-[3px] w-2.5',
+    delays: [
+      -1120, -1040, -960, -880, -800, -720, -640, -560, -480, -400, -320, -240,
+      -160, -80, 0,
+    ],
+    duration: 1200,
+  },
+  '4xl': {
+    angleIncrement: 20,
+    lineDimensions: 'h-[3.5px] w-3.5',
+    delays: [
+      -1228, -1156, -1083, -1011, -939, -867, -794, -722, -650, -578, -506,
+      -433, -361, -289, -217, -144, -72, 0,
+    ],
+    duration: 1300,
+  },
+} as const;
+
+export type SpinnerSize = keyof typeof sizeConfig;
+
+const spinnerVariants = cva(
+  'relative inline-block aspect-square transform-gpu text-gray-700',
+  {
+    variants: {
+      size: {
+        sm: 'size-3', // 12px
+        md: 'size-4', // 16px
+        lg: 'size-5', // 20px
+        xl: 'size-6', // 24px
+        '2xl': 'size-8', // 32px
+        '3xl': 'size-10', // 40px
+        '4xl': 'size-14', // 56px
+      },
+    },
+  }
+);
+
+export interface SpinnerProps extends React.HTMLAttributes<HTMLSpanElement> {
+  size?: SpinnerSize;
+}
 
 /**
- * Spinner matching Geist's multi-line fade spinner.
- * At size ≤12: 8 lines, ≤16: 10 lines, else: 12 lines.
+ * Lines that fade in turn around a ring, painted with `currentColor`
+ * (`text-gray-700` unless `className` sets another). The fade is the
+ * `spinner-opacity` keyframes in our `styles.css`.
  */
-export function Spinner({
-  size = 14,
-  color,
-}: {
-  size?: number;
-  color?: string;
-}) {
-  const config =
-    size <= 12
-      ? {
-          count: 8,
-          angle: 45,
-          delays: [-875, -750, -625, -500, -375, -250, -125, 0],
-          duration: 1000,
-          lineW: 3,
-          lineH: 1.5,
-        }
-      : size <= 16
-        ? {
-            count: 10,
-            angle: 36,
-            delays: [-900, -800, -700, -600, -500, -400, -300, -200, -100, 0],
-            duration: 1000,
-            lineW: 4,
-            lineH: 1.5,
-          }
-        : {
-            count: 12,
-            angle: 30,
-            delays: [
-              -1100, -1000, -900, -800, -700, -600, -500, -400, -300, -200,
-              -100, 0,
-            ],
-            duration: 1200,
-            lineW: size * 0.24,
-            lineH: size * 0.08,
-          };
+export function Spinner({ size = 'lg', className, ...props }: SpinnerProps) {
+  const { angleIncrement, lineDimensions, delays, duration } = sizeConfig[size];
 
   return (
+    // biome-ignore lint/a11y/useSemanticElements: a loading indicator is a status region; <output> is a form control
     <span
-      className="relative inline-flex"
-      style={{
-        width: size,
-        height: size,
-      }}
+      role="status"
+      aria-label="Loading"
+      className={cn(spinnerVariants({ size }), className)}
+      {...props}
     >
-      <style dangerouslySetInnerHTML={{ __html: KEYFRAMES }} />
-      {config.delays.map((delay, i) => (
+      {delays.map((delay, index) => (
         <span
+          aria-hidden="true"
           key={delay}
-          className="absolute top-1/2 left-1/2 rounded-[1px] bg-gray-700 [animation-iteration-count:infinite] [animation-name:wf-spinner-fade] [animation-timing-function:linear]"
+          className={cn(
+            'absolute top-1/2 left-1/2 origin-center rounded-full bg-current will-change-transform',
+            lineDimensions
+          )}
           style={{
-            width: config.lineW,
-            height: config.lineH,
-            marginLeft: -config.lineW / 2,
-            marginTop: -config.lineH / 2,
-            backgroundColor: color,
-            transform: `rotate(${i * config.angle}deg) translate(${size * 0.36}px)`,
-            animationDuration: `${config.duration}ms`,
+            animation: `spinner-opacity ${duration}ms linear infinite`,
             animationDelay: `${delay}ms`,
+            // Centring lives in the transform rather than translate
+            // utilities, which Tailwind v3 compiles to `transform` too.
+            transform: `translate(-50%, -50%) rotate(${index * angleIncrement}deg) translate(146%)`,
           }}
         />
       ))}
+      <span className="sr-only">Loading...</span>
     </span>
   );
 }

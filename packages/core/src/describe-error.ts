@@ -1,5 +1,7 @@
 import {
   CorruptedEventLogError,
+  DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT,
+  DynamicWorkflowsNotEnabledError,
   QUICKJS_SNAPSHOT_REMEDIATION,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -91,6 +93,57 @@ const WORLD_CONTRACT_HINT =
 const DEPLOYMENT_MISMATCH_HINT =
   "The run was delivered to a deployment other than the deployment it is pinned to, and was stopped to protect against code-skew errors after the runtime failed to re-route it there. Verify that the run's deployment is still available and that queue callbacks route to it.";
 
+const DYNAMIC_WORKFLOWS_NOT_ENABLED_DESCRIPTION_HINT = `Dynamic workflows are not enabled for this project. ${DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT}`;
+
+const WORKFLOW_NOT_REGISTERED_HINT =
+  'The deployment that executed this run does not have its workflow registered. Usually the run was started or replayed against a deployment where the workflow was renamed, moved, or removed, or the build did not bundle it. Check the workflowId and the deployment the run is pinned to.';
+
+/**
+ * Attribution and hint for persisted error codes that fully determine the
+ * presentation on their own (no `errorName` needed). Used by
+ * {@link describeRunError} after the name-based checks.
+ */
+const CODE_DESCRIPTIONS: Partial<
+  Record<RunErrorCode, Omit<ErrorDescription, 'errorCode'>>
+> = {
+  [RUN_ERROR_CODES.REPLAY_TIMEOUT]: {
+    attribution: 'sdk',
+    hint: REPLAY_TIMEOUT_HINT,
+  },
+  [RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED]: {
+    attribution: 'sdk',
+    hint: MAX_DELIVERIES_HINT,
+  },
+  [RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED]: {
+    attribution: 'user',
+    hint: MAX_EVENTS_HINT,
+  },
+  [RUN_ERROR_CODES.CORRUPTED_EVENT_LOG]: {
+    attribution: 'sdk',
+    hint: CORRUPTED_EVENT_LOG_HINT,
+  },
+  [RUN_ERROR_CODES.STREAM_ERROR]: {
+    attribution: 'sdk',
+    hint: STREAM_ERROR_HINT,
+  },
+  [RUN_ERROR_CODES.WORLD_CONTRACT_ERROR]: {
+    attribution: 'sdk',
+    hint: WORLD_CONTRACT_HINT,
+  },
+  [RUN_ERROR_CODES.DEPLOYMENT_MISMATCH]: {
+    attribution: 'sdk',
+    hint: DEPLOYMENT_MISMATCH_HINT,
+  },
+  [RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED]: {
+    attribution: 'sdk',
+    hint: WORKFLOW_NOT_REGISTERED_HINT,
+  },
+  [RUN_ERROR_CODES.RUNTIME_ERROR]: {
+    attribution: 'sdk',
+    hint: RUNTIME_ERROR_HINT,
+  },
+};
+
 function normalizeErrorCode(code: string | undefined): RunErrorCode {
   // Values read back from persisted events are `string | undefined`, so we
   // only trust codes that match a known entry in `RUN_ERROR_CODES`.
@@ -119,6 +172,13 @@ export function describeRunError(
   if (name === 'SerializationError') {
     return { attribution: 'user', errorCode, hint: SERIALIZATION_ERROR_HINT };
   }
+  if (name === 'DynamicWorkflowsNotEnabledError') {
+    return {
+      attribution: 'user',
+      errorCode,
+      hint: DYNAMIC_WORKFLOWS_NOT_ENABLED_DESCRIPTION_HINT,
+    };
+  }
   if (name && CONTEXT_ERROR_NAMES.has(name)) {
     return { attribution: 'user', errorCode, hint: CONTEXT_ERROR_HINT };
   }
@@ -129,43 +189,20 @@ export function describeRunError(
       hint: CORRUPTED_EVENT_LOG_HINT,
     };
   }
-  if (errorCode === RUN_ERROR_CODES.REPLAY_TIMEOUT) {
-    return { attribution: 'sdk', errorCode, hint: REPLAY_TIMEOUT_HINT };
-  }
-  if (errorCode === RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED) {
-    return { attribution: 'sdk', errorCode, hint: MAX_DELIVERIES_HINT };
-  }
-  if (errorCode === RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED) {
-    return { attribution: 'user', errorCode, hint: MAX_EVENTS_HINT };
-  }
-  if (errorCode === RUN_ERROR_CODES.CORRUPTED_EVENT_LOG) {
+  // Runs that failed on SDKs before WORKFLOW_NOT_REGISTERED existed persisted
+  // RUNTIME_ERROR; the error name still identifies the targeting/build cause.
+  if (name === 'WorkflowNotRegisteredError') {
     return {
       attribution: 'sdk',
       errorCode,
-      hint: CORRUPTED_EVENT_LOG_HINT,
+      hint: WORKFLOW_NOT_REGISTERED_HINT,
     };
   }
-  if (errorCode === RUN_ERROR_CODES.STREAM_ERROR) {
-    return {
-      attribution: 'sdk',
-      errorCode,
-      hint: STREAM_ERROR_HINT,
-    };
-  }
-  if (errorCode === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR) {
-    return {
-      attribution: 'sdk',
-      errorCode,
-      hint: WORLD_CONTRACT_HINT,
-    };
-  }
-  if (errorCode === RUN_ERROR_CODES.DEPLOYMENT_MISMATCH) {
-    return { attribution: 'sdk', errorCode, hint: DEPLOYMENT_MISMATCH_HINT };
+  const byCode = CODE_DESCRIPTIONS[errorCode];
+  if (byCode) {
+    return { ...byCode, errorCode };
   }
   if (name === 'WorkflowRuntimeError' || name === 'StepNotRegisteredError') {
-    return { attribution: 'sdk', errorCode, hint: RUNTIME_ERROR_HINT };
-  }
-  if (errorCode === RUN_ERROR_CODES.RUNTIME_ERROR) {
     return { attribution: 'sdk', errorCode, hint: RUNTIME_ERROR_HINT };
   }
   return { attribution: 'user', errorCode };
@@ -183,6 +220,8 @@ export function describeRunError(
  *   value, didn't register a class). We attribute it to the user.
  * - Context-violation errors (`NotInWorkflowContextError`, etc.) likewise
  *   describe a user mistake.
+ * - `DynamicWorkflowsNotEnabledError` means the project has not opted into
+ *   dynamic workflows: a configuration the user fixes, so `user`.
  * - `WorkflowRuntimeError` (and subclasses like `StepNotRegisteredError`)
  *   indicates an internal SDK invariant broke, so surface that as `sdk`.
  *
@@ -214,6 +253,16 @@ export function describeError(
     };
   }
 
+  // The project has not opted into dynamic workflows: its configuration, not
+  // an SDK failure, and the hint says how to opt in.
+  if (DynamicWorkflowsNotEnabledError.is(err)) {
+    return {
+      attribution: 'user',
+      errorCode: effectiveCode,
+      hint: DYNAMIC_WORKFLOWS_NOT_ENABLED_DESCRIPTION_HINT,
+    };
+  }
+
   if (CorruptedEventLogError.is(err)) {
     return {
       attribution: 'sdk',
@@ -229,6 +278,16 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: DEPLOYMENT_MISMATCH_HINT,
+    };
+  }
+
+  // Likewise WorkflowNotRegisteredError: a WorkflowRuntimeError subclass with
+  // its own code and a targeting/build hint instead of the internal-error one.
+  if (effectiveCode === RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: WORKFLOW_NOT_REGISTERED_HINT,
     };
   }
 

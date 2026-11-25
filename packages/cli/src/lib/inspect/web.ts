@@ -83,7 +83,10 @@ async function isServerRunning(hostUrl: string): Promise<boolean> {
 /**
  * Start the @workflow/web server in the current process.
  */
-async function startWebServer(webPort: number): Promise<boolean> {
+async function startWebServer(
+  webPort: number,
+  allowedHosts: string | undefined
+): Promise<boolean> {
   if (await isServerRunning(getHostUrl(webPort))) {
     logger.debug('Server is already running');
     return true;
@@ -92,7 +95,7 @@ async function startWebServer(webPort: number): Promise<boolean> {
   try {
     logger.info('Starting web UI server...');
     const { startServer } = await import('@workflow/web/server');
-    webServer = await startServer(webPort);
+    webServer = await startServer(webPort, { allowedHosts });
     logger.success(chalk.green(`Web UI server started on port ${webPort}`));
     return true;
   } catch (error) {
@@ -251,7 +254,7 @@ export async function launchWebUI(
     );
   } else {
     // Start the server
-    const started = await startWebServer(webPort);
+    const started = await startWebServer(webPort, flags.webAllowedHosts);
     if (!started) {
       logger.error('Failed to start web UI server');
       return;

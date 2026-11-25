@@ -173,6 +173,21 @@ describe('resumeHook durable resume', () => {
     expect(attributes['workflow.hook.resume_strategy']).toBe('sequential');
   });
 
+  it('names the hook_received it committed on the wake', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { queue } = makeWorld(hook, {
+      createEvent: vi.fn().mockResolvedValue({
+        event: { eventId: 'evnt_00000000000000000000000007' },
+      }),
+    });
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(queue.mock.calls[0][1].wakeEventId).toBe(
+      'evnt_00000000000000000000000007'
+    );
+  });
+
   it("stamps hook_received with the run's spec version when it is older", async () => {
     // The runtime executing the run reads this event; one built against a
     // lower spec version (an older deployment, or another SDK) rejects an
@@ -199,6 +214,66 @@ describe('resumeHook durable resume', () => {
 
     expect(createEvent.mock.calls[0][1]).toMatchObject({
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+  });
+
+  it("names a spec 9 run's workflow on hook_received, on the ordinary route", async () => {
+    // The backend keys the payload ref by workflow name; without it, it reads
+    // the run stamp for the name before the write path reads it again.
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { createEvent } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    const [runId, event, params] = createEvent.mock.calls[0];
+    expect(runId).toBe(hook.runId);
+    expect(event).toEqual({
+      eventType: 'hook_received',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      correlationId: hook.hookId,
+      eventData: {
+        token: hook.token,
+        workflowName: currentContext.workflowName,
+        payload: PAYLOAD_BYTES,
+      },
+    });
+    // Same route as before: a by-token resume is not a resolved delivery.
+    expect(params.requireHookResumeDedup).toBeUndefined();
+    expect(params).toMatchObject({ inBand: false, v1Compat: false });
+  });
+
+  it('names the workflow on a cached-handle resolved delivery too', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { createEvent, getByToken } = makeWorld(hook, undefined, {
+      resolvedHookResume: true,
+    });
+
+    await resumeHook(hook, { foo: 'bar' });
+
+    expect(getByToken).not.toHaveBeenCalled();
+    const [, event, params] = createEvent.mock.calls[0];
+    expect(params.requireHookResumeDedup).toBe(true);
+    expect(event.eventData.workflowName).toBe(currentContext.workflowName);
+  });
+
+  it.each([
+    ['spec 8', 8],
+    ['spec 2', 2],
+  ])('leaves the workflow name off a %s run', async (_label, runSpecVersion) => {
+    const hook = {
+      ...baseHook,
+      specVersion: runSpecVersion,
+      resumeContext: { ...currentContext, runSpecVersion },
+    } satisfies Hook;
+    const { createEvent } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    const [, event] = createEvent.mock.calls[0];
+    expect(event.eventData).toEqual({
+      token: hook.token,
+      payload: PAYLOAD_BYTES,
     });
   });
 
@@ -616,7 +691,7 @@ describe('resumeHook durable resume', () => {
     const createEvent = vi.fn(async (_run, _event, params) => {
       if (params.requireHookResumeDedup)
         throw new WorkflowWorldError('refused', { status });
-      return {};
+      return { event: { eventId: 'evnt_00000000000000000000000009' } };
     });
     const { getByToken, queue } = makeWorld(
       hook,
@@ -630,6 +705,10 @@ describe('resumeHook durable resume', () => {
     expect(fallback[2].requireHookResumeDedup).toBeUndefined();
     expect(fallback[2].resumeId).toBe(resolved[2].resumeId);
     expect(queue).toHaveBeenCalledTimes(1);
+    // The wake names the event the fallback write committed.
+    expect(queue.mock.calls[0][1].wakeEventId).toBe(
+      'evnt_00000000000000000000000009'
+    );
     expect(telemetrySpan.setAttributes).toHaveBeenCalledWith({
       'workflow.hook.resume_route': 'resolved_fallback',
       'workflow.hook.resolved_refusal_status': status,

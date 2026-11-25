@@ -19,12 +19,17 @@ import {
   HealthCheckPayloadSchema,
   isSingleOrchestratorMessage,
   MessageId,
+  messageRunSpecVersion,
+  orchestratorRunIdOf,
   parseQueueName,
   parseQueueRoute,
   type Queue,
+  type QueueOptions,
+  type QueuePayload,
   QueuePayloadSchema,
   QueuePrefix,
   resolveQueueNamespace,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorRunIdOf,
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
@@ -45,11 +50,27 @@ import {
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
-import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
+import {
+  type PostgresWorldConfig,
+  resolveJobPrefix,
+  UNPINNED_DEPLOYMENT_ID,
+} from './config.js';
+import { createClient } from './drizzle/index.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
-import { createJobLeases, resolveJobLockStaleSeconds } from './job-lease.js';
+import {
+  createJobLeases,
+  type JobLeasePolicy,
+  resolveJobLeasePolicy,
+} from './job-lease.js';
 import { MessageData } from './message.js';
+import { createPurgeBackstopTask, worldPurgeTask } from './retention.js';
+import {
+  createRunLeases,
+  graphileSchemaIdentifier,
+  isMissingTable,
+  type LeftJob,
+} from './run-lease.js';
 
 /**
  * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
@@ -111,14 +132,15 @@ const graphileLogger = createGraphileLogger();
  * done, and a bound here declares a slow-but-healthy delivery crashed and
  * redelivers it while the original is still running (two executions of the
  * same steps). Crash recovery does not need one: `reenqueueActiveRuns`
- * re-enqueues active runs on start, and with `jobLockStaleSeconds` set a
- * running delivery renews its job lock and any other process releases a job
- * whose lock goes unrenewed (because its process died), and the lock of its
- * named queue, for redelivery (see `job-lease.ts`). Without it, Graphile
- * Worker resets a dead worker's job and named-queue locks only after 4 hours
- * (`resetLockedAt`). A spec 9 run's orchestrator deliveries all use the run's
- * named queue, so without it a hard-killed worker can hold them back for that
- * long; see the README.
+ * re-enqueues active runs on start, and a running delivery renews its job
+ * lock while any other process releases a job whose lock goes unrenewed
+ * (because its process died), for redelivery (see `job-lease.ts`). By
+ * default that release covers only jobs that own a run's delivery lease (a
+ * spec 9 run's orchestrator deliveries, invoke mode's executor lane; see
+ * `run-lease.ts`) of renewing holders, after 300 seconds; with
+ * `jobLockStaleSeconds` set it covers every job of this World after that
+ * window, and `0` turns it off, leaving Graphile Worker's 4 hour reset
+ * (`resetLockedAt`).
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
@@ -163,6 +185,32 @@ const CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT = 49;
 const POST_CEILING_RETRY_ATTEMPTS = 24;
 const MAX_GRAPHILE_JOB_ATTEMPTS =
   CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT + POST_CEILING_RETRY_ATTEMPTS;
+/**
+ * Re-runs of one spec 9 orchestrator delivery for the wakes other
+ * deliveries left on its run lease (see `run-lease.ts`), as world-vercel
+ * bounds its coalesced re-runs. Past the cap the delivery releases the lease,
+ * which re-adds the wake still left as a job.
+ */
+export const MAX_COALESCED_RERUNS = 32;
+/**
+ * How often a process with a runner recovers orphaned run leases (see
+ * `RunLeases.recoverOrphans`). An owner can stop being able to run only
+ * after the stale-lock sweep released it, so this need not be frequent.
+ */
+const ORPHANED_LEASE_INTERVAL_MS = 60_000;
+/**
+ * Graphile priority of a spec 9 handoff's job: below the default 0, so the
+ * continuation, which the run's lease passes to, starts ahead of other work
+ * (Graphile takes the lowest priority first, then the earliest `run_at`).
+ */
+const HANDOFF_JOB_PRIORITY = -1;
+/**
+ * When the invocation that runs a delivery began (epoch ms), passed to the
+ * handler as `invocationStartedAt`. The same for every coalesced re-run, so
+ * a late re-run does not get a fresh inline budget.
+ */
+const INVOCATION_STARTED_AT_HEADER =
+  'x-workflow-postgres-invocation-started-at';
 const EXECUTOR_JOB_HEADER = 'x-workflow-postgres-executor-job';
 const EXECUTOR_WORKER_HEADER = 'x-workflow-postgres-executor-worker';
 const EXECUTOR_ATTEMPT_HEADER = 'x-workflow-postgres-executor-attempt';
@@ -173,23 +221,16 @@ const ExecutorDelivery = z.object({
 });
 type ExecutorDelivery = z.infer<typeof ExecutorDelivery>;
 
-const GraphileHelpers = z.compile(
-  z.object({
-    abortSignal: z.instanceof(AbortSignal).optional(),
-    job: z.object({
-      attempts: z.number().int().positive(),
-      id: z.string().optional(),
-      locked_by: z.string().nullable().optional(),
-      task_identifier: z.string().optional(),
-      max_attempts: z.number().int().positive().optional(),
-    }),
-    getQueueName: z
-      .custom<() => string | null | Promise<string | null>>(
-        (value) => typeof value === 'function'
-      )
-      .optional(),
-  })
-);
+const GraphileHelpers = z.object({
+  abortSignal: z.instanceof(AbortSignal).optional(),
+  job: z.object({
+    attempts: z.number().int().positive(),
+    id: z.string().optional(),
+    locked_by: z.string().nullable().optional(),
+    task_identifier: z.string().optional(),
+    max_attempts: z.number().int().positive().optional(),
+  }),
+});
 
 type HttpExecutionResult =
   | { type: 'completed' }
@@ -204,6 +245,22 @@ type HttpExecutionResult =
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
 
+/** A coalesced hook wake's resume timing and event, for the re-run. */
+interface CoalescedResume {
+  hookResumeTiming: unknown;
+  traceCarrier?: unknown;
+  wakeEventId?: unknown;
+}
+
+/** Whether a queue message is a step's execution message. */
+function isStepMessage(message: unknown): boolean {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    typeof (message as { stepId?: unknown }).stepId === 'string'
+  );
+}
+
 function executorInput(message: unknown) {
   if (HealthCheckPayloadSchema.safeParse(message).success) return undefined;
   const parsed = WorkflowInvokePayloadSchema.safeParse(message);
@@ -213,7 +270,21 @@ function executorInput(message: unknown) {
 /**
  * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
-export type PostgresQueue = Queue & {
+export type PostgresQueue = Omit<Queue, 'queue'> & {
+  queue(
+    queueName: ValidQueueName,
+    message: QueuePayload,
+    opts?: QueueOptions & {
+      /**
+       * The Graphile `jobKey`, in place of the idempotency key or the
+       * message id. It is carried on the message for the jobs that continue
+       * it (see `MessageData.jobKey`), but unlike `idempotencyKey` the
+       * delivery is not deduplicated as a completed message. Startup
+       * recovery keys its job by run with it.
+       */
+      jobKey?: string;
+    }
+  ): ReturnType<Queue['queue']>;
   start(): Promise<void>;
   close(): Promise<void>;
   /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
@@ -223,14 +294,40 @@ export type PostgresQueue = Queue & {
   ): void;
   /** Deliver a queue prefix's messages over HTTP to `path` on the app (see `Queue.registerRoute`). */
   registerRoute(prefix: QueuePrefix, path: string): void;
+  /**
+   * The runs with an orchestrator job that a worker holds locked: a delivery
+   * running here or in a live peer, or cut off by a process that died.
+   * Startup recovery lists them even when they look parked (see
+   * `createRecoverableRunsList`). `undefined` when the jobs cannot be read.
+   */
+  lockedOrchestratorRunIds(): Promise<string[] | undefined>;
 };
 
 export function createQueue(
   config: PostgresWorldConfig,
-  pool: Pool
+  pool: Pool,
+  /** @internal Test hooks; not part of the public API. */
+  internal?: {
+    /** The `'run-leases'` default window, in place of 300 seconds. */
+    defaultJobLockStaleSeconds?: number;
+    /** How often orphaned run leases are recovered, in place of 60 seconds. */
+    orphanedLeaseIntervalMs?: number;
+    /** Deferred messages one run lease keeps, in place of 100. */
+    maxDeferredPerLease?: number;
+  }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const localWorld = createWorld({ dataDir: undefined, port });
+  // Only for its queue handler. 'read' so a Postgres app never creates a
+  // queue auth key file or a `.workflow-data` directory: this World declares
+  // queueAuthMode 'skip', and the key is read only if something sends.
+  const localWorld = createWorld({
+    dataDir: undefined,
+    port,
+    queueAuthKey: 'read',
+    // This World's runs are in Postgres, not in the Local World's storage,
+    // and its worker resolves an unstamped orchestrator message itself.
+    readUnstampedRunSpec: false,
+  });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
   // custom dispatcher, and a queue-owned pool keeps these sockets out of the
@@ -277,13 +374,51 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(): string {
-    return `${resolveJobPrefix(config)}flows`;
+  function getJobQueueName(
+    deploymentId: string | undefined = config.deploymentId
+  ): string {
+    return `${resolveJobPrefix(config, deploymentId)}flows`;
+  }
+
+  /**
+   * The task of another deployment's runs, when `opts.deploymentId` names one:
+   * a pinned run's messages go to the workers of the deployment that started
+   * it, wherever they are enqueued from, and an unpinned run's (one recorded
+   * with {@link UNPINNED_DEPLOYMENT_ID}, such as a run started before
+   * `deploymentId` was set) go to the unpinned task. `undefined` means this
+   * World's own, as it does for an id that cannot name a deployment's task.
+   */
+  function deploymentTask(deploymentId: string | undefined) {
+    if (
+      deploymentId === undefined ||
+      deploymentId === (config.deploymentId ?? UNPINNED_DEPLOYMENT_ID)
+    ) {
+      return undefined;
+    }
+    if (deploymentId === UNPINNED_DEPLOYMENT_ID) {
+      return `${resolveJobPrefix({ jobPrefix: config.jobPrefix })}flows`;
+    }
+    try {
+      return getJobQueueName(deploymentId);
+    } catch {
+      return undefined;
+    }
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  const leasePolicy: JobLeasePolicy = resolveJobLeasePolicy(
+    config.jobLockStaleSeconds,
+    internal?.defaultJobLockStaleSeconds
+  );
+  const runLeases = createRunLeases(
+    pool,
+    internal?.maxDeferredPerLease !== undefined
+      ? { maxDeferred: internal.maxDeferredPerLease }
+      : {}
+  );
   const jobLeases = createJobLeases(pool, {
-    staleSeconds: resolveJobLockStaleSeconds(config.jobLockStaleSeconds),
+    staleSeconds: leasePolicy.staleSeconds,
+    ...(leasePolicy.scope === 'off' ? {} : { scope: leasePolicy.scope }),
   });
   /**
    * The Workflow SDK prefix this World serves: messages on it (and jobs that
@@ -298,29 +433,67 @@ export function createQueue(
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
   /**
-   * The Graphile named queue of one run's orchestrator deliveries.
+   * A single-orchestrator run's (spec >= 9) orchestrator deliveries never
+   * overlap: each takes the run's delivery lease before it runs
+   * (`run-lease.ts`), across every worker and process sharing the database.
+   * That is the queue half of the single-writer guarantee (the in-band fence
+   * in storage.ts is the other). Step messages, health checks and the
+   * messages of earlier runs take no lease and keep full parallelism (see
+   * `singleOrchestratorRunIdOf`). A delayed job (a timer, a
+   * `{ timeoutSeconds }` redelivery) holds no lease until it runs.
    *
-   * Graphile runs the jobs of a named queue one at a time, across every
-   * worker and process sharing the database, so a single-orchestrator run's
-   * (spec >= 9) orchestrator deliveries never overlap: the queue half of the
-   * single-writer guarantee (the in-band fence in storage.ts is the other).
-   * Step messages, health checks and the messages of earlier runs carry no
-   * queue name and keep full parallelism (see `singleOrchestratorRunIdOf`).
-   * A delayed job (a timer, a `{ timeoutSeconds }` redelivery) does not hold
-   * the queue: only a running job locks it.
-   *
-   * The invoke executor lane uses the same name, so a run's ordinary and
+   * The invoke executor lane takes the same lease, so a run's ordinary and
    * executor deliveries serialize with each other too, including while a
    * deployment switches `enableInvoke`.
    */
-  const executorQueueName = (runId: string) =>
-    `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
+  /**
+   * The query that adds an executor wake for a run: a job on the executor
+   * task whose delivery reads the run's invocation mailbox. No job_key:
+   * every invoke (including a completed request's retry) gets a wake.
+   */
+  const addExecutorWake = (
+    queueId: string,
+    runId: string
+  ): [text: string, values: unknown[]] => [
+    `SELECT ${graphileSchemaIdentifier()}.add_job(identifier => $1, payload => $2::json,
+          max_attempts => $3)`,
+    [
+      executorTask(),
+      JSON.stringify(
+        MessageData.encode({
+          id: queueId,
+          data: transport.serialize({ runId }) as Buffer,
+          messageId: MessageId.parse(`msg_${generateMessageId()}`),
+          attempt: 1,
+        })
+      ),
+      MAX_GRAPHILE_JOB_ATTEMPTS,
+    ],
+  ];
 
-  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+  const createQueueHandler: Queue['createQueueHandler'] = (
+    prefix,
+    givenHandler
+  ) => {
+    // Passes the delivering worker's `invocationStartedAt` (set on the
+    // request, see `deliverMessage`) through to the handler.
+    const withInvocationStart =
+      (req: Request): typeof givenHandler =>
+      (message, metadata) => {
+        const startedAt = Number(req.headers.get(INVOCATION_STARTED_AT_HEADER));
+        return givenHandler(
+          message,
+          Number.isFinite(startedAt) && startedAt > 0
+            ? { ...metadata, invocationStartedAt: startedAt }
+            : metadata
+        );
+      };
     if (!invocations || prefix !== ownPrefix())
-      return localWorld.createQueueHandler(prefix, handler);
+      return (req) =>
+        localWorld.createQueueHandler(prefix, withInvocationStart(req))(req);
     return async (req) => {
+      const handler = withInvocationStart(req);
       // Keep transport provenance request-scoped; it is not a World API field.
       const delivery = ExecutorDelivery.safeParse({
         id: req.headers.get(EXECUTOR_JOB_HEADER),
@@ -361,23 +534,21 @@ export function createQueue(
             });
           const proof = delivery.data;
           // Use Graphile's public jobs view, not private tables. This verifies the
-          // actual active task/queue/attempt rather than trusting a boolean header.
-          // It is an admission check, NOT a fence on later journal writes.
+          // actual active task/attempt and that the job owns the run's lease,
+          // rather than trusting a boolean header. It is an admission check,
+          // NOT a fence on later journal writes.
           const { rows } = await pool.query(
-            `SELECT id FROM graphile_worker.jobs
-         WHERE id = $1 AND task_identifier = $2 AND queue_name = $3
-           AND locked_by = $4 AND attempts = $5 AND locked_at IS NOT NULL`,
-            [
-              proof.id,
-              executorTask(),
-              executorQueueName(input.runId),
-              proof.worker,
-              proof.attempt,
-            ]
+            `SELECT jobs.id FROM ${graphileSchemaIdentifier()}.jobs AS jobs
+         JOIN workflow.workflow_run_delivery_leases AS leases
+           ON leases.owner_job_id = jobs.id AND leases.run_id = $3
+         WHERE jobs.id = $1 AND jobs.task_identifier = $2
+           AND jobs.locked_by = $4 AND jobs.attempts = $5
+           AND jobs.locked_at IS NOT NULL`,
+            [proof.id, executorTask(), input.runId, proof.worker, proof.attempt]
           );
           if (rows.length === 0)
             throw new WorkflowWorldError(
-              'Executor delivery is not active on the run queue',
+              'Executor delivery does not hold the run lease',
               { status: 409 }
             );
           if (input.invoke) {
@@ -422,6 +593,22 @@ export function createQueue(
                 pending.id,
                 outcome
               );
+            },
+            async () => {
+              // Intake has stopped. An invocation still in the mailbox was
+              // not delivered, and this delivery may be the only wake it
+              // had: the wakes of invocations submitted while the run's
+              // lease was held collapse into one (see `run-lease.ts`). Leave
+              // a wake for it. One submitted during this delivery has a wake
+              // of its own, and a second one costs a delivery that finds
+              // nothing to do.
+              if ((await invocations.pending(input.runId)).length === 0) return;
+              await pool.query(
+                ...addExecutorWake(
+                  parseQueueName(metadata.queueName).id,
+                  input.runId
+                )
+              );
             }
           );
         }
@@ -430,11 +617,14 @@ export function createQueue(
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
-    return 'postgres';
+    return config.deploymentId ?? UNPINNED_DEPLOYMENT_ID;
   };
 
   const completedMessages = new Set<string>();
-  const inflightMessages = new Map<string, Promise<void>>();
+  const inflightMessages = new Map<
+    string,
+    Promise<'completed' | 'rescheduled'>
+  >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let runnerStart: RunnerStart | null = null;
@@ -463,13 +653,16 @@ export function createQueue(
     headers,
     delaySeconds,
     jobKey,
+    messageJobKey,
     executorRunId,
-    serialRunId,
     attemptOffset,
     deliveryOffset,
     createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
     jobKeyMode = 'preserve_run_at',
+    priority,
+    handoffLease,
+    task,
   }: {
     queueId: string;
     prefix?: QueuePrefix;
@@ -482,10 +675,10 @@ export function createQueue(
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
-    /** Run the job on the invoke executor task, in this run's named queue. */
+    /** Stored on the message as `MessageData.jobKey`. */
+    messageJobKey?: string;
+    /** Run the job on the invoke executor task. */
     executorRunId?: string;
-    /** An orchestrator delivery for this run: run it in the run's named queue. */
-    serialRunId?: string;
     attemptOffset?: number;
     deliveryOffset?: number;
     maxAttempts?: number;
@@ -497,7 +690,16 @@ export function createQueue(
      * while any job holds the key, locked or not.
      */
     jobKeyMode?: 'preserve_run_at' | 'unsafe_dedupe';
-  }) {
+    /** Graphile priority; lower runs first. Default 0. */
+    priority?: number;
+    /**
+     * The run lease this job continues, as a handoff: the job is added and
+     * handed the lease in one transaction (see `RunLeases.handoff`).
+     */
+    handoffLease?: { runId: string; jobId: string };
+    /** Another deployment's task ({@link deploymentTask}); default this World's. */
+    task?: string;
+  }): Promise<{ handedOff: boolean }> {
     const utils = workerUtils;
     if (!utils) {
       throw new Error('Postgres queue worker utils are not initialized');
@@ -508,29 +710,45 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
-    const runQueue = executorRunId ?? serialRunId;
-    await utils.addJob(
-      executorRunId ? executorTask() : getJobQueueName(),
-      MessageData.encode({
-        id: queueId,
-        ...(prefix ? { prefix } : {}),
-        ...(route ? { route } : {}),
-        data: Buffer.from(body),
-        attempt,
-        ...(attemptOffset !== undefined ? { attemptOffset } : {}),
-        ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
-        messageId,
-        ...(createdAt ? { createdAt } : {}),
-        idempotencyKey,
-        headers,
-      }),
-      {
-        ...(jobKey ? { jobKey, jobKeyMode } : {}),
-        ...(runAt ? { runAt } : {}),
-        maxAttempts,
-        ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
-      }
-    );
+    const jobTask =
+      task ?? (executorRunId ? executorTask() : getJobQueueName());
+    const payload = MessageData.encode({
+      id: queueId,
+      ...(prefix ? { prefix } : {}),
+      ...(route ? { route } : {}),
+      data: Buffer.from(body),
+      attempt,
+      ...(attemptOffset !== undefined ? { attemptOffset } : {}),
+      ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
+      messageId,
+      ...(createdAt ? { createdAt } : {}),
+      idempotencyKey,
+      ...(messageJobKey ? { jobKey: messageJobKey } : {}),
+      headers,
+    });
+    if (handoffLease) {
+      const handedOff = await runLeases.handoff(
+        handoffLease.runId,
+        handoffLease.jobId,
+        {
+          task: jobTask,
+          payload,
+          jobKey,
+          jobKeyMode,
+          maxAttempts,
+          priority,
+          runAt,
+        }
+      );
+      return { handedOff };
+    }
+    await utils.addJob(jobTask, payload, {
+      ...(jobKey ? { jobKey, jobKeyMode } : {}),
+      ...(runAt ? { runAt } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      maxAttempts,
+    });
+    return { handedOff: false };
   }
 
   async function transferToExecutor(
@@ -553,6 +771,7 @@ export function createQueue(
       deliveryOffset: deliveryCount - 1,
       maxAttempts: remainingAttempts,
       idempotencyKey: message.idempotencyKey,
+      messageJobKey: message.jobKey,
       headers: message.headers,
       // A distinct key avoids replacing the legacy job that is still locked.
       jobKey: `${executorTask()}:transfer:${message.messageId}`,
@@ -697,6 +916,7 @@ export function createQueue(
     headers: extraHeaders,
     abortSignal,
     executorDelivery,
+    invocationStartedAt,
   }: {
     queueName: ValidQueueName;
     prefix: QueuePrefix;
@@ -710,6 +930,8 @@ export function createQueue(
     headers?: Record<string, string>;
     abortSignal?: AbortSignal;
     executorDelivery?: ExecutorDelivery;
+    /** See {@link INVOCATION_STARTED_AT_HEADER}. */
+    invocationStartedAt?: number;
   }): Promise<HttpExecutionResult> {
     const headers = new Headers(extraHeaders);
     headers.set('content-type', 'application/json');
@@ -724,6 +946,10 @@ export function createQueue(
     headers.delete(EXECUTOR_JOB_HEADER);
     headers.delete(EXECUTOR_WORKER_HEADER);
     headers.delete(EXECUTOR_ATTEMPT_HEADER);
+    headers.delete(INVOCATION_STARTED_AT_HEADER);
+    if (invocationStartedAt !== undefined) {
+      headers.set(INVOCATION_STARTED_AT_HEADER, String(invocationStartedAt));
+    }
     if (executorDelivery) {
       headers.set(EXECUTOR_JOB_HEADER, executorDelivery.id);
       headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
@@ -888,7 +1114,9 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await startRunnerWhenExecutorIsReady();
+          if (!config.skipWorkers) {
+            await startRunnerWhenExecutorIsReady();
+          }
         } catch (err) {
           startPromise = null;
           throw err;
@@ -896,48 +1124,63 @@ export function createQueue(
       })();
     }
     await startPromise;
-    if (!closing && !runner && !runnerStart) {
+    if (!closing && !config.skipWorkers && !runner && !runnerStart) {
       await startRunnerWhenExecutorIsReady();
     }
   }
 
   /**
    * The Graphile job-key mode of a publish (`queue`). A follow-up job the
-   * queue schedules itself (a reschedule, a transfer to the executor) keeps
-   * `'preserve_run_at'`: it is sent while the job it continues is locked,
-   * and must be inserted next to it.
+   * queue schedules itself (a reschedule, a transfer to the executor, a
+   * stamped move) keeps `'preserve_run_at'`: it is sent while the
+   * job it continues is locked, and must be inserted next to it.
    *
-   * - A single-orchestrator run's keyed message (spec >= 9: a step's
-   *   execution message, each hop of a wait's timer) is sent with a key only
-   *   to be deduplicated: the runtime sends it again from later deliveries
-   *   of the run (the re-send rule, a timer every delivery that may owe it
-   *   sends), and a second job would be a second owner of the step's body,
-   *   or a second chain of a long wait's hops. `'unsafe_dedupe'` makes the send a no-op while any
-   *   job holds the key: a locked one (being delivered), one waiting out its
-   *   delay, or one in retry backoff, whose attempts and `run_at` it keeps.
-   *   The key is free again once the job completes and is deleted.
-   * - Any other keyed publish keeps `'preserve_run_at'`: a duplicate may be
-   *   an immediate replay of a delayed retry, and keeping the first job's
+   * - A step's execution message (`stepId` set), of any run, and a
+   *   single-orchestrator run's other keyed messages (spec >= 9: each hop of
+   *   a wait's timer) are sent with a key only to be deduplicated: the
+   *   runtime sends them again from later deliveries of the run (spec 9's
+   *   re-send rule, a timer every delivery that may owe it sends; spec 8's
+   *   republish of a delivery's step messages after a failed send, and its
+   *   dispatch of a step another handler may already have queued), and a
+   *   second job would be a second owner of the step's body, or a second
+   *   chain of a long wait's hops. `'unsafe_dedupe'` makes the send a no-op
+   *   while any job holds the key: a locked one (being delivered), one
+   *   waiting out its delay, or one in retry backoff, whose attempts and
+   *   `run_at` it keeps. The key is free again once the job completes and is
+   *   deleted. A step's retry is not such a send: it is a reschedule of the
+   *   step's own job.
+   * - Any other keyed publish of an earlier run (spec 8's timers, hook wakes
+   *   and backstops) keeps `'preserve_run_at'`: a duplicate may be an
+   *   immediate replay of a delayed retry, and keeping the first job's
    *   `run_at` keeps that backoff.
    */
+  /** The Graphile key of a job that continues `message`'s own job. */
+  const followUpJobKey = (message: MessageData) =>
+    message.jobKey ?? message.idempotencyKey ?? message.messageId;
+
   const jobKeyModeFor = (
     message: unknown,
     idempotencyKey: string | undefined
   ): 'preserve_run_at' | 'unsafe_dedupe' =>
-    idempotencyKey !== undefined && isSingleOrchestratorMessage(message)
+    idempotencyKey !== undefined &&
+    (isSingleOrchestratorMessage(message) || isStepMessage(message))
       ? 'unsafe_dedupe'
       : 'preserve_run_at';
 
-  const queue: Queue['queue'] = async (queue, message, opts) => {
+  const queue: PostgresQueue['queue'] = async (queue, message, opts) => {
     await start();
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
+    const task = deploymentTask(opts?.deploymentId);
+    // Invoke mode's executor lane is this World's own; another deployment's
+    // runs are delivered on its flow task, as without invoke.
     const input =
-      invocations && prefix === ownPrefix()
+      invocations && !task && prefix === ownPrefix()
         ? executorInput(message)
         : undefined;
     await addGraphileJob({
+      task,
       queueId,
       // Kept, so the job is delivered under the queue name it was sent to
       // whichever worker takes it, rather than the worker's own prefix.
@@ -950,15 +1193,10 @@ export function createQueue(
       idempotencyKey: opts?.idempotencyKey,
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
-      jobKey: opts?.idempotencyKey ?? messageId,
+      jobKey: opts?.jobKey ?? opts?.idempotencyKey ?? messageId,
+      messageJobKey: opts?.jobKey,
       jobKeyMode: jobKeyModeFor(message, opts?.idempotencyKey),
-      // Only the SDK's own prefix carries workflow runs; a queue consumer's
-      // own messages are never serialized by run.
-      ...(input
-        ? { executorRunId: input.runId }
-        : prefix === ownPrefix()
-          ? { serialRunId: singleOrchestratorRunIdOf(message) }
-          : {}),
+      ...(input ? { executorRunId: input.runId } : {}),
     });
     return { messageId };
   };
@@ -975,24 +1213,8 @@ export function createQueue(
       payload,
       options,
       async (client, _id, run) => {
-        const wake = MessageData.encode({
-          id: run.workflowName,
-          data: transport.serialize({ runId }) as Buffer,
-          messageId: MessageId.parse(`msg_${generateMessageId()}`),
-          attempt: 1,
-        });
-        // The mailbox insertion and wake share this transaction. No job_key:
-        // every invoke (including a completed request's retry) gets a wake.
-        await client.query(
-          `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
-          queue_name => $3, max_attempts => $4)`,
-          [
-            executorTask(),
-            JSON.stringify(wake),
-            executorQueueName(runId),
-            MAX_GRAPHILE_JOB_ATTEMPTS,
-          ]
-        );
+        // The mailbox insertion and wake share this transaction.
+        await client.query(...addExecutorWake(run.workflowName, runId));
       }
     );
   };
@@ -1000,6 +1222,108 @@ export function createQueue(
   async function deserializeMessageBody(data: Buffer): Promise<unknown> {
     const bodyStream = Stream.Readable.toWeb(Stream.Readable.from([data]));
     return transport.deserialize(bodyStream as ReadableStream<Uint8Array>);
+  }
+
+  /**
+   * The spec version a run's row records, or `undefined` when the run is not
+   * found, records none, or cannot be read. An unread version leaves the
+   * message ungated, as before this check existed: the in-band fence keeps
+   * an overlap safe, so a failed read must not fail the delivery.
+   */
+  async function readRunSpecVersion(
+    runId: string
+  ): Promise<number | undefined> {
+    let value: number | string | null | undefined;
+    try {
+      const { rows } = await pool.query<{
+        spec_version: number | string | null;
+      }>('SELECT spec_version FROM workflow.workflow_runs WHERE id = $1', [
+        runId,
+      ]);
+      value = rows[0]?.spec_version;
+    } catch {
+      return undefined;
+    }
+    // Migration 0005 created the column as `varchar` (drizzle's schema says
+    // integer), so the driver returns a string on a migrated database.
+    const specVersion =
+      value === null || value === undefined ? Number.NaN : Number(value);
+    return Number.isSafeInteger(specVersion) ? specVersion : undefined;
+  }
+
+  /**
+   * The body of a coalesced re-run: the delivery's own message, with the
+   * resume timing (and trace context) of a hook wake it absorbed in place of
+   * its own. The runtime starts a resume's TTR measurement only from the
+   * `hookResumeTiming` of the message it handles, and the re-run is what
+   * consumes the absorbed resume, so without this the measurement would be
+   * lost. Its own timing is dropped either way: the first run consumed it,
+   * and a re-run must not report that resume again. The same goes for its
+   * `wakeEventId`, which the first run consumed.
+   */
+  function rerunBody(body: unknown, resume: CoalescedResume | undefined) {
+    const {
+      hookResumeTiming: _consumed,
+      wakeEventId: _consumedWake,
+      ...rest
+    } = body as Record<string, unknown>;
+    return transport.serialize(
+      resume
+        ? {
+            ...rest,
+            hookResumeTiming: resume.hookResumeTiming,
+            ...(resume.traceCarrier !== undefined && {
+              traceCarrier: resume.traceCarrier,
+            }),
+            ...(resume.wakeEventId !== undefined && {
+              wakeEventId: resume.wakeEventId,
+            }),
+          }
+        : rest
+    ) as Buffer;
+  }
+
+  /** The hook resume's timing a wake left on a run lease carries, if any. */
+  async function resumeOf(left: LeftJob): Promise<CoalescedResume | undefined> {
+    const message = MessageData.safeParse(left.payload);
+    if (!message.success) return undefined;
+    let body: unknown;
+    try {
+      body = await deserializeMessageBody(message.data.data);
+    } catch {
+      return undefined;
+    }
+    if (typeof body !== 'object' || body === null) return undefined;
+    const { hookResumeTiming, traceCarrier, wakeEventId } = body as Record<
+      string,
+      unknown
+    >;
+    return hookResumeTiming === undefined
+      ? undefined
+      : {
+          hookResumeTiming,
+          ...(traceCarrier !== undefined && { traceCarrier }),
+          ...(wakeEventId !== undefined && { wakeEventId }),
+        };
+  }
+
+  /**
+   * Whether a later delivery of the run covers this orchestrator message, so
+   * that it can be left on the run's lease as a wake (see `run-lease.ts`), as
+   * world-vercel coalesces it: every producer commits what such a message is
+   * for (a step outcome, a `hook_received`, a cancellation) before it sends
+   * it, and the re-run reads the log. `run.wakeUp()`'s waits are
+   * best-effort, and a final timer's wait is found due by the re-run. A start
+   * message (`runInput`) carries the run's input for a start that has not
+   * committed its `run_created` yet, and a hook's input or an invocation
+   * carries data of its own, so those are deferred and re-added instead.
+   */
+  function isCoveredWake(body: unknown): boolean {
+    return !(
+      typeof body === 'object' &&
+      body !== null &&
+      ('runInput' in body || 'invoke' in body || 'hookInput' in body)
+    );
   }
 
   function createTaskHandler(queue: QueuePrefix, executor = false) {
@@ -1028,15 +1352,10 @@ export function createQueue(
         invocations && prefix === queue ? executorInput(body) : undefined;
       let executorDelivery: ExecutorDelivery | undefined;
       if (orchestration) {
-        const actualQueue =
-          executor && graphileHelpers.success
-            ? await graphileHelpers.data.getQueueName?.call(helpers)
-            : undefined;
         if (
           !executor ||
           !graphileHelpers.success ||
-          graphileHelpers.data.job.task_identifier !== executorTask() ||
-          actualQueue !== executorQueueName(orchestration.runId)
+          graphileHelpers.data.job.task_identifier !== executorTask()
         ) {
           const job = graphileHelpers.success
             ? graphileHelpers.data.job
@@ -1062,80 +1381,308 @@ export function createQueue(
           worker: graphileHelpers.data.job.locked_by,
           attempt: graphileHelpers.data.job.attempts,
         });
+      } else if (prefix === queue && !executor) {
+        // An orchestrator message without a spec stamp (an older SDK's
+        // `resumeHook()` or `cancel()` during a rolling upgrade, another
+        // client of the World) does not say it needs the run's lease. If its
+        // run is spec 9, stamp it with the run's version and re-add it, so it
+        // takes the lease and waits for the run's live delivery instead of
+        // running beside it. Only unstamped messages pay the read; every
+        // message this runtime sends is stamped.
+        const unstampedRunId =
+          messageRunSpecVersion(body) === undefined
+            ? orchestratorRunIdOf(body)
+            : undefined;
+        if (unstampedRunId !== undefined) {
+          const specVersion = await readRunSpecVersion(unstampedRunId);
+          if (
+            specVersion !== undefined &&
+            specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+          ) {
+            const stamped = {
+              ...(body as Record<string, unknown>),
+              runSpecVersion: specVersion,
+            };
+            await addGraphileJob({
+              queueId: messageData.id,
+              prefix: messageData.prefix,
+              route: messageData.route,
+              body: transport.serialize(stamped) as Buffer,
+              messageId: messageData.messageId,
+              createdAt: messageData.createdAt,
+              // Not a delivery: the moved job reports this one's counts.
+              attempt,
+              attemptOffset: attempt - 1,
+              deliveryOffset: deliveryCount - 1,
+              idempotencyKey: messageData.idempotencyKey,
+              messageJobKey: messageData.jobKey,
+              headers: messageData.headers,
+              jobKey: `${getJobQueueName()}:stamped:${messageData.messageId}`,
+            });
+            return;
+          }
+        }
       }
+      const job = graphileHelpers.success
+        ? graphileHelpers.data.job
+        : undefined;
+      const ownJobId = job?.id;
+      /**
+       * The run whose delivery lease this delivery takes (`run-lease.ts`): a
+       * spec 9 orchestrator delivery's, or an invoke executor delivery's.
+       */
+      const leaseRunId =
+        ownJobId === undefined
+          ? undefined
+          : orchestration
+            ? orchestration.runId
+            : prefix === queue
+              ? singleOrchestratorRunIdOf(body)
+              : undefined;
+      /**
+       * Whether this delivery re-runs for the wakes other deliveries leave
+       * on its lease. Not on the invoke executor lane, whose deliveries also
+       * drive the run's invocation mailbox.
+       */
+      const coalescing = leaseRunId !== undefined && !orchestration;
+      const invocationStartedAt = Date.now();
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
-        const result = await deliverMessage({
-          queueName,
-          prefix,
-          route: messageData.route,
-          messageId: messageData.messageId,
-          createdAt: messageData.createdAt,
-          attempt,
-          deliveryCount,
-          body: messageData.data,
-          headers: messageData.headers,
-          executorDelivery,
-          abortSignal: graphileHelpers.success
-            ? graphileHelpers.data.abortSignal
-            : undefined,
-        });
-
-        if (result.type === 'completed') {
-          return 'completed';
+        let leased = false;
+        if (leaseRunId !== undefined && ownJobId !== undefined && job) {
+          const remainingAttempts = Math.max(
+            1,
+            (job.max_attempts ?? MAX_GRAPHILE_JOB_ATTEMPTS) - job.attempts + 1
+          );
+          const claim = await runLeases.claim(
+            leaseRunId,
+            ownJobId,
+            {
+              task:
+                job.task_identifier ??
+                (executor ? executorTask() : getJobQueueName()),
+              // Not a delivery: the re-added job reports this one's counts.
+              payload: MessageData.encode({
+                ...messageData,
+                attempt,
+                attemptOffset: attempt - 1,
+                deliveryOffset: deliveryCount - 1,
+              }),
+              jobKey: followUpJobKey(messageData),
+              maxAttempts: remainingAttempts,
+              ...(orchestration ? { executor: true } : {}),
+            },
+            // An executor wake is covered by any later executor delivery,
+            // which reads every pending invocation: it collapses into the
+            // lease's one wake rather than piling up as deferred messages.
+            isCoveredWake(body) ? 'wake' : 'deferred',
+            typeof body === 'object' &&
+              body !== null &&
+              (body as { hookResumeTiming?: unknown }).hookResumeTiming !==
+                undefined
+          );
+          // Left for the lease's owner, which re-runs for it or re-adds it.
+          // Not 'completed': a re-added job under the same key must not be
+          // skipped as already done in this process.
+          if (claim.owner === false) return 'rescheduled';
+          if (claim.owner === 'busy') {
+            // The owner already has as many deferred messages as a lease
+            // keeps: this one stays a job of its own, retried after a delay
+            // that grows with its age (half of it, 1 to 60 seconds), and
+            // takes the lease or a free slot then.
+            const createdAtMs = messageData.createdAt
+              ? Date.parse(messageData.createdAt)
+              : Number.NaN;
+            await addGraphileJob({
+              task: job.task_identifier,
+              queueId: messageData.id,
+              prefix: messageData.prefix,
+              route: messageData.route,
+              body: messageData.data,
+              messageId: messageData.messageId,
+              createdAt: messageData.createdAt,
+              attempt,
+              attemptOffset: attempt - 1,
+              deliveryOffset: deliveryCount - 1,
+              idempotencyKey: messageData.idempotencyKey,
+              messageJobKey: messageData.jobKey,
+              headers: messageData.headers,
+              delaySeconds: Number.isFinite(createdAtMs)
+                ? Math.min(
+                    60,
+                    Math.max(1, Math.round((Date.now() - createdAtMs) / 2000))
+                  )
+                : 5,
+              jobKey: followUpJobKey(messageData),
+              maxAttempts: remainingAttempts,
+              ...(orchestration ? { executorRunId: orchestration.runId } : {}),
+            });
+            return 'rescheduled';
+          }
+          leased = claim.owner === true;
+        }
+        let handedOff = false;
+        try {
+          return await deliverLeased();
+        } finally {
+          if (leased && !handedOff && leaseRunId && ownJobId) {
+            await runLeases.release(leaseRunId, ownJobId);
+          }
         }
 
-        if (result.type === 'reschedule') {
-          // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a
-          // handoff: the next delivery continues this one and reports the
-          // same `attempt` (see `Queue.createQueueHandler`). Core derives a
-          // delivery's creator identity from `attempt`, so a crash
-          // redelivery that hands off must stay a redelivery for its
-          // successor.
-          const handoff =
-            result.timeoutSeconds === 0 && isSingleOrchestratorMessage(body);
-          // Schedule the follow-up job before we return so a crash cannot
-          // lose the wake-up request.
-          await addGraphileJob({
-            queueId: messageData.id,
-            prefix: messageData.prefix,
-            route: messageData.route,
-            body: messageData.data,
-            // The same message: its id and creation time carry over. The
-            // replacement is a new Graphile job whose own attempt count
-            // starts again at 1; the deliveries made so far ride along as
-            // `deliveryOffset`, so the handler sees the next deliveryCount.
-            // A handoff also carries the attempts so far as
-            // `attemptOffset`; any other reschedule starts `attempt` over,
-            // so a step retried in place many times on one message is not
-            // failed by core's max-deliveries cap.
-            messageId: messageData.messageId,
-            createdAt: messageData.createdAt,
-            attempt: handoff ? attempt : attempt + 1,
-            attemptOffset: handoff ? attempt - 1 : messageData.attemptOffset,
-            deliveryOffset: deliveryCount,
-            idempotencyKey: messageData.idempotencyKey,
-            headers: messageData.headers,
-            delaySeconds: result.timeoutSeconds,
-            jobKey: messageData.idempotencyKey ?? messageData.messageId,
-            ...(orchestration
-              ? { executorRunId: orchestration.runId }
-              : prefix === queue
-                ? { serialRunId: singleOrchestratorRunIdOf(body) }
+        async function deliverLeased(): Promise<'completed' | 'rescheduled'> {
+          let rerun = 0;
+          let result: HttpExecutionResult;
+          let deliveryBody: Buffer | Uint8Array = messageData.data;
+          for (;;) {
+            result = await deliverMessage({
+              queueName,
+              prefix,
+              route: messageData.route,
+              messageId: messageData.messageId,
+              createdAt: messageData.createdAt,
+              attempt,
+              // A coalesced re-run reports the next delivery count and the
+              // same attempt, so the runtime reads the log as on a
+              // redelivery (see `Queue.createQueueHandler`).
+              deliveryCount: deliveryCount + rerun,
+              body: deliveryBody,
+              headers: messageData.headers,
+              executorDelivery,
+              invocationStartedAt,
+              abortSignal: graphileHelpers.success
+                ? graphileHelpers.data.abortSignal
+                : undefined,
+            });
+            if (
+              result.type !== 'completed' ||
+              !leased ||
+              !coalescing ||
+              leaseRunId === undefined ||
+              ownJobId === undefined ||
+              rerun >= MAX_COALESCED_RERUNS
+            ) {
+              break;
+            }
+            const wake = await runLeases.takeWake(leaseRunId, ownJobId);
+            if (wake === undefined) break;
+            deliveryBody = rerunBody(body, await resumeOf(wake));
+            rerun++;
+          }
+
+          if (result.type === 'completed') {
+            // The run has consumed the wakes it had, and a wake stored while
+            // this delivery ran queued its own job or was left on the run's
+            // lease (re-added when the lease is released, or by orphan
+            // recovery), so startup recovery may treat the run as parked
+            // again (see `createRecoverableRunsList`). A step delivery or
+            // wait-timer hop is not an orchestrator delivery and leaves the
+            // flag set, and neither is a message on another queue prefix (a
+            // queue consumer of its own), whatever `runId` it carries.
+            // Cleared before the lease is released. Best effort: a flag left
+            // set costs the run one replay at the next start(), which is no
+            // reason to fail a delivery that completed.
+            const completedRunId =
+              prefix === queue ? orchestratorRunIdOf(body) : undefined;
+            if (completedRunId) {
+              await pool
+                .query(
+                  `UPDATE workflow.workflow_runs
+                   SET wake_pending = false
+                   WHERE id = $1 AND wake_pending IS TRUE`,
+                  [completedRunId]
+                )
+                .catch((error: { code?: unknown }) => {
+                  // No runs table (the queue used on its own) or no
+                  // migration 0032: nothing to clear.
+                  if (error?.code === '42P01' || error?.code === '42703')
+                    return;
+                  console.warn(
+                    `[world-postgres] Could not clear wake_pending for run ${completedRunId}: ${error}`
+                  );
+                });
+            }
+            return 'completed';
+          }
+
+          if (result.type === 'reschedule') {
+            // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a
+            // handoff: the next delivery continues this one and reports the
+            // same `attempt` (see `Queue.createQueueHandler`). Core derives a
+            // delivery's creator identity from `attempt`, so a crash
+            // redelivery that hands off must stay a redelivery for its
+            // successor.
+            const handoff =
+              result.timeoutSeconds === 0 && isSingleOrchestratorMessage(body);
+            // A spec 9 orchestrator's `{ timeoutSeconds: n > 0 }` (a
+            // redelivery after the in-band fence refused its write, or a run
+            // deferred for load) is a counted redelivery of the same message,
+            // as on world-vercel and world-local: it carries `attempt` over,
+            // so a run refused on every pass reaches the delivery cap
+            // (`MAX_DELIVERIES_EXCEEDED`) instead of looping. A step message's
+            // in-place retry still starts `attempt` over.
+            const countedRedelivery =
+              !handoff &&
+              isSingleOrchestratorMessage(body) &&
+              orchestratorRunIdOf(body) !== undefined;
+            const currentDeliveryCount = deliveryCount + rerun;
+            // Schedule the follow-up job before we return so a crash cannot
+            // lose the wake-up request.
+            const next = await addGraphileJob({
+              queueId: messageData.id,
+              prefix: messageData.prefix,
+              route: messageData.route,
+              // As last delivered: after a coalesced re-run, that is the body
+              // carrying the absorbed hook wake's resume timing (`rerunBody`).
+              // A re-run that hands off before consuming it, at its invocation
+              // deadline say, passes it on to the next invocation, as an
+              // uncoalesced timed wake that hands off does.
+              body: deliveryBody,
+              // The same message: its id and creation time carry over. The
+              // replacement is a new Graphile job whose own attempt count
+              // starts again at 1; the deliveries made so far ride along as
+              // `deliveryOffset`, so the handler sees the next deliveryCount.
+              // A handoff also carries the attempts so far as
+              // `attemptOffset`; any other reschedule starts `attempt` over,
+              // so a step retried in place many times on one message is not
+              // failed by core's max-deliveries cap.
+              messageId: messageData.messageId,
+              createdAt: messageData.createdAt,
+              attempt: handoff ? attempt : attempt + 1,
+              attemptOffset: handoff
+                ? attempt - 1
+                : countedRedelivery
+                  ? attempt
+                  : messageData.attemptOffset,
+              deliveryOffset: currentDeliveryCount,
+              idempotencyKey: messageData.idempotencyKey,
+              messageJobKey: messageData.jobKey,
+              headers: messageData.headers,
+              delaySeconds: result.timeoutSeconds,
+              ...(handoff ? { priority: HANDOFF_JOB_PRIORITY } : {}),
+              jobKey: followUpJobKey(messageData),
+              ...(orchestration ? { executorRunId: orchestration.runId } : {}),
+              // A handoff's continuation takes the run's lease over, with the
+              // wakes left on it, so the run's other deliveries keep waiting
+              // for it rather than starting between the two.
+              ...(handoff && leased && leaseRunId && ownJobId
+                ? { handoffLease: { runId: leaseRunId, jobId: ownJobId } }
                 : {}),
-          });
-          return 'rescheduled';
-        }
+            });
+            handedOff = next.handedOff;
+            return 'rescheduled';
+          }
 
-        throw new Error(
-          `[postgres world] Queue execution failed (${result.status}): ${result.text}`
-        );
+          throw new Error(
+            `[postgres world] Queue execution failed (${result.status}): ${result.text}`
+          );
+        }
       };
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
         // Wakes carry no key, and get no run-level exclusion here. A
         // single-orchestrator run's orchestrator deliveries are serialized by
-        // its named queue (see `executorQueueName`), and its orchestrator
+        // its delivery lease (see `run-lease.ts`), and its orchestrator
         // reads new events from the log itself while it runs an inline step.
         // An earlier run's delivery can hold an inline step until another
         // wake aborts it, and run-level exclusion would exclude that wake.
@@ -1143,14 +1690,20 @@ export function createQueue(
         return;
       }
 
-      if (completedMessages.has(idempotencyKey)) {
-        return;
-      }
-
-      const existing = inflightMessages.get(idempotencyKey);
-      if (existing) {
-        await existing;
-        return;
+      // A job whose key is being delivered in this process waits for that
+      // delivery, and is acknowledged without its own only if that delivery
+      // completed. One that rescheduled (a handoff's continuation, which is
+      // this job's own message and can be taken while its predecessor is
+      // still returning) or failed leaves this job to run.
+      for (;;) {
+        if (completedMessages.has(idempotencyKey)) {
+          return;
+        }
+        const existing = inflightMessages.get(idempotencyKey);
+        if (!existing) break;
+        if ((await existing.catch(() => 'failed' as const)) === 'completed') {
+          return;
+        }
       }
 
       const execution = executeTask()
@@ -1158,6 +1711,7 @@ export function createQueue(
           if (result === 'completed') {
             markMessageCompleted(idempotencyKey);
           }
+          return result;
         })
         .finally(() => {
           inflightMessages.delete(idempotencyKey);
@@ -1181,6 +1735,12 @@ export function createQueue(
       taskList[executorTask()] = jobLeases.wrap(
         createTaskHandler(workflowPrefix, true)
       );
+    // The backstop of a zero-retention run's purge, which its terminal
+    // transaction adds (see `purgeTask`). Not a delivery: no run lease.
+    // Shared by every deployment (see `worldPurgeTask`).
+    taskList[worldPurgeTask(config)] = createPurgeBackstopTask(
+      createClient(pool)
+    );
 
     runner = await run({
       pgPool: pool,
@@ -1192,7 +1752,7 @@ export function createQueue(
       // fib(6) produces ~24 concurrent polling steps at peak, and at
       // concurrency=10 (the previous default) it would deadlock on the
       // default Postgres setup. See packages/core/src/runtime/run.ts and
-      // docs/content/docs/changelog/eager-processing.mdx for context.
+      // packages/core/src/runtime/eager-processing.md for context.
       concurrency: config.queueConcurrency || 50,
       logger: graphileLogger,
       ...(config.applicationManagedShutdown === true && {
@@ -1202,12 +1762,108 @@ export function createQueue(
       taskList,
     });
     // Graphile Worker only resets locks older than 4 hours. Release this
-    // World's jobs (including spec 9 orchestrator and invoke executor jobs
-    // and their per-run queue locks) whose holders stopped renewing them.
+    // World's jobs (including spec 9 orchestrator and invoke executor jobs)
+    // whose holders stopped renewing them. By default only jobs that own a
+    // run's delivery lease, and only those of holders registered as renewing
+    // (see `JobLeasePolicy`).
     jobLeases.startSweeper([getJobQueueName(), executorTask()]);
+    scheduleOrphanRecovery();
+  }
+
+  const orphanedLeaseIntervalMs =
+    internal?.orphanedLeaseIntervalMs ?? ORPHANED_LEASE_INTERVAL_MS;
+  let orphanTimer: ReturnType<typeof setTimeout> | undefined;
+  let recoveringOrphans: Promise<void> | undefined;
+  let orphanRecoveryFailing = false;
+
+  /**
+   * Periodically recover the run leases whose owner can no longer run (see
+   * `RunLeases.recoverOrphans`), with jitter so the processes sharing the
+   * database spread their checks. Every process with a runner recovers
+   * every deployment's leases: a pinned deployment whose workers scaled to
+   * zero runs no process of its own to recover them.
+   */
+  function scheduleOrphanRecovery() {
+    if (closing || orphanTimer || orphanedLeaseIntervalMs <= 0) return;
+    orphanTimer = setTimeout(
+      () => {
+        orphanTimer = undefined;
+        recoveringOrphans = recoverOrphanedLeases().finally(() => {
+          recoveringOrphans = undefined;
+          scheduleOrphanRecovery();
+        });
+      },
+      orphanedLeaseIntervalMs * (0.8 + 0.4 * Math.random())
+    );
+    orphanTimer.unref?.();
+  }
+
+  async function recoverOrphanedLeases() {
+    try {
+      const recovered = await runLeases.recoverOrphans();
+      orphanRecoveryFailing = false;
+      if (recovered.leases > 0 && process.env.WORKFLOW_JSON_MODE !== '1') {
+        console.warn(
+          `[world-postgres] Recovered ${recovered.leases} run lease(s) whose owner job can no longer run, re-adding the ${recovered.jobs} message(s) left on them`
+        );
+      }
+    } catch (error) {
+      // A missing table (migration 0031) is reported by the leases' first
+      // claim; anything else is retried on the next tick.
+      if (
+        !orphanRecoveryFailing &&
+        !isMissingTable(error) &&
+        process.env.WORKFLOW_JSON_MODE !== '1'
+      ) {
+        console.warn(
+          '[world-postgres] Failed to recover orphaned run leases; retrying:',
+          error
+        );
+      }
+      orphanRecoveryFailing = true;
+    }
+  }
+
+  async function lockedOrchestratorRunIds(): Promise<string[] | undefined> {
+    const graphileSchema = graphileSchemaIdentifier();
+    try {
+      // Only the jobs being delivered: a few per worker, whatever the
+      // backlog.
+      const { rows } = await pool.query<{ payload: unknown }>(
+        `SELECT payload FROM ${graphileSchema}._private_jobs
+         WHERE locked_at IS NOT NULL`
+      );
+      const runIds = new Set<string>();
+      for (const { payload } of rows) {
+        const message = MessageData.safeParse(payload);
+        // Another queue consumer's job, whatever `runId` it carries.
+        if (
+          !message.success ||
+          (message.data.prefix ?? ownPrefix()) !== ownPrefix()
+        )
+          continue;
+        const runId = orchestratorRunIdOf(
+          await deserializeMessageBody(message.data.data).catch(() => undefined)
+        );
+        if (runId) runIds.add(runId);
+      }
+      return [...runIds];
+    } catch (error) {
+      console.warn(
+        `[world-postgres] Could not read locked jobs; startup recovery re-enqueues every active run: ${error}`
+      );
+      return undefined;
+    }
   }
 
   return {
+    lockedOrchestratorRunIds,
+    // The runtime does not check the flow route until messages are delivered
+    // in-process and the route is denied
+    // (https://github.com/vercel/workflow/issues/5258). Meanwhile the database
+    // credentials control who can enqueue, and the route has to be protected
+    // at the network edge (see "Protect the queue route" in the docs).
+    queueAuthMode: 'skip',
     createQueueHandler,
     getDeploymentId,
     queue,
@@ -1246,6 +1902,9 @@ export function createQueue(
       // After the runner, whose active deliveries keep renewing while it
       // drains them.
       await jobLeases.stop();
+      clearTimeout(orphanTimer);
+      orphanTimer = undefined;
+      await recoveringOrphans;
       if (workerUtils) {
         await workerUtils.release();
         workerUtils = null;

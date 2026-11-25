@@ -5,6 +5,7 @@ import {
   EVENT_ID_PREFIX,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  isRunCreationEvent,
   isSlotBody,
   isSlotEventId,
   slotToEventId,
@@ -89,5 +90,55 @@ describe('time is never derived from a slot id', () => {
     expect(validateUlidTimestamp(slotAsRunId, 'wrun_')).toMatch(
       /is not a valid ULID/
     );
+  });
+});
+
+describe('isRunCreationEvent', () => {
+  it('is a run_created, wherever it is', () => {
+    expect(
+      isRunCreationEvent({
+        eventType: 'run_created',
+        eventId: slotToEventId(FIRST_EVENT_SLOT),
+      })
+    ).toBe(true);
+    expect(
+      isRunCreationEvent({
+        eventType: 'run_created',
+        eventId: `evnt_${ulid()}`,
+      })
+    ).toBe(true);
+  });
+
+  it('is a run_started at the first slot: a creation recorded on the start', () => {
+    expect(
+      isRunCreationEvent({
+        eventType: 'run_started',
+        eventId: slotToEventId(FIRST_EVENT_SLOT),
+      })
+    ).toBe(true);
+  });
+
+  it('is not a run_started above the first slot, or with a ULID id', () => {
+    expect(
+      isRunCreationEvent({
+        eventType: 'run_started',
+        eventId: slotToEventId(FIRST_EVENT_SLOT + 1),
+      })
+    ).toBe(false);
+    expect(
+      isRunCreationEvent({
+        eventType: 'run_started',
+        eventId: `evnt_${ulid()}`,
+      })
+    ).toBe(false);
+  });
+
+  it('is not any other event at the first slot', () => {
+    expect(
+      isRunCreationEvent({
+        eventType: 'hook_received',
+        eventId: slotToEventId(FIRST_EVENT_SLOT),
+      })
+    ).toBe(false);
   });
 });

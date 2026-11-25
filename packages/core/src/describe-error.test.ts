@@ -1,9 +1,11 @@
 import {
   CorruptedEventLogError,
+  DynamicWorkflowsNotEnabledError,
   RUN_ERROR_CODES,
   SerializationError,
   StepNotRegisteredError,
   WorkflowDeploymentMismatchError,
+  WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { describe, expect, test } from 'vitest';
@@ -80,6 +82,33 @@ describe('describeError', () => {
     expect(result.errorCode).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
   });
 
+  test('WorkflowNotRegisteredError gets WORKFLOW_NOT_REGISTERED and a targeting hint', () => {
+    const result = describeError(new WorkflowNotRegisteredError('missingWf'));
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED);
+    expect(result.hint).toContain('does not have its workflow registered');
+  });
+
+  test('persisted WORKFLOW_NOT_REGISTERED code keeps its code and hint', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED,
+      errorName: 'WorkflowNotRegisteredError',
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED);
+    expect(result.hint).toContain('does not have its workflow registered');
+  });
+
+  test('legacy RUNTIME_ERROR run named WorkflowNotRegisteredError gets the targeting hint', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+      errorName: 'WorkflowNotRegisteredError',
+    });
+    expect(result.attribution).toBe('sdk');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+    expect(result.hint).toContain('does not have its workflow registered');
+  });
+
   test('REPLAY_TIMEOUT via precomputed errorCode is attributed to the SDK', () => {
     const result = describeError(undefined, RUN_ERROR_CODES.REPLAY_TIMEOUT);
     expect(result.attribution).toBe('sdk');
@@ -138,6 +167,38 @@ describe('describeError', () => {
     );
     expect(result.errorCode).toBe(RUN_ERROR_CODES.REPLAY_TIMEOUT);
     expect(result.attribution).toBe('sdk');
+  });
+});
+
+describe('describeError for a missing dynamic workflows opt-in', () => {
+  test('is attributed to the user with a hint naming the environment variable', () => {
+    const result = describeError(
+      new DynamicWorkflowsNotEnabledError('not enabled')
+    );
+    expect(result.attribution).toBe('user');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.USER_ERROR);
+    expect(result.hint).toContain('Dynamic workflows are not enabled');
+    expect(result.hint).toContain('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1');
+  });
+
+  test('is recognized by name across realms', () => {
+    const err = Object.assign(new Error('not enabled'), {
+      name: 'DynamicWorkflowsNotEnabledError',
+    });
+    expect(describeError(err)).toMatchObject({
+      attribution: 'user',
+      errorCode: RUN_ERROR_CODES.USER_ERROR,
+    });
+  });
+
+  test('persisted event fields are attributed to the user with the hint', () => {
+    const result = describeRunError({
+      errorCode: RUN_ERROR_CODES.USER_ERROR,
+      errorName: 'DynamicWorkflowsNotEnabledError',
+    });
+    expect(result.attribution).toBe('user');
+    expect(result.errorCode).toBe(RUN_ERROR_CODES.USER_ERROR);
+    expect(result.hint).toContain('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1');
   });
 });
 
@@ -283,6 +344,18 @@ describe('describeError — payload shape snapshots', () => {
           "hint": "A value passed across a workflow/step boundary could not be serialized. See the error message for the offending path and the Learn More link for details.",
         }
       `);
+  });
+
+  test('DynamicWorkflowsNotEnabledError payload', () => {
+    expect(
+      describeError(new DynamicWorkflowsNotEnabledError('not enabled'))
+    ).toMatchInlineSnapshot(`
+      {
+        "attribution": "user",
+        "errorCode": "USER_ERROR",
+        "hint": "Dynamic workflows are not enabled for this project. Set the WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 environment variable on your project, then redeploy (or restart your dev server) so the new value takes effect.",
+      }
+    `);
   });
 
   test('context-violation error payload', () => {

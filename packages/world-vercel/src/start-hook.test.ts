@@ -20,7 +20,7 @@ import {
 import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
 import { throwForErrorResponse } from './events-v4.js';
 import { errorForResponse } from './http-core.js';
-import { createWorld, EXPERIMENTAL_START_HOOK_ENV } from './index.js';
+import { createWorld } from './index.js';
 import { encode as encodeRunId } from './run-id/index.js';
 
 vi.mock('./get-deadline.js', () => ({
@@ -322,14 +322,10 @@ describe('atomic start Hook wire contract (world-vercel)', () => {
     expect(ThrottleError.is(errorForResponse(429, 'busy'))).toBe(true);
   });
 
-  it(`declares atomicStartHook only with ${EXPERIMENTAL_START_HOOK_ENV}`, () => {
-    expect(createWorld(config).capabilities?.atomicStartHook).toBeUndefined();
-    vi.stubEnv(EXPERIMENTAL_START_HOOK_ENV, '1');
+  it('always declares atomicStartHook', () => {
     expect(createWorld(config).capabilities?.atomicStartHook).toEqual({
       active: true,
     });
-    vi.stubEnv(EXPERIMENTAL_START_HOOK_ENV, 'yes');
-    expect(createWorld(config).capabilities?.atomicStartHook).toBeUndefined();
   });
 });
 

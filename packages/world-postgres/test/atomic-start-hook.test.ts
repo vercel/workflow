@@ -20,7 +20,7 @@ import {
 import { TestPool } from './pool.js';
 
 /**
- * `start({ hook })` admission: the decision, the run's start Hook (an
+ * `start({ experimental_hook })` admission: the decision, the run's start Hook (an
  * ordinary `workflow_hooks` row with id `startHookId(runId)`) and the run it
  * admits commit in one transaction. From then on the start Hook is an
  * ordinary Hook, and nothing on a plain `createHook()` changes.
@@ -43,7 +43,6 @@ describe('atomic start Hook (world-postgres)', () => {
     const dbUrl = container.getConnectionUri();
     process.env.DATABASE_URL = dbUrl;
     process.env.WORKFLOW_POSTGRES_URL = dbUrl;
-    process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK = '1';
     execSync('pnpm db:push', {
       stdio: 'inherit',
       cwd: process.cwd(),
@@ -62,20 +61,10 @@ describe('atomic start Hook (world-postgres)', () => {
     await container.stop();
   });
 
-  test('declares atomicStartHook only with WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK', () => {
-    const previous = process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK;
-    try {
-      delete process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK;
-      expect(
-        createWorld({ pool }).capabilities?.atomicStartHook
-      ).toBeUndefined();
-      process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK = '1';
-      expect(createWorld({ pool }).capabilities?.atomicStartHook?.active).toBe(
-        true
-      );
-    } finally {
-      process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK = previous;
-    }
+  test('always declares atomicStartHook', () => {
+    expect(createWorld({ pool }).capabilities?.atomicStartHook?.active).toBe(
+      true
+    );
   });
 
   atomicStartHookConformance({
@@ -86,7 +75,7 @@ describe('atomic start Hook (world-postgres)', () => {
     newRunId: () => `wrun_${ulid()}`,
     concurrentCandidates: 12,
     // Admission reads the candidate's age off the JS clock; retention is
-    // compared in SQL and is exercised in real time.
+    // compared in SQL against `now()` (see `passRetention`).
     advanceClock: (ms) => {
       if (ms === 0) {
         vi.useRealTimers();
@@ -95,6 +84,17 @@ describe('atomic start Hook (world-postgres)', () => {
       const target = Date.now() + ms;
       vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
       vi.setSystemTime(target);
+    },
+    // The database clock cannot be moved, so the retentions it would see as
+    // passed once `now()` is past `until` are moved back to `now()` instead;
+    // later ones keep running. The SQL comparisons are the World's own.
+    passRetention: async (until) => {
+      await pool.query(
+        `UPDATE workflow.workflow_hooks
+           SET token_retention_until = now() - interval '1 millisecond'
+         WHERE token_retention_until <= $1`,
+        [until]
+      );
     },
     // No `stageUnacknowledgedClaim`: the start Hook and the run commit in one
     // transaction, so the orphan state cannot exist (asserted below).

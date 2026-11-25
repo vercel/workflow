@@ -1,5 +1,264 @@
 # @workflow/core
 
+## 5.8.0
+
+### Minor Changes
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Add `burst` to `experimental_rateLimit()`: an idle key admits up to `burst` calls at once (default 1, and up to a day of the rate, so it may exceed `limit`), then refills one per interval, like a token bucket.
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Add `experimental_rateLimit()` for spec 10 runs on both the node:vm and QuickJS engines, driven by the single orchestrator like `sleep()`.
+
+- [#5622](https://github.com/vercel/workflow/pull/5622) [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - New runs on the Vercel, Local and Postgres Worlds now use a new execution engine that supports speculative execution, and vastly reduces engine overhead. `WORKFLOW_SPEC_VERSION=8` opts out. Runs on third-party worlds use the old engine (spec 8) unless they implement the prerequisites.
+
+### Patch Changes
+
+- [#5688](https://github.com/vercel/workflow/pull/5688) [`40f340a`](https://github.com/vercel/workflow/commit/40f340a9ffae5385beab8eac778ce81e73583348) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` again before QuickJS stores VM snapshots for runs without an encryption key, since a snapshot holds the handler's environment variables.
+
+- [#5654](https://github.com/vercel/workflow/pull/5654) [`1b0f72b`](https://github.com/vercel/workflow/commit/1b0f72b6f27373e38a2b2fac0c34e1eeeba35d23) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Send a run's wait timers concurrently instead of one at a time.
+
+- [#5685](https://github.com/vercel/workflow/pull/5685) [`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116) Thanks [@pranaygp](https://github.com/pranaygp)! - Keep the skipped-slot report of a batch whose first rate limit write is refused or sent again, so events another writer appended below it still reach the run.
+
+- [#5647](https://github.com/vercel/workflow/pull/5647) [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Send `experimental_rateLimit()` calls made at once in one batch.
+- Updated dependencies [[`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/world@5.4.0
+  - @workflow/world-vercel@5.8.0
+  - @workflow/world-local@5.6.0
+  - @workflow/errors@5.2.0
+
+## 5.7.2
+
+### Patch Changes
+
+- [#5649](https://github.com/vercel/workflow/pull/5649) [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a spec 9 run sometimes requiring a full event log reload when an incremental read of the event log moved its position past an event it did not take in when merging speculative writes.
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world@5.3.1
+  - @workflow/world-local@5.5.2
+  - @workflow/errors@5.1.6
+  - @workflow/world-vercel@5.7.2
+
+## 5.7.1
+
+### Patch Changes
+
+- [#5502](https://github.com/vercel/workflow/pull/5502) [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62) Thanks [@pranaygp](https://github.com/pranaygp)! - Throw `DynamicWorkflowsNotEnabledError` instead of `WorkflowRuntimeError` when dynamic workflows are not enabled, at `start()` and on delivery, so a run that fails on it is recorded as `USER_ERROR` instead of `RUNTIME_ERROR`. Code that caught this refusal with `WorkflowRuntimeError.is(err)` should check `DynamicWorkflowsNotEnabledError.is(err)` instead.
+
+- [#5618](https://github.com/vercel/workflow/pull/5618) [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - An abort published by a workflow or a step reaches the inline steps running in the same process directly, so a race's loser on a zero-retention run is still aborted when the run's end clears the abort stream before the step reads it.
+
+- [#5643](https://github.com/vercel/workflow/pull/5643) [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Close a remaining spec 9 run-ahead gap: an incremental read of the event log could bring a committed event to a slot the orchestrator held another event's speculative copy at, drop it, and let a pass run before the log was repaired. A read now follows the same rule as the live feed and a write's answer, and the repair runs before the next pass.
+
+- [#5627](https://github.com/vercel/workflow/pull/5627) [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix spec 9 runs that failed with `CORRUPTED_EVENT_LOG` ("Workflow replay diverged …" or "has a hole at slot …"), or never completed, after the orchestrator ran ahead of its writes while the live event feed delivered one of those writes before its answer. The orchestrator then placed later speculative events at the wrong slots, where two events could share an id and one of them, a step's outcome among them, was dropped from the log the workflow consumed. Each position is now counted once, no two events share a slot, a step outcome still being written is taken in before any speculative one placed after it, and a committed event is never dropped in favour of a speculative one.
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62)]:
+  - @workflow/errors@5.1.5
+  - @workflow/world-local@5.5.1
+  - @workflow/world-vercel@5.7.1
+
+## 5.7.0
+
+### Minor Changes
+
+- [#5353](https://github.com/vercel/workflow/pull/5353) [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `runs.deleteDataMany` method to the World interface, which deletes the stored data (payloads, not metadata) of finished runs on demand, and implement it in the Vercel, Local and Postgres Worlds. Exposed as `run.delete()` and `deleteRuns()` (`workflow/api`), `deleteRuns(world, runIds)` (`@workflow/core/runtime`), and `pnpx workflow delete <runId>` in the CLI. `workflow cancel` and `workflow start` no longer accept listing flags they ignored, such as `--limit` on `start` or `--cursor` and `--sort` on either. `workflow delete`, `workflow cancel` and `workflow start` now print the error they fail with, such as an unknown flag, instead of exiting with no output.
+
+- [#5577](https://github.com/vercel/workflow/pull/5577) [`036e1a8`](https://github.com/vercel/workflow/commit/036e1a855ef5424663f7f1cdac3e3a083bb81f92) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Snapshot QuickJS runs that have no encryption key without an opt-in. Runs with an encryption key are unchanged: their snapshots are encrypted, and a plaintext snapshot is still rejected on restore.
+
+### Patch Changes
+
+- [#5323](https://github.com/vercel/workflow/pull/5323) [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - On QuickJS, a spec 9 run that finishes while an inline step body is still running (the loser of a race against a sleep, a hook or another step) now writes its `run_completed` or `run_failed` without waiting for that body, whatever the run's retention, as node:vm and spec 8 runs already did. The body still settles before the delivery returns; on an `experimental_retention: 0` run the World discards what it writes after the purge.
+
+- [#5422](https://github.com/vercel/workflow/pull/5422) [`b074e75`](https://github.com/vercel/workflow/commit/b074e7590b099ad80bca0979e309a32ffc159598) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Log at debug, not warn, when a queued step delivery waits on a fresh inline execution of the same step in the same process
+
+- [#5619](https://github.com/vercel/workflow/pull/5619) [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report the events a replay diverged at (`replayDivergenceEventIds`, ids only) beside `replayDivergenceCount` on the write that ends a divergence episode, including the `run_failed` of a `CORRUPTED_EVENT_LOG` failure, so world-vercel can locate the divergence when the run's error payload is encrypted.
+
+- [#5535](https://github.com/vercel/workflow/pull/5535) [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep spec 9 orchestrator deliveries alive through short sleeps instead of re-invoking for each one, and lower the default `WORKFLOW_ORCHESTRATOR_LINGER_MS` to 5 seconds
+
+- [#5448](https://github.com/vercel/workflow/pull/5448) [`5699483`](https://github.com/vercel/workflow/commit/569948318c7ae642cc2a2a554912ff5dd883eed3) Thanks [@benpankow](https://github.com/benpankow)! - Load the event log once, after `run_started`, on a `start({ experimental_hook })` candidate's first spec 9 delivery, instead of before and after it. Starting each such run makes one fewer World read, and that delivery no longer races `run_created`. `WORKFLOW_TURBO=0` turns this off along with turbo.
+
+- [#5450](https://github.com/vercel/workflow/pull/5450) [`4890ea9`](https://github.com/vercel/workflow/commit/4890ea98976e14e0754c9992faeb708e1320ab9b) Thanks [@benpankow](https://github.com/benpankow)! - A `start({ experimental_hook })` candidate's first spec 9 delivery no longer reads the event log after its `run_started`: the write's skipped-slot report brings whatever landed after the run's creation, so the log stays whole. A report that stops short or leaves a hole still gets the load.
+
+- [#5495](https://github.com/vercel/workflow/pull/5495) [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Index the long strings of run inputs and hook payloads in memory linear in the payload, and write a reference to one only when it is shorter than the string. Check state that holds one object (or `Map`) many times once per object, so a small shared graph can't stall a replay or `workflow inspect`.
+
+- [#5610](https://github.com/vercel/workflow/pull/5610) [`5df0437`](https://github.com/vercel/workflow/commit/5df043770f41bd38435fa02ea80ead7ab7a03d05) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Keep the abort reason when a workflow aborts a signal a running step holds on an encrypted run, instead of aborting the step's signal with a generic `AbortError`.
+
+- [#5485](https://github.com/vercel/workflow/pull/5485) [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Resume a spec 9 run whose first delivery is replayed after a crashed invocation instead of leaving its open step stranded.
+
+- [#5468](https://github.com/vercel/workflow/pull/5468) [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9) Thanks [@benpankow](https://github.com/benpankow)! - A `resumeHook()` wake names the `hook_received` it was sent for, so a spec 9 orchestrator delivery in a process that already consumed the run's log below that event skips the tail read that checks for a no-op wake.
+
+- [#5612](https://github.com/vercel/workflow/pull/5612) [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Omit private backend URLs from request diagnostics and sanitize captured E2E CLI output before it reaches CI reports.
+- Updated dependencies [[`d50f412`](https://github.com/vercel/workflow/commit/d50f412c3ef1e4084b10da03de6784d9e3b53d0f), [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`10f35e3`](https://github.com/vercel/workflow/commit/10f35e334a16489916bf117f022c8e1ccdc61efd), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772)]:
+  - @workflow/world-local@5.5.0
+  - @workflow/world@5.3.0
+  - @workflow/world-vercel@5.7.0
+  - @workflow/errors@5.1.4
+
+## 5.6.1
+
+### Patch Changes
+
+- [#5426](https://github.com/vercel/workflow/pull/5426) [`bb100a9`](https://github.com/vercel/workflow/commit/bb100a9decb69483bb9342dc1062b0c3118b0763) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Name the attempt that never recorded a result in a step's "exceeded max retries" error
+
+- [#5263](https://github.com/vercel/workflow/pull/5263) [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1) Thanks [@pranaygp](https://github.com/pranaygp)! - Mint the compute instance id on first use instead of at module load, so the runtime can be loaded where random values are forbidden in global scope (Cloudflare Workers).
+
+- [#5285](https://github.com/vercel/workflow/pull/5285) [`f957b8e`](https://github.com/vercel/workflow/commit/f957b8ea5de0d155c02b5c6c4cbf474556971ede) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix an unhandled rejection that could end the process when a stream passed across a workflow boundary (a step return value, a workflow argument, or a stream written into `getWritable()`) failed before its pipe was awaited, such as a returned `fetch()` body whose socket closed (`TypeError: terminated`). The pipe's error still surfaces to the runtime's stream-op handling.
+
+- [#4910](https://github.com/vercel/workflow/pull/4910) [`d18aff2`](https://github.com/vercel/workflow/commit/d18aff22acec8a3f57237e58624d7a4d25ca7eed) Thanks [@dretanacr](https://github.com/dretanacr)! - Fix a run stalling after a failed inline step attempt when a queued delivery of the same step was waiting on it in the same process: the inline retry was folded into that delivery's message, which then acked as skipped. The waiting delivery now carries the retry.
+
+- [#5263](https://github.com/vercel/workflow/pull/5263) [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `setPrecompiledQuickJSModules()` to `@workflow/core/runtime`, so a host whose runtime forbids compiling WebAssembly from bytes (Cloudflare Workers) can hand the QuickJS engine modules compiled at deploy time.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Drop dependencies that are never loaded at runtime, so installing `workflow` downloads less: `@aws-sdk/credential-provider-web-identity` and `debug` from `@workflow/core`; `date-fns` (replaced by a small relative-time formatter with the same output), `chokidar`, `ora`, `esbuild`, `@swc/core` and other build-only packages from `@workflow/cli`; `@vercel/queue` from `@workflow/world-local` and `@workflow/world-postgres` (only its types were used); `swr` from `@workflow/web` (already bundled into its build); and `@swc/core`, `@workflow/swc-plugin`, `exsolve` and `pathe` from the framework integrations that do not import them.
+  
+  If you use `awsCredentialsProvider` from `@vercel/functions/oidc` without an AWS SDK client, install `@aws-sdk/credential-provider-web-identity` or switch to `@vercel/oidc-aws-credentials-provider`.
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5506](https://github.com/vercel/workflow/pull/5506) [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a bug where spec 9 runs inconsistently enforced the max events per run limit
+
+- [#5410](https://github.com/vercel/workflow/pull/5410) [`b1f9269`](https://github.com/vercel/workflow/commit/b1f92691bcc3bc18b9df094d45379c6464cf4d65) Thanks [@benpankow](https://github.com/benpankow)! - Rebuild state passed between steps by reference with one copy per changed container per step result, and plain assignment instead of `Object.defineProperty`, so replaying a long run spends far less time rehydrating step results.
+
+- [#4334](https://github.com/vercel/workflow/pull/4334) [`021723b`](https://github.com/vercel/workflow/commit/021723bc679a0788332e6ebba9d58da55ba4333c) Thanks [@pranaygp](https://github.com/pranaygp)! - Fail a live stream read with a `StreamError` naming the index when consecutive reads stall at a chunk the stream reports but never serves, instead of reconnecting to it until the reconnect budget runs out
+
+- [#5402](https://github.com/vercel/workflow/pull/5402) [`87cde0b`](https://github.com/vercel/workflow/commit/87cde0b52c59bded6ce98a87aef5c2582ac6b19c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Update `quickjs-wasi` to 3.7.0 (QuickJS-NG v0.18.0). The QuickJS runtime now reads engine-captured Error stacks through the `Error.prototype.stack` accessor, so errors thrown from workflows keep their stack traces.
+
+- [#5443](https://github.com/vercel/workflow/pull/5443) [`e4ec16f`](https://github.com/vercel/workflow/commit/e4ec16f9b2aa092782bbd43c9f9fc50083f926f5) Thanks [@benpankow](https://github.com/benpankow)! - Skip loading `@vercel/functions` for `waitUntil` outside Vercel, where it has no request context to extend. A local or self-hosted process's first `start()` no longer evaluates the whole module.
+- Updated dependencies [[`e6a3975`](https://github.com/vercel/workflow/commit/e6a3975c953b366497c29749d7f1ab2e7c17732c), [`24d000a`](https://github.com/vercel/workflow/commit/24d000a31a685bc1c430132e20824521985e455e), [`eb47074`](https://github.com/vercel/workflow/commit/eb4707435329ba0dd9a10501db14354275058673), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/world-local@5.4.1
+  - @workflow/world-vercel@5.6.1
+  - @workflow/errors@5.1.3
+  - @workflow/serde@5.0.1
+  - @workflow/utils@5.1.1
+  - @workflow/world@5.2.2
+
+## 5.6.0
+
+### Patch Changes
+
+- [#5386](https://github.com/vercel/workflow/pull/5386) [`55fa58b`](https://github.com/vercel/workflow/commit/55fa58b0b47d45c0e47743ae53e6b087eb6f87b3) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Retry an initial missing event history once after the concurrent run lookup succeeds, avoiding an unnecessary queue redelivery.
+
+- [#5403](https://github.com/vercel/workflow/pull/5403) [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72) Thanks [@pranaygp](https://github.com/pranaygp)! - Classify runs that fail with `WorkflowNotRegisteredError` under a dedicated `WORKFLOW_NOT_REGISTERED` error code instead of the generic `RUNTIME_ERROR`, so starting a workflow the deployment doesn't bundle is attributed separately from internal runtime failures.
+- Updated dependencies [[`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c), [`c88e158`](https://github.com/vercel/workflow/commit/c88e158eaed8c69a9aadb9ae0ef43d14d748ad25), [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72), [`18586f5`](https://github.com/vercel/workflow/commit/18586f54bdfb9ce2f805f349d0464d07c8ec96ea), [`c11fc40`](https://github.com/vercel/workflow/commit/c11fc40013681fef9afe0b315b1d22284579bbe0), [`29094be`](https://github.com/vercel/workflow/commit/29094bed374ab6bc9d3ed3c500b61e93048968a6)]:
+  - @workflow/world@5.2.1
+  - @workflow/world-vercel@5.6.0
+  - @workflow/errors@5.1.2
+  - @workflow/world-local@5.4.0
+
+## 5.5.0
+
+### Minor Changes
+
+- [#5227](https://github.com/vercel/workflow/pull/5227) [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove opt-out and test-only environment variables that are no longer needed. The runtime no longer reads `WORKFLOW_INLINE_EARLY_ADVANCE`, `WORKFLOW_RETURN_VALUE_LONG_POLL`, `WORKFLOW_SLOT_GAP_CHECK`, `WORKFLOW_LOG_ORDER_DRAWS`, `WORKFLOW_INLINE_OWNERSHIP` or `WORKFLOW_BATCH_TRANSITIONS`, and the behavior they could switch off is always on. `WORKFLOW_SEALED_LOG` (deprecated) is no longer read, and `@workflow/world` no longer exports `SEALED_LOG_ENV_VAR`: set `WORKFLOW_SPEC_VERSION=6` to create new runs without the sealed log. The Vercel World no longer reads `WORKFLOW_MAX_CHUNKS_PER_REQUEST` or `WORKFLOW_TEST_LIMIT_OVERRIDES`, and the Local and Postgres Worlds no longer read `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS` and `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`.
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Refuse deliveries to the flow route without the app's queue key, for Worlds that declare `queueAuthMode: 'loopback'`, with a marked 401 before any run is touched, and count refusals on `workflow.queue.delivery.refused`. `WORKFLOW_QUEUE_AUTH=off` turns the check off, except while dynamic workflows are enabled. Warn when the flow route starts on a World that declares no `queueAuthMode` (once, then at most once a minute when routes restart).
+
+- [#5306](https://github.com/vercel/workflow/pull/5306) [`dfe2764`](https://github.com/vercel/workflow/commit/dfe27649e90c5e9b233edd778c64affff63216ee) Thanks [@joelfickson](https://github.com/joelfickson)! - Add `maxAttempts` to `getStepMetadata()`, so a step can tell when it is running its last attempt.
+
+- [#5214](https://github.com/vercel/workflow/pull/5214) [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Store deeply frozen values passed between steps, such as results of immer's `produce`, as references and changes instead of full copies. Such values are returned frozen.
+
+- [#5214](https://github.com/vercel/workflow/pull/5214) [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `createStateResolver()` to `workflow/observability` and `createRunStateHydrator()` to `@workflow/web-shared`, so run inspectors show the actual values of state stored by reference.
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- [#5249](https://github.com/vercel/workflow/pull/5249) [`f292ef0`](https://github.com/vercel/workflow/commit/f292ef05cadbd5320298568050e39c96ef19f813) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reading a started child's `run.returnValue` inside the parent workflow no longer starts waiting until the promise is awaited (its first `then`, `catch` or `finally`), so a parent that reads it early keeps spec 9 run-ahead for the steps before the await. The parent's child-run completion hook also stays open between waits instead of being disposed and registered again, and an open completion hook stops run-ahead only while something waits on it.
+
+- [#5342](https://github.com/vercel/workflow/pull/5342) [`f486912`](https://github.com/vercel/workflow/commit/f486912be3b3715747737f68bd5f9a10b8d0cfa4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - QuickJS now treats an idle child completion hook as inactive when deciding whether to keep a workflow delivery live.
+
+- [#5270](https://github.com/vercel/workflow/pull/5270) [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a run's creation is recorded on its first `run_started` alone, with no separate `run_created`.
+
+- [#5289](https://github.com/vercel/workflow/pull/5289) [`3debce2`](https://github.com/vercel/workflow/commit/3debce2174130c3f54ac6ed7f030f93b2f5576fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Support Next.js' `workflows.experimentalRoutePrefix` in local tooling: `workflow health` takes `--base-path`, the CLI and web UI find a manifest generated below a route prefix, and the flow route span's `http.route` includes the base path.
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: a run that waits only on open hooks now lingers for `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` (default 5 seconds, never more than `WORKFLOW_ORCHESTRATOR_LINGER_MS`) instead of the full 30 seconds after each idle pass, so a long-lived approval or cancel hook beside a polling `sleep()` holds each wake for up to 5 seconds. A run with a background step still open keeps the full linger.
+
+- [#5281](https://github.com/vercel/workflow/pull/5281) [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: `resumeHook()` and `resumeWebhook()` now send the run's workflow name with their `hook_received`
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9 node engine: keep the loaded event log's ids, highest slot and hole check in an incremental index, so an in-band write no longer rescans the whole log. On 2000 sequential inline steps in one delivery, time per step drops from about 18 ms to about 12 ms in the in-memory benchmark.
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9 QuickJS orchestrator: hand off to the next delivery at the invocation's inline deadline, and create new steps as background steps within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` of it, as the node engine does. A delivery whose inline step ran past the deadline no longer starts the next inline step and runs into the function's maximum duration.
+
+- [#5261](https://github.com/vercel/workflow/pull/5261) [`b7534aa`](https://github.com/vercel/workflow/commit/b7534aa6d102bd4caa584d28f6c3daef59478dc6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: the QuickJS engine (`WORKFLOW_VM=quickjs`) now runs ahead of its writes as the node engine does, on by default with `WORKFLOW_RUN_AHEAD_DEPTH` (default 10, `0` turns it off). At a boundary no other writer can change, an inline step's outcome reaches the workflow before its `step_completed` commits, and the next steps' creations go out ahead in one batch while their bodies start. If another writer takes a slot a speculative write was placed at, QuickJS restarts the delivery in place from a fresh load, with run-ahead off for the rest of it. The node engine repairs such a write in place instead. Because the QuickJS clock advances to every event the VM reads, a boundary whose code read the clock while the VM held an unconfirmed speculative event waits for its writes to commit before deciding anything.
+
+- [#5279](https://github.com/vercel/workflow/pull/5279) [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: a background step's early redelivery while a `retryAfter` is still ahead now decides from the step's latest event (one newest-first `listByCorrelationId` read without payloads) instead of reading the run's whole log. Each step delivery's span records what it read (`step.delivery.log_read`).
+
+- [#5297](https://github.com/vercel/workflow/pull/5297) [`d2a0d5a`](https://github.com/vercel/workflow/commit/d2a0d5ae67456a1946e1e29fe32c34e51a933f5b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: keep the run-ahead hazard check's cost flat as a delivery runs more inline steps. It copied every step the delivery had run into new sets for each live-feed event and reported event, across one context per boundary it had ever run ahead of, so a long sequential run's step-to-step overhead grew with its length (about 60 ms per step at 1,000 steps on world-vercel). Contexts now leave once their speculative writes settle, and the check answers membership without copying. The `workflow.execute` span records the most contexts held at once as `workflow.run_ahead.contexts_max`.
+
+- [#5275](https://github.com/vercel/workflow/pull/5275) [`50a1a9f`](https://github.com/vercel/workflow/commit/50a1a9f696729aa7944f7660e004ffe67650a120) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Back off a spec 9 orchestrator's log-tail poll while no live feed covers the run: each empty poll doubles the interval up to 10 seconds, reset on activity.
+
+- [#5298](https://github.com/vercel/workflow/pull/5298) [`530abff`](https://github.com/vercel/workflow/commit/530abff0838d260640c033c4ced86cef56f6123e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - In spec 9, on a run's first delivery (turbo mode), a step fan-out now starts its inline bodies while its creation batches commit. Background steps' messages still go out only once their creation committed.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+
+- [#5214](https://github.com/vercel/workflow/pull/5214) [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add internal helpers that find and apply changes between versions of a frozen value.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`9bf1109`](https://github.com/vercel/workflow/commit/9bf110927184c1809b036947a4e7c3fff2b5484e), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`7153e09`](https://github.com/vercel/workflow/commit/7153e0973c7244eec8b6b3dd349a83eb96ac9743), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf), [`b70daa3`](https://github.com/vercel/workflow/commit/b70daa37c46e6ab0efd384d067e1b9b504fdc555), [`a9eba54`](https://github.com/vercel/workflow/commit/a9eba5463de9c5ea49de07069bc07a2ecd36f1ce), [`6fe8408`](https://github.com/vercel/workflow/commit/6fe8408477d7133eaa45f69a96969347f6bbdcd9), [`87847c5`](https://github.com/vercel/workflow/commit/87847c52cbc44793e51ab9196786c0f1290413d5)]:
+  - @workflow/world@5.2.0
+  - @workflow/world-local@5.3.0
+  - @workflow/world-vercel@5.5.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
+## 5.4.0
+
+### Minor Changes
+
+- [#5048](https://github.com/vercel/workflow/pull/5048) [`e1bce44`](https://github.com/vercel/workflow/commit/e1bce44d3faacff855a35265d47afe3819abed1a) Thanks [@pranaygp](https://github.com/pranaygp)! - Awaiting `run.returnValue` of a child run from the workflow that started it now suspends on one system hook per parent, which each child resumes when it finishes, instead of polling inside a step.
+
+### Patch Changes
+
+- [#5226](https://github.com/vercel/workflow/pull/5226) [`50d425f`](https://github.com/vercel/workflow/commit/50d425fac77ec212422d57a832411c4515c0ba3c) Thanks [@pranaygp](https://github.com/pranaygp)! - **Removed:** reading `response.body` with `getReader()`, `values()` or `for await` inside workflow functions (added in 5.3.0) throws again. Use `response.json()`, `response.text()` or `response.arrayBuffer()`, or make the request and read the response in a step function. If you assigned `globalThis.fetch = fetch` to run AI SDK calls in a workflow function, move those calls into a step function, or use AI SDK's `WorkflowAgent` for agents.
+
+- [#5238](https://github.com/vercel/workflow/pull/5238) [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289) Thanks [@pranaygp](https://github.com/pranaygp)! - Rename the `start()` option `hook` to `experimental_hook`, and enable it by default on the Postgres and Vercel Worlds. `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK` and `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK` are removed, along with the `EXPERIMENTAL_START_HOOK_ENV` exports; the capability is only used when a caller passes `experimental_hook` to `start()`.
+- Updated dependencies [[`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289), [`c805b90`](https://github.com/vercel/workflow/commit/c805b906e251198bc9b9f4a5340ec144fa288b62), [`f98fca1`](https://github.com/vercel/workflow/commit/f98fca13f6659e222db7803511b5e92443e7db63), [`a4123ba`](https://github.com/vercel/workflow/commit/a4123baf9768084f4b31604d609672392cb43c84)]:
+  - @workflow/world-vercel@5.4.0
+  - @workflow/world-local@5.2.1
+
+## 5.3.0
+
+### Minor Changes
+
+- [#5100](https://github.com/vercel/workflow/pull/5100) [`2be58c2`](https://github.com/vercel/workflow/commit/2be58c26f9f95c324a4da6190018545c542227f8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Let a parallel branch start its next inline step without waiting for its slower siblings (spec 8 runs on the Node.js VM). A run now ends as soon as the workflow returns or throws, even while a `Promise.race` loser is still running inline; that loser gets only its current attempt, and its step events can follow `run_completed`. Set `WORKFLOW_INLINE_EARLY_ADVANCE=0` to restore the previous behavior.
+
+- [#5091](https://github.com/vercel/workflow/pull/5091) [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Reuse the Hook returned by getHookByToken() with resumeHook() to skip the token lookup on later deliveries, including across JSON or other ordinary serialization. Capable Worlds enforce atomic deduplication on cached deliveries. The SDK falls back internally after definite pre-write refusals, retries admission throttles, and never re-sends an uncertain resolved write. Trace attributes identify resolved deliveries and fallback refusals.
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add `start(workflow, args, { hook: { token, metadata, experimental_minRetention } })`, which admits the run and creates its start Hook in one atomic step, and throws `HookConflictError` naming the owner for a duplicate, which never becomes a run. `resumeHook(token)` works as soon as the run is admitted, and payloads sent before the workflow calls `createHook({ token })` are delivered in order once it does; that `createHook()` binds to the start Hook without registering a new one. Disposing the start Hook releases the token immediately; otherwise the run's end releases it, after any `experimental_minRetention` (there is no default retention). `cancel()` of a candidate that never became a run fences it.
+
+- [#5081](https://github.com/vercel/workflow/pull/5081) [`e127948`](https://github.com/vercel/workflow/commit/e1279482719168a0987e48f73d107be6287670c3) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Use length-prefixed frames for real-time abort stream packets. Keep readers compatible with existing unframed packets, reassemble split transport reads, and retain unframed writes for older cross-deployment targets and hook resumptions without an attested receiving runtime. Payload encryption and durable hook events are unchanged.
+
+### Patch Changes
+
+- [#5041](https://github.com/vercel/workflow/pull/5041) [`7d31a0a`](https://github.com/vercel/workflow/commit/7d31a0a329dd020441e0aebba2bb55068f8e0f4b) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Close a stream read that is cancelled while it is still connecting, so a fast signal-bearing step no longer leaves its abort-stream read open until the server's max duration.
+
+- [#5183](https://github.com/vercel/workflow/pull/5183) [`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop Astro and Vite from warning about generated workflow files during build and dev.
+
+- [#4990](https://github.com/vercel/workflow/pull/4990) [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip redundant hook disposal events when a workflow completes or fails.
+
+- [#5018](https://github.com/vercel/workflow/pull/5018) [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183) Thanks [@pranaygp](https://github.com/pranaygp)! - Run steps started beside an awaited `hook.getConflict()` inline instead of handing them to the queue: the suspension now defers their creates, settles the awaiter off the hook write, and runs the bodies on the pass after it. Those steps now share one inline batch with whatever the settled awaiter started, so work the awaiter's branch begins after its own first step waits for them — where queueing put the branch in a separate invocation. Steps past `WORKFLOW_MAX_INLINE_STEPS` are unaffected and still queue.
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - With `WORKFLOW_VM=quickjs`, replay ignores events for a step, wait or hook after its terminal event, as the default engine does.
+
+- [#4945](https://github.com/vercel/workflow/pull/4945) [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Keep the QuickJS VM heap flat over long runs: settled steps, sleeps, attributes and disposed hooks are released instead of retained (with their step arguments) for the rest of the run, and event replay no longer scans every operation the run ever created.
+
+- [#5070](https://github.com/vercel/workflow/pull/5070) [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Forward the run's `encryptionPublicKey` on a resilient `run_started`, so a run created from its queued copy can still receive sealed writes.
+
+- [#5115](https://github.com/vercel/workflow/pull/5115) [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry steps whose stream encryption key lookup fails transiently instead of failing them with a `SerializationError`
+
+- [#5053](https://github.com/vercel/workflow/pull/5053) [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Fix a step that could be created and never run when two executions of it met in one process and the first one's claim lost.
+
+- [#5156](https://github.com/vercel/workflow/pull/5156) [`44d7c76`](https://github.com/vercel/workflow/commit/44d7c769e94fb8b8a684dd69f2450ea9c52990cc) Thanks [@alangenfeld](https://github.com/alangenfeld)! - The single-orchestrator engine admits `start({ hook })` candidates: their first delivery skips turbo, `run_started` carries the start Hook request, a refused candidate acknowledges without running code, and the workflow's `createHook({ token })` binds to the start Hook.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+
+- [#5184](https://github.com/vercel/workflow/pull/5184) [`997b03d`](https://github.com/vercel/workflow/commit/997b03df9d987d5f4092fca2209d491434c3fdbe) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix webhook and workflow URLs using port 3000 instead of the server's port when `@workflow/utils` is not a direct dependency
+
+- [#5187](https://github.com/vercel/workflow/pull/5187) [`433b345`](https://github.com/vercel/workflow/commit/433b345511420f902962126e4a6713fa66eaf540) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Support reading `response.body` with `getReader()` inside workflow functions, fixing AI SDK calls through the workflow `fetch` on current `ai` versions. The QuickJS engine also no longer fails to serialize step arguments such as fetch options that contain `signal: undefined`.
+- Updated dependencies [[`3ca3bf0`](https://github.com/vercel/workflow/commit/3ca3bf0b36b1bcdf1d105b8af530b6f0e553485b), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`612c5f4`](https://github.com/vercel/workflow/commit/612c5f4d558e61ea8c55dd269f2511b7bca69636), [`1123ea6`](https://github.com/vercel/workflow/commit/1123ea6c13cce041b5088da2684987dfa5165a92), [`2a3e4c0`](https://github.com/vercel/workflow/commit/2a3e4c00fd4114473d7cf95737bdb70bddc41e8d), [`6455beb`](https://github.com/vercel/workflow/commit/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`72131a2`](https://github.com/vercel/workflow/commit/72131a227d3efbf2613104026976c3a0d887d1c6), [`d4b7b06`](https://github.com/vercel/workflow/commit/d4b7b06cbf918a6af6927a45fd6f2423279c507b), [`5dc9e15`](https://github.com/vercel/workflow/commit/5dc9e1543dfcbb1d130b9a4cff87b8952c4cd7c2)]:
+  - @workflow/world-local@5.2.0
+  - @workflow/world@5.1.0
+  - @workflow/world-vercel@5.3.0
+  - @workflow/errors@5.1.0
+
 ## 5.2.3
 
 ### Patch Changes

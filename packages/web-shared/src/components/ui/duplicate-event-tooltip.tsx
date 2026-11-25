@@ -1,7 +1,6 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
 import {
   Tooltip,
   TooltipContent,
@@ -11,7 +10,7 @@ import {
 
 /**
  * Explains why an event row is shown greyed out, whether it is a repeat the
- * runtime read past ({@link DUPLICATE_EVENT_MESSAGE}), a backend seal for an
+ * runtime read past (`DUPLICATE_EVENT_MESSAGE`), a backend seal for an
  * abandoned position (`SEALED_EVENT_MESSAGE`), or any other notice a list
  * attaches.
  *
@@ -30,37 +29,13 @@ export function EventNoticeTooltip({
   if (!notice) return children;
 
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>{children}</TooltipTrigger>
-        <TooltipContent
-          className="max-w-[264px] leading-snug"
-          collisionPadding={8}
-          side="top"
-        >
+        <TooltipContent collisionPadding={8} side="top">
           {notice}
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
-  );
-}
-
-/**
- * The duplicate-specific wrapper kept for existing call sites: greys the
- * event out as a repeat the runtime read past.
- */
-export function DuplicateEventTooltip({
-  isDuplicate = false,
-  children,
-}: {
-  isDuplicate?: boolean;
-  children: ReactNode;
-}): ReactNode {
-  return (
-    <EventNoticeTooltip
-      notice={isDuplicate ? DUPLICATE_EVENT_MESSAGE : undefined}
-    >
-      {children}
-    </EventNoticeTooltip>
   );
 }

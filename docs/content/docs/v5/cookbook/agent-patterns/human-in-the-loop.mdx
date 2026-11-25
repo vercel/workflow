@@ -159,7 +159,7 @@ Approval requests arrive as typed tool parts with `state: "approval-requested"`.
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { WorkflowChatTransport } from "@ai-sdk/workflow";
+import { WorkflowChatTransport } from "@ai-sdk/workflow/client";
 import { lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
 import { useMemo } from "react";
 import type { BookingAgentUIMessage } from "@/workflows/booking-agent";

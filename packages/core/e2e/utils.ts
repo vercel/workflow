@@ -4,10 +4,9 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
-import { onTestFailed } from 'vitest';
+import { onTestFailed, TestRunner } from 'vitest';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
@@ -359,6 +358,14 @@ export function hasStepSourceMaps(): boolean {
     return false;
   }
 
+  // Nuxt 4.6's dev server replaces `Error.prepareStackTrace` and only remaps
+  // modules vite-node evaluated, which disables Node's `--enable-source-maps`
+  // for the natively imported step bundle even though it carries a valid
+  // inline map. Remove once https://github.com/nuxt/nuxt/pull/36833 ships.
+  if (appName === 'nuxt') {
+    return false;
+  }
+
   // Source maps now default to off in production builds and on only in dev
   // servers. Local prod and local postgres runs (no DEV_TEST_CONFIG) are
   // production builds, so step bundles have no source maps.
@@ -423,7 +430,7 @@ function getCliArgs(): string {
     return '';
   }
 
-  return `--backend vercel --verbose`;
+  return `--backend vercel`;
 }
 
 // ---------------------------------------------------------------------------
@@ -525,12 +532,17 @@ const awaitCommand = async (
         cwd,
         env: {
           ...process.env,
-          DEBUG: '1',
           WORKFLOW_NO_UPDATE_CHECK: '1',
           ...envOverrides,
+          DEBUG: '',
         },
       });
 
+      const privateBackendUrl = process.env.VERCEL_WORKFLOW_SERVER_URL;
+      const sanitizeOutput = (text: string) =>
+        privateBackendUrl
+          ? text.replaceAll(privateBackendUrl, '[REDACTED]')
+          : text;
       let stdout = '';
       let stderr = '';
 
@@ -539,7 +551,6 @@ const awaitCommand = async (
           const text = Buffer.isBuffer(chunk)
             ? chunk.toString('utf8')
             : String(chunk);
-          process.stdout.write(chunk);
           stdout += text;
         });
       }
@@ -549,7 +560,6 @@ const awaitCommand = async (
           const text = Buffer.isBuffer(chunk)
             ? chunk.toString('utf8')
             : String(chunk);
-          process.stderr.write(chunk);
           stderr += text;
         });
       }
@@ -560,6 +570,12 @@ const awaitCommand = async (
       });
       child.on('close', (code, signal) => {
         noteCliSettled();
+        // Sanitize complete streams before logging or returning them: the URL
+        // can straddle chunks, and reporters persist errors outside CI masking.
+        stdout = sanitizeOutput(stdout);
+        stderr = sanitizeOutput(stderr);
+        if (stdout) process.stdout.write(stdout);
+        if (stderr) process.stderr.write(stderr);
         if (code !== 0) {
           const exitReason = signal
             ? `killed by signal ${signal}`
@@ -592,14 +608,7 @@ export const cliInspectJson = async (args: string) => {
       ...inspectArgs,
       ...cliArgs,
     ],
-    cliAppPath,
-    undefined,
-    {
-      // e2e assertions read entities immediately after writing them; the
-      // analytics store ingests asynchronously and can miss the freshest
-      // rows. Force the storage-backed list paths for determinism.
-      WORKFLOW_DISABLE_ANALYTICS_READS: '1',
-    }
+    cliAppPath
   );
   if (!result.stdout.trim()) {
     throw new Error(
@@ -666,9 +675,78 @@ const manifestRetryTimeoutMs = Number(
 const manifestRetryIntervalMs = 250;
 
 /**
+ * How long a manifest fetch keeps retrying a failure that says nothing about
+ * the manifest: a request a dev server reset while it restarted its worker
+ * after a rebuild (Nitro's dev runner closes the old worker with requests in
+ * flight), a 5xx or 429, or a request that never answered.
+ */
+const manifestTransientRetryMs = Number(
+  process.env.WORKFLOW_E2E_MANIFEST_TRANSIENT_RETRY_MS ?? '30000'
+);
+/** Bounds one manifest request, so one a reload swallowed is retried. */
+const manifestAttemptTimeoutMs = 10_000;
+
+/** Statuses a manifest fetch retries: the server, not the manifest, failed. */
+function isTransientManifestStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+/** A manifest fetch the server answered definitively: not retried. */
+class ManifestFetchError extends Error {}
+
+let manifestRequest: Promise<WorkflowManifest> | null = null;
+
+/**
+ * One manifest request: the manifest, or why a retry may still get it.
+ * Throws a {@link ManifestFetchError} when one cannot.
+ */
+async function attemptManifest(
+  url: string
+): Promise<{ manifest: WorkflowManifest } | { failure: string }> {
+  try {
+    const res = await fetchWithTrustedSources(url, {
+      signal: AbortSignal.timeout(manifestAttemptTimeoutMs),
+    });
+    if (res.ok) return { manifest: (await res.json()) as WorkflowManifest };
+    const failure = `${res.status} ${await res.text()}`;
+    if (isTransientManifestStatus(res.status)) return { failure };
+    throw new ManifestFetchError(
+      `Failed to fetch manifest from ${url}: ${failure}`
+    );
+  } catch (error) {
+    if (error instanceof ManifestFetchError) throw error;
+    // A thrown fetch: the connection was reset or refused, or the attempt
+    // timed out.
+    const cause =
+      error instanceof Error && error.cause instanceof Error
+        ? ` (${error.cause.message})`
+        : '';
+    return {
+      failure: `${error instanceof Error ? error.message : String(error)}${cause}`,
+    };
+  }
+}
+
+async function requestManifest(url: string): Promise<WorkflowManifest> {
+  const deadline = Date.now() + manifestTransientRetryMs;
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await attemptManifest(url);
+    if ('manifest' in outcome) return outcome.manifest;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Failed to fetch manifest from ${url} after ${attempt} attempts over ${manifestTransientRetryMs}ms: ${outcome.failure}`
+      );
+    }
+    await sleep(manifestRetryIntervalMs);
+  }
+}
+
+/**
  * Fetches the workflow manifest from the deployment URL.
  * The manifest is served at /.well-known/workflow/v1/manifest.json by each
- * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
+ * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set. Concurrent callers
+ * share one request, which retries transient failures (see
+ * `manifestTransientRetryMs`); a 4xx fails at once.
  */
 export async function fetchManifest(
   deploymentUrl: string,
@@ -676,15 +754,14 @@ export async function fetchManifest(
 ): Promise<WorkflowManifest> {
   const forceRefresh = options?.forceRefresh ?? false;
   if (cachedManifest && !forceRefresh) return cachedManifest;
-
-  const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
-  const res = await fetchWithTrustedSources(url);
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
-    );
+  if (!manifestRequest) {
+    const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
+    const request = requestManifest(url).finally(() => {
+      if (manifestRequest === request) manifestRequest = null;
+    });
+    manifestRequest = request;
   }
-  cachedManifest = (await res.json()) as WorkflowManifest;
+  cachedManifest = await manifestRequest;
   return cachedManifest;
 }
 
@@ -864,7 +941,7 @@ interface TrackedRun {
  *
  * Concurrent suites bind one of these per test via {@link runInTestState}
  * (AsyncLocalStorage), so tests interleaving on the event loop cannot
- * clobber each other's attribution — `getCurrentTest()` is a plain module
+ * clobber each other's attribution — `TestRunner.getCurrentTest()` is a plain module
  * variable in vitest and is wrong after any `await` under concurrency.
  * Sequential suites (dev.test.ts, e2e-agent.test.ts, e2e-region.test.ts)
  * keep the classic path: {@link setupRunTracking} resets a module-level
@@ -876,7 +953,7 @@ interface PerTestState {
   /**
    * The test's own `ctx.skip`, captured where the context is unambiguous
    * (the fixture), so conformance gates called mid-test-body can skip the
-   * right test — `getCurrentTest()?.context.skip` would target whichever
+   * right test — `TestRunner.getCurrentTest()?.context.skip` would target whichever
    * test most recently started.
    */
   skip?: (note?: string) => void;
@@ -899,7 +976,8 @@ export function createPerTestState(
 
 /** ALS-bound skip when available, vitest's global otherwise. */
 const currentSkip = (): ((note?: string) => void) | undefined =>
-  testStateStorage.getStore()?.skip ?? getCurrentTest()?.context.skip;
+  testStateStorage.getStore()?.skip ??
+  TestRunner.getCurrentTest()?.context.skip;
 
 /** Run `fn` with `state` bound as the ambient per-test state. */
 export function runInTestState<T>(
@@ -1543,6 +1621,71 @@ export const cliHealthJson = async (options?: { timeout?: number }) => {
 };
 
 /**
+ * Repeat `read` until `predicate` holds or `timeoutMs` passes, and return the
+ * last completed read either way so the caller's assertions report what was
+ * seen rather than a bare timeout.
+ *
+ * - A read that throws is retried like one that has not converged: a
+ *   transient failure should not end the poll.
+ * - A read still pending after `attemptTimeoutMs` is abandoned and retried,
+ *   so one stalled request cannot outlast the whole budget. The poll is
+ *   therefore bounded by `timeoutMs + attemptTimeoutMs`.
+ * - If no read completed in time, the last failure is thrown.
+ */
+export async function readUntil<T>(
+  read: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  {
+    timeoutMs = 30_000,
+    intervalMs = 1_000,
+    attemptTimeoutMs = 10_000,
+  }: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    attemptTimeoutMs?: number;
+  } = {}
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { value: T } | undefined;
+  let lastError: unknown;
+  for (;;) {
+    const attempt = new AbortController();
+    try {
+      const value = await Promise.race([
+        read(),
+        sleep(attemptTimeoutMs, undefined, { signal: attempt.signal }).then(
+          () => {
+            throw new Error(
+              `readUntil: a read did not finish within ${attemptTimeoutMs}ms`
+            );
+          }
+        ),
+      ]);
+      last = { value };
+      let satisfied = false;
+      try {
+        satisfied = predicate(value);
+      } catch {
+        // Malformed intermediate state (e.g. `.find()` returned undefined)
+        // counts as not-yet-converged.
+      }
+      if (satisfied) return value;
+    } catch (err) {
+      lastError = err;
+    } finally {
+      // Settles the timer's promise as a rejection nobody awaits any more;
+      // `Promise.race` already holds a handler for it.
+      attempt.abort();
+    }
+    if (Date.now() >= deadline) {
+      if (last) return last.value;
+      throw lastError;
+    }
+    await sleep(intervalMs);
+  }
+}
+
+/**
  * Poll `cliInspectJson(args)` until `predicate(json)` holds, or the timeout
  * elapses — in which case the LAST result is returned so the caller's
  * assertions still run and produce a real failure message.
@@ -1553,30 +1696,23 @@ export const cliHealthJson = async (options?: { timeout?: number }) => {
  * missing or carry stale pending/running statuses for a few seconds
  * before converging on the durable state.
  */
-export const cliInspectJsonUntil = async (
+export const cliInspectJsonUntil = (
   args: string,
+  // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
   predicate: (json: any) => boolean,
   {
     timeoutMs = 30_000,
     intervalMs = 2_000,
   }: { timeoutMs?: number; intervalMs?: number } = {}
-): Promise<any> => {
-  const deadline = Date.now() + timeoutMs;
   // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
-  let json: any;
-  for (;;) {
-    ({ json } = await cliInspectJson(args));
-    let satisfied = false;
-    try {
-      satisfied = predicate(json);
-    } catch {
-      // Malformed intermediate state (e.g. `.find()` returned undefined)
-      // counts as not-yet-converged.
-    }
-    if (satisfied || Date.now() >= deadline) return json;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-};
+): Promise<any> =>
+  readUntil(async () => (await cliInspectJson(args)).json, predicate, {
+    timeoutMs,
+    intervalMs,
+    // `awaitCommand` already bounds each CLI invocation, with a budget sized
+    // for slow process startup; a second, shorter one here would cut it off.
+    attemptTimeoutMs: defaultCliTimeoutMs + 5_000,
+  });
 
 /**
  * The `name` / `message` of a failed run, from whatever shape the World

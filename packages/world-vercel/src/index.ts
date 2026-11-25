@@ -25,7 +25,7 @@ export {
   MAX_EXECUTION_CONTEXT_BYTES,
   validateRunExecutionContext,
 } from './execution-context.js';
-export { createQueue } from './queue.js';
+export { createQueue, vercelTriggerConsumerGroup } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
@@ -39,18 +39,6 @@ export type { APIConfig } from './utils.js';
  */
 export { openWsChannel as openEventsChannel } from './ws-transport.js';
 
-/**
- * Opt-in switch for `start({ hook })` on Vercel, until the backend half ships
- * everywhere. Any value other than `1` or `true` leaves it off.
- */
-export const EXPERIMENTAL_START_HOOK_ENV =
-  'WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK';
-
-function isExperimentalStartHookEnabled(): boolean {
-  const value = process.env[EXPERIMENTAL_START_HOOK_ENV];
-  return value === '1' || value === 'true';
-}
-
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
@@ -58,9 +46,13 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
   // Read once: the runtime validates this declaration, and `run_started`
   // attests the same value (see `APIConfig.mintedSpecVersion`). The backend
-  // fences in-band writes (`capabilities.inBandFence` below), so
-  // `WORKFLOW_SPEC_VERSION=9` creates spec 9 runs; spec 8 otherwise.
-  const specVersion = mintedSpecVersion(process.env, { inBandFence: true });
+  // fences in-band writes (`capabilities.inBandFence` below) and reserves
+  // rate limit slots (`capabilities.rateLimits`), so new runs are spec 10 by
+  // default; `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8.
+  const specVersion = mintedSpecVersion(process.env, {
+    inBandFence: true,
+    rateLimits: true,
+  });
   config = { ...config, mintedSpecVersion: specVersion };
 
   return {
@@ -76,19 +68,14 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // `start({ hook })` admission. Opt-in until the backend that admits it
-      // is deployed: a server that predates it drops the `startHook` meta key
-      // silently and would start a run without its start Hook. Read per World, so a
-      // process can flip it without a rebuild. See `start-hook.ts` in
-      // @workflow/world for the contract the server implements.
-      ...(isExperimentalStartHookEnabled()
-        ? { atomicStartHook: { active: true } }
-        : {}),
+      // `start({ experimental_hook })` admission. Only used when a caller passes `experimental_hook` to
+      // `start()`. See `start-hook.ts` in @workflow/world for the contract the
+      // server implements.
+      atomicStartHook: { active: true },
       // One orchestrator delivery per single-orchestrator run at a time: its
       // orchestrator messages carry the run id as a VQS concurrency key on
-      // the flow topic (or, under WORKFLOW_SEQUENTIAL_REPLAYS=1, go to a
-      // per-run topic consumed with `maxConcurrency: 1`; see queue.ts).
-      // Spec-8 runs keep the shared, unserialized flow topic.
+      // the flow topic (see queue.ts). Spec-8 runs keep the shared,
+      // unserialized flow topic.
       //
       // Part of the spec-9 contract rather than capabilities: the backend
       // stores an in-band event's `occurredAt` as its `createdAt` (clamped
@@ -99,6 +86,10 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // `queue()` passes `experimental_hold` to Vercel Queues' send-and-hold.
+      // Support, not configuration: a queue service with it switched off
+      // answers `not_held` / `unsupported` and delivers the message as usual.
+      experimental_queueHold: true,
       // Cached hook writes use a distinct endpoint that rejects before writing
       // when the backend cannot enforce the required deduplication contract.
       resolvedHookResume: true,
@@ -114,9 +105,20 @@ export function createWorld(config?: APIConfig): World {
       // carry the counters. Single-orchestrator runs (spec >= 9) always list
       // one, which the runtime requires.
       inBandFence: true,
+      // `experimental_rateLimit()`: the backend reserves each call's slot
+      // when the call's in-band `rate_created` is written, and commits the
+      // decision in its place. It refuses rate events on runs below spec 10,
+      // and any it cannot decide, so no call is recorded without a
+      // reservation.
+      rateLimits: true,
+      // world-vercel's batch decides a rate event on a spec 10 run as the
+      // single write does, so the in-band writer sends rate limit calls made
+      // at once in one batch, and a call's write beside the step outcome
+      // before it.
+      rateEventsInBatch: true,
       // The server implements the takeover protocol behind
-      // `createHook({ experimental_force: true })` (workflow-server
-      // docs/hook-force-claim.md). Static rather than attested per lookup,
+      // `createHook({ experimental_force: true })`. Static rather than
+      // attested per lookup,
       // because the decision is made at `createHook()` time, before any
       // lookup; against a server that has it switched off (or predates it)
       // a forced creation is answered with `hook_conflict`, which the
@@ -138,14 +140,7 @@ export function createWorld(config?: APIConfig): World {
     getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
-    // Analytics list reads are served from an eventually-ingested store.
-    // Tooling that needs read-your-writes listings immediately after a
-    // write (e.g. deterministic e2e assertions) can force the CLI/world
-    // list paths back onto primary storage by disabling the namespace.
-    analytics:
-      process.env.WORKFLOW_DISABLE_ANALYTICS_READS === '1'
-        ? undefined
-        : createAnalytics(config),
+    analytics: createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     regionForRunId,

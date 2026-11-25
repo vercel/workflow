@@ -1,7 +1,12 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
+import {
+  TOOLTIP_DELAY_MS,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '../../ui/tooltip';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -55,6 +60,36 @@ function getEventStyle(
   };
 }
 
+/**
+ * The colored type icon (workflow, step, hook, sleep) with its tooltip. Shared
+ * by the Trace span list and the Events tab so both mark entities the same way.
+ */
+export function ResourceIcon({
+  resource,
+  isErrored = false,
+  isCancelled = false,
+}: {
+  resource: string;
+  isErrored?: boolean;
+  isCancelled?: boolean;
+}) {
+  const {
+    icon: Icon,
+    className,
+    label,
+  } = getEventStyle(resource, isErrored, isCancelled);
+  return (
+    <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
+      <TooltipTrigger asChild>
+        <span className={cn('shrink-0', className)}>
+          <Icon className="w-4 h-4" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 const EventRow = ({
   span,
   isSelected,
@@ -69,16 +104,10 @@ const EventRow = ({
   const durationMs = getSpanDurationMs(span);
   const isErrored = isSpanErrored(span);
   const isCancelled = isSpanCancelled(span);
-  const {
-    icon: Icon,
-    className: tagClassName,
-    label: iconLabel,
-  } = getEventStyle(span.resource, isErrored, isCancelled);
-
   return (
     <li
       className={cn(
-        'relative overflow-clip group transition-opacity',
+        'relative overflow-clip transition-opacity hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200',
         ROW_HEIGHT_CLASS,
         isDimmed && 'opacity-35'
       )}
@@ -88,26 +117,21 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
-        <div className="flex h-full min-w-0 items-center pl-4 pr-2">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <Tooltip delayDuration={500}>
-              <TooltipTrigger asChild>
-                <span className={cn('shrink-0', tagClassName)}>
-                  <Icon className="w-4 h-4" />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top">{iconLabel}</TooltipContent>
-            </Tooltip>
-            <span className="min-w-0 text-label-14">
-              <MiddleTruncate value={span.name} />
-            </span>
-          </div>
-          <div className="ml-2 shrink-0">
-            <span className="text-label-14 text-gray-900 tabular-nums">
-              {formatDurationPrecise(durationMs)}
-            </span>
-          </div>
+      <div className="flex h-full min-w-0 items-center pl-4 pr-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ResourceIcon
+            resource={span.resource}
+            isErrored={isErrored}
+            isCancelled={isCancelled}
+          />
+          <span className="min-w-0 text-label-14">
+            <MiddleTruncate value={span.name} />
+          </span>
+        </div>
+        <div className="ml-2 shrink-0">
+          <span className="text-label-14 text-gray-900 tabular-nums">
+            {formatDurationPrecise(durationMs)}
+          </span>
         </div>
       </div>
     </li>

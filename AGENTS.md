@@ -33,6 +33,10 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
+New runs default to spec 10 (a single orchestrator per run behind the World's in-band fence, plus `experimental_rateLimit()`) on Worlds that declare both the fence and rate limits (Vercel, Local, Postgres), to spec 9 on Worlds that declare only the fence, and to spec 8 on Worlds without it; `WORKFLOW_SPEC_VERSION=8` opts out. Spec 10 is capability-only on top of spec 9, so it runs on the spec 9 runtime. The spec 9 runtime lives in `packages/core/src/runtime/spec9/`, and the spec 8 one in `packages/core/src/runtime/spec8/`.
+
+Design notes live as markdown next to the code they describe, not in the docs site, which never links to source files: `packages/core/src/runtime/spec9/README.md` (the spec 9 reference), `packages/core/src/runtime/spec8/*.md` (turbo mode, lazy inline step start, inline step message ownership, batched event writes), `packages/core/src/runtime/*.md` (eager processing, resilient start, durable and resilient hook resume) and `packages/core/src/attributes-mvp.md`. Read the relevant note before changing that behaviour, and update it in the same change.
+
 ## Development commands
 
 ### Workspace-level commands
@@ -74,7 +78,12 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 
 # Step 1: Start the dev server in background
 # NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
-cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+# NOTE: WORKFLOW_QUEUE_AUTH=off matches the e2e-local CI lanes, which keep
+# queue auth off until the team decides to run them with it on. It is refused
+# while dynamic workflows are enabled; the dynamic-workflow e2e runs with auth
+# on and starts its runs through the app (see the header of
+# packages/core/e2e/e2e-dynamic-workflow.test.ts).
+cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 WORKFLOW_QUEUE_AUTH=off pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
 # Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
@@ -166,7 +175,10 @@ world-postgres it first brings up the container and applies migrations, and
 leaves Postgres running for the next iteration unless `--teardown` is passed;
 the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
 under `--world local`, whose only state is a data directory the script clears
-before each run.
+before each run. Under `--world local` it also exports `WORKFLOW_QUEUE_AUTH=off`,
+as the e2e-local CI lanes do until the team decides to run them with queue auth
+on. world-postgres needs no such setting: it declares
+`queueAuthMode: 'skip'`, so its flow route is not checked.
 
 Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates
@@ -174,8 +186,9 @@ them with an exclusive `link(2)` against a directory that two processes (the app
 and the harness) both write to. A slot race a transaction closes is not
 automatically closed by a filesystem.
 
-Export `WORKFLOW_SPEC_VERSION=9` to race the single orchestrator; CI runs both
-worlds at the default spec and at spec 9. Read the world-local spec 9 cell with
+Both worlds race the single orchestrator (spec 10) by default; export
+`WORKFLOW_SPEC_VERSION=8` to race the spec 8 one. CI runs both worlds at the
+default spec and at spec 8. Read the world-local default (spec 10) cell with
 one difference in mind: its run gate is in-process, and the harness calls
 `start()` and `resumeHook()` from its own process, so those messages reach the
 app through the harness' queue and overlap the app's own deliveries of the run.
@@ -276,10 +289,8 @@ Worlds are nonetheless worth fixing on their own merits, and neither is what
 made the lanes red: world-local defaults to **1000** in-flight deliveries (the
 comment above it says the limit exists to avoid overwhelming the process, and
 the repro script has to override it to 10), world-postgres to 50 embedded
-workers *per process*; and neither World has world-vercel's per-run replay
-serialization, which is itself opt-in there behind
-`WORKFLOW_SEQUENTIAL_REPLAYS` (vercel/workflow#2193), so a run's concurrent
-wakes each replay the whole log.
+workers *per process*; and neither World serializes a spec 8 run's replays,
+so a run's concurrent wakes each replay the whole log.
 
 world-local's storms come out clean far more often than world-postgres's, so the
 default scale says even less there: the corruption it does produce needs a
@@ -371,6 +382,7 @@ This project uses pnpm with workspace configuration. The required version is spe
 - 2-space indentation, single quotes, trailing commas (ES5)
 - Import type enforcement enabled
 - Explicit `any` is discouraged (Biome's `noExplicitAny` rule is currently disabled); exhaustive dependencies warnings enabled
+- Observability UI (`packages/web`, `packages/web-shared`): never use opacity to set a text colour. Read `packages/web-shared/AGENTS.md` before touching styles there.
 
 ## Local checks vs. CI
 
@@ -398,8 +410,18 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - README.md files in each package must accurately reflect the current functionality and purpose of that package
 - READMEs should not contain outdated or incorrect information about package capabilities
 - When modifying package functionality, ensure corresponding README updates are included
-- Document every user-configurable environment variable in the docs.
+- Document every user-configurable environment variable in the docs. The docs describe spec 9 runs (the default since v5.8.0) as the default behaviour, without naming the spec version. Where a spec 8 run (created before v5.8.0, on a World without the in-band fence, or with `WORKFLOW_SPEC_VERSION=8`) behaves differently, add a `<Spec8Note>` right after the default description; its children continue the fixed lead sentence, so start them in lowercase, keep them self-contained (no pronoun pointing outside the note), and never place the note right next to another callout. `docs/lib/remark-spec8-note.ts` expands it into a callout. Never add per-version sections. In `configuration/runtime-tuning.mdx`, orchestrator-only settings go in the Orchestrator section and the rest in the topic sections, each with a `<Spec8Note>` if spec 8 reads it differently or not at all. How each runtime works inside lives in its design note (for spec 9, `packages/core/src/runtime/spec9/README.md`); `docs/content/worlds/` may name spec versions where it describes what a World implements to support them.
+- Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
+- Docs pages never reference or link to source files in this repository. Design notes for maintainers live as markdown next to the code they describe (see [Workflow execution model](#workflow-execution-model)) and are referenced from source comments.
+- The docs site is public: everything under `docs/content/` is published on workflow-sdk.dev, indexed by search engines, and served to agents through site search, `llms.txt` and the docs MCP. Write it only for people who use the SDK or build a World. Design notes, RFCs, implementation references and anything else aimed at maintainers go next to the code, never into a docs page. There is no `/docs/changelog` section; release notes come from changesets (rendered at `/changelog`).
+- Preview-only tooling pages go in a docs tree's `internal/` folder with `internal: true` frontmatter, which makes production answer 404 for them, keeps them out of the sidebar, sitemap, search, `llms.txt` and chat, and marks them `noindex`. Public pages never link to them.
+- `pnpm --filter docs lint:links` (the Docs Links CI job) enforces the three rules above. When a page leaves the site, add a redirect in `docs/next.config.ts`.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
+- `skills/` holds skills published for SDK users. Skills for contributors working in this repository live in `.agents/skills/` and are not published. Read [`web-guidelines`](.agents/skills/web-guidelines/SKILL.md) before changing `packages/web` or `packages/web-shared`.
+
+## Pull requests
+
+When opening a pull request, always use the [template](.github/PULL_REQUEST_TEMPLATE/pull_request_template.md) and follow the agent instructions in its trailing comment.
 
 ### Docs preview links in PR descriptions
 
@@ -410,6 +432,15 @@ When a PR adds or updates docs pages (anything under `docs/content/`), add a "Do
 - When a change is scoped to a specific section of a page, link to its heading anchor (e.g. `/docs/foundations/hooks#checking-for-token-conflicts`) and verify the anchor matches a real heading in the MDX.
 - A table with one row per page (and one column per docs version, when both v4 and v5 were updated) works well.
 - The preview deployment sits behind deployment protection, so the links require Vercel team access. This is expected; include them anyway for reviewers.
+
+### Observability UI preview links in PR descriptions
+
+When a PR changes the observability UI (`packages/web` or `packages/web-shared`), add a "Preview" section to the PR description with a direct link to the change on the `workflow-web` preview deployment, followed by step-by-step instructions for checking it there:
+
+- Build the URL from the branch name: lowercase it, replace every character other than `a-z` and `0-9` with `-`, and use `https://workflow-web-git-<branch-slug>.labs.vercel.dev`. For example, `web-shared/search-input` becomes `https://workflow-web-git-web-shared-search-input.labs.vercel.dev`.
+- Vercel shortens long branch slugs, so once the `vercel[bot]` comment appears on the PR, compare the link with the Preview link in its `workflow-web` row and use that one if they differ.
+- Link to the page that shows the change: the home page (`/`, with `?tab=runs`, `hooks` or `workflows`) or a run (`/run/<runId>`, with `?tab=trace`, `events`, `streams` or `graph`).
+- The preview deployment sits behind deployment protection, so the link requires Vercel team access. This is expected; include it anyway for reviewers.
 
 ## SWC plugin
 
@@ -574,8 +605,8 @@ process), `web` and `web-shared` (the observability UI), `vitest` (the test
 runner's process), and private packages such as `world-sim`.
 
 ### Trace context propagation (world-vercel HTTP requests)
-Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists. `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
+Every outgoing HTTP request from `@workflow/world-vercel` to the backend (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists. `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
 
-Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step. Workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
+Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step. Backend spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
 
 The same rule covers a request path that is not an HTTP request. A non-`fetch` transport must still open the client span callers read a trace through: use `withHttpClientSpan` (`http-core.ts`), the envelope `instrumentedFetch` is built on, so the span carries the same name, kind, and attributes rather than a hand-rolled parallel shape. The WS events transport is the worked example. `postEventFrameOverWs` synthesizes an `http POST` span per frame and tags it `workflow.events.transport: 'ws'`, and the handshake gets its own `workflow.events.ws.connect` span (`ws-transport-spans.test.ts`). Adding a transport that writes events without one silently deletes the per-event view of a run.

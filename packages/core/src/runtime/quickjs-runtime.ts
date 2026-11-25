@@ -34,9 +34,12 @@ import { globalSingleton } from '@workflow/utils';
 import {
   classifyEntityEvent,
   type Event,
+  eventIdToSlot,
+  isRunCreationEvent,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   TERMINAL_EVENT_CLASSES,
   type WorkflowRun,
   type WorldCapabilities,
@@ -56,11 +59,16 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
+import type { RateLimitOptions } from '../rate-limit.js';
 import { createSeededNanoid } from '../seeded-nanoid.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
+import {
+  rateLimitSpecVersionMessage,
+  resolveRateLimitCall,
+} from '../workflow/rate-limit-call.js';
 import {
   getReplayTimeoutMs,
   isQuickJSBaselineSnapshotEnabled,
@@ -70,6 +78,7 @@ import {
   quickjsWasiVersion,
   quickjsWasm,
 } from './quickjs-assets.generated.js';
+import { getPrecompiledQuickJSModules } from './quickjs-precompiled.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -140,6 +149,31 @@ export interface PendingWait {
   hasCreatedEvent: boolean;
 }
 
+/** One `experimental_rateLimit()` call (`rate_<ulid>`). */
+export interface PendingRate {
+  type: 'rate';
+  correlationId: string;
+  key: string;
+  limit: number;
+  periodMs: number;
+  /** How many calls may go at once on an idle key. Absent for no burst. */
+  burst?: number;
+  /** ISO string of the call's deadline. */
+  expiresAt: string;
+  /** The call opted in to a key in the reserved `$` namespace. */
+  allowReservedKey?: true;
+  /** Whether the call's `rate_created` is in the log. */
+  hasCreatedEvent: boolean;
+  /**
+   * ISO string of the slot the World reserved, once the VM has read the
+   * call's waiting `rate_created` (the newest one, for a call reserved
+   * again): the call is then an open wait until its `rate_acquired`.
+   */
+  resumeAt?: string;
+  /** The log slot of that `rate_created`, which its `rate_acquired` names. */
+  createdSlot?: number;
+}
+
 export interface PendingHook {
   type: 'hook';
   correlationId: string;
@@ -158,10 +192,13 @@ export interface PendingHook {
    */
   startHook?: true;
   /**
-   * True for internal system hooks (e.g. AbortController's hook), which
-   * are exempt from user-hook token namespace conflict checks.
+   * True for SDK-internal hooks (the AbortController hook, the child-run
+   * completion hook). Recorded on `hook_created`; such hooks are resumed by
+   * writers outside this run, and need not be created at terminal drain.
    */
   isSystem?: boolean;
+  /** True for an AbortController's hook (VM-only; not recorded). */
+  isAbortSignal?: boolean;
   /**
    * Set when the workflow called AbortController.abort() during this
    * invocation. The host must record the abort: create a hook_received
@@ -204,6 +241,7 @@ export interface PendingHookDispose {
 export type PendingOperation =
   | PendingStep
   | PendingWait
+  | PendingRate
   | PendingHook
   | PendingAttribute
   | PendingHookDispose;
@@ -366,7 +404,7 @@ globalThis.__releasePending = function(op) {
 globalThis.__releaseIfSettled = function(op) {
   if (
     op.hasCreatedEvent &&
-    (op.type === "step" || op.type === "wait" || op.type === "attribute") &&
+    (op.type === "step" || op.type === "wait" || op.type === "rate" || op.type === "attribute") &&
     !globalThis.__resolvers[op.correlationId]
   ) {
     globalThis.__releasePending(op);
@@ -388,9 +426,11 @@ globalThis.__releaseDisposedHook = function(correlationId) {
   var dispose = globalThis.__findPending(correlationId, "hook_dispose");
   if (dispose) globalThis.__releasePending(dispose);
   var hook = globalThis.__findPending(correlationId, "hook");
+  // An AbortController's hook keeps its op: abort() finds it by
+  // correlationId to request the abort later.
   if (
     hook &&
-    !hook.isSystem &&
+    !hook.isAbortSignal &&
     !hook.abortRequested &&
     !globalThis.__resolvers[correlationId]
   ) {
@@ -462,6 +502,15 @@ if (typeof ReadableStream === "undefined") {
   // Minimal ReadableStream that stores body data for Response.json()/text()
   globalThis.ReadableStream = function() {};
   globalThis.ReadableStream.prototype.__bodyData = null;
+  // Reading a body as a stream is not supported in workflow functions; match
+  // the node:vm engine's error instead of failing with "not a function".
+  var streamNotSupported = function() {
+    throw new Error("This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.");
+  };
+  ["cancel", "getReader", "pipeThrough", "pipeTo", "tee", "values"].forEach(function(name) {
+    globalThis.ReadableStream.prototype[name] = streamNotSupported;
+  });
+  globalThis.ReadableStream.prototype[Symbol.asyncIterator] = streamNotSupported;
 }
 
 if (typeof WritableStream === "undefined") {
@@ -696,6 +745,55 @@ globalThis[Symbol.for("WORKFLOW_SLEEP")] = function(param) {
   });
 };
 
+// experimental_rateLimit(): one call is one rate_<ulid> id. The call is
+// checked on the host (__resolveRateLimitCall), the same way the node:vm
+// engine checks it, before an id is drawn, so a refused call leaves the run's
+// id sequence as if it were never made. The deadline comes from the
+// workflow's clock, so every replay asks for the same one. The call settles
+// on the event the World committed for it (see processEvents): rate_acquired
+// resolves, rate_failed rejects with RateLimitMaxWaitError, and a waiting
+// rate_created leaves it pending until its slot.
+globalThis.__resolveRateLimitCall = function() {
+  return JSON.stringify({ error: { name: "Error", message: "experimental_rateLimit() cannot be called at module scope." } });
+};
+var __rateJsonParse = JSON.parse;
+globalThis[Symbol.for("WORKFLOW_RATE_LIMIT")] = function(options) {
+  // The host reads the workflow clock for the deadline itself, so the call
+  // is not a clock read of workflow code: the deadline is written once, on
+  // the call's rate_created, and nothing the workflow decides depends on it.
+  var call = __rateJsonParse(globalThis.__resolveRateLimitCall(options));
+  if (call.error) {
+    var Ctor = call.error.name === "TypeError" ? TypeError : call.error.name === "RangeError" ? RangeError : Error;
+    return Promise.reject(new Ctor(call.error.message));
+  }
+  var correlationId = "rate_" + globalThis.__generateUlid();
+  var op = {
+    type: "rate",
+    correlationId: correlationId,
+    key: call.key,
+    limit: call.limit,
+    periodMs: call.periodMs,
+    expiresAt: call.expiresAt,
+    hasCreatedEvent: false,
+  };
+  if (call.burst !== undefined) op.burst = call.burst;
+  if (call.allowReservedKey === true) op.allowReservedKey = true;
+  globalThis.__pushPending(op);
+  return new Promise(function(resolve, reject) {
+    globalThis.__registerResolver(correlationId, resolve, reject);
+  });
+};
+// A logged rate event under a call's id names another key than the call the
+// workflow is making: the code changed under the run. Fails the run, as a
+// replay divergence does on the node:vm engine, rather than rejecting a
+// promise the workflow could catch.
+globalThis.__rateDivergence = function(message) {
+  if (globalThis.__workflowError !== undefined || globalThis.__workflowDone) return;
+  var err = new Error("Replay divergence: " + message);
+  err.name = "ReplayDivergenceError";
+  globalThis.__workflowError = { message: err.message, stack: err.stack || "", name: err.name, value: err };
+};
+
 // Response/Request polyfills — .json()/.text()/.arrayBuffer() are useStep
 // proxies that execute on the host side. The proxies are assigned directly
 // to the prototypes so that 'this' (the Response/Request instance) is
@@ -780,7 +878,7 @@ if (typeof Request === "undefined") {
 globalThis.__startHookOptionsError = function(rejected) {
   return "\`createHook()\` was called with this run's start token and " +
     rejected.map(function(name) { return "\`" + name + "\`"; }).join(", ") +
-    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
+    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
 };
 // Hook correlation ids are minted from the run's ULID sequence, skipping the
 // one id a run must never mint: its start Hook's (see __startHook). A redraw is
@@ -800,7 +898,7 @@ globalThis.__mintHookCorrelationId = function() {
 // The promise is resolved when a hook_received event arrives.
 globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
-  // The run's start Hook (start(workflow, args, { hook })), injected by the
+  // The run's start Hook (start(workflow, args, { experimental_hook })), injected by the
   // host as __startHook, was created by the run's admission: the first
   // createHook with its token opens it (no hook_created, no suspension).
   // Mirrors workflow/hook.ts.
@@ -900,6 +998,9 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     metadata: options.metadata,
     hasCreatedEvent: false,
   };
+  // SDK-internal hooks (e.g. the child-run completion hook); see
+  // SystemHookOptions on the host.
+  if (options.isSystem === true && !options.isWebhook) pendingOp.isSystem = true;
   globalThis.__pushPending(pendingOp);
 
   // Per-hook lifecycle state backing hook.getConflict(): resolves null
@@ -1006,6 +1107,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
 
   // Symbol.dispose for explicit resource management
   hook[Symbol.dispose] = disposeHook;
+
+  // SDK-internal (the child-run completion dispatcher): stop waiting for the
+  // next payload without disposing the hook, so one landing later is
+  // buffered for the next then() instead. See workflow/hook.ts.
+  hook[Symbol.for("WORKFLOW_HOOK_RELEASE_AWAITER")] = function() {
+    delete globalThis.__resolvers[correlationId];
+  };
 
   // AsyncIterable — yields payloads until disposed
   hook[Symbol.asyncIterator] = function() {
@@ -1142,14 +1250,14 @@ globalThis.AbortController = function WorkflowAbortController() {
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
   var correlationId = globalThis.__mintHookCorrelationId();
   this[__ABORT_HOOK_CID] = correlationId;
-  // Register an internal system hook. isSystem prevents token namespace
-  // conflicts with user hooks.
+  // Register an internal system hook. Its token is unique by construction.
   globalThis.__pushPending({
     type: "hook",
     correlationId: correlationId,
     token: hookToken,
     isWebhook: false,
     isSystem: true,
+    isAbortSignal: true,
     hasCreatedEvent: false,
   });
   globalThis.__abortSignals[correlationId] = this.signal;
@@ -1292,6 +1400,24 @@ const quickjsAssets = globalSingleton(
 
 function getCompiledAssets() {
   if (!quickjsAssets.promise) {
+    const precompiled = getPrecompiledQuickJSModules();
+    if (precompiled) {
+      // The host compiled the modules at deploy time (runtimes that forbid
+      // compiling WebAssembly from bytes). See `quickjs-precompiled.ts`.
+      quickjsAssets.promise = Promise.resolve({
+        wasm: precompiled.quickjs,
+        extensions: quickjsExtensions.map((ext) => {
+          const wasm = precompiled.extensions[ext.name];
+          if (!wasm) {
+            throw new Error(
+              `setPrecompiledQuickJSModules() is missing the "${ext.name}" QuickJS extension`
+            );
+          }
+          return { ...ext, wasm: wasm as ExtensionDescriptor['wasm'] };
+        }),
+      });
+      return quickjsAssets.promise;
+    }
     quickjsAssets.promise = (async () => {
       const [wasm, ...extensionModules] = await Promise.all([
         WebAssemblyGlobal.compile(quickjsWasm),
@@ -1677,12 +1803,45 @@ export interface QuickJSWorkflowSession {
    * when the VM frees memory, so it is the signal for heap growth.
    */
   memoryUsage(): QuickJSMemoryUsage;
+  /**
+   * The VM's open hooks, and whether workflow code is waiting on each one's
+   * next payload right now. Only valid while the last result was
+   * `suspended`. The suspension's `pendingOperations` leave out a created
+   * hook nothing awaits, so a run-ahead classification reads its hooks from
+   * here (see `runtime/out-of-band-observation.ts`).
+   */
+  openHooks(): QuickJSOpenHook[];
+  /**
+   * How many times code in the VM has read the clock so far (the WASI
+   * clock behind `Date.now()` and `new Date()`; QuickJS may read it on its
+   * own too, which only over-counts). This engine advances the clock to
+   * every event it reads, an unread hook payload included, so a run-ahead
+   * delivery uses this to tell whether a decision may depend on where
+   * another writer's event landed (see `spec9/quickjs-entrypoint.ts`).
+   */
+  clockReads(): number;
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
 
 /** See {@link QuickJSWorkflowSession.memoryUsage}. */
 export type QuickJSMemoryUsage = ReturnType<QuickJS['getMemoryUsage']>;
+
+/** One open hook of a suspended VM (see {@link QuickJSWorkflowSession.openHooks}). */
+export interface QuickJSOpenHook {
+  correlationId: string;
+  token: string;
+  isSystem?: boolean;
+  /** A disposal of the hook is pending in this suspension. */
+  disposed?: boolean;
+  /**
+   * Workflow code is waiting on the hook's next payload: a resolver is
+   * registered for it. Over-reports for an awaiter a lost `Promise.race`
+   * abandoned, which only costs run-ahead; a payload landing for a hook with
+   * no resolver is buffered and changes nothing until something awaits.
+   */
+  observed: boolean;
+}
 
 /**
  * Run a workflow invocation to its first settled state and dispose the
@@ -1764,10 +1923,18 @@ export async function startQuickJSWorkflow(
   const advanceClock = (ms: number) => {
     if (Number.isFinite(ms)) vmNowMs = Math.max(vmNowMs, ms);
   };
+  // Every read of the clock by code in the VM (`Date.now()`, `new Date()`,
+  // a `sleep()` computing its deadline): see
+  // `QuickJSWorkflowSession.clockReads`.
+  let clockReads = 0;
+  const readClock = (): number => {
+    clockReads++;
+    return vmNowMs;
+  };
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
 
-  // The run's start Hook (start(workflow, args, { hook })), or undefined.
+  // The run's start Hook (start(workflow, args, { experimental_hook })), or undefined.
   const runStartHook = (): RunStartHook | undefined =>
     options.startHook === undefined
       ? resolveRunStartHook({
@@ -1899,6 +2066,47 @@ export async function startQuickJSWorkflow(
         vm.setProp(vm.global, '__validateAttributeWrite', fnHandle);
       },
     },
+    {
+      // experimental_rateLimit(): checks the call exactly as the node:vm
+      // engine does (`resolveRateLimitCall`), and answers with the call as
+      // its `rate_created` carries it, or the error to reject with. Only
+      // the single orchestrator drives rate limit calls; whether the run is
+      // at spec 10 is the World's to say (see `createRateLimit`).
+      name: '__resolveRateLimitCall',
+      fn: (vm) => (optionsHandle) => {
+        const answer = (value: unknown) =>
+          vm.newString(JSON.stringify(value)) as never;
+        const runSpecVersion = options.workflowRun.specVersion;
+        if ((runSpecVersion ?? 0) < SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+          return answer({
+            error: {
+              name: 'Error',
+              message: rateLimitSpecVersionMessage(runSpecVersion),
+            },
+          });
+        }
+        try {
+          // `vmNowMs`, not `readClock()`: the deadline is written once, on
+          // the call's `rate_created`, and settles nothing (the World decides
+          // from it, and a replay settles the call from the committed
+          // event), so it does not gate run-ahead as a clock read of
+          // workflow code does (`clockReadOnSpeculation`).
+          const call = resolveRateLimitCall(
+            vm.dump(optionsHandle) as RateLimitOptions,
+            vmNowMs
+          );
+          return answer({ ...call, expiresAt: call.expiresAt.toISOString() });
+        } catch (err) {
+          const error = err as Error;
+          return answer({
+            error: { name: error.name, message: error.message },
+          });
+        }
+      },
+      install: (vm, fnHandle) => {
+        vm.setProp(vm.global, '__resolveRateLimitCall', fnHandle);
+      },
+    },
   ];
 
   if (options.existingSnapshot) {
@@ -1922,7 +2130,7 @@ export async function startQuickJSWorkflow(
     }
     const vm = await restoreWorkflowVM(
       options.existingSnapshot.data,
-      () => vmNowMs,
+      readClock,
       interruptBudget
     );
     try {
@@ -1943,7 +2151,7 @@ export async function startQuickJSWorkflow(
         vm.registerHostCallback(callback.name, callback.fn(vm));
       }
 
-      // A start({ hook }) run's heap must have booted with the start Hook
+      // A start({ experimental_hook }) run's heap must have booted with the start Hook
       // binding (and the run's __startHook). One captured by an older engine
       // build would mint a fresh id for the start token, so it is refused
       // here and the entrypoint falls back to a full replay. Checked only for
@@ -2007,6 +2215,7 @@ export async function startQuickJSWorkflow(
         }),
         historicalAttributeIds,
         () => lastUlid,
+        () => clockReads,
         options.encryptionKey
       );
     } catch (err) {
@@ -2061,10 +2270,10 @@ export async function startQuickJSWorkflow(
       memoryLimit: 256 * 1024 * 1024,
       interruptHandler: createInterruptHandler(interruptBudget),
       extensions: assets.extensions,
-      wasi: makeDeterministicClockWasi(() => vmNowMs),
+      wasi: makeDeterministicClockWasi(readClock),
     });
   } else {
-    vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
+    vm = await initWorkflowVM(readClock, interruptBudget);
   }
 
   // Host-side serde: captures the VM's intrinsics (bootstrap included)
@@ -2107,7 +2316,7 @@ export async function startQuickJSWorkflow(
       `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
     ).dispose();
 
-    // The run's start Hook (start(workflow, args, { hook })), for the guest's
+    // The run's start Hook (start(workflow, args, { experimental_hook })), for the guest's
     // createHook binding. Not set at all for a run without one, which boots
     // exactly as before.
     const startHook = runStartHook();
@@ -2165,13 +2374,15 @@ export async function startQuickJSWorkflow(
       }
     }
 
-    // Extract workflow arguments. Prefer the run_created event; fall back
-    // to the queue message's runInput if the event log is incomplete
+    // Extract workflow arguments. Prefer the run's creation event (its
+    // `run_created`, or on spec >= 9 the `run_started` that created it and
+    // holds the first slot: `isRunCreationEvent`); fall back to the queue
+    // message's runInput if the event log is incomplete
     // (eventually-consistent read after start()). Failing to find input
     // for a first invocation is fatal: running the workflow function
     // with no args would silently turn typed arguments into `undefined`
     // and, for recursive workflows, produce exponential fan-out.
-    const runCreatedEvent = events.find((e) => e.eventType === 'run_created');
+    const runCreatedEvent = events.find(isRunCreationEvent);
     const runCreatedInput =
       runCreatedEvent && 'eventData' in runCreatedEvent
         ? (runCreatedEvent.eventData as Record<string, unknown>)?.input
@@ -2187,7 +2398,9 @@ export async function startQuickJSWorkflow(
       runtimeLogger.debug('QuickJS runtime: run input format', {
         prefix: new TextDecoder().decode(decryptedInput.subarray(0, 4)),
         byteLength: decryptedInput.byteLength,
-        source: runCreatedInput ? 'run_created' : 'queueMessage.runInput',
+        source: runCreatedInput
+          ? runCreatedEvent?.eventType
+          : 'queueMessage.runInput',
       });
       // Build the argument value directly in the VM via the host-side
       // serde (guest code never sees the wire bytes).
@@ -2196,7 +2409,7 @@ export async function startQuickJSWorkflow(
       inputHandle.dispose();
     } else if (runInput === undefined && events.length > 0) {
       // The event log is non-empty (we got run_started or similar) but
-      // no run_created event was found and no queue-provided runInput is
+      // no creation event was found and no queue-provided runInput is
       // available. This is the race condition observed during the fib
       // incident: silently dropping arguments would turn `n` into
       // `undefined` and, for recursive workflows, cause exponential
@@ -2240,7 +2453,7 @@ export async function startQuickJSWorkflow(
     // throw an error tagged with `name = "WorkflowNotRegisteredError"`
     // so the host-side entrypoint can reconstruct a real
     // WorkflowNotRegisteredError (a WorkflowRuntimeError subclass that
-    // classifies as RUNTIME_ERROR) rather than a generic user error.
+    // classifies as WORKFLOW_NOT_REGISTERED) rather than a generic user error.
     // See quickjs-entrypoint.ts's run_failed branch.
     try {
       vm.evalCode(`
@@ -2344,6 +2557,7 @@ export async function startQuickJSWorkflow(
       }),
       historicalAttributeIds,
       () => lastUlid,
+      () => clockReads,
       options.encryptionKey
     );
   }
@@ -2368,6 +2582,12 @@ function makeSettledSession(
     memoryUsage: () => {
       throw new Error(
         'QuickJS workflow session is settled — memoryUsage is only valid while suspended'
+      );
+    },
+    clockReads: () => 0,
+    openHooks: () => {
+      throw new Error(
+        'QuickJS workflow session is settled — openHooks is only valid while suspended'
       );
     },
     dispose: () => {},
@@ -2400,6 +2620,8 @@ function makeLiveSession(
   historicalAttributeIds: Set<string>,
   /** The last correlation-id ULID the VM drew (see isConsumedTerminal). */
   getLastUlid: () => string | undefined,
+  /** See {@link QuickJSWorkflowSession.clockReads}. */
+  getClockReads: () => number,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -2486,6 +2708,33 @@ function makeLiveSession(
         );
       }
       return vm.getMemoryUsage();
+    },
+    clockReads(): number {
+      return getClockReads();
+    },
+    openHooks(): QuickJSOpenHook[] {
+      if (!alive) {
+        throw new Error(
+          'QuickJS workflow session is not alive — openHooks is only valid while suspended'
+        );
+      }
+      using h = vm.evalCode(`(function(){
+        var list = globalThis.__pendingList();
+        var disposed = {};
+        list.forEach(function(p){
+          if (p.type === "hook_dispose") disposed[p.correlationId] = true;
+        });
+        return list.filter(function(p){ return p.type === "hook"; }).map(function(p){
+          return {
+            correlationId: p.correlationId,
+            token: String(p.token),
+            isSystem: p.isSystem === true,
+            disposed: disposed[p.correlationId] === true,
+            observed: !!globalThis.__resolvers[p.correlationId]
+          };
+        });
+      })()`);
+      return vm.dump(h) as QuickJSOpenHook[];
     },
     dispose(): void {
       if (alive) {
@@ -2781,6 +3030,98 @@ async function processEvents(
           ).dispose();
         }
         markCreated(vm, cidJs);
+        break;
+      }
+      case 'rate_created':
+      case 'rate_acquired':
+      case 'rate_failed': {
+        // experimental_rateLimit(): the call settles on the event the World
+        // committed for it, in log order (this engine drains the VM after
+        // each event, which orders it as the node:vm engine's step-kind
+        // delivery barrier does). A waiting rate_created records the slot
+        // on the call's op, so the entrypoint treats it as an open wait;
+        // a call reserved again past its grace gets the newest one.
+        const key = eventData?.key as string | undefined;
+        const acquireAt = eventData?.acquireAt as Date | string | undefined;
+        const acquireAtIso =
+          acquireAt === undefined
+            ? undefined
+            : new Date(acquireAt).toISOString();
+        const createdSlot =
+          event.eventType === 'rate_created' && event.eventId
+            ? eventIdToSlot(event.eventId)
+            : null;
+        const outcome = vm.dump(
+          vm.evalCode(
+            `(function(){
+              var cid = ${cidJs};
+              var type = ${JSON.stringify(event.eventType)};
+              var key = ${JSON.stringify(key ?? null)};
+              var op = globalThis.__findPending(cid, "rate");
+              if (op && key !== null && op.key !== key) {
+                globalThis.__rateDivergence(type + " for " + cid + " is for rate limit key " + JSON.stringify(key) + ", but the current call is for " + JSON.stringify(op.key));
+                return "diverged";
+              }
+              if (type === "rate_created") {
+                var at = ${JSON.stringify(acquireAtIso ?? null)};
+                if (op && at !== null) {
+                  op.resumeAt = at;
+                  op.createdSlot = ${JSON.stringify(createdSlot)};
+                }
+                return "pending";
+              }
+              var settle;
+              if (type === "rate_acquired") {
+                settle = { kind: "resolve_undefined" };
+              } else {
+                var ErrCls = globalThis[Symbol.for('@workflow/errors//RateLimitMaxWaitError')];
+                var callKey = key !== null ? key : (op ? op.key : "");
+                var at2 = ${JSON.stringify(acquireAtIso ?? null)};
+                var err;
+                if (typeof ErrCls === 'function') {
+                  err = new ErrCls(callKey, at2 !== null ? new Date(at2) : undefined);
+                } else {
+                  err = new Error('Rate limit ' + JSON.stringify(callKey) + " has no slot within the call's maxWait");
+                  err.name = 'RateLimitMaxWaitError';
+                  err.key = callKey;
+                  if (at2 !== null) err.wouldAcquireAt = new Date(at2);
+                }
+                settle = { kind: "reject_value", value: err };
+              }
+              var resolver = globalThis.__resolvers[cid];
+              if (resolver) {
+                delete globalThis.__resolvers[cid];
+                if (settle.kind === "resolve_undefined") resolver.resolve(); else resolver.reject(settle.value);
+                return "settled";
+              }
+              return "unsettled";
+            })()`
+          )
+        ) as 'diverged' | 'pending' | 'settled' | 'unsettled';
+        if (outcome === 'settled' || outcome === 'diverged') {
+          resolved = true;
+          let b: number;
+          do {
+            b = vm.executePendingJobs();
+          } while (b > 0);
+        } else if (
+          outcome === 'unsettled' &&
+          !isConsumedTerminal(cid, getLastUlid())
+        ) {
+          // No resolver yet, so buffer (see step_completed above).
+          vm.evalCode(
+            event.eventType === 'rate_acquired'
+              ? `globalThis.__terminalBuffer[${cidJs}] = { kind: "resolve_undefined" };`
+              : `(function(){
+                  var ErrCls = globalThis[Symbol.for('@workflow/errors//RateLimitMaxWaitError')];
+                  var at = ${JSON.stringify(acquireAtIso ?? null)};
+                  var key = ${JSON.stringify(key ?? '')};
+                  var err = typeof ErrCls === 'function' ? new ErrCls(key, at !== null ? new Date(at) : undefined) : Object.assign(new Error('Rate limit ' + JSON.stringify(key) + " has no slot within the call's maxWait"), { name: 'RateLimitMaxWaitError', key: key });
+                  globalThis.__terminalBuffer[${cidJs}] = { kind: "reject_value", value: err };
+                })()`
+          ).dispose();
+        }
+        markCreated(vm, cidJs, 'rate');
         break;
       }
       case 'attr_set': {
@@ -3315,7 +3656,7 @@ interface TerminalInertBatch {
  * `__unreflectedTerminals` until it is (see endTerminalInertBatch).
  */
 const TERMINAL_STATE_JS = `
-  var re = /^(step|wait|attr|hook)_([0-9A-HJKMNP-TV-Z]{26})$/;
+  var re = /^(step|wait|rate|attr|hook)_([0-9A-HJKMNP-TV-Z]{26})$/;
   function reflected(cid) {
     var m = re.exec(cid);
     if (!m) return false;
@@ -3405,7 +3746,8 @@ function endTerminalInertBatch(
  * ids whose promise the VM constructs (via __registerResolver) in the same
  * synchronous call that draws the id.
  */
-const AWAITED_CORRELATION_ID = /^(?:step|wait|attr)_([0-9A-HJKMNP-TV-Z]{26})$/;
+const AWAITED_CORRELATION_ID =
+  /^(?:step|wait|rate|attr)_([0-9A-HJKMNP-TV-Z]{26})$/;
 
 /**
  * Whether the VM already consumed the terminal for this correlation id.
@@ -3624,6 +3966,9 @@ function collectDrainOperations(
       }
       if (p.abortRequested) return true;
       if (p.hasCreatedEvent) return false;
+      // A finished run has nobody to wait for a slot, so the drain reserves
+      // none (as the node:vm engine's terminal drain does).
+      if (p.type === "rate") return false;
       // Skip system hooks that were disposed before ever being created.
       if (p.type === "hook" && p.disposed) return false;
       return true;

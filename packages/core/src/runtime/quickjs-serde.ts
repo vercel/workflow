@@ -190,6 +190,11 @@ const CAPTURE_INTRINSICS = `(() => {
     dataViewByteOffset: getter(DataView.prototype, 'byteOffset'),
     dataViewByteLength: getter(DataView.prototype, 'byteLength'),
     arrayBufferByteLength: getter(ArrayBuffer.prototype, 'byteLength'),
+    // QuickJS-NG >= 0.16 implements the Error.prototype.stack accessor
+    // proposal: an engine-captured stack lives in an internal slot behind
+    // this native getter rather than in an own data property. Undefined
+    // on engines that still store it as an own data property.
+    errorStack: getter(Error.prototype, 'stack'),
     objectPrototype: Object.prototype,
     errorPrototype: Error.prototype,
     domExceptionPrototype: maybeProto(g.DOMException),
@@ -259,6 +264,7 @@ const SYMBOL_NAMES = [
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
   '@workflow/errors//HookForceClaimedError',
+  '@workflow/errors//RateLimitMaxWaitError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
@@ -427,6 +433,7 @@ export function createQuickJSSerde(
     dataViewByteOffset: at('dataViewByteOffset'),
     dataViewByteLength: at('dataViewByteLength'),
     arrayBufferByteLength: at('arrayBufferByteLength'),
+    errorStack: optional('errorStack'),
     objectPrototype: at('objectPrototype'),
     errorPrototype: at('errorPrototype'),
     domExceptionPrototype: optional('domExceptionPrototype'),
@@ -595,6 +602,29 @@ export function createQuickJSSerde(
     return result;
   };
 
+  /**
+   * An Error's `stack`. An own data property (set by guest code, or by
+   * revivers) wins. Otherwise, on engines with the Error.prototype.stack
+   * accessor, read the engine-captured trace through the boot-captured
+   * native getter: it only returns the Error's internal slot and runs no
+   * guest code, so a guest that replaces `Error.prototype.stack` cannot
+   * observe or spoof the read. Falls back to a data-property lookup along
+   * the prototype chain.
+   */
+  const errorStackString = (value: JSValueHandle): string | undefined => {
+    const ownStack = own(value, 'stack');
+    if (ownStack) {
+      const result = ownStack.isString ? ownStack.toString() : undefined;
+      ownStack.dispose();
+      return result;
+    }
+    if (i.errorStack && value.isError) {
+      using engineStack = call(i.errorStack, value);
+      if (engineStack.isString) return engineStack.toString();
+    }
+    return chainedString(value, 'stack');
+  };
+
   const ownString = (
     target: JSValueHandle,
     key: string | JSValueHandle
@@ -671,7 +701,7 @@ export function createQuickJSSerde(
 
   /**
    * `HookConflictError`'s third constructor argument for a reduced value:
-   * `{ kind: 'start' }` for a refused `start({ hook })`, else undefined.
+   * `{ kind: 'start' }` for a refused `start({ experimental_hook })`, else undefined.
    */
   const startConflictOptions = (value: JSValueHandle): JSValueHandle => {
     if (ownString(value, 'kind') !== 'start') return vm.undefined;
@@ -938,7 +968,7 @@ export function createQuickJSSerde(
     const shape: { message: string; stack?: string; cause?: unknown } = {
       message: chainedString(value, 'message') ?? '',
     };
-    const stack = chainedString(value, 'stack');
+    const stack = errorStackString(value);
     if (stack !== undefined) shape.stack = stack;
     if (guestHasOwn(value, 'cause')) {
       shape.cause = own(value, 'cause') ?? undefined;
@@ -965,9 +995,22 @@ export function createQuickJSSerde(
     return result;
   };
 
+  /**
+   * The own `signal` property, only when it holds an object. Plain objects
+   * such as fetch options carry `signal: undefined` (the AI SDK always
+   * passes one), and reading symbol keys off that handle throws.
+   */
+  const ownSignal = (value: JSValueHandle): JSValueHandle | undefined => {
+    const signal = own(value, 'signal');
+    if (!signal) return undefined;
+    if (signal.typeof === 'object' && !signal.isNull) return signal;
+    signal.dispose();
+    return undefined;
+  };
+
   const reduceAbort = (value: JSValueHandle): unknown => {
     // streamName/hookToken live on the signal (or the controller's signal).
-    const signal = own(value, 'signal');
+    const signal = ownSignal(value);
     const holder = signal ?? value;
     const streamName =
       ownSymbolString(value, 'WORKFLOW_ABORT_STREAM_NAME') ??
@@ -1001,7 +1044,7 @@ export function createQuickJSSerde(
       if (!guestHasOwn(value, 'signal')) return false;
       const hasStamp =
         ownSymbolString(value, 'WORKFLOW_ABORT_STREAM_NAME') !== undefined ||
-        own(value, 'signal')?.consume(
+        ownSignal(value)?.consume(
           (signal) =>
             ownSymbolString(signal, 'WORKFLOW_ABORT_STREAM_NAME') !== undefined
         );
@@ -1188,6 +1231,25 @@ export function createQuickJSSerde(
         reduced.claimedByHookId = claimedByHookId;
       } else {
         claimedByHookId?.dispose();
+      }
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
+    RateLimitMaxWaitError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'RateLimitMaxWaitError')
+        return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        key: own(value, 'key'),
+      };
+      const wouldAcquireAt = own(value, 'wouldAcquireAt');
+      if (wouldAcquireAt && !wouldAcquireAt.isUndefined) {
+        reduced.wouldAcquireAt = wouldAcquireAt;
+      } else {
+        wouldAcquireAt?.dispose();
       }
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
@@ -1918,6 +1980,40 @@ export function createQuickJSSerde(
       } else {
         error = buildError(i.Error, value, { name: 'HookForceClaimedError' });
         for (const field of ['token', 'claimedByRunId', 'claimedByHookId']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+      }
+      return error;
+    },
+    RateLimitMaxWaitError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass(
+        '@workflow/errors//RateLimitMaxWaitError'
+      );
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (key, wouldAcquireAt); the message is the
+        // original's.
+        const key = own(value, 'key') ?? vm.undefined;
+        const wouldAcquireAt = own(value, 'wouldAcquireAt') ?? vm.undefined;
+        error = vm.construct(cls, key, wouldAcquireAt);
+        if (key !== vm.undefined) key.dispose();
+        if (wouldAcquireAt !== vm.undefined) wouldAcquireAt.dispose();
+        for (const field of ['message', 'stack']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+        if (guestHasOwn(value, 'cause')) {
+          const cause = own(value, 'cause') ?? vm.undefined;
+          define(error, 'cause', cause);
+          if (cause !== vm.undefined) cause.dispose();
+        }
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'RateLimitMaxWaitError' });
+        for (const field of ['key', 'wouldAcquireAt']) {
           const handle = own(value, field);
           if (handle && !handle.isUndefined) define(error, field, handle);
           handle?.dispose();

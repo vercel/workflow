@@ -78,7 +78,7 @@ export function TraceViewerSkeleton() {
 
       {/* Minimap strip: thin density lines tracing the same shape as the bars */}
       <div className="relative h-10 min-h-10 shrink-0 border-b border-gray-alpha-400">
-        <div className="absolute inset-x-4 top-[6px]">
+        <div className="absolute inset-x-4 top-1.5">
           {ROWS.map((row) => (
             <Skeleton
               key={row.id}
@@ -130,7 +130,7 @@ export function TraceViewerSkeleton() {
             <div key={row.id} className="relative h-10">
               <div className="absolute inset-x-4 inset-y-0">
                 <Skeleton
-                  className={`absolute top-1/2 h-6 -translate-y-1/2 rounded-[0.25rem] ${row.offsetClassName} ${row.barClassName}`}
+                  className={`absolute top-1/2 h-6 -translate-y-1/2 rounded-sm ${row.offsetClassName} ${row.barClassName}`}
                 />
               </div>
             </div>

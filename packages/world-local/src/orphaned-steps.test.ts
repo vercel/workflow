@@ -77,10 +77,13 @@ async function restart(
   await world.start();
   return {
     world,
-    atDelivery: await vi.waitFor(() => {
-      if (!atDelivery) throw new Error('run not delivered yet');
-      return atDelivery;
-    }),
+    atDelivery: await vi.waitFor(
+      () => {
+        if (!atDelivery) throw new Error('run not delivered yet');
+        return atDelivery;
+      },
+      { timeout: 20_000 }
+    ),
   };
 }
 
@@ -296,7 +299,11 @@ describe('orphaned inline steps on restart', () => {
   it('releases several runs at once, each before its own delivery', async () => {
     const previous = createWorld({ dataDir });
     const runIds: string[] = [];
-    for (let i = 0; i < 3 * RELEASE_CONCURRENCY; i++) {
+    // A couple more runs than are released at once are enough to see the
+    // bound. Every run costs about a dozen database operations here and at
+    // the restart, which on a loaded Windows runner (a connection opened per
+    // operation, see vitest.config.ts) took 24 runs past the test timeout.
+    for (let i = 0; i < RELEASE_CONCURRENCY + 2; i++) {
       const runId = await startRun(previous);
       await startInlineStep(previous, runId, 'step_inline');
       runIds.push(runId);
@@ -329,7 +336,9 @@ describe('orphaned inline steps on restart', () => {
     await bootNewRealm();
     await world.start();
 
-    await vi.waitFor(() => expect(atDelivery.size).toBe(runIds.length));
+    await vi.waitFor(() => expect(atDelivery.size).toBe(runIds.length), {
+      timeout: 20_000,
+    });
     for (const runId of runIds) {
       expect(atDelivery.get(runId)).toEqual([
         'step_created',
@@ -359,7 +368,9 @@ describe('orphaned inline steps on restart', () => {
     await bootNewRealm();
     await world.start();
 
-    await vi.waitFor(() => expect(delivered).toEqual([runId]));
+    await vi.waitFor(() => expect(delivered).toEqual([runId]), {
+      timeout: 20_000,
+    });
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining(
         `Failed to release orphaned steps of run ${runId}`

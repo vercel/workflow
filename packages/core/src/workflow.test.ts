@@ -3207,6 +3207,41 @@ async function workflow() {
   });
 
   describe('Response', () => {
+    it.each([
+      ['getReader()', 'res.body.getReader()'],
+      ['for await', 'for await (const _ of res.body) {}'],
+    ])('does not support reading response.body with %s', async (_label, read) => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      await expect(
+        runWorkflow(
+          `async function workflow() {
+          const res = new Response('Hello, world!');
+          ${read};
+          return 'unreachable';
+        }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          [],
+          noEncryptionKey
+        )
+      ).rejects.toThrow('not available inside a workflow function');
+    });
+
     it('should support new Response with body', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {

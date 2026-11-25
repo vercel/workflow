@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  DynamicWorkflowsNotEnabledError,
   EncryptionKeyLookupError,
   MaxEventsExceededError,
   ReplayDivergenceError,
@@ -24,8 +25,8 @@ const WORLD_CONTRACT_ERROR_CODES = new Set([
 /**
  * `WorkflowWorldError.code` values that mark a transient transport failure
  * (set by world-vercel's HTTP client): `TRANSPORT` covers an exhausted
- * RetryAgent (`UND_ERR_REQ_RETRY`, e.g. the firewall in front of
- * workflow-server shedding load with 429/503), a dropped socket, or a
+ * RetryAgent (`UND_ERR_REQ_RETRY`, e.g. the backend
+ * shedding load with 429/503), a dropped socket, or a
  * connect/DNS failure; `TIMEOUT` covers a request that exceeded the client
  * timeout. Both are infrastructure failures a fresh invocation can recover
  * from. Kept distinct from `WORLD_CONTRACT_ERROR_CODES` so a transport blip is
@@ -47,7 +48,6 @@ const RETRYABLE_WORLD_ERROR_CODES = new Set([
 const RUNTIME_ERROR_CHECKS = [
   WorkflowRuntimeError.is,
   StepNotRegisteredError.is,
-  WorkflowNotRegisteredError.is,
   // SDK-level encryption failures (most notably AES-GCM auth-tag
   // mismatches surfacing as a native `OperationError` from
   // `AESCipherJob.onDone`) are wrapped in `RuntimeDecryptionError` at
@@ -90,7 +90,7 @@ export function isWorldContractError(err: unknown): err is WorkflowWorldError {
 }
 
 /**
- * True when an error from a world (workflow-server) call is a transient
+ * True when an error from a world (e.g. world-vercel) call is a transient
  * infrastructure failure that should be retried by redelivering the queue
  * message, rather than failing the run. A fresh invocation will likely
  * succeed once the backend (or the firewall in front of it) recovers.
@@ -120,6 +120,16 @@ export function isRetryableWorldError(err: unknown): boolean {
 }
 
 export function classifyRunError(err: unknown): RunErrorCode {
+  // A dynamic workflow started or delivered where the project has not opted
+  // in. It is not a WorkflowRuntimeError, so it would land on USER_ERROR
+  // anyway; checked explicitly (by name, so it holds after the error crosses
+  // a step boundary or VM realm) so a future change to the hierarchy or the
+  // checks below cannot turn a project's configuration back into an SDK
+  // RUNTIME_ERROR.
+  if (DynamicWorkflowsNotEnabledError.is(err)) {
+    return RUN_ERROR_CODES.USER_ERROR;
+  }
+
   if (ReplayDivergenceError.is(err)) {
     return RUN_ERROR_CODES.REPLAY_DIVERGENCE;
   }
@@ -134,6 +144,13 @@ export function classifyRunError(err: unknown): RunErrorCode {
 
   if (WorkflowDeploymentMismatchError.is(err)) {
     return RUN_ERROR_CODES.DEPLOYMENT_MISMATCH;
+  }
+
+  // A run whose workflow the executing deployment doesn't bundle gets its own
+  // code rather than the generic RUNTIME_ERROR, so dashboards can tell a
+  // targeting or build problem apart from a runtime invariant failure.
+  if (WorkflowNotRegisteredError.is(err)) {
+    return RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED;
   }
 
   // World-layer faults, both a malformed response (contract violation) and a

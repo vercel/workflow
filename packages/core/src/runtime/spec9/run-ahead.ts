@@ -1,6 +1,9 @@
 import { globalSingleton } from '@workflow/utils';
 import type { Event, World } from '@workflow/world';
-import type { OutOfBandObservation } from '../out-of-band-observation.js';
+import {
+  isAlwaysObservedHook,
+  type OutOfBandObservation,
+} from '../out-of-band-observation.js';
 
 /**
  * What the boundary a speculative write ran ahead of allowed to land below
@@ -16,6 +19,15 @@ export interface RunAheadContext {
   sensitiveHookIds: ReadonlySet<string>;
   /** Steps this delivery runs inline: only it writes their events. */
   selfStepIds: ReadonlySet<string>;
+}
+
+/**
+ * The membership {@link runAheadHazard} reads: a context, or a view over
+ * several that answers without copying their ids into a new set.
+ */
+export interface RunAheadMembership {
+  sensitiveHookIds: Pick<ReadonlySet<string>, 'has'>;
+  selfStepIds: Pick<ReadonlySet<string>, 'has'>;
 }
 
 /**
@@ -42,7 +54,7 @@ export class RunAheadStopError extends Error {
  */
 export function runAheadHazard(
   event: Event,
-  context: RunAheadContext,
+  context: RunAheadMembership,
   isOwn: (event: Event) => boolean
 ): string | undefined {
   if (isOwn(event)) return undefined;
@@ -103,6 +115,7 @@ export function runAheadContextFor(input: {
   observation: OutOfBandObservation;
   hookItems: readonly {
     correlationId: string;
+    token: string;
     isSystem?: boolean;
     disposed?: boolean;
   }[];
@@ -113,7 +126,7 @@ export function runAheadContextFor(input: {
   for (const hook of input.hookItems) {
     if (hook.disposed) continue;
     if (
-      hook.isSystem ||
+      isAlwaysObservedHook(hook) ||
       input.observedHookIds === undefined ||
       input.observedHookIds.has(hook.correlationId)
     ) {

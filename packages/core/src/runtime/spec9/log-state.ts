@@ -1,4 +1,5 @@
 import type { Event, SerializedData } from '@workflow/world';
+import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from '../child-run-completion.js';
 
 /**
  * Upper bound on a step input carried on its queue message. Larger inputs are
@@ -36,6 +37,11 @@ export interface InlineStepSpec {
   attempt: number;
   firstStartedAt?: Date;
   /**
+   * When the step's latest attempt started, for an attempt after one that
+   * left no outcome. Reported if that attempt exhausted the retry budget.
+   */
+  lastStartedAt?: Date;
+  /**
    * The step's creation-bearing `step_started`, when the orchestrator wrote
    * it (its creation batch). The executor then writes no start.
    */
@@ -65,6 +71,8 @@ export interface LogStepState {
   starts: number;
   /** When the step's first attempt started. */
   firstStartedAt?: Date;
+  /** When the step's latest attempt started. */
+  lastStartedAt?: Date;
   terminal: boolean;
   /** The step's last event is a `step_retrying`. */
   lastIsRetrying: boolean;
@@ -144,6 +152,7 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
       case 'step_started':
         step.starts++;
         step.firstStartedAt ??= new Date(event.createdAt);
+        step.lastStartedAt = new Date(event.createdAt);
         step.lastIsRetrying = false;
         break;
       case 'step_retrying':
@@ -166,74 +175,159 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
   return out;
 }
 
+/** What a run waits on outside its orchestrator (see {@link externalWorkOf}). */
+export type ExternalWork = 'step' | 'hook';
+
 /**
- * Whether the run waits on work that happens outside its orchestrator: an
- * open hook (created, not disposed), or a step running from its own message
- * that has no outcome yet. That is a background step, or an inline step that
- * retried: an inline step's retry moves it to its own message, which runs
- * every later attempt.
+ * What the run waits on outside its orchestrator, if anything: `'step'` for
+ * a step running from its own message that has no outcome yet (a background
+ * step, or an inline step that retried: an inline step's retry moves it to
+ * its own message, which runs every later attempt), else `'hook'` for an
+ * open hook (created, not disposed), else `undefined`. A step outranks a
+ * hook: it decides how long a delivery lingers (see
+ * `getOrchestratorLingerMsFor`), and a step's outcome is due soon while a
+ * hook may never be resumed.
  *
  * Any open hook counts, however rarely it is resumed: a run that keeps a hook
  * open for its whole life (a cancel or approval hook beside a polling loop)
- * makes every pass that finds nothing to run linger, even one that just
- * armed a timer much longer than the linger window.
+ * makes every pass that finds nothing to run linger for the hook window,
+ * even one that just armed a timer much longer than it.
+ *
+ * The exception is the parent's child-run completion hook, which stays open
+ * for the rest of the run once the parent awaited a child
+ * (`child-run-completion.ts`). It is external work only while a child is
+ * awaited, which is when the dispatcher waits on its next payload. Given the
+ * suspension's `observedHookIds`, an open completion hook not among them does
+ * not count. Without them (QuickJS) every open hook counts.
  */
-export function awaitsExternalWork(events: readonly Event[]): boolean {
+export function externalWorkOf(
+  events: readonly Event[],
+  observedHookIds?: ReadonlySet<string>
+): ExternalWork | undefined {
   const openHooks = new Set<string>();
   const retried = new Set<string>();
   for (const event of events) {
     if (!event.correlationId) continue;
-    if (event.eventType === 'hook_created') openHooks.add(event.correlationId);
-    else if (event.eventType === 'hook_disposed') {
+    if (event.eventType === 'hook_created') {
+      const token = (event as { eventData?: { token?: unknown } }).eventData
+        ?.token;
+      const idleCompletionHook =
+        observedHookIds !== undefined &&
+        typeof token === 'string' &&
+        token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX) &&
+        !observedHookIds.has(event.correlationId);
+      if (!idleCompletionHook) openHooks.add(event.correlationId);
+    } else if (event.eventType === 'hook_disposed') {
       openHooks.delete(event.correlationId);
     } else if (event.eventType === 'step_retrying') {
       retried.add(event.correlationId);
     }
   }
-  if (openHooks.size > 0) return true;
-  return analyzeLogSteps(events).some(
-    (step) =>
-      !step.terminal && (!step.inline || retried.has(step.correlationId))
-  );
+  if (
+    analyzeLogSteps(events).some(
+      (step) =>
+        !step.terminal && (!step.inline || retried.has(step.correlationId))
+    )
+  ) {
+    return 'step';
+  }
+  return openHooks.size > 0 ? 'hook' : undefined;
 }
 
-/** An open wait: created and not completed. */
+/**
+ * Whether the run waits on work that happens outside its orchestrator: an
+ * open hook, or a step running from its own message (see
+ * {@link externalWorkOf}).
+ */
+export function awaitsExternalWork(
+  events: readonly Event[],
+  observedHookIds?: ReadonlySet<string>
+): boolean {
+  return externalWorkOf(events, observedHookIds) !== undefined;
+}
+
+/**
+ * An open wait: created and not completed.
+ *
+ * Two kinds share the timer machinery. A `sleep()` is open from its
+ * `wait_created` until its `wait_completed`. An `experimental_rateLimit()`
+ * call that has to wait is open from its committed `rate_created`, which
+ * carries the reserved `acquireAt`, until its `rate_acquired` (or a
+ * `rate_failed`, which only a World writes): its `resumeAt` is that
+ * `acquireAt`, and the orchestrator that completes it writes `rate_acquired`
+ * naming the `rate_created`'s slot instead of `wait_completed`.
+ */
 export interface OpenWait {
+  kind: 'wait' | 'rate';
   correlationId: string;
   resumeAt: Date;
   resumeAtMs: number;
+  /** The `wait_created`, or the `rate_created` of a rate call. */
   event: Event;
 }
 
 export function openWaits(events: readonly Event[]): OpenWait[] {
   const completed = new Set<string>();
   for (const event of events) {
-    if (event.eventType === 'wait_completed' && event.correlationId) {
+    if (!event.correlationId) continue;
+    if (
+      event.eventType === 'wait_completed' ||
+      event.eventType === 'rate_acquired' ||
+      event.eventType === 'rate_failed'
+    ) {
       completed.add(event.correlationId);
     }
   }
   const seen = new Set<string>();
   const out: OpenWait[] = [];
   for (const event of events) {
-    if (event.eventType !== 'wait_created' || !event.correlationId) continue;
-    if (completed.has(event.correlationId) || seen.has(event.correlationId)) {
+    if (!event.correlationId) continue;
+    let kind: OpenWait['kind'];
+    let resumeAt: Date;
+    if (event.eventType === 'wait_created') {
+      kind = 'wait';
+      resumeAt = new Date(event.eventData.resumeAt);
+    } else if (
+      event.eventType === 'rate_created' &&
+      event.eventData.acquireAt !== undefined
+    ) {
+      kind = 'rate';
+      resumeAt = new Date(event.eventData.acquireAt);
+    } else {
       continue;
     }
-    seen.add(event.correlationId);
-    const resumeAt = new Date(event.eventData.resumeAt);
-    out.push({
+    if (completed.has(event.correlationId)) continue;
+    const open: OpenWait = {
+      kind,
       correlationId: event.correlationId,
       resumeAt,
       resumeAtMs: resumeAt.getTime(),
       event,
-    });
+    };
+    if (seen.has(event.correlationId)) {
+      // A rate call woken past its grace window is reserved again: the World
+      // commits a new `rate_created` in place of its `rate_acquired`, and the
+      // call waits for the newest one's slot. A repeated `wait_created` keeps
+      // the first.
+      if (kind === 'rate') {
+        const at = out.findIndex(
+          (wait) => wait.correlationId === event.correlationId
+        );
+        out[at] = open;
+      }
+      continue;
+    }
+    seen.add(event.correlationId);
+    out.push(open);
   }
   return out;
 }
 
 /**
  * Open waits whose deadline has passed, and open waits named in `wakeUp`
- * (`run.wakeUp()`), whatever their deadline.
+ * (`run.wakeUp()`), whatever their deadline. A rate call is never woken
+ * early: its slot is the World's to keep, and the World refuses a
+ * `rate_acquired` before it.
  */
 export function dueWaits(
   events: readonly Event[],
@@ -241,7 +335,9 @@ export function dueWaits(
   wakeUp?: ReadonlySet<string>
 ): OpenWait[] {
   return openWaits(events).filter(
-    (wait) => wait.resumeAtMs <= nowMs || wakeUp?.has(wait.correlationId)
+    (wait) =>
+      wait.resumeAtMs <= nowMs ||
+      (wait.kind === 'wait' && wakeUp?.has(wait.correlationId))
   );
 }
 

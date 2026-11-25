@@ -101,6 +101,15 @@ export const cliFlags = {
     helpValue: 'WEB_PORT',
     env: 'WORKFLOW_WEB_PORT',
   }),
+  webAllowedHosts: Flags.string({
+    description:
+      'Comma-separated host names the local web UI accepts, besides localhost and IP addresses (".example.com" matches subdomains, "*" any host)',
+    required: false,
+    helpGroup: 'Output',
+    helpLabel: '--webAllowedHosts',
+    helpValue: 'HOSTS',
+    env: 'WORKFLOW_WEB_ALLOWED_HOSTS',
+  }),
   noBrowser: Flags.boolean({
     description: 'Disable automatic browser opening when launching web UI',
     required: false,
@@ -172,4 +181,21 @@ export const urlFlag = {
     helpGroup: 'Output',
     helpLabel: '--url',
   }),
+};
+
+/**
+ * The flags that pick the backend to talk to, and how to print: the subset
+ * of {@link cliFlags} a command that is not a listing reads. Commands spread
+ * this instead of `cliFlags`, so `--help` does not advertise (and the parser
+ * does not accept) listing flags such as `--limit` or `--sort` that the
+ * command would silently ignore.
+ */
+export const targetFlags = {
+  verbose: cliFlags.verbose,
+  json: cliFlags.json,
+  backend: cliFlags.backend,
+  authToken: cliFlags.authToken,
+  project: cliFlags.project,
+  team: cliFlags.team,
+  env: cliFlags.env,
 };

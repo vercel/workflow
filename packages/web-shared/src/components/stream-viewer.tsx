@@ -2,9 +2,11 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { getStreamImageType } from '../lib/stream-image';
 import { serializeForClipboard } from './sidebar/copyable-data-block';
+import { StreamImagePreview } from './stream-image-preview';
 import { StreamViewerSkeleton } from './stream-viewer-skeleton';
-import { CopyButton } from './trace-viewer/components/copy-button';
+import { CopyButton } from './ui/copy-button';
 import { DataInspector } from './ui/data-inspector';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -34,22 +36,30 @@ interface StreamViewerProps {
 // ──────────────────────────────────────────────────────────────────────────
 
 const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
+  const image =
+    chunk.value instanceof Uint8Array && getStreamImageType(chunk.value)
+      ? chunk.value
+      : null;
   return (
     <div className="flex w-full items-start gap-1 border-b border-gray-alpha-400 px-3 py-2">
       <div className="min-w-0 flex-1">
-        {typeof chunk.value === 'string' ? (
-          <span className="whitespace-pre-wrap break-words text-label-12 font-mono text-gray-1000">
+        {image ? (
+          <StreamImagePreview data={image} />
+        ) : typeof chunk.value === 'string' ? (
+          <span className="whitespace-pre-wrap break-words text-label-12-mono text-gray-1000">
             {chunk.value}
           </span>
         ) : (
           <DataInspector data={chunk.value} expandLevel={1} />
         )}
       </div>
-      <CopyButton
-        copyText={serializeForClipboard(chunk.value)}
-        ariaLabel="Copy chunk"
-        className="shrink-0 -mr-1 [&>div]:h-4 [&>div]:w-4 [&_svg]:h-4 [&_svg]:w-4"
-      />
+      {!image && (
+        <CopyButton
+          textToCopy={serializeForClipboard(chunk.value)}
+          aria-label="Copy chunk"
+          className="-mr-1"
+        />
+      )}
     </div>
   );
 });
@@ -109,7 +119,7 @@ export function StreamViewer({
           </div>
         ) : chunks.length === 0 ? (
           <div className="flex h-10 items-center border-b border-gray-alpha-400 bg-background-200 px-3 text-label-12 text-gray-900">
-            {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
+            {isLive ? 'Waiting for stream data…' : 'Stream is empty'}
           </div>
         ) : (
           <Virtuoso

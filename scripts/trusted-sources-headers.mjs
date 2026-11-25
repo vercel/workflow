@@ -182,7 +182,19 @@ async function getOidcToken() {
   if (inflight) return inflight;
   inflight = (async () => {
     try {
-      const minted = await mintFromGitHubActionsRunner();
+      // An early refresh still holds a valid token, so it tries once and
+      // falls back to that token rather than holding every request through
+      // the backoff; the next request past the fast path tries again.
+      const stillValid = () => cachedToken && Date.now() < cachedExpiresAtMs;
+      let minted;
+      try {
+        minted = await mintFromGitHubActionsRunner(
+          stillValid() ? 1 : MINT_ATTEMPTS
+        );
+      } catch (error) {
+        if (stillValid()) return cachedToken;
+        throw error;
+      }
       if (minted) {
         cachedToken = minted.token;
         cachedExpiresAtMs = minted.expiresAtMs;
@@ -207,30 +219,96 @@ async function getOidcToken() {
   return inflight;
 }
 
+/** A mint failure that retrying cannot fix. */
+class MintError extends Error {}
+
+/** Attempts at the runner's token endpoint before a mint gives up. */
+const MINT_ATTEMPTS = 5;
+/**
+ * Bounds one attempt, so an endpoint that accepts the connection and never
+ * answers (as it does during the same incidents that return 503) is retried
+ * instead of holding every caller until the job times out.
+ */
+const MINT_ATTEMPT_TIMEOUT_MS = Number(
+  process.env.WORKFLOW_OIDC_MINT_ATTEMPT_TIMEOUT_MS ?? '10000'
+);
+/** Delay before the second attempt; doubled for each one after it. */
+const MINT_RETRY_BASE_DELAY_MS = Number(
+  process.env.WORKFLOW_OIDC_MINT_RETRY_BASE_DELAY_MS ?? '1000'
+);
+
+/**
+ * The runner's token endpoint is a GitHub service like any other and answers
+ * 5xx (or drops the connection) during GitHub incidents. A suite mints on its
+ * first request, so one failed mint fails a whole lane's suite before any
+ * test runs. Retries 5xx, 429 and network errors with backoff; anything else (a 4xx:
+ * the job lacks `id-token: write`, or its request token expired) is final.
+ *
+ * @param {string} url
+ * @param {string} requestToken
+ * @param {number} attempts
+ * @returns {Promise<Response>}
+ */
+async function fetchMintResponse(url, requestToken, attempts) {
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await attemptMint(url, requestToken);
+    if (outcome.response) return outcome.response;
+    if (attempt >= attempts) {
+      throw new MintError(
+        `Failed to mint GitHub Actions OIDC token after ${attempt} attempts: ${outcome.failure}`
+      );
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, MINT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1))
+    );
+  }
+}
+
+/**
+ * One request to the runner's token endpoint: its response when it
+ * succeeded, or why a retry may still succeed. Throws when one cannot.
+ *
+ * @param {string} url
+ * @param {string} requestToken
+ * @returns {Promise<{ response: Response } | { response?: undefined, failure: string }>}
+ */
+async function attemptMint(url, requestToken) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${requestToken}`,
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(MINT_ATTEMPT_TIMEOUT_MS),
+    });
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
+  if (res.ok) return { response: res };
+  const failure = `${res.status} ${res.statusText}`;
+  await res.body?.cancel().catch(() => {});
+  if (res.status < 500 && res.status !== 429) {
+    throw new MintError(`Failed to mint GitHub Actions OIDC token: ${failure}`);
+  }
+  return { failure };
+}
+
 /**
  * Mints a fresh OIDC token from the GitHub Actions runner if the
  * required env vars are set; returns `null` otherwise.
  *
+ * @param {number} attempts
  * @returns {Promise<{ token: string, expiresAtMs: number } | null>}
  */
-async function mintFromGitHubActionsRunner() {
+async function mintFromGitHubActionsRunner(attempts) {
   const url = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
   const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   if (!url || !requestToken) return null;
   // Audience defaults to `https://github.com/<owner>`; matches the
   // trusted-source rules configured on each Vercel project.
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${requestToken}`,
-      Accept: 'application/json',
-    },
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to mint GitHub Actions OIDC token: ${res.status} ${res.statusText}`
-    );
-  }
+  const res = await fetchMintResponse(url, requestToken, attempts);
   /** @type {{ value?: string }} */
   const body = await res.json();
   const token = body.value;

@@ -9,7 +9,7 @@ import { createWorld as createVercelCliWorld } from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
-import { checkForUpdateCached } from '../update-check.js';
+import { checkForUpdateCached, isBetaVersion } from '../update-check.js';
 import {
   inferLocalWorldEnvVars,
   inferVercelEnvVars,
@@ -31,6 +31,8 @@ export const setupCliWorld = async (
     authToken: string;
     project: string;
     team: string;
+    /** Git branch for resolving the latest preview deployment. */
+    branch?: string;
   },
   version: string,
   ignoreLocalWorldConfigError = false
@@ -47,11 +49,10 @@ export const setupCliWorld = async (
     : 'https://workflow-sdk.dev/';
 
   // Prepare showBox lines
-  const boxLines = [
-    `Workflow CLI v${version}`,
-    `Docs at ${docsUrl}`,
-    chalk.yellow('This is a beta release'),
-  ];
+  const boxLines = [`Workflow CLI v${version}`, `Docs at ${docsUrl}`];
+  if (isBetaVersion(version)) {
+    boxLines.push(chalk.yellow('This is a beta release'));
+  }
 
   // Add update message if available
   if (updateCheck.needsUpdate && updateCheck.latestVersion) {
@@ -60,12 +61,11 @@ export const setupCliWorld = async (
       chalk.cyan(
         `Update available: ${updateCheck.currentVersion} → ${updateCheck.latestVersion}`
       ),
-      // Note that we're suggesting install "latest" instead of the release tag that the user is
-      // on, because we currently tag beta releases as "latest". After GA, we need to adjust
-      // this to install the release tag that the user is on.
-      chalk.gray(
-        `Run: \`[npm|bun|pnpm] i workflow@${updateCheck.latestVersion}\``
-      ),
+      // The versions above are @workflow/cli versions, but users install the
+      // `workflow` package, which has its own version numbers. Suggest its
+      // "latest" dist-tag rather than pinning a CLI version number, which
+      // could name an older `workflow` release than the one installed.
+      chalk.gray('Run: `[npm|bun|pnpm] i workflow@latest`'),
       chalk.gray(
         terminalLink(
           'View changelog',
@@ -129,13 +129,17 @@ export const setupCliWorld = async (
         projectId: vercelEnvVars.projectId,
         projectName: vercelEnvVars.projectName,
         teamId: vercelEnvVars.teamId,
+        gitBranch: flags.branch,
       },
     });
   } else if (
     flags.backend === 'local' ||
     flags.backend === '@workflow/world-local'
   ) {
-    world = createLocalCliWorld();
+    // Read the key the running app wrote to its data directory, never
+    // replace it: a CLI command acts on that app, and a new key would be one
+    // the app's routes do not hold.
+    world = createLocalCliWorld({ queueAuthKey: 'read' });
   } else {
     world = await createDynamicCliWorld(flags.backend);
   }

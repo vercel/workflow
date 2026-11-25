@@ -23,6 +23,8 @@ import type { Queue } from './queue.js';
 import type {
   BulkCancelWorkflowRunsRequest,
   BulkCancelWorkflowRunsResult,
+  DeleteRunsDataRequest,
+  DeleteRunsDataResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WaitForTerminalRunStatusParams,
@@ -42,6 +44,7 @@ import type {
   Step,
   StepWithoutData,
 } from './steps.js';
+import type { RunUsage } from './usage.js';
 
 export interface StreamWriteSession {
   /**
@@ -334,6 +337,28 @@ export interface Storage {
     cancelMany?(
       request: BulkCancelWorkflowRunsRequest
     ): Promise<BulkCancelWorkflowRunsResult>;
+
+    /**
+     * Delete the stored data of many finished runs in a single operation,
+     * including their inputs, outputs and errors, their steps' and events'
+     * payloads, their hook payloads, and their stream contents. Metadata is
+     * not deleted: the run, step, event and hook records stay listed with
+     * their IDs, names, statuses, timestamps and the run's attributes, and
+     * streams keep their names; only the payloads read back as expired.
+     *
+     * Only finished runs have their data deleted. A run that has not
+     * finished is answered `skipped` and left untouched; the World must
+     * never cancel it. Returns a per-run outcome for each requested ID
+     * (order preserved) plus an aggregate summary. See
+     * `DeleteRunDataResult` for the outcomes.
+     *
+     * OPTIONAL. There is no fallback: the SDK helper `deleteRuns` in
+     * `@workflow/core` throws when the configured World does not implement
+     * it.
+     */
+    deleteDataMany?(
+      request: DeleteRunsDataRequest
+    ): Promise<DeleteRunsDataResult>;
   };
 
   steps: {
@@ -511,6 +536,10 @@ export interface Storage {
      * owns those barriers itself: the core runtime never batches a
      * suspension that carries attribute writes, and writes a suspension's
      * hook events through the single path concurrently with its batch.
+     *
+     * The design is described in
+     * `packages/core/src/runtime/spec8/batched-event-writes.md` in the Workflow
+     * SDK repository.
      */
     createBatch?(
       runId: string,
@@ -648,6 +677,27 @@ export interface Storage {
      */
     delete(runId: string): Promise<void>;
   };
+
+  /**
+   * Per-run usage (events, retries, data written) for observability
+   * surfaces such as `workflow inspect run --usage`.
+   *
+   * @experimental OPTIONAL, and its shape (`RunUsage`) may change without a
+   * major version bump. Only world-local implements it today; consumers
+   * feature-detect (`world.experimental_usage?.…`) and show nothing when it
+   * is absent.
+   *
+   * Implementations must count the run's whole log, not a page of it, and
+   * must not read every event to do so.
+   */
+  experimental_usage?: {
+    /**
+     * Usage of one run, read from one consistent view of its log.
+     * Rejects with `WorkflowRunNotFoundError` for a run this World does not
+     * see.
+     */
+    getRun(runId: string): Promise<RunUsage>;
+  };
 }
 
 /**
@@ -658,9 +708,11 @@ export interface Storage {
  * closed (keep their conservative behavior) unless the World explicitly
  * declares it.
  *
- * {@link inBandFence} is required for spec 9 runs, which are opt-in
- * (`WORKFLOW_SPEC_VERSION=9`): the runtime refuses to create or drive one on
- * a World that does not declare it. A World without it creates spec 8 runs.
+ * {@link inBandFence} is required for spec 9 runs: the runtime refuses to
+ * create or drive one on a World that does not declare it. A World that
+ * declares it creates spec 9 runs by default, or spec 10 runs if it also
+ * declares {@link rateLimits} (`WORKFLOW_SPEC_VERSION=8` opts out); a World
+ * without it creates spec 8 runs.
  */
 export interface WorldCapabilities {
   /**
@@ -683,14 +735,14 @@ export interface WorldCapabilities {
   };
 
   /**
-   * Admits `start({ hook })`: `events.create` creates the start Hook
+   * Admits `start({ experimental_hook })`: `events.create` creates the start Hook
    * `startHookId(runId)` for `eventData.startHook.token` atomically with
    * creating the run on `run_created` and on a resilient `run_started`
    * (resumable at once, even while the run is pending), makes one immutable
    * accept-or-reject decision per candidate `runId`, and refuses a duplicate
    * with `HookConflictError` naming the owner. The full contract is in
    * `start-hook.ts`; `test-support/atomic-start-hook-conformance.ts` checks
-   * it. Missing or inactive means `start({ hook })` fails before it publishes
+   * it. Missing or inactive means `start({ experimental_hook })` fails before it publishes
    * anything. A start that also sets a retention requires `hookRetention`.
    *
    * Like every capability, this describes the complete World: a World whose
@@ -705,10 +757,8 @@ export interface WorldCapabilities {
   /**
    * The World's queue delivers a single-orchestrator run's orchestrator
    * messages one at a time (see `singleOrchestratorRunIdOf`): on Vercel
-   * Queues, a concurrency key per run (or, under
-   * `WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run topics consumed with
-   * `maxConcurrency: 1`); an in-process per-run gate or a per-run job queue
-   * elsewhere. Worlds whose queue cannot serialize a run's orchestrator
+   * Queues, a concurrency key per run; an in-process per-run gate or a
+   * per-run job queue elsewhere. Worlds whose queue cannot serialize a run's orchestrator
    * deliveries must leave this unset.
    *
    * Declares queue *support*, not deployed configuration. The runtime takes
@@ -719,14 +769,29 @@ export interface WorldCapabilities {
   maxConcurrency?: boolean;
 
   /**
+   * **Experimental.** The World's queue can hold a message for its sender
+   * (`QueueOptions.experimental_hold`): `queue()` may come back with
+   * `experimental_hold.status: 'held'`, a claim the sender runs itself in
+   * the request that sent it, with the queue as the crash backstop.
+   * Declares *support*: a given send can still come back `not_held` (the
+   * queue service has send-and-hold off, local development), and is then
+   * delivered as usual.
+   * A caller that runs work in process behind a delayed backstop message
+   * where this is unset can send undelayed with a hold where it is set.
+   *
+   * @experimental
+   */
+  experimental_queueHold?: boolean;
+
+  /**
    * The World implements the in-band writer fence on single-orchestrator runs
    * (spec >= 9). **Required for spec 9 runs**: `@workflow/core` refuses to
    * create one in `start()`, or to begin a spec 9 orchestrator delivery, on
-   * a World that does not declare it, before it writes anything. Spec 9 runs
-   * are opt-in (`WORKFLOW_SPEC_VERSION=9`), and a World that declares this
-   * passes `{ inBandFence: true }` to `mintedSpecVersion` so the setting can
-   * take effect. A World without it creates spec 8 runs, which need no
-   * fence.
+   * a World that does not declare it, before it writes anything. A World
+   * that declares this passes `{ inBandFence: true }` to `mintedSpecVersion`,
+   * which then creates spec 9 runs by default, or spec 10 runs with
+   * {@link rateLimits} too (`WORKFLOW_SPEC_VERSION=8` keeps them on spec 8).
+   * A World without it creates spec 8 runs, which need no fence.
    *
    * Declaring it commits the World to all of:
    *
@@ -754,9 +819,68 @@ export interface WorldCapabilities {
    *   fence.
    *
    * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
-   * each of these against a World's `events` storage.
+   * each of these against a World's `events` storage. "Implementing spec 9 in
+   * a World" in `packages/core/src/runtime/spec9/README.md` (in the Workflow SDK
+   * repository) is the full guide.
    */
   inBandFence?: boolean;
+
+  /**
+   * The World reserves rate limit slots for `experimental_rateLimit()`, and
+   * so may mint runs at `SPEC_VERSION_RATE_LIMITS` (pass it to
+   * `mintedSpecVersion`, which then creates spec 10 runs by default). It
+   * requires {@link inBandFence}.
+   *
+   * What a World that declares this does with the rate events (see
+   * `events.ts`):
+   *
+   * - **`rate_created`** (in-band only, on a run at spec 10 or later): reserve
+   *   the call's slot on its key, scoped to the project, then commit what the
+   *   reservation decided IN PLACE of the request: `rate_acquired` with
+   *   `acquireAt` when the slot is now, `rate_created` with `acquireAt` when
+   *   it is later, `rate_failed` (`reason: 'max_wait'`) when it is past
+   *   `expiresAt`. Reserve nothing for a write the fence or the run's state
+   *   would refuse. Refuse with `EntityConflictError` a `rate_created` whose
+   *   correlation id already has an event, and with a 400 a key that starts
+   *   with `$` unless the request sets `allowReservedKey: true`
+   *   (`assertRateLimitKeyAllowed`); the opt-in is not kept on the committed
+   *   event. `rateLimitIntervalUs` and `decideRateLimit` in
+   *   `@workflow/world` are the algorithm.
+   * - **`rate_acquired`** (in-band only): `eventData.createdSlot` names the
+   *   call's `rate_created`. Refuse it with `EntityConflictError` on a run in
+   *   a terminal state, when that slot holds no `rate_created` of the same
+   *   correlation id, or when the call was already settled, and with
+   *   `TooEarlyError` (`retryAfter` in seconds) before that event's
+   *   `acquireAt` by the World's clock. Within the call's grace
+   *   (`decideRateWake`), commit the recorded `acquireAt`, never one the
+   *   request carries; past it, reserve the call again and commit what that
+   *   decided in place of the request (`rate_acquired`, `rate_created` with
+   *   `acquireAt` and `lateWakes`, or `rate_failed`).
+   * - **`rate_failed`** is never accepted from a client.
+   *
+   * A World without it refuses every rate event, so a spec 10 run never
+   * records one it did not decide.
+   */
+  rateLimits?: boolean;
+
+  /**
+   * The World's `events.createBatch` takes in-band `rate_created` and
+   * `rate_acquired` items, at the end of a batch and several at once, and
+   * decides each one exactly as the single-event write does (see
+   * {@link rateLimits}), in request order: it reserves only once the fence
+   * was accepted, and the item's result carries the event committed in its
+   * place (`rate_acquired`, `rate_created` with `acquireAt`, or
+   * `rate_failed`). A refused item is answered with the status the single
+   * write would have had (400, 409, 425) and its position is sealed like any
+   * refused item's, or the batch reports `allocated`. An item refused with
+   * `rate-batch-deferred` or `rate-decision-failed` (503) had nothing
+   * committed, and the runtime sends it again; a slot the World reserved for
+   * it before failing is wasted, never admitted twice. The runtime sends
+   * a rate limit call's write in the same batch as the speculative step
+   * outcomes queued before it, which saves the call a round trip, and the
+   * writes of calls made at once in one batch. Requires {@link rateLimits}.
+   */
+  rateEventsInBatch?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
@@ -825,7 +949,7 @@ export interface WorldCapabilities {
    *      the re-pointing if the claimer had not, so `resumeHook()` can follow
    *      the token to its new owner and retry with the same `resumeId`.
    *
-   * Formalised in `workflow-server/specs/HookForceClaim.tla`. A World that
+   * A World that
    * cannot give these guarantees must leave this unset; the runtime then
    * rejects `experimental_force` at `createHook()` time.
    */
@@ -931,6 +1055,11 @@ export interface World extends Queue, Streamer, Storage {
    * determines the latest deployment that shares the same environment (e.g., same
    * "production" target or same git branch for "preview" deployments) as the
    * current deployment.
+   *
+   * The CLI's `workflow start` uses it too, so a process that is not itself a
+   * deployment resolves "latest" the same way `start()` does. Such a process
+   * has no current deployment, so an implementation that supports it resolves
+   * relative to the environment it was configured for.
    *
    * Not all World implementations support this: it is only implemented by
    * world-vercel where deployment routing is meaningful.

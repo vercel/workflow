@@ -132,6 +132,8 @@ describe('useStreamReader payloads', () => {
   });
 
   it.each([
+    'x',
+    'ab',
     'encrypted text',
     'encp is plain text',
     'devl is plain text',
@@ -176,6 +178,125 @@ describe('useStreamReader payloads', () => {
 describe('useStreamReader status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each([
+    [0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10],
+    [0xff, 0xd8, 0xff, 0xe0],
+    [...new TextEncoder().encode('GIF89a')],
+    [...new TextEncoder().encode('RIFF1234WEBP')],
+  ])('preserves raw image bytes across network chunks: %j', async (...header) => {
+    const payload = Uint8Array.from([...header, 10, 0xff, 0, 1, 2, 3, 4, 5]);
+    vi.mocked(readStream).mockResolvedValue({
+      body: new ReadableStream({
+        start(controller) {
+          for (let offset = 0; offset < payload.length; offset += 2)
+            controller.enqueue(payload.slice(offset, offset + 2));
+          controller.close();
+        },
+      }),
+      cursor: null,
+      done: true,
+    });
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'image', 'run-1', null, 'completed')
+    );
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.chunks.map(({ value }) => value)).toEqual([payload]);
+  });
+
+  it.each([
+    2, 7, 12,
+  ])('refreshes a growing image after a %i-byte initial snapshot', async (length) => {
+    const signature = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4,
+    ]);
+    const partial = signature.slice(0, length);
+    const complete = Uint8Array.from([...signature, 10, 0xff, 5, 6]);
+    const response = (bytes: Uint8Array, done: boolean): StreamResponse => ({
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+      cursor: 'storage-cursor',
+      done,
+    });
+    vi.mocked(readStream)
+      .mockResolvedValueOnce(response(partial, false))
+      .mockResolvedValueOnce(response(complete, true));
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'image', 'run-1', null, 'running')
+    );
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    expect(result.current.chunks.map(({ value }) => value)).toEqual(
+      length >= 12 ? [partial] : []
+    );
+    const id = result.current.chunks[0]?.id;
+    await waitFor(
+      () =>
+        expect(result.current.chunks.map(({ value }) => value)).toEqual([
+          complete,
+        ]),
+      { timeout: 5000 }
+    );
+    if (id !== undefined) expect(result.current.chunks[0].id).toBe(id);
+    expect(vi.mocked(readStream).mock.calls[1][4]).toBeUndefined();
+    expect(result.current.isLive).toBe(false);
+  });
+
+  it('keeps the current image when a poll returns the same bytes', async () => {
+    const image = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4,
+    ]);
+    vi.mocked(readStream).mockImplementation(async () => ({
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(image.slice());
+          controller.close();
+        },
+      }),
+      cursor: null,
+      done: false,
+    }));
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'image', 'run-1', null, 'running')
+    );
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    const initial = result.current.chunks;
+    await waitFor(() => expect(readStream).toHaveBeenCalledTimes(2), {
+      timeout: 5000,
+    });
+    // Let the poll's state update settle before comparing identities.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(result.current.chunks).toBe(initial);
+  });
+
+  it('reads a serialized frame shorter than the longest image signature', async () => {
+    const payload = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      Uint8Array.from(new TextEncoder().encode('[0]'))
+    ) as Uint8Array;
+    const framed = new Uint8Array(4 + payload.length);
+    new DataView(framed.buffer).setUint32(0, payload.length, false);
+    framed.set(payload, 4);
+    vi.mocked(readStream).mockResolvedValue({
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(framed);
+          controller.close();
+        },
+      }),
+      cursor: null,
+      done: true,
+    });
+    const { result } = renderHook(() =>
+      useStreamReader(env, 'stream', 'run-1', null, 'completed')
+    );
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    expect(result.current.chunks.map(({ value }) => value)).toEqual([0]);
   });
 
   it('does not report live while the initial request is loading', async () => {

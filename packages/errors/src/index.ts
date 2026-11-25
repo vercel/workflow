@@ -113,6 +113,7 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   HOOK_FORCE_CLAIMED: 'hook-force-claimed',
+  RATE_LIMIT_MAX_WAIT: 'rate-limit-max-wait',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
@@ -237,7 +238,7 @@ export class WorkflowWorldError extends WorkflowError {
 }
 
 /**
- * `WorkflowWorldError.code` for a `start({ hook })` request the World will
+ * `WorkflowWorldError.code` for a `start({ experimental_hook })` request the World will
  * never admit: an invalid start Hook, a retention beyond the World's limit, a
  * candidate too old to be created, or a candidate refused while admission was
  * switched off and recorded as refused. Permanent, so the queued copy of the
@@ -246,7 +247,7 @@ export class WorkflowWorldError extends WorkflowError {
 export const START_HOOK_ADMISSION_REJECTED = 'START_HOOK_ADMISSION_REJECTED';
 
 /**
- * `WorkflowWorldError.code` for a `start({ hook })` request answered while
+ * `WorkflowWorldError.code` for a `start({ experimental_hook })` request answered while
  * admission is switched off on the backend, with no decision recorded for the
  * candidate. Not final: once admission is back on, another copy of the same
  * candidate can still be admitted. `start()` reports it as
@@ -257,13 +258,13 @@ export const START_HOOK_ADMISSION_DISABLED = 'START_HOOK_ADMISSION_DISABLED';
 
 /**
  * `WorkflowWorldError.code` for a `run_cancelled` that reached a
- * `start({ hook })` candidate the World admitted but never created a run for.
+ * `start({ experimental_hook })` candidate the World admitted but never created a run for.
  * The World fenced it, so no copy can create it any more, and released its
  * token as for an ended run. `cancel()` treats it as cancelled.
  */
 export const START_HOOK_CANDIDATE_CANCELLED = 'START_HOOK_CANDIDATE_CANCELLED';
 
-/** Which half of `start({ hook })` could not be confirmed. */
+/** Which half of `start({ experimental_hook })` could not be confirmed. */
 export type WorkflowStartStage = 'queue' | 'admission';
 
 /**
@@ -310,6 +311,67 @@ export class WorkflowStartError extends WorkflowError {
 
   static is(value: unknown): value is WorkflowStartError {
     return isError(value) && value.name === 'WorkflowStartError';
+  }
+}
+
+/**
+ * @internal
+ * The environment variable a deployment sets to opt into dynamic workflows.
+ * Mirrors `DYNAMIC_WORKFLOWS_ENV` in `@workflow/core`, which this package
+ * cannot import.
+ */
+const DYNAMIC_WORKFLOWS_ENV_VAR = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
+
+const DYNAMIC_WORKFLOWS_DOCS_URL =
+  'https://workflow-sdk.dev/docs/advanced/dynamic-workflows#enabling-dynamic-workflows';
+
+/**
+ * @internal
+ * The fix-it hint carried by every {@link DynamicWorkflowsNotEnabledError}.
+ * Exported so presentation layers (e.g. `describeError` in `@workflow/core`)
+ * repeat the same instructions instead of drifting from them.
+ */
+export const DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT = `Set the ${DYNAMIC_WORKFLOWS_ENV_VAR}=1 environment variable on your project, then redeploy (or restart your dev server) so the new value takes effect.`;
+
+/**
+ * Thrown when a dynamic workflow is started or delivered on a deployment that
+ * has not opted into dynamic workflows with the
+ * `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` environment variable.
+ *
+ * This is a configuration problem in the user's project, not an SDK failure,
+ * so it is deliberately **not** a `WorkflowRuntimeError`: when a run fails
+ * on it (for example because `start()` refused inside a step and the
+ * workflow did not catch it), the run is recorded as `USER_ERROR` rather
+ * than `RUNTIME_ERROR`.
+ *
+ * `fatal` is set because the refusal is deterministic: a step that calls
+ * `start()` fails straight away instead of spending its retry budget on the
+ * same refusal. See `FatalError.is()`.
+ *
+ * Use the static `DynamicWorkflowsNotEnabledError.is()` method for
+ * type-safe checking in catch blocks. It is a name-based check, so it also
+ * recognizes the error after it crosses a step boundary or VM realm.
+ */
+export class DynamicWorkflowsNotEnabledError extends WorkflowError {
+  readonly fatal = true;
+
+  /**
+   * @param message - What was refused, e.g. that `start()` created no run.
+   *   The fix-it hint and a docs link are appended to it.
+   */
+  constructor(message: string, options?: ErrorOptions) {
+    super(
+      appendFramedDetails(message, [
+        { label: 'hint', value: DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT },
+        { label: 'docs', value: DYNAMIC_WORKFLOWS_DOCS_URL },
+      ]),
+      { cause: options?.cause }
+    );
+    this.name = 'DynamicWorkflowsNotEnabledError';
+  }
+
+  static is(value: unknown): value is DynamicWorkflowsNotEnabledError {
+    return isError(value) && value.name === 'DynamicWorkflowsNotEnabledError';
   }
 }
 
@@ -494,19 +556,28 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
  * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
  */
 export class MaxEventsExceededError extends WorkflowError {
+  /**
+   * The events the runtime counted. A lower bound on the log's size when
+   * {@link eventCountIsLowerBound} is set: the runtime stopped reading the
+   * log once it held the limit.
+   */
   readonly eventCount: number;
   readonly limit: number;
+  readonly eventCountIsLowerBound: boolean;
 
   constructor(
     eventCount: number,
     limit: number,
-    options?: WorkflowErrorOptions
+    options?: WorkflowErrorOptions & { eventCountIsLowerBound?: boolean }
   ) {
+    const eventCountIsLowerBound = options?.eventCountIsLowerBound === true;
     // Frame hint + docs here (instead of passing `slug` through) so the
     // hint sits above the docs link.
     super(
       formatErrorMessageWithDetails(
-        `Workflow exceeded the maximum of ${limit} events per run`,
+        eventCountIsLowerBound
+          ? `Workflow exceeded the maximum of ${limit} events per run (its event log holds at least ${eventCount} events)`
+          : `Workflow exceeded the maximum of ${limit} events per run`,
         {
           hint: `${QUICKJS_SNAPSHOT_REMEDIATION} Alternatively, split the work into child workflows.`,
           slug: options?.slug ?? ERROR_SLUGS.MAX_EVENTS_EXCEEDED,
@@ -517,6 +588,7 @@ export class MaxEventsExceededError extends WorkflowError {
     this.name = 'MaxEventsExceededError';
     this.eventCount = eventCount;
     this.limit = limit;
+    this.eventCountIsLowerBound = eventCountIsLowerBound;
   }
 
   static is(value: unknown): value is MaxEventsExceededError {
@@ -744,7 +816,7 @@ export class StepNotRegisteredError extends WorkflowRuntimeError {
  * - Something went wrong with the bundling/build tooling that caused the workflow
  *   to not get built correctly
  *
- * When this happens, the run fails with a `RUNTIME_ERROR` error code.
+ * When this happens, the run fails with a `WORKFLOW_NOT_REGISTERED` error code.
  */
 export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
   workflowName: string;
@@ -856,7 +928,7 @@ export class WorkflowRunNotFoundError extends WorkflowError {
  * `createHook` in two or more concurrent runs. Use a unique token per run
  * (or omit the token to let the runtime generate one automatically).
  *
- * `start(workflow, args, { hook })` throws it with `kind: 'start'` for a
+ * `start(workflow, args, { experimental_hook })` throws it with `kind: 'start'` for a
  * duplicate start: no run was created, and `conflictingRunId` owns the token.
  */
 export class HookConflictError extends WorkflowError {
@@ -864,7 +936,7 @@ export class HookConflictError extends WorkflowError {
   // TODO: Make this required once all persisted hook_conflict events and World
   // implementations always include the active hook owner's run ID.
   conflictingRunId?: string;
-  /** `'start'` when a `start({ hook })` was refused; no run was created. */
+  /** `'start'` when a `start({ experimental_hook })` was refused; no run was created. */
   kind?: 'start';
 
   constructor(
@@ -933,6 +1005,38 @@ export class HookForceClaimedError extends WorkflowError {
 }
 
 /**
+ * Thrown by `experimental_rateLimit()` in a workflow when the call's earliest
+ * slot on its key is past its `maxWait`. Nothing was reserved, so the call
+ * used up none of the key's capacity.
+ *
+ * Use the static `RateLimitMaxWaitError.is()` method for type-safe checking
+ * in catch blocks; the class identity differs between the workflow VM and the
+ * host, so `instanceof` is not reliable across that boundary.
+ */
+export class RateLimitMaxWaitError extends WorkflowError {
+  key: string;
+  /** When the call would have gone ahead, had it waited. */
+  wouldAcquireAt?: Date;
+
+  constructor(key: string, wouldAcquireAt?: Date) {
+    super(
+      `Rate limit "${key}" has no slot within the call's maxWait` +
+        (wouldAcquireAt
+          ? ` (next slot at ${wouldAcquireAt.toISOString()})`
+          : ''),
+      { slug: ERROR_SLUGS.RATE_LIMIT_MAX_WAIT }
+    );
+    this.name = 'RateLimitMaxWaitError';
+    this.key = key;
+    if (wouldAcquireAt !== undefined) this.wouldAcquireAt = wouldAcquireAt;
+  }
+
+  static is(value: unknown): value is RateLimitMaxWaitError {
+    return isError(value) && value.name === 'RateLimitMaxWaitError';
+  }
+}
+
+/**
  * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
  * does not match any active hook.
  *
@@ -982,16 +1086,37 @@ export class HookNotFoundError extends WorkflowError {
  *
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
+ *
+ * `code` carries the World's reason for the conflict when it gives one, such
+ * as {@link RUN_ALREADY_STARTED_CODE}. Without a code, the conflict says
+ * nothing about which of those cases it is.
  */
 export class EntityConflictError extends WorkflowWorldError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { code?: string; url?: string }) {
+    super(message, options);
     this.name = 'EntityConflictError';
   }
 
   static is(value: unknown): value is EntityConflictError {
     return isError(value) && value.name === 'EntityConflictError';
   }
+}
+
+/**
+ * Error code a World gives an {@link EntityConflictError} refusing a second
+ * `run_started` for a run that is running: the run was started, by this
+ * delivery's own earlier attempt or by another one, and has not finished. It
+ * does not mean the run finished, which a World answers differently.
+ */
+export const RUN_ALREADY_STARTED_CODE = 'run-already-started';
+
+/** Whether `error` refuses a `run_started` because the run already started. */
+export function isRunAlreadyStartedError(
+  error: unknown
+): error is EntityConflictError {
+  return (
+    EntityConflictError.is(error) && error.code === RUN_ALREADY_STARTED_CODE
+  );
 }
 
 /**
@@ -1383,6 +1508,9 @@ const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
 const HOOK_FORCE_CLAIMED_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookForceClaimedError'
 );
+const RATE_LIMIT_MAX_WAIT_ERROR_KEY = Symbol.for(
+  '@workflow/errors//RateLimitMaxWaitError'
+);
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
@@ -1419,6 +1547,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY, {
       value: HookForceClaimedError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RATE_LIMIT_MAX_WAIT_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RATE_LIMIT_MAX_WAIT_ERROR_KEY, {
+      value: RateLimitMaxWaitError,
       writable: false,
       enumerable: false,
       configurable: false,

@@ -12,9 +12,9 @@ import {
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
+import { afterRunFailed } from './after-terminal-write.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
 import type { EventCreator } from './helpers.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 
 /** Cap on the re-route backoff, in seconds. */
@@ -238,8 +238,9 @@ export async function guardDeploymentAffinity({
       }
       return result('failed', run.deploymentId, recoveryAttempts);
     }
-    dispatchRunFailedHooks(
-      run.runId,
+    await afterRunFailed(
+      world,
+      run,
       workflowName,
       dehydratedError,
       undefined,

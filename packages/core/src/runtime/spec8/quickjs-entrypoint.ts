@@ -45,6 +45,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
 import {
@@ -55,10 +56,6 @@ import {
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
 import { republishOwedForceClaimVictimWakes } from '../hook-wake.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import { quickjsWasiVersion } from '../quickjs-assets.generated.js';
 import {
   type EventCreator,
@@ -1470,7 +1467,9 @@ export async function runWorkflowWithQuickJS(params: {
                       ? { inlineDeltaSinceCursor }
                       : {}),
                   }))(),
-              'debug'
+              // Its retry goes out under its own `retry:1` key (below), not
+              // the dispatch key, so no waiting delivery may carry it.
+              { logLevel: 'debug' }
             )
           )
         );
@@ -1835,7 +1834,7 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
-    dispatchRunCompletedHooks(runId, workflowName);
+    await afterRunCompleted(world, workflowRun, workflowName);
   } else if (result.suspended) {
     // Workflow still suspended after the inline loop. All durable side
     // effects for the final suspension state were already dispatched by
@@ -2035,7 +2034,8 @@ export async function runWorkflowWithQuickJS(params: {
     // The VM serializes errors as `{ name, message, stack }`, so we
     // reconstruct a host-side Error of the correct class based on the
     // VM-side `name`: specific WorkflowRuntimeError subclasses need
-    // to be preserved so classifyRunError() tags them as RUNTIME_ERROR.
+    // to be preserved so classifyRunError() tags them with their own
+    // code (WORKFLOW_NOT_REGISTERED for WorkflowNotRegisteredError).
     const reconstructed: Error =
       result.failed.name === 'WorkflowNotRegisteredError'
         ? new WorkflowNotRegisteredError(workflowName)
@@ -2221,8 +2221,9 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
-    dispatchRunFailedHooks(
-      runId,
+    await afterRunFailed(
+      world,
+      workflowRun,
       workflowName,
       dehydratedError,
       encryptionKey,

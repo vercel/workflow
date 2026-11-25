@@ -314,7 +314,8 @@ export function ownedWaitChains(params: {
     waitCreatorMessageId(
       events.find(
         (event) =>
-          event.eventType === 'wait_created' &&
+          (event.eventType === 'wait_created' ||
+            event.eventType === 'rate_created') &&
           event.correlationId === correlationId
       )
     );
@@ -348,6 +349,14 @@ export function schedulesWaitTimer(params: {
     // Not in the log yet: this delivery is about to write it.
     return true;
   }
+  // A rate limit call's slot is known only once its `rate_created` commits,
+  // so its timer cannot go out before the creation the way a sleep's does
+  // (`armWaitsBeforeCreation`). A creating delivery that lost the response,
+  // and whose redelivery the queue coalesced into another message's, would
+  // then leave the call with no timer. Every delivery that sees one open
+  // arms it instead: the hop's key depends only on the call and its slot,
+  // so the queue keeps one timer however many send it.
+  if (wait.eventType === 'rate_created') return true;
   const creator = waitCreatorMessageId(wait);
   return creator !== undefined && ownedChains.has(creator);
 }
@@ -410,7 +419,11 @@ export function waitTimersToArm<
   const out: W[] = [];
   for (const wait of waits) {
     if (wait.correlationId === timerFor) out.push(wait);
-    const chain = waitCreatorMessageId(wait.event) ?? messageId;
+    // A rate limit call is its own chain (see `schedulesWaitTimer`).
+    const chain =
+      wait.event?.eventType === 'rate_created'
+        ? `rate:${wait.correlationId}`
+        : (waitCreatorMessageId(wait.event) ?? messageId);
     const current = earliest.get(chain);
     if (!current || wait.resumeAtMs < current.resumeAtMs) {
       earliest.set(chain, wait);
@@ -422,11 +435,16 @@ export function waitTimersToArm<
   return out;
 }
 
-/** The message whose invocation wrote `wait`'s `wait_created`, if recorded. */
+/**
+ * The message whose invocation wrote `wait`'s `wait_created`, or a rate
+ * call's `rate_created`, if recorded.
+ */
 export function waitCreatorMessageId(
   wait: Event | undefined
 ): string | undefined {
-  return wait?.eventType === 'wait_created'
-    ? wait.eventData.creatorMessageId
-    : undefined;
+  if (wait?.eventType === 'wait_created')
+    return wait.eventData.creatorMessageId;
+  if (wait?.eventType === 'rate_created')
+    return wait.eventData.creatorMessageId;
+  return undefined;
 }

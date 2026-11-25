@@ -1,5 +1,71 @@
 # @workflow/vite
 
+## 5.0.15
+
+### Patch Changes
+
+- [#5676](https://github.com/vercel/workflow/pull/5676) [`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump dev dependency `vite` to patched releases (7.3.8, 8.3.8) to pick up a security fix.
+- Updated dependencies []:
+  - @workflow/builders@5.1.6
+
+## 5.0.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.5
+
+## 5.0.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.4
+
+## 5.0.12
+
+### Patch Changes
+
+- Updated dependencies [[`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc)]:
+  - @workflow/builders@5.1.3
+
+## 5.0.11
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f)]:
+  - @workflow/builders@5.1.2
+
+## 5.0.10
+
+### Patch Changes
+
+- Updated dependencies [[`c88e158`](https://github.com/vercel/workflow/commit/c88e158eaed8c69a9aadb9ae0ef43d14d748ad25)]:
+  - @workflow/builders@5.1.1
+
+## 5.0.9
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump dev dependencies `next` to 16.4.5 and `vite` to 7.3.7 to pick up security fixes.
+- Updated dependencies [[`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198), [`e05186a`](https://github.com/vercel/workflow/commit/e05186ab2fc138a7b1b52b263cff0b3d4deaafb0), [`f61f410`](https://github.com/vercel/workflow/commit/f61f41006b23ad3659180f17c6a2a94e0ac3249e), [`b573022`](https://github.com/vercel/workflow/commit/b5730229e4dec88e18d32c05988efd5f05e27947), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b)]:
+  - @workflow/builders@5.1.0
+
+## 5.0.8
+
+### Patch Changes
+
+- Updated dependencies [[`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41)]:
+  - @workflow/builders@5.0.8
+
+## 5.0.7
+
+### Patch Changes
+
+- Updated dependencies [[`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1)]:
+  - @workflow/builders@5.0.7
+
 ## 5.0.6
 
 ### Patch Changes

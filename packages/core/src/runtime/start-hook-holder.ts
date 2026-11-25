@@ -99,7 +99,7 @@ export type StartHookHolderWakeResult =
   | 'error';
 
 /**
- * A refused `start({ hook })` names the token's holder. When that holder is
+ * A refused `start({ experimental_hook })` names the token's holder. When that holder is
  * a run still `pending` well past a normal startup, its first orchestrator
  * message was most likely lost and nothing else will start it, so the token
  * would stay held by a run that never runs. Re-publish a plain orchestrator

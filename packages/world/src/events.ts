@@ -17,36 +17,38 @@ import type { Wait } from './waits.js';
 export * from './event-metadata.js';
 
 // Event type enum
-export const EventTypeSchema = z.compile(
-  z.enum([
-    // Run lifecycle events
-    'run_created',
-    'run_started',
-    'run_completed',
-    'run_failed',
-    'run_cancelled',
-    // Run attribute events
-    'attr_set',
-    // Step lifecycle events
-    'step_created',
-    'step_completed',
-    'step_failed',
-    'step_retrying',
-    'step_started',
-    // Hook lifecycle events
-    'hook_created',
-    'hook_received',
-    'hook_disposed',
-    'hook_conflict', // Created by world when hook token already exists
-    // Wait lifecycle events
-    'wait_created',
-    'wait_completed',
-    // Sealed-log filler (specVersion >= 7): written ONLY by the World's backend
-    // to occupy a slot whose writer allocated it and died. Carries no workflow
-    // meaning; replay skips it (see EventsConsumer). Never user-creatable.
-    'noop',
-  ])
-);
+export const EventTypeSchema = z.enum([
+  // Run lifecycle events
+  'run_created',
+  'run_started',
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+  // Run attribute events
+  'attr_set',
+  // Step lifecycle events
+  'step_created',
+  'step_completed',
+  'step_failed',
+  'step_retrying',
+  'step_started',
+  // Hook lifecycle events
+  'hook_created',
+  'hook_received',
+  'hook_disposed',
+  'hook_conflict', // Created by world when hook token already exists
+  // Wait lifecycle events
+  'wait_created',
+  'wait_completed',
+  // Rate limit events (specVersion >= 10, `experimental_rateLimit()`)
+  'rate_created',
+  'rate_acquired', // Also committed by the World in place of a rate_created
+  'rate_failed', // Created by world when a rate_created's slot is past its deadline
+  // Sealed-log filler (specVersion >= 7): written ONLY by the World's backend
+  // to occupy a slot whose writer allocated it and died. Carries no workflow
+  // meaning; replay skips it (see EventsConsumer). Never user-creatable.
+  'noop',
+]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 
 const RunEventTypeSchema = EventTypeSchema.extract([
@@ -63,13 +65,11 @@ export function isRunEventType(eventType: string): eventType is RunEventType {
   return RUN_EVENT_TYPES.includes(eventType as RunEventType);
 }
 
-export const TerminalRunEventTypeSchema = z.compile(
-  EventTypeSchema.extract([
-    'run_completed',
-    'run_failed',
-    'run_cancelled',
-  ] as const)
-);
+export const TerminalRunEventTypeSchema = EventTypeSchema.extract([
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+] as const);
 export type TerminalRunEventType = z.infer<typeof TerminalRunEventTypeSchema>;
 export const TERMINAL_RUN_EVENT_TYPES = TerminalRunEventTypeSchema.options;
 
@@ -153,10 +153,23 @@ export function isWaitEventType(eventType: string): eventType is WaitEventType {
   return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
 }
 
+const RateEventTypeSchema = EventTypeSchema.extract([
+  'rate_created',
+  'rate_acquired',
+  'rate_failed',
+] as const);
+export type RateEventType = z.infer<typeof RateEventTypeSchema>;
+export const RATE_EVENT_TYPES = RateEventTypeSchema.options;
+
+export function isRateEventType(eventType: string): eventType is RateEventType {
+  return RATE_EVENT_TYPES.includes(eventType as RateEventType);
+}
+
 const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
   'step_created',
   'hook_created',
   'wait_created',
+  'rate_created',
 ] as const);
 export type ChildEntityCreationEventType = z.infer<
   typeof ChildEntityCreationEventTypeSchema
@@ -211,13 +224,11 @@ export function stripEventDataRefs(
 // Changing the type here will mainly improve type safety for o11y consumers.
 // Note: specVersion is optional for backward compatibility with legacy data in storage,
 // but is always sent by the runtime on new events.
-export const BaseEventSchema = z.compile(
-  z.object({
-    eventType: EventTypeSchema,
-    correlationId: z.string().optional(),
-    specVersion: z.number().optional(),
-  })
-);
+export const BaseEventSchema = z.object({
+  eventType: EventTypeSchema,
+  correlationId: z.string().optional(),
+  specVersion: z.number().optional(),
+});
 
 // Event schemas (shared between creation requests and server responses)
 // Note: Serialized data fields use SerializedDataSchema to support both:
@@ -401,50 +412,53 @@ const StepCreatedEventSchema = BaseEventSchema.extend({
  * Event created when a hook is first invoked. The World implementation
  * atomically creates both the event and the hook entity.
  */
-export const HookCreatedEventSchema = z.compile(
-  BaseEventSchema.extend({
-    eventType: z.literal('hook_created'),
-    correlationId: z.string(),
-    eventData: z.object({
-      token: z.string(),
-      tokenRetentionUntil: z.coerce.date().optional(),
-      metadata: SerializedDataSchema.optional(),
-      isWebhook: z.boolean().optional(),
-      isSystem: z.boolean().optional(),
-      /**
-       * `createHook({ experimental_force: true })`: when the token belongs to
-       * another live run, the World takes it over — journaling
-       * `hook_disposed{forceClaimedBy}` in that run's log and re-pointing the
-       * token — instead of answering `hook_conflict`. Requires the
-       * `hookForceClaim` capability.
-       */
-      force: z.boolean().optional(),
-      /**
-       * World-written on a forced creation that did take a token over: the
-       * run and hook it was taken from, plus what a queue message to that run
-       * needs (`workflowName`, `deploymentId`, `runSpecVersion`). Absent when
-       * the token was free. The wake-targeting fields are in the LOG, not only
-       * on the hook entity, so a replay can republish the victim's wake from
-       * the row alone; see `publishForceClaimVictimWake` in @workflow/core.
-       */
-      forceClaimedFrom: z
-        .object({
-          runId: z.string(),
-          hookId: z.string(),
-          workflowName: z.string().optional(),
-          deploymentId: z.string().optional(),
-          runSpecVersion: z.number().optional(),
-        })
-        .optional(),
-    }),
-  })
-);
+export const HookCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('hook_created'),
+  correlationId: z.string(),
+  eventData: z.object({
+    token: z.string(),
+    tokenRetentionUntil: z.coerce.date().optional(),
+    metadata: SerializedDataSchema.optional(),
+    isWebhook: z.boolean().optional(),
+    isSystem: z.boolean().optional(),
+    /**
+     * `createHook({ experimental_force: true })`: when the token belongs to
+     * another live run, the World takes it over — journaling
+     * `hook_disposed{forceClaimedBy}` in that run's log and re-pointing the
+     * token — instead of answering `hook_conflict`. Requires the
+     * `hookForceClaim` capability.
+     */
+    force: z.boolean().optional(),
+    /**
+     * World-written on a forced creation that did take a token over: the
+     * run and hook it was taken from, plus what a queue message to that run
+     * needs (`workflowName`, `deploymentId`, `runSpecVersion`). Absent when
+     * the token was free. The wake-targeting fields are in the LOG, not only
+     * on the hook entity, so a replay can republish the victim's wake from
+     * the row alone; see `publishForceClaimVictimWake` in @workflow/core.
+     */
+    forceClaimedFrom: z
+      .object({
+        runId: z.string(),
+        hookId: z.string(),
+        workflowName: z.string().optional(),
+        deploymentId: z.string().optional(),
+        runSpecVersion: z.number().optional(),
+      })
+      .optional(),
+  }),
+});
 
 const HookReceivedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_received'),
   correlationId: z.string(),
   eventData: z.object({
     token: z.string().optional(),
+    // The target run's workflow name, sent by `resumeHook()` on a spec 9 run
+    // so a backend that keys payload refs by workflow name can build the key
+    // without reading the run first (as on `step_completed`). Optional:
+    // older runtimes and older runs omit it.
+    workflowName: z.string().optional(),
     payload: SerializedDataSchema,
   }),
 });
@@ -492,7 +506,7 @@ const HookConflictEventSchema = BaseEventSchema.extend({
      * understand the involuntary disposal — the forced hook gets the
      * ordinary `HookConflictError` it opted out of instead of stranding
      * that run. Absent on a conflict answered by a World that does not
-     * implement forcing at all. (A run's `start({ hook })` Hook is taken like
+     * implement forcing at all. (A run's `start({ experimental_hook })` Hook is taken like
      * any other Hook, so it is never a reason to refuse.)
      */
     forceRefusedReason: z.literal('victim-spec-version').optional(),
@@ -540,6 +554,99 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
       resumeAt: z.coerce.date().optional(),
     })
     .optional(),
+});
+
+// One correlation id (`rate_<ulid>`) per `experimental_rateLimit()` call. The
+// runtime writes `rate_created`; the World reserves the call's slot on the
+// key and commits what the reservation decided IN PLACE of the request:
+//
+//   rate_acquired                       the slot is now: the call goes ahead
+//   rate_created(acquireAt) ...         the slot is later: the run waits,
+//     rate_acquired                       then the runtime records the end
+//   rate_failed                         the slot is past the deadline
+//
+// `rate_acquired` after a wait is what gives the end of the wait a position
+// in the log, the way `wait_completed` does for `sleep()`. Rate events exist
+// only on runs stamped at `SPEC_VERSION_RATE_LIMITS` or later.
+
+/** What every rate event repeats from its call. */
+const RateCallSchema = z.object({
+  /** The key whose rate is limited. Shared by every run of the project. */
+  key: z.string(),
+  /** How many calls the key admits per `periodMs`. */
+  limit: z.number(),
+  periodMs: z.number(),
+  /** The call's deadline: past it, the call fails instead of waiting. */
+  expiresAt: z.coerce.date(),
+  /**
+   * How many calls may go at once on an idle key, at least 1, saving up at
+   * most 24 hours of the rate. Absent for no burst. Recorded, so a call
+   * reserved again keeps it.
+   */
+  burst: z.number().int().positive().optional(),
+});
+
+const RateCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('rate_created'),
+  correlationId: z.string(),
+  eventData: RateCallSchema.extend({
+    /**
+     * The reserved slot. Set by the World on the committed event, never by
+     * the runtime's request: the run waits until then.
+     */
+    acquireAt: z.coerce.date().optional(),
+    /**
+     * Queue message id of the orchestrator delivery that wrote this event.
+     * As for `wait_created`, only that delivery, or a redelivery of the same
+     * message, schedules the wait's timer; the World keeps it on the
+     * committed event.
+     */
+    creatorMessageId: z.string().optional(),
+    /**
+     * Set by the World on a `rate_created` it reserved again after a late
+     * wake: how many times the call was woken past its grace. It sets the
+     * grace the call's next wake is judged with. Never set by the runtime.
+     */
+    lateWakes: z.number().int().nonnegative().optional(),
+    /**
+     * The request's opt-in to a key in the reserved `$` namespace
+     * (`RESERVED_RATE_LIMIT_KEY_PREFIX`), for Workflow SDK libraries. Checked
+     * by the World on the request; never set on a committed event.
+     */
+    allowReservedKey: z.literal(true).optional(),
+  }),
+});
+
+const RateAcquiredEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('rate_acquired'),
+  correlationId: z.string(),
+  eventData: RateCallSchema.partial().extend({
+    /** The slot the call went ahead at (set by the World). */
+    acquireAt: z.coerce.date().optional(),
+    /**
+     * After a wait: the log slot of the call's own `rate_created`. The World
+     * reads that event back and commits its `acquireAt`, never one the
+     * request carries. Absent when the World committed `rate_acquired` in
+     * place of the `rate_created`.
+     */
+    createdSlot: z.number().int().positive().optional(),
+  }),
+});
+
+/**
+ * World-only: committed in place of a `rate_created` whose earliest slot is
+ * past the call's deadline. Nothing is reserved.
+ */
+const RateFailedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('rate_failed'),
+  correlationId: z.string(),
+  eventData: RateCallSchema.extend({
+    reason: z.literal('max_wait'),
+    /** The slot the call would have had. */
+    acquireAt: z.coerce.date().optional(),
+    /** As on `rate_created`: late wakes before the call failed. */
+    lateWakes: z.number().int().nonnegative().optional(),
+  }),
 });
 
 const AttributeWriterSchema = z.discriminatedUnion('type', [
@@ -635,6 +742,11 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
  * when the run_created event failed (e.g., storage outage during start()), the
  * runtime passes the run input through the queue so the server can create the run
  * on the run_started call if it doesn't exist yet.
+ *
+ * On a spec >= 9 run, a `run_started` that created its run may also be stored
+ * with that data at the run's first slot, standing for the run's creation, with
+ * no `run_created` in the log. Readers accept that shape (`isRunCreationEvent`);
+ * nothing in this SDK asks a World to write it yet.
  */
 const RunStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_started'),
@@ -723,30 +835,31 @@ const RunCancelledEventSchema = BaseEventSchema.extend({
 
 // Discriminated union for user-creatable events (requests to world.events.create)
 // Note: hook_conflict is NOT included here - it can only be created by World implementations
-export const CreateEventSchema = z.compile(
-  z.discriminatedUnion('eventType', [
-    // Run lifecycle events
-    RunCreatedEventSchema,
-    RunStartedEventSchema,
-    RunCompletedEventSchema,
-    RunFailedEventSchema,
-    RunCancelledEventSchema,
-    AttrSetEventSchema,
-    // Step lifecycle events
-    StepCreatedEventSchema,
-    StepCompletedEventSchema,
-    StepFailedEventSchema,
-    StepRetryingEventSchema,
-    StepStartedEventSchema,
-    // Hook lifecycle events
-    HookCreatedEventSchema,
-    HookReceivedEventSchema,
-    HookDisposedEventSchema,
-    // Wait lifecycle events
-    WaitCreatedEventSchema,
-    WaitCompletedEventSchema,
-  ])
-);
+export const CreateEventSchema = z.discriminatedUnion('eventType', [
+  // Run lifecycle events
+  RunCreatedEventSchema,
+  RunStartedEventSchema,
+  RunCompletedEventSchema,
+  RunFailedEventSchema,
+  RunCancelledEventSchema,
+  AttrSetEventSchema,
+  // Step lifecycle events
+  StepCreatedEventSchema,
+  StepCompletedEventSchema,
+  StepFailedEventSchema,
+  StepRetryingEventSchema,
+  StepStartedEventSchema,
+  // Hook lifecycle events
+  HookCreatedEventSchema,
+  HookReceivedEventSchema,
+  HookDisposedEventSchema,
+  // Wait lifecycle events
+  WaitCreatedEventSchema,
+  WaitCompletedEventSchema,
+  // Rate limit events
+  RateCreatedEventSchema,
+  RateAcquiredEventSchema,
+]);
 
 // Discriminated union for ALL events (includes World-only events like hook_conflict)
 // This is used for reading events from the event log
@@ -772,29 +885,31 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  // Rate limit events
+  RateCreatedEventSchema,
+  RateAcquiredEventSchema,
+  RateFailedEventSchema, // World-only: the slot is past the call's deadline
   NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
 ]);
 
 // Server response includes runId, eventId, and createdAt
 // specVersion is optional in database for backward compatibility
-export const EventSchema = z.compile(
-  AllEventsSchema.and(
-    z.object({
-      runId: z.string(),
-      eventId: z.string(),
-      createdAt: z.coerce.date(),
-      occurredAt: z.coerce.date().optional(),
-      specVersion: z.number().optional(),
-      /**
-       * Lazy hook resume idempotency key, persisted on `hook_received` events so
-       * the queue consumer can detect that the producer's concurrent direct write
-       * already landed in the run_started preload and skip its own re-ensure.
-       * Mirrors {@link CreateEventParams.resumeId}; absent on all other events and
-       * on legacy (non-lazy) resumes.
-       */
-      resumeId: z.string().optional(),
-    })
-  )
+export const EventSchema = AllEventsSchema.and(
+  z.object({
+    runId: z.string(),
+    eventId: z.string(),
+    createdAt: z.coerce.date(),
+    occurredAt: z.coerce.date().optional(),
+    specVersion: z.number().optional(),
+    /**
+     * Lazy hook resume idempotency key, persisted on `hook_received` events so
+     * the queue consumer can detect that the producer's concurrent direct write
+     * already landed in the run_started preload and skip its own re-ensure.
+     * Mirrors {@link CreateEventParams.resumeId}; absent on all other events and
+     * on legacy (non-lazy) resumes.
+     */
+    resumeId: z.string().optional(),
+  })
 );
 
 // Inferred types
@@ -1029,6 +1144,14 @@ export interface CreateEventParams {
    */
   replayDivergenceCount?: number;
   /**
+   * The ids of the events at which the replays of that episode diverged,
+   * oldest first, sent with {@link CreateEventParams.replayDivergenceCount}.
+   * Event ids only, never payloads, so a divergence can be located even when
+   * the run's error payload is encrypted. Request telemetry like the count:
+   * Worlds may log it, and must not require or persist it.
+   */
+  replayDivergenceEventIds?: readonly string[];
+  /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
    * strictly after this cursor (via `events`/`cursor`/`hasMore`): the
@@ -1114,7 +1237,9 @@ export interface CreateEventParams {
    * - `run` (with `run.startedAt`) and `maxEvents` are present: this
    *   response plays `run_started`'s role, including the event-ceiling
    *   handshake.
-   * - The log contains `run_created`, `run_started`, and the canonical
+   * - The log contains the run's creation (`run_created`, or a creating
+   *   `run_started` at the first slot: `isRunCreationEvent`), `run_started`,
+   *   and the canonical
    *   `hook_received` carrying the requested {@link resumeId}.
    * - `events` uses the same ascending ordering semantics as `events.list`.
    * - The log is read atomically/consistently WITH (i.e. no earlier than)
@@ -1420,7 +1545,10 @@ export interface EventLogSnapshot {
  * `run_created` counts as the run's first in-band position, so the run's
  * first orchestrator write (`run_started`) expects this value. It is the same
  * when `run_created` never landed and `run_started` creates the run (resilient
- * start): the creation the World performs for it counts in its place.
+ * start): the creation the World performs for it counts in its place, also
+ * when that `run_started` holds the first slot as the creation itself
+ * (`isRunCreationEvent`). The log then has one event where the count says
+ * two, which is why a count is only ever read from a snapshot.
  *
  * The runtime adopts it in place of a load snapshot when it knows the log
  * holds nothing but the run's creation: a run with no events yet, and turbo
@@ -1448,6 +1576,14 @@ export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
  */
 export type EventListResponse = PaginatedResponse<Event> & {
   snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling, the same value {@link EventResult.maxEvents}
+   * carries on a run-lifecycle write. Optional: a World that does not report
+   * it here leaves the runtime with the ceiling from its own `run_started`
+   * write, if any. The spec 9 orchestrator, which writes `run_started` only on
+   * a run's first delivery, enforces it on every later one from its log load.
+   */
+  maxEvents?: number;
 };
 
 /** Options for {@link Storage.events.subscribe}. */

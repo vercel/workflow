@@ -27,11 +27,11 @@ function mockAgent(): MockAgent {
 
 /**
  * `waitForWorkflowRunTerminalStatus` — the `world-vercel` half of
- * `runs.waitForTerminalStatus`, backed by workflow-server's long-pollable
+ * `runs.waitForTerminalStatus`, backed by the backend's long-pollable
  * `GET /v2/runs/:runId/status`.
  *
  * The interesting behavior is the degradation: this adapter can be talking to
- * a workflow-server that does not have the route, and it must tell that apart
+ * a backend that does not have the route, and it must tell that apart
  * from a run that does not exist.
  */
 describe('waitForWorkflowRunTerminalStatus', () => {
@@ -298,7 +298,7 @@ describe('waitForWorkflowRunTerminalStatus', () => {
 
   it('suppresses the fast path per backend, not process-wide', async () => {
     // One process can hold worlds pointed at different backends — the
-    // api.vercel.com proxy and workflow-server directly — which can be on
+    // api.vercel.com proxy and the backend directly — which can be on
     // different versions. A miss against one must not disable the other.
     const agent = mockAgent();
     const direct = agent.get(ORIGIN);
@@ -393,5 +393,163 @@ describe('waitForWorkflowRunTerminalStatus', () => {
     ).rejects.toBeInstanceOf(WorkflowWorldError);
 
     agent.assertNoPendingInterceptors();
+  });
+
+  describe('honors the caller signal on the plain-read fallback', () => {
+    // The caller's signal times out long before the held reply lands, so the
+    // call rejects only if the plain read carries the signal. Without it the
+    // reply lands and the call resolves.
+    const HELD_READ_MS = 2_000;
+    const CALLER_TIMEOUT_MS = 50;
+
+    function interceptHeldPlainRead(agent: MockAgent) {
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}?remoteRefBehavior=resolve`,
+          method: 'GET',
+        })
+        .reply(200, runBody('running'))
+        .delay(HELD_READ_MS);
+    }
+
+    async function expectCallerTimeout(
+      promise: Promise<unknown>,
+      signal: AbortSignal
+    ) {
+      const error = await promise.then(
+        () => expect.fail('expected the caller timeout to reject the call'),
+        (error: unknown) => error
+      );
+      expect(error).toBeInstanceOf(WorkflowWorldError);
+      expect((error as WorkflowWorldError).cause).toBe(signal.reason);
+    }
+
+    it('when there is no budget to wait with', async () => {
+      const agent = mockAgent();
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
+      interceptHeldPlainRead(agent);
+
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { signal },
+          { token: 'test-token', dispatcher: agent }
+        ),
+        signal
+      );
+    });
+
+    it('when the status route is marked unsupported', async () => {
+      const agent = mockAgent();
+      const config = { token: 'test-token', dispatcher: agent };
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+          method: 'GET',
+        })
+        .reply(404, { error: 'not-found', message: 'No route matches GET …' });
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}?remoteRefBehavior=resolve`,
+          method: 'GET',
+        })
+        .reply(200, runBody('running'));
+      await waitForWorkflowRunTerminalStatus(
+        RUN_ID,
+        { timeoutMs: 25_000 },
+        config
+      );
+
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
+      interceptHeldPlainRead(agent);
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { timeoutMs: 25_000, signal },
+          config
+        ),
+        signal
+      );
+    });
+
+    it('when the long poll degrades after the route fails', async () => {
+      const agent = mockAgent();
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+          method: 'GET',
+        })
+        .reply(404, { error: 'not-found', message: 'No route matches GET …' });
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
+      interceptHeldPlainRead(agent);
+
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { timeoutMs: 25_000, signal },
+          { token: 'test-token', dispatcher: agent }
+        ),
+        signal
+      );
+    });
+
+    it('keeps long polling enabled when the caller aborts the degrade read', async () => {
+      const agent = mockAgent();
+      const config = { token: 'test-token', dispatcher: agent };
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+          method: 'GET',
+        })
+        .reply(404, { error: 'not-found', message: 'No route matches GET …' });
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
+      interceptHeldPlainRead(agent);
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { timeoutMs: 25_000, signal },
+          config
+        ),
+        signal
+      );
+
+      // The route never got its verdict, so the next wait still probes it
+      // instead of skipping straight to a plain read.
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+          method: 'GET',
+        })
+        .reply(200, runBody('completed'));
+      const run = await waitForWorkflowRunTerminalStatus(
+        RUN_ID,
+        { timeoutMs: 25_000 },
+        config
+      );
+      expect(run.status).toBe('completed');
+    });
+
+    it('sends no request when the signal is already aborted', async () => {
+      // No interceptors: any request would fail on the disabled network
+      // instead of rejecting with the caller's reason.
+      const agent = mockAgent();
+      const controller = new AbortController();
+      controller.abort(new Error('caller-cancel'));
+
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { signal: controller.signal },
+          { token: 'test-token', dispatcher: agent }
+        ),
+        controller.signal
+      );
+    });
   });
 });

@@ -91,6 +91,8 @@ We call `fetch()` with a URL and optional request options, like the standard fet
 
 This API lets you use `fetch` in a workflow. You can also implement a custom fetch for different error handling and retry logic.
 
+Libraries that call `fetch` internally, like AI SDK calls, should be called from a step function. For agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent). See [`fetch-in-workflow`](/docs/errors/fetch-in-workflow).
+
 ### Customizing fetch behavior
 
 The following custom fetch wrapper provides more advanced error handling with custom retry logic. Call `globalThis.fetch` inside your own `"use step"` function because calling the workflow `fetch` imported from `workflow` would nest a step inside a step:
@@ -146,5 +148,5 @@ export async function customFetch(
 This example demonstrates:
 
 - Throwing [`FatalError`](/docs/api-reference/workflow/fatal-error) for client errors (400-499) to prevent retries.
-- Handling 429 rate limiting by reading the `Retry-After` header and using [`RetryableError`](/docs/api-reference/workflow/retryable-error).
+- Handling 429 rate limiting by reading the `Retry-After` header and using [`RetryableError`](/docs/api-reference/workflow/retryable-error). To stay under the limit across every run, call [`experimental_rateLimit()`](/docs/foundations/rate-limits) before the request.
 - Allowing automatic retries for server errors (5xx) by throwing a plain `Error`.

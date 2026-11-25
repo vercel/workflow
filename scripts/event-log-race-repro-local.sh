@@ -157,9 +157,10 @@ to 10 here. Export your own value to override:
   WORKFLOW_LOCAL_QUEUE_CONCURRENCY       (--world local)
 
 `WORKFLOW_SPEC_VERSION` is passed through the same way, to the app and the
-harness alike. Export `WORKFLOW_SPEC_VERSION=9` to race the single
-orchestrator: both Worlds then create spec 9 runs, and the harness fails if a
-run comes back at another spec version.
+harness alike. Both Worlds create spec 10 (single-orchestrator) runs by
+default; export `WORKFLOW_SPEC_VERSION=8` to race the spec 8 orchestrator
+instead. With it set, the harness fails if a run comes back at another spec
+version.
 
 Examples:
   # Default scale (a regression check, a few minutes).
@@ -168,8 +169,8 @@ Examples:
   # Same, against world-local. No Docker, no database.
   scripts/event-log-race-repro-local.sh --world local
 
-  # Same, with spec 9 (single-orchestrator) runs.
-  WORKFLOW_SPEC_VERSION=9 scripts/event-log-race-repro-local.sh --world local
+  # Same, with spec 8 runs.
+  WORKFLOW_SPEC_VERSION=8 scripts/event-log-race-repro-local.sh --world local
 
   # One run per scenario, to smoke the plumbing.
   EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS=1 \
@@ -261,6 +262,11 @@ else
   export WORKFLOW_TARGET_WORLD="local"
   export WORKFLOW_LOCAL_DATA_DIR="$DATA_DIR"
   export WORKFLOW_LOCAL_QUEUE_CONCURRENCY="${WORKFLOW_LOCAL_QUEUE_CONCURRENCY:-$LOCAL_QUEUE_CONCURRENCY}"
+  # Queue auth stays off here, as on the e2e-local CI lanes, until the team
+  # decides to run them with it on. The runtime refuses it while dynamic
+  # workflows are enabled, so do not export
+  # WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
+  export WORKFLOW_QUEUE_AUTH="off"
 fi
 
 export PORT="$PORT"

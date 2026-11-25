@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: true
           require-lockfile: true
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check WORKFLOW_SERVER_URL_OVERRIDE is empty
         run: |
@@ -59,10 +59,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js 24.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
 
@@ -72,15 +72,20 @@ jobs:
       - name: Check every test file is run by turbo test or a CI lane
         run: node scripts/check-no-unrun-tests.mjs
 
+      # Compiled tests and declaration maps that point at an unpublished
+      # `src/` add weight to every install and are read by no consumer.
+      - name: Check publishable packages exclude tests and orphaned maps
+        run: node scripts/check-published-files.mjs
+
   scripts-tests:
     name: CI Scripts Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js 24.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
 
@@ -94,10 +99,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: true
           require-lockfile: true
@@ -112,6 +117,22 @@ jobs:
       - name: Check pending changesets assemble into a release plan
         run: node scripts/check-changesets.mjs
 
+      # The Release job's trusted publishing cannot create a package on npm,
+      # so a public package that has never been published fails the release
+      # and holds back the packages after it (see scripts/check-published.mjs).
+      - name: Check every public package already exists on npm
+        run: node scripts/check-published.mjs --packages-exist
+
+      # release.yml refuses to publish while any public package's version is
+      # outside the branch's release major (0.x experimental packages aside),
+      # and a package that lands with another major blocks every release on
+      # main until it is fixed. Run the same guard here, with the release
+      # major read from release.yml so the two cannot disagree.
+      - name: Check package versions match the release major
+        run: |
+          RELEASE_VERSION=$(sed -n 's/^ *RELEASE_VERSION: *\([0-9][0-9]*\) *$/\1/p' .github/workflows/release.yml)
+          node .github/scripts/check-release-major.js "${RELEASE_VERSION:?RELEASE_VERSION not found in release.yml}"
+
   docs-links:
     name: Docs Links
     runs-on: ubuntu-latest
@@ -120,10 +141,10 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup pnpm
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: true
           require-lockfile: true

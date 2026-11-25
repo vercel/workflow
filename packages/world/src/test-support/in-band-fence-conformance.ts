@@ -35,6 +35,9 @@ import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
+ *
+ * The rules come from "The in-band fence" and "Implementing spec 9 in a World"
+ * in `packages/core/src/runtime/spec9/README.md`.
  */
 export interface InBandFenceConformanceOptions {
   /** Describe-block name, usually the World's name. */

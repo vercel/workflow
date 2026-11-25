@@ -8,7 +8,7 @@ import type {
 import { startHookId } from '@workflow/world';
 
 /**
- * A run's `start({ hook })` Hook (see `start-hook.ts` in @workflow/world).
+ * A run's `start({ experimental_hook })` Hook (see `start-hook.ts` in @workflow/world).
  * The admission writes it as an ordinary Hook entity with id
  * `startHookId(runId)`; nothing writes a `hook_created` for it, so the run
  * record and its `run_created` are where it can be rebuilt from.

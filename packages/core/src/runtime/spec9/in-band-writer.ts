@@ -1,6 +1,8 @@
 import {
+  EntityConflictError,
   InBandSupersededError,
   RUN_ERROR_CODES,
+  TooEarlyError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -16,6 +18,7 @@ import type {
   World,
 } from '@workflow/world';
 import { eventIdToSlot, IN_BAND_SEQ_AT_RUN_CREATION } from '@workflow/world';
+import { runtimeLogger } from '../../logger.js';
 import {
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
@@ -157,6 +160,9 @@ export const RESILIENT_START_SNAPSHOT: EventLogSnapshot = Object.freeze({
  * (`WorldCapabilities.inBandFence`), so the writer always sends an expected
  * count. A write before any snapshot was
  * adopted is a runtime bug, and fails without reaching the World.
+ *
+ * See "The in-band fence" in `./README.md` (the spec 9 reference) for the
+ * fence's rules and how refusals are handled.
  */
 export class InBandWriter {
   private expected: number | undefined;
@@ -203,6 +209,20 @@ export class InBandWriter {
    */
   onAccepted: ((event: Event) => void) | undefined;
 
+  private readonly commitListeners = new Set<() => void>();
+
+  /**
+   * Calls `listener` after each write of this writer that committed an event,
+   * beside {@link onAccepted}. Returns a function that removes it. The live
+   * feed uses it to start its poll backoff over on the delivery's own writes.
+   */
+  addCommitListener(listener: () => void): () => void {
+    this.commitListeners.add(listener);
+    return () => {
+      this.commitListeners.delete(listener);
+    };
+  }
+
   /** Throws for a World that does not declare the fence. */
   constructor(
     private readonly world: Pick<World, 'events' | 'capabilities'>,
@@ -212,7 +232,9 @@ export class InBandWriter {
   }
 
   private accepted(event: Event | undefined): void {
-    if (event) this.onAccepted?.(event);
+    if (!event) return;
+    this.onAccepted?.(event);
+    for (const listener of this.commitListeners) listener();
   }
 
   /**
@@ -300,7 +322,94 @@ export class InBandWriter {
     data: T,
     params?: CreateEventParams
   ): Promise<EventResult<T['eventType']>> {
+    if (this.batchesRateWrite(data)) {
+      return this.writeRate(data, params ?? {}, 0) as Promise<
+        EventResult<T['eventType']>
+      >;
+    }
     return this.write(data, params, false);
+  }
+
+  /**
+   * Whether `data` is a rate limit call's write (`rate_created`, or
+   * `rate_acquired` after a wait) on a World whose batch decides a rate event
+   * the way a single write does (`WorldCapabilities.rateEventsInBatch`):
+   * such a write goes out in a group, beside the writes it does not depend
+   * on (see {@link writeRate}).
+   */
+  private batchesRateWrite(data: CreateEventRequest): boolean {
+    return (
+      (data.eventType === 'rate_created' ||
+        data.eventType === 'rate_acquired') &&
+      this.world.capabilities?.rateEventsInBatch === true &&
+      this.supportsBatch
+    );
+  }
+
+  /**
+   * Sends a rate limit call's write in a group rather than in a turn of its
+   * own:
+   *
+   * - It joins the open group when it fits: after the speculative outcome of
+   *   the step before it (which saves the call a whole round trip), or after
+   *   the writes of the calls made beside it (`Promise.all`), so several
+   *   calls go out in one batch rather than one round trip after another.
+   * - Otherwise it opens a group of its own, which the next calls' writes
+   *   join until its turn comes. Alone in it, it goes out as a single write.
+   *
+   * Once a rate write is in a group, only rate writes join it after it: a
+   * run-ahead write made later may depend on what the call decides, while
+   * another call's write in flight beside it cannot.
+   *
+   * It keeps the outcome of a write of its own: a refusal of it rejects this
+   * call with the World's error and leaves the writer as it was (see
+   * {@link sendGroup}), as a refused {@link create} does, except a refusal
+   * that says nothing was committed for it ({@link RATE_RESEND_ERRORS}),
+   * which sends it again in the next group.
+   * Positions are counted as for any batch: the World seals a refused item's
+   * position, or reports `allocated`.
+   */
+  private writeRate(
+    data: CreateEventRequest,
+    params: CreateEventParams,
+    resends: number
+  ): Promise<EventResult> {
+    return new Promise((resolve, reject) => {
+      const member: AheadWrite = {
+        kind: 'single',
+        events: [
+          {
+            event: data,
+            ...(params.occurredAt !== undefined
+              ? { occurredAt: new Date(params.occurredAt) }
+              : {}),
+            ...(params.computeInstanceId !== undefined
+              ? { computeInstanceId: params.computeInstanceId }
+              : {}),
+          },
+        ],
+        params,
+        verify: () => {},
+        own: true,
+        resends,
+        resolve: resolve as (result: EventResult | EventBatchResult) => void,
+        reject,
+      };
+      this.pendingPositions += 1;
+      const group = this.openGroup;
+      if (
+        group &&
+        groupSize(group) + 1 <= MAX_BATCH_EVENTS &&
+        groupBytes(group) + creationBatchBytes(data) <=
+          MAX_IN_BAND_CREATION_BATCH_BYTES
+      ) {
+        group.push(member);
+        return;
+      }
+      const own = [member];
+      this.serialize(0, () => this.sendGroup(own)).catch(() => {});
+      this.openGroup = own;
+    });
   }
 
   /**
@@ -329,14 +438,89 @@ export class InBandWriter {
    * The slot the next write would take if no other writer appends first:
    * one past every position this writer knows is allocated, including the
    * writes still queued in it. Run-ahead places a speculative event there.
+   *
+   * Each position is counted once. The write being sent is in
+   * `pendingPositions` until it settles, while `knownMaxSlot` can already
+   * cover its positions: the live feed echoes a write before its answer
+   * arrives ({@link observeEvent}), and the answer raises `knownMaxSlot` a
+   * few microtasks before the write settles. Those positions are taken off
+   * ({@link sending}), or the prediction would run past the slot the next
+   * write takes, and a speculative event placed there shares its id with a
+   * later event.
    */
   predictNextSlot(): number {
-    return this.knownMaxSlot + this.pendingPositions + 1;
+    return (
+      this.knownMaxSlot +
+      this.pendingPositions -
+      (this.sending?.covered ?? 0) +
+      1
+    );
   }
 
-  /** A position another writer took, seen in a load, a report or the feed. */
+  /** A position another writer took, seen in a load or a report. */
   observeSlot(slot: number): void {
     if (slot > this.knownMaxSlot) this.knownMaxSlot = slot;
+  }
+
+  /**
+   * An event seen outside this writer's own answers (the live feed, an
+   * incremental load): its position is allocated. When it is an event of the
+   * write being sent (the feed's echo, ahead of the answer), that write's
+   * position is now covered by `knownMaxSlot` and is not counted again by
+   * {@link predictNextSlot}.
+   */
+  observeEvent(
+    event: Pick<Event, 'eventId' | 'eventType' | 'correlationId'>
+  ): void {
+    const slot = eventIdToSlot(event.eventId);
+    if (slot === null || slot <= this.knownMaxSlot) return;
+    this.knownMaxSlot = slot;
+    const sending = this.sending;
+    if (!sending || sending.covered >= sending.positions) return;
+    const at = sending.unechoed.findIndex(
+      (sent) =>
+        sent.eventType === event.eventType &&
+        sent.correlationId === event.correlationId
+    );
+    if (at === -1) return;
+    sending.unechoed.splice(at, 1);
+    sending.covered++;
+  }
+
+  /**
+   * The write being sent: how many positions it asks for, how many of them
+   * `knownMaxSlot` already covers, and its events the live feed has not
+   * echoed yet. Cleared where the write leaves `pendingPositions`.
+   */
+  private sending:
+    | {
+        positions: number;
+        covered: number;
+        unechoed: { eventType: string; correlationId: string | undefined }[];
+      }
+    | undefined;
+
+  private beginSend(events: readonly CreateEventRequest[]): void {
+    this.sending = {
+      positions: events.length,
+      covered: 0,
+      unechoed: events.map((event) => ({
+        eventType: event.eventType,
+        correlationId: event.correlationId,
+      })),
+    };
+  }
+
+  /**
+   * The write being sent was answered, or failed: whatever it allocated is
+   * in `knownMaxSlot` (the caller noted the answer's slots just before), so
+   * none of its positions is predicted on top of that.
+   */
+  private answerSend(): void {
+    const sending = this.sending;
+    if (!sending) return;
+    sending.covered = sending.positions;
+    sending.unechoed = [];
   }
 
   /**
@@ -395,13 +579,16 @@ export class InBandWriter {
       let result: EventResult<T['eventType']>;
       try {
         const position = this.sendPosition(params?.eventCount);
+        const fence = this.fenceParams();
+        this.beginSend([data]);
         const written = await this.world.events.create(this.runId, data, {
           ...params,
           ...position,
-          ...this.fenceParams(),
+          ...fence,
         });
         this.noteComplete(position, written, [written.event]);
         const inferred = this.allocatedBy([written.event], knownAtSend);
+        this.answerSend();
         const allocated = written.allocated ?? inferred;
         this.advance(allocated);
         result = written.event
@@ -411,6 +598,7 @@ export class InBandWriter {
             }
           : written;
       } catch (error) {
+        this.answerSend();
         throw this.stop(error, required);
       }
       this.accepted(result.event);
@@ -502,6 +690,8 @@ export class InBandWriter {
       this.pendingPositions += member.events.length;
       if (
         this.openGroup &&
+        // Never behind a rate limit call's write (see writeRate).
+        this.openGroup.at(-1)?.own !== true &&
         groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS &&
         groupBytes(this.openGroup) + groupBytes([member]) <=
           MAX_IN_BAND_CREATION_BATCH_BYTES
@@ -539,7 +729,7 @@ export class InBandWriter {
             await this.sendSingle(
               first.events[0]!.event,
               first.params as CreateEventParams,
-              true,
+              first.own !== true,
               first.verify
             )
           );
@@ -567,6 +757,7 @@ export class InBandWriter {
       const knownAtSend = this.knownMaxSlot;
       const position = this.sendPosition(first.params.eventCount);
       let result: EventBatchResult;
+      this.beginSend(events.map(({ event }) => event));
       try {
         result = await this.world.events.createBatch!.call(
           this.world.events,
@@ -582,6 +773,7 @@ export class InBandWriter {
           }
         );
       } catch (error) {
+        this.answerSend();
         const stopped = this.stop(error, true);
         for (const write of group) write.reject(stopped);
         return;
@@ -604,11 +796,13 @@ export class InBandWriter {
       for (const item of result.results) {
         if (item.error === undefined) this.noteSlot(item.event.eventId);
       }
+      this.answerSend();
       this.advance(result.allocated ?? events.length - replayed);
 
       let offset = 0;
       let failed: unknown;
-      for (const [index, write] of group.entries()) {
+      let reportOwed = true;
+      for (const write of group) {
         const count = write.events.length;
         const slice = result.results
           .slice(offset, offset + count)
@@ -634,20 +828,60 @@ export class InBandWriter {
           continue;
         }
         // The skipped-slot report covers what lies below the whole block,
-        // so it belongs to the group's first write.
-        const report =
-          index === 0
-            ? {
-                ...(result.events !== undefined
-                  ? { events: result.events }
-                  : {}),
-                ...(result.hasMore ? { hasMore: true as const } : {}),
-              }
-            : {};
+        // so it goes to the first write of the group that gets an answer.
+        // That is the group's first write unless it is a rate limit call's
+        // write that was refused or is sent again: its caller never sees
+        // this batch's answer, while `noteComplete` has already counted the
+        // report as delivered, so the World would not send it again.
+        const report = reportOwed
+          ? {
+              ...(result.events !== undefined ? { events: result.events } : {}),
+              ...(result.hasMore ? { hasMore: true as const } : {}),
+            }
+          : {};
         try {
           let answer: EventResult | EventBatchResult;
           if (write.kind === 'single') {
             const item = slice[0];
+            if (write.own === true && item && item.error !== undefined) {
+              const resends = write.resends ?? 0;
+              // Behind another item's refusal, the World never got to this
+              // one: that costs it no resend. Each group's first item gets
+              // an answer of its own, so these resends end.
+              const behindRefusal = item.error === EARLIER_POSITION_FAILED;
+              const resendable = RATE_RESEND_ERRORS.has(item.error);
+              const rateLog = {
+                workflowRunId: this.runId,
+                eventType: write.events[0]?.event.eventType,
+                correlationId: write.events[0]?.event.correlationId,
+                status: item.status,
+                error: item.error,
+                resends,
+              };
+              if (resendable && (behindRefusal || resends < MAX_RATE_RESENDS)) {
+                runtimeLogger.debug(
+                  'Rate limit write refused before it was decided, sending it again',
+                  rateLog
+                );
+                // Nothing was committed for it: sent again, in the next
+                // group, with the others sent again beside it.
+                this.writeRate(
+                  write.events[0]!.event,
+                  write.params as CreateEventParams,
+                  behindRefusal ? resends : resends + 1
+                ).then(write.resolve, write.reject);
+                continue;
+              }
+              if (resendable) {
+                runtimeLogger.debug(
+                  'Rate limit write refused before it was decided, out of resends',
+                  rateLog
+                );
+              }
+              // Its own refusal, as a single write's: the writer goes on.
+              write.reject(refusalOf(item, write.events[0]?.event.eventType));
+              continue;
+            }
             if (!item || item.error !== undefined) {
               throw new WorkflowWorldError(
                 `A run-ahead ${write.events[0]?.event.eventType} was refused` +
@@ -657,12 +891,14 @@ export class InBandWriter {
             }
             answer = { event: item.event, ...report } as EventResult;
           } else {
+            // A batch write always gets an answer, refused items included.
             answer = {
               results: slice,
               ...report,
               allocated: count,
             } as EventBatchResult;
           }
+          reportOwed = false;
           write.verify(answer);
           write.resolve(answer);
         } catch (error) {
@@ -672,6 +908,7 @@ export class InBandWriter {
       }
     } finally {
       this.pendingPositions -= total;
+      this.sending = undefined;
     }
   }
 
@@ -753,6 +990,7 @@ export class InBandWriter {
       const knownAtSend = this.knownMaxSlot;
       const position = this.sendPosition(params?.eventCount);
       try {
+        this.beginSend(events.map(({ event }) => event));
         const result = await createBatch.call(
           this.world.events,
           this.runId,
@@ -785,6 +1023,7 @@ export class InBandWriter {
         for (const item of result.results) {
           if (item.error === undefined) this.noteSlot(item.event.eventId);
         }
+        this.answerSend();
         this.advance(result.allocated ?? events.length - replayed);
         const answered: EventBatchResult = {
           ...result,
@@ -814,6 +1053,7 @@ export class InBandWriter {
         }
         return answered;
       } catch (error) {
+        this.answerSend();
         throw this.stop(error, required);
       }
     });
@@ -933,6 +1173,9 @@ export class InBandWriter {
     this.pendingPositions += positions;
     const settle = () => {
       this.pendingPositions -= positions;
+      // A run-ahead group leaves `pendingPositions` in `sendGroup`, and has
+      // cleared this there.
+      if (positions > 0) this.sending = undefined;
     };
     const guarded = async (): Promise<T> => {
       try {
@@ -978,6 +1221,13 @@ function groupBytes(group: AheadWrite[]): number {
 /** A run-ahead write waiting in an open group (see {@link InBandWriter}). */
 interface AheadWrite {
   kind: 'single' | 'batch';
+  /**
+   * A rate limit call's write, with an outcome of its own
+   * ({@link InBandWriter.writeRate}): its refusal rejects it alone.
+   */
+  own?: boolean;
+  /** How many times an `own` write was sent again ({@link RATE_RESEND_ERRORS}). */
+  resends?: number;
   events: BatchEventRequest[];
   params: CreateEventParams | Omit<CreateEventBatchParams, 'inBand'>;
   verify: (result: EventResult | EventBatchResult) => void;
@@ -1004,4 +1254,56 @@ export function withWrittenEventData<E extends Event>(
     ...event,
     eventData: fresh ? { ...stored, ...sent } : { ...sent, ...stored },
   };
+}
+
+/**
+ * Refusals of a rate limit call's write in a batch that say nothing was
+ * committed for it, so the writer sends it again
+ * ({@link InBandWriter.writeRate}) rather than failing the call:
+ *
+ * - `rate-batch-deferred` (503): the batch ran out of time to decide it,
+ *   and reserved nothing;
+ * - `rate-decision-failed` (503): the World could not decide its key's
+ *   calls in this batch;
+ * - `batch-earlier-position-failed` (409): an earlier in-band item of the
+ *   batch was refused or did not commit, such as another call's
+ *   `rate_acquired` before its slot.
+ *
+ * The last two can leave a slot reserved for the call (a key's write that
+ * applied before it failed, an item decided before the one ahead of it
+ * failed to commit). The call recorded nothing, so sending it again
+ * reserves another: that slot is wasted, and the key is never
+ * over-admitted.
+ */
+const RATE_RESEND_ERRORS: ReadonlySet<string> = new Set([
+  'rate-batch-deferred',
+  'rate-decision-failed',
+  'batch-earlier-position-failed',
+]);
+
+/** The refusal of an item behind another item's refusal in the batch. */
+const EARLIER_POSITION_FAILED = 'batch-earlier-position-failed';
+
+/**
+ * How many times a rate limit call's write is sent again, for a refusal of
+ * its own (503), before it fails. A refusal behind another item's
+ * (`batch-earlier-position-failed`) does not count: several wakes due
+ * together while the World's clock is a little behind are each refused too
+ * early in turn, and the last of them would otherwise run out of resends
+ * and fail as a conflict, as if it were already acquired.
+ */
+const MAX_RATE_RESENDS = 2;
+
+/**
+ * The error a refused batch item stands for, as the single-event write would
+ * have thrown it: what the delivery's handlers of a rate limit write look for.
+ */
+function refusalOf(
+  item: { status: number; error: string; message: string },
+  eventType: string | undefined
+): Error {
+  const message = `${eventType ?? 'Event'} refused in a batch (${item.status} ${item.error}): ${item.message}`;
+  if (item.status === 409) return new EntityConflictError(message);
+  if (item.status === 425) return new TooEarlyError(message, { retryAfter: 1 });
+  return new WorkflowWorldError(message, { status: item.status });
 }

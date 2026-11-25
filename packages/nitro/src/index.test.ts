@@ -153,6 +153,77 @@ describe('@workflow/nitro builder lifecycle', () => {
 
     expect(dispose).toHaveBeenCalledTimes(2);
   });
+
+  /**
+   * A LocalBuilder whose builds each take a few milliseconds and log when
+   * they start and finish; `failNext` makes the next build that starts fail.
+   */
+  function recordingBuilder() {
+    const builder = new LocalBuilder(
+      createNitroStub({ routing: true, dev: true })
+    );
+    const log: string[] = [];
+    let builds = 0;
+    let failNext = false;
+    Object.assign(builder, {
+      getInputFiles: async () => {
+        const id = ++builds;
+        const fail = failNext;
+        failNext = false;
+        log.push(`start ${id}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        log.push(`end ${id}`);
+        if (fail) throw new Error(`build ${id} failed`);
+        return [];
+      },
+      createCombinedBundle: async () => ({ manifest: {} }),
+      createWebhookBundle: async () => {},
+      createManifest: async () => {},
+    });
+    return {
+      builder,
+      log,
+      failNextBuild: () => {
+        failNext = true;
+      },
+    };
+  }
+
+  it('coalesces the builds requested while one runs into one build after it', async () => {
+    const { builder, log } = recordingBuilder();
+
+    // A burst of dev reloads: the first starts a build, the rest arrive
+    // while it runs.
+    const burst = [
+      builder.build(),
+      builder.build(),
+      builder.build(),
+      builder.build(),
+    ];
+    await Promise.all(burst);
+
+    // One build covers the rest of the burst, and it starts only after the
+    // first finished, so it reads every change the burst was made for.
+    expect(log).toEqual(['start 1', 'end 1', 'start 2', 'end 2']);
+
+    // A request made once that build started gets a build of its own.
+    const running = builder.build();
+    await vi.waitFor(() => expect(log).toContain('start 3'));
+    await Promise.all([running, builder.build()]);
+    expect(log.slice(4)).toEqual(['start 3', 'end 3', 'start 4', 'end 4']);
+  });
+
+  it('runs a queued build after a failed one, and reports each outcome to its callers', async () => {
+    const { builder, log, failNextBuild } = recordingBuilder();
+
+    failNextBuild();
+    const failing = builder.build();
+    const queued = builder.build();
+
+    await expect(failing).rejects.toThrow('build 1 failed');
+    await expect(queued).resolves.toBeUndefined();
+    expect(log).toEqual(['start 1', 'end 1', 'start 2', 'end 2']);
+  });
 });
 
 describe('@workflow/nitro transform boundaries', () => {

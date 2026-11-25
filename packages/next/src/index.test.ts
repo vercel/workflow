@@ -2,12 +2,14 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { turbopackContentPattern } from '@workflow/builders';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -251,6 +253,90 @@ describe('withWorkflow builder config', () => {
     expect(builderConfigs[0]).toMatchObject({
       basePath: '/v2',
     });
+  });
+
+  it('leaves the base path unset without basePath or a route prefix', async () => {
+    const config = withWorkflow({});
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: undefined,
+      experimentalRoutePrefix: undefined,
+    });
+  });
+
+  it('passes a normalized route prefix to the workflow builder', async () => {
+    const config = withWorkflow(
+      {},
+      { workflows: { experimentalRoutePrefix: 'dashboard/' } }
+    );
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      // The runtime resolves workflow URLs against the base path, so it has
+      // to carry the prefix the routes were emitted under.
+      basePath: '/dashboard',
+      experimentalRoutePrefix: '/dashboard',
+    });
+  });
+
+  it('appends the route prefix to the Next basePath', async () => {
+    const config = withWorkflow(
+      { basePath: '/v2' },
+      { workflows: { experimentalRoutePrefix: '/dashboard' } }
+    );
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: '/v2/dashboard',
+      experimentalRoutePrefix: '/dashboard',
+    });
+  });
+
+  it('rejects an unusable route prefix when the config is created', () => {
+    expect(() =>
+      withWorkflow({}, { workflows: { experimentalRoutePrefix: '/[team]' } })
+    ).toThrowError(/workflows\.experimentalRoutePrefix/);
+  });
+
+  it('copies the diagnostics manifest from the prefixed route directory', async () => {
+    const projectDir = mkdtempSync(
+      join(realTmpDir, 'workflow-next-route-prefix-')
+    );
+    const manifest = '{"version":"1.0.0"}';
+    writeFile(
+      join(projectDir, 'app/dashboard/.well-known/workflow/v1/manifest.json'),
+      manifest
+    );
+
+    try {
+      const nextConfig = await withWorkflow(
+        {},
+        { workflows: { experimentalRoutePrefix: '/dashboard' } }
+      )('phase-production-build', { defaultConfig: {} });
+
+      await (
+        nextConfig.compiler as {
+          runAfterProductionCompile?: (metadata: {
+            projectDir: string;
+            distDir: string;
+          }) => Promise<void>;
+        }
+      ).runAfterProductionCompile?.({ projectDir, distDir: '.next' });
+
+      expect(
+        readFileSync(
+          join(projectDir, '.next/diagnostics/workflows-manifest.json'),
+          'utf-8'
+        )
+      ).toBe(manifest);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 
   it('externalizes the non-bundlable Vercel packages while preserving user externals', async () => {
@@ -501,5 +587,71 @@ describe('withWorkflow builder config', () => {
       process.chdir(originalCwd);
       rmSync(projectDir, { recursive: true, force: true });
     }
+  });
+
+  describe('turbopack rule content condition', () => {
+    async function getRuleContentPatterns(): Promise<[string, RegExp][]> {
+      const nextConfig = await withWorkflow({})('phase-production-build', {
+        defaultConfig: {},
+      });
+      const rules = (nextConfig.turbopack?.rules ?? {}) as Record<
+        string,
+        { condition?: { all?: { content?: RegExp }[] } }
+      >;
+      const patterns = Object.entries(rules).flatMap(([key, rule]) =>
+        (rule.condition?.all ?? [])
+          .filter((entry) => entry.content instanceof RegExp)
+          .map((entry) => [key, entry.content as RegExp] as [string, RegExp])
+      );
+      expect(patterns.length).toBeGreaterThan(0);
+      return patterns;
+    }
+
+    // The shape @ai-sdk/openai and @ai-sdk/gateway ship: the serde symbols are
+    // imported constants used as computed keys, with no directive in the file.
+    // See https://github.com/vercel/workflow/issues/4897.
+    it.each([
+      [
+        'static [WORKFLOW_SERIALIZE]',
+        'class OpenAIResponsesLanguageModel {\n  static [WORKFLOW_SERIALIZE](model) {\n    return model.config;\n  }\n}',
+      ],
+      [
+        'static [WORKFLOW_DESERIALIZE]',
+        'class OpenAIResponsesLanguageModel {\n  static [ WORKFLOW_DESERIALIZE ](options) {\n    return new this(options);\n  }\n}',
+      ],
+    ])('sends files using %s to the workflow loader', async (_, source) => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test(source), `rule ${key}`).toBe(true);
+      }
+    });
+
+    it.each([
+      ['"use workflow"', 'export async function wf() {\n  "use workflow";\n}'],
+      ["'use step'", "export async function s() {\n  'use step';\n}"],
+      [
+        '@workflow/serde import',
+        "import { WORKFLOW_SERIALIZE } from '@workflow/serde';",
+      ],
+      [
+        'Symbol.for serde key',
+        'class Point {\n  static [Symbol.for("workflow-serialize")](p) {}\n}',
+      ],
+    ])('still sends files using %s to the workflow loader', async (_, source) => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test(source), `rule ${key}`).toBe(true);
+      }
+    });
+
+    it('uses the builders pattern itself, not a copy', async () => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern, `rule ${key}`).toBe(turbopackContentPattern);
+      }
+    });
+
+    it('skips files with no workflow patterns', async () => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test('export const x = 1;'), `rule ${key}`).toBe(false);
+      }
+    });
   });
 });

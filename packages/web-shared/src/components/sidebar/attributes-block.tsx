@@ -8,13 +8,13 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { ArrowUpRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
-import { CopyButton } from '../trace-viewer/components/copy-button';
 import { MiddleTruncate } from '../trace-viewer/components/middle-truncate/middle-truncate';
 import {
   CollapsibleContent,
   CollapsibleRoot,
   CollapsibleTrigger,
 } from '../ui/collapsible';
+import { CopyButton } from '../ui/copy-button';
 import { CopyableDataBlock } from './copyable-data-block';
 
 function isReservedAttributeKey(key: string): boolean {
@@ -22,12 +22,12 @@ function isReservedAttributeKey(key: string): boolean {
 }
 
 const rowValueVariants = cva(
-  'min-w-0 flex-1 truncate text-right text-copy-13 text-gray-1000',
+  'min-w-0 flex-1 truncate text-right text-gray-1000',
   {
     variants: {
       variant: {
-        default: '',
-        mono: 'font-mono',
+        default: 'text-copy-13',
+        mono: 'text-copy-13-mono',
       },
     },
     defaultVariants: {
@@ -37,12 +37,12 @@ const rowValueVariants = cva(
 );
 
 const rowCopyValueVariants = cva(
-  'flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden text-copy-13 text-gray-1000',
+  'flex min-w-0 flex-1 items-center justify-end gap-1 overflow-hidden text-gray-1000',
   {
     variants: {
       variant: {
-        default: '',
-        mono: 'font-mono',
+        default: 'text-copy-13',
+        mono: 'text-copy-13-mono',
       },
     },
     defaultVariants: {
@@ -106,9 +106,10 @@ function DetailKeyValueRowBase({
             />
           )}
           <CopyButton
-            copyText={copyText}
-            ariaLabel={`Copy ${label}`}
-            className="shrink-0 -mr-1"
+            textToCopy={copyText}
+            aria-label={`Copy ${label}`}
+            size="small"
+            className="-my-0.5 -mr-1"
           />
         </div>
       ) : (
@@ -131,7 +132,7 @@ function DetailKeyValueRowBase({
   );
 }
 
-export function DetailKeyValueRow(props: DetailKeyValueRowProps) {
+function DetailKeyValueRow(props: DetailKeyValueRowProps) {
   return <DetailKeyValueRowBase {...props} />;
 }
 
@@ -158,7 +159,7 @@ function AttributeRow({
  * reserved `$`-prefixed keys (alphabetical), so framework metadata doesn't
  * crowd out user-set attributes.
  */
-export function sortAttributeKeys(keys: string[]): string[] {
+function sortAttributeKeys(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
     const aReserved = isReservedAttributeKey(a);
     const bReserved = isReservedAttributeKey(b);

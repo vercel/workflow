@@ -163,9 +163,11 @@ const calls = { contract_slow: 0, contract_add: 0 };
  * an inline step, and how far `contract_slow` moves the clock: past it.
  */
 const DEADLINE_MS = getInlineStepDeadlineMarginMs() + 60_000;
+/** How far `contract_slow` moves the clock; by default past the deadline. */
+let slowAdvanceMs = DEADLINE_MS;
 registerStepFunction('contract_slow', async (a: number, b: number) => {
   calls.contract_slow++;
-  vi.setSystemTime(Date.now() + DEADLINE_MS);
+  vi.setSystemTime(Date.now() + slowAdvanceMs);
   return a + b;
 });
 registerStepFunction('contract_add', async (a: number, b: number) => {
@@ -193,6 +195,7 @@ describe.each([
     vqs.state.keys.clear();
     calls.contract_slow = 0;
     calls.contract_add = 0;
+    slowAdvanceMs = DEADLINE_MS;
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_test');
     // The adapter's events socket is storage, which the fake World serves.
@@ -316,54 +319,65 @@ describe.each([
     expect(eventsOf(store, 'run_started')).toHaveLength(1);
   });
 
-  // The node engine hands a delivery off at its inline deadline; the QuickJS
-  // one does not (it hands off only on its replay budget, an elapsed wait or
-  // an unread write of its own), so these two run on node.
-  it.runIf(engine === 'node')(
-    'hands a delivery past its deadline off on the same message, as a delivery that is not an attempt',
-    async () => {
-      const [start] = vqs.state.messages;
-      await deliver(start!);
-      // The first step ran and moved past the deadline: the message is kept,
-      // handed off.
-      expect(calls.contract_slow).toBe(1);
-      expect(vqs.state.messages).toContain(start);
-      expect(start!.handoffCount).toBe(1);
+  // Both engines hand a delivery off at its inline deadline.
+  it('hands a delivery past its deadline off on the same message, as a delivery that is not an attempt', async () => {
+    const [start] = vqs.state.messages;
+    await deliver(start!);
+    // The first step ran and moved past the deadline: the message is kept,
+    // handed off.
+    expect(calls.contract_slow).toBe(1);
+    expect(vqs.state.messages).toContain(start);
+    expect(start!.handoffCount).toBe(1);
 
-      await runUntilIdle();
-      expect(await runResult(store)).toBe(13);
-      expect(calls).toEqual({ contract_slow: 1, contract_add: 1 });
-      expect(eventsOf(store, 'run_started')).toHaveLength(1);
-      // The handoff is not an attempt: nothing after it was a retry.
-      expect(eventsOf(store, 'step_retrying')).toHaveLength(0);
-    }
-  );
+    await runUntilIdle();
+    expect(await runResult(store)).toBe(13);
+    expect(calls).toEqual({ contract_slow: 1, contract_add: 1 });
+    expect(eventsOf(store, 'run_started')).toHaveLength(1);
+    // The handoff is not an attempt: nothing after it was a retry.
+    expect(eventsOf(store, 'step_retrying')).toHaveLength(0);
+  });
 
-  it.runIf(engine === 'node')(
-    "continues a start message close to its expiry on a new message that drops the run's input, and the run completes from its log",
-    async () => {
-      const [start] = vqs.state.messages;
-      start!.expiresAt = new Date(Date.now());
-      await deliver(start!);
-      expect(calls.contract_slow).toBe(1);
-      // Acknowledged: the run continues on a new message.
-      expect(vqs.state.messages).not.toContain(start);
-      expect(vqs.state.messages).toHaveLength(1);
-      const [continuation] = vqs.state.messages;
-      expect(continuation!.messageId).not.toBe(start!.messageId);
-      expect(continuation!.wrapper.payload).toMatchObject({
-        runId,
-        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-      });
-      expect('runInput' in continuation!.wrapper.payload).toBe(false);
-      expect(continuation!.opts.experimental_concurrencyKey).toBe(
-        start!.opts.experimental_concurrencyKey
-      );
+  // Inside the inline-start margin, before the deadline: the next step is
+  // created as a background step on its own message, not run inline.
+  it('runs a step created inside the inline-start margin from its own message', async () => {
+    slowAdvanceMs = DEADLINE_MS - getInlineStepDeadlineMarginMs() / 2;
+    const [start] = vqs.state.messages;
+    await deliver(start!);
+    expect(calls).toEqual({ contract_slow: 1, contract_add: 0 });
+    expect(start!.handoffCount).toBe(0);
+    const stepMessages = vqs.state.sent.filter(
+      (message) => message.wrapper.payload.stepId !== undefined
+    );
+    expect(stepMessages).toHaveLength(1);
+    expect(stepMessages[0]!.wrapper.payload.stepName).toBe('contract_add');
 
-      await runUntilIdle();
-      expect(await runResult(store)).toBe(13);
-      expect(calls).toEqual({ contract_slow: 1, contract_add: 1 });
-      expect(eventsOf(store, 'run_started')).toHaveLength(1);
-    }
-  );
+    await runUntilIdle();
+    expect(await runResult(store)).toBe(13);
+    expect(calls).toEqual({ contract_slow: 1, contract_add: 1 });
+  });
+
+  it("continues a start message close to its expiry on a new message that drops the run's input, and the run completes from its log", async () => {
+    const [start] = vqs.state.messages;
+    start!.expiresAt = new Date(Date.now());
+    await deliver(start!);
+    expect(calls.contract_slow).toBe(1);
+    // Acknowledged: the run continues on a new message.
+    expect(vqs.state.messages).not.toContain(start);
+    expect(vqs.state.messages).toHaveLength(1);
+    const [continuation] = vqs.state.messages;
+    expect(continuation!.messageId).not.toBe(start!.messageId);
+    expect(continuation!.wrapper.payload).toMatchObject({
+      runId,
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    expect('runInput' in continuation!.wrapper.payload).toBe(false);
+    expect(continuation!.opts.experimental_concurrencyKey).toBe(
+      start!.opts.experimental_concurrencyKey
+    );
+
+    await runUntilIdle();
+    expect(await runResult(store)).toBe(13);
+    expect(calls).toEqual({ contract_slow: 1, contract_add: 1 });
+    expect(eventsOf(store, 'run_started')).toHaveLength(1);
+  });
 });

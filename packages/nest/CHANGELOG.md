@@ -1,5 +1,76 @@
 # @workflow/nest
 
+## 5.1.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.6
+
+## 5.1.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.5
+
+## 5.1.11
+
+### Patch Changes
+
+- [#5438](https://github.com/vercel/workflow/pull/5438) [`5dc1c88`](https://github.com/vercel/workflow/commit/5dc1c88faaf5cbb3fc38f93b82a93a740b8f7b21) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - `workflow-nest init` warns when the `@swc/core` that `nest build` uses is missing or is not 1.15.x, and prints the install command for the project's package manager, run where `@nestjs/cli` is installed (the workspace root, in a monorepo that installs it there)
+- Updated dependencies []:
+  - @workflow/builders@5.1.4
+
+## 5.1.10
+
+### Patch Changes
+
+- Updated dependencies [[`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc)]:
+  - @workflow/builders@5.1.3
+
+## 5.1.9
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`e6f5bc7`](https://github.com/vercel/workflow/commit/e6f5bc7251f0c8daa8f03c1dd29fce04b6f57fa5), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c)]:
+  - @workflow/swc-plugin@5.0.2
+  - @workflow/builders@5.1.2
+  - @workflow/utils@5.1.1
+
+## 5.1.8
+
+### Patch Changes
+
+- Updated dependencies [[`c88e158`](https://github.com/vercel/workflow/commit/c88e158eaed8c69a9aadb9ae0ef43d14d748ad25)]:
+  - @workflow/builders@5.1.1
+
+## 5.1.7
+
+### Patch Changes
+
+- [#5307](https://github.com/vercel/workflow/pull/5307) [`c7003b1`](https://github.com/vercel/workflow/commit/c7003b17935c3ed964b948c400a72ee9c989fc38) Thanks [@joelfickson](https://github.com/joelfickson)! - Mark the NestJS and SWC peer dependencies as optional, so installing `workflow` no longer pulls `@nestjs/core`, `@nestjs/common` and `@swc/cli` into projects that do not use NestJS. NestJS projects must now list `@swc/cli` and `@swc/core` in their own `devDependencies` (`npm i -D @swc/cli @swc/core`).`workflow-nest init` now warns when they are missing.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+- Updated dependencies [[`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`e05186a`](https://github.com/vercel/workflow/commit/e05186ab2fc138a7b1b52b263cff0b3d4deaafb0), [`f61f410`](https://github.com/vercel/workflow/commit/f61f41006b23ad3659180f17c6a2a94e0ac3249e), [`b573022`](https://github.com/vercel/workflow/commit/b5730229e4dec88e18d32c05988efd5f05e27947), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/builders@5.1.0
+  - @workflow/utils@5.1.0
+
+## 5.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41)]:
+  - @workflow/builders@5.0.8
+
+## 5.1.5
+
+### Patch Changes
+
+- Updated dependencies [[`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1)]:
+  - @workflow/builders@5.0.7
+
 ## 5.1.4
 
 ### Patch Changes

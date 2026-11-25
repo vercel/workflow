@@ -39,6 +39,25 @@ export type Config = {
    * Default is 10ms. Set to 0 for immediate flushing.
    */
   streamFlushIntervalMs?: number;
+  /**
+   * How this World handles the app's queue auth key, in
+   * `<dataDir>/queue-auth-key`. `'regenerate'` (the default, and what
+   * `getWorld()` creates in an app or in a script that calls `start()`)
+   * writes a new key when the World is created, before its queue sends
+   * anything. `'read'` only reads the key the app wrote and never creates or
+   * replaces it: for tools acting on a running app's data directory (the CLI,
+   * the web UI) and for world-postgres's internal Local World.
+   */
+  queueAuthKey?: 'regenerate' | 'read';
+  /**
+   * Whether the queue reads a run's stored spec version for an orchestrator
+   * message that carries none (an older SDK's `resumeHook()` or `cancel()`),
+   * so a spec 9 run's unstamped message is serialized with the run's other
+   * orchestrator deliveries (default `true`). world-postgres's internal Local
+   * World sets `false`: its runs are not in this World's storage, and it
+   * resolves unstamped messages itself.
+   */
+  readUnstampedRunSpec?: boolean;
 };
 
 export const config = once<Config>(() => {
@@ -71,8 +90,8 @@ export function resolveRecoverActiveRuns(config: Partial<Config>): boolean {
 
 export function resolveDirectBaseUrl(config: Partial<Config>): string {
   return (
-    config.baseUrl ??
-    process.env.WORKFLOW_LOCAL_BASE_URL ??
+    config.baseUrl ||
+    process.env.WORKFLOW_LOCAL_BASE_URL ||
     createWorkflowBaseUrl('http://localhost')
   );
 }

@@ -14,6 +14,7 @@
 
 import type { Span } from '@opentelemetry/api';
 import {
+  DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -41,8 +42,8 @@ import {
   hydrateDynamicWorkflowCode,
   type PayloadKey,
 } from '../serialization.js';
+import { afterRunFailed } from './after-terminal-write.js';
 import {
-  DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
   isDynamicWorkflowsEnabled,
   isVmRetentionEnabled,
@@ -54,7 +55,6 @@ import {
 } from './dynamic-workflow.js';
 import { memoizeEncryptionKey, queueMessage } from './helpers.js';
 import type { RunInputActivity } from './invocations.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -166,14 +166,15 @@ export interface Orchestrator {
    * Writes the `run_failed` that ends a run past its max queue deliveries.
    * Resolves `'superseded'` when the in-band fence refused the write, which
    * does not prove another orchestrator is running; the caller has the queue
-   * redeliver the message to retry it. Otherwise throws what the World threw.
+   * redeliver the message to retry it. Otherwise resolves the run the write
+   * returned (when the World returned one), or throws what the World threw.
    */
   writeMaxDeliveriesFailure(
     world: World,
     runId: string,
     eventData: RunFailedEventRequest['eventData'],
     requestId: string | undefined
-  ): Promise<'written' | 'superseded'>;
+  ): Promise<{ run: WorkflowRun | undefined } | 'superseded'>;
   /** Runs one delivery of the run's queue message. */
   runDelivery(delivery: WorkflowDelivery): Promise<DeliveryResult>;
 }
@@ -402,6 +403,13 @@ export async function getMaxInlineDurationMs(
 }
 
 export function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
+  // A dynamic run delivered to a deployment that has not opted in: the
+  // project's configuration, deterministic on every redelivery, so it fails
+  // the run, attributed to the user rather than the SDK.
+  if (DynamicWorkflowsNotEnabledError.is(err)) {
+    return RUN_ERROR_CODES.USER_ERROR;
+  }
+
   if (WorkflowRuntimeError.is(err)) {
     return RUN_ERROR_CODES.RUNTIME_ERROR;
   }
@@ -440,6 +448,7 @@ export async function recordFatalRunError({
 
   let encryptionKey: PayloadKey | undefined;
   let dehydratedError: Uint8Array;
+  let failedRun: WorkflowRun | undefined;
   try {
     const getEncryptionKey = memoizeEncryptionKey(world, workflowRun ?? runId);
     encryptionKey = await getEncryptionKey();
@@ -450,7 +459,7 @@ export async function recordFatalRunError({
       globalThis,
       (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
     );
-    await world.events.create(
+    const written = await world.events.create(
       runId,
       {
         eventType: 'run_failed',
@@ -464,6 +473,7 @@ export async function recordFatalRunError({
       // log, so it carries no fence count.
       { requestId, inBand: false }
     );
+    failedRun = written?.run;
   } catch (failErr) {
     if (EntityConflictError.is(failErr) || RunExpiredError.is(failErr)) {
       return;
@@ -481,8 +491,9 @@ export async function recordFatalRunError({
     }
     throw failErr;
   }
-  dispatchRunFailedHooks(
-    runId,
+  await afterRunFailed(
+    world,
+    workflowRun ?? failedRun ?? runId,
     workflowName,
     dehydratedError,
     encryptionKey,
@@ -499,15 +510,19 @@ export async function recordFatalRunError({
  * with the run, and replaying it means evaluating that exact code rather than
  * whatever the deployment now contains.
  *
- * Stored code is only executed when all of these hold, and each failure is a
- * `WorkflowRuntimeError` so the caller fails the run instead of redelivering a
- * message whose verdict cannot change:
+ * Stored code is only executed when all of these hold, and each failure is
+ * an error `getWorkflowSetupErrorCode` maps to a code, so the caller fails the
+ * run instead of redelivering a message whose verdict cannot change:
  *
- * - this deployment has opted in to dynamic workflows;
+ * - this deployment has opted in to dynamic workflows (otherwise
+ *   `DynamicWorkflowsNotEnabledError`, recorded as `USER_ERROR`: the opt-in
+ *   is the project's configuration);
  * - the run's `workflowName` is the id its `dynamicWorkflow` marker derives
  *   (a marker on a static workflow's run does not redirect it to stored code);
  * - the code exists and hydrates, which requires the `encr` envelope whenever
  *   the run has key material or was started with encryption.
+ *
+ * The last two are `WorkflowRuntimeError` (`RUNTIME_ERROR`).
  *
  * Two sources for the code, in order of what the invocation already holds:
  *
@@ -542,8 +557,10 @@ export async function resolveWorkflowCodeForRun(
 
   const runLabel = `Workflow run "${workflowRun.runId}" is a dynamic workflow run (source ${dynamicWorkflow.sourceHash.slice(0, 12)})`;
   if (!isDynamicWorkflowsEnabled()) {
-    throw new WorkflowRuntimeError(
-      `${runLabel}, but this deployment has not enabled dynamic workflows, so its stored code was not executed. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    // The project's configuration, not an SDK failure: the deployment that
+    // received the run has not opted in. See `getWorkflowSetupErrorCode`.
+    throw new DynamicWorkflowsNotEnabledError(
+      `${runLabel}, but dynamic workflows are not enabled for this project on the deployment that received it, so its stored code was not executed.`
     );
   }
   const expectedWorkflowName = dynamicWorkflowName(dynamicWorkflow);

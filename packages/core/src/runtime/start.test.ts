@@ -1,4 +1,5 @@
 import {
+  DynamicWorkflowsNotEnabledError,
   EntityConflictError,
   FatalError,
   ThrottleError,
@@ -11,6 +12,7 @@ import {
   SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -119,9 +121,18 @@ describe('start', () => {
           },
         }).catch((err: unknown) => err);
 
-        expect(WorkflowRuntimeError.is(error)).toBe(true);
-        expect((error as Error).message).toMatch(
-          /Dynamic workflows are disabled on this deployment.*WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1/
+        // The project's configuration, not an SDK failure: its own class,
+        // deliberately not a WorkflowRuntimeError, so a run it fails is
+        // classified USER_ERROR.
+        expect(DynamicWorkflowsNotEnabledError.is(error)).toBe(true);
+        expect(WorkflowRuntimeError.is(error)).toBe(false);
+        expect(FatalError.is(error)).toBe(true);
+        expect((error as Error).message).toBe(
+          [
+            'Dynamic workflows are not enabled for this project, so start() did not create a run for the given workflow source.',
+            '├▶ hint: Set the WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 environment variable on your project, then redeploy (or restart your dev server) so the new value takes effect.',
+            '╰▶ docs: https://workflow-sdk.dev/docs/advanced/dynamic-workflows#enabling-dynamic-workflows',
+          ].join('\n')
         );
         expect(world.getDeploymentId).not.toHaveBeenCalled();
         expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
@@ -215,6 +226,37 @@ describe('start', () => {
         })
       ).rejects.toThrow(/cannot appear in workflow queue names/);
       expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('refuses a spec 10 run on a World that does not reserve rate limit slots', async () => {
+      const getDeploymentId = vi.fn().mockResolvedValue('deploy_123');
+      const workflow = Object.assign(async () => undefined, {
+        workflowId: 'workflow//./test//rateLimited',
+      });
+      // A World that declares spec 10 some other way than mintedSpecVersion.
+      setWorld({
+        capabilities: { inBandFence: true },
+        specVersion: SPEC_VERSION_RATE_LIMITS,
+        getDeploymentId,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      await expect(start(workflow as never, [])).rejects.toThrow(
+        /capabilities\.rateLimits/
+      );
+      // An explicit spec 10 on a World with the fence but no rate limits.
+      setWorld({
+        capabilities: { inBandFence: true },
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        getDeploymentId,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      await expect(
+        start(workflow as never, [], { specVersion: SPEC_VERSION_RATE_LIMITS })
+      ).rejects.toThrow(/capabilities\.rateLimits/);
       expect(eventsCreate).not.toHaveBeenCalled();
       expect(queue).not.toHaveBeenCalled();
     });
@@ -660,14 +702,6 @@ async function workflow() {
 
       it.each<[string, () => Promise<unknown>, RegExp]>([
         [
-          'the opt-in is off',
-          () => {
-            vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
-            return start(source, { experimental_dynamic: { steps } });
-          },
-          /Dynamic workflows are disabled on this deployment/,
-        ],
-        [
           'experimental_dynamic is missing',
           () => start(source as never, []),
           /no `experimental_dynamic` options/,
@@ -722,7 +756,8 @@ async function workflow() {
         const error = await startIt().catch((err: unknown) => err);
 
         // Same type and message as before; `fatal` is what makes a step that
-        // calls `start()` fail instead of retrying a refusal.
+        // calls `start()` fail instead of retrying a refusal. (The opt-in
+        // refusal has its own class; see 'deployment opt-in' above.)
         expect(WorkflowRuntimeError.is(error)).toBe(true);
         expect((error as Error).message).toMatch(message);
         expect(FatalError.is(error)).toBe(true);
@@ -979,10 +1014,10 @@ async function workflow() {
     });
 
     it('accepts a world switched back to the pre-sealed-log version', async () => {
-      // What `WORKFLOW_SEALED_LOG=0` produces: `mintedSpecVersion()` answers
+      // What `WORKFLOW_SPEC_VERSION=6` produces: `mintedSpecVersion()` answers
       // the slot-identity version, so the World declares one BELOW the version
       // this runtime stamps by default. The runtime has to admit it, or the
-      // kill switch would reject the very World it selects and a rollback
+      // setting would reject the very World it selects and a rollback
       // would surface as a startup failure instead.
       const rolledBack = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
@@ -1018,7 +1053,8 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_MAX_SUPPORTED,
-        capabilities: { inBandFence: true },
+        // The ceiling is spec 10, which needs both.
+        capabilities: { inBandFence: true, rateLimits: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,

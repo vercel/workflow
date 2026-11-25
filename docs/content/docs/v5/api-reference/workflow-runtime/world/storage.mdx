@@ -182,8 +182,7 @@ a normal return, not an error, and a missing run throws
   also return a non-terminal snapshot before `timeoutMs` is up. Callers pace
   their own retries (`await run.returnValue` keeps consecutive non-terminal
   observations at least one `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` apart), and
-  worlds that omit the method are polled on that interval instead. Set
-  `WORKFLOW_RETURN_VALUE_LONG_POLL=0` to force interval polling everywhere.
+  worlds that omit the method are polled on that interval instead.
 </Callout>
 
 ### runs.list()
@@ -247,6 +246,8 @@ const finished = await world.runs.list({
 To cancel a run, create a `run_cancelled` event through `world.events.create()` (see [world.events](#worldevents) above), or use the Workflow CLI or web interface helpers.
 
 To cancel a batch in one call, a world may implement the optional `runs.cancelMany({ runIds })`. It returns a summary plus a per-run outcome (`cancelled`, `already_cancelled`, `not_cancellable`, `not_found`, or `failed`). Backends that omit it fall back to per-run cancellation automatically.
+
+To delete the stored data of finished runs, a world may implement the optional `runs.deleteDataMany({ runIds })`. It deletes run payloads but not metadata: it keeps the run, step, event and hook records listed, with their IDs, names, statuses, timestamps and the run's attributes. It must delete only the data of finished runs and answer every other run `skipped` without cancelling it. It returns a summary plus a per-run outcome, in the order of `runIds`: `deleted`, `already_deleted` (the data was already gone; anything left behind is deleted too), `skipped` (with a `reason` and the run's `status`), `not_created`, `not_found`, or `failed` (with a `code`, and `retryable` when retrying can succeed). Deletion must be idempotent. Backends that omit it have no fallback: `deleteRuns()` throws.
 
 ### WorkflowRun type
 
@@ -352,7 +353,7 @@ Look up a hook by its token. Useful in webhook resume flows where you receive a 
 <Callout type="info">
 For runtime application code, prefer [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token). Use `world.hooks.getByToken()` when you are working directly with the World storage interface for custom tooling, admin views, or low-level integrations.
 
-Hook-token lookup is the low-level form of the recommended idempotency flow: if a hook is already registered for your business key, reuse the hook's `runId` or resume that hook instead of starting another run. If no hook exists yet, start the workflow with [`start({ hook: { token } })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts), which creates the Hook atomically with the run and refuses a duplicate with `HookConflictError` naming the owner. On a World without atomic start Hooks, have the workflow create the deterministic hook near the beginning and check `await hook.getConflict()` to detect whether another run claimed the token first. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+Hook-token lookup is the low-level form of the recommended idempotency flow: if a hook is already registered for your business key, reuse the hook's `runId` or resume that hook instead of starting another run. If no hook exists yet, start the workflow with [`start({ experimental_hook: { token } })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts), which creates the Hook atomically with the run and refuses a duplicate with `HookConflictError` naming the owner. On a World without atomic start Hooks, have the workflow create the deterministic hook near the beginning and check `await hook.getConflict()` to detect whether another run claimed the token first. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 </Callout>
 
 ```typescript lineNumbers

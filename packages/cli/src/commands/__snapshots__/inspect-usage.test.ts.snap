@@ -1,0 +1,166 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`workflow inspect run <id> --usage > prints a readable summary 1`] = `
+"processOrder  wrun_<RUN_ID>  ● completed
+
+Events           37
+Storage (local)  2.28 KB
+
+TYPE   NAME                              EVENTS  SHARE
+Steps  10 calls  ↻ 1 retry                   32    86%  █████████░
+       ├─ sendEmail  3 calls                  9    24%  ██░░░░░░░░
+       ├─ chargeCard  1 call  ↻ 1 retry       5    14%  █░░░░░░░░░
+       ├─ audit0  1 call                      3     8%  █░░░░░░░░░
+       ├─ audit1  1 call                      3     8%  █░░░░░░░░░
+       ├─ audit2  1 call                      3     8%  █░░░░░░░░░
+       └─ + 3 other steps                     9    24%
+Hooks  1 hook                                 2     5%  █░░░░░░░░░
+       └─ approve-order                       2     5%  █░░░░░░░░░
+Run                                           3     8%  █░░░░░░░░░
+TOTAL                                        37   100%
+
+How usage is counted: https://workflow-sdk.dev/docs/observability/usage
+
+STORAGE (LOCAL)     SIZE
+Run                 20 B
+Steps              168 B
+Hooks               40 B
+Streams          2.05 KB
+TOTAL            2.28 KB
+
+Local runs aren't billed. Counted from this run's log in your local data directory.
+Machine-readable: --json"
+`;
+
+exports[`workflow inspect run <id> --usage > prints the usage shape as JSON with --json 1`] = `
+{
+  "billableEvents": 37,
+  "billed": false,
+  "dataPurged": false,
+  "dataRetained": null,
+  "dataWritten": {
+    "byEntity": {
+      "hook": 40,
+      "run": 20,
+      "step": 168,
+      "stream": 2048,
+    },
+    "bytes": 2276,
+    "source": "log",
+  },
+  "events": 37,
+  "eventsBySpan": [
+    {
+      "calls": 3,
+      "events": 9,
+      "kind": "step",
+      "name": "step//./src/workflows/order//sendEmail",
+      "retries": 0,
+      "share": 0.24324324324324326,
+    },
+    {
+      "calls": 1,
+      "events": 5,
+      "kind": "step",
+      "name": "step//./src/workflows/order//chargeCard",
+      "retries": 1,
+      "share": 0.13513513513513514,
+    },
+    {
+      "calls": 1,
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit0",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "calls": 1,
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit1",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "calls": 1,
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit2",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "calls": 1,
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit3",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "calls": 1,
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit4",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "calls": 1,
+      "events": 3,
+      "kind": "step",
+      "name": "step//./src/workflows/order//audit5",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "calls": 1,
+      "events": 3,
+      "kind": "run",
+      "name": "workflow//./src/workflows/order//processOrder",
+      "retries": 0,
+      "share": 0.08108108108108109,
+    },
+    {
+      "calls": 1,
+      "events": 2,
+      "id": "hook_1",
+      "kind": "hook",
+      "name": "approve-order",
+      "retries": 0,
+      "share": 0.05405405405405406,
+    },
+  ],
+  "inProgress": false,
+  "retries": {
+    "count": 1,
+    "events": 2,
+  },
+  "runEvents": {
+    "byType": {
+      "cancelled": 0,
+      "completed": 1,
+      "created": 1,
+      "failed": 0,
+      "started": 1,
+    },
+    "events": 3,
+  },
+  "runId": "wrun_<RUN_ID>",
+  "status": "completed",
+  "stepEvents": {
+    "byType": {
+      "completed": 10,
+      "created": 10,
+      "failed": 0,
+      "other": 0,
+      "retrying": 1,
+      "started": 11,
+    },
+    "events": 32,
+    "steps": 10,
+  },
+  "workflowName": "workflow//./src/workflows/order//processOrder",
+}
+`;

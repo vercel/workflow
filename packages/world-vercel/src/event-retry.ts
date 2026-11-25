@@ -8,7 +8,7 @@
  * is not acked, it redelivers, the workflow replays, and the step's user code is
  * re-executed with `attempt++` even though it already ran to completion once.
  *
- * That re-execution is avoidable, because workflow-server makes event writes
+ * That re-execution is avoidable, because the backend makes event writes
  * idempotent *in outcome*: the entity handlers run before the event-log row is
  * inserted, and state transitions are conditional writes that exclude
  * already-terminal states. A retry whose original already landed therefore
@@ -61,7 +61,7 @@
  *
  * A `503 start-hook-run-pending` has a third policy, also for every event type.
  * The backend answers it to a write that reaches a run's start Hook (the
- * Hook a `start({ hook })` admission created) while the run itself is not
+ * Hook a `start({ experimental_hook })` admission created) while the run itself is not
  * stored yet: admission across regions is two writes, and the second one has
  * not landed. Like a 429 it is a definitive no-write, and the run appears
  * shortly, so the POST is re-sent in-process after each Retry-After for up to
@@ -147,8 +147,8 @@ export interface EventRetryPolicy {
 }
 
 /**
- * Validated per-event idempotency-on-retry classification, derived from reading
- * every handler in workflow-server's event create path. `retryable: true` means
+ * Validated per-event idempotency-on-retry classification, derived from the
+ * backend's event create handlers. `retryable: true` means
  * a retry whose original already landed produces no duplicate event row and no
  * double-applied state (it surfaces a 409 the SDK already handles).
  *
@@ -208,6 +208,16 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: true,
     reason: 'conditional delete (exists) → 409, no duplicate row',
   },
+  // Rate limit calls are in-band only: a retry whose original landed carries
+  // a stale fence count, so the backend refuses it (412) before it reserves.
+  rate_created: {
+    retryable: true,
+    reason: 'in-band fence → 412 before reserving, no duplicate row or slot',
+  },
+  rate_acquired: {
+    retryable: true,
+    reason: 'in-band fence → 412, or already-acquired guard → 409',
+  },
   // True idempotency via a correlationId constraint that reuses the eventId.
   attr_set: {
     retryable: true,
@@ -232,6 +242,11 @@ export const EVENT_RETRY_ELIGIBILITY = {
   },
   // Server-originated; the SDK never POSTs it.
   hook_conflict: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
+  // Server-originated: committed in place of a rate_created past its deadline.
+  rate_failed: {
     retryable: false,
     reason: 'server-originated; never POSTed by the SDK',
   },

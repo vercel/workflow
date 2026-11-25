@@ -21,10 +21,10 @@ node scripts/benchmark-compression-size.mjs
 ```
 
 The script prints the exact bytes the serialization layer hands to the World storage
-backends (S3/DynamoDB refs for Vercel, `bytea` columns for Postgres, JSON
+backends (payload refs for Vercel, `bytea` columns for Postgres, JSON
 files for local), compression off vs on, per workload, plus a simulated
 10-step AI-agent event-log total. Backends that base64-encode binary
-(DynamoDB inline refs, world-local JSON) see approximately 33% larger absolute
+(world-local JSON, and some backends' inline refs) see approximately 33% larger absolute
 savings
 than the raw numbers.
 

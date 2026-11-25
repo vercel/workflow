@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  DynamicWorkflowsNotEnabledError,
   HookConflictError,
   MaxEventsExceededError,
   ReplayDivergenceError,
@@ -45,10 +46,36 @@ describe('classifyRunError', () => {
     ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
   });
 
-  it('classifies WorkflowNotRegisteredError as RUNTIME_ERROR', () => {
+  it('classifies DynamicWorkflowsNotEnabledError as USER_ERROR', () => {
+    // A missing opt-in is the project's configuration, not an SDK failure.
+    expect(
+      classifyRunError(new DynamicWorkflowsNotEnabledError('not enabled'))
+    ).toBe(RUN_ERROR_CODES.USER_ERROR);
+  });
+
+  it('classifies a cross-realm DynamicWorkflowsNotEnabledError by name as USER_ERROR', () => {
+    // What a step's refusal revives as in the workflow VM: a plain Error
+    // that keeps the name, which must not fall into any RUNTIME_ERROR check.
+    const err = Object.assign(new Error('not enabled'), {
+      name: 'DynamicWorkflowsNotEnabledError',
+      fatal: true,
+    });
+    expect(classifyRunError(err)).toBe(RUN_ERROR_CODES.USER_ERROR);
+  });
+
+  it('classifies WorkflowNotRegisteredError as WORKFLOW_NOT_REGISTERED', () => {
     expect(classifyRunError(new WorkflowNotRegisteredError('myWorkflow'))).toBe(
-      RUN_ERROR_CODES.RUNTIME_ERROR
+      RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED
     );
+  });
+
+  it('classifies a cross-realm WorkflowNotRegisteredError by name as WORKFLOW_NOT_REGISTERED', () => {
+    // Errors thrown inside the workflow VM are a different realm's class, so
+    // classification must rely on the name, not instanceof.
+    const err = Object.assign(new Error('is not registered'), {
+      name: 'WorkflowNotRegisteredError',
+    });
+    expect(classifyRunError(err)).toBe(RUN_ERROR_CODES.WORKFLOW_NOT_REGISTERED);
   });
 
   it('classifies WorkflowDeploymentMismatchError as DEPLOYMENT_MISMATCH', () => {
@@ -77,7 +104,7 @@ describe('classifyRunError', () => {
 
   it('classifies a 5xx WorkflowWorldError as WORLD_CONTRACT_ERROR (backend fault, retryable)', () => {
     // A WorkflowWorldError only originates from the world adapter talking to
-    // workflow-server, so a 5xx is the backend's fault, not the user's. These
+    // its backend, so a 5xx is the backend's fault, not the user's. These
     // are normally redelivered (isRetryableWorldError); if one reaches terminal
     // classification it must be a world error, not USER_ERROR.
     expect(

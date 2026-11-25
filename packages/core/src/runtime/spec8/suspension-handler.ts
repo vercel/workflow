@@ -37,7 +37,7 @@ import {
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
 import {
   absorbSkippedSlotReport,
@@ -58,7 +58,6 @@ import { settlePhase, startSuspensionHookWrites } from '../suspension-hooks.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import {
   getMaxInlineSteps,
-  isBatchTransitionsEnabled,
   MAX_BATCH_FANOUT_EVENTS,
   SPEC8_EVENT_SPEC_VERSION,
 } from './constants.js';
@@ -155,6 +154,15 @@ export interface SuspensionHandlerParams {
    * suspension. Omitted, every suspension republishes on its own.
    */
   forceClaimVictimWakes?: Set<string>;
+  /**
+   * Steps this invocation is already executing inline from an earlier pass
+   * of the same delivery (inline early advance). They are left
+   * out entirely: nothing is created, deferred, or reported in
+   * `pendingSteps` for them, since their own executions write their events.
+   * They still occupy inline slots, so fewer new steps are deferred for
+   * inline execution while they run.
+   */
+  inFlightStepCorrelationIds?: ReadonlySet<string>;
 }
 
 /**
@@ -194,6 +202,13 @@ export interface SuspensionHandlerResult {
    * was not provided or no step was eligible.
    */
   queuedStepCorrelationIds: Set<string>;
+  /**
+   * New steps this suspension did not defer for inline execution only
+   * because steps from `inFlightStepCorrelationIds` held inline slots. They
+   * are created and queued like any step past the inline limit. Zero
+   * without in-flight steps.
+   */
+  inlineSlotsHeldBack: number;
   /**
    * How many events this phase's writes reported back as occupying slots they
    * skipped over, already merged into the caller's `eventLog.events`. Nonzero
@@ -389,6 +404,7 @@ export async function handleSuspension({
   ownerMessageId,
   allowDeferredBatchWork,
   forceClaimVictimWakes,
+  inFlightStepCorrelationIds,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -516,8 +532,13 @@ export async function handleSuspension({
   };
   // Separate queue items by type
   const stepItems = suspension.items.filter(
-    (item): item is StepInvocationQueueItem => item.type === 'step'
+    (item): item is StepInvocationQueueItem =>
+      item.type === 'step' &&
+      !inFlightStepCorrelationIds?.has(item.correlationId)
   );
+  // At terminal drain a system hook that was never created is not needed:
+  // nothing will resume it once the run ends. An abort that was requested
+  // still has to be recorded, so its hook is created and resumed.
   const allHookItems = suspension.items.filter(
     (item): item is HookInvocationQueueItem =>
       item.type === 'hook' &&
@@ -793,12 +814,19 @@ export async function handleSuspension({
   const hasHookConflictAwaiter = hooksNeedingCreation.some(
     (item) => item.hasConflictAwaiter === true
   );
-  const lazyInlineCorrelationIds = new Set<string>(
-    stepItems
-      .filter((item) => stepsNeedingCreation.has(item.correlationId))
-      .slice(0, getMaxInlineSteps())
-      .map((item) => item.correlationId)
+  const inlineCandidates = stepItems.filter((item) =>
+    stepsNeedingCreation.has(item.correlationId)
   );
+  const inlineSlots = Math.max(
+    0,
+    getMaxInlineSteps() - (inFlightStepCorrelationIds?.size ?? 0)
+  );
+  const lazyInlineCorrelationIds = new Set<string>(
+    inlineCandidates.slice(0, inlineSlots).map((item) => item.correlationId)
+  );
+  const inlineSlotsHeldBack =
+    Math.min(inlineCandidates.length, getMaxInlineSteps()) -
+    lazyInlineCorrelationIds.size;
   // Collected by correlationId because the per-step ops below run concurrently
   // and settle out of order. We rebuild the array in deterministic
   // `lazyInlineCorrelationIds` order (the ordered slice above) after the ops
@@ -824,9 +852,9 @@ export async function handleSuspension({
   // method and a run whose events are slot-numbered. Hook writes cannot ride
   // a batch (see `createBatch`), but they need no barrier against one either:
   // they commit through the single path alongside the batch. Everything
-  // outside the gate keeps the single-event path byte-for-byte.
+  // outside the gate keeps the single-event path byte-for-byte. See
+  // `./batched-event-writes.md`.
   const batchFanoutEligible =
-    isBatchTransitionsEnabled() &&
     typeof world.events.createBatch === 'function' &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
     attributeItems.length === 0;
@@ -1292,7 +1320,7 @@ export async function handleSuspension({
               // the compute-instance attribution the single claim sends via
               // CreateEventParams.
               ...(entry.kind === 'inline-started'
-                ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+                ? { computeInstanceId: getComputeInstanceId() }
                 : {}),
             })),
             // Per-write request attribution, same as the single path's
@@ -1768,6 +1796,7 @@ export async function handleSuspension({
     createdStepCorrelationIds,
     failedStepCorrelationIds,
     queuedStepCorrelationIds,
+    inlineSlotsHeldBack,
     lazyInlineSteps,
     inlineClaims,
     deferredBatchWork,
@@ -1805,7 +1834,12 @@ export async function handleSuspension({
  */
 export function pendingQueueDrain(
   world: World,
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * Steps the caller is still executing inline. Read live, and left out of
+   * the drain: their own executions write their events.
+   */
+  inFlightStepCorrelationIds?: ReadonlySet<string>
 ): PendingQueueDrain {
   return async (suspension, run) => {
     await handleSuspension({
@@ -1814,6 +1848,7 @@ export function pendingQueueDrain(
       run,
       runReadyBarrier,
       terminalDrain: true,
+      inFlightStepCorrelationIds,
     });
   };
 }

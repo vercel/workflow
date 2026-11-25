@@ -65,7 +65,7 @@ const MANIFEST_LOCATIONS: Record<string, ManifestLocation> = {
   nest: {
     skipReason: 'Nest generates its manifest when the application starts',
   },
-  astro: { path: 'src/pages/.well-known/workflow/v1/manifest.json' },
+  astro: { path: 'src/pages/.well-known/workflow/v1/_manifest.json' },
   'tanstack-start': { path: 'node_modules/.nitro/workflow/manifest.json' },
 };
 

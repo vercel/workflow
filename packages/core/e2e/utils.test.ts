@@ -1,16 +1,29 @@
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { dehydrateRunError } from '../src/serialization';
 import {
+  cliInspectJson,
   createPerTestState,
   describeRunError,
+  fetchManifest,
   getCollectedRunIds,
   getRecordedInfraEvents,
   hasStepSourceMaps,
+  readUntil,
   runInTestState,
   trackRun,
   waitForRunPickup,
   warmDeployment,
 } from './utils';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -221,6 +234,92 @@ describe('warmDeployment', () => {
   });
 });
 
+describe('readUntil', () => {
+  const fast = { timeoutMs: 200, intervalMs: 5, attemptTimeoutMs: 50 };
+
+  test('returns the first read that satisfies the predicate', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => ++reads,
+      (n) => n >= 3,
+      fast
+    );
+    expect(value).toBe(3);
+    expect(reads).toBe(3);
+  });
+
+  test('returns the last read when the predicate never holds', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => ++reads,
+      () => false,
+      fast
+    );
+    expect(value).toBe(reads);
+    expect(reads).toBeGreaterThan(1);
+  });
+
+  test('treats a throwing predicate as not yet converged', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => (++reads < 2 ? undefined : { ok: true }),
+      (v) => (v as { ok: boolean }).ok,
+      fast
+    );
+    expect(value).toEqual({ ok: true });
+  });
+
+  test('retries a read that throws', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => {
+        if (++reads < 3) throw new Error('transient');
+        return 'ok';
+      },
+      (v) => v === 'ok',
+      fast
+    );
+    expect(value).toBe('ok');
+  });
+
+  test('abandons a stalled read and retries', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      () =>
+        ++reads === 1 ? new Promise<string>(() => {}) : Promise.resolve('ok'),
+      (v) => v === 'ok',
+      fast
+    );
+    expect(value).toBe('ok');
+    expect(reads).toBe(2);
+  });
+
+  test('throws the last failure when no read ever completes', async () => {
+    await expect(
+      readUntil(
+        async () => {
+          throw new Error('always down');
+        },
+        () => true,
+        fast
+      )
+    ).rejects.toThrow('always down');
+  });
+
+  test('prefers an earlier completed read over a later failure', async () => {
+    let reads = 0;
+    const value = await readUntil(
+      async () => {
+        if (++reads > 1) throw new Error('went away');
+        return 'stale';
+      },
+      () => false,
+      fast
+    );
+    expect(value).toBe('stale');
+  });
+});
+
 describe('per-test state isolation', () => {
   test('interleaved contexts attribute runs to their own test', async () => {
     const before = getCollectedRunIds().length;
@@ -323,5 +422,131 @@ describe('describeRunError', () => {
     ).resolves.toEqual({});
     await expect(describeRunError(undefined, RUN_ID)).resolves.toEqual({});
     await expect(describeRunError(null, RUN_ID)).resolves.toEqual({});
+  });
+});
+
+describe('fetchManifest', () => {
+  const servers: Server[] = [];
+  afterEach(() => {
+    for (const server of servers.splice(0)) {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  /** A server answering each manifest request with the next of `replies`. */
+  async function manifestServer(
+    replies: Array<'reset' | number | Record<string, unknown>>
+  ) {
+    let requests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      const reply = replies[Math.min(requests++, replies.length - 1)];
+      if (reply === 'reset') {
+        // What a dev server's proxy sees when the worker it forwarded to is
+        // closed by a reload with the request in flight.
+        request.socket.destroy();
+        return;
+      }
+      if (typeof reply === 'number') {
+        response.writeHead(reply).end('unavailable');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(reply));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    return { url: `http://127.0.0.1:${port}`, requests: () => requests };
+  }
+
+  const manifest = { version: '1', workflows: {}, steps: {} };
+
+  test('retries a reset connection and a 5xx until the manifest answers', async () => {
+    const server = await manifestServer(['reset', 500, 503, manifest]);
+
+    await expect(
+      fetchManifest(server.url, { forceRefresh: true })
+    ).resolves.toEqual(manifest);
+    expect(server.requests()).toBe(4);
+  });
+
+  test('shares one request between concurrent callers', async () => {
+    const server = await manifestServer(['reset', manifest]);
+
+    const results = await Promise.all([
+      fetchManifest(server.url, { forceRefresh: true }),
+      fetchManifest(server.url, { forceRefresh: true }),
+      fetchManifest(server.url, { forceRefresh: true }),
+    ]);
+    expect(results).toEqual([manifest, manifest, manifest]);
+    expect(server.requests()).toBe(2);
+  });
+
+  test('fails at once on a 4xx', async () => {
+    const server = await manifestServer([404, manifest]);
+
+    await expect(
+      fetchManifest(server.url, { forceRefresh: true })
+    ).rejects.toThrow(/Failed to fetch manifest from .*: 404 unavailable/);
+    expect(server.requests()).toBe(1);
+  });
+});
+
+describe('CLI failure reports', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test.each([
+    1, 0,
+  ])('redacts captured output before serializing a failure (exit %s)', async (code) => {
+    process.env.APP_NAME = 'nextjs-turbopack';
+    process.env.DEPLOYMENT_URL = 'https://preview.invalid';
+    process.env.DEBUG = '*';
+    const backend = 'https://private-backend.invalid';
+    process.env.VERCEL_WORKFLOW_SERVER_URL = backend;
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        // Split across chunks: redacting each chunk alone would miss the URL.
+        child.stderr.write(`request failed: ${backend.slice(0, 15)}`);
+        child.stderr.write(backend.slice(15));
+        if (code !== 0) child.stdout.write(`backend=${backend}`);
+        child.emit('close', code, null);
+      });
+      return child as ReturnType<typeof spawn>;
+    });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const error = await cliInspectJson(
+      'event evnt_test --runId wrun_test'
+    ).catch((error: Error) => error);
+    expect(error).toBeInstanceOf(Error);
+    const report = JSON.stringify(error, Object.getOwnPropertyNames(error));
+    expect(report).not.toContain(backend);
+    expect(report).toContain('[REDACTED]');
+    expect(report).toContain('request failed');
+    expect(
+      JSON.stringify(vi.mocked(process.stdout.write).mock.calls)
+    ).not.toContain(backend);
+    expect(
+      JSON.stringify(vi.mocked(process.stderr.write).mock.calls)
+    ).not.toContain(backend);
+    expect(spawn).toHaveBeenLastCalledWith(
+      'node',
+      expect.not.arrayContaining(['--verbose']),
+      expect.objectContaining({
+        env: expect.objectContaining({ DEBUG: '' }),
+      })
+    );
   });
 });

@@ -1,5 +1,5 @@
 /**
- * The queued copy of a `start({ hook })` candidate, as the flow route sees
+ * The queued copy of a `start({ experimental_hook })` candidate, as the flow route sees
  * it: its `run_started` carries the reservation and may be the write that
  * admits or refuses the candidate. A refused copy acks without running any
  * code; every other World error keeps its ordinary handling.

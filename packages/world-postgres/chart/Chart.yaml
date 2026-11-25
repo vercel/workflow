@@ -1,0 +1,5 @@
+apiVersion: v2
+name: workflow-postgres
+description: Runs a Workflow SDK application on @workflow/world-postgres in Kubernetes, with every run pinned to the image version that started it.
+type: application
+version: 0.1.0

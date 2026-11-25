@@ -34,6 +34,12 @@ import type { RunStartHook } from './runtime/start-hook-binding.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
+  bindStateContext,
+  registerStateSource,
+  StateContext,
+  stateSourceId,
+} from './serialization/state-refs.js';
+import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
 } from './serialization.js';
@@ -43,6 +49,7 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_RATE_LIMIT,
   WORKFLOW_SET_ATTRIBUTES,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
@@ -65,6 +72,7 @@ import { createSetAttributes } from './workflow/attribute-dispatcher.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
+import { createRateLimit } from './workflow/rate-limit.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
@@ -471,6 +479,11 @@ async function createWorkflowSessionInner(
     fixedTimestamp,
   });
 
+  // Each replay rebuilds frozen state versions from the log it reads, and
+  // inline steps resolve their inputs against the same context.
+  replayPayloadCache.stateContext = new StateContext();
+  bindStateContext(vmGlobalThis, replayPayloadCache.stateContext);
+
   const initialInterruption = withResolvers<never>();
   let state: WorkflowSessionState = {
     type: 'running',
@@ -508,7 +521,7 @@ async function createWorkflowSessionInner(
   // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
   // delivery and a later server-backed replay, so use fixedTimestamp.
   // The draw counter is the progress metric for `quiesceEarlierCascades`
-  // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+  // (log-order draws): a quiet turn is one that drew nothing. It
   // counts EVERY draw from this sequence. This same function is installed as
   // the `STABLE_ULID` global below, which serialization draws stream ids
   // from during dehydration. This is deliberate because quiescence must also
@@ -705,6 +718,7 @@ async function createWorkflowSessionInner(
   const useStep = createUseStep(workflowContext);
   const createHook = createCreateHook(workflowContext);
   const sleep = createSleep(workflowContext);
+  const rateLimit = createRateLimit(workflowContext, workflowRun.specVersion);
   const setAttributes = createSetAttributes(workflowContext);
 
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
@@ -715,6 +729,8 @@ async function createWorkflowSessionInner(
   vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_SLEEP] = sleep;
+  // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+  vmGlobalThis[WORKFLOW_RATE_LIMIT] = rateLimit;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
     getWorkflowRunStreamId(workflowRun.runId, namespace);
@@ -1251,7 +1267,7 @@ async function createWorkflowSessionInner(
     args = await trace('workflow.input.hydrate', async () => {
       const prepared =
         await replayPayloadCache.prepareWorkflowInput(workflowRun);
-      return hydrateWorkflowArguments(
+      const hydrated = await hydrateWorkflowArguments(
         workflowRun.input,
         workflowRun.runId,
         encryptionKey,
@@ -1259,6 +1275,9 @@ async function createWorkflowSessionInner(
         {},
         prepared
       );
+      // Later state changes may refer to the input's strings.
+      registerStateSource(vmGlobalThis, stateSourceId('run-input'), hydrated);
+      return hydrated;
     });
   });
   await workflowContext.promiseQueue;

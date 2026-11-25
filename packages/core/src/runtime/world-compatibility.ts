@@ -2,6 +2,7 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import {
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
@@ -21,17 +22,17 @@ import {
  * `SPEC_VERSION_CURRENT`, which now sits one above it at the sealed log. Two
  * reasons, and both are about the window a spec bump is staged over:
  *
- * - `WORKFLOW_SEALED_LOG=0` puts a deployment back on slot identity, so its
+ * - `WORKFLOW_SPEC_VERSION=6` puts a deployment back on slot identity, so its
  *   World declares the lower version. Flooring at the version we stamp by
- *   default would make that kill switch reject the very World it selects,
+ *   default would make that setting reject the very World it selects,
  *   turning a rollback into a startup failure.
  * - A World package one version behind the runtime it ships alongside is the
  *   normal state mid-bump, and it can still serve the protocol: slot identity
  *   is what the runtime actually requires, and sealed logs are a capability on
  *   top of it that only the backend implements.
  *
- * The range narrows again when the sealed log becomes mandatory and the flag
- * goes away, exactly as slot identity's own floor did.
+ * The range narrows again once `WORKFLOW_SPEC_VERSION` stops accepting
+ * versions below the sealed log, exactly as slot identity's own floor did.
  */
 export function assertWorldSupportsRuntimeProtocol(
   world: Pick<World, 'specVersion'>
@@ -89,7 +90,28 @@ export function assertWorldSupportsInBandFence(
       'stale in-band write with `InBandSupersededError` (412), it can declare ' +
       '`capabilities.inBandFence: true` and ' +
       '`specVersion: mintedSpecVersion(process.env, { inBandFence: true })`, ' +
-      'which creates spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set. ' +
+      'which creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts out), ' +
+      'or spec 10 runs once it also declares `capabilities.rateLimits` and passes `rateLimits: true`. ' +
+      'See "Building a World" in the Workflow docs.'
+  );
+}
+
+/**
+ * Rejects a World that does not reserve rate limit slots
+ * (`WorldCapabilities.rateLimits`) for a run at spec
+ * `SPEC_VERSION_RATE_LIMITS` or later. Such a run may write rate events, and
+ * only a World that decides them may hold one.
+ */
+export function assertWorldSupportsRateLimits(
+  world: Pick<World, 'capabilities'>
+): void {
+  if (world.capabilities?.rateLimits === true) return;
+  throw new WorkflowRuntimeError(
+    `Spec version ${SPEC_VERSION_RATE_LIMITS} runs require a World that reserves ` +
+      'rate limit slots (`capabilities.rateLimits`), which the configured World ' +
+      'does not declare. A World that has not implemented them should declare ' +
+      '`specVersion: mintedSpecVersion(process.env, { inBandFence: true })`, ' +
+      `which never creates spec ${SPEC_VERSION_RATE_LIMITS} runs. ` +
       'See "Building a World" in the Workflow docs.'
   );
 }

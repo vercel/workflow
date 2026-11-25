@@ -1,7 +1,10 @@
 import {
   EntityConflictError,
+  FatalError,
+  RetryableError,
   START_HOOK_CANDIDATE_CANCELLED,
   StreamError,
+  ThrottleError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -11,6 +14,9 @@ import {
   BULK_CANCEL_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
   type BulkCancelWorkflowRunsResult,
+  DELETE_RUNS_DATA_MAX_RUN_IDS,
+  type DeleteRunDataResult,
+  type DeleteRunsDataResult,
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
@@ -22,6 +28,8 @@ import {
 import { runtimeLogger } from '../logger.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
+import { afterRunCancelled } from './after-terminal-write.js';
 import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -230,7 +238,7 @@ export async function wakeRunAfterOutOfBandWrite(
  * Cancel a workflow run.
  *
  * A run that does not exist (yet) is still cancelled through the World: a
- * `start({ hook })` candidate that was admitted but never created a run (the
+ * `start({ experimental_hook })` candidate that was admitted but never created a run (the
  * recovery `WorkflowStartError` points at) is fenced by it, so no copy of it
  * can create the run any more. Otherwise the World answers not found, which
  * is thrown as `WorkflowRunNotFoundError`.
@@ -274,7 +282,10 @@ export async function cancelRun(
       v1Compat: compatMode,
       ...(run && isSingleOrchestratorRun(run) ? { inBand: false } : {}),
     });
-    if (run) await wakeRunAfterOutOfBandWrite(world, run);
+    if (run) {
+      await wakeRunAfterOutOfBandWrite(world, run);
+      await afterRunCancelled(world, run);
+    }
   } catch (err) {
     // The World fenced a candidate that never became a run: cancelled.
     if (
@@ -332,39 +343,37 @@ export async function cancelRuns(
 
   // Fast path: a single batch operation when the world supports it.
   if (world.runs.cancelMany) {
-    return world.runs.cancelMany({
+    const result = await world.runs.cancelMany({
       runIds,
       ...(options?.cancelReason !== undefined
         ? { cancelReason: options.cancelReason }
         : {}),
     });
+    // The batch write cannot resume the completion hooks of parents waiting
+    // on these runs, so do it per cancelled run here (`cancelRun` does the
+    // same on the fallback path below).
+    await forEachConcurrently(
+      result.results.filter(({ outcome }) => outcome === 'cancelled'),
+      ({ runId }) => afterRunCancelled(world, runId)
+    );
+    return result;
   }
 
   // Fallback: bounded-concurrency single-run cancellation.
   const results: BulkCancelWorkflowRunResult[] = new Array(runIds.length);
-  let nextIndex = 0;
-
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const index = nextIndex++;
-      if (index >= runIds.length) return;
-      const runId = runIds[index];
-      try {
-        await cancelRun(world, runId, options);
-        results[index] = { runId, outcome: 'cancelled' };
-      } catch {
-        results[index] = {
-          runId,
-          outcome: 'failed',
-          code: 'internal_error',
-          retryable: true,
-        };
-      }
+  await forEachConcurrently(runIds, async (runId, index) => {
+    try {
+      await cancelRun(world, runId, options);
+      results[index] = { runId, outcome: 'cancelled' };
+    } catch {
+      results[index] = {
+        runId,
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      };
     }
-  };
-
-  const workerCount = Math.min(CANCEL_RUNS_FALLBACK_CONCURRENCY, runIds.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  });
 
   const summary = {
     requested: runIds.length,
@@ -395,6 +404,217 @@ export async function cancelRuns(
   }
 
   return { summary, results };
+}
+
+/**
+ * Delete the stored data of many finished runs in one call: their inputs,
+ * outputs and errors, their steps' and events' payloads, their hook payloads,
+ * and their stream contents, as if each had been started with
+ * `experimental_retention: 0`. Deletion cannot be undone.
+ *
+ * Metadata is not deleted: despite the name, the runs themselves stay
+ * listed, and so do their steps, events and hooks, with their IDs, names,
+ * statuses, timestamps and the runs' attributes. Only their payloads go,
+ * reading back as expired.
+ *
+ * Runs that have not finished are answered `skipped` and left untouched:
+ * this never cancels a run. Cancel it first (see {@link cancelRuns}) to
+ * delete its data. Every outcome is reported per run, in the order of
+ * `runIds`.
+ *
+ * Retrying is safe, since deletion is idempotent. Inside a step, runs that
+ * fail with `retryable: true` are re-sent once, on their own, after a
+ * second. If any still fail, or the World rate-limits a request, this throws
+ * a `RetryableError` (after the World's `retryAfter` when it gives one, else
+ * 10 seconds), so the step retries the whole batch; runs already handled
+ * then answer `already_deleted`. Outside a step, retryable failures are
+ * returned for the caller to retry, and a rate limit throws the World's
+ * `ThrottleError`.
+ *
+ * Delegates to the World's `runs.deleteDataMany`. There is no fallback: a
+ * World that cannot delete run data would otherwise report success while
+ * keeping the data.
+ *
+ * @throws if `runIds` is empty, contains duplicates, or exceeds
+ *   {@link DELETE_RUNS_DATA_MAX_RUN_IDS}; if the configured World does not
+ *   support deleting run data; or if the World does not answer exactly one
+ *   result per run.
+ */
+export async function deleteRuns(
+  world: World,
+  runIds: string[]
+): Promise<DeleteRunsDataResult> {
+  if (runIds.length === 0) {
+    throw new FatalError('deleteRuns requires at least one run ID.');
+  }
+  if (runIds.length > DELETE_RUNS_DATA_MAX_RUN_IDS) {
+    throw new FatalError(
+      `deleteRuns accepts at most ${DELETE_RUNS_DATA_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
+    );
+  }
+  if (new Set(runIds).size !== runIds.length) {
+    throw new FatalError(
+      'deleteRuns requires unique run IDs (duplicates found).'
+    );
+  }
+  if (!world.runs.deleteDataMany) {
+    // Fatal: inside a step, retrying cannot add the method.
+    throw new FatalError(
+      'The configured World does not support deleting run data.'
+    );
+  }
+  const { deleteDataMany } = world.runs;
+  const request: DeleteRequest = (ids) =>
+    deleteDataMany.call(world.runs, { runIds: ids });
+
+  const inStep = contextStorage.getStore() !== undefined;
+  let results = await requestRunDataDeletion(request, runIds, inStep);
+
+  if (inStep) {
+    // Re-send only the runs that failed retryably, once, before failing the
+    // step: a step retry re-sends the whole batch, and every run in it
+    // counts towards world-vercel's rate limit.
+    let retryable = retryableFailures(results);
+    if (retryable.length > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, DELETE_RUNS_IN_CALL_RETRY_DELAY_MS)
+      );
+      const retried = await requestRunDataDeletion(
+        request,
+        retryable.map((result) => result.runId),
+        inStep
+      );
+      const retriedById = new Map(retried.map((r) => [r.runId, r]));
+      results = results.map(
+        (result) => retriedById.get(result.runId) ?? result
+      );
+      retryable = retryableFailures(results);
+    }
+    if (retryable.length > 0) {
+      const codes = [...new Set(retryable.map((result) => result.code))];
+      throw new RetryableError(
+        `Deleting the data of ${describeRunIds(
+          retryable.map((result) => result.runId)
+        )} failed (${codes.join(', ')}) and will be retried.`,
+        { retryAfter: DELETE_RUNS_STEP_RETRY_DELAY_MS }
+      );
+    }
+  }
+
+  return { summary: summarizeRunDataDeletion(results), results };
+}
+
+/** Wait before re-sending a step's retryable failures within the call. */
+const DELETE_RUNS_IN_CALL_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Wait before a step retries a deletion that still failed, or that the World
+ * rate-limited without saying for how long. Longer than `RetryableError`'s
+ * 1 s default, so a step's small retry budget is not spent in a few seconds.
+ */
+const DELETE_RUNS_STEP_RETRY_DELAY_MS = 10_000;
+
+/**
+ * One `deleteDataMany` request: its results in the order of `runIds`. Inside
+ * a step, a rate limit throws a `RetryableError` after the World's
+ * `retryAfter` (or {@link DELETE_RUNS_STEP_RETRY_DELAY_MS}).
+ */
+type DeleteRequest = (runIds: string[]) => Promise<DeleteRunsDataResult>;
+
+async function requestRunDataDeletion(
+  request: DeleteRequest,
+  runIds: string[],
+  inStep: boolean
+): Promise<DeleteRunDataResult[]> {
+  let response: DeleteRunsDataResult;
+  try {
+    response = await request(runIds);
+  } catch (err) {
+    if (inStep && ThrottleError.is(err)) {
+      throw new RetryableError(
+        `The World rate-limited deleting the data of ${describeRunIds(runIds)}.`,
+        {
+          retryAfter:
+            typeof err.retryAfter === 'number'
+              ? err.retryAfter * 1000
+              : DELETE_RUNS_STEP_RETRY_DELAY_MS,
+        }
+      );
+    }
+    throw err;
+  }
+
+  // Exactly one result per requested run, in request order. Anything else
+  // would leave a run's fate unknown, so it is not reported as success.
+  const resultByRunId = new Map(
+    response.results.map((result) => [result.runId, result])
+  );
+  if (
+    resultByRunId.size !== response.results.length ||
+    response.results.length !== runIds.length ||
+    !runIds.every((runId) => resultByRunId.has(runId))
+  ) {
+    const unanswered = runIds.filter((runId) => !resultByRunId.has(runId));
+    throw new Error(
+      `The World did not answer the deletion of the data of ${describeRunIds(
+        unanswered.length > 0 ? unanswered : runIds
+      )} with exactly one result per run (requested ${runIds.length}, received ${response.results.length}).`
+    );
+  }
+  return runIds.map((runId) => resultByRunId.get(runId) as DeleteRunDataResult);
+}
+
+function retryableFailures(
+  results: DeleteRunDataResult[]
+): Extract<DeleteRunDataResult, { outcome: 'failed' }>[] {
+  return results.filter(
+    (result): result is Extract<DeleteRunDataResult, { outcome: 'failed' }> =>
+      result.outcome === 'failed' && result.retryable
+  );
+}
+
+/** The summary of `results`, counting each outcome. */
+function summarizeRunDataDeletion(
+  results: DeleteRunDataResult[]
+): DeleteRunsDataResult['summary'] {
+  const count = (outcome: DeleteRunDataResult['outcome']) =>
+    results.filter((result) => result.outcome === outcome).length;
+  return {
+    requested: results.length,
+    deleted: count('deleted'),
+    alreadyDeleted: count('already_deleted'),
+    skipped: count('skipped'),
+    notCreated: count('not_created'),
+    notFound: count('not_found'),
+    failed: count('failed'),
+  };
+}
+
+/** `run wrun_a`, or `runs wrun_a, wrun_b and 3 more`, for error messages. */
+function describeRunIds(runIds: string[]): string {
+  const shown = runIds.slice(0, 3).join(', ');
+  const more = runIds.length > 3 ? ` and ${runIds.length - 3} more` : '';
+  return `${runIds.length === 1 ? 'run' : 'runs'} ${shown}${more}`;
+}
+
+/**
+ * Runs `fn` over `items` with at most {@link CANCEL_RUNS_FALLBACK_CONCURRENCY}
+ * calls in flight. `fn` must not reject.
+ */
+async function forEachConcurrently<T>(
+  items: readonly T[],
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      await fn(items[index]!, index);
+    }
+  };
+  const workerCount = Math.min(CANCEL_RUNS_FALLBACK_CONCURRENCY, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 }
 
 /**
@@ -498,8 +718,11 @@ function rememberWakeUp(
  * (world-vercel) drops the names, and the waits then run their full length.
  * A delivery is running not only while it has work: after a pass with
  * nothing left to run it stays live while the run waits on an open hook or
- * a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`), so a wake sent just
- * after a run was active can be dropped too. `stoppedCount` then still
+ * a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`, or
+ * `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` for open hooks alone), so a wake sent just
+ * after a run was active can be dropped too, and until a wait due within
+ * `WORKFLOW_ORCHESTRATOR_WAIT_LINGER_MS`, so a wake sent during such a short
+ * sleep is dropped and the sleep runs its full length. `stoppedCount` then still
  * counts the waits it asked to complete.
  * A queue that holds the message until the running delivery ends (the Local
  * and Postgres Worlds) delivers it after that delivery. Older runs get

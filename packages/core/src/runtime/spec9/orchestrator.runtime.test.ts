@@ -32,6 +32,7 @@ import {
 } from '../constants.js';
 import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
+import { exceededMaxRetriesMessage } from './step-executor.js';
 import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
   stepMessageRetentionSeconds,
@@ -415,6 +416,11 @@ describe.each([
          return all.reduce((sum, x) => sum + x, 0);
        }${transform('workflow')}`;
       const expectedSum = (width * (width + 1)) / 2;
+      // How long the inline bodies of a fan-out may take to start while its
+      // background dispatch is held. Locally they start within ~300ms; on a
+      // loaded CI runner (Windows especially) over 2s, and over 10s for the
+      // file's first run. Within the 60s test timeout.
+      const INLINE_BODIES_STARTED_TIMEOUT_MS = 30_000;
       const stepBatchesOf = (world: AppendOnlyWorld) =>
         world.queueBatches.filter((batch) =>
           batch.every(
@@ -500,9 +506,13 @@ describe.each([
           (error: unknown) => error
         );
         try {
-          // Every inline body ran while no step message went out.
+          // Every inline body ran while no step message went out. The step
+          // batch is held until `release()`, so waiting longer cannot let a
+          // step message out first: the budget only has to cover a loaded
+          // runner, where the first run in the file starts its inline
+          // bodies seconds late (module loading, not the dispatch).
           await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
-            timeout: 2_000,
+            timeout: INLINE_BODIES_STARTED_TIMEOUT_MS,
           });
           expect(stepBatchesOf(world).length).toBeGreaterThan(0);
           expect(stepMessagesOf(world)).toEqual([]);
@@ -569,7 +579,7 @@ describe.each([
             if (failed || !isStepBatch(messages)) return;
             // Fail only once the inline bodies ran.
             await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
-              timeout: 2_000,
+              timeout: INLINE_BODIES_STARTED_TIMEOUT_MS,
             });
             failed = true;
             throw new Error('queue unavailable');
@@ -832,6 +842,17 @@ describe.each([
           return (result?.timeoutSeconds ?? 0) > 0;
         })
       ).toBe(true);
+      // Each early hop decided from the step's latest event alone: one
+      // newest-first read of the step, no full log read.
+      const earlyHops = stepDeliveries.slice(1, -1);
+      expect(earlyHops.length).toBeGreaterThanOrEqual(3);
+      const stepReads = world.correlationListCalls.filter(
+        (call) =>
+          (call.pagination as { sortOrder?: string } | undefined)?.sortOrder ===
+          'desc'
+      );
+      expect(stepReads.length).toBeGreaterThanOrEqual(earlyHops.length);
+      expect(stepReads.every((call) => call.resolveData === 'none')).toBe(true);
       // Only two attempts ran: the early hops ran no body.
       expect(calls.so_long_retry).toBe(2);
       expect(
@@ -913,8 +934,17 @@ describe.each([
       for (const attributes of redelivered) {
         expect(attributes['step.delivery.reason']).toBe('retry-after');
         expect(attributes['step.delivery.timeout_seconds']).toBeGreaterThan(0);
+        // Decided from the step's latest event, without the full log.
+        expect(attributes['step.delivery.log_read']).toBe('step_tail');
       }
-      expect(decided.map((a) => a['step.delivery.decision'])).toContain('run');
+      const ran = decided.filter(
+        (attributes) => attributes['step.delivery.decision'] === 'run'
+      );
+      expect(ran.map((a) => a['step.delivery.log_read'])).toEqual([
+        // The first delivery reads nothing; the due retry reads the full log.
+        'none',
+        'full_log',
+      ]);
     } finally {
       traceSpy.mockRestore();
       nowSpy.mockRestore();
@@ -986,9 +1016,17 @@ describe.each([
     await world.runUntilIdle();
 
     expect(calls.so_once).toBe(1);
-    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    const starts = eventsOf(world, 'step_started');
+    expect(starts).toHaveLength(1);
     expect(eventsOf(world, 'step_failed')).toHaveLength(1);
-    expect(await runResult(world)).toMatch(/^failed: /);
+    // No error from the body exists; the failure names the attempt that left
+    // no outcome instead.
+    expect(await runResult(world)).toBe(
+      `failed: ${exceededMaxRetriesMessage('so_once', 0, {
+        attempt: 1,
+        startedAt: new Date(starts[0]!.createdAt),
+      })}`
+    );
   });
 
   describe("a background step's first delivery", () => {
@@ -1668,36 +1706,34 @@ describe.each([
   // timer delivery arms the next wait that message created once its own
   // wait completes, so every sleep of a Promise.all gets a timer.
   it('arms the next sleep of a Promise.all once the earlier one completes', async () => {
-    const { world } = await setup(
-      `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-       async function workflow() { await Promise.all([sleep("1s"), sleep("2s")]); return "done"; }${transform('workflow')}`,
-      []
-    );
-    const timedWaits = () =>
-      new Set(
-        world.queueCalls.flatMap((call) => {
-          const continuation = (
-            call.message as { waitContinuation?: { correlationId: string } }
-          ).waitContinuation;
-          return continuation ? [continuation.correlationId] : [];
-        })
+    // On the queue's clock (a faked `Date`), so each timer is delivered when
+    // its own sleep is due. On the real clock, a loaded runner could reach
+    // the first sleep's timer only once the second sleep was due too: that
+    // delivery completes both, and the second never needs a timer.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { world } = await setup(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+         async function workflow() { await Promise.all([sleep("1s"), sleep("2s")]); return "done"; }${transform('workflow')}`,
+        []
       );
-    // The harness delivers a delayed message at once, and a timer that comes
-    // early re-arms itself, so deliver one message per tick until the later
-    // sleep is due on the real clock.
-    const deadline = Date.now() + 10_000;
-    while (
-      eventsOf(world, 'run_completed').length === 0 &&
-      Date.now() < deadline
-    ) {
-      const next = world.held[0];
-      if (next) await world.deliver(next);
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      const timedWaits = () =>
+        new Set(
+          world.queueCalls.flatMap((call) => {
+            const continuation = (
+              call.message as { waitContinuation?: { correlationId: string } }
+            ).waitContinuation;
+            return continuation ? [continuation.correlationId] : [];
+          })
+        );
+      await world.runOnClock({ limit: 20 });
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const waits = eventsOf(world, 'wait_created').map((e) => e.correlationId);
+      expect(waits).toHaveLength(2);
+      expect(timedWaits()).toEqual(new Set(waits));
+    } finally {
+      vi.useRealTimers();
     }
-    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
-    expect(timedWaits()).toEqual(
-      new Set(eventsOf(world, 'wait_created').map((e) => e.correlationId))
-    );
   });
 
   // A redelivery of a message (a crash, or a rejected delivery) holds that
@@ -1773,6 +1809,52 @@ describe.each([
     expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBeGreaterThan(0);
   });
 
+  // Node only: the QuickJS engine records no consumed position, so it never
+  // reads the tail and there is nothing for the wake to skip.
+  it.runIf(engine === 'node')(
+    'skips the tail read for a wake that names an event it has not consumed',
+    async () => {
+      const { world, runId } = await setup(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() { await sleep("1h"); return "done"; }${transform('workflow')}`,
+        []
+      );
+      await world.deliver(world.held[0]!);
+      world.held.length = 0;
+      // An out-of-band writer commits an event, then sends its wake naming it.
+      const written = world.appendOutOfBand({
+        eventType: 'noop',
+      } as Partial<Event>);
+      const tailReads = () =>
+        world.listCalls.filter(
+          (call) =>
+            (call.pagination as { sortOrder?: string } | undefined)
+              ?.sortOrder === 'desc'
+        ).length;
+      const before = tailReads();
+      const listsBefore = world.listCalls.length;
+      await world.deliver(
+        world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
+      );
+      expect(tailReads()).toBe(before);
+      // It loaded the log instead.
+      expect(world.listCalls.length).toBeGreaterThan(listsBefore);
+      // A wake naming an event it already consumed still reads the tail, and
+      // finds nothing new: the delivery above consumed the event.
+      const listsAfter = world.listCalls.length;
+      await world.deliver(
+        world.enqueue(QUEUE, { runId, wakeEventId: written.eventId })
+      );
+      expect(tailReads()).toBe(before + 1);
+      expect(world.listCalls.length).toBe(listsAfter + 1);
+      // A malformed or non-slot name is no hint: the delivery reads the tail.
+      for (const wakeEventId of [42, 'evnt_not-a-slot']) {
+        await world.deliver(world.enqueue(QUEUE, { runId, wakeEventId }));
+      }
+      expect(tailReads()).toBe(before + 3);
+    }
+  );
+
   describe('a delivery the fence refuses', () => {
     const fanOut = 2 * MAX_IN_BAND_CREATION_BATCH_EVENTS + 4;
     const fanOutCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
@@ -1799,6 +1881,18 @@ describe.each([
         },
       };
     };
+    /**
+     * Drains the run, step messages ahead of orchestrator wakes. In plain
+     * FIFO order the steps the redelivery creates wait behind a wake per
+     * earlier step outcome, each a full replay that finds nothing to do (the
+     * QuickJS engine has no no-op shortcut for them): ~130 replays of a
+     * ~400-event log, which took over 60s on a loaded Windows runner.
+     */
+    const drain = (world: AppendOnlyWorld) =>
+      world.runUntilIdle(500, {
+        prefer: (held) =>
+          (held.message as { stepId?: string }).stepId !== undefined,
+      });
     const stepMessageIds = (world: AppendOnlyWorld) =>
       world.queueCalls.flatMap((call) => {
         const stepId = (call.message as { stepId?: string }).stepId;
@@ -1828,7 +1922,7 @@ describe.each([
 
         // The redelivery creates the rest and finishes the run; each step
         // runs once.
-        await world.runUntilIdle(500);
+        await drain(world);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
         const starts = eventsOf(world, 'step_started').map(
@@ -1889,7 +1983,7 @@ describe.each([
           messageId: start.messageId,
           deliveryCount: 2,
         });
-        await world.runUntilIdle(500);
+        await drain(world);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
         const starts = eventsOf(world, 'step_started').map(

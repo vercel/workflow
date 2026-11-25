@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { debugLog } from '@workflow/utils';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
@@ -12,12 +13,10 @@ import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import { Mutex } from './util.js';
 
-const StreamPublishMessage = z.compile(
-  z.object({
-    streamId: z.string(),
-    chunkId: z.templateLiteral(['chnk_', z.string()]),
-  })
-);
+const StreamPublishMessage = z.object({
+  streamId: z.string(),
+  chunkId: z.templateLiteral(['chnk_', z.string()]),
+});
 
 interface StreamChunkEvent {
   id: `chnk_${string}`;
@@ -65,6 +64,12 @@ export interface ListenChannelOptions {
    * that cannot tolerate a missed notification re-read their state here.
    */
   onReconnect?: () => void;
+  /**
+   * Runs once per outage, when the active connection drops (before any
+   * reconnect attempt). A `NOTIFY` sent from here until `onReconnect` is
+   * lost.
+   */
+  onDisconnect?: () => void;
 }
 
 /**
@@ -113,6 +118,11 @@ export const listenChannel = async (
       console.warn(
         `[world-postgres] LISTEN ${channel} connection lost; reconnecting`
       );
+      try {
+        options.onDisconnect?.();
+      } catch {
+        // A failing callback must not stop the reconnect.
+      }
     }
     scheduleReconnect();
   };
@@ -224,6 +234,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     return mutex.acquire();
   };
 
+  // A chunk's bytes, or none once its run's data has been deleted. The
+  // deletion blanks every chunk itself, and inserts are refused after it
+  // (see `insertDataChunks`); reads check the run as well, so bytes that
+  // reach the table some other way are still never served.
+  const chunkDataUnlessRunDeleted = sql<Buffer>`CASE WHEN EXISTS (
+      SELECT 1 FROM ${Schema.runs} r
+      WHERE r.id = ${streams.runId} AND r.expired_at IS NOT NULL
+    ) THEN ''::bytea ELSE ${streams.chunkData} END`.mapWith(streams.chunkData);
+
   const STREAM_TOPIC = 'workflow_event_chunk';
 
   const listenSubscription = listenChannel(
@@ -240,7 +259,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       const resource = getMutex(key);
       await resource.mutex.andThen(async () => {
         const [value] = await drizzle
-          .select({ eof: streams.eof, data: streams.chunkData })
+          .select({ eof: streams.eof, data: chunkDataUnlessRunDeleted })
           .from(streams)
           .where(
             and(
@@ -303,7 +322,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       .select({
         id: streams.chunkId,
         eof: streams.eof,
-        data: streams.chunkData,
+        data: chunkDataUnlessRunDeleted,
       })
       .from(streams)
       .where(and(eq(streams.streamId, name)))
@@ -329,6 +348,67 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
 
+  /**
+   * Inserts data chunks in one statement, unless the run's data has been
+   * deleted (by zero retention or on demand): a step still running when its
+   * run finished would otherwise write past the deletion. Whether the chunks
+   * were written.
+   *
+   * The statement reads `expired_at` under the run's row lock (`FOR SHARE`)
+   * and holds that lock until the insert commits, whatever the run's status
+   * or retention. A deletion updates the run row first (see
+   * `purgeRunUserData`), and that update conflicts with the lock, so the two
+   * serialize:
+   *
+   * - an insert that locks first commits before the deletion can update the
+   *   run, and the deletion's later statements see the committed chunks and
+   *   blank them;
+   * - an insert that waits on a deletion re-reads the run row once it
+   *   commits (READ COMMITTED re-checks a locked row against its newest
+   *   version), sees `expired_at`, and inserts nothing.
+   *
+   * No chunk with data can therefore commit behind a deletion, even for a
+   * moment. The lock is shared, so concurrent stream writes to one run do not
+   * wait on each other; they wait only for a transaction that updates or
+   * exclusively locks the run row, and such a transaction waits for them.
+   * Postgres lets a new shared locker in ahead of a waiting updater, so
+   * writes that overlap without a gap keep that updater waiting.
+   *
+   * `tla/StreamPurge.tla` models this interlock and the variants that break
+   * it; `test/stream-deletion-race.test.ts` races it against real Postgres.
+   */
+  const insertDataChunks = async (
+    runId: string,
+    name: string,
+    chunkIds: string[],
+    chunks: (string | Uint8Array)[]
+  ): Promise<boolean> => {
+    const rows = sql.join(
+      chunks.map(
+        (chunk, i) =>
+          sql`(${chunkIds[i]}, ${name}, ${runId}, ${toBuffer(chunk)}::bytea)`
+      ),
+      sql`, `
+    );
+    const result = await drizzle.execute(sql`
+      INSERT INTO ${streams} (id, stream_id, run_id, data, eof)
+      SELECT v.id, v.stream_id, v.run_id, v.data, false
+      FROM (VALUES ${rows}) AS v (id, stream_id, run_id, data)
+      WHERE NOT COALESCE(
+        (SELECT r.expired_at IS NOT NULL FROM ${Schema.runs} r
+         WHERE r.id = ${runId}
+         FOR SHARE),
+        false
+      )`);
+    if ((result.rowCount ?? 0) > 0) return true;
+    // The caller's write resolves either way, so this is the only trace of
+    // the dropped chunks. No stream name: it can carry user data.
+    debugLog(
+      `[world-postgres] dropped ${chunks.length} stream chunk(s) written after the data of run "${runId}" was deleted`
+    );
+    return false;
+  };
+
   return {
     streams: {
       async write(
@@ -340,13 +420,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         const chunkId = genChunkId();
-        await drizzle.insert(streams).values({
-          chunkId,
-          streamId: name,
-          runId,
-          chunkData: toBuffer(chunk),
-          eof: false,
-        });
+        if (!(await insertDataChunks(runId, name, [chunkId], [chunk]))) return;
         await notifyStream(
           JSON.stringify(
             StreamPublishMessage.encode({
@@ -371,15 +445,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         // Batch insert all chunks in a single query
-        await drizzle.insert(streams).values(
-          chunks.map((chunk, i) => ({
-            chunkId: chunkIds[i],
-            streamId: name,
-            runId,
-            chunkData: toBuffer(chunk),
-            eof: false,
-          }))
-        );
+        if (!(await insertDataChunks(runId, name, chunkIds, chunks))) return;
 
         // Notify for each chunk (could be batched in future if needed)
         for (const chunkId of chunkIds) {
@@ -450,7 +516,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const rows = await drizzle
           .select({
             chunkId: streams.chunkId,
-            data: streams.chunkData,
+            data: chunkDataUnlessRunDeleted,
           })
           .from(streams)
           .where(

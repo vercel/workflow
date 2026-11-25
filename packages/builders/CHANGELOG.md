@@ -1,5 +1,97 @@
 # @workflow/builders
 
+## 5.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`40f340a`](https://github.com/vercel/workflow/commit/40f340a9ffae5385beab8eac778ce81e73583348), [`1b0f72b`](https://github.com/vercel/workflow/commit/1b0f72b6f27373e38a2b2fac0c34e1eeeba35d23), [`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/core@5.8.0
+  - @workflow/errors@5.2.0
+
+## 5.1.5
+
+### Patch Changes
+
+- Updated dependencies [[`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992)]:
+  - @workflow/core@5.7.2
+  - @workflow/errors@5.1.6
+
+## 5.1.4
+
+### Patch Changes
+
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62), [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03), [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c), [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6)]:
+  - @workflow/core@5.7.1
+  - @workflow/errors@5.1.5
+
+## 5.1.3
+
+### Patch Changes
+
+- [#5568](https://github.com/vercel/workflow/pull/5568) [`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc) Thanks [@abhiramshaji-cyber](https://github.com/abhiramshaji-cyber)! - Read decorator options from tsconfig in the Rollup transform, so Nitro and Nuxt builds parse decorators in workflow files when `experimentalDecorators` is on.
+- Updated dependencies [[`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e), [`c2aa4f7`](https://github.com/vercel/workflow/commit/c2aa4f7a5e92ac368b0245e820c48becc46cb997), [`b074e75`](https://github.com/vercel/workflow/commit/b074e7590b099ad80bca0979e309a32ffc159598), [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470), [`036e1a8`](https://github.com/vercel/workflow/commit/036e1a855ef5424663f7f1cdac3e3a083bb81f92), [`de7f123`](https://github.com/vercel/workflow/commit/de7f1232b6faed4f0d57772f99473e9397ed23a8), [`5699483`](https://github.com/vercel/workflow/commit/569948318c7ae642cc2a2a554912ff5dd883eed3), [`4890ea9`](https://github.com/vercel/workflow/commit/4890ea98976e14e0754c9992faeb708e1320ab9b), [`e379eaf`](https://github.com/vercel/workflow/commit/e379eaf6a07696c904c28ee494cc128af2e2c772), [`5df0437`](https://github.com/vercel/workflow/commit/5df043770f41bd38435fa02ea80ead7ab7a03d05), [`4649046`](https://github.com/vercel/workflow/commit/464904683952e94fe1e3709a781a75bac3ddc2a1), [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9), [`a136c89`](https://github.com/vercel/workflow/commit/a136c89997ea2cb5da59395efd6520f263c0c087)]:
+  - @workflow/core@5.7.0
+  - @workflow/errors@5.1.4
+
+## 5.1.2
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`bb100a9`](https://github.com/vercel/workflow/commit/bb100a9decb69483bb9342dc1062b0c3118b0763), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`e6f5bc7`](https://github.com/vercel/workflow/commit/e6f5bc7251f0c8daa8f03c1dd29fce04b6f57fa5), [`f957b8e`](https://github.com/vercel/workflow/commit/f957b8ea5de0d155c02b5c6c4cbf474556971ede), [`d18aff2`](https://github.com/vercel/workflow/commit/d18aff22acec8a3f57237e58624d7a4d25ca7eed), [`fde2482`](https://github.com/vercel/workflow/commit/fde24825b62fecdd95db83e61ec43ccaffa187d1), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df), [`b1f9269`](https://github.com/vercel/workflow/commit/b1f92691bcc3bc18b9df094d45379c6464cf4d65), [`021723b`](https://github.com/vercel/workflow/commit/021723bc679a0788332e6ebba9d58da55ba4333c), [`8f748ba`](https://github.com/vercel/workflow/commit/8f748ba060e26b0787948d927ef07ee24c5d2c0c), [`87cde0b`](https://github.com/vercel/workflow/commit/87cde0b52c59bded6ce98a87aef5c2582ac6b19c), [`e4ec16f`](https://github.com/vercel/workflow/commit/e4ec16f9b2aa092782bbd43c9f9fc50083f926f5)]:
+  - @workflow/core@5.6.1
+  - @workflow/swc-plugin@5.0.2
+  - @workflow/errors@5.1.3
+  - @workflow/utils@5.1.1
+
+## 5.1.1
+
+### Patch Changes
+
+- [#5373](https://github.com/vercel/workflow/pull/5373) [`c88e158`](https://github.com/vercel/workflow/commit/c88e158eaed8c69a9aadb9ae0ef43d14d748ad25) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the `WORKFLOW_SEQUENTIAL_REPLAYS` opt-in. Flow messages always go to the workflow's flow topic, and a spec 9 run's orchestrator messages are kept to one invocation at a time by world-vercel. `isSequentialReplaysEnabled()` is deprecated and always returns `false`, and the flow queue trigger never sets `maxConcurrency`.
+- Updated dependencies [[`55fa58b`](https://github.com/vercel/workflow/commit/55fa58b0b47d45c0e47743ae53e6b087eb6f87b3), [`bdfc2e0`](https://github.com/vercel/workflow/commit/bdfc2e0a0572b48b79f932f9c20d7af89b858c72)]:
+  - @workflow/core@5.6.0
+  - @workflow/errors@5.1.2
+
+## 5.1.0
+
+### Minor Changes
+
+- [#4339](https://github.com/vercel/workflow/pull/4339) [`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `workflows.experimentalRoutePrefix` option to `withWorkflow()`, backed by the same field on the Next.js builder config. It emits the generated workflow routes, their queue trigger config and the manifest below a route segment the app owns (e.g. `/dashboard/.well-known/workflow/v1/flow`). Can be used to host workflow routes within a Microfrontends child app
+
+### Patch Changes
+
+- [#5224](https://github.com/vercel/workflow/pull/5224) [`e05186a`](https://github.com/vercel/workflow/commit/e05186ab2fc138a7b1b52b263cff0b3d4deaafb0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Register serialization classes from packages with no `workflow` dependency, such as AI SDK providers, in the step bundle. A model created inside a `"use workflow"` function and passed to a step (the `WorkflowAgent` shape) no longer fails with `Class "class//@ai-sdk/openai@…" not found`.
+
+- [#5304](https://github.com/vercel/workflow/pull/5304) [`f61f410`](https://github.com/vercel/workflow/commit/f61f41006b23ad3659180f17c6a2a94e0ac3249e) Thanks [@joelfickson](https://github.com/joelfickson)! - Compile JSX in project-local files bundled into a directly loaded steps bundle (Nitro dev, Vitest, NestJS ESM), so a step that imports a `.tsx` module no longer fails with `Unexpected token '<'`.
+
+- [#5303](https://github.com/vercel/workflow/pull/5303) [`b573022`](https://github.com/vercel/workflow/commit/b5730229e4dec88e18d32c05988efd5f05e27947) Thanks [@joelfickson](https://github.com/joelfickson)! - Read `experimentalDecorators` and `emitDecoratorMetadata` through tsconfig `extends` (including `extends` arrays and extensionless paths such as `./tsconfig.base`), so decorated classes in workflow and step files compile when the options live in a base config.
+
+- [#5331](https://github.com/vercel/workflow/pull/5331) [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade dependencies to their latest patch and minor releases.
+- Updated dependencies [[`c386053`](https://github.com/vercel/workflow/commit/c386053ac93aced311af599c2d1f5931871fcd62), [`e866ab9`](https://github.com/vercel/workflow/commit/e866ab960816a9570f26d2dd3778d976f83f4a4a), [`f292ef0`](https://github.com/vercel/workflow/commit/f292ef05cadbd5320298568050e39c96ef19f813), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`f486912`](https://github.com/vercel/workflow/commit/f486912be3b3715747737f68bd5f9a10b8d0cfa4), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`3debce2`](https://github.com/vercel/workflow/commit/3debce2174130c3f54ac6ed7f030f93b2f5576fb), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`b7534aa`](https://github.com/vercel/workflow/commit/b7534aa6d102bd4caa584d28f6c3daef59478dc6), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1), [`d2a0d5a`](https://github.com/vercel/workflow/commit/d2a0d5ae67456a1946e1e29fe32c34e51a933f5b), [`50a1a9f`](https://github.com/vercel/workflow/commit/50a1a9f696729aa7944f7660e004ffe67650a120), [`530abff`](https://github.com/vercel/workflow/commit/530abff0838d260640c033c4ced86cef56f6123e), [`dfe2764`](https://github.com/vercel/workflow/commit/dfe27649e90c5e9b233edd778c64affff63216ee), [`a8030ca`](https://github.com/vercel/workflow/commit/a8030caa601c67c62a8745a12a7764aa94ce981b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0), [`1bcd7ef`](https://github.com/vercel/workflow/commit/1bcd7ef5d81d64e9230bbd85fe408fcfe72147b0)]:
+  - @workflow/core@5.5.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
+## 5.0.8
+
+### Patch Changes
+
+- [#5063](https://github.com/vercel/workflow/pull/5063) [`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41) Thanks [@joelfickson](https://github.com/joelfickson)! - Export `workflowSerdeComputedPropertyPattern` alongside the other workflow pattern regexes.
+- Updated dependencies [[`e1bce44`](https://github.com/vercel/workflow/commit/e1bce44d3faacff855a35265d47afe3819abed1a), [`50d425f`](https://github.com/vercel/workflow/commit/50d425fac77ec212422d57a832411c4515c0ba3c), [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289)]:
+  - @workflow/core@5.4.0
+
+## 5.0.7
+
+### Patch Changes
+
+- [#5183](https://github.com/vercel/workflow/pull/5183) [`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop Astro and Vite from warning about generated workflow files during build and dev.
+
+- [#4999](https://github.com/vercel/workflow/pull/4999) [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1) Thanks [@joelfickson](https://github.com/joelfickson)! - Fix module error reporting when the offending import spans multiple lines, and fix multi-line imports not being checked for modules correctly.
+- Updated dependencies [[`7d31a0a`](https://github.com/vercel/workflow/commit/7d31a0a329dd020441e0aebba2bb55068f8e0f4b), [`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0), [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183), [`2be58c2`](https://github.com/vercel/workflow/commit/2be58c26f9f95c324a4da6190018545c542227f8), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`44d7c76`](https://github.com/vercel/workflow/commit/44d7c769e94fb8b8a684dd69f2450ea9c52990cc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`e127948`](https://github.com/vercel/workflow/commit/e1279482719168a0987e48f73d107be6287670c3), [`997b03d`](https://github.com/vercel/workflow/commit/997b03df9d987d5f4092fca2209d491434c3fdbe), [`433b345`](https://github.com/vercel/workflow/commit/433b345511420f902962126e4a6713fa66eaf540)]:
+  - @workflow/core@5.3.0
+  - @workflow/errors@5.1.0
+
 ## 5.0.6
 
 ### Patch Changes

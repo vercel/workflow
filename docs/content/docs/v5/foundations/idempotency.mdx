@@ -1,6 +1,6 @@
 ---
 title: Idempotency
-description: Make step retries safe, and start a workflow run at most once per key with start({ hook }).
+description: Make step retries safe, and start a workflow run at most once per key with start({ experimental_hook }).
 type: conceptual
 summary: Use step IDs for retry-safe external calls, and pass a deterministic hook token to start() so a duplicate request is refused or routed to the run that owns it.
 prerequisites:
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
 
   try {
     const run = await start(processOrder, [orderId], {
-      hook: { token: `order:${orderId}` }, // [!code highlight]
+      experimental_hook: { token: `order:${orderId}` }, // [!code highlight]
     });
     return Response.json({ runId: run.runId, duplicate: false });
   } catch (error) {
@@ -81,7 +81,7 @@ export async function POST(request: Request) {
 }
 ```
 
-`start({ hook })` admits the run and creates its **start Hook** in one atomic step. Exactly one run owns the token. A duplicate `start()` with the same token throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with the owner's `conflictingRunId`. The duplicate never becomes a run, and none of its code runs.
+`start({ experimental_hook })` admits the run and creates its **start Hook** in one atomic step. Exactly one run owns the token. A duplicate `start()` with the same token throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with the owner's `conflictingRunId`. The duplicate never becomes a run, and none of its code runs.
 
 ### Start or route to the owner
 
@@ -99,7 +99,7 @@ export async function POST(request: Request) {
   let owner: string | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const run = await start(processOrder, [orderId, note], { hook: { token } });
+      const run = await start(processOrder, [orderId, note], { experimental_hook: { token } });
       return Response.json({ runId: run.runId, started: true });
     } catch (error) {
       if (!HookConflictError.is(error)) throw error;
@@ -152,7 +152,7 @@ export async function processOrder(orderId: string, note: string) {
 - `createHook({ token })` with the run's start token returns a handle bound to the start Hook. It doesn't register a new Hook, so it adds no step, and `await hook.getConflict()` resolves `null`.
 - Payloads resumed before the workflow opens the Hook are kept, and are delivered in order once it does.
 - If the workflow never opens it, the token was only an idempotency key. The run completes normally, and unread payloads are simply left unread.
-- `metadata` and `experimental_minRetention` belong on `start({ hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `experimental_force` to this `createHook()` throws.
+- `metadata` and `experimental_minRetention` belong on `start({ experimental_hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `experimental_force` to this `createHook()` throws.
 
 ### Keep the token after the run ends
 
@@ -166,7 +166,7 @@ import { processOrder } from "./workflows/process-order";
 declare const orderId: string; // @setup
 
 const run = await start(processOrder, [orderId, ""], {
-  hook: {
+  experimental_hook: {
     token: `order:${orderId}`,
     experimental_minRetention: "30 days", // [!code highlight]
     metadata: { orderId },
@@ -222,17 +222,17 @@ Disposing the start Hook ends the run's idempotency: from the end of that block,
 
 ### When `start()` can't confirm the outcome
 
-If `start({ hook })` can't confirm whether its candidate run was queued or admitted, for example because the World timed out, it throws [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error) with the candidate's `runId`. The outcome is unknown, not failed. Retrying with the same token is safe: the retry either becomes the owner, or is refused with a `HookConflictError` naming the owner. Inside a workflow, the `start()` step retries it on its own.
+If `start({ experimental_hook })` can't confirm whether its candidate run was queued or admitted, for example because the World timed out, it throws [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error) with the candidate's `runId`. The outcome is unknown, not failed. Retrying with the same token is safe: the retry either becomes the owner, or is refused with a `HookConflictError` naming the owner. Inside a workflow, the `start()` step retries it on its own.
 
 ### World support
 
-`start({ hook })` requires a World that supports atomic start Hooks (`capabilities.atomicStartHook`), and Hook retention when you set `experimental_minRetention`. Otherwise `start()` throws before it enqueues anything.
+`start({ experimental_hook })` requires a World that supports atomic start Hooks (`capabilities.atomicStartHook`), and Hook retention when you set `experimental_minRetention`. Otherwise `start()` throws before it enqueues anything.
 
 | World | Support |
 | --- | --- |
 | [Local World](/worlds/local) | Supported. |
-| [Postgres World](/worlds/postgres) | Opt in with [`WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1`](/worlds/postgres#workflow_postgres_experimental_start_hook), after applying migration `0028_add_start_hook_admissions` (required for every Postgres World on this version, with or without the flag). Stop workers running a previous version first. |
-| [Vercel World](/worlds/vercel) | Opt in with [`WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1`](/worlds/vercel#workflow_vercel_experimental_start_hook), which needs a backend that supports start Hooks. |
+| [Postgres World](/worlds/postgres) | Supported, after applying migration `0028_add_start_hook_admissions`. Stop workers running a previous version first; see [Start Hooks](/worlds/postgres#start-hooks). |
+| [Vercel World](/worlds/vercel) | Supported. |
 
 See [`start()`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) for the full option reference.
 
@@ -278,7 +278,7 @@ export async function processOrder(orderId: string): Promise<OrderResult> {
 Outside the workflow, try `resumeHook()` first, and on `HookNotFoundError` call `start()` and retry the resume until the new run registers its hook.
 
 <Callout type="warn">
-Unlike `start({ hook })`, this doesn't stop a duplicate from becoming a run. Two concurrent requests can both see "no hook yet" and each call `start()`. The losing run is still created, queued, and started, and returns once `getConflict()` resolves with the owner. The route can detect it by comparing the resumed hook's `runId` with the run it started.
+Unlike `start({ experimental_hook })`, this doesn't stop a duplicate from becoming a run. Two concurrent requests can both see "no hook yet" and each call `start()`. The losing run is still created, queued, and started, and returns once `getConflict()` resolves with the owner. The route can detect it by comparing the resumed hook's `runId` with the run it started.
 </Callout>
 
 The token becomes available when its workflow ends, unless you set `experimental_minRetention` on `createHook()`. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends).

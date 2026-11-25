@@ -141,7 +141,7 @@ describe('postgres queue http execution', () => {
     process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
 
     const execution = getTaskHandler('workflow_flows')(
       buildMessageData('__wkf_workflow_test-step', {
@@ -202,7 +202,7 @@ describe('postgres queue http execution', () => {
 
   it('keeps the base-url error when env vars and local port detection cannot resolve a target', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
 
     const task = getTaskHandler('workflow_flows');
     const message = {
@@ -252,7 +252,7 @@ describe('postgres queue http execution', () => {
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
 
     const controller = new AbortController();
     const execution = getTaskHandler('workflow_flows')(
@@ -303,7 +303,7 @@ describe('postgres queue http execution', () => {
 
     try {
       const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-      await queue.start();
+      await startQueue(queue);
 
       const controller = new AbortController();
       const execution = getTaskHandler('workflow_flows')(
@@ -358,7 +358,7 @@ describe('postgres queue http execution', () => {
       { connectionString: 'postgres://test', namespace },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
     const task = getTaskHandler('workflow_flows');
     const queueName = namespace
       ? `__${namespace}_wkf_workflow_test-workflow`
@@ -389,15 +389,39 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('with skipWorkers, enqueues jobs but never runs a worker', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', skipWorkers: true },
+      pool
+    );
+    await queue.start();
+    // Started twice, as an application restarting the World would.
+    await queue.start();
+
+    // No executor port is detected, so without the option the worker would
+    // already have started (see startQueue).
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(run).not.toHaveBeenCalled();
+    expect(workerUtilsMock.migrate).toHaveBeenCalled();
+
+    await queue.queue('__wkf_workflow_test-workflow' as ValidQueueName, {
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    expect(
+      vi.mocked(workerUtilsMock.addJob).mock.calls.map((call) => call[0])
+    ).toEqual(['workflow_flows']);
+  });
+
   it.each([
     undefined,
     'custom',
-  ])('routes a run’s orchestrator deliveries to its own named queue (namespace: %s)', async (namespace) => {
+  ])('adds a run’s orchestrator deliveries as plain jobs, without a per-run named queue (namespace: %s)', async (namespace) => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', namespace },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
     const queueName = (
       namespace
         ? `__${namespace}_wkf_workflow_test-workflow`
@@ -428,32 +452,25 @@ describe('postgres queue http execution', () => {
     const options = vi
       .mocked(workerUtilsMock.addJob)
       .mock.calls.map((call) => call[2]);
-    // Without invoke, orchestrator deliveries stay on the ordinary task; the
-    // named queue alone is what serializes them.
+    // Without invoke, orchestrator deliveries stay on the ordinary task. The
+    // run's delivery lease, taken when a job runs, is what serializes them
+    // (`run-lease.ts`); no job is put in a Graphile named queue, whose rows
+    // are never deleted and are all locked on every poll.
     expect(
       vi.mocked(workerUtilsMock.addJob).mock.calls.map((call) => call[0])
     ).toEqual(Array(6).fill('workflow_flows'));
-    expect(options[0]).toMatchObject({
-      queueName: 'workflow_flows:run_a:executor',
-    });
-    expect(options[1]).toMatchObject({
-      queueName: 'workflow_flows:run_a:executor',
-    });
-    expect(options[2]).toMatchObject({
-      queueName: 'workflow_flows:run_b:executor',
-    });
-    expect(options[3]).not.toHaveProperty('queueName');
-    expect(options[4]).not.toHaveProperty('queueName');
-    expect(options[5]).not.toHaveProperty('queueName');
+    for (const option of options) {
+      expect(option).not.toHaveProperty('queueName');
+    }
   });
 
-  it('keeps a rescheduled orchestrator delivery in its run’s named queue', async () => {
+  it('reschedules an orchestrator delivery as a plain job', async () => {
     const server = await startWorkflowHttpServer([], 0, undefined, undefined, {
       timeoutSeconds: 5,
     });
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
     await getTaskHandler('workflow_flows')(
       buildMessageData('__wkf_workflow_test-workflow', {
         runId: 'run_a',
@@ -464,7 +481,7 @@ describe('postgres queue http execution', () => {
     expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
       'workflow_flows',
       expect.objectContaining({ attempt: 2 }),
-      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+      expect.not.objectContaining({ queueName: expect.anything() })
     );
   });
 
@@ -475,7 +492,7 @@ describe('postgres queue http execution', () => {
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     try {
-      await queue.start();
+      await startQueue(queue);
 
       const task = getTaskHandler('workflow_flows');
       const payload = buildMessageData('__wkf_workflow_health_check', {
@@ -512,7 +529,7 @@ describe('postgres queue http execution', () => {
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     try {
-      await queue.start();
+      await startQueue(queue);
 
       const task = getTaskHandler('workflow_flows');
       const payload = buildMessageData('__wkf_workflow_test-step', {
@@ -576,25 +593,58 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('preserves the first schedule when a keyed delayed job is published again', async () => {
+  it("deduplicates an earlier run's step message against any job holding its key", async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    // A spec 8 step message, as its runtime sends it (and sends again after
+    // a failed send).
+    const message = {
+      runId: 'run_01ABC',
+      stepId: 'step_01ABC',
+      stepName: 'retrying-step',
+      runSpecVersion: 8,
+    } as const;
+
+    await queue.queue('__wkf_workflow_test-step', message, {
+      delaySeconds: 5,
+      idempotencyKey: 'step_01ABC',
+    });
+    await queue.queue('__wkf_workflow_test-step', message, {
+      idempotencyKey: 'step_01ABC',
+    });
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
+    expect(workerUtilsMock.addJob).toHaveBeenNthCalledWith(
+      2,
+      'workflow_flows',
+      expect.anything(),
+      expect.objectContaining({
+        jobKey: 'step_01ABC',
+        jobKeyMode: 'unsafe_dedupe',
+      })
+    );
+  });
+
+  it("preserves the first schedule when an earlier run's other keyed message is published again", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
 
     try {
       const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
       await queue.start();
+      // A spec 8 timer: no step, keyed by its wait.
       const message = {
         runId: 'run_01ABC',
-        stepId: 'step_01ABC',
-        stepName: 'retrying-step',
+        waitContinuation: { correlationId: 'wait_01ABC', attempt: 0 },
+        runSpecVersion: 8,
       } as const;
 
-      await queue.queue('__wkf_workflow_test-step', message, {
+      await queue.queue('__wkf_workflow_test', message, {
         delaySeconds: 5,
-        idempotencyKey: 'step_01ABC',
+        idempotencyKey: 'wait_01ABC:1704067205',
       });
-      await queue.queue('__wkf_workflow_test-step', message, {
-        idempotencyKey: 'step_01ABC',
+      await queue.queue('__wkf_workflow_test', message, {
+        idempotencyKey: 'wait_01ABC:1704067205',
       });
 
       expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
@@ -603,7 +653,7 @@ describe('postgres queue http execution', () => {
         'workflow_flows',
         expect.anything(),
         expect.objectContaining({
-          jobKey: 'step_01ABC',
+          jobKey: 'wait_01ABC:1704067205',
           jobKeyMode: 'preserve_run_at',
         })
       );
@@ -667,7 +717,7 @@ describe('postgres queue http execution', () => {
     });
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
     await getTaskHandler('workflow_flows')(
       buildMessageData(
         '__wkf_workflow_test-step',
@@ -689,6 +739,119 @@ describe('postgres queue http execution', () => {
         jobKeyMode: 'preserve_run_at',
       })
     );
+  });
+
+  it('clears wake_pending when an orchestrator delivery completes', async () => {
+    const server = await startWorkflowHttpServer([]);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining('wake_pending = false'),
+      ['run_01ABC']
+    );
+  });
+
+  it('completes the delivery when wake_pending cannot be cleared', async () => {
+    const server = await startWorkflowHttpServer([]);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('wake_pending')) {
+        throw Object.assign(new Error('no such table'), { code: '42P01' });
+      }
+      return { rows: [{ exists: false }] };
+    });
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await expect(
+      getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+        { job: { attempts: 1 } }
+      )
+    ).resolves.toBeUndefined();
+  });
+
+  it('does not clear wake_pending for a step delivery', async () => {
+    const server = await startWorkflowHttpServer([]);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test-step', {
+        runId: 'run_01ABC',
+        stepId: 'step_01ABC',
+        stepName: 'test-step',
+      }),
+      { job: { attempts: 1 } }
+    );
+    expect(pool.query).not.toHaveBeenCalledWith(
+      expect.stringContaining('wake_pending = false'),
+      expect.anything()
+    );
+  });
+
+  it('does not clear wake_pending for a delivery on another queue prefix', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    queue.registerHandler('__agent_wkf_workflow_', async () =>
+      Response.json({})
+    );
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+    expect(pool.query).not.toHaveBeenCalledWith(
+      expect.stringContaining('wake_pending = false'),
+      expect.anything()
+    );
+  });
+
+  it('uses an explicit jobKey as the graphile key without making it an idempotency key', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await queue.queue(
+      '__wkf_workflow_test',
+      { runId: 'run_01ABC' },
+      { jobKey: 'startup-recovery:run_01ABC' }
+    );
+    const [, data, options] = vi.mocked(workerUtilsMock.addJob).mock
+      .calls[0] as [
+      string,
+      MessageData,
+      { jobKey?: string; jobKeyMode?: string },
+    ];
+    expect(data.idempotencyKey).toBeUndefined();
+    expect(data.jobKey).toBe('startup-recovery:run_01ABC');
+    expect(options.jobKey).toBe('startup-recovery:run_01ABC');
+    expect(options.jobKeyMode).toBe('preserve_run_at');
+  });
+
+  it("keeps a startup-recovery job's key on its reschedule", async () => {
+    const server = await startWorkflowHttpServer([], 0, undefined, undefined, {
+      timeoutSeconds: 7,
+    });
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData(
+        '__wkf_workflow_test',
+        { runId: 'run_01ABC' },
+        { jobKey: 'startup-recovery:run_01ABC' }
+      ),
+      { job: { attempts: 1 } }
+    );
+    const [, data, options] = vi.mocked(workerUtilsMock.addJob).mock
+      .calls[0] as [string, MessageData, { jobKey?: string }];
+    // A later boot's recovery job for the run replaces this one rather than
+    // adding a second, and so does this job's own next reschedule.
+    expect(options.jobKey).toBe('startup-recovery:run_01ABC');
+    expect(data.jobKey).toBe('startup-recovery:run_01ABC');
+    expect(data.idempotencyKey).toBeUndefined();
   });
 
   it('stamps createdAt on a new message and keeps an idempotency key off a wake', async () => {
@@ -714,7 +877,7 @@ describe('postgres queue http execution', () => {
     );
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
 
     const createdAt = '2026-10-05T00:00:00.000Z';
     const messageId = MessageId.parse('msg_01STEP');
@@ -764,7 +927,7 @@ describe('postgres queue http execution', () => {
     );
   });
 
-  it('uses per-run executor queues without serializing step jobs when invoke is enabled', async () => {
+  it('adds orchestration to the executor task and step jobs to the ordinary one when invoke is enabled', async () => {
     const queue = buildQueue(
       {
         connectionString: 'postgres://test',
@@ -781,6 +944,8 @@ describe('postgres queue http execution', () => {
         taskList: {
           workflow_flows: expect.any(Function),
           workflow_flows_executor: expect.any(Function),
+          // The zero-retention purge backstop (see retention.ts).
+          workflow_purge: expect.any(Function),
         },
       })
     );
@@ -792,16 +957,12 @@ describe('postgres queue http execution', () => {
       stepName: 'step',
     });
     const calls = vi.mocked(workerUtilsMock.addJob).mock.calls;
-    expect(calls[0]).toEqual([
+    expect(calls.map((call) => call[0])).toEqual([
       'workflow_flows_executor',
-      expect.any(Object),
-      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' }),
+      'workflow_flows_executor',
+      'workflow_flows',
     ]);
-    expect(calls[1][2]).toMatchObject({
-      queueName: 'workflow_flows:run_b:executor',
-    });
-    expect(calls[2][0]).toBe('workflow_flows');
-    expect(calls[2][2]).not.toHaveProperty('queueName');
+    for (const call of calls) expect(call[2]).not.toHaveProperty('queueName');
   });
 
   it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
@@ -809,7 +970,7 @@ describe('postgres queue http execution', () => {
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
     const fetchMock = vi
       .spyOn(nodeHttp, 'nodeHttpFetch')
       .mockResolvedValue(Response.json({ ok: true }));
@@ -835,7 +996,6 @@ describe('postgres queue http execution', () => {
         'workflow_flows_executor',
         expect.objectContaining({ ...payload, attempt: 4, attemptOffset: 3 }),
         expect.objectContaining({
-          queueName: 'workflow_flows:run_a:executor',
           jobKey: `workflow_flows_executor:transfer:${payload.messageId}`,
           maxAttempts: 6,
         })
@@ -850,7 +1010,7 @@ describe('postgres queue http execution', () => {
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
     const fetchMock = vi
       .spyOn(nodeHttp, 'nodeHttpFetch')
       .mockResolvedValue(Response.json({ ok: true }));
@@ -880,7 +1040,7 @@ describe('postgres queue http execution', () => {
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
     vi.mocked(workerUtilsMock.addJob).mockRejectedValueOnce(
       new Error('transfer failed')
     );
@@ -892,16 +1052,19 @@ describe('postgres queue http execution', () => {
     ).rejects.toThrow('transfer failed');
   });
 
-  it('only forwards executor provenance for a job on the expected named queue', async () => {
+  it('forwards executor provenance only for a job on the executor task that owns the run lease', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
     process.env.WORKFLOW_LOCAL_BASE_URL = 'http://executor.test';
     const fetchMock = vi
       .spyOn(nodeHttp, 'nodeHttpFetch')
       .mockResolvedValue(Response.json({ ok: true }));
+    // Every lease statement finds its row: the claim takes the lease, and
+    // the release finds nothing left on it.
+    pool.query.mockResolvedValue({ rows: [{}], rowCount: 1 });
     const payload = buildMessageData(
       '__wkf_workflow_example',
       { runId: 'run_a' },
@@ -921,19 +1084,25 @@ describe('postgres queue http execution', () => {
         locked_by: 'worker-real',
         task_identifier: 'workflow_flows_executor',
       },
-      getQueueName: vi.fn().mockResolvedValue(null),
     };
     try {
-      const execute = getTaskHandler('workflow_flows_executor');
-      await execute(payload, helpers);
+      // A job on the ordinary task is transferred, never delivered there.
+      await getTaskHandler('workflow_flows')(payload, {
+        job: { ...helpers.job, task_identifier: 'workflow_flows' },
+      });
       expect(fetchMock).not.toHaveBeenCalled();
       expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
         'workflow_flows_executor',
         expect.anything(),
-        expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+        expect.anything()
       );
-      helpers.getQueueName.mockResolvedValue('workflow_flows:run_a:executor');
-      await execute(payload, helpers);
+      await getTaskHandler('workflow_flows_executor')(payload, helpers);
+      expect(pool.query).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'INSERT INTO "workflow"."workflow_run_delivery_leases"'
+        ),
+        ['run_a', '42']
+      );
       const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
       expect(headers.get('x-workflow-postgres-executor-job')).toBe('42');
       expect(headers.get('x-workflow-postgres-executor-worker')).toBe(
@@ -950,7 +1119,7 @@ describe('postgres queue http execution', () => {
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
     process.env.WORKFLOW_LOCAL_BASE_URL = 'http://executor.test';
     const fetchMock = vi
       .spyOn(nodeHttp, 'nodeHttpFetch')
@@ -1039,25 +1208,19 @@ describe('postgres queue http execution', () => {
         attempt: 3,
         attemptOffset: 2,
       }),
-      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+      expect.not.objectContaining({ queueName: expect.anything() })
     );
   });
 
-  it('refuses inactive/wrong-queue executor evidence before supplying a feed', async () => {
+  it('refuses executor evidence of a job that is inactive or does not own the run lease, before supplying a feed', async () => {
     const { handler, receive } = receiver();
     pool.query.mockResolvedValue({ rows: [] });
     await expect(receive(request(proof))).rejects.toThrow(
-      'not active on the run queue'
+      'does not hold the run lease'
     );
     expect(pool.query).toHaveBeenCalledWith(
-      expect.stringContaining('graphile_worker.jobs'),
-      [
-        '42',
-        'workflow_flows_executor',
-        'workflow_flows:run_a:executor',
-        'worker-real',
-        3,
-      ]
+      expect.stringContaining('workflow.workflow_run_delivery_leases'),
+      ['42', 'workflow_flows_executor', 'run_a', 'worker-real', 3]
     );
     expect(handler).not.toHaveBeenCalled();
     expect(invocationTransport.pending).not.toHaveBeenCalled();
@@ -1150,8 +1313,10 @@ describe('postgres queue http execution', () => {
   it("renews a running delivery's job lock and releases stale locks while the runner runs", async () => {
     const server = await startHangingWorkflowHttpServer('headers');
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    // Answer the renewal (job ids and their holders); the holders'
+    // registration also unnests, but only its worker ids.
     pool.query.mockImplementation(async (sql: string, params?: unknown[]) =>
-      sql.includes('unnest(')
+      sql.includes('unnest(') && Array.isArray(params?.[1])
         ? {
             rows: (params?.[1] as string[]).map((worker, i) => ({
               id: (params?.[0] as string[])[i],
@@ -1165,7 +1330,7 @@ describe('postgres queue http execution', () => {
       pool
     );
     try {
-      await queue.start();
+      await startQueue(queue);
       const controller = new AbortController();
       const execution = getTaskHandler('workflow_flows')(
         buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
@@ -1221,6 +1386,38 @@ describe('postgres queue http execution', () => {
     );
   });
 
+  it('by default releases only stale run-lease jobs of renewing holders', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', jobPrefix: 'myapp_' },
+      pool,
+      { defaultJobLockStaleSeconds: 1 }
+    );
+    await queue.start();
+    await vi.waitFor(
+      () => {
+        expect(pool.query).toHaveBeenCalledWith(
+          expect.stringContaining('"workflow"."workflow_run_delivery_leases"'),
+          [1, ['myapp_flows', 'myapp_flows_executor']]
+        );
+      },
+      { timeout: 2_000 }
+    );
+  });
+
+  it('turns renewal and the release of stale locks off with jobLockStaleSeconds: 0', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', jobLockStaleSeconds: 0 },
+      pool,
+      { defaultJobLockStaleSeconds: 1 }
+    );
+    await queue.start();
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(pool.query).not.toHaveBeenCalledWith(
+      expect.stringContaining('_private_tasks'),
+      expect.anything()
+    );
+  });
+
   it('keeps the queue prefix, and the route registered for it, on the job', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     queue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
@@ -1262,7 +1459,7 @@ describe('postgres queue http execution', () => {
     // A worker whose own prefix is the Workflow SDK's default.
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     queue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
-    await queue.start();
+    await startQueue(queue);
 
     await getTaskHandler('workflow_flows')(
       buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
@@ -1292,7 +1489,7 @@ describe('postgres queue http execution', () => {
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
 
     await getTaskHandler('workflow_flows')(
       buildMessageData(
@@ -1317,7 +1514,7 @@ describe('postgres queue http execution', () => {
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
+    await startQueue(queue);
 
     await getTaskHandler('workflow_flows')(
       buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
@@ -1347,7 +1544,7 @@ describe('postgres queue http execution', () => {
       { connectionString: 'postgres://test', namespace: 'custom' },
       pool
     );
-    await queue.start();
+    await startQueue(queue);
 
     await getTaskHandler('workflow_flows')(
       buildMessageData(
@@ -1384,7 +1581,7 @@ describe('postgres queue http execution', () => {
       });
       return Response.json({ timeoutSeconds: 30 });
     });
-    await queue.start();
+    await startQueue(queue);
 
     await getTaskHandler('workflow_flows')(
       buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
@@ -1438,9 +1635,10 @@ describe('postgres queue http execution', () => {
 
 function buildQueue(
   config: Parameters<typeof createQueue>[0],
-  pgPool: Parameters<typeof createQueue>[1]
+  pgPool: Parameters<typeof createQueue>[1],
+  internal?: Parameters<typeof createQueue>[2]
 ) {
-  const queue = createQueue(config, pgPool);
+  const queue = createQueue(config, pgPool, internal);
   createdQueues.push(queue);
   return queue;
 }
@@ -1452,6 +1650,7 @@ function buildMessageData(
     attempt?: number;
     headers?: Record<string, string>;
     idempotencyKey?: string;
+    jobKey?: string;
     messageId?: MessageId;
     createdAt?: string;
     route?: string;
@@ -1469,9 +1668,24 @@ function buildMessageData(
     attempt: opts?.attempt ?? 1,
     headers: opts?.headers,
     idempotencyKey: opts?.idempotencyKey,
+    ...(opts?.jobKey ? { jobKey: opts.jobKey } : {}),
     messageId: opts?.messageId ?? MessageId.parse('msg_01ABC'),
     ...(opts?.createdAt ? { createdAt: opts.createdAt } : {}),
   });
+}
+
+/**
+ * Start the queue and wait for its Graphile runner. `start()` can resolve
+ * before the runner starts: when its probe of a loopback executor times out
+ * (an event loop stalled past the probe's timeout on a loaded machine), it
+ * defers the runner's start until the executor answers.
+ */
+async function startQueue(queue: ReturnType<typeof createQueue>) {
+  await queue.start();
+  // The deferred start re-probes every 50ms with a 200ms socket timeout, on
+  // the same loaded machine that made `start()` return early: give it far
+  // more than `vi.waitFor`'s 1s default.
+  await vi.waitFor(() => expect(run).toHaveBeenCalled(), { timeout: 10_000 });
 }
 
 function getTaskHandler(name: 'workflow_flows') {

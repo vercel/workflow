@@ -1,5 +1,5 @@
 /**
- * A `start({ hook })` run on the single-orchestrator engine that never opens
+ * A `start({ experimental_hook })` run on the single-orchestrator engine that never opens
  * its start Hook still releases it at the run's end, against a real World
  * (world-local): the token is no longer resumable, and without a retention a
  * new start with it is admitted. With a retention, the token stays findable
@@ -48,7 +48,15 @@ let dir: string | undefined;
 
 afterEach(async () => {
   setWorld(undefined);
-  if (dir) await rm(dir, { recursive: true, force: true });
+  if (dir)
+    await rm(dir, {
+      recursive: true,
+      force: true,
+      // Windows: world-local closes its connection to the database a moment
+      // after the last operation; until then the file cannot be deleted.
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   dir = undefined;
 });
 
@@ -59,7 +67,7 @@ async function localWorld(): Promise<World> {
   return world;
 }
 
-/** Admits a candidate through `run_created`, as `start({ hook })` does. */
+/** Admits a candidate through `run_created`, as `start({ experimental_hook })` does. */
 async function admit(world: World, startHook: StartHook): Promise<string> {
   const runId = `wrun_${ulid()}`;
   const input = await dehydrateWorkflowArguments([], runId, undefined, []);

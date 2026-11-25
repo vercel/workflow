@@ -47,6 +47,20 @@ function createWorkflowPlugins(builder: SvelteKitBuilder): Plugin[] {
     workflowTransformPlugin() as Plugin,
     {
       name: 'workflow:sveltekit',
+      // Keep the SDK inside the server bundle. SvelteKit 3 adapters bundle the
+      // server with Vite and leave every package in the app's `dependencies`
+      // external unless `ssr.noExternal` names it, so `workflow` would be
+      // loaded from `node_modules` at runtime, past the transform plugin above.
+      // That transform is what registers the SDK's serializable classes (it
+      // gives `Run` its `classId`), so a step returning the `Run` from
+      // `start()` would fail with `Class "Run" ... must have a static "classId"
+      // property`. Build only: the dev server does not externalize this way.
+      config(_config, env) {
+        if (env.command !== 'build') {
+          return;
+        }
+        return { ssr: { noExternal: ['workflow', /^@workflow\//] } };
+      },
       // SvelteKit bundles the server (including undici, via the world adapter)
       // into ESM output. undici loads most node: builtins as ESM imports, but
       // pulls in `node:http2` lazily via a bare `require('node:http2')` inside a

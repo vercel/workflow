@@ -71,7 +71,7 @@ export async function POST(request: Request) {
 
   try {
     const run = await start(processOrder, [orderId], {
-      hook: { token: `order:${orderId}` }, // [!code highlight]
+      experimental_hook: { token: `order:${orderId}` }, // [!code highlight]
     });
     return Response.json({ runId: run.runId, reused: false });
   } catch (error) {
@@ -91,4 +91,4 @@ The run's start Hook can be resumed as soon as `start()` returns, so a duplicate
 - [`createHook()`](/docs/api-reference/workflow/create-hook): Creates a hook with an optional deterministic token.
 - [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Finds the hook that owns a token.
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resumes the active hook when the duplicate request carries data.
-- [`start()`](/docs/api-reference/workflow-api/start): Starts a new workflow run, at most once per `hook.token`.
+- [`start()`](/docs/api-reference/workflow-api/start): Starts a new workflow run, at most once per `experimental_hook.token`.

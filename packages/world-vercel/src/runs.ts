@@ -8,6 +8,10 @@ import {
   BulkCancelWorkflowRunsResultSchema,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
+  type DeleteRunDataResult,
+  type DeleteRunsDataRequest,
+  DeleteRunsDataRequestSchema,
+  type DeleteRunsDataResult,
   type ExperimentalSetAttributesResult,
   type GetWorkflowRunParams,
   type ListWorkflowRunsParams,
@@ -41,40 +45,36 @@ import {
  * `errorCode` is a separate plaintext metadata field used for routing
  * and classification.
  */
-export const WorkflowRunWireBaseSchema = z.compile(
-  WorkflowRunBaseSchema.omit({
-    error: true,
-    errorCode: true,
-  }).extend({
-    error: z.union([SerializedDataSchema, z.any()]).optional(),
-    errorCode: z.string().optional(),
-    // Not part of the World interface, but passed through for direct consumers and debugging
-    blobStorageBytes: z.number().optional(),
-    streamStorageBytes: z.number().optional(),
-  })
-);
+export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
+  error: true,
+  errorCode: true,
+}).extend({
+  error: z.union([SerializedDataSchema, z.any()]).optional(),
+  errorCode: z.string().optional(),
+  // Not part of the World interface, but passed through for direct consumers and debugging
+  blobStorageBytes: z.number().optional(),
+  streamStorageBytes: z.number().optional(),
+});
 
 // Wire schema for resolved data (full input/output)
-const WorkflowRunWireSchema = z.compile(WorkflowRunWireBaseSchema);
+const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
 
 // Wire schema for lazy mode with refs instead of data
 // input/output can be Uint8Array (v2) or any JSON (legacy v1)
-const WorkflowRunWireWithRefsSchema = z.compile(
-  WorkflowRunWireBaseSchema.omit({
-    input: true,
-    output: true,
-  }).extend({
-    // We discard the results of the refs, so we don't care about the type here
-    inputRef: z.any().optional(),
-    outputRef: z.any().optional(),
-    // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
-    input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-    output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-    // Discarded by `filterRunData`: `resolveData: 'none'` never returns a
-    // dynamic run's code, whatever shape the backend sends it in.
-    dynamicWorkflowCode: z.any().optional(),
-  })
-);
+const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
+  input: true,
+  output: true,
+}).extend({
+  // We discard the results of the refs, so we don't care about the type here
+  inputRef: z.any().optional(),
+  outputRef: z.any().optional(),
+  // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
+  input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  // Discarded by `filterRunData`: `resolveData: 'none'` never returns a
+  // dynamic run's code, whatever shape the backend sends it in.
+  dynamicWorkflowCode: z.any().optional(),
+});
 
 // Overloaded function signatures for filterRunData
 function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
@@ -224,9 +224,21 @@ export async function getWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+  return readRunOrNotFound(id, { resolveData }, config);
+}
 
+/**
+ * The plain run read, with a `404` raised as `WorkflowRunNotFoundError`.
+ * `waitForWorkflowRunTerminalStatus` falls back to this with the caller's
+ * `signal`, which `GetWorkflowRunParams` has no field for.
+ */
+async function readRunOrNotFound(
+  id: string,
+  params: { resolveData: 'none' | 'all'; signal?: AbortSignal },
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
   try {
-    return await readRun(id, { resolveData }, config);
+    return await readRun(id, params, config);
   } catch (error) {
     if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
@@ -236,7 +248,7 @@ export async function getWorkflowRun(
 }
 
 /**
- * Issue one run read against workflow-server and normalize it into the World's
+ * Issue one run read against the backend and normalize it into the World's
  * `WorkflowRun` shape.
  *
  * `waitMs`, when set, targets the long-pollable `GET /v2/runs/:runId/status`
@@ -301,7 +313,7 @@ const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
 /**
  * Suppression deadline per base URL, because one process can hold worlds
  * pointed at different backends: the api.vercel.com proxy (with
- * `projectConfig`) and workflow-server directly resolve to different hosts,
+ * `projectConfig`) and the backend directly resolve to different hosts,
  * which can be on different versions. A miss against one must not disable the
  * fast path for the other. Bounded by construction: the key is the resolved
  * base URL, of which a process has a handful at most.
@@ -354,7 +366,7 @@ function isLongPollUnusable(error: WorkflowWorldError): boolean {
 }
 
 /**
- * Wait for a run to reach a terminal status, using workflow-server's
+ * Wait for a run to reach a terminal status, using the backend's
  * long-pollable `GET /v2/runs/:runId/status` route.
  *
  * Implements `Storage['runs'].waitForTerminalStatus`: resolves as soon as the
@@ -405,30 +417,24 @@ export async function waitForWorkflowRunTerminalStatus(
     )
   );
 
+  const signal = params?.signal;
+
   const { baseUrl } = getHttpUrl(config);
   const unsupportedUntil = longPoll.unsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
 
   if (waitMs === 0 || Date.now() < unsupportedUntil) {
-    return getWorkflowRun(id, { resolveData }, config);
+    return readRunOrNotFound(id, { resolveData, signal }, config);
   }
 
   try {
-    return await readRun(
-      id,
-      {
-        resolveData,
-        waitMs,
-        ...(params?.signal ? { signal: params.signal } : {}),
-      },
-      config
-    );
+    return await readRun(id, { resolveData, waitMs, signal }, config);
   } catch (error) {
     // The caller cancelled on purpose. That is not a verdict on the route, so
     // it propagates rather than degrading; otherwise an ordinary abort would
     // both cost an extra read and switch the fast path off for every run in
     // this process. Checked first because an abort surfaces with the same
     // `TIMEOUT` code as a request that ran out of time on its own.
-    if (params?.signal?.aborted) {
+    if (signal?.aborted) {
       throw error;
     }
     if (!(error instanceof WorkflowWorldError) || !isLongPollUnusable(error)) {
@@ -436,7 +442,7 @@ export async function waitForWorkflowRunTerminalStatus(
     }
 
     // Throws WorkflowRunNotFoundError when the run is what was missing.
-    const run = await getWorkflowRun(id, { resolveData }, config);
+    const run = await readRunOrNotFound(id, { resolveData, signal }, config);
     longPoll.unsupportedUntilByBaseUrl.set(
       baseUrl,
       Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS
@@ -584,15 +590,127 @@ export async function cancelWorkflowRuns(
 }
 
 /**
+ * Wire response of world-vercel's run-data deletion endpoint, which has its
+ * own names for the `deleted` and `already_deleted` outcomes and their
+ * summary counts. Translated by {@link deleteRunDataFromWire}.
+ */
+const DeleteRunsDataWireResultSchema = z.object({
+  summary: z.object({
+    requested: z.number(),
+    purged: z.number(),
+    alreadyPurged: z.number(),
+    skipped: z.number(),
+    notCreated: z.number(),
+    notFound: z.number(),
+    failed: z.number(),
+  }),
+  results: z.array(
+    z.discriminatedUnion('outcome', [
+      z.object({ runId: z.string(), outcome: z.literal('purged') }),
+      z.object({ runId: z.string(), outcome: z.literal('already_purged') }),
+      z.object({
+        runId: z.string(),
+        outcome: z.literal('skipped'),
+        reason: z.string(),
+        status: z.string(),
+      }),
+      z.object({ runId: z.string(), outcome: z.literal('not_created') }),
+      z.object({ runId: z.string(), outcome: z.literal('not_found') }),
+      z.object({
+        runId: z.string(),
+        outcome: z.literal('failed'),
+        code: z.string(),
+        retryable: z.boolean(),
+      }),
+    ])
+  ),
+});
+type DeleteRunsDataWireResult = z.infer<typeof DeleteRunsDataWireResultSchema>;
+
+function deleteRunDataResultFromWire(
+  result: DeleteRunsDataWireResult['results'][number]
+): DeleteRunDataResult {
+  switch (result.outcome) {
+    case 'purged':
+      return { runId: result.runId, outcome: 'deleted' };
+    case 'already_purged':
+      return { runId: result.runId, outcome: 'already_deleted' };
+    default:
+      return result;
+  }
+}
+
+/**
+ * Delete the stored data of many finished runs in a single request. Their
+ * metadata (the run, step, event and hook records, with their IDs, names,
+ * statuses, timestamps and the runs' attributes) is kept.
+ *
+ * world-vercel only deletes the data of runs that have finished and answers
+ * every other run `skipped`, so this never cancels anything. The request is
+ * checked client-side (1–100 unique IDs) as a convenience; world-vercel
+ * enforces the same limit and answers a `400` otherwise. The results are
+ * reordered to match the requested `runIds`.
+ *
+ * @throws ThrottleError, carrying `retryAfter` (seconds) when known, if
+ *   world-vercel rate-limits the request.
+ */
+export async function deleteWorkflowRunsData(
+  request: DeleteRunsDataRequest,
+  config?: APIConfig
+): Promise<DeleteRunsDataResult> {
+  const { runIds } = DeleteRunsDataRequestSchema.parse(request);
+
+  const response = await makeRequest({
+    endpoint: '/v4/runs/purge',
+    options: { method: 'POST' },
+    data: { runIds },
+    config,
+    schema: DeleteRunsDataWireResultSchema,
+  });
+
+  // Exactly one result per requested ID, as for bulk cancel: anything else is
+  // a protocol violation, not a run to report as `not_found`.
+  const resultByRunId = new Map(
+    response.results.map((result) => [result.runId, result])
+  );
+  const isBijection =
+    resultByRunId.size === response.results.length &&
+    response.results.length === runIds.length &&
+    runIds.every((runId) => resultByRunId.has(runId));
+  if (!isBijection) {
+    throw new WorkflowWorldError(
+      `Delete-data response did not contain exactly one result per requested run ID ` +
+        `(requested ${runIds.length}, received ${response.results.length}).`
+    );
+  }
+
+  const { purged, alreadyPurged, ...summary } = response.summary;
+  return {
+    summary: {
+      requested: summary.requested,
+      deleted: purged,
+      alreadyDeleted: alreadyPurged,
+      skipped: summary.skipped,
+      notCreated: summary.notCreated,
+      notFound: summary.notFound,
+      failed: summary.failed,
+    },
+    results: runIds.map((runId) =>
+      deleteRunDataResultFromWire(
+        resultByRunId.get(runId) as DeleteRunsDataWireResult['results'][number]
+      )
+    ),
+  };
+}
+
+/**
  * Wire response schema for `experimentalSetAttributes`. The backend
  * returns the post-merge attribute snapshot so callers don't need to
  * issue a follow-up read.
  */
-const ExperimentalSetAttributesResponseSchema = z.compile(
-  z.object({
-    attributes: z.record(z.string(), z.string()),
-  })
-);
+const ExperimentalSetAttributesResponseSchema = z.object({
+  attributes: z.record(z.string(), z.string()),
+});
 
 /**
  * Apply attribute changes to a workflow run. The body shape mirrors the

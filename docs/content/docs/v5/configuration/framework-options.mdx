@@ -28,6 +28,13 @@ Framework options are read at build or dev-server startup. Use them for settings
 - Controls source maps for generated workflow bundles.
 - Explicit config wins over `WORKFLOW_SOURCEMAP`.
 
+### `workflows.experimentalRoutePrefix`
+
+- Environment override: none
+- Default: none, so the routes are generated at the app root
+- Experimental. Emits the generated workflow routes below a route segment the app owns, such as `/dashboard/.well-known/workflow/v1/flow`, for apps that cannot own the origin's root paths.
+- See [`withWorkflow`](/docs/api-reference/workflow-next/with-workflow#workflow-route-prefix) for the generated paths and the Turborepo caching caveat.
+
 ```typescript title="next.config.ts" lineNumbers
 import { withWorkflow } from "workflow/next";
 
@@ -73,6 +80,12 @@ Configure Workflow through the Nitro `workflow` module options.
 - Environment override: `WORKFLOW_SOURCEMAP`
 - Default: `inline` in development, `false` in production
 - Controls source maps for generated workflow bundles.
+
+### `workflow.dashboard`
+
+- Environment override: `WORKFLOW_WEB_ALLOWED_HOSTS` (for `allowedHosts`)
+- Default: enabled in development, disabled in production builds, never mounted on Vercel
+- Embeds the observability web UI in the Nitro server at `/_workflow`. Pass `true` or `false` to force it on or off, or an object `{ enabled, path, allowedHosts }`. `allowedHosts` lists host names the dashboard accepts in the `Host` header besides `localhost`, `*.localhost`, and IP addresses (`.example.com` matches the domain and its subdomains, `true` accepts any host); requests under any other name get a `403`. See [`--webAllowedHosts`](/docs/configuration/cli-and-web-ui#--weballowedhosts).
 
 ## NestJS
 

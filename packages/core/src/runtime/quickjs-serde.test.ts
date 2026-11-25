@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import {
   HookConflictError,
+  RateLimitMaxWaitError,
   StreamError,
   WorkflowStartError,
 } from '@workflow/errors';
@@ -95,6 +96,19 @@ describe('wire parity: guest serialize matches the reference codec', () => {
       'plain object',
       '({a: 1, b: "two", c: null})',
       () => ({ a: 1, b: 'two', c: null }),
+    ],
+    // fetch options as the AI SDK passes them: an own `signal` key holding
+    // no AbortSignal must stay a plain object, not trip the Abort reducers.
+    [
+      'object with signal: undefined',
+      '({method: "POST", body: "{}", signal: undefined})',
+      () => ({ method: 'POST', body: '{}', signal: undefined }),
+    ],
+    ['object with signal: null', '({signal: null})', () => ({ signal: null })],
+    [
+      'object with a primitive signal',
+      '({signal: "not a signal"})',
+      () => ({ signal: 'not a signal' }),
     ],
     ['nested arrays', '[1, [2, [3, [4]]]]', () => [1, [2, [3, [4]]]]],
     [
@@ -207,6 +221,18 @@ describe('wire parity: guest serialize matches the reference codec', () => {
         cause.stack = 'cause-stack';
         const error = new WorkflowStartError('wrun_c', 'admission', cause);
         error.stack = 'start-stack';
+        return error;
+      },
+    ],
+    [
+      'RateLimitMaxWaitError',
+      '(() => { const e = new Error(\'Rate limit "openai" has no slot within the call\\\'s maxWait (next slot at 2026-01-01T00:05:00.000Z)\\n\u2570\u25b6 docs: https://workflow-sdk.dev/err/rate-limit-max-wait\', { cause: undefined }); e.name = "RateLimitMaxWaitError"; e.stack = "rate-stack"; e.key = "openai"; e.wouldAcquireAt = new Date("2026-01-01T00:05:00.000Z"); return e; })()',
+      () => {
+        const error = new RateLimitMaxWaitError(
+          'openai',
+          new Date('2026-01-01T00:05:00.000Z')
+        );
+        error.stack = 'rate-stack';
         return error;
       },
     ],
@@ -417,6 +443,33 @@ describe('full round trip through the host serde only', () => {
       first: 3,
       last: 5,
     });
+  });
+
+  it('carries the engine-captured stack of a thrown Error', () => {
+    // No manual `e.stack = ...`: the trace is the one QuickJS captured
+    // when the Error was constructed (behind the Error.prototype.stack
+    // accessor on QuickJS-NG >= 0.16, not an own data property).
+    const bytes = serializeGuest(
+      `(() => {
+        function innerThrower() { throw new TypeError('deep'); }
+        function outerCaller() { innerThrower(); }
+        try { outerCaller(); } catch (e) { return e; }
+      })()`
+    );
+    const revived = checkInGuest(
+      bytes,
+      `function (e) {
+        return {
+          isTypeError: e instanceof TypeError,
+          message: e.message,
+          stack: e.stack,
+        };
+      }`
+    ) as { isTypeError: boolean; message: string; stack: string };
+    expect(revived.isTypeError).toBe(true);
+    expect(revived.message).toBe('deep');
+    expect(revived.stack).toContain('innerThrower');
+    expect(revived.stack).toContain('outerCaller');
   });
 
   it('revives a pre-existing DataView payload with its bounds', () => {
@@ -907,6 +960,42 @@ describe('side-effect freedom', () => {
     vm.evalCode(`
       delete Map.prototype[Symbol.iterator];
     `).dispose();
+  });
+
+  it('reading an Error stack does not run a patched Error.prototype.stack', () => {
+    vm.evalCode(`
+      globalThis.__stackSpyCalls = 0;
+      globalThis.__originalStackDescriptor =
+        Object.getOwnPropertyDescriptor(Error.prototype, 'stack');
+      Object.defineProperty(Error.prototype, 'stack', {
+        configurable: true,
+        get() { globalThis.__stackSpyCalls++; return 'spoofed'; },
+        set(v) {},
+      });
+    `).dispose();
+    try {
+      const bytes = serializeGuest(
+        `(() => { function namedFrame() { return new Error('x'); } return namedFrame(); })()`
+      );
+      const spyCalls = vm
+        .evalCode('globalThis.__stackSpyCalls')
+        .consume((h) => h.toNumber());
+      expect(spyCalls).toBe(0);
+      const stack = checkInGuest(
+        bytes,
+        `function (e) { return Object.getOwnPropertyDescriptor(e, 'stack').value; }`
+      );
+      expect(stack).not.toBe('spoofed');
+      expect(stack).toContain('namedFrame');
+    } finally {
+      vm.evalCode(`
+        if (globalThis.__originalStackDescriptor) {
+          Object.defineProperty(Error.prototype, 'stack', globalThis.__originalStackDescriptor);
+        } else {
+          delete Error.prototype.stack;
+        }
+      `).dispose();
+    }
   });
 
   it('a Symbol.toStringTag spoof does not reclassify a plain object', () => {

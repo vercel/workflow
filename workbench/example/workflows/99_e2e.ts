@@ -4,6 +4,7 @@ import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
   createHook,
   createWebhook,
+  experimental_rateLimit,
   FatalError,
   fetch,
   getStepMetadata,
@@ -15,7 +16,11 @@ import {
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
-import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
+import {
+  HookConflictError,
+  HookForceClaimedError,
+  RateLimitMaxWaitError,
+} from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -243,6 +248,34 @@ export async function stepWinsRaceWorkflow() {
   ]);
   const endTime = Date.now();
   return { winner, durationMs: endTime - startTime };
+}
+
+//////////////////////////////////////////////////////////
+
+// Times come from inside the step, on the host clock: the workflow's own
+// `Date.now()` is the replay clock, which says nothing about when a step ran.
+async function timedDelayStep(ms: number, label: string) {
+  'use step';
+  const startedAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return { label, startedAt, endedAt: Date.now() };
+}
+
+/**
+ * A two-step chain beside one long step (vercel/workflow#4457). The chain's
+ * second step should start once its first settles, not once the long step
+ * beside it does.
+ */
+export async function parallelBranchesAdvanceIndependentlyWorkflow() {
+  'use workflow';
+  const [chain, long] = await Promise.all([
+    (async () => [
+      await timedDelayStep(500, 'chain1'),
+      await timedDelayStep(500, 'chain2'),
+    ])(),
+    timedDelayStep(10_000, 'long'),
+  ]);
+  return { chain, long };
 }
 
 //////////////////////////////////////////////////////////
@@ -909,7 +942,7 @@ export async function hookSignalOwnerWorkflow(token: string, message: string) {
 }
 
 /**
- * The owner of a `start({ hook })` token. The start Hook exists from
+ * The owner of a `start({ experimental_hook })` token. The start Hook exists from
  * admission; `createHook()` with the start token binds this run to it (no
  * write, never a conflict) and collects `expected` payloads, including any
  * resumed before the body got here.
@@ -934,7 +967,7 @@ export async function startHookOwnerWorkflow(token: string, expected: number) {
 }
 
 /**
- * A `start({ hook })` run that waits on a separate gate token before it opens
+ * A `start({ experimental_hook })` run that waits on a separate gate token before it opens
  * its start Hook, then reads `expected` payloads from it: payloads resumed
  * before the gate opens are already in the log when `createHook()` runs.
  */
@@ -959,7 +992,7 @@ export async function startHookGateThenClaimWorkflow(
 }
 
 /**
- * A `start({ hook })` run that never opens its start Hook: the token is only
+ * A `start({ experimental_hook })` run that never opens its start Hook: the token is only
  * its idempotency key. It waits on a separate gate token so a test can
  * observe it while it runs.
  */
@@ -975,7 +1008,7 @@ export async function startHookUnclaimedWorkflow(
 }
 
 /**
- * A `start({ hook })` run that opens its start Hook late: it first waits on
+ * A `start({ experimental_hook })` run that opens its start Hook late: it first waits on
  * a gate token, then calls `createHook()` with the start token and awaits one
  * payload. If another run force-claimed the token meanwhile, the await
  * rejects with HookForceClaimedError, which this reports.
@@ -1007,7 +1040,7 @@ export async function startHookLateClaimWorkflow(
 }
 
 /**
- * A `start({ hook })` run that reads one payload from its start Hook and
+ * A `start({ experimental_hook })` run that reads one payload from its start Hook and
  * disposes it (which frees the token), waits on a gate token, then calls
  * `createHook()` with the same token again: an ordinary new Hook, which
  * conflicts if another run took the token in between.
@@ -1037,7 +1070,7 @@ export async function startHookReclaimWorkflow(
 }
 
 /**
- * A `start({ hook })` run that opens its start Hook but never reads from it:
+ * A `start({ experimental_hook })` run that opens its start Hook but never reads from it:
  * payloads resumed to it stay unconsumed, and the run still completes.
  */
 export async function startHookClaimUnreadWorkflow(
@@ -1054,7 +1087,7 @@ export async function startHookClaimUnreadWorkflow(
 
 /**
  * Reads one payload from its start Hook and ends without disposing it, so a
- * retention set on `start({ hook })` keeps the token past the run's end.
+ * retention set on `start({ experimental_hook })` keeps the token past the run's end.
  */
 export async function startHookRetainedOwnerWorkflow(token: string) {
   'use workflow';
@@ -1066,7 +1099,7 @@ export async function startHookRetainedOwnerWorkflow(token: string) {
 }
 
 /**
- * Passes an option that belongs on `start({ hook })` to `createHook()` with
+ * Passes an option that belongs on `start({ experimental_hook })` to `createHook()` with
  * the start token, which throws.
  */
 export async function startHookOptionsOnStartTokenWorkflow(
@@ -2300,6 +2333,29 @@ export async function crossContextSerdeWorkflow() {
     sum: { x: sum.x, y: sum.y, z: sum.z },
     scaled: { x: scaled.x, y: scaled.y, z: scaled.z },
     arraySum: { x: arraySum.x, y: arraySum.y, z: arraySum.z },
+  };
+}
+
+//////////////////////////////////////////////////////////
+// Serde classes keyed by imported WORKFLOW_SERIALIZE symbols
+//////////////////////////////////////////////////////////
+
+import { createTemperature, warmTemperature } from './serde-steps';
+
+/**
+ * Round-trips a class whose only serde marker is a computed key imported from
+ * a non-`@workflow` module (the `@ai-sdk/openai` shape from #4897). The
+ * workflow never imports Temperature; it only moves instances between steps.
+ */
+export async function importedSerdeKeyWorkflow() {
+  'use workflow';
+
+  const cold = await createTemperature(20);
+  const warm = await warmTemperature(cold, 5);
+
+  return {
+    cold: { celsius: cold.celsius },
+    warm: { celsius: warm.celsius },
   };
 }
 
@@ -3864,18 +3920,88 @@ export async function startFromWorkflow(inputValue: number) {
 }
 
 /**
+ * Child for the child-run completion tests: sleeps first so the parent's
+ * first read finds it still running and the parent has to suspend on the
+ * completion hook, then doubles `value` or fails.
+ */
+export async function slowChildWorkflow(value: number, fail: boolean) {
+  'use workflow';
+  await sleep('2s');
+  if (fail) {
+    throw new FatalError(`slow child failed for ${value}`);
+  }
+  return await doubleValue(value);
+}
+
+/**
+ * Parent that awaits a child's `returnValue` directly from workflow code.
+ * The wait goes through the system completion hook rather than a polling
+ * step; the e2e test checks the parent's event log for it.
+ */
+export async function awaitChildReturnValueWorkflow(
+  value: number,
+  fail: boolean
+) {
+  'use workflow';
+  const childRun = await start(slowChildWorkflow, [value, fail]);
+  try {
+    const childResult = await childRun.returnValue;
+    return { childRunId: childRun.runId, childResult };
+  } catch (error) {
+    return {
+      childRunId: childRun.runId,
+      childError: (error as Error).name,
+      childErrorCause: ((error as Error).cause as Error | undefined)?.message,
+    };
+  }
+}
+
+/**
+ * Child for the fan-out completion test: finishes only once the test resumes
+ * its hook, then doubles `value`. The test resumes it after the parent is
+ * suspended on its completion hook, so the child's resume always lands on it
+ * (a child that finished before the parent registered would be answered by
+ * the parent's status read instead, with no `hook_received`).
+ */
+export async function gatedChildWorkflow(token: string, value: number) {
+  'use workflow';
+  using hook = createHook<Record<string, never>>({ token });
+  await hook;
+  return await doubleValue(value);
+}
+
+/**
+ * Parent that fans out to several children and awaits them all. Every child
+ * resumes the parent's one completion hook, so the parent's log holds a
+ * single system hook however many children it waits on. Child `i` waits on
+ * the hook `${tokenPrefix}:${i}`.
+ */
+export async function awaitChildrenFanOutWorkflow(
+  values: number[],
+  tokenPrefix: string
+) {
+  'use workflow';
+  const runs = await Promise.all(
+    values.map((value, i) =>
+      start(gatedChildWorkflow, [`${tokenPrefix}:${i}`, value])
+    )
+  );
+  const results = await Promise.all(runs.map((run) => run.returnValue));
+  return { childRunIds: runs.map((run) => run.runId), results };
+}
+
+/**
  * Recursive Fibonacci workflow. start() is called directly to spawn
  * child workflows for fib(n-1) and fib(n-2).
  *
- * WORKER POOL CAVEAT: each `runA.returnValue` / `runB.returnValue` await
- * resolves by polling the child run's status inside a step that holds a
- * worker slot until the child completes. In worker-based worlds (notably
- * `world-postgres`), the peak number of these in-flight polls must fit
- * within `queueConcurrency`, or the workflow will deadlock — all slots
- * end up held by parents waiting for children that can't get a slot to
- * start. For `fib(n)`, the recursion tree produces roughly `2·(T(n)−leaves)`
- * concurrent polls at peak; fib(6) needs ~24 slots, fib(10) needs
- * hundreds. If you raise `n`, raise `queueConcurrency` accordingly.
+ * Each `runA.returnValue` / `runB.returnValue` await suspends the parent on
+ * the child-run completion hook, which the child resumes when it finishes,
+ * so a waiting parent holds no worker slot. (Before that hook existed, each
+ * await polled inside a step that held a slot until the child completed, and
+ * a deep enough tree deadlocked worker-based worlds such as `world-postgres`
+ * once every slot was held by a waiting parent. With
+ * `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` the awaits poll again, and that
+ * caveat applies: fib(6) needs ~24 slots, fib(10) hundreds.)
  */
 export async function fibonacciWorkflow(n: number): Promise<number> {
   'use workflow';
@@ -4540,4 +4666,231 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
   'use workflow';
   const child = await startDisallowedDynamicRun(value);
   return { childRunId: child.runId };
+}
+
+//////////////////////////////////////////////////////////
+// Frozen values stored by reference
+//////////////////////////////////////////////////////////
+
+type StateRefsMessage = { readonly role: string; readonly content: string };
+type StateRefsChat = {
+  readonly history: readonly StateRefsMessage[];
+  readonly turns: number;
+};
+
+/** The next chat, frozen, reusing the unchanged (already frozen) messages. */
+const stateRefsNext = (
+  chat: StateRefsChat,
+  added: StateRefsMessage[]
+): StateRefsChat =>
+  Object.freeze({
+    history: Object.freeze([
+      ...chat.history,
+      ...added.map((m) => Object.freeze({ ...m })),
+    ]),
+    turns: chat.turns + 1,
+  });
+
+const stateRefsMessage = (i: number) =>
+  `Turn ${i}: please summarise the attached report and list its three biggest risks. `.repeat(
+    2
+  );
+
+async function stateRefsReply(
+  chat: StateRefsChat,
+  text: string,
+  failOnce: boolean
+) {
+  'use step';
+  // A failed first attempt makes the retry run in a new invocation, which
+  // rebuilds its input from the run's log.
+  if (failOnce && getStepMetadata().attempt < 2)
+    throw new Error('transient: retry in a new invocation');
+  return stateRefsNext(chat, [
+    { role: 'user', content: text },
+    { role: 'assistant', content: `re ${text.length}` },
+  ]);
+}
+
+async function stateRefsSummary(chat: StateRefsChat, i: number) {
+  'use step';
+  return `${i}:${chat.turns}:${chat.history.length}`;
+}
+
+/**
+ * Frozen state passed from step to step: step inputs are stored as references
+ * and outputs as changes. Covers a hook string referenced by later
+ * state, a retry that rebuilds cold, a replay after a sleep, and a fan-out
+ * wider than the inline limit (queued steps rebuild cold).
+ */
+export async function stateRefsWorkflow(
+  token: string,
+  turns: number,
+  width: number
+) {
+  'use workflow';
+  let chat: StateRefsChat = Object.freeze({
+    history: Object.freeze([]),
+    turns: 0,
+  });
+  using hook = createHook<{ text: string }>({ token });
+  const { text } = await hook;
+  chat = await stateRefsReply(chat, text, false);
+  for (let i = 1; i < turns; i++) {
+    chat = await stateRefsReply(
+      chat,
+      i === 2 ? text : stateRefsMessage(i),
+      i === 3
+    );
+    if (i === 4) await sleep('1s');
+  }
+  const fan = await Promise.all(
+    Array.from({ length: width }, (_, i) => stateRefsSummary(chat, i))
+  );
+  return {
+    turns: chat.turns,
+    first: chat.history[0]?.content,
+    last: chat.history.at(-2)?.content.slice(0, 7),
+    fan,
+  };
+}
+
+//////////////////////////////////////////////////////////
+// experimental_rateLimit()
+//
+// Every fixture takes its key from the test, which makes one up per test:
+// a key's rate is shared by every run of the project and environment, so a
+// fixed key would couple concurrent tests, and CI runs, to each other.
+
+type RateLimitFixtureOptions = {
+  limit: number;
+  periodMs: number;
+  burst?: number;
+};
+
+/** Wall-clock time, from a step: the workflow's own clock is deterministic. */
+async function rateLimitNow() {
+  'use step';
+  return Date.now();
+}
+
+/**
+ * Calls `experimental_rateLimit()` `calls` times on one key, one after the
+ * other, and reports when the run got past each call.
+ */
+export async function rateLimitSequentialWorkflow(
+  key: string,
+  calls: number,
+  options: RateLimitFixtureOptions
+) {
+  'use workflow';
+  const startedAt = await rateLimitNow();
+  const passedAt: number[] = [];
+  for (let i = 0; i < calls; i++) {
+    await experimental_rateLimit({
+      key,
+      limit: options.limit,
+      period: options.periodMs,
+      ...(options.burst !== undefined && { burst: options.burst }),
+    });
+    passedAt.push(await rateLimitNow());
+  }
+  return { startedAt, passedAt };
+}
+
+/**
+ * Calls `experimental_rateLimit()` `calls` times on one key at once, so the
+ * calls reach the World together, and reports when each branch got past its
+ * call.
+ */
+export async function rateLimitParallelWorkflow(
+  key: string,
+  calls: number,
+  options: RateLimitFixtureOptions
+) {
+  'use workflow';
+  const startedAt = await rateLimitNow();
+  const passedAt = await Promise.all(
+    Array.from({ length: calls }, async () => {
+      await experimental_rateLimit({
+        key,
+        limit: options.limit,
+        period: options.periodMs,
+        ...(options.burst !== undefined && { burst: options.burst }),
+      });
+      return rateLimitNow();
+    })
+  );
+  return { startedAt, passedAt };
+}
+
+/**
+ * Takes the key's slot, then calls again with a `maxWait` shorter than the
+ * wait for the next slot and catches the rejection, then calls a third time
+ * without one: a rejected call reserves nothing, so the third call gets the
+ * slot the second was refused.
+ */
+export async function rateLimitMaxWaitWorkflow(
+  key: string,
+  options: RateLimitFixtureOptions,
+  maxWaitMs: number
+) {
+  'use workflow';
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+  });
+  const firstPassedAt = await rateLimitNow();
+
+  let rejected:
+    | { isRateLimitMaxWaitError: boolean; name: string; key?: string }
+    | undefined;
+  try {
+    await experimental_rateLimit({
+      key,
+      limit: options.limit,
+      period: options.periodMs,
+      maxWait: maxWaitMs,
+    });
+  } catch (error) {
+    rejected = {
+      isRateLimitMaxWaitError: RateLimitMaxWaitError.is(error),
+      name: (error as Error).name,
+      key: RateLimitMaxWaitError.is(error) ? error.key : undefined,
+    };
+  }
+  const rejectedAt = await rateLimitNow();
+
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+  });
+  const thirdPassedAt = await rateLimitNow();
+  return { firstPassedAt, rejected, rejectedAt, thirdPassedAt };
+}
+
+/**
+ * Calls with a `maxWait` that cannot be met and lets the rejection escape,
+ * so the run fails with it.
+ */
+export async function rateLimitMaxWaitUncaughtWorkflow(
+  key: string,
+  options: RateLimitFixtureOptions,
+  maxWaitMs: number
+) {
+  'use workflow';
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+  });
+  await experimental_rateLimit({
+    key,
+    limit: options.limit,
+    period: options.periodMs,
+    maxWait: maxWaitMs,
+  });
+  return 'unreachable';
 }

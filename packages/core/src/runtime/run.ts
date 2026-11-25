@@ -9,6 +9,8 @@ import {
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
+  type DeleteRunDataResult,
+  isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
   type WorkflowRunStatus,
@@ -28,10 +30,13 @@ import {
   tagForwardedWritableTarget,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { afterRunCancelled } from './after-terminal-write.js';
+import { awaitChildRunCompletion } from './child-run-completion.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  deleteRuns,
   isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
@@ -40,6 +45,9 @@ import {
 } from './runs.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
+
+/** Concurrent run reads in one `Run.readFinishedRunIds` step. */
+const READ_FINISHED_CONCURRENCY = 20;
 const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
   'completed',
   'failed',
@@ -111,20 +119,14 @@ export function getReturnValueMaxLongPolls(): number {
 
 /**
  * Whether `await run.returnValue` may use the World's long poll
- * (`runs.waitForTerminalStatus`) instead of interval-polling `runs.get`.
+ * (`runs.waitForTerminalStatus`). Always `true`: the
+ * `WORKFLOW_RETURN_VALUE_LONG_POLL` kill switch is no longer read.
  *
- * Default **ON** wherever the World implements the method; a World that does
- * not is already on the interval path with nothing to switch off. Reads
- * `process.env.WORKFLOW_RETURN_VALUE_LONG_POLL` lazily; an explicit `'0'` /
- * `'false'` is the kill switch, restoring the fixed-interval poll exactly as
- * it behaved before the fast path existed.
- *
+ * @deprecated No longer read by the runtime; always returns `true`.
  * @internal
  */
 export function isReturnValueLongPollEnabled(): boolean {
-  const raw = process.env.WORKFLOW_RETURN_VALUE_LONG_POLL;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
+  return true;
 }
 
 /**
@@ -202,14 +204,22 @@ export interface WorkflowRunWritableStreamOptions {
  */
 export class Run<TResult> {
   static [WORKFLOW_SERIALIZE](instance: Run<unknown>) {
-    return { runId: instance.runId, resilientStart: instance.#resilientStart };
+    return {
+      runId: instance.runId,
+      resilientStart: instance.#resilientStart,
+      ...(instance.#parentRunId ? { parentRunId: instance.#parentRunId } : {}),
+    };
   }
 
   static [WORKFLOW_DESERIALIZE](data: {
     runId: string;
     resilientStart?: boolean;
+    parentRunId?: string;
   }) {
-    return new Run(data.runId, { resilientStart: data.resilientStart });
+    return new Run(data.runId, {
+      resilientStart: data.resilientStart,
+      parentRunId: data.parentRunId,
+    });
   }
 
   /**
@@ -243,9 +253,22 @@ export class Run<TResult> {
    */
   #resilientStart = false;
 
-  constructor(runId: string, opts?: { resilientStart?: boolean }) {
+  /**
+   * The workflow run that started this run with `start()` and that this run
+   * resumes, through the child-run completion hook, when it finishes. Set only
+   * on handles returned by such a `start()`. Inside that parent workflow,
+   * `returnValue` suspends on the hook instead of polling.
+   * @internal
+   */
+  #parentRunId: string | undefined;
+
+  constructor(
+    runId: string,
+    opts?: { resilientStart?: boolean; parentRunId?: string }
+  ) {
     this.runId = runId;
     this.#resilientStart = opts?.resilientStart ?? false;
+    this.#parentRunId = opts?.parentRunId;
   }
 
   /**
@@ -322,7 +345,7 @@ export class Run<TResult> {
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
     // A run that does not exist is cancelled through the World all the same:
-    // a `start({ hook })` candidate that was admitted but never created its
+    // a `start({ experimental_hook })` candidate that was admitted but never created its
     // run (the one a `WorkflowStartError` names) is fenced by it, so it can
     // never start. Otherwise the World answers `WorkflowRunNotFoundError`.
     const run = await world.runs
@@ -367,6 +390,42 @@ export class Run<TResult> {
       await world.events.create(this.runId, cancelled);
     }
     await wakeRunAfterOutOfBandWrite(world, run);
+    await afterRunCancelled(world, run);
+  }
+
+  /**
+   * Deletes the stored data of the finished run: its input, output and
+   * error, its steps' and events' payloads, its hook payloads, and its
+   * stream contents, as if it had been started with
+   * `experimental_retention: 0`. This cannot be undone.
+   *
+   * Metadata is not deleted: the run stays listed, and so do its steps,
+   * events and hooks, with their IDs, names, statuses, timestamps and the
+   * run's attributes. Only their payloads go, reading back as expired.
+   *
+   * Only a finished run has its data deleted. A run that has not finished
+   * is answered `skipped` and left running: cancel it first (see
+   * {@link Run.cancel}) to delete its data now.
+   *
+   * Runs as a step. Inside a workflow, a retryable failure (or the World
+   * rate-limiting the request) throws a `RetryableError`, so the step
+   * retries; deletion is idempotent, so a retry finishes what the failed
+   * attempt left. Called outside a workflow, a `failed` result is returned
+   * as is.
+   *
+   * @returns the run's outcome: `deleted`, `already_deleted` (its data was
+   *   already gone), `skipped` (with the run's `status`), `not_created`,
+   *   `not_found`, or `failed` (with `code`, and `retryable` when retrying
+   *   can succeed).
+   * @throws if the configured World does not support deleting run data.
+   */
+  async delete(): Promise<DeleteRunDataResult> {
+    'use step';
+    const { results } = await deleteRuns(await this.#lazyWorldPromise, [
+      this.runId,
+    ]);
+    // `deleteRuns` guarantees exactly one result, for this run.
+    return results[0] as DeleteRunDataResult;
   }
 
   /**
@@ -400,12 +459,71 @@ export class Run<TResult> {
   }
 
   /**
-   * The return value of the workflow run.
-   * Polls the workflow return value until the workflow run completes.
+   * The return value of the workflow run, once it completes. Rejects with
+   * `WorkflowRunFailedError` or `WorkflowRunCancelledError` if the run fails
+   * or is cancelled.
+   *
+   * Inside the workflow that started this run, the parent suspends on a system
+   * hook the run resumes when it finishes, so waiting costs no compute and
+   * resumes as soon as the run is done. Everywhere else (host code, steps,
+   * a workflow handed another run's handle) it polls until the run finishes.
    */
   get returnValue(): Promise<TResult> {
+    return (
+      awaitChildRunCompletion(
+        this.runId,
+        this.#parentRunId,
+        () => this.readReturnValue(),
+        (runIds) => Run.readFinishedRunIds(runIds)
+      ) ?? this.readReturnValue()
+    );
+  }
+
+  /**
+   * The step behind {@link returnValue}: polls until the run is terminal.
+   * Use `returnValue` instead.
+   * @internal
+   */
+  async readReturnValue(): Promise<TResult> {
     'use step';
     return this.#pollReturnValue();
+  }
+
+  /**
+   * Which of `runIds` have finished (completed, failed, or cancelled), in one
+   * step: the batched status read behind the child-run completion hook. A run
+   * that cannot be found is reported as finished, so the caller's
+   * `returnValue` read surfaces the not-found (or retries a resilient start).
+   * @internal
+   */
+  static async readFinishedRunIds(runIds: string[]): Promise<string[]> {
+    'use step';
+    const world = await getWorldLazy();
+    const finished = new Set<string>();
+    let next = 0;
+    const worker = async () => {
+      for (
+        let runId = runIds[next++];
+        runId !== undefined;
+        runId = runIds[next++]
+      ) {
+        try {
+          const run = await world.runs.get(runId, { resolveData: 'none' });
+          if (isTerminalWorkflowRunStatus(run.status)) finished.add(runId);
+        } catch (error) {
+          if (!WorkflowRunNotFoundError.is(error)) throw error;
+          finished.add(runId);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(READ_FINISHED_CONCURRENCY, runIds.length) },
+        worker
+      )
+    );
+    // Input order, so the result does not depend on read timing.
+    return runIds.filter((runId) => finished.has(runId));
   }
 
   /**
@@ -681,11 +799,10 @@ export class Run<TResult> {
     // paying up to a full interval of quantization on a run that already
     // ended. Worlds that cannot wait do not implement it (see
     // `Storage['runs'].waitForTerminalStatus`) and this stays the exact
-    // fixed-interval poll it has always been, as does an operator who
-    // throws the `WORKFLOW_RETURN_VALUE_LONG_POLL=0` kill switch.
-    const waitForTerminalStatus = isReturnValueLongPollEnabled()
-      ? world.runs.waitForTerminalStatus?.bind(world.runs)
-      : undefined;
+    // fixed-interval poll it has always been.
+    const waitForTerminalStatus = world.runs.waitForTerminalStatus?.bind(
+      world.runs
+    );
 
     // Long polls spent so far. Once the cap is reached the loop keeps waiting
     // but on the interval path, which is the strategy we know is correct; see

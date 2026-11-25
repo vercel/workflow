@@ -9,6 +9,7 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  type ShouldRevalidateFunctionArgs,
   useNavigate,
   useRouteError,
   useSearchParams,
@@ -19,6 +20,7 @@ import { ThemePicker } from '~/components/theme-dropdown';
 import { DocsLink } from '~/components/top-nav/docs-link';
 import { Toaster } from '~/components/ui/sonner';
 import { Logo } from '~/icons/logo';
+import { DEFAULT_META_DESCRIPTION, DEFAULT_TITLE } from '~/lib/meta';
 import { ServerConfigProvider } from '~/lib/world-config-context';
 import { getPublicServerConfig } from '~/server/workflow-server-actions.server';
 
@@ -31,6 +33,27 @@ import './globals.css';
 export async function loader({ context }: Route.LoaderArgs) {
   const serverConfig = await getPublicServerConfig();
   return { serverConfig, basename: context?.basename ?? '' };
+}
+
+// The loader's data is process-wide: it depends on the server's environment
+// and the embed mount path, never on the URL. Without this, every search param
+// change (switching tabs, opening a side panel) and every client-side page
+// change waits on a server round trip to re-run it before the next view
+// renders. Keep the default after mutations and explicit revalidation, where
+// the current and next URLs are the same.
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  formMethod,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  if (formMethod && formMethod.toUpperCase() !== 'GET') {
+    return defaultShouldRevalidate;
+  }
+  if (currentUrl.href === nextUrl.href) {
+    return defaultShouldRevalidate;
+  }
+  return false;
 }
 
 // Catch-all action: handles stray POST requests (e.g. from Radix UI dialogs
@@ -48,6 +71,17 @@ export async function action({ request }: { request: Request }) {
   return null;
 }
 
+/**
+ * The default title and description. A route with its own `meta` (the run's
+ * Usage page) replaces them; every other route inherits these.
+ */
+export function meta() {
+  return [
+    { title: DEFAULT_TITLE },
+    { name: 'description', content: DEFAULT_META_DESCRIPTION },
+  ];
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
@@ -55,11 +89,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
-        <title>Workflow Observability UI</title>
-        <meta
-          name="description"
-          content="Web interface for inspecting flow runs, steps, streams, and events"
-        />
         <Meta />
         <Links />
       </head>

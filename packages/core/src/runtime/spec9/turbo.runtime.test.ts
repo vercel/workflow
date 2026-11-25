@@ -1,6 +1,12 @@
-import { InBandSupersededError, RunExpiredError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  InBandSupersededError,
+  RUN_ALREADY_STARTED_CODE,
+  RunExpiredError,
+} from '@workflow/errors';
 import {
   type Event,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
@@ -14,7 +20,9 @@ import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   expectRefusalRedelivery,
   runResult,
+  stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
+import { TURBO_FIRST_DELIVERY_MAX_AGE_MS } from '../constants.js';
 import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
 
@@ -49,7 +57,85 @@ registerStepFunction('turbo_add', async (a: number, b: number) => {
   return a + b;
 });
 
+registerStepFunction('turbo_branch', async (n: number) => {
+  bodies.push({
+    listCalls: currentWorld?.listCalls.length ?? -1,
+    eventTypes: currentWorld?.events.map((e) => e.eventType) ?? [],
+  });
+  const hook = onBody;
+  onBody = undefined;
+  hook?.();
+  return n * 2;
+});
+
+/** `n` branches: the first inline slots run here, the rest in the background. */
+const fanOut = `const branch = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_branch");
+  async function workflow(n) {
+    const out = await Promise.all(Array.from({ length: n }, (_, i) => branch(i)));
+    return out.reduce((a, b) => a + b, 0);
+  }${transform('workflow')}`;
+
 const twoSteps = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_add");
+  async function workflow(a, b) {
+    const first = await add(a, b);
+    return await add(first, 10);
+  }${transform('workflow')}`;
+
+/**
+ * When set, the next `turbo_parkable` body records itself and then waits on
+ * this: the step an invocation that dies mid-step leaves open.
+ */
+let parkNextBody: Promise<void> | undefined;
+
+registerStepFunction('turbo_parkable', async (a: number, b: number) => {
+  bodies.push({
+    listCalls: currentWorld?.listCalls.length ?? -1,
+    eventTypes: currentWorld?.events.map((e) => e.eventType) ?? [],
+  });
+  const park = parkNextBody;
+  parkNextBody = undefined;
+  if (park) await park;
+  return a + b;
+});
+
+const returnsAtOnce = `async function workflow() {
+    return 42;
+  }${transform('workflow')}`;
+
+/**
+ * A World seeded with the log a crashed first delivery left, as its replay
+ * finds it: it refuses a second `run_started` as a started run, and its
+ * queue holds nothing the crashed delivery sent.
+ */
+async function replayWorldFor(
+  code: string,
+  crashed: AppendOnlyWorld,
+  runId: string
+): Promise<AppendOnlyWorld> {
+  const crashedLog = structuredClone(crashed.events);
+  const crashedRun = structuredClone(await crashed.asWorld().runs.get(runId));
+  const replay: AppendOnlyWorld = new AppendOnlyWorld({
+    fence: true,
+    beforeCreate(data) {
+      if (
+        data.eventType === 'run_started' &&
+        replay.events.some((e) => e.eventType === 'run_started')
+      ) {
+        throw new EntityConflictError(
+          `Workflow run "${runId}" has already started`,
+          { code: RUN_ALREADY_STARTED_CODE }
+        );
+      }
+    },
+  });
+  replay.seedLog(crashedRun, crashedLog);
+  currentWorld = replay;
+  setWorld(replay.asWorld());
+  await workflowEntrypoint(code)(new Request('https://example.test'));
+  return replay;
+}
+
+const twoParkableSteps = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_parkable");
   async function workflow(a, b) {
     const first = await add(a, b);
     return await add(first, 10);
@@ -150,12 +236,17 @@ const types = (events: readonly Event[]) => events.map((e) => e.eventType);
 const indexOf = (world: AppendOnlyWorld, type: string) =>
   world.events.findIndex((e) => e.eventType === type);
 
-const ENV = ['WORKFLOW_TURBO', 'WORKFLOW_OPTIMISTIC_INLINE_START'] as const;
+const ENV = [
+  'WORKFLOW_TURBO',
+  'WORKFLOW_OPTIMISTIC_INLINE_START',
+  'WORKFLOW_MAX_INLINE_STEPS',
+] as const;
 const savedEnv: Partial<Record<(typeof ENV)[number], string | undefined>> = {};
 
 beforeEach(() => {
   bodies = [];
   onBody = undefined;
+  parkNextBody = undefined;
   for (const key of ENV) {
     savedEnv[key] = process.env[key];
     delete process.env[key];
@@ -307,6 +398,182 @@ describe.each([
     expect(world.held).toEqual([]);
   });
 
+  it('runs the open step again when a replay of the first delivery finds the run already started', async () => {
+    // The first delivery starts the run and its first step, then its
+    // invocation dies mid-step: the log it leaves is captured while the body
+    // is parked.
+    let releaseBody: () => void = () => {};
+    parkNextBody = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    const {
+      world: crashed,
+      runId,
+      start,
+    } = await setup(twoParkableSteps, [1, 2]);
+    const crashedDelivery = crashed.deliver(start).catch(() => {});
+    await vi.waitFor(() =>
+      expect(types(crashed.events)).toEqual([
+        'run_created',
+        'run_started',
+        'step_started',
+      ])
+    );
+    const crashedLog = structuredClone(crashed.events);
+    const crashedRun = structuredClone(await crashed.asWorld().runs.get(runId));
+    const firstStepId = crashedLog[2]!.correlationId;
+    // A step body still executing in this process would be awaited by the
+    // replay rather than run again (one execution per step per process); a
+    // dead invocation's is not. Let it settle against the discarded World.
+    releaseBody();
+    await crashedDelivery;
+
+    // A platform re-runs the crashed invocation: the same request, so the
+    // same message with delivery count 1, against the log the first one left.
+    // The World refuses the replay's `run_started` as a started run.
+    const replay: AppendOnlyWorld = new AppendOnlyWorld({
+      fence: true,
+      beforeCreate(data) {
+        if (
+          data.eventType === 'run_started' &&
+          replay.events.some((e) => e.eventType === 'run_started')
+        ) {
+          throw new EntityConflictError(
+            `Workflow run "${runId}" has already started`,
+            { code: RUN_ALREADY_STARTED_CODE }
+          );
+        }
+      },
+    });
+    replay.seedLog(crashedRun, crashedLog);
+    currentWorld = replay;
+    setWorld(replay.asWorld());
+    await workflowEntrypoint(twoParkableSteps)(
+      new Request('https://example.test')
+    );
+
+    await replay.deliver({ ...start, deliveryCount: 1, createdAt: new Date() });
+    await replay.runUntilIdle();
+
+    // Not acknowledged as finished: the open step ran again, as attempt 2,
+    // and the run completed.
+    const firstStepStarts = replay.events.filter(
+      (e) => e.eventType === 'step_started' && e.correlationId === firstStepId
+    );
+    expect(firstStepStarts.map((e) => e.eventData?.attempt)).toEqual([1, 2]);
+    expect(types(replay.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+  });
+
+  it('continues from a fresh load when run_started loses a race to another start on the normal path', async () => {
+    process.env.WORKFLOW_TURBO = '0';
+    let raced = false;
+    const { world, runId, start } = await setup(twoSteps, [1, 2], {
+      fence: true,
+      beforeCreate(data) {
+        if (data.eventType !== 'run_started' || raced) return;
+        // Another delivery's `run_started` lands between this delivery's
+        // load and its own write.
+        raced = true;
+        currentWorld!.appendOutOfBand({
+          eventType: 'run_started',
+          runId,
+          correlationId: runId,
+        } as Partial<Event>);
+        throw new EntityConflictError(
+          `Workflow run "${runId}" has already started`,
+          { code: RUN_ALREADY_STARTED_CODE }
+        );
+      },
+    });
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(raced).toBe(true);
+    expect(types(world.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+  });
+
+  it('loads the log instead of taking the turbo path when the first message is older than a first delivery can be', async () => {
+    const { world, start } = await setup(twoSteps, [1, 2]);
+
+    await world.deliver({
+      ...start,
+      createdAt: new Date(Date.now() - TURBO_FIRST_DELIVERY_MAX_AGE_MS - 1),
+    });
+    await world.runUntilIdle();
+
+    expect(bodies[0]!.listCalls).toBeGreaterThan(0);
+    expect(world.creates[0]?.params).not.toMatchObject({ skipPreload: true });
+    expect(types(world.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+  });
+
+  it('completes the run when a replay of the first delivery of a workflow with no steps conflicts', async () => {
+    // The crashed delivery committed `run_started` and died before the
+    // completion. The replay's turbo `run_completed` queues behind its
+    // refused `run_started`, and a terminal write reads a conflict as "the
+    // run already finished": the start's refusal must still decide.
+    const { world: crashed, runId, start } = await setup(returnsAtOnce, []);
+    crashed.appendOutOfBand({
+      eventType: 'run_started',
+      runId,
+      correlationId: runId,
+    } as Partial<Event>);
+    const replay = await replayWorldFor(returnsAtOnce, crashed, runId);
+
+    await replay.deliver({ ...start, deliveryCount: 1, createdAt: new Date() });
+    await replay.runUntilIdle();
+
+    expect(types(replay.events)).toEqual([
+      'run_created',
+      'run_started',
+      'run_completed',
+    ]);
+  });
+
+  it.each([
+    ['young', 0],
+    ['old', TURBO_FIRST_DELIVERY_MAX_AGE_MS + 1_000],
+  ])('re-sends a background step a crashed first delivery never sent, on a %s replay', async (_age, ageMs) => {
+    // Every step goes to the background. The crashed delivery commits the
+    // first step's `step_created` and dies before its message goes out: the
+    // replay's World holds the log and no message.
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '0';
+    const { world: crashed, runId, start } = await setup(twoSteps, [1, 2]);
+    await crashed.deliver(start);
+    expect(types(crashed.events)).toEqual([
+      'run_created',
+      'run_started',
+      'step_created',
+    ]);
+    const replay = await replayWorldFor(twoSteps, crashed, runId);
+
+    await replay.deliver({
+      ...start,
+      deliveryCount: 1,
+      createdAt: new Date(Date.now() - ageMs),
+    });
+    // The re-send keeps the step's key, so a copy QuickJS's turbo pass sent
+    // alongside its refused `step_created` is the same queue message.
+    const sent = stepMessagesOf(replay);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(new Set(sent.map((c) => c.opts?.idempotencyKey)).size).toBe(1);
+    expect(
+      sent.some((c) => (c.message as { stepResent?: boolean }).stepResent)
+    ).toBe(true);
+    await replay.runUntilIdle();
+
+    expect(types(replay.events).filter((t) => t === 'run_completed')).toEqual([
+      'run_completed',
+    ]);
+    expect(await runResult(replay)).toBe(13);
+  });
+
   it('completes a resilient start (run_created never landed) under turbo', async () => {
     const { world, start } = await setup(
       twoSteps,
@@ -323,6 +590,32 @@ describe.each([
     expect(world.deliveries).toHaveLength(1);
     expect(types(world.events)).toEqual([
       'run_created',
+      'run_started',
+      'step_started',
+      'step_completed',
+      'step_started',
+      'step_completed',
+      'run_completed',
+    ]);
+    expect(bodies[0]?.listCalls).toBe(0);
+  });
+
+  it('completes a resilient start whose run_started the World recorded as the creation, under turbo', async () => {
+    // The World writes the creating `run_started` at the first slot, where
+    // turbo holds a `run_created` it built without loading the log: the two
+    // replay alike, and the write's `allocated` keeps the fence count right.
+    const { world, start } = await setup(
+      twoSteps,
+      [1, 2],
+      { creationOnStart: true },
+      false
+    );
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(world.deliveries).toHaveLength(1);
+    expect(types(world.events)).toEqual([
       'run_started',
       'step_started',
       'step_completed',
@@ -507,5 +800,161 @@ describe.each([
     expect(bodies).toHaveLength(1);
     expect(bodies[0]?.eventTypes).toContain('step_started');
     expect(world.events.at(-1)?.eventType).toBe('run_completed');
+  });
+});
+
+// The node engine only: QuickJS writes a suspension's creations through its
+// own path (`spec9/quickjs-entrypoint.ts`), which commits them first.
+describe('turbo fan-out on the node engine', () => {
+  beforeEach(() => {
+    currentEngine = 'node';
+  });
+
+  const BRANCHES = 8;
+  const SUM = BRANCHES * (BRANCHES - 1);
+
+  it("starts a fan-out's inline bodies before its creations commit, and its background steps only after", async () => {
+    // Hold the creation batch until an inline body has run: the body can
+    // only run first if it does not wait for its creation to commit.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+      // Without the early start the batch would wait for a body that
+      // waits for it: let it go, so that fails the assertions below.
+      setTimeout(resolve, 2_000).unref?.();
+    });
+    let stepMessagesAtFirstBody = -1;
+    const { world, start } = await setup(fanOut, [BRANCHES], {
+      fence: true,
+      async beforeCreate(data, _params, source) {
+        if (source?.batch && data.eventType === 'step_created') await held;
+      },
+    });
+    onBody = () => {
+      stepMessagesAtFirstBody = stepMessagesOf(world).length;
+      release();
+    };
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(SUM);
+    // The first body ran before any step's creation was durable, and before
+    // any background step's message went out.
+    expect(
+      bodies[0]?.eventTypes.filter((type) => type.startsWith('step_'))
+    ).toEqual([]);
+    expect(bodies[0]?.listCalls).toBe(0);
+    expect(stepMessagesAtFirstBody).toBe(0);
+    // Every branch ran once: 3 inline, the rest from their messages.
+    expect(bodies).toHaveLength(BRANCHES);
+    expect(stepMessagesOf(world)).toHaveLength(BRANCHES - 3);
+    // Every write still lands after run_started, in decision order.
+    const order = types(world.events);
+    expect(order.indexOf('run_started')).toBe(1);
+    expect(order.filter((t) => t === 'step_completed')).toHaveLength(BRANCHES);
+  });
+
+  it('commits a fan-out first when one of its inline steps allows no retries', async () => {
+    // The first branch takes an inline slot and must not run before its
+    // start is durable.
+    const mixed = `const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_once");
+      const branch = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_branch");
+      async function workflow(n) {
+        const out = await Promise.all([
+          once(0),
+          ...Array.from({ length: n }, (_, i) => branch(i)),
+        ]);
+        return out.reduce((a, b) => a + b, 0);
+      }${transform('workflow')}`;
+    // Hold the creation batch a while: an inline body that started ahead
+    // of it would run in the meantime.
+    let bodiesWhileHeld: number | undefined;
+    const { world, start } = await setup(mixed, [BRANCHES], {
+      fence: true,
+      async beforeCreate(data, _params, source) {
+        if (!source?.batch || data.eventType !== 'step_created') return;
+        if (bodiesWhileHeld !== undefined) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        bodiesWhileHeld = bodies.length;
+      },
+    });
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(1 + SUM);
+    expect(bodies).toHaveLength(BRANCHES + 1);
+    // No body ran before the boundary's creations were durable.
+    expect(bodiesWhileHeld).toBe(0);
+  });
+
+  it('commits a fan-out first under WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    const { world, start } = await setup(fanOut, [BRANCHES]);
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(SUM);
+    expect(bodies[0]?.eventTypes).toContain('step_started');
+    expect(bodies[0]?.eventTypes).toContain('step_created');
+  });
+
+  it('redelivers and completes when the creation batch an inline body started ahead of fails', async () => {
+    let refused = false;
+    const { world, start } = await setup(fanOut, [BRANCHES], {
+      fence: true,
+      beforeCreate(data, _params, source) {
+        if (source?.batch && data.eventType === 'step_created' && !refused) {
+          refused = true;
+          throw Object.assign(new Error('unavailable'), { status: 503 });
+        }
+      },
+    });
+
+    // The failed batch fails the delivery once its bodies settled; the
+    // queue redelivers it, and the redelivery decides from the log.
+    await expect(world.deliver(start)).rejects.toThrow('unavailable');
+    await world.runUntilIdle();
+
+    expect(refused).toBe(true);
+    expect(world.deliveries[1]?.deliveryCount).toBe(2);
+    expect(await runResult(world)).toBe(SUM);
+    // Each branch completed exactly once in the log, whatever ran twice.
+    const completed = world.events.filter(
+      (e) => e.eventType === 'step_completed'
+    );
+    expect(new Set(completed.map((e) => e.correlationId)).size).toBe(BRANCHES);
+    expect(completed).toHaveLength(BRANCHES);
+  });
+});
+
+describe('a run raised to spec 10 by its run_started', () => {
+  const rateLimited = `const rateLimit = globalThis[Symbol.for("WORKFLOW_RATE_LIMIT")];
+  async function workflow() {
+    await rateLimit({ key: "raised", limit: 1, period: "1s" });
+    return "done";
+  }${transform('workflow')}`;
+
+  it('lets the first delivery call experimental_rateLimit()', async () => {
+    // A caller that mints spec 9 starts the run; this deployment mints 10,
+    // so the World raises the run when its run_started is written. The
+    // first delivery runs ahead of that response.
+    const { world, start } = await setup(rateLimited, [], {
+      fence: true,
+      beforeCreate(data) {
+        if (data.eventType === 'run_started') {
+          (currentWorld as unknown as { run: WorkflowRun }).run.specVersion =
+            SPEC_VERSION_RATE_LIMITS;
+        }
+      },
+    });
+    await world.deliver(start);
+    await world.runUntilIdle();
+    const failed = world.events.find((e) => e.eventType === 'run_failed');
+    expect(failed).toBeUndefined();
+    expect(types(world.events)).toContain('run_completed');
+    expect(await runResult(world)).toBe('done');
   });
 });

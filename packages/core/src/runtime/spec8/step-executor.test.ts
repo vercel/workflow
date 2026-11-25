@@ -14,13 +14,17 @@ import {
   hydrateStepError,
 } from '../../serialization.js';
 import { contextStorage } from '../../step/context-storage.js';
+import {
+  getStepMetadata,
+  type StepMetadata,
+} from '../../step/get-step-metadata.js';
 import { getWritable } from '../../step/writable-stream.js';
 import {
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../../symbols.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
   unserializableStepInputPlaceholder,
@@ -800,6 +804,50 @@ describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
   });
 });
 
+describe('executeStep — step metadata', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it.each([
+    [undefined, 4],
+    [2, 3],
+    [0, 1],
+  ])('exposes maxAttempts for maxRetries %s as %s', async (maxRetries, maxAttempts) => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    let metadata: StepMetadata | undefined;
+    registerStepFunction(
+      stepName,
+      Object.assign(
+        async () => {
+          metadata = getStepMetadata();
+        },
+        { maxRetries }
+      )
+    );
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(metadata).toMatchObject({ attempt: 1, maxAttempts });
+  });
+});
+
 describe('executeStep — compute instance stamping', () => {
   afterEach(() => {
     counter += 1;
@@ -834,7 +882,7 @@ describe('executeStep — compute instance stamping', () => {
     expect(started).toHaveLength(1);
     expect(started[0]?.[2]).toMatchObject({
       requestId: 'req_step_executor',
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
     // An executor write names no log position: it has no log to merge a
     // skipped-slot report into, so it must not ask the World to read one.
@@ -871,7 +919,7 @@ describe('executeStep — compute instance stamping', () => {
     );
     expect(started?.[2]).toMatchObject({
       requestId: 'req_unregistered',
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
   });
 
@@ -924,7 +972,7 @@ describe('executeStep — compute instance stamping', () => {
       ([, data]) => data.eventType === 'step_started'
     );
     expect(started?.[2]).toMatchObject({
-      computeInstanceId: COMPUTE_INSTANCE_ID,
+      computeInstanceId: getComputeInstanceId(),
     });
     expect(started?.[2]?.requestId).toBeUndefined();
   });

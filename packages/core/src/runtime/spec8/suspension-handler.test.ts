@@ -22,7 +22,7 @@ import {
   hydrateStepError,
 } from '../../serialization.js';
 import { runWorkflow } from '../../workflow.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from '../helpers.js';
 import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from '../hook-wake.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
@@ -280,6 +280,68 @@ describe('handleSuspension', () => {
       expect.anything()
     );
     expect([...result.createdStepCorrelationIds]).toEqual(['s4']);
+  });
+
+  it('leaves inline slots held by steps still running from an earlier pass, beside an awaited hook', async () => {
+    // Two steps of this delivery are still running inline (early advance),
+    // so of the default three slots one is free: the first new step is
+    // deferred for the pass after the hook registration, and the other two
+    // are created and queued alongside the hook.
+    const eventsCreate = vi.fn(
+      async (_runId: string, request: { eventType: string }) => ({
+        event: { eventType: request.eventType },
+      })
+    );
+    const world = createWorld(eventsCreate);
+    const pending = new Map<string, QueueItem>([
+      [
+        'running1',
+        {
+          type: 'step',
+          correlationId: 'running1',
+          stepName: 'running1',
+          args: [],
+        },
+      ],
+      ...['s1', 's2', 's3'].map(
+        (id) =>
+          [id, { type: 'step', correlationId: id, stepName: id, args: [] }] as [
+            string,
+            QueueItem,
+          ]
+      ),
+      [
+        'hook_awaited',
+        {
+          type: 'hook',
+          correlationId: 'hook_awaited',
+          token: 'claim-token',
+          hasConflictAwaiter: true,
+        },
+      ],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+      inFlightStepCorrelationIds: new Set(['running1', 'running2']),
+    });
+
+    expect(result.hasAwaitedHookCreation).toBe(true);
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual(['s1']);
+    expect(result.inlineSlotsHeldBack).toBe(2);
+    expect([...result.createdStepCorrelationIds].sort()).toEqual(['s2', 's3']);
+    // The running step is left to the execution that owns it.
+    expect(result.pendingSteps.map((s) => s.correlationId)).not.toContain(
+      'running1'
+    );
+    expect(
+      eventsCreate.mock.calls.filter(
+        ([, request]) =>
+          (request as { correlationId?: string }).correlationId === 'running1'
+      )
+    ).toEqual([]);
   });
 
   it('neither re-creates nor inlines a replayed step whose log holds only its step_started', async () => {
@@ -2057,9 +2119,6 @@ describe('handleSuspension batched fan-out', () => {
   }
 
   beforeEach(() => {
-    // No WORKFLOW_BATCH_TRANSITIONS stub: the fold is DEFAULT ON, so these
-    // tests exercising it with an unset env prove the default engages. The
-    // kill switch has its own test below.
     // Cap lazy-inline deferral at 1 so only the first step defers its
     // step_created and the rest take the eager path where the fold engages;
     // the cap interaction has its own test below.
@@ -2155,28 +2214,6 @@ describe('handleSuspension batched fan-out', () => {
         run: slotRun,
       })
     ).rejects.toMatchObject({ status: 410 });
-  });
-
-  it('keeps the single path when the kill switch disables batching', async () => {
-    vi.stubEnv('WORKFLOW_BATCH_TRANSITIONS', '0');
-    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
-      event,
-    }));
-    const createBatch = successfulCreateBatch();
-    const world = createBatchWorld(eventsCreate, createBatch);
-
-    await handleSuspension({
-      suspension: new WorkflowSuspension(
-        stepsAndWait(['s1', 's2'], 'w1'),
-        globalThis
-      ),
-      world,
-      run: slotRun,
-    });
-
-    expect(createBatch).not.toHaveBeenCalled();
-    // s1 defers; s2's eager create + the wait go out as single writes.
-    expect(eventsCreate).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the single path when the World lacks createBatch', async () => {
@@ -2631,7 +2668,7 @@ describe('handleSuspension batched fan-out', () => {
       expect(s1Created.eventData.input).toBeDefined();
       expect(s1Started.eventData.input).toBeUndefined();
       expect(s1Started.eventData.ownerMessageId).toBe('msg_owner_1');
-      expect(events[1].computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
+      expect(events[1].computeInstanceId).toBe(getComputeInstanceId());
       expect(events[0].computeInstanceId).toBeUndefined();
       // Claims: both inline steps owned, running attempt 1, input attached
       // (batch responses return refs lazily — the body hydrates local bytes).
