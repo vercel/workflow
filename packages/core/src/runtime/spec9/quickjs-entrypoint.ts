@@ -3112,11 +3112,14 @@ async function runQuickJSDelivery(
         );
       }
       // Hand off before the function's deadline, as the node engine does: a
-      // turn that begins past it starts nothing more, the bodies still
-      // running settle, and the next delivery continues from the log.
+      // turn that begins past it starts nothing more, and the next delivery
+      // continues from the log. Not while an inline body is in flight: this
+      // delivery cannot end before the body does, so the handoff would only
+      // stop the run from reacting to events until then.
       if (
         params.inlineDeadlineMs !== undefined &&
-        Date.now() >= params.inlineDeadlineMs
+        Date.now() >= params.inlineDeadlineMs &&
+        inFlightInline.size === 0
       ) {
         deadlineReached = true;
         wfdiag('inline_iteration', {

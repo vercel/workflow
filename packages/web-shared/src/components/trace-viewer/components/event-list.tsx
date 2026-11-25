@@ -1,7 +1,12 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
+import {
+  TOOLTIP_DELAY_MS,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '../../ui/tooltip';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -74,7 +79,7 @@ export function ResourceIcon({
     label,
   } = getEventStyle(resource, isErrored, isCancelled);
   return (
-    <Tooltip delayDuration={500}>
+    <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
       <TooltipTrigger asChild>
         <span className={cn('shrink-0', className)}>
           <Icon className="w-4 h-4" />
