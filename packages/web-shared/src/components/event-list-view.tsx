@@ -362,6 +362,7 @@ function EventListViewInner({
                       <EventRow
                         row={row}
                         index={item.index}
+                        sincePreviousMs={item.sincePreviousMs}
                         isSelected={isSelected}
                         isTabStop={
                           selectedIndex === -1 ? item.index === 0 : isSelected
@@ -492,7 +493,7 @@ function RelatedHint({
 
 export function EventListView(props: EventsListProps) {
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider>
       <ContextCardProvider>
         <EventListViewInner {...props} />
       </ContextCardProvider>

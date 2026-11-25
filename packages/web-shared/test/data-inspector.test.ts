@@ -59,7 +59,6 @@ function render(data: unknown, expandLevel = 1): string {
 
 function visibleText(markup: string): string {
   return markup
-    .replace(/<style[\s\S]*?<\/style>/g, '')
     .replace(/<[^>]+>/g, '')
     .replace(/&quot;/g, '"')
     .replace(/&lt;/g, '<')

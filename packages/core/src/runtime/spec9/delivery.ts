@@ -3522,8 +3522,13 @@ async function runDelivery(
         }
 
         // Hand off before the function's deadline: the next
-        // delivery continues from the log.
-        if (Date.now() >= inlineDeadlineMs) {
+        // delivery continues from the log. Not while an inline
+        // step is in flight: this delivery cannot end before the
+        // step does (the drain below waits for it), so the
+        // handoff would only stop the run from reacting to events
+        // until then. The handoff comes at the first pass with
+        // nothing in flight.
+        if (Date.now() >= inlineDeadlineMs && inFlight.size === 0) {
           runtimeLogger.info(
             'Invocation deadline reached, handing the run to the next delivery',
             {
