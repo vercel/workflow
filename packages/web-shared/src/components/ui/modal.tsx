@@ -15,8 +15,6 @@ function ModalContent({
   onCloseAutoFocus,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Content>) {
-  // Radix returns focus to its Trigger, and a modal opened through `open`
-  // has none, so return it to whatever had focus when the modal opened.
   const openerRef = useRef<HTMLElement | null>(null);
   return (
     <DialogPrimitive.Portal>
@@ -30,13 +28,13 @@ function ModalContent({
         )}
         onKeyDown={(e) => {
           onKeyDown?.(e);
-          // Page-level shortcuts listen on window; keep keys typed in the
-          // modal from reaching them. Radix handles Escape and Tab before this.
           e.stopPropagation();
         }}
         onFocusCapture={(e) => {
-          // A child's autoFocus can run before Radix's open autofocus event.
-          if (!openerRef.current && !e.currentTarget.contains(e.relatedTarget)) {
+          if (
+            !openerRef.current &&
+            !e.currentTarget.contains(e.relatedTarget)
+          ) {
             openerRef.current =
               e.relatedTarget instanceof HTMLElement ? e.relatedTarget : null;
           }
