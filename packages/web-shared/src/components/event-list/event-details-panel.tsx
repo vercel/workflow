@@ -9,7 +9,7 @@ import {
   hasEncryptedValues,
   type TimingSegment,
 } from '../../lib/event-list-model';
-import { parseDate } from '../../lib/time';
+import { formatTimestamp, parseDate } from '../../lib/time';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -30,6 +30,7 @@ import {
 } from '../ui/error-stack-block';
 import { IconButton } from '../ui/icon-button';
 import { Skeleton } from '../ui/skeleton';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 /**
@@ -329,12 +330,20 @@ function EventDetailsBody({
           ) : null}
           <DetailMonoKeyValueRow
             label="Created"
-            value={createdAt.toLocaleString()}
+            value={
+              <TimestampTooltip date={createdAt}>
+                <span>{formatTimestamp(createdAt)}</span>
+              </TimestampTooltip>
+            }
           />
           {occurredAt ? (
             <DetailMonoKeyValueRow
               label="Occurred"
-              value={occurredAt.toLocaleString()}
+              value={
+                <TimestampTooltip date={occurredAt}>
+                  <span>{formatTimestamp(occurredAt)}</span>
+                </TimestampTooltip>
+              }
             />
           ) : null}
         </div>

@@ -16,33 +16,12 @@ import { DUPLICATE_EVENT_MESSAGE } from './duplicate-events';
 import type { ExactWorkflowSearchId } from './exact-event-search-id';
 import { isEncryptedMarker } from './hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from './sealed-events';
-import { getEventDate, parseDate } from './time';
+import { formatTimestamp, getEventDate, parseDate } from './time';
 import { formatDurationPrecise } from './utils';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Time
 // ──────────────────────────────────────────────────────────────────────────
-
-const pad = (n: number, width = 2) => n.toString().padStart(width, '0');
-
-/** Timestamp parts: dimmed `NOV 06`, clock, dimmed `.123`. */
-export function formatTimestampParts(date: Date): {
-  day: string;
-  clock: string;
-  ms: string;
-} {
-  const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase();
-  return {
-    day: `${month} ${pad(date.getDate())}`,
-    clock: `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
-    ms: `.${pad(date.getMilliseconds(), 3)}`,
-  };
-}
-
-function formatClock(value: unknown): string | null {
-  const date = parseDate(value);
-  return date ? formatTimestampParts(date).clock : null;
-}
 
 export function formatElapsed(ms: number): string {
   return ms <= 0 ? '0ms' : `+${formatDurationPrecise(ms)}`;
@@ -371,9 +350,9 @@ function getEventMessage(event: Event, queuedMs?: number): string {
       if (attempt && attempt > 1) return `attempt ${attempt}`;
       return queuedMs ? `queued ${formatDurationPrecise(queuedMs)}` : '';
     case 'step_retrying': {
-      const retryAt = formatClock(data.retryAfter);
+      const retryAt = parseDate(data.retryAfter);
       const head = attempt ? `attempt ${attempt} failed` : 'attempt failed';
-      return retryAt ? `${head} · retry at ${retryAt}` : head;
+      return retryAt ? `${head} · retry at ${formatTimestamp(retryAt)}` : head;
     }
     case 'step_failed':
       return attempt ? `failed on attempt ${attempt}` : 'failed';
@@ -382,8 +361,8 @@ function getEventMessage(event: Event, queuedMs?: number): string {
     case 'run_cancelled':
       return typeof data.cancelReason === 'string' ? data.cancelReason : '';
     case 'wait_created': {
-      const resumeAt = formatClock(data.resumeAt);
-      return resumeAt ? `resumes at ${resumeAt}` : '';
+      const resumeAt = parseDate(data.resumeAt);
+      return resumeAt ? `resumes at ${formatTimestamp(resumeAt)}` : '';
     }
     case 'hook_created':
       return data.isWebhook ? 'webhook' : '';

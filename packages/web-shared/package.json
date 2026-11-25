@@ -47,7 +47,6 @@
     "@workflow/world": "workspace:*",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "date-fns": "4.4.0",
     "lucide-react": "0.575.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",

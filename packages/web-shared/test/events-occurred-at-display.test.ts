@@ -43,12 +43,12 @@ function renderEventsTabRow(
 
 /**
  * Every timestamp a row shows, in column order. Each is rendered as day,
- * clock and milliseconds in separate elements.
+ * clock and fraction in separate elements.
  */
 function timestampsIn(markup: string): string[] {
   return [
     ...markup.matchAll(
-      /<span[^>]*>([A-Z]{3} \d{2} )<\/span>(\d{2}:\d{2}:\d{2})<span[^>]*>(\.\d{3})<\/span>/g
+      /<span[^>]*>([A-Z][a-z]{2} \d{2} )<\/span>(\d{2}:\d{2}:\d{2})<span[^>]*>(\.\d{2})<\/span>/g
     ),
   ].map(([, day, clock, ms]) => `${day}${clock}${ms}`);
 }
@@ -143,7 +143,7 @@ describe('event occurredAt display', () => {
   it('uses occurrence time as the created timestamp in each Events tab row by default', () => {
     const markup = renderEventsTabRow(eventsTabEvent);
 
-    expect(timestampsIn(markup)).toEqual(['MAR 16 12:34:56.789']);
+    expect(timestampsIn(markup)).toEqual(['Mar 16 12:34:56.78']);
   });
 
   it('shows separate occurrence and created times in each Events tab row when enabled', () => {
@@ -152,8 +152,8 @@ describe('event occurredAt display', () => {
     });
 
     expect(timestampsIn(markup)).toEqual([
-      'MAR 16 12:34:56.789',
-      'MAR 16 12:34:57.123',
+      'Mar 16 12:34:56.78',
+      'Mar 16 12:34:57.12',
     ]);
   });
 

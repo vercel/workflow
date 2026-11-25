@@ -42,6 +42,7 @@ import {
 } from '../../lib/stream-display';
 import { Button } from './button';
 import styles from './data-inspector.module.css';
+import { TimestampTooltip } from './timestamp-tooltip';
 
 // ---------------------------------------------------------------------------
 // Decoded byte display (built by `collapseRefs`, rendered by `DataRender`)
@@ -692,7 +693,9 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
   if (value instanceof Date) {
     return (
       <LeafRow field={field} isLast={isLast}>
-        <span className={styles.date}>{value.toISOString()}</span>
+        <TimestampTooltip date={value}>
+          <span className={styles.date}>{value.toISOString()}</span>
+        </TimestampTooltip>
       </LeafRow>
     );
   }
