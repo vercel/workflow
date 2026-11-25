@@ -267,7 +267,7 @@ describe('computeTimeMarkers', () => {
 
   it('keeps clean whole-second labels when the step is >=1s', () => {
     const labels = computeTimeMarkers(10_000, 0).map((m) => m.label);
-    expect(labels).toEqual(['0ms', '2s', '4s', '6s', '8s', '10s']);
+    expect(labels).toEqual(['0s', '2s', '4s', '6s', '8s', '10s']);
   });
 
   it('still reads in ms when super zoomed in', () => {
@@ -286,13 +286,13 @@ describe('computeTimeMarkers', () => {
   it('steps long windows by round units of time', () => {
     const DAY = 24 * 60 * 60 * 1000;
     expect(computeTimeMarkers(7 * DAY, 0).map((m) => m.label)).toEqual([
-      '0ms',
+      '0s',
       '2d',
       '4d',
       '6d',
     ]);
     expect(computeTimeMarkers(DAY / 16, 0).map((m) => m.label)).toEqual([
-      '0ms',
+      '0s',
       '15m',
       '30m',
       '45m',

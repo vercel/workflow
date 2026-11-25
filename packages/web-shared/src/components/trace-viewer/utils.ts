@@ -152,7 +152,10 @@ export function computeTimeMarkers(
     if (position < -0.01 || position > 1.01) continue;
     markers.push({
       position: Math.min(Math.max(position, 0), 1),
-      label: formatDuration(Math.abs(t), fractionDigits),
+      label:
+        t === 0 && interval >= MS_IN_SECOND
+          ? '0s'
+          : formatDuration(Math.abs(t), fractionDigits),
       value: t,
     });
     if (markers.length >= MAX_MARKERS) break;
