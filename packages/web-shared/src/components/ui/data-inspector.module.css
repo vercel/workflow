@@ -21,7 +21,6 @@
   margin: 0;
   padding: 0 0 0 2ch;
 }
-/* Highlight only the innermost hovered row, and not rows that hold siblings. */
 .child:hover:not(:has(.child:hover)):not(:has(.child ~ .child)) {
   background-color: var(--ds-gray-alpha-100);
   border-radius: 4px;
