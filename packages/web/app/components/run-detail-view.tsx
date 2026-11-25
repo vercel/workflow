@@ -1,6 +1,7 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { FetchSpanDetail } from '@workflow/web-shared';
 import {
+  ContextCardProvider,
   DecryptButton,
   ErrorBoundary,
   type SidebarDataContextValue,
@@ -68,7 +69,6 @@ import {
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
 import type { RunUsageOutletContext } from '~/routes/run-usage';
-import { CopyableText } from './display-utils/copyable-text';
 import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
@@ -615,7 +615,7 @@ export function RunDetailView({
           </Breadcrumb>
 
           {/* Run Overview Header */}
-          <div className="space-y-4 p-6 border rounded-lg">
+          <div className="space-y-4">
             {/* Title Row: the actions wrap below the name on narrow screens */}
             <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
               <div className="mb-4">
@@ -649,127 +649,123 @@ export function RunDetailView({
               </div>
             </div>
 
-            {/* Status and Timeline Row: wraps on narrow screens */}
-            <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
-              <div className="flex flex-col gap-1 min-w-[76px]">
-                <div className="text-xs text-muted-foreground">Status</div>
-                {run.status ? (
-                  <StatusBadge
-                    status={run.status}
-                    context={{ error: run.error, cancelReason }}
-                  />
-                ) : (
-                  <Skeleton className="h-4" />
-                )}
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="text-xs text-muted-foreground">Duration</div>
-                <div className="text-xs">
-                  {run.runId ? (
-                    run.startedAt ? (
-                      (() => {
-                        const ms =
-                          (run.completedAt
-                            ? new Date(run.completedAt).getTime()
-                            : Date.now()) - new Date(run.startedAt).getTime();
-                        const seconds = Math.floor(ms / 1000);
-                        if (seconds < 60) return `${seconds}s`;
-                        const minutes = Math.floor(seconds / 60);
-                        const remainingSeconds = seconds % 60;
-                        if (minutes < 60) {
-                          return remainingSeconds > 0
-                            ? `${minutes}m ${remainingSeconds}s`
-                            : `${minutes}m`;
-                        }
-                        const hours = Math.floor(minutes / 60);
-                        const remainingMinutes = minutes % 60;
-                        return remainingMinutes > 0
-                          ? `${hours}h ${remainingMinutes}m`
-                          : `${hours}h`;
-                      })()
-                    ) : (
-                      '-'
-                    )
+            {/* Status and Timeline Row: wraps on narrow screens. One card
+                provider, so the timestamps' card moves between them. */}
+            <ContextCardProvider>
+              <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
+                <div className="flex flex-col gap-1 min-w-[76px]">
+                  <div className="text-xs text-muted-foreground">Status</div>
+                  {run.status ? (
+                    <StatusBadge
+                      status={run.status}
+                      context={{ error: run.error, cancelReason }}
+                    />
                   ) : (
                     <Skeleton className="h-4" />
                   )}
                 </div>
-              </div>
-              <div className="flex flex-col gap-1">
-                <div className="text-xs text-muted-foreground">Run ID</div>
-                <CopyableText text={runId}>
-                  <div className="text-xs mt-0.5 font-mono">{runId}</div>
-                </CopyableText>
-              </div>
-              <div className="flex flex-col gap-1 min-w-[104px]">
-                <div className="text-xs text-muted-foreground">Queued</div>
-                {run.createdAt ? (
-                  <div className="text-xs">
-                    <RelativeTime date={run.createdAt} />
-                  </div>
-                ) : (
-                  <Skeleton className="h-4" />
-                )}
-              </div>
-              <div className="flex flex-col gap-1 min-w-[104px]">
-                <div className="text-xs text-muted-foreground">Started</div>
-                <div className="text-xs">
-                  {run.runId ? (
-                    run.startedAt ? (
-                      <RelativeTime date={run.startedAt} />
-                    ) : (
-                      '-'
-                    )
-                  ) : (
-                    <Skeleton className="h-4" />
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-col gap-1 min-w-[104px]">
-                <div className="text-xs text-muted-foreground">Completed</div>
-                <div className="text-xs">
-                  {run.runId ? (
-                    run.completedAt ? (
-                      <RelativeTime date={run.completedAt} />
-                    ) : (
-                      '-'
-                    )
-                  ) : (
-                    <Skeleton className="h-4" />
-                  )}
-                </div>
-              </div>
-              {showUsage && (
-                <RunUsageHeaderStats
-                  runId={runId}
-                  usage={runUsage ?? undefined}
-                  error={runUsageError}
-                  isLocalBackend={isLocalBackend}
-                  onUsagePage={usagePage != null}
-                />
-              )}
-              {run.expiredAt != null && (
                 <div className="flex flex-col gap-1">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="text-xs text-muted-foreground cursor-help flex items-center gap-1">
-                        Expired
-                        <HelpCircle className="w-3 h-3" />
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>
-                        The storage data for this run has expired and is no
-                        longer available.
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
+                  <div className="text-xs text-muted-foreground">Duration</div>
                   <div className="text-xs">
-                    <RelativeTime date={run.expiredAt} />
+                    {run.runId ? (
+                      run.startedAt ? (
+                        (() => {
+                          const ms =
+                            (run.completedAt
+                              ? new Date(run.completedAt).getTime()
+                              : Date.now()) - new Date(run.startedAt).getTime();
+                          const seconds = Math.floor(ms / 1000);
+                          if (seconds < 60) return `${seconds}s`;
+                          const minutes = Math.floor(seconds / 60);
+                          const remainingSeconds = seconds % 60;
+                          if (minutes < 60) {
+                            return remainingSeconds > 0
+                              ? `${minutes}m ${remainingSeconds}s`
+                              : `${minutes}m`;
+                          }
+                          const hours = Math.floor(minutes / 60);
+                          const remainingMinutes = minutes % 60;
+                          return remainingMinutes > 0
+                            ? `${hours}h ${remainingMinutes}m`
+                            : `${hours}h`;
+                        })()
+                      ) : (
+                        '-'
+                      )
+                    ) : (
+                      <Skeleton className="h-4" />
+                    )}
                   </div>
                 </div>
-              )}
-            </div>
+                <div className="flex flex-col gap-1 min-w-[104px]">
+                  <div className="text-xs text-muted-foreground">Queued</div>
+                  {run.createdAt ? (
+                    <div className="text-xs">
+                      <RelativeTime date={run.createdAt} hover="card" />
+                    </div>
+                  ) : (
+                    <Skeleton className="h-4" />
+                  )}
+                </div>
+                <div className="flex flex-col gap-1 min-w-[104px]">
+                  <div className="text-xs text-muted-foreground">Started</div>
+                  <div className="text-xs">
+                    {run.runId ? (
+                      run.startedAt ? (
+                        <RelativeTime date={run.startedAt} hover="card" />
+                      ) : (
+                        '-'
+                      )
+                    ) : (
+                      <Skeleton className="h-4" />
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1 min-w-[104px]">
+                  <div className="text-xs text-muted-foreground">Completed</div>
+                  <div className="text-xs">
+                    {run.runId ? (
+                      run.completedAt ? (
+                        <RelativeTime date={run.completedAt} hover="card" />
+                      ) : (
+                        '-'
+                      )
+                    ) : (
+                      <Skeleton className="h-4" />
+                    )}
+                  </div>
+                </div>
+                {showUsage && (
+                  <RunUsageHeaderStats
+                    runId={runId}
+                    usage={runUsage ?? undefined}
+                    error={runUsageError}
+                    onUsagePage={usagePage != null}
+                  />
+                )}
+                {run.expiredAt != null && (
+                  <div className="flex flex-col gap-1">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="text-xs text-muted-foreground cursor-help flex items-center gap-1">
+                          Expired
+                          <HelpCircle className="w-3 h-3" />
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>
+                          The storage data for this run has expired and is no
+                          longer available.
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
+                    <div className="text-xs">
+                      <RelativeTime date={run.expiredAt} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </ContextCardProvider>
           </div>
           <RunLimitGuidanceAlert run={runData} />
         </div>

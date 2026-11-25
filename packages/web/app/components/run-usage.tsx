@@ -29,7 +29,6 @@ import {
   AlertCircle,
   ArrowUpRight,
   ChevronRight,
-  HelpCircle,
   RotateCw,
 } from 'lucide-react';
 import {
@@ -224,18 +223,8 @@ export function usageVisible(
 /** What the header shows in place of a number the read did not return. */
 const UNAVAILABLE = '—';
 
-/**
- * `Storage (local)` on a run that is not billed, `Storage` on one that is.
- * Before the first read answers, the backend decides: only the Local World
- * shows the field then.
- */
-export function dataWrittenLabel(
-  usage: RunUsage | undefined,
-  isLocalBackend: boolean
-): string {
-  if (usage) return formatDataWrittenHeading(usage);
-  return isLocalBackend ? 'Storage (local)' : 'Storage';
-}
+/** What the run header calls the run's storage figure. */
+const HEADER_STORAGE_LABEL = 'Storage';
 
 const failedMessage = (error: Error) =>
   `Failed to read this run’s usage: ${error.message}`;
@@ -280,98 +269,73 @@ function HeaderFigure({
 }
 
 /**
- * The run header's Events and Storage figures, from the World's count
- * of the whole run (not the events this page has loaded). Both open the
- * run's Usage page. Until the first read answers they are placeholders; if
- * it failed, they say so (the error is in the tooltip and, in full, on the
- * Usage page) instead of loading forever.
+ * The run header's Storage figure, from the World's count of the whole run
+ * (not the events this page has loaded). It opens the run's Usage page.
+ * Until the first read answers it is a placeholder; if it failed, it says so
+ * (the error is in the tooltip and, in full, on the Usage page) instead of
+ * loading forever. On a local run, the label's tooltip says what it counts.
  */
 export function RunUsageHeaderStats({
   runId,
   usage,
   error,
-  isLocalBackend,
   onUsagePage = false,
 }: {
   runId: string;
   usage: RunUsage | undefined;
   error: Error | null;
-  isLocalBackend: boolean;
-  /** On the Usage page the figures are text, not links to it. */
+  /** On the Usage page the figure is text, not a link to it. */
   onUsagePage?: boolean;
 }) {
   const failed = !usage && error !== null;
   const failedTitle = failed ? failedMessage(error) : undefined;
   const localNote = usage ? formatLocalDataWrittenNote(usage) : null;
-  const to = runUsagePath(runId);
-  const label = dataWrittenLabel(usage, isLocalBackend);
-  const events = usage ? usage.events.toLocaleString('en-US') : UNAVAILABLE;
+  const label = HEADER_STORAGE_LABEL;
   const bytes = usage ? formatUsageBytes(usage.dataWritten.bytes) : UNAVAILABLE;
   return (
-    <>
-      <div className="flex flex-col gap-1">
-        <div className="text-xs text-muted-foreground">Events</div>
-        {usage || failed ? (
-          <HeaderFigure
-            to={to}
-            onUsagePage={onUsagePage}
-            label={
-              usage
-                ? `${formatCount(usage.events, 'event', 'events')}, open usage`
-                : 'Events unavailable, open usage'
-            }
-            title={failedTitle}
-            testId="run-usage-events"
-          >
-            {events}
-          </HeaderFigure>
+    <div className="flex flex-col gap-1">
+      <div
+        className="text-xs text-muted-foreground"
+        data-testid="run-usage-data-label"
+      >
+        {localNote ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <NewTabLink
+                href={STORAGE_DOCS_URL}
+                className="rounded-sm underline decoration-dotted underline-offset-2 hover:text-gray-1000 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
+                label={`How ${label} is counted`}
+                testId="run-usage-data-help"
+              >
+                {label}
+              </NewTabLink>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              <p>{localNote}</p>
+            </TooltipContent>
+          </Tooltip>
         ) : (
-          <Skeleton className="w-[40px] h-[20px]" />
+          label
         )}
       </div>
-      <div className="flex flex-col gap-1">
-        <div
-          className="text-xs text-muted-foreground flex items-center gap-1"
-          data-testid="run-usage-data-label"
+      {usage || failed ? (
+        <HeaderFigure
+          to={runUsagePath(runId)}
+          onUsagePage={onUsagePage}
+          label={
+            usage
+              ? `${bytes} ${label.toLowerCase()}, open usage`
+              : `${label} unavailable, open usage`
+          }
+          title={failedTitle}
+          testId="run-usage-data-written"
         >
-          {label}
-          {localNote && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <NewTabLink
-                  href={STORAGE_DOCS_URL}
-                  className="-m-1.5 inline-flex rounded-sm p-1.5 text-muted-foreground hover:text-gray-1000 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
-                  label={`How ${label} is counted`}
-                  testId="run-usage-data-help"
-                >
-                  <HelpCircle className="w-3 h-3" aria-hidden="true" />
-                </NewTabLink>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-xs">
-                <p>{localNote}</p>
-              </TooltipContent>
-            </Tooltip>
-          )}
-        </div>
-        {usage || failed ? (
-          <HeaderFigure
-            to={to}
-            onUsagePage={onUsagePage}
-            label={
-              usage
-                ? `${bytes} ${label.toLowerCase()}, open usage`
-                : `${label} unavailable, open usage`
-            }
-            title={failedTitle}
-            testId="run-usage-data-written"
-          >
-            {bytes}
-          </HeaderFigure>
-        ) : (
-          <Skeleton className="w-[50px] h-[20px]" />
-        )}
-      </div>
-    </>
+          {bytes}
+        </HeaderFigure>
+      ) : (
+        <Skeleton className="w-[50px] h-[20px]" />
+      )}
+    </div>
   );
 }
 
