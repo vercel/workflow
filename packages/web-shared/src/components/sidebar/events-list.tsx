@@ -153,7 +153,7 @@ function EventItem({
         <div className="flex w-full items-center justify-between gap-3">
           <EventNoticeTooltip notice={rowNotice}>
             <span
-              className={`text-label-12 font-mono ${
+              className={`text-label-12-mono ${
                 rowNotice ? 'text-gray-700' : 'text-gray-1000'
               }`}
             >
@@ -172,7 +172,7 @@ function EventItem({
             <div className="flex items-center justify-between gap-2 py-2 px-3">
               <span className="text-label-12 text-gray-900">Occurred</span>
               <TimestampTooltip date={occurredAt}>
-                <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+                <span className="max-w-[70%] truncate text-right text-label-12-mono">
                   {formatEventTimestamp(occurredAt)}
                 </span>
               </TimestampTooltip>
@@ -180,7 +180,7 @@ function EventItem({
           )}
           <div className="flex items-center justify-between gap-2 py-2 px-3">
             <span className="text-label-12 text-gray-900">Event ID</span>
-            <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+            <span className="max-w-[70%] truncate text-right text-label-12-mono">
               {event.eventId}
             </span>
           </div>
@@ -189,7 +189,7 @@ function EventItem({
               <span className="text-label-12 text-gray-900">
                 Correlation ID
               </span>
-              <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+              <span className="max-w-[70%] truncate text-right text-label-12-mono">
                 {event.correlationId}
               </span>
             </div>
