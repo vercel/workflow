@@ -259,6 +259,27 @@ const assertNoSetupLines = async (path) => {
   }
 };
 
+/**
+ * `<Spec8Note>` is expanded into a callout with a fixed lead at build time
+ * (lib/remark-spec8-note.ts). A page that uses it must show the lead and no
+ * raw tag, in its HTML and its markdown export.
+ */
+const assertSpec8NotesExpanded = async (path) => {
+  for (const url of [path, `${path}.md`]) {
+    const res = await fetchWithTrustedSources(`${BASE_URL}${url}`);
+    if (!res.ok) {
+      throw new Error(`${url} returned ${res.status}`);
+    }
+    const body = await res.text();
+    if (body.includes('Spec8Note')) {
+      throw new Error(`${url} renders a raw <Spec8Note> tag`);
+    }
+    if (!body.includes('For runs started before v5.8.0')) {
+      throw new Error(`${url} is missing the <Spec8Note> lead`);
+    }
+  }
+};
+
 const checks = [
   {
     name: 'Deployment protection',
@@ -303,6 +324,10 @@ const checks = [
   {
     name: 'No @setup lines - cookbook rate limiting',
     run: () => assertNoSetupLines('/cookbook/common-patterns/rate-limiting'),
+  },
+  {
+    name: 'Spec 8 notes expanded - runtime tuning',
+    run: () => assertSpec8NotesExpanded('/docs/configuration/runtime-tuning'),
   },
   {
     name: 'HTML meta - worlds index',

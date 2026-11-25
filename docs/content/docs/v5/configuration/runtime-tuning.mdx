@@ -65,8 +65,13 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_MAX_QUEUE_DELIVERIES`
 
 - Default: `48`
-- Delivery attempts before a run or step is failed gracefully.
+- Delivery attempts of a run's [orchestrator](#orchestrator) messages before the run is failed gracefully. A delivery the [in-band fence](/docs/api-reference/workflow-errors/in-band-superseded-error) refuses counts, so a run whose every write is refused fails instead of looping.
+- A step's queue message retries in place and is bounded by the step's `maxRetries` instead. Past this cap, a step that shows no activity for an hour (every delivery fails before the step starts, for example because its input cannot be read) fails with a catchable `FatalError` naming `MAX_DELIVERIES_EXCEEDED`.
 - Can only be lowered. Workflow calibrates the default to record failure before the queue expires the message.
+
+<Spec8Note>
+every delivery of a run's or a step's queue message counts, and the run or step is failed gracefully once it reaches the cap.
+</Spec8Note>
 
 ### `WORKFLOW_QUEUE_AUTH`
 
@@ -94,6 +99,11 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `3`
 - Recovery replays before replay divergence is recorded as corruption.
+- On the Node.js VM engine, a recovery replay reloads the event log and replays from scratch in a fresh VM in the same delivery. Once the budget is spent, the run fails with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log). A redelivery starts the count again, and `WORKFLOW_MAX_QUEUE_DELIVERIES` bounds it.
+
+<Spec8Note>
+each recovery replay is queued as a new delivery of the run.
+</Spec8Note>
 
 ### `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`
 
@@ -106,19 +116,32 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`
 
 - Default: `30000` (30 seconds)
-- A pending wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) keeps the per-step event-log delta optimization off only if it can fire while the current invocation is still running steps inline: its target time must fall before the end of the invocation's inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms), which is otherwise derived from the platform's function deadline and tops out at 10 minutes) plus this allowance for clock skew between the runtime and the wait timer. A wait due later than that does not cost the extra `events.list()` per step. A `wait_created` whose target time cannot be read is treated as due now.
-- Before an invocation parks on a wait over a log it last extended from a step's inline delta, it re-reads the log once, so a wait completed early through `run.wakeUp()` (the dashboard's "cancel sleeps" action) is acted on then rather than when the wait's own timer would have fired.
+- A pending wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) stops the orchestrator from [running ahead](#workflow_run_ahead_depth) of its writes at a boundary only if it can fire while the current invocation is still running steps inline: its target time must fall before the end of the invocation's inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms), which is otherwise derived from the platform's function deadline and tops out at 10 minutes) plus this allowance for clock skew between the runtime and the wait timer. A `wait_created` whose target time cannot be read is treated as due now.
 - Turbo's forced optimistic start is unaffected: any open wait keeps it off, whatever the target time.
-- Must be a finite integer. `31536000000` (one year) restores the older behavior of gating on any pending wait; `Infinity` is rejected and falls back to the default. Open hooks are unaffected: they gate regardless of this setting.
+- Must be a finite integer. `Infinity` is rejected and falls back to the default.
+
+<Spec8Note>
+a pending wait that can fire within the same window keeps the per-step event-log delta optimization off instead, and a wait due later does not cost the extra `events.list()` per step. Before an invocation parks on a wait over a log it last extended from a step's inline delta, it re-reads the log once, so a wait completed early through `run.wakeUp()` (the dashboard's "cancel sleeps" action) is acted on then rather than when the wait's own timer would have fired. `31536000000` (one year) gates on any pending wait. Open hooks gate regardless of this setting.
+</Spec8Note>
 
 ### Stale reads, and why nothing has to be rejected
 
 - Not a variable: this is how a replay working from an out-of-date event log stays correct, and why no World needs a precondition guard to make it so.
 - Three properties work together. A reader's log is always a **prefix** of the run's log, never a prefix with a hole in it. The World allocates positions at commit, so nothing lands behind a position a reader has already passed. Replay is **deterministic on a prefix**: the same prefix always yields the same decisions, so a shorter log does not mean a different run, only a run that has not caught up. Every write **reports what it missed**: a creation names the position it replayed from (`eventCount`), and the World returns the events occupying the positions it was pushed past. The replay merges those and continues, correcting itself on the write rather than on a read.
 - So a stale replay costs a merge, not a rejection. None of the shipped Worlds refuses a write for being stale.
-- A World *may* refuse instead, with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)). This is appropriate when it allocates positions somewhere other than the commit and cannot report a gap reliably. The runtime restarts the replay in the same invocation from a corrected event log and falls back to a re-invocation with a fresh replay after spending the restart budget. It never retries the rejected write as-is because a replay working from a corrected log derives different events.
-- A World that does refuse should only ever do so on evidence, and accept the write in every other case. A rejection then always means the position was stale, while the absence of one proves nothing about currency.
-- Two runtime behaviors follow from the properties above rather than from any fence. The per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) stays active while the run has an open hook. A `hook_received` event missed by the delta window is observed one iteration later, and the next write brings it back. While a hook is open, inline steps take the await-then-run path even when optimistic inline start is enabled. Several invocations race for one step's claim there, and awaiting it means the body runs only for the writer that won.
+- One orchestrator invocation at a time writes a run's decisions. The World refuses a write only from an invocation another one has superseded, with [`InBandSupersededError`](/docs/api-reference/workflow-errors/in-band-superseded-error), and the runtime handles that refusal itself.
+
+<Spec8Note>
+every queue delivery replays the run and writes its own decisions, and a World *may* refuse a stale write with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)). This is appropriate when it allocates positions somewhere other than the commit and cannot report a gap reliably. A World that does refuse should only ever do so on evidence, and accept the write in every other case: a rejection then always means the position was stale, while the absence of one proves nothing about currency. The runtime restarts the replay in the same invocation from a corrected event log, and falls back to a re-invocation with a fresh replay after spending the restart budget below. It never retries the rejected write as-is, because a replay working from a corrected log derives different events.
+
+Two runtime behaviors follow from the properties above rather than from any fence. The per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) stays active while the run has an open hook: a `hook_received` event missed by the delta window is observed one iteration later, and the next write brings it back. While a hook is open, inline steps take the await-then-run path even when optimistic inline start is enabled. Several invocations race for one step's claim there, and awaiting it means the body runs only for the writer that won.
+</Spec8Note>
+
+The `WORKFLOW_PRECONDITION_*` settings below have no effect on runs that use the in-band fence.
+
+<Spec8Note>
+the runtime reads the `WORKFLOW_PRECONDITION_*` settings when a World refuses a stale write.
+</Spec8Note>
 
 ### `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`
 
@@ -150,9 +173,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_MAX_INLINE_STEPS`
 
 - Default: `3`
-- Clamp: `1` to `16`
-- Number of newly-created steps one invocation runs inline in parallel before queueing the rest.
-- Steps started beside an awaited hook registration (`hook.getConflict()`) count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
+- Clamp: `0` to `16`
+- Number of newly-created steps one invocation runs inline in parallel before queueing the rest. Inline steps already open or running count against it. `0` queues every step.
+- Steps created while a new hook waits on its registration (`hook.getConflict()`), or within [`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`](#workflow_inline_step_deadline_margin_ms) of the end of the inline window, are queued.
+- A step runs inline at most once: its retry runs from its own queue message.
+
+<Spec8Note>
+the clamp is `1` to `16`, and the runtime treats `0` as unset. Steps started beside an awaited hook registration count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
+</Spec8Note>
 
 ### `WORKFLOW_TURBO`
 
@@ -163,18 +191,56 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - A run started with `start({ experimental_hook })` never runs steps before `run_started` returns, but its first delivery still writes `run_started` without loading the event log first.
 - Set `0` or `false` to disable, including for such runs.
 
+<Spec8Note>
+the queue message's age is not checked.
+</Spec8Note>
+
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
 
-- Default: disabled
-- Starts inline step bodies before their `step_started` event is confirmed.
-- Use only when step side effects are idempotent.
-- Set `0` or `false` to force it off, including the first-delivery fast path used by `WORKFLOW_TURBO`.
+- Default: unset
+- Inline step bodies start before their `step_started` event is confirmed only on a run's first delivery under `WORKFLOW_TURBO`, and while the orchestrator [runs ahead](#workflow_run_ahead_depth) of its writes. Those are the only cases where the runtime knows no other writer can change the run.
+- Set `0` or `false` to make those bodies wait for their start to commit, and to override [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start). No other value has an effect.
+
+<Spec8Note>
+`1` or `true` starts every inline step body before its `step_started` is confirmed. Use it only when step side effects are idempotent.
+</Spec8Note>
+
+### `WORKFLOW_OPTIMISTIC_BACKGROUND_START`
+
+- Default: unset
+- `1` or `true` starts a background step's body before its `step_started` commits, on its message's first delivery, saving one round trip. A step queued before `run.cancel()` then still runs its body. Use only when background step bodies are idempotent.
+- Steps with `maxRetries: 0` and redeliveries always wait for their start to commit.
+
+<Spec8Note>
+the runtime ignores this setting.
+</Spec8Note>
+
+### `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`
+
+- Default: `60000`
+- How long before the inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms)) ends the orchestrator stops starting inline steps. Steps created inside the margin are queued.
+
+<Spec8Note>
+the runtime ignores this setting.
+</Spec8Note>
+
+### `WORKFLOW_RUN_AHEAD_DEPTH`
+
+- Default: `10`
+- Clamp: `0` to `16`
+- Maximum number of inline step outcomes that may be unconfirmed at once while the orchestrator runs ahead of its writes. Node.js VM engine only.
+- When no other writer could change what the workflow does next (no awaited hook, no `AbortController`, no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits. Writes still land in order.
+- `0` disables run-ahead.
+
+<Spec8Note>
+the orchestrator never runs ahead of its writes, and the runtime ignores this setting.
+</Spec8Note>
 
 ### `WORKFLOW_RETAINED_VM`
 
 - Default: enabled
 - Node.js VM engine only. Keeps the suspended workflow VM alive across inline steps within one invocation, so each iteration of the inline loop appends only the newly written events instead of replaying the whole event log in a fresh VM. QuickJS manages its own retained inline loop independently of this setting.
-- A step- or attribute-driven suspension can keep the VM retained even when hooks or waits are open or created at the same boundary. Hook- or wait-only suspensions park the invocation because nothing in the current delivery can advance them, with one exception: when the hook's own create is what the workflow is waiting on (a `hook.getConflict()` awaiter, or a create whose token is already claimed), the invocation resumes the retained VM over the committed `hook_created` or `hook_conflict` instead of re-invoking through the queue, and runs the steps started at that same boundary on the pass after it. Any replay divergence falls back to a full replay.
+- A step- or attribute-driven suspension can keep the VM retained even when hooks or waits are open or created at the same boundary. Hook- or wait-only suspensions park the invocation because nothing in the current delivery can advance them, with one exception: when the hook's own create is what the workflow is waiting on (a `hook.getConflict()` awaiter, or a create whose token is already claimed), the invocation resumes the retained VM over the committed `hook_created` or `hook_conflict` instead of re-invoking through the queue. Any replay divergence falls back to a full replay.
 - Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, `RegExp`, typed arrays, `ArrayBuffer`, `URL`, `Headers`) keep the VM retained. Patching or polyfilling built-in prototypes doesn't change that because serialization never calls them. A boundary falls back to a full replay only when serializing its arguments runs code the workflow controls, such as a getter, a proxy, or a custom class serializer, or computes an `Error`'s stack trace.
 - Set `0` or `false` to replay the Node.js workflow from scratch in a fresh VM on every iteration.
 
@@ -184,6 +250,10 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Clamp: `1` to `900`
 - How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
+
+<Spec8Note>
+the runtime reads this setting only for these runs. Runs that use the in-band fence have no backstop messages, because an inline step belongs to the orchestrator invocation that created it.
+</Spec8Note>
 
 ## Workflow VM engine
 
@@ -382,16 +452,13 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
 - QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
 
-## Spec 9
+## Orchestrator
 
-Everything above describes spec 8 runs. New runs are spec 10 by default on the Vercel, Local and Postgres Worlds, and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8. Spec 10 runs are spec 9 runs that may call [`experimental_rateLimit()`](/docs/api-reference/workflow/rate-limit), and everything in this section applies to both. Spec 9 runs read some of the settings above differently, and add the settings below.
+One orchestrator invocation at a time drives each run: it replays the run, runs inline steps, and writes every decision. A background step's own invocation only runs its body and reports the outcome. These settings tune how the orchestrator picks up events that other writers commit, and how long it stays live waiting for them.
 
-### `WORKFLOW_SPEC_VERSION`
-
-- Default: unset. New runs use spec version 10 on a World that declares the in-band fence and reserves rate limit slots (the Vercel, Local and Postgres Worlds do), 9 on a World that declares only the fence, and 8 on one without the fence.
-- `8` keeps new runs on spec 8. `6` to `10` select that version; `9` or `10` on a World without the fence creates spec 8 runs, and `10` on a World with the fence but no rate limits creates spec 9 runs. Any other value is ignored with a one-time warning and creates spec 8 runs, so a typo in an opt-out never creates spec 9 or 10 runs. A run keeps the version it was created with.
-- `6` creates new runs on the scheme from before the [sealed log](/docs/how-it-works/event-sourcing), where each event position is allocated by the write that occupies it. Use it in an environment shared with a runtime that cannot read sealed logs yet, such as one that pins its own accepted spec range (the Python runtime). Runs below `8` cannot have their hook tokens taken over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds): a forced hook in another run gets `HookConflictError` instead.
-- Upgrade every deployment and process that shares the World together, setting `8` on the upgraded ones until all of them run this release, and do not roll back below this release once spec 9 or 10 runs exist.
+<Spec8Note>
+the runtime ignores the settings in this section, because every queue delivery replays the run and writes its own decisions.
+</Spec8Note>
 
 ### `WORKFLOW_ORCHESTRATOR_RATE_WAIT_MS`
 
@@ -428,18 +495,13 @@ Everything above describes spec 8 runs. New runs are spec 10 by default on the V
 - Default: `5000`
 - Deadline for one incremental read of the event log before the orchestrator sends it again. `0` turns the deadline off.
 
-### `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`
+## Spec version
 
-- Default: `60000`
-- How long before the inline window ends the orchestrator stops starting inline steps.
+### `WORKFLOW_SPEC_VERSION`
 
-### `WORKFLOW_OPTIMISTIC_BACKGROUND_START`
-
-- Default: unset
-- `1` or `true` starts a background step's body before its `step_started` commits. Use only when background step bodies are idempotent.
-
-### `WORKFLOW_RUN_AHEAD_DEPTH`
-
-- Default: `10`
-- Clamp: `0` to `16`
-- How many inline step outcomes may be unconfirmed at once while the orchestrator runs ahead of its writes. `0` disables run-ahead.
+- Default: unset. New runs use the newest spec version the World supports: 10 on the Vercel, Local and Postgres Worlds. A third-party World creates spec 9 runs if it implements the [in-band fence](/worlds/building-a-world#optional-the-in-band-writer-fence) but not [rate limits](/docs/api-reference/workflow/rate-limit), and spec 8 runs if it implements neither (see [Supporting spec 9 runs](/worlds/building-a-world#supporting-spec-9-runs)).
+- `8` opts out: new runs use the earlier execution model, where every queue delivery replays the run and writes its own decisions. Pages that describe a difference for such runs say so in a note.
+- `6` to `10` select that version, but never one above what the World supports: `9` or `10` on a World without the fence creates spec 8 runs, and `10` on a World without rate limits creates spec 9 runs. Any other value is ignored with a one-time warning and creates spec 8 runs, so a typo in an opt-out never opts in.
+- `6` creates new runs on the scheme from before the [sealed log](/docs/how-it-works/event-sourcing), where each event position is allocated by the write that occupies it. Use it in an environment shared with a runtime that cannot read sealed logs yet, such as one that pins its own accepted spec range (the Python runtime). Runs below `8` cannot have their hook tokens taken over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds): a forced hook in another run gets `HookConflictError` instead.
+- A run keeps the version it was created with.
+- Upgrade every deployment and process that shares the World together, setting `8` on the upgraded ones until all of them run v5.8.0 or later. Do not roll back below v5.8.0 once runs at spec 9 or later exist: an older release fails writes to them.
