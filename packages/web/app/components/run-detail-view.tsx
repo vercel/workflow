@@ -650,9 +650,6 @@ export function RunDetailView({
             </div>
 
             {/* Status and Timeline Row: wraps on narrow screens */}
-            {/* ponytail: skeletons take their column's width; the min widths fit
-                the widest status and a same-day time, so loading doesn't shift
-                the row. A "yesterday at …" time is wider and still does. */}
             <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
               <div className="flex flex-col gap-1 min-w-[76px]">
                 <div className="text-xs text-muted-foreground">Status</div>
