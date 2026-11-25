@@ -47,7 +47,6 @@ export function ResolveHookModal({
   );
 }
 
-// Mounts with the modal content, so each open starts with an empty form.
 function ResolveHookForm({
   onClose,
   onSubmit,
@@ -104,7 +103,6 @@ function ResolveHookForm({
           </code>
           .
         </p>
-        {/* Radix focuses the first focusable element, this textarea, on open. */}
         <textarea
           id={inputId}
           value={jsonInput}
@@ -118,7 +116,6 @@ function ResolveHookForm({
               e.currentTarget.form?.requestSubmit();
             }
           }}
-          // Read-only rather than disabled, so focus stays in the field.
           readOnly={isSubmitting}
           placeholder='{"key": "value"}'
           aria-invalid={parseError ? true : undefined}
