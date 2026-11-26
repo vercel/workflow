@@ -5,6 +5,7 @@ import { useContext } from 'react';
 import { Button } from '../ui/button';
 import { CopyButton } from '../ui/copy-button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
+import { DisabledReasonTooltip } from '../ui/decrypt-button';
 
 const encryptedPlaceholderPreview = `{
   "input": "[encrypted]",
@@ -24,18 +25,21 @@ export function EncryptedDataBlock() {
       </pre>
       <div className="absolute inset-0 flex items-center justify-center">
         {ctx ? (
-          <Button
-            onClick={ctx.onDecrypt}
-            loading={ctx.isDecrypting}
-            disabled={ctx.isDecryptDisabled}
-            title={
+          <DisabledReasonTooltip
+            reason={
               ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined
             }
-            size="small"
-            prefix={<Lock />}
           >
-            Decrypt
-          </Button>
+            <Button
+              onClick={ctx.onDecrypt}
+              loading={ctx.isDecrypting}
+              disabled={ctx.isDecryptDisabled}
+              size="small"
+              prefix={<Lock />}
+            >
+              Decrypt
+            </Button>
+          </DisabledReasonTooltip>
         ) : (
           <span className="inline-flex items-center gap-1 rounded border border-gray-alpha-400 bg-gray-100 px-1.5 py-0.5 text-button-12 font-medium text-gray-700">
             <Lock className="h-3 w-3" />

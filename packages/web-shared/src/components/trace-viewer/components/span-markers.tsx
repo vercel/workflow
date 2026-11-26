@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../../lib/cn';
 import { TimestampTooltip } from '../../ui/timestamp-tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import type { SpanMarker, SpanMarkerKind } from '../utils';
 
 const MARKER_KIND_PREFIX: Record<SpanMarkerKind, string> = {
@@ -147,32 +148,36 @@ export function OffscreenMarkerIndicator({
   const tick = <MarkerTick className="h-3.5 shrink-0" />;
 
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={(e) => {
-        // Don't let the row's onClick fire, since revealing shouldn't also
-        // change the span selection.
-        e.stopPropagation();
-        onReveal?.(targetMs);
-      }}
-      className={cn(
-        'pointer-events-auto absolute top-1/2 z-20 flex h-6 -translate-y-1/2 cursor-pointer items-center rounded-sm border border-gray-alpha-400 bg-background-100 hover:bg-gray-100',
-        direction === 'right' ? 'right-0 pl-1.5' : 'left-0 pr-1.5'
-      )}
-    >
-      {direction === 'left' ? (
-        <>
-          {chevron}
-          {tick}
-        </>
-      ) : (
-        <>
-          {tick}
-          {chevron}
-        </>
-      )}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={label}
+          onClick={(e) => {
+            // Don't let the row's onClick fire, since revealing shouldn't also
+            // change the span selection.
+            e.stopPropagation();
+            onReveal?.(targetMs);
+          }}
+          className={cn(
+            'pointer-events-auto absolute top-1/2 z-20 flex h-6 -translate-y-1/2 cursor-pointer items-center rounded-sm border border-gray-alpha-400 bg-background-100 hover:bg-gray-100',
+            direction === 'right' ? 'right-0 pl-1.5' : 'left-0 pr-1.5'
+          )}
+        >
+          {direction === 'left' ? (
+            <>
+              {chevron}
+              {tick}
+            </>
+          ) : (
+            <>
+              {tick}
+              {chevron}
+            </>
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }

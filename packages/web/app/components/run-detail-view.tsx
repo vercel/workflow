@@ -891,7 +891,6 @@ export function RunDetailView({
                                   ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
                                   : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
                               }`}
-                              title={streamId}
                             >
                               {streamId}
                             </button>

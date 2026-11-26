@@ -98,7 +98,6 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
             // shows the first line, single-line, with overflow
             // ellipsised so a long title doesn't push the copy button or
             // wrap into the framed hint/docs lines.
-            title={message}
           >
             {title}
           </p>

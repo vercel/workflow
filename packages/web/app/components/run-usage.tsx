@@ -248,34 +248,40 @@ function HeaderFigure({
   to,
   onUsagePage,
   label,
-  title,
+  tooltip,
   testId,
   children,
 }: {
   to: string;
   onUsagePage: boolean;
   label: string;
-  title?: string;
+  tooltip?: string;
   testId: string;
   children: ReactNode;
 }) {
   if (onUsagePage) {
     return (
-      <div className="text-xs" data-testid={testId} title={title}>
+      <div className="text-xs" data-testid={testId}>
         {children}
       </div>
     );
   }
-  return (
+  const link = (
     <Link
       to={to}
       className="-my-1 inline-block min-w-6 rounded-sm py-1 text-left text-xs underline decoration-dotted underline-offset-2 text-gray-1000 hover:text-blue-900 focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]"
       aria-label={label}
-      title={title}
       data-testid={testId}
     >
       {children}
     </Link>
+  );
+  if (!tooltip) return link;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{link}</TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -301,7 +307,7 @@ export function RunUsageHeaderStats({
   onUsagePage?: boolean;
 }) {
   const failed = !usage && error !== null;
-  const failedTitle = failed ? failedMessage(error) : undefined;
+  const failedTooltip = failed ? failedMessage(error) : undefined;
   const localNote = usage ? formatLocalDataWrittenNote(usage) : null;
   const to = runUsagePath(runId);
   const label = dataWrittenLabel(usage, isLocalBackend);
@@ -320,7 +326,7 @@ export function RunUsageHeaderStats({
                 ? `${formatCount(usage.events, 'event', 'events')}, open usage`
                 : 'Events unavailable, open usage'
             }
-            title={failedTitle}
+            tooltip={failedTooltip}
             testId="run-usage-events"
           >
             {events}
@@ -362,7 +368,7 @@ export function RunUsageHeaderStats({
                 ? `${bytes} ${label.toLowerCase()}, open usage`
                 : `${label} unavailable, open usage`
             }
-            title={failedTitle}
+            tooltip={failedTooltip}
             testId="run-usage-data-written"
           >
             {bytes}
@@ -597,7 +603,6 @@ function UsageGroup({
                 <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
                   <span
                     className="min-w-0 font-mono text-gray-1000"
-                    title={child.label}
                     data-testid="run-usage-child-label"
                   >
                     <BreakableLabel label={child.label} />

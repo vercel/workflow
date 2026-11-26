@@ -1,7 +1,14 @@
 'use client';
 
 import { Lock, LockOpen } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { Button } from './button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from './tooltip';
 
 interface DecryptButtonProps {
   /** Whether an encryption key has been obtained (decryption is active). */
@@ -14,6 +21,27 @@ interface DecryptButtonProps {
   disabledReason?: string;
   /** Called when the user clicks to initiate decryption. */
   onClick?: () => void;
+}
+
+export function DisabledReasonTooltip({
+  reason,
+  children,
+}: {
+  reason?: string;
+  children: ReactNode;
+}): ReactNode {
+  if (!reason) return children;
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>{children}</span>
+        </TooltipTrigger>
+        <TooltipContent>{reason}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 }
 
 /**
@@ -29,23 +57,24 @@ export function DecryptButton({
   onClick,
 }: DecryptButtonProps) {
   return (
-    <Button
-      variant="secondary"
-      size="small"
-      onClick={decrypted ? undefined : onClick}
-      loading={loading}
-      disabled={decrypted || disabled}
-      title={disabled ? disabledReason : undefined}
-      prefix={decrypted ? <LockOpen /> : <Lock />}
-      // Decrypted is a success state rather than an unavailable one, so it
-      // keeps the green fill instead of the disabled gray.
-      className={
-        decrypted
-          ? 'disabled:cursor-default disabled:bg-green-100 disabled:text-green-900 disabled:[--themed-border:_var(--ds-green-400)] disabled:hover:bg-green-100'
-          : undefined
-      }
-    >
-      {decrypted ? 'Decrypted' : 'Decrypt'}
-    </Button>
+    <DisabledReasonTooltip reason={disabled ? disabledReason : undefined}>
+      <Button
+        variant="secondary"
+        size="small"
+        onClick={decrypted ? undefined : onClick}
+        loading={loading}
+        disabled={decrypted || disabled}
+        prefix={decrypted ? <LockOpen /> : <Lock />}
+        // Decrypted is a success state rather than an unavailable one, so it
+        // keeps the green fill instead of the disabled gray.
+        className={
+          decrypted
+            ? 'disabled:cursor-default disabled:bg-green-100 disabled:text-green-900 disabled:[--themed-border:_var(--ds-green-400)] disabled:hover:bg-green-100'
+            : undefined
+        }
+      >
+        {decrypted ? 'Decrypted' : 'Decrypt'}
+      </Button>
+    </DisabledReasonTooltip>
   );
 }
