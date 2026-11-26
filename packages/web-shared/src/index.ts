@@ -37,6 +37,6 @@ export {
   type StateHistoryPage,
 } from './lib/state-hydration';
 export { getStreamImageType } from './lib/stream-image';
+export { formatDuration } from './lib/time';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider } from './lib/toast';
-export { formatDuration } from './lib/utils';

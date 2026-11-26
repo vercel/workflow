@@ -4,13 +4,14 @@ import type { Event } from '@workflow/world';
 import { ChevronDown, ChevronUp, CircleX, TriangleAlert } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
+import type { EventLevel, EventListRow } from '../../lib/event-list-model';
 import {
-  type EventLevel,
-  type EventListRow,
   formatElapsed,
-} from '../../lib/event-list-model';
-import { formatTimestampParts, getEventDate, parseDate } from '../../lib/time';
-import { formatDurationPrecise } from '../../lib/utils';
+  formatPreciseDuration,
+  formatTimestampParts,
+  getEventDate,
+  parseDate,
+} from '../../lib/time';
 import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { Skeleton } from '../ui/skeleton';
@@ -182,7 +183,7 @@ export function IdleGapRow({ ms, reason }: { ms: number; reason: string }) {
     <div className="mx-1 mt-px flex h-6 items-center gap-2.5 pl-[30px] pr-2 font-mono text-label-12-mono text-gray-700">
       <span className="h-px w-3 shrink-0 bg-gray-400" />
       <span className="shrink-0">
-        {formatDurationPrecise(ms)} idle{reason ? ` · ${reason}` : ''}
+        {formatPreciseDuration(ms)} idle{reason ? ` · ${reason}` : ''}
       </span>
       <span className="h-px flex-1 bg-gray-400" />
     </div>
@@ -262,7 +263,7 @@ export function EventRow({
         ))}
       <TimestampCell date={displayedAt} secondaryClass={secondaryClass} />
       <div className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}>
-        {sincePreviousMs !== undefined ? formatElapsed(sincePreviousMs) : ''}
+        {sincePreviousMs !== undefined && formatElapsed(sincePreviousMs)}
       </div>
       <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
         <ResourceIcon

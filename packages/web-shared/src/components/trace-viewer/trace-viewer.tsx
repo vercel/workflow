@@ -13,6 +13,7 @@ import {
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { cn } from '../../lib/cn';
+import { formatPreciseDuration } from '../../lib/time';
 import { IconButton } from '../ui/icon-button';
 import { SearchInput } from '../ui/search-input';
 import { Spinner } from '../ui/spinner';
@@ -35,7 +36,6 @@ import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
 import styles from './trace-viewer.module.css';
 import type { TraceWithMeta } from './types';
-import { formatDurationPrecise } from './util/timing';
 import {
   clampViewportToRoot,
   computeRootBounds,
@@ -394,7 +394,7 @@ function TraceViewerContent({
     if (hover == null) return null;
     const absTime = viewport.start + hover.fraction * viewDuration;
     const offset = absTime - root.startTime;
-    return { fraction: hover.fraction, label: formatDurationPrecise(offset) };
+    return { fraction: hover.fraction, label: formatPreciseDuration(offset) };
   }, [hover, viewport.start, viewDuration, root.startTime]);
 
   const handleTimelineMouseMove = useCallback(

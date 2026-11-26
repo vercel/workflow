@@ -12,10 +12,10 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
+import { formatPreciseDuration } from '../../../lib/time';
 import { otelTimeToMs } from '../../workflow-traces/trace-time-utils';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
-import { formatDurationPrecise } from '../util/timing';
 import type {
   OffscreenMarkers,
   Segment,
@@ -313,7 +313,7 @@ function SegmentBar({
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
         if (seg.status === 'queued') {
-          const leadInLabel = formatDurationPrecise(seg.fullDurationMs);
+          const leadInLabel = formatPreciseDuration(seg.fullDurationMs);
           const showLeadInLabel =
             showLabels &&
             seg.pixelWidth >= Math.max(40, estimateLabelWidthPx(leadInLabel));
@@ -337,7 +337,7 @@ function SegmentBar({
           );
         }
 
-        const label = formatDurationPrecise(seg.fullDurationMs);
+        const label = formatPreciseDuration(seg.fullDurationMs);
         // Only render the label when there's enough room for it without clipping.
         const showLabel =
           showLabels &&
@@ -459,7 +459,7 @@ const TimelineBar = memo(function TimelineBar({
       ? 'border-gray-700 bg-gray-500'
       : colors.className;
 
-  const totalLabel = formatDurationPrecise(totalDurationMs);
+  const totalLabel = formatPreciseDuration(totalDurationMs);
   const showTotalLabel =
     geometry.visiblePixelWidth >=
     Math.max(40, estimateLabelWidthPx(totalLabel));
@@ -586,7 +586,7 @@ const DeltaMeasureLine = memo(function DeltaMeasureLine({
   const startX = Math.min(guideX, hoveredX);
   const endX = Math.max(guideX, hoveredX);
 
-  const label = formatDurationPrecise(delta.deltaMs);
+  const label = formatPreciseDuration(delta.deltaMs);
   const labelWidthPx = estimateLabelWidthPx(label);
   // Center the label on the line; when the line is too short, place it beside
   // the right endpoint, flipping left near the viewport's right edge.

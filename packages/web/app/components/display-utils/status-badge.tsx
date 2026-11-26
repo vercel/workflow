@@ -1,13 +1,13 @@
 import {
   CopyButton,
   cn,
+  formatDuration,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@workflow/web-shared';
 import type { Step, WorkflowRun } from '@workflow/world';
 import { getStatusColorClass } from '~/lib/status-colors';
-import { formatDuration } from '~/lib/utils';
 
 /** Extract the error code from an unknown error value (StructuredError shape). */
 function getErrorCode(error: unknown): string | undefined {
