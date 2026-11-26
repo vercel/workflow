@@ -882,19 +882,22 @@ export function RunDetailView({
                           </div>
                         ) : (
                           streams.map((streamId) => (
-                            <button
-                              key={streamId}
-                              type="button"
-                              onClick={() => setSelectedStreamId(streamId)}
-                              className={`flex h-10 min-h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
-                                selectedStreamId === streamId
-                                  ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
-                                  : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
-                              }`}
-                              title={streamId}
-                            >
-                              {streamId}
-                            </button>
+                            <Tooltip key={streamId}>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedStreamId(streamId)}
+                                  className={`flex h-10 min-h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
+                                    selectedStreamId === streamId
+                                      ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
+                                      : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
+                                  }`}
+                                >
+                                  {streamId}
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>{streamId}</TooltipContent>
+                            </Tooltip>
                           ))
                         )}
                       </div>

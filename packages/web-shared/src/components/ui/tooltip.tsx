@@ -20,7 +20,13 @@ function TooltipProvider({
   );
 }
 
-const Tooltip = TooltipPrimitive.Root;
+function Tooltip(props: React.ComponentProps<typeof TooltipPrimitive.Root>) {
+  return (
+    <TooltipProvider>
+      <TooltipPrimitive.Root {...props} />
+    </TooltipProvider>
+  );
+}
 
 const TooltipTrigger = TooltipPrimitive.Trigger;
 

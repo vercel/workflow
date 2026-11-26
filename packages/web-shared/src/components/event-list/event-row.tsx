@@ -266,30 +266,32 @@ export function EventRow({
       <div className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}>
         {sincePreviousMs !== undefined ? formatElapsed(sincePreviousMs) : ''}
       </div>
-      <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
+      <div className={cn(CELL, COL.name, 'gap-2')}>
         <ResourceIcon
           resource={row.resource}
           isErrored={level === 'error'}
           isCancelled={event.eventType === 'run_cancelled'}
         />
         {name ? (
-          <span
-            className={cn(
-              '-mx-1 truncate rounded px-1',
-              isRelated && 'text-blue-900',
-              isRelated && isTinted && 'bg-blue-100'
-            )}
-          >
-            {name}
-          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className={cn(
+                  '-mx-1 truncate rounded px-1',
+                  isRelated && 'text-blue-900',
+                  isRelated && isTinted && 'bg-blue-100'
+                )}
+              >
+                {name}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{name}</TooltipContent>
+          </Tooltip>
         ) : null}
       </div>
       <div className={cn(CELL, COL.event)}>
         <EventNoticeTooltip notice={notice}>
-          <span
-            className={cn('truncate', notice && 'line-through')}
-            title={event.eventType}
-          >
+          <span className={cn('truncate', notice && 'line-through')}>
             {event.eventType}
           </span>
         </EventNoticeTooltip>
@@ -300,7 +302,6 @@ export function EventRow({
           'min-w-0 flex-1 h-3.5 border-l',
           LEVEL_SEPARATOR_CLASS[level]
         )}
-        title={message || undefined}
       >
         <span className="truncate">{message}</span>
       </div>

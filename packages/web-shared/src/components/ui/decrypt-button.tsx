@@ -2,6 +2,7 @@
 
 import { Lock, LockOpen } from 'lucide-react';
 import { Button } from './button';
+import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip';
 
 interface DecryptButtonProps {
   /** Whether an encryption key has been obtained (decryption is active). */
@@ -29,23 +30,31 @@ export function DecryptButton({
   onClick,
 }: DecryptButtonProps) {
   return (
-    <Button
-      variant="secondary"
-      size="small"
-      onClick={decrypted ? undefined : onClick}
-      loading={loading}
-      disabled={decrypted || disabled}
-      title={disabled ? disabledReason : undefined}
-      prefix={decrypted ? <LockOpen /> : <Lock />}
-      // Decrypted is a success state rather than an unavailable one, so it
-      // keeps the green fill instead of the disabled gray.
-      className={
-        decrypted
-          ? 'disabled:cursor-default disabled:bg-green-100 disabled:text-green-900 disabled:[--themed-border:_var(--ds-green-400)] disabled:hover:bg-green-100'
-          : undefined
-      }
-    >
-      {decrypted ? 'Decrypted' : 'Decrypt'}
-    </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={decrypted ? undefined : onClick}
+            loading={loading}
+            disabled={decrypted || disabled}
+            prefix={decrypted ? <LockOpen /> : <Lock />}
+            // Decrypted is a success state rather than an unavailable one, so it
+            // keeps the green fill instead of the disabled gray.
+            className={
+              decrypted
+                ? 'disabled:cursor-default disabled:bg-green-100 disabled:text-green-900 disabled:[--themed-border:_var(--ds-green-400)] disabled:hover:bg-green-100'
+                : undefined
+            }
+          >
+            {decrypted ? 'Decrypted' : 'Decrypt'}
+          </Button>
+        </span>
+      </TooltipTrigger>
+      {disabled && disabledReason ? (
+        <TooltipContent>{disabledReason}</TooltipContent>
+      ) : null}
+    </Tooltip>
   );
 }

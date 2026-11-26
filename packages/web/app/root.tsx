@@ -208,10 +208,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           <div className="flex items-center justify-between w-full">
             <div className="flex items-center gap-4">
               <Link to="/">
-                <h1
-                  className="flex items-center gap-2"
-                  title="Workflow Observability"
-                >
+                <h1 className="flex items-center gap-2">
                   <Logo />
                 </h1>
               </Link>

@@ -123,9 +123,6 @@ describe('a failed first usage read on a finished run', () => {
     expect(skeletons(header)).toBe(0);
     expect(screen.getByTestId('run-usage-events').textContent).toBe('—');
     expect(screen.getByTestId('run-usage-data-written').textContent).toBe('—');
-    expect(screen.getByTestId('run-usage-events').getAttribute('title')).toBe(
-      'Failed to read this run’s usage: database is locked'
-    );
     // The Usage page has the full error and a way to read again.
     expect(screen.getByTestId('usage-tab').textContent).toContain(
       'Failed to read this run’s usage: database is locked'
@@ -135,6 +132,14 @@ describe('a failed first usage read on a finished run', () => {
   });
 
   it('links the header’s placeholders to the Usage page, where the error is', async () => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
     vi.mocked(fetchRunUsage).mockResolvedValue(failure('locked'));
     function Header() {
       const state = useRunUsage(env, 'wrun_a');
@@ -156,6 +161,10 @@ describe('a failed first usage read on a finished run', () => {
       expect(link.tagName).toBe('A');
       expect(link.getAttribute('href')).toBe('/run/wrun_a/usage');
     }
+    fireEvent.focus(screen.getByTestId('run-usage-events'));
+    expect((await screen.findByRole('tooltip')).textContent).toBe(
+      'Failed to read this run’s usage: locked'
+    );
   });
 
   it('recovers with "Try again" in the header and the tab', async () => {

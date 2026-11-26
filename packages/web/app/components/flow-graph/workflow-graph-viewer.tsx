@@ -226,7 +226,6 @@ export function DiamondNodeComponent({ data, selected }: NodeProps) {
           fontWeight: 600,
           padding: size * 0.25, // Keep text within the diamond's inscribed area
         }}
-        title={typeof nodeData.label === 'string' ? nodeData.label : undefined}
       >
         <span className="text-center line-clamp-3 overflow-hidden">
           {nodeData.label}
