@@ -22,52 +22,77 @@ export function getEventDate(
 }
 
 const timestampFormat = new Intl.DateTimeFormat('en-US', {
+  year: 'numeric',
   month: 'short',
   day: '2-digit',
   hour: '2-digit',
   minute: '2-digit',
   second: '2-digit',
-  fractionalSecondDigits: 2,
+  fractionalSecondDigits: 3,
   hourCycle: 'h23',
 });
+
+const timestampFields = (date: Date) =>
+  Object.fromEntries(
+    timestampFormat.formatToParts(date).map(({ type, value }) => [type, value])
+  );
 
 export function formatTimestampParts(date: Date): {
   day: string;
   clock: string;
   ms: string;
 } {
-  const part = Object.fromEntries(
-    timestampFormat.formatToParts(date).map(({ type, value }) => [type, value])
-  );
+  const part = timestampFields(date);
   return {
     day: `${part.month} ${part.day}`,
     clock: `${part.hour}:${part.minute}:${part.second}`,
-    ms: `.${part.fractionalSecond}`,
+    ms: `.${part.fractionalSecond.slice(0, 2)}`,
   };
 }
 
 export function formatTimestamp(date: Date): string {
-  const { day, clock, ms } = formatTimestampParts(date);
-  return `${day} ${clock}${ms}`;
+  const part = timestampFields(date);
+  return `${part.month} ${Number(part.day)}, ${part.year} ${part.hour}:${part.minute}:${part.second}.${part.fractionalSecond}`;
 }
 
-export function formatDuration(ms: number, fractionDigits?: number): string {
-  if (Math.round(ms) < SECOND) return `${Math.round(ms)}ms`;
+export function formatShortUnit(ms: number): string {
+  let value = ms / SECOND;
+  let unit = 's';
+  for (const [next, size] of [
+    ['m', 60],
+    ['h', 60],
+    ['d', 24],
+  ] as const) {
+    if (Math.round(value) < size) break;
+    value /= size;
+    unit = next;
+  }
+  return `${Math.round(value)}${unit}`;
+}
 
-  const digits = fractionDigits ?? (Math.round(ms / 10) * 10 < MINUTE ? 2 : 0);
-  const step = SECOND / 10 ** digits;
-  const rounded = Math.round(ms / step) * step;
-  const seconds = Number(((rounded % MINUTE) / SECOND).toFixed(digits));
-
-  return [
-    [Math.floor(rounded / DAY), 'd'],
-    [Math.floor((rounded % DAY) / HOUR), 'h'],
-    [Math.floor((rounded % HOUR) / MINUTE), 'm'],
-    [seconds, 's'],
-  ]
-    .filter(([value]) => value)
-    .map(([value, unit]) => `${value}${unit}`)
+export function formatDuration(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / SECOND));
+  if (seconds >= 3600) return formatShortUnit(ms);
+  const minutes = Math.floor(seconds / 60);
+  return [minutes && `${minutes}m`, seconds % 60 && `${seconds % 60}s`]
+    .filter(Boolean)
     .join(' ');
+}
+
+export function formatElapsed(ms: number): string {
+  if (ms <= 0) return '0ms';
+  if (ms < SECOND) return `+${Math.round(ms)}ms`;
+  if (ms < 10 * SECOND) return `+${Number((ms / SECOND).toFixed(1))}s`;
+  return `+${formatDuration(ms)}`;
+}
+
+const round2 = (value: number) => Number(value.toFixed(2));
+
+export function formatPreciseDuration(ms: number): string {
+  if (!round2(ms)) return '0';
+  if (round2(ms) < SECOND) return `${round2(ms)}ms`;
+  if (round2(ms / SECOND) < 60) return `${round2(ms / SECOND)}s`;
+  return formatDuration(ms);
 }
 
 const TIME_UNITS = [

@@ -3,4 +3,4 @@
 '@workflow/web': patch
 ---
 
-Durations read the same in the run header, runs list, trace, Events tab and graph (`857ms`, `5.97s`, `7d 1h 52m 34s`), and the timeline ruler steps by round units of time.
+The run header and runs list show durations in whole seconds or one rounded unit (`6s`, `2m 3s`, `8d`), the trace keeps sub-second precision (`857ms`, `5.97s`), and the timeline ruler labels round steps in one unit (`2s`, `48h`).

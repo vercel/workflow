@@ -1,7 +1,7 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
-import { formatDuration } from '../../../lib/time';
+import { formatPreciseDuration } from '../../../lib/time';
 import {
   TOOLTIP_DELAY_MS,
   Tooltip,
@@ -130,7 +130,7 @@ const EventRow = ({
         </div>
         <div className="ml-2 shrink-0">
           <span className="text-label-14 text-gray-900 tabular-nums">
-            {formatDuration(durationMs)}
+            {formatPreciseDuration(durationMs)}
           </span>
         </div>
       </div>

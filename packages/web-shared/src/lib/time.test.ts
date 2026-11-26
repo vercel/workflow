@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   formatDuration,
+  formatElapsed,
+  formatPreciseDuration,
   formatShortTimeAgo,
+  formatShortUnit,
   formatTimeAgo,
   formatTimestamp,
   formatTimestampParts,
@@ -52,66 +55,104 @@ describe('getEventDate', () => {
 });
 
 describe('formatTimestamp', () => {
-  it('shows the local day and a 24h clock with two fraction digits', () => {
-    const date = new Date('2026-11-18T03:33:23.263Z');
-    expect(formatTimestamp(date)).toBe('Nov 17 22:33:23.26');
-    expect(formatTimestampParts(date)).toEqual({
-      day: 'Nov 17',
-      clock: '22:33:23',
+  it('shows the local date and a 24h clock with milliseconds', () => {
+    expect(formatTimestamp(new Date('2026-11-18T03:33:23.263Z'))).toBe(
+      'Nov 17, 2026 22:33:23.263'
+    );
+    expect(formatTimestamp(new Date('2026-03-06T05:04:05.007Z'))).toBe(
+      'Mar 6, 2026 00:04:05.007'
+    );
+  });
+
+  it('splits a row timestamp into a padded day, clock and two fraction digits', () => {
+    expect(formatTimestampParts(new Date('2026-03-06T05:04:05.267Z'))).toEqual({
+      day: 'Mar 06',
+      clock: '00:04:05',
       ms: '.26',
     });
   });
+});
 
-  it('pads the day and reads midnight as 00', () => {
-    expect(formatTimestamp(new Date('2026-03-06T05:04:05.007Z'))).toBe(
-      'Mar 06 00:04:05.00'
-    );
+describe('formatShortUnit', () => {
+  it('rounds to the largest unit', () => {
+    expect(formatShortUnit(45 * SECOND)).toBe('45s');
+    expect(formatShortUnit(2 * MINUTE + 3 * SECOND)).toBe('2m');
+    expect(formatShortUnit(3 * HOUR + 12 * MINUTE)).toBe('3h');
+    expect(formatShortUnit(12 * HOUR)).toBe('12h');
+    expect(formatShortUnit(7 * DAY + 18 * HOUR)).toBe('8d');
+    expect(formatShortUnit(30 * DAY)).toBe('30d');
+  });
+
+  it('carries rounding into the next unit', () => {
+    expect(formatShortUnit(59_600)).toBe('1m');
+    expect(formatShortUnit(59 * MINUTE + 40 * SECOND)).toBe('1h');
+    expect(formatShortUnit(23 * HOUR + 40 * MINUTE)).toBe('1d');
   });
 });
 
 describe('formatDuration', () => {
-  it('shows whole milliseconds below a second', () => {
-    expect(formatDuration(0)).toBe('0ms');
-    expect(formatDuration(0.4)).toBe('0ms');
-    expect(formatDuration(56)).toBe('56ms');
-    expect(formatDuration(857)).toBe('857ms');
+  it('shows whole seconds, and 1s for anything shorter', () => {
+    expect(formatDuration(0)).toBe('1s');
+    expect(formatDuration(56)).toBe('1s');
+    expect(formatDuration(857)).toBe('1s');
+    expect(formatDuration(5970)).toBe('6s');
   });
 
-  it('shows seconds with up to two decimals below a minute', () => {
-    expect(formatDuration(999.6)).toBe('1s');
-    expect(formatDuration(1626)).toBe('1.63s');
-    expect(formatDuration(1500)).toBe('1.5s');
-    expect(formatDuration(5970)).toBe('5.97s');
-    expect(formatDuration(45_000)).toBe('45s');
-    expect(formatDuration(59_994)).toBe('59.99s');
-  });
-
-  it('shows whole seconds from a minute up and leaves out zero units', () => {
-    expect(formatDuration(59_996)).toBe('1m');
-    expect(formatDuration(63_450)).toBe('1m 3s');
+  it('shows minutes and seconds under an hour', () => {
+    expect(formatDuration(59_600)).toBe('1m');
     expect(formatDuration(2 * MINUTE + 3 * SECOND)).toBe('2m 3s');
-    expect(formatDuration(HOUR + 5 * SECOND)).toBe('1h 5s');
-    expect(formatDuration(3 * HOUR + 12 * MINUTE)).toBe('3h 12m');
-    expect(formatDuration(2 * DAY)).toBe('2d');
-    expect(formatDuration(7 * DAY + HOUR + 52 * MINUTE + 33_750)).toBe(
-      '7d 1h 52m 34s'
-    );
+    expect(formatDuration(59 * MINUTE + 59 * SECOND)).toBe('59m 59s');
+  });
+
+  it('shows one rounded unit from an hour', () => {
+    expect(formatDuration(HOUR - 400)).toBe('1h');
+    expect(formatDuration(3 * HOUR + 12 * MINUTE)).toBe('3h');
+    expect(formatDuration(7 * DAY + 18 * HOUR)).toBe('8d');
+  });
+});
+
+describe('formatElapsed', () => {
+  it('shows milliseconds under a second, and no sign on zero', () => {
+    expect(formatElapsed(0)).toBe('0ms');
+    expect(formatElapsed(12)).toBe('+12ms');
+    expect(formatElapsed(776)).toBe('+776ms');
+  });
+
+  it('shows one decimal under ten seconds', () => {
+    expect(formatElapsed(1010)).toBe('+1s');
+    expect(formatElapsed(4700)).toBe('+4.7s');
+    expect(formatElapsed(9960)).toBe('+10s');
+  });
+
+  it('shows the duration from ten seconds', () => {
+    expect(formatElapsed(12_400)).toBe('+12s');
+    expect(formatElapsed(2 * MINUTE + 3 * SECOND)).toBe('+2m 3s');
+    expect(formatElapsed(3 * HOUR + 12 * MINUTE)).toBe('+3h');
+  });
+});
+
+describe('formatPreciseDuration', () => {
+  it('shows up to two decimals under a minute', () => {
+    expect(formatPreciseDuration(0.4)).toBe('0.4ms');
+    expect(formatPreciseDuration(62)).toBe('62ms');
+    expect(formatPreciseDuration(857)).toBe('857ms');
+    expect(formatPreciseDuration(1010)).toBe('1.01s');
+    expect(formatPreciseDuration(5970)).toBe('5.97s');
+  });
+
+  it('reads zero as 0', () => {
+    expect(formatPreciseDuration(0)).toBe('0');
+    expect(formatPreciseDuration(0.001)).toBe('0');
   });
 
   it('carries rounding into the next unit', () => {
-    expect(formatDuration(999.5)).toBe('1s');
-    expect(formatDuration(59_995)).toBe('1m');
-    expect(formatDuration(119_999)).toBe('2m');
-    expect(formatDuration(3_659_999)).toBe('1h 1m');
-    expect(formatDuration(86_459_999)).toBe('1d 1m');
+    expect(formatPreciseDuration(999.999)).toBe('1s');
+    expect(formatPreciseDuration(59_996)).toBe('1m');
   });
 
-  it('uses the given number of decimals on the seconds', () => {
-    expect(formatDuration(500, 1)).toBe('500ms');
-    expect(formatDuration(1620, 1)).toBe('1.6s');
-    expect(formatDuration(1002, 3)).toBe('1.002s');
-    expect(formatDuration(2 * MINUTE + 50, 2)).toBe('2m 0.05s');
-    expect(formatDuration(2 * MINUTE, 2)).toBe('2m');
+  it('shows the duration from a minute', () => {
+    expect(formatPreciseDuration(2 * MINUTE + 3 * SECOND)).toBe('2m 3s');
+    expect(formatPreciseDuration(7 * DAY + 18 * HOUR)).toBe('8d');
   });
 });
 

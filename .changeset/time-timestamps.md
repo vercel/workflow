@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Timestamps read the same in the Events tab and the detail panels (`Nov 17 22:33:23.26`), each with the time card.
+Event rows show `NOV 17 22:33:21.45` and detail values show `Nov 17, 2026 22:33:21.453`, each with the time card.

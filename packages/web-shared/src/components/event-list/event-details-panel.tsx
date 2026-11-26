@@ -9,7 +9,11 @@ import {
   hasEncryptedValues,
   type TimingSegment,
 } from '../../lib/event-list-model';
-import { formatDuration, formatTimestamp, parseDate } from '../../lib/time';
+import {
+  formatPreciseDuration,
+  formatTimestamp,
+  parseDate,
+} from '../../lib/time';
 import { getEventSpanId } from '../../lib/trace-builder';
 import {
   AttrSetEventBlock,
@@ -190,7 +194,7 @@ function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
             </span>
             <span className="text-gray-900">{segment.label}</span>
             <span className="tabular-nums text-gray-1000">
-              {formatDuration(segment.ms)}
+              {formatPreciseDuration(segment.ms)}
             </span>
           </li>
         ))}
@@ -271,7 +275,7 @@ function EventDetailsBody({
           label="Timing"
           actions={
             <span className="text-label-13 tabular-nums text-gray-900">
-              {formatDuration(timingTotal)} total
+              {formatPreciseDuration(timingTotal)} total
             </span>
           }
         >
@@ -281,7 +285,7 @@ function EventDetailsBody({
         <Collapsible defaultOpen label="Timing">
           <DetailMonoKeyValueRow
             label="Duration"
-            value={formatDuration(row.durationMs)}
+            value={formatPreciseDuration(row.durationMs)}
           />
         </Collapsible>
       ) : null}

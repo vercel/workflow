@@ -257,23 +257,12 @@ describe('clampViewportToRoot', () => {
 });
 
 describe('computeTimeMarkers', () => {
-  it('emits distinct, precise labels across a sub-second-step window', () => {
-    // A ~3s window drops the tick step to 500ms. Before the fix this rendered
-    // duplicate "2s, 2s, 3s, 3s" labels; now each tick is distinct.
-    const labels = computeTimeMarkers(3000, 0).map((m) => m.label);
-    expect(labels).toEqual(['0ms', '500ms', '1s', '1.5s', '2s', '2.5s', '3s']);
-    expect(new Set(labels).size).toBe(labels.length);
-  });
+  const labels = (viewDuration: number) =>
+    computeTimeMarkers(viewDuration, 0).map((m) => m.label);
 
-  it('keeps clean whole-second labels when the step is >=1s', () => {
-    const labels = computeTimeMarkers(10_000, 0).map((m) => m.label);
-    expect(labels).toEqual(['0s', '2s', '4s', '6s', '8s', '10s']);
-  });
-
-  it('still reads in ms when super zoomed in', () => {
-    const labels = computeTimeMarkers(120, 0).map((m) => m.label);
-    expect(labels).toEqual([
-      '0ms',
+  it('labels each tick in the unit of its step', () => {
+    expect(labels(120)).toEqual([
+      '0',
       '20ms',
       '40ms',
       '60ms',
@@ -281,25 +270,26 @@ describe('computeTimeMarkers', () => {
       '100ms',
       '120ms',
     ]);
-  });
-
-  it('steps long windows by round units of time', () => {
-    const DAY = 24 * 60 * 60 * 1000;
-    expect(computeTimeMarkers(7 * DAY, 0).map((m) => m.label)).toEqual([
-      '0s',
-      '2d',
-      '4d',
-      '6d',
+    expect(labels(3000)).toEqual([
+      '0',
+      '500ms',
+      '1000ms',
+      '1500ms',
+      '2000ms',
+      '2500ms',
+      '3000ms',
     ]);
-    expect(computeTimeMarkers(DAY / 16, 0).map((m) => m.label)).toEqual([
-      '0s',
+    expect(labels(6000)).toEqual(['0', '1s', '2s', '3s', '4s', '5s', '6s']);
+    expect(labels(90 * 60_000)).toEqual([
+      '0',
       '15m',
       '30m',
       '45m',
-      '1h',
-      '1h 15m',
-      '1h 30m',
+      '60m',
+      '75m',
+      '90m',
     ]);
+    expect(labels(7 * 24 * 3_600_000)).toEqual(['0', '48h', '96h', '144h']);
   });
 });
 
