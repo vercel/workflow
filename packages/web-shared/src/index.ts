@@ -24,6 +24,7 @@ export {
   hydrateResourceIO,
   hydrateResourceIOAsync,
 } from './lib/hydration';
+export { STATUS_DOT } from './lib/palette';
 export {
   getRunLimitGuidance,
   type RunLimitGuidance,
