@@ -52,7 +52,7 @@ let bodiesFinished = 0;
 /** Per body start: how many step outcomes had committed. */
 let completedAtStart: number[] = [];
 
-registerStepFunction('ra_inc', async (n: number) => {
+function noteBodyStart(): void {
   bodiesStarted++;
   const world = currentWorld;
   if (world) {
@@ -61,11 +61,23 @@ registerStepFunction('ra_inc', async (n: number) => {
     // Every step before this one is `bodiesStarted - 1`.
     unconfirmedAtStart.push(bodiesStarted - 1 - outcomes);
   }
+}
+
+registerStepFunction('ra_inc', async (n: number) => {
+  noteBodyStart();
   bodiesFinished++;
   return n + 1;
 });
 
 const step = `globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_inc")`;
+
+registerStepFunction(
+  'ra_inc_signal',
+  async (n: number, signal: AbortSignal) => {
+    noteBodyStart();
+    return n + (signal.aborted ? 100 : 1);
+  }
+);
 
 /** Holds `ra_gate`'s body until released; `entered` settles once it runs. */
 let gate = withResolvers<void>();
@@ -186,6 +198,38 @@ const withAbortSignal = `const inc = ${step};
     let n = 0;
     for (let i = 0; i < steps; i++) n = await inc(n);
     return controller.signal.aborted ? -1 : n;
+  }${registerWorkflow()}`;
+
+// An AbortController only workflow code aborts (`{ inBandOnly: true }`),
+// optionally aborted halfway through the loop, optionally with an abort
+// listener that starts a step.
+const withInBandOnlyAbort = (
+  abortHalfway: boolean,
+  listenerStep = false
+) => `const inc = ${step};
+  async function workflow(steps) {
+    const controller = new AbortController({ inBandOnly: true });
+    let fromListener = Promise.resolve(0);
+    ${listenerStep ? 'controller.signal.addEventListener("abort", () => { fromListener = inc(999); });' : ''}
+    let n = 0;
+    for (let i = 0; i < steps; i++) {
+      ${abortHalfway ? 'if (i === Math.floor(steps / 2)) controller.abort("halfway");' : ''}
+      n = await inc(controller.signal.aborted ? n + 100 : n);
+    }
+    return n + (await fromListener);
+  }${registerWorkflow()}`;
+
+// eve's pattern: an in-band-only controller's signal passed to every step,
+// aborted halfway by workflow code.
+const signalIntoSteps = `const inc = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_inc_signal");
+  async function workflow(steps) {
+    const controller = new AbortController({ inBandOnly: true });
+    let n = 0;
+    for (let i = 0; i < steps; i++) {
+      if (i === Math.floor(steps / 2)) controller.abort("halfway");
+      n = await inc(n, controller.signal);
+    }
+    return n;
   }${registerWorkflow()}`;
 
 // The child-run completion system hook (`child-run-completion.ts`), kept
@@ -1135,6 +1179,130 @@ describe.each([
     expect(await runResult(world)).toBe(STEPS);
     expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
   });
+
+  // node:vm only: QuickJS has no awaiter tracking, so it keeps every open
+  // hook path-changing.
+  it.runIf(vm === 'node')(
+    'runs ahead with an in-band-only AbortController open',
+    async () => {
+      const { world } = await run(withInBandOnlyAbort(false), [STEPS]);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(STEPS);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    'runs ahead past an in-band-only abort from workflow code, and a replay decides the same',
+    async () => {
+      const source = withInBandOnlyAbort(true);
+      // Steps before the abort add 1; from the abort on, each adds 101.
+      const half = Math.floor(STEPS / 2);
+      const expected = half + (STEPS - half) * 101;
+      const { world } = await run(source, [STEPS]);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(expected);
+      // The abort was decided with earlier outcomes still in flight; its
+      // hook_received commits behind them.
+      expect(unconfirmedAtStart[half - 1]).toBeGreaterThan(0);
+      expect(eventsOf(world, 'hook_received')).toHaveLength(1);
+
+      // Run-ahead off leaves the same log: the abort's hook_received at the
+      // same position among the step events.
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+      unconfirmedAtStart = [];
+      bodiesStarted = 0;
+      const off = await run(source, [STEPS]);
+      await off.world.runUntilIdle();
+      expect(await runResult(off.world)).toBe(expected);
+      expect(shape(world.events)).toEqual(shape(off.world.events));
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(RUN_AHEAD_DEPTH));
+
+      const cold = await coldReplay(world, source);
+      expect(cold.result).toBe(expected);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    'runs ahead past an in-band-only abort whose listener starts a step',
+    async () => {
+      const source = withInBandOnlyAbort(true, true);
+      const half = Math.floor(STEPS / 2);
+      const expected = half + (STEPS - half) * 101 + 1000;
+      const { world } = await run(source, [STEPS]);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(expected);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS + 1);
+
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+      unconfirmedAtStart = [];
+      bodiesStarted = 0;
+      const off = await run(source, [STEPS]);
+      await off.world.runUntilIdle();
+      expect(await runResult(off.world)).toBe(expected);
+      expect(shape(world.events)).toEqual(shape(off.world.events));
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(RUN_AHEAD_DEPTH));
+
+      const cold = await coldReplay(world, source);
+      expect(cold.result).toBe(expected);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    'runs ahead with an in-band-only signal passed to every step, aborted halfway',
+    async () => {
+      const half = Math.floor(STEPS / 2);
+      const expected = half + (STEPS - half) * 100;
+      const { world } = await run(signalIntoSteps, [STEPS]);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(expected);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      const cold = await coldReplay(world, signalIntoSteps);
+      expect(cold.result).toBe(expected);
+    }
+  );
+
+  it.runIf(vm === 'node')(
+    "reports another writer's hook_received on an in-band-only abort hook as a hazard",
+    async () => {
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let outcomes = 0;
+      const { world, runId } = await run(withInBandOnlyAbort(false), [STEPS], {
+        ...slowOutcomes,
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (data.eventType === 'step_completed' && ++outcomes === 2) {
+            const hook = eventsOf(world, 'hook_created')[0];
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: hook?.correlationId,
+              eventData: {
+                token: (hook?.eventData as { token?: string } | undefined)
+                  ?.token,
+                payload: await dehydrateStepReturnValue(
+                  { aborted: true, reason: 'from elsewhere' },
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'hook_received')).toHaveLength(1);
+      expect(
+        errors.mock.calls.some(
+          ([line]) =>
+            String(line).includes('Run-ahead stopped: an event') &&
+            String(line).includes('hook_received')
+        )
+      ).toBe(true);
+      errors.mockRestore();
+    }
+  );
 
   // Why the parent can keep its completion hook open between waits
   // (`child-run-completion.ts`): unlike an abort hook, it is path-changing

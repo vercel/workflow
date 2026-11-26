@@ -121,6 +121,7 @@ import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   ABORT_HOOK_TOKEN,
+  ABORT_IN_BAND_ONLY,
   ABORT_LISTENER_ATTACHED,
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
@@ -1983,7 +1984,17 @@ type AbortSerializedData = {
   hookToken: string;
   aborted: boolean;
   reason: unknown;
+  /** From an in-band-only controller: revived signals keep refusing to leave as a controller. */
+  inBandOnly?: true;
 };
+
+/** Whether the holder or its signal comes from an in-band-only controller. */
+function isInBandOnlyAbort(holder: unknown, signal: unknown): boolean {
+  return (
+    readProperty(holder, ABORT_IN_BAND_ONLY) === true ||
+    readProperty(signal, ABORT_IN_BAND_ONLY) === true
+  );
+}
 
 /**
  * Symbol-keyed internal fields tagged onto AbortController/AbortSignal
@@ -1994,6 +2005,7 @@ type AbortInternals = {
   [ABORT_STREAM_NAME]?: string;
   [ABORT_HOOK_TOKEN]?: string;
   [ABORT_READER_CANCEL]?: AbortController;
+  [ABORT_IN_BAND_ONLY]?: true;
 };
 
 type AbortSignalLike = AbortInternals & {
@@ -2048,6 +2060,7 @@ function reduceAbortWithListener(
     hookToken: hookToken!,
     aborted: signal.aborted,
     reason: signal.aborted ? signal.reason : undefined,
+    ...(isInBandOnlyAbort(holder, signal) ? { inBandOnly: true as const } : {}),
   };
 }
 
@@ -2071,6 +2084,7 @@ function reduceAbortBySymbol(
     hookToken: hookToken!,
     aborted: signal.aborted,
     reason: signal.aborted ? signal.reason : undefined,
+    ...(isInBandOnlyAbort(holder, signal) ? { inBandOnly: true as const } : {}),
   };
 }
 
@@ -2526,6 +2540,26 @@ export function getWorkflowReducers(
       }
       const signal = readProperty(value, 'signal');
       if (!signal) return false;
+      // Any object whose `signal` carries the abort symbol reduces as a
+      // controller here, and revives with a working `abort()` in the step.
+      // An object that is not a controller but carries an in-band-only
+      // signal (a `{ signal, url }`) is left to the plain-object path
+      // instead, so it revives as itself with a read-only signal.
+      if (
+        ownSymbol === undefined &&
+        !isNativeAbortController &&
+        isInBandOnlyAbort(undefined, signal)
+      ) {
+        return false;
+      }
+      if (isInBandOnlyAbort(value, signal)) {
+        throw new SerializationError(
+          'An AbortController created with { inBandOnly: true } cannot leave workflow code.',
+          {
+            hint: 'Pass its signal instead. Only workflow code may abort an in-band-only controller.',
+          }
+        );
+      }
       return reduceAbortBySymbol(signal as AbortSignal, holder);
     },
     AbortSignal: (value) => {
@@ -2923,11 +2957,12 @@ function setupAbortStreamReader(
  */
 function tagAbortPair(
   controller: AbortController,
-  value: { streamName: string; hookToken: string },
+  value: { streamName: string; hookToken: string; inBandOnly?: true },
   readerCancel?: AbortController
 ): void {
   const taggedController = controller as AbortController & AbortInternals;
   const taggedSignal = controller.signal as AbortSignal & AbortInternals;
+  if (value.inBandOnly === true) taggedSignal[ABORT_IN_BAND_ONLY] = true;
   taggedController[ABORT_STREAM_NAME] = value.streamName;
   taggedController[ABORT_HOOK_TOKEN] = value.hookToken;
   taggedSignal[ABORT_STREAM_NAME] = value.streamName;
@@ -2956,6 +2991,7 @@ function copyAbortInternals(src: AbortSignal, dest: AbortSignal): void {
   if (s[ABORT_READER_CANCEL] !== undefined) {
     d[ABORT_READER_CANCEL] = s[ABORT_READER_CANCEL];
   }
+  if (s[ABORT_IN_BAND_ONLY] === true) d[ABORT_IN_BAND_ONLY] = true;
 }
 
 /**
@@ -3658,7 +3694,11 @@ export function getWorkflowRevivers(
     // signal). The signal does not own a hook subscription here; abort state
     // is delivered via the existing replay machinery on the source side.
     AbortController: (value) => {
-      const signal = new WorkflowAbortSignal(value.streamName, value.hookToken);
+      const signal = new WorkflowAbortSignal(
+        value.streamName,
+        value.hookToken,
+        value.inBandOnly === true
+      );
       if (value.aborted) signal._setAborted(value.reason);
       return {
         [ABORT_STREAM_NAME]: value.streamName,
@@ -3668,7 +3708,11 @@ export function getWorkflowRevivers(
       };
     },
     AbortSignal: (value) => {
-      const signal = new WorkflowAbortSignal(value.streamName, value.hookToken);
+      const signal = new WorkflowAbortSignal(
+        value.streamName,
+        value.hookToken,
+        value.inBandOnly === true
+      );
       if (value.aborted) signal._setAborted(value.reason);
       return signal;
     },

@@ -15,6 +15,10 @@ export {
   RetryableError,
   type RetryableErrorOptions,
 } from '@workflow/errors';
+export type {
+  WorkflowAbortControllerConstructor,
+  WorkflowAbortControllerOptions,
+} from './abort-controller-types.js';
 export {
   createHook,
   createWebhook,

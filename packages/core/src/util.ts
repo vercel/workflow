@@ -79,6 +79,26 @@ export function getAbortStreamId(id: string) {
 const ABORT_TOKEN_PREFIX = 'abrt_';
 
 /**
+ * The id prefix of an `AbortController` created with `{ inBandOnly: true }`:
+ * its hook token is `abrt_inband_{ulid}`. A ULID is uppercase, so no other
+ * abort token starts this way.
+ */
+export const IN_BAND_ONLY_ABORT_ID_PREFIX = 'inband_';
+
+/**
+ * The whole token, ULID included (26 Crockford base32 characters), so a user
+ * hook whose token merely starts with the prefix is not mistaken for one.
+ */
+const IN_BAND_ONLY_ABORT_TOKEN_PATTERN = new RegExp(
+  `^${ABORT_TOKEN_PREFIX}${IN_BAND_ONLY_ABORT_ID_PREFIX}[0-9A-HJKMNP-TV-Z]{26}$`
+);
+
+/** Whether `token` is the hook token of an in-band-only `AbortController`. */
+export function isInBandOnlyAbortToken(token: string): boolean {
+  return IN_BAND_ONLY_ABORT_TOKEN_PATTERN.test(token);
+}
+
+/**
  * Derive the abort stream name from a hook token.
  * Hook tokens use the format `abrt_{id}`, and the corresponding stream is
  * `strm_{id}_system_abort`.

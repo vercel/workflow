@@ -9,6 +9,10 @@ export {
   RetryableError,
   type RetryableErrorOptions,
 } from '@workflow/errors';
+export type {
+  WorkflowAbortControllerConstructor,
+  WorkflowAbortControllerOptions,
+} from '../abort-controller-types.js';
 export type { Hook, HookOptions } from '../create-hook.js';
 export {
   experimental_rateLimit,

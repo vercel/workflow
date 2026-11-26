@@ -65,6 +65,20 @@ describe('observeOutOfBandWriters', () => {
     });
   });
 
+  it('classifies an in-band-only AbortController hook like a user hook', () => {
+    const inBandOnly = hook('abrt', { isSystem: true, inBandOnly: true });
+    expect(observe([inBandOnly])).toMatchObject({
+      abortSignalHookCount: 0,
+      systemHookCount: 1,
+      unobservedHookCount: 1,
+      inert: true,
+    });
+    // Without awaiter tracking (QuickJS) it stays path-changing.
+    expect(observe([inBandOnly], { observedHookIds: undefined })).toMatchObject(
+      { unknownHookCount: 1, inert: false }
+    );
+  });
+
   it('classifies the child-run completion hook like a user hook', () => {
     const completion = hook('cmpl', {
       token: childRunCompletionToken('wrun_parent'),

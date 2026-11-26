@@ -15,7 +15,12 @@ import { DEFERRED_CHECK_DELAY_MS, EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
-import { dehydrateStepReturnValue } from './serialization.js';
+import {
+  dehydrateStepArguments,
+  dehydrateStepReturnValue,
+} from './serialization.js';
+import { ABORT_HOOK_TOKEN } from './symbols.js';
+import { isInBandOnlyAbortToken } from './util.js';
 import { createContext } from './vm/index.js';
 import {
   createAbortSignalStatics,
@@ -285,6 +290,83 @@ describe('AbortController in workflow VM', () => {
       expect(c1.signal.reason).toEqual(new Error('c1 reason'));
       expect(c2.signal.aborted).toBe(false);
       expect(c2.signal.reason).toBeUndefined();
+    });
+  });
+
+  describe('in-band-only controllers', () => {
+    const queueItemFor = (token: string) =>
+      [...ctx.invocationsQueue.values()].find(
+        (item) => item.type === 'hook' && item.token === token
+      );
+
+    it('marks the hook in-band-only only when asked', () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const plain = new AbortController();
+      const inBandOnly = new AbortController({ inBandOnly: true });
+      expect(queueItemFor(plain.signal[ABORT_HOOK_TOKEN])).not.toHaveProperty(
+        'inBandOnly'
+      );
+      expect(queueItemFor(inBandOnly.signal[ABORT_HOOK_TOKEN])).toMatchObject({
+        isSystem: true,
+        inBandOnly: true,
+      });
+    });
+
+    it("recognizes only an in-band-only controller's own token", () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const inBandOnly = new AbortController({ inBandOnly: true });
+      const plain = new AbortController();
+      expect(isInBandOnlyAbortToken(inBandOnly.signal[ABORT_HOOK_TOKEN])).toBe(
+        true
+      );
+      expect(isInBandOnlyAbortToken(plain.signal[ABORT_HOOK_TOKEN])).toBe(
+        false
+      );
+      // A user hook token that only looks like one is left alone.
+      expect(isInBandOnlyAbortToken('abrt_inband_order-42')).toBe(false);
+      expect(
+        isInBandOnlyAbortToken(`${inBandOnly.signal[ABORT_HOOK_TOKEN]}-copy`)
+      ).toBe(false);
+    });
+
+    it('refuses to pass the controller to a step, but passes its signal', async () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const controller = new AbortController({ inBandOnly: true });
+      const error = await dehydrateStepArguments(
+        [controller],
+        'wrun_test',
+        undefined,
+        ctx.globalThis
+      ).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).cause).toMatchObject({
+        message: expect.stringMatching(/inBandOnly/),
+      });
+      await expect(
+        dehydrateStepArguments(
+          [controller.signal],
+          'wrun_test',
+          undefined,
+          ctx.globalThis
+        )
+      ).resolves.toBeDefined();
+    });
+
+    it('passes an object that carries its signal as a plain object, not a controller', async () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const controller = new AbortController({ inBandOnly: true });
+      await expect(
+        dehydrateStepArguments(
+          [{ signal: controller.signal, url: 'https://example.test' }],
+          'wrun_test',
+          undefined,
+          ctx.globalThis
+        )
+      ).resolves.toBeDefined();
     });
   });
 

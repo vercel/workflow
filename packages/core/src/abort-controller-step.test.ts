@@ -11,10 +11,18 @@ import { FatalError } from '@workflow/errors';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   dehydrateStepArguments,
+  dehydrateStepReturnValue,
+  dehydrateWorkflowArguments,
   hydrateStepArguments,
+  hydrateStepReturnValue,
+  hydrateWorkflowArguments,
 } from './serialization.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
-import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from './symbols.js';
+import {
+  ABORT_HOOK_TOKEN,
+  ABORT_IN_BAND_ONLY,
+  ABORT_STREAM_NAME,
+} from './symbols.js';
 
 // ============================================================================
 // Mocks
@@ -716,5 +724,58 @@ describe('step-initiated abort: durable hook resume is committed before completi
       aborted: true,
       reason: 'aborted from step',
     });
+  });
+});
+
+describe('in-band-only signals through a step', () => {
+  it('keep their flag through a step and into a child run, and pass inside a plain object', async () => {
+    // An in-band-only controller's signal, as workflow code holds it.
+    const source = new AbortController();
+    const signal = source.signal as any;
+    signal[ABORT_STREAM_NAME] = 'strm_in_band_only';
+    signal[ABORT_HOOK_TOKEN] = 'abrt_in_band_only';
+    signal[ABORT_IN_BAND_ONLY] = true;
+
+    const ops: Promise<void>[] = [];
+    const [inStep] = (await hydrateStepArguments(
+      await dehydrateStepArguments([signal], 'wrun_test', undefined),
+      'wrun_test',
+      undefined,
+      ops
+    )) as [AbortSignal];
+    expect((inStep as any)[ABORT_IN_BAND_ONLY]).toBe(true);
+
+    // The step returns it, and workflow code revives it.
+    const back = await hydrateStepReturnValue(
+      await dehydrateStepReturnValue(inStep, 'wrun_test', undefined, ops),
+      'wrun_test',
+      undefined
+    );
+    expect((back as any)[ABORT_IN_BAND_ONLY]).toBe(true);
+
+    // An object carrying it reaches the next step as itself, with a signal
+    // the step can read but not abort.
+    const [options] = (await hydrateStepArguments(
+      await dehydrateStepArguments(
+        [{ signal: back, url: 'https://example.test' }],
+        'wrun_test',
+        undefined
+      ),
+      'wrun_test',
+      undefined,
+      ops
+    )) as [{ signal: AbortSignal; url: string; abort?: unknown }];
+    expect(options.url).toBe('https://example.test');
+    expect(options.signal.aborted).toBe(false);
+    expect((options.signal as any)[ABORT_IN_BAND_ONLY]).toBe(true);
+    expect(options.abort).toBeUndefined();
+
+    // A child run started from the step gets it as an argument.
+    const [inChild] = (await hydrateWorkflowArguments(
+      await dehydrateWorkflowArguments([inStep], 'wrun_child', undefined, ops),
+      'wrun_child',
+      undefined
+    )) as [AbortSignal];
+    expect((inChild as any)[ABORT_IN_BAND_ONLY]).toBe(true);
   });
 });

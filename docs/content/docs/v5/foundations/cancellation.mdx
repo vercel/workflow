@@ -450,6 +450,29 @@ export async function workflow() {
 
 This is safe even if both steps have already completed because aborting a finished operation is a no-op.
 
+**Mark controllers only workflow code aborts as in-band only:**
+
+If workflow code is the only place that calls `abort()`, and steps only ever receive the controller's `signal`, create the controller with `{ inBandOnly: true }`. An open controller then doesn't stop the runtime from [running steps ahead](/docs/configuration/runtime-tuning#workflow_run_ahead_depth) of their writes.
+
+```typescript lineNumbers
+import type { WorkflowAbortControllerConstructor } from "workflow";
+declare function stepA(signal: AbortSignal): Promise<string>; // @setup
+
+export async function workflow() {
+  "use workflow";
+  // The DOM and Node.js types declare a constructor without options.
+  const InBandOnlyAbortController =
+    AbortController as WorkflowAbortControllerConstructor;
+  const controller = new InBandOnlyAbortController({ inBandOnly: true }); // [!code highlight]
+
+  const result = await stepA(controller.signal); // a signal, or an object holding one, is fine
+  controller.abort();
+  return result;
+}
+```
+
+Passing the controller created in this way to a step throws a `SerializationError`. Under [`WORKFLOW_VM=quickjs`](/docs/configuration/runtime-tuning#workflow_vm) the option has no effect: the controller can be passed to a step, and an open one stops run-ahead.
+
 ## Related documentation
 
 - [How Cancellation Works](/docs/how-it-works/cancellation): Hook and stream backing, serialization internals
