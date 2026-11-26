@@ -222,6 +222,28 @@ const stepsPastSleep = (duration: string) => `const inc = ${step};
     return n;
   }${registerWorkflow()}`;
 
+/** How long `ra_slow`'s body runs: longer than `timeoutRace`'s sleep. */
+const SLOW_STEP_MS = 2500;
+const TIMEOUT_RACE_SLEEP_MS = 1500;
+registerStepFunction('ra_slow', async () => {
+  await new Promise((resolve) => setTimeout(resolve, SLOW_STEP_MS));
+  return 'step';
+});
+
+// The timeout pattern: a sleep created up front, raced against an inline step
+// that outlasts it, between runs of steps that run ahead.
+const timeoutRace = `const inc = ${step};
+  const slow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_slow");
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow(steps) {
+    const timer = sleep(${TIMEOUT_RACE_SLEEP_MS}).then(() => "sleep");
+    let n = 0;
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    const winner = await Promise.race([timer, slow()]);
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return { winner, n };
+  }${registerWorkflow()}`;
+
 const sleepThenStep = `const inc = ${step};
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
@@ -1329,6 +1351,30 @@ describe.each([
     const cold = await coldReplay(world, source);
     expect(cold.result).toBe(steps);
   });
+
+  it('completes a sleep that comes due while an inline step outlasts it, and a replay decides the same', async () => {
+    // The floor puts the sleep outside the allowance when the race starts,
+    // so the boundary is inert; it comes due while the slow body runs.
+    vi.stubEnv('WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS', '50');
+    const error = vi.spyOn(console, 'error');
+    const { world } = await run(timeoutRace, [3]);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toEqual({ winner: 'sleep', n: 6 });
+    const waitCompleted = eventsOf(world, 'wait_completed')[0];
+    const waitCreated = eventsOf(world, 'wait_created')[0];
+    expect(waitCompleted).toBeDefined();
+    // Completed when it came due, not once the slow step returned.
+    expect(
+      +new Date(waitCompleted!.createdAt) - +new Date(waitCreated!.createdAt)
+    ).toBeLessThan(SLOW_STEP_MS);
+    expect(
+      error.mock.calls.some(([line]) =>
+        String(line).includes('possibleLogCorruption')
+      )
+    ).toBe(false);
+    const cold = await coldReplay(world, timeoutRace);
+    expect(cold.result).toEqual({ winner: 'sleep', n: 6 });
+  }, 20_000);
 
   it('stops with no orphan writes when the fence refuses a speculative write, and the redelivery completes', async () => {
     // Refuses the write that carries the third outcome, however the writer
