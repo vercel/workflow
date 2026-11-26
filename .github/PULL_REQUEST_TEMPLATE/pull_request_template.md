@@ -38,8 +38,10 @@ AGENTS:
   - Use plain words and short sentences, and lead with the outcome before the details
   - Break up anything longer than a few sentences with lists, tables, or `####` headings, one idea per item
   - Explain terms and internal names the first time they appear, and put code identifiers in backticks
-- If the PR changes docs pages or the observability UI:
-  - Add the preview and screenshot sections described under "Pull requests" in AGENTS.md after the Why
+- If the PR changes docs pages:
+  - Add the Docs Preview section described under "Pull requests" in AGENTS.md after the Why
+- If the PR changes the observability UI:
+  - Add the Preview and screenshot sections described in .agents/skills/web-guidelines/pull-requests/GUIDE.md after the Why
 - For complex changes (>1k lines, not counting lockfiles):
   - Add a `### Walkthrough` section after How did you test your changes? which breaks down the primary changes into easy-to-follow `#### Sub-Sections`
 - For all changes:
