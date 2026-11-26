@@ -20,19 +20,19 @@ export const SPAN_COLORS = {
     line: '--ds-gray-400',
   },
   failed: {
-    icon: 'text-red-900',
+    icon: 'text-red-800',
     bar: 'border-red-500 bg-red-200',
     line: '--ds-red-400',
   },
   cancelled: {
-    icon: 'text-gray-900',
+    icon: 'text-gray-700',
     bar: 'border-gray-700 bg-gray-500',
     line: '--ds-gray-600',
   },
   retrying: {
-    icon: 'text-gray-900',
-    bar: 'border-gray-500 bg-gray-400',
-    line: '--ds-gray-400',
+    icon: 'text-amber-800',
+    bar: 'border-amber-500 bg-amber-200',
+    line: '--ds-amber-400',
   },
 };
 
@@ -54,3 +54,14 @@ const STATE_TONE: Record<string, Tone> = {
 export function getSpanColors(resource: string, state = '') {
   return SPAN_COLORS[STATE_TONE[state] ?? RESOURCE_TONE[resource] ?? 'hook'];
 }
+
+export const STATUS_DOT = {
+  queued: 'bg-gray-500',
+  pending: 'bg-gray-500',
+  cancelled: 'bg-gray-500',
+  running: 'bg-geist-warning',
+  retrying: 'bg-geist-warning',
+  succeeded: 'bg-geist-cyan',
+  completed: 'bg-geist-cyan',
+  failed: 'bg-geist-error',
+};

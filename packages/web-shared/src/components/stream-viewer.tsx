@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { STATUS_DOT } from '../lib/palette';
 import { getStreamImageType } from '../lib/stream-image';
 import { serializeForClipboard } from './sidebar/copyable-data-block';
 import { StreamImagePreview } from './stream-image-preview';
@@ -104,8 +105,10 @@ export function StreamViewer({
       <div className="flex h-10 min-h-10 items-center gap-1.5 border-b border-gray-alpha-400 px-3">
         {isLive && (
           <>
-            <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
-            <span className="text-label-12 text-green-700">Live</span>
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${STATUS_DOT.running}`}
+            />
+            <span className="text-label-12 text-gray-900">Live</span>
           </>
         )}
       </div>
