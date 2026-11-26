@@ -1,5 +1,5 @@
 import { isRunCreationEvent } from '@workflow/world';
-import { formatDuration, otelTimeToMs } from '../../lib/time';
+import { otelTimeToMs } from '../../lib/time';
 import type { Span, SpanEvent } from './types';
 
 // ---------------------------------------------------------------------------
@@ -109,24 +109,18 @@ export interface TimeMarker {
   value: number;
 }
 
-const NICE_INTERVALS = [
-  ...[1, 2, 5, 10, 20, 50, 100, 200, 500],
-  ...[1, 2, 5, 10, 15, 30].map((seconds) => seconds * 1_000),
-  ...[1, 2, 5, 10, 15, 30].map((minutes) => minutes * 60_000),
-  ...[1, 2, 3, 6, 12].map((hours) => hours * 3_600_000),
-  ...[1, 2, 5, 10, 20, 50, 100].map((days) => days * 86_400_000),
-];
+const RULER_STEPS = (
+  [
+    ['ms', 1, [1, 2, 5, 10, 20, 50, 100, 200, 500]],
+    ['s', 1_000, [1, 2, 5, 10, 15, 20, 30]],
+    ['m', 60_000, [1, 2, 5, 10, 15, 20, 30]],
+    ['h', 3_600_000, [1, 2, 3, 4, 6, 8, 12, 24, 48, 72, 168]],
+  ] as const
+).flatMap(([unit, size, counts]) =>
+  counts.map((count) => ({ unit, size, interval: count * size }))
+);
 
 const MAX_MARKERS = 8;
-
-const MS_IN_SECOND = 1000;
-
-function pickInterval(viewDuration: number, maxTicks: number): number {
-  for (const interval of NICE_INTERVALS) {
-    if (viewDuration / interval <= maxTicks) return interval;
-  }
-  return NICE_INTERVALS[NICE_INTERVALS.length - 1];
-}
 
 export function computeTimeMarkers(
   viewDuration: number,
@@ -135,14 +129,9 @@ export function computeTimeMarkers(
   if (viewDuration <= 0) return [];
 
   const maxTicks = 6;
-  const interval = pickInterval(viewDuration, maxTicks);
-
-  // Sub-second steps need fractional labels, or ticks past 1s collide as
-  // duplicate whole seconds ("…1s, 2s, 2s, 3s"). Scale decimals to the step.
-  const fractionDigits =
-    interval < MS_IN_SECOND
-      ? Math.ceil(-Math.log10(interval / MS_IN_SECOND))
-      : undefined;
+  const { unit, size, interval } =
+    RULER_STEPS.find((step) => viewDuration / step.interval <= maxTicks) ??
+    RULER_STEPS[RULER_STEPS.length - 1];
 
   const firstTick = Math.ceil(offset / interval) * interval;
   const markers: TimeMarker[] = [];
@@ -152,10 +141,7 @@ export function computeTimeMarkers(
     if (position < -0.01 || position > 1.01) continue;
     markers.push({
       position: Math.min(Math.max(position, 0), 1),
-      label:
-        t === 0 && interval >= MS_IN_SECOND
-          ? '0s'
-          : formatDuration(Math.abs(t), fractionDigits),
+      label: t === 0 ? '0' : `${Math.abs(t) / size}${unit}`,
       value: t,
     });
     if (markers.length >= MAX_MARKERS) break;

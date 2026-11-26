@@ -17,7 +17,7 @@ import type { ExactWorkflowSearchId } from './exact-event-search-id';
 import { isEncryptedMarker } from './hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from './sealed-events';
 import {
-  formatDuration,
+  formatPreciseDuration,
   formatTimestampParts,
   getEventDate,
   parseDate,
@@ -348,7 +348,7 @@ function getEventMessage(event: Event, queuedMs?: number): string {
   switch (event.eventType) {
     case 'step_started':
       if (attempt && attempt > 1) return `attempt ${attempt}`;
-      return queuedMs ? `queued ${formatDuration(queuedMs)}` : '';
+      return queuedMs ? `queued ${formatPreciseDuration(queuedMs)}` : '';
     case 'step_retrying': {
       const retryAt = parseDate(data.retryAfter);
       const head = attempt ? `attempt ${attempt} failed` : 'attempt failed';
