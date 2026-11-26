@@ -3,7 +3,13 @@
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../../lib/cn';
-import type { SpanMarker } from '../utils';
+import { TimestampTooltip } from '../../ui/timestamp-tooltip';
+import type { SpanMarker, SpanMarkerKind } from '../utils';
+
+const MARKER_KIND_PREFIX: Record<SpanMarkerKind, string> = {
+  hook_received: 'Hook received',
+  attr_set: 'Attribute set',
+};
 
 // ---------------------------------------------------------------------------
 // Marker projection
@@ -11,8 +17,9 @@ import type { SpanMarker } from '../utils';
 
 export interface VisibleMarker {
   leftPct: number;
-  /** Absolute (epoch) timestamp in ms. */
+  /** Absolute (epoch) timestamp in ms, for the tooltip. */
   timeMs: number;
+  kind: SpanMarkerKind;
 }
 
 /**
@@ -36,6 +43,7 @@ export function projectMarkers(
       {
         leftPct: ((m.timeMs - visibleStartMs) / visibleDurationMs) * 100,
         timeMs: m.timeMs,
+        kind: m.kind,
       },
     ];
   });
@@ -80,8 +88,10 @@ function MarkerTick({ className }: { className?: string }): ReactNode {
 
 /**
  * Point-in-time markers overlaid on a bar: one vertical tick per event (hook
- * resumptions and attribute writes), centered on the bar. The position is
- * clamped a hair inside the bar so an edge marker never jams the rounded corner.
+ * resumptions and attribute writes), centered on the bar. Each tick sits inside
+ * a larger hit target and, on hover, shows the shared relative-time context
+ * card, prefixed with the event kind. The position is clamped a hair inside
+ * the bar so an edge marker never jams the rounded corner.
  */
 export function MarkerLayer({
   markers,
@@ -93,12 +103,14 @@ export function MarkerLayer({
       {markers.map((m, index) => (
         <span
           key={`${m.timeMs}-${index}`}
-          className="pointer-events-none absolute top-0 bottom-0 z-10 flex w-8 -translate-x-1/2 items-center justify-center"
+          className="pointer-events-auto absolute top-0 bottom-0 z-10 flex w-8 -translate-x-1/2 items-center justify-center"
           style={{ left: `clamp(8px, ${m.leftPct}%, calc(100% - 8px))` }}
         >
-          <span className="flex h-6 w-8 items-center justify-center">
-            <MarkerTick className="h-3" />
-          </span>
+          <TimestampTooltip date={m.timeMs} prefix={MARKER_KIND_PREFIX[m.kind]}>
+            <span className="flex h-6 w-8 items-center justify-center">
+              <MarkerTick className="h-3" />
+            </span>
+          </TimestampTooltip>
         </span>
       ))}
     </>
