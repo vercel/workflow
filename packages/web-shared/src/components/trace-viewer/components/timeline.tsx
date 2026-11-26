@@ -12,6 +12,7 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
+import { getSpanColors } from '../../../lib/palette';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
 import { formatDurationPrecise, getHighResInMs } from '../util/timing';
@@ -28,10 +29,8 @@ import {
   computeSpanGaps,
   computeSpanMarkers,
   computeSpanSegments,
-  getResourceClassNames,
   getSpanDurationMs,
-  isSpanCancelled,
-  isSpanErrored,
+  getSpanState,
 } from '../utils';
 import {
   cullCollidingMarkers,
@@ -50,24 +49,9 @@ const TINY_BAR_BOX_SIZE_PX = 24;
 const TINY_BAR_WIDTH_PX = 4;
 export const TIMELINE_PADDING_PX = 16;
 
-const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
-  queued: 'bg-gray-400 border border-gray-500',
-  pending: 'bg-gray-200 border border-gray-500',
-  retrying: 'bg-gray-400 border border-gray-500',
-  waiting: 'bg-gray-200 border border-gray-500',
-  running: 'bg-blue-200 border border-blue-500',
-  completed: 'bg-blue-200 border border-blue-500',
-  cancelled: 'bg-gray-500 border border-gray-700',
-  failed: 'bg-red-200 border border-red-500',
-  succeeded: 'bg-green-200 border border-green-500',
-  sleeping: 'bg-gray-400 border border-gray-500',
-  received: 'bg-blue-200 border border-blue-500',
-};
-
 const STRIPED_SEGMENT_STATUSES: ReadonlySet<SegmentStatus> = new Set([
   'pending',
   'running',
-  'received',
 ]);
 
 function AnimatedStripes({ status }: { status: SegmentStatus }): ReactNode {
@@ -297,9 +281,11 @@ function LeadInConnector({
 }
 
 function SegmentBar({
+  resource,
   segments,
   showLabels = true,
 }: {
+  resource: string;
   segments: VisibleSegment[];
   /**
    * When false, segment duration labels are suppressed. Used when a separate
@@ -346,8 +332,8 @@ function SegmentBar({
           <div
             key={i}
             className={cn(
-              'absolute h-full min-w-px overflow-hidden rounded-sm',
-              SEGMENT_CLASSES[seg.status]
+              'absolute h-full min-w-px overflow-hidden rounded-sm border',
+              getSpanColors(resource, seg.status).bar
             )}
             style={{
               // 1px gap between adjacent segments, distributed equally.
@@ -449,14 +435,10 @@ const TimelineBar = memo(function TimelineBar({
   const hasMarkers =
     markers.length > 0 || offscreen.left !== null || offscreen.right !== null;
 
-  const isErrored = isSpanErrored(span);
-  const isCancelled = isSpanCancelled(span);
-  const colors = getResourceClassNames(span.resource);
-  const fallbackClassName = isErrored
-    ? (colors.errorClassName ?? 'border-red-500 bg-red-200')
-    : isCancelled
-      ? 'border-gray-700 bg-gray-500'
-      : colors.className;
+  const fallbackClassName = getSpanColors(
+    span.resource,
+    getSpanState(span)
+  ).bar;
 
   const totalLabel = formatDurationPrecise(totalDurationMs);
   const showTotalLabel =
@@ -489,7 +471,11 @@ const TimelineBar = memo(function TimelineBar({
           ) : geometry.mode.kind === 'tiny' ? (
             <div className={cn('h-6 rounded-sm border', fallbackClassName)} />
           ) : segments.length > 0 ? (
-            <SegmentBar segments={segments} showLabels={!hasMarkers} />
+            <SegmentBar
+              resource={span.resource}
+              segments={segments}
+              showLabels={!hasMarkers}
+            />
           ) : (
             <PlainBar
               className={fallbackClassName}
