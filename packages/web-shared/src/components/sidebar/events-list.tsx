@@ -8,7 +8,12 @@ import {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from '../../lib/sealed-events';
-import { getEventDate, parseDate } from '../../lib/time';
+import {
+  formatTimestamp,
+  formatTimestampParts,
+  getEventDate,
+  parseDate,
+} from '../../lib/time';
 import {
   Collapsible,
   CollapsibleContent,
@@ -23,17 +28,6 @@ import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
-
-const formatEventTimestamp = (date: Date): string =>
-  date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    second: 'numeric',
-    fractionalSecondDigits: 3,
-    timeZoneName: 'short',
-  });
 
 /**
  * A single event row that can lazy-load its eventData when expanded.
@@ -117,14 +111,7 @@ function EventItem({
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
     : getEventDate(event);
-  const displayedCreatedAtTime = displayedCreatedAt.toLocaleTimeString(
-    undefined,
-    {
-      hour: 'numeric',
-      minute: 'numeric',
-      second: 'numeric',
-    }
-  );
+  const { day, clock, ms } = formatTimestampParts(displayedCreatedAt);
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
@@ -150,8 +137,10 @@ function EventItem({
               {event.eventType}
             </span>
           </EventNoticeTooltip>
-          <span className="shrink-0 text-label-13 text-gray-900">
-            {displayedCreatedAtTime}
+          <span className="shrink-0 text-label-12-mono uppercase text-gray-900">
+            <TimestampTooltip date={displayedCreatedAt}>
+              <span>{`${day} ${clock}${ms}`}</span>
+            </TimestampTooltip>
           </span>
         </div>
       </CollapsibleTrigger>
@@ -163,7 +152,7 @@ function EventItem({
               <span className="text-label-12 text-gray-900">Occurred</span>
               <TimestampTooltip date={occurredAt}>
                 <span className="max-w-[70%] truncate text-right text-label-12-mono">
-                  {formatEventTimestamp(occurredAt)}
+                  {formatTimestamp(occurredAt)}
                 </span>
               </TimestampTooltip>
             </div>

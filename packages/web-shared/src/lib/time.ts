@@ -22,33 +22,37 @@ export function getEventDate(
 }
 
 const timestampFormat = new Intl.DateTimeFormat('en-US', {
+  year: 'numeric',
   month: 'short',
   day: '2-digit',
   hour: '2-digit',
   minute: '2-digit',
   second: '2-digit',
-  fractionalSecondDigits: 2,
+  fractionalSecondDigits: 3,
   hourCycle: 'h23',
 });
+
+const timestampFields = (date: Date) =>
+  Object.fromEntries(
+    timestampFormat.formatToParts(date).map(({ type, value }) => [type, value])
+  );
 
 export function formatTimestampParts(date: Date): {
   day: string;
   clock: string;
   ms: string;
 } {
-  const part = Object.fromEntries(
-    timestampFormat.formatToParts(date).map(({ type, value }) => [type, value])
-  );
+  const part = timestampFields(date);
   return {
     day: `${part.month} ${part.day}`,
     clock: `${part.hour}:${part.minute}:${part.second}`,
-    ms: `.${part.fractionalSecond}`,
+    ms: `.${part.fractionalSecond.slice(0, 2)}`,
   };
 }
 
 export function formatTimestamp(date: Date): string {
-  const { day, clock, ms } = formatTimestampParts(date);
-  return `${day} ${clock}${ms}`;
+  const part = timestampFields(date);
+  return `${part.month} ${Number(part.day)}, ${part.year} ${part.hour}:${part.minute}:${part.second}.${part.fractionalSecond}`;
 }
 
 export function formatDuration(ms: number, fractionDigits?: number): string {

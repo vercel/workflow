@@ -32,4 +32,21 @@ describe('buildEventRow', () => {
       notice: DUPLICATE_EVENT_MESSAGE,
     });
   });
+
+  it('shows when a failed attempt retries', () => {
+    const stepRetrying = {
+      eventId: 'evnt_step_retrying',
+      eventType: 'step_retrying',
+      correlationId: 'step_1',
+      createdAt: new Date(2026, 0, 1),
+      eventData: { attempt: 1, retryAfter: new Date(2026, 0, 1, 9, 5, 7, 250) },
+    } as Event;
+
+    expect(
+      buildEventRow(
+        stepRetrying,
+        buildEventLookups([stepRetrying], null, new Set())
+      ).message
+    ).toBe('attempt 1 failed · retry at 09:05:07');
+  });
 });

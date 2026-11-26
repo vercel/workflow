@@ -3,12 +3,11 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
-import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { cn } from '../../lib/cn';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
-import { parseDate } from '../../lib/time';
+import { formatTimestamp, parseDate } from '../../lib/time';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
   Collapsible,
@@ -350,23 +349,12 @@ const getModuleSpecifierFromName = (value: unknown): string => {
   return raw;
 };
 
-const formatLocalMillisecondTime = (date: Date): string =>
-  format(date, 'MMM dd HH:mm:ss.SS OO').toUpperCase();
-
-const localMillisecondTimeOrNull = (value: unknown): string | null => {
-  const date = parseDate(value);
-  if (!date) {
-    return null;
-  }
-  return formatLocalMillisecondTime(date);
-};
-
 const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
   const date = parseDate(value);
   if (!date) return null;
   return (
     <TimestampTooltip date={date}>
-      <span>{formatLocalMillisecondTime(date)}</span>
+      <span>{formatTimestamp(date)}</span>
     </TimestampTooltip>
   );
 };
@@ -412,8 +400,8 @@ const attributeToDisplayFn: Record<
   isWebhook: (value: unknown) => String(value),
   isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),
-  lastReceivedAt: localMillisecondTimeOrNull,
-  disposedAt: localMillisecondTimeOrNull,
+  lastReceivedAt: timestampWithTooltipOrNull,
+  disposedAt: timestampWithTooltipOrNull,
   // Internal resume plumbing, not surfaced in the UI
   resumeContext: (_value: unknown) => null,
   resumeId: (_value: unknown) => null,

@@ -8,9 +8,8 @@ import {
   type EventLevel,
   type EventListRow,
   formatElapsed,
-  formatTimestampParts,
 } from '../../lib/event-list-model';
-import { getEventDate, parseDate } from '../../lib/time';
+import { formatTimestampParts, getEventDate, parseDate } from '../../lib/time';
 import { formatDurationPrecise } from '../../lib/utils';
 import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
@@ -63,7 +62,7 @@ function TimestampCell({
 }) {
   const parts = formatTimestampParts(date);
   return (
-    <div className={cn(CELL, COL.time, 'tabular-nums')}>
+    <div className={cn(CELL, COL.time, 'tabular-nums uppercase')}>
       <TimestampTooltip date={date}>
         {/* The tooltip trigger lays this span out as a flex row, which would
             trim the space after the day unless whitespace is preserved. */}
