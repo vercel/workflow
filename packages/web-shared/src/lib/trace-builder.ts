@@ -21,10 +21,11 @@ import {
   WORKFLOW_LIBRARY,
   waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
+import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { findDuplicateEventIds } from './duplicate-events';
 import { isSealedNoopEvent } from './sealed-events';
 import { findStartHookCreation, type StartHookCreation } from './start-hook';
-import { getEventDate, otelTimeToMs } from './time';
+import { getEventDate } from './time';
 import type { Span } from './trace-types';
 
 /**

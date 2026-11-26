@@ -1,5 +1,5 @@
 import { isRunCreationEvent } from '@workflow/world';
-import { otelTimeToMs } from '../../lib/time';
+import { otelTimeToMs } from '../workflow-traces/trace-time-utils';
 import type { Span, SpanEvent } from './types';
 
 // ---------------------------------------------------------------------------
@@ -129,9 +129,17 @@ export function computeTimeMarkers(
   if (viewDuration <= 0) return [];
 
   const maxTicks = 6;
-  const { unit, size, interval } =
-    RULER_STEPS.find((step) => viewDuration / step.interval <= maxTicks) ??
-    RULER_STEPS[RULER_STEPS.length - 1];
+  const fits = (interval: number) => viewDuration / interval <= maxTicks;
+  const hour = 3_600_000;
+  const scale =
+    hour * 10 ** Math.floor(Math.log10(viewDuration / maxTicks / hour));
+  const { unit, size, interval } = RULER_STEPS.find((step) =>
+    fits(step.interval)
+  ) ?? {
+    unit: 'h',
+    size: hour,
+    interval: scale * ([1, 2, 5].find((count) => fits(count * scale)) ?? 10),
+  };
 
   const firstTick = Math.ceil(offset / interval) * interval;
   const markers: TimeMarker[] = [];

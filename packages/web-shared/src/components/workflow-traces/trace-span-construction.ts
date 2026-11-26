@@ -10,13 +10,10 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import type { StartHookCreation } from '../../lib/start-hook';
-import {
-  calculateDuration,
-  dateToOtelTime,
-  getEventDate,
-} from '../../lib/time';
+import { getEventDate } from '../../lib/time';
 import type { Span, SpanEvent } from '../../lib/trace-types';
 import { shouldShowVerticalLine } from './event-colors';
+import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
 export const WORKFLOW_LIBRARY = {
   name: 'workflow-development-kit',

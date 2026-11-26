@@ -1,6 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { otelTimeToMs } from '../src/lib/time.js';
+import { otelTimeToMs } from '../src/components/workflow-traces/trace-time-utils.js';
 import { buildTrace } from '../src/lib/trace-builder.js';
 
 const BASE_TIME = new Date('2026-03-16T00:00:00Z');

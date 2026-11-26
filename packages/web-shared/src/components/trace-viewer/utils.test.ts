@@ -291,6 +291,19 @@ describe('computeTimeMarkers', () => {
     ]);
     expect(labels(7 * 24 * 3_600_000)).toEqual(['0', '48h', '96h', '144h']);
   });
+
+  it('keeps labelling views longer than its listed steps', () => {
+    const markers = computeTimeMarkers(90 * 24 * 3_600_000, 0);
+
+    expect(markers.map((m) => m.label)).toEqual([
+      '0',
+      '500h',
+      '1000h',
+      '1500h',
+      '2000h',
+    ]);
+    expect(markers[markers.length - 1].position).toBeGreaterThan(0.9);
+  });
 });
 
 describe('getResourceClassNames', () => {

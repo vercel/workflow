@@ -13,11 +13,12 @@ import {
 import { useLoadMoreOnScroll } from '../../hooks/use-load-more-on-scroll';
 import { useReducedMotion } from '../../hooks/use-reduced-motion';
 import { cn } from '../../lib/cn';
-import { formatPreciseDuration, otelTimeToMs } from '../../lib/time';
+import { formatPreciseDuration } from '../../lib/time';
 import { IconButton } from '../ui/icon-button';
 import { SearchInput } from '../ui/search-input';
 import { Spinner } from '../ui/spinner';
 import { TooltipProvider } from '../ui/tooltip';
+import { otelTimeToMs } from '../workflow-traces/trace-time-utils';
 import { TraceDetailPanel } from './components/detail-panel';
 import EventList from './components/event-list';
 import { Minimap } from './components/minimap';
