@@ -15,7 +15,7 @@
 <!--
   ✍️ Provide information about which parts of your changes are covered by tests,
   what the reasoning behind your tests was, and which manual flows you went through.
-  For observability (CLI/web/web-shared) changes, showing a screenshot/video and mentioning test data used is often sufficient.
+  For observability (CLI/web/web-shared) changes, showing before and after screenshots or a video and mentioning test data used is often sufficient.
   For builder changes, building the related workbench app and showing it compiles and runs correctly is often sufficient.
   For world, runtime, core, etc. changes, test files are required.
 -->
@@ -39,7 +39,7 @@ AGENTS:
   - Break up anything longer than a few sentences with lists, tables, or `####` headings, one idea per item
   - Explain terms and internal names the first time they appear, and put code identifiers in backticks
 - If the PR changes docs pages or the observability UI:
-  - Add the preview sections described under "Pull requests" in AGENTS.md after the Why
+  - Add the preview and screenshot sections described under "Pull requests" in AGENTS.md after the Why
 - For complex changes (>1k lines, not counting lockfiles):
   - Add a `### Walkthrough` section after How did you test your changes? which breaks down the primary changes into easy-to-follow `#### Sub-Sections`
 - For all changes:
