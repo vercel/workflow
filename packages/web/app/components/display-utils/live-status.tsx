@@ -1,4 +1,9 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
+import {
+  STATUS_DOT,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
 import { LIVE_UPDATE_INTERVAL_MS } from '~/lib/utils';
 
 interface LiveStatusProps {
@@ -14,12 +19,14 @@ export function LiveStatus({ hasError, errorMessage }: LiveStatusProps) {
           <div className="flex items-center gap-1.5">
             <div
               className={`w-2 h-2 rounded-full ${
-                hasError ? 'bg-red-500' : 'bg-green-500 animate-pulse'
+                hasError
+                  ? STATUS_DOT.failed
+                  : `${STATUS_DOT.running} animate-pulse`
               }`}
             />
             <span
               className={`text-xs ${
-                hasError ? 'text-red-600' : 'text-muted-foreground'
+                hasError ? 'text-red-800' : 'text-muted-foreground'
               }`}
             >
               {hasError ? 'Error' : 'Live'}
