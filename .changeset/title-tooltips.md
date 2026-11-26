@@ -1,6 +1,6 @@
 ---
-'@workflow/web-shared': minor
+'@workflow/web-shared': patch
 '@workflow/web': patch
 ---
 
-Replace native `title` tooltips with the shared Tooltip; truncated text shows its full value in a tooltip only when it is cut off. Export `TruncatedTooltip`.
+Replace native `title` hover text with the shared Tooltip, which no longer needs a `TooltipProvider`.

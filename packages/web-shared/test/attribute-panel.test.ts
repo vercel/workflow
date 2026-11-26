@@ -2,16 +2,9 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { AttributePanel } from '../src/components/sidebar/attribute-panel.js';
-import { TooltipProvider } from '../src/components/ui/tooltip.js';
 
 const render = (data: Record<string, unknown>): string =>
-  renderToStaticMarkup(
-    createElement(
-      TooltipProvider,
-      null,
-      createElement(AttributePanel, { data })
-    )
-  );
+  renderToStaticMarkup(createElement(AttributePanel, { data }));
 
 /**
  * `vercelId` is the key the analytics read contract stores a flow-function

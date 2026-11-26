@@ -42,13 +42,7 @@ import {
 } from '../../lib/stream-display';
 import { Button } from './button';
 import styles from './data-inspector.module.css';
-import { DisabledReasonTooltip } from './decrypt-button';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from './tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip';
 
 // ---------------------------------------------------------------------------
 // Decoded byte display (built by `collapseRefs`, rendered by `DataRender`)
@@ -128,23 +122,28 @@ function EncryptedInlineLabel() {
   const ctx = useContext(DecryptClickContext);
   if (ctx) {
     return (
-      <DisabledReasonTooltip
-        reason={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
-      >
-        <Button
-          size="small"
-          className="align-baseline"
-          loading={ctx.isDecrypting}
-          disabled={ctx.isDecryptDisabled}
-          prefix={<Lock />}
-          onClick={(e) => {
-            e.stopPropagation();
-            ctx.onDecrypt();
-          }}
-        >
-          Decrypt
-        </Button>
-      </DisabledReasonTooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button
+              size="small"
+              className="align-baseline"
+              loading={ctx.isDecrypting}
+              disabled={ctx.isDecryptDisabled}
+              prefix={<Lock />}
+              onClick={(e) => {
+                e.stopPropagation();
+                ctx.onDecrypt();
+              }}
+            >
+              Decrypt
+            </Button>
+          </span>
+        </TooltipTrigger>
+        {ctx.isDecryptDisabled && ctx.decryptDisabledReason ? (
+          <TooltipContent>{ctx.decryptDisabledReason}</TooltipContent>
+        ) : null}
+      </Tooltip>
     );
   }
   return (
@@ -216,41 +215,39 @@ function DecodedBytesChunk({
         <DecodedBytesInspector decodedText={decodedText} source={source} />
       )}
       <div className="mt-2 flex">
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="inline-flex overflow-hidden rounded border border-gray-400">
-                <button
-                  type="button"
-                  className={cn(
-                    'h-5 px-1.5 font-medium text-[10px] text-gray-900',
-                    selectedView === 'decoded' ? 'bg-gray-200' : 'bg-gray-100'
-                  )}
-                  onClick={() => setSelectedView('decoded')}
-                  aria-pressed={selectedView === 'decoded'}
-                  aria-label="Show decoded text"
-                >
-                  Decoded
-                </button>
-                <button
-                  type="button"
-                  className={cn(
-                    'h-5 border-gray-400 border-l px-1.5 font-medium text-[10px] text-gray-900',
-                    selectedView === 'bytes' ? 'bg-gray-200' : 'bg-gray-100'
-                  )}
-                  onClick={() => setSelectedView('bytes')}
-                  aria-pressed={selectedView === 'bytes'}
-                  aria-label="Show raw bytes summary"
-                >
-                  Bytes
-                </button>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              {`${source.type} decoded as ${source.encoding.toUpperCase()} text. Switch to Bytes to inspect the summarized raw value.`}
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="inline-flex overflow-hidden rounded border border-gray-400">
+              <button
+                type="button"
+                className={cn(
+                  'h-5 px-1.5 font-medium text-[10px] text-gray-900',
+                  selectedView === 'decoded' ? 'bg-gray-200' : 'bg-gray-100'
+                )}
+                onClick={() => setSelectedView('decoded')}
+                aria-pressed={selectedView === 'decoded'}
+                aria-label="Show decoded text"
+              >
+                Decoded
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'h-5 border-gray-400 border-l px-1.5 font-medium text-[10px] text-gray-900',
+                  selectedView === 'bytes' ? 'bg-gray-200' : 'bg-gray-100'
+                )}
+                onClick={() => setSelectedView('bytes')}
+                aria-pressed={selectedView === 'bytes'}
+                aria-label="Show raw bytes summary"
+              >
+                Bytes
+              </button>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            {`${source.type} decoded as ${source.encoding.toUpperCase()}`}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </div>
   );
