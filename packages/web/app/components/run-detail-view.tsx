@@ -69,7 +69,6 @@ import {
 import { useServerConfig } from '~/lib/world-config-context';
 import type { RunUsageOutletContext } from '~/routes/run-usage';
 import { CopyableText } from './display-utils/copyable-text';
-import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
@@ -526,11 +525,6 @@ export function RunDetailView({
 
   const workflowName = parseWorkflowName(run.workflowName)?.shortName;
 
-  // At this point, we've already returned if there was an error
-  // So hasError is always false here
-  const hasError = false;
-  const errorMessage = '';
-
   return (
     <>
       {/* Cancel Confirmation Dialog */}
@@ -629,7 +623,6 @@ export function RunDetailView({
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <LiveStatus hasError={hasError} errorMessage={errorMessage} />
                 <RunActionsButtons
                   env={env}
                   runId={runId}
