@@ -338,7 +338,10 @@ export function HooksTable({
                       </TableCell>
                       <TableCell className="py-2 text-muted-foreground text-xs">
                         {hook.createdAt ? (
-                          <TimestampTooltip date={hook.createdAt} />
+                          <TimestampTooltip
+                            date={hook.createdAt}
+                            alwaysRelative
+                          />
                         ) : (
                           '-'
                         )}

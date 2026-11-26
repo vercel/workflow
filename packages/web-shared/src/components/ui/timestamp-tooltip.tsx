@@ -1,8 +1,8 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
-import { formatShortTimeAgo, formatTimeAgo, parseDate } from '../../lib/time';
+import { useEffect, useReducer } from 'react';
+import { formatRelativeTime, formatTimeAgo, parseDate } from '../../lib/time';
 import {
   ContextCardProvider,
   ContextCardTrigger,
@@ -10,19 +10,30 @@ import {
   useHasContextCardProvider,
 } from './context-card';
 
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(Date.now);
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(timer);
-  }, [intervalMs]);
-
-  return now;
+interface RelativeTimeOptions {
+  alwaysRelative?: boolean;
+  verbs?: [future: string, past: string];
 }
 
-function ShortTimeAgo({ date }: { date: number }): ReactNode {
-  return formatShortTimeAgo(date, useNow(60_000));
+function useTick(delay: number): void {
+  const [, tick] = useReducer((count: number) => count + 1, 0);
+
+  useEffect(() => {
+    const timer = setTimeout(tick, delay);
+    return () => clearTimeout(timer);
+  });
+}
+
+function RelativeTime({
+  date,
+  alwaysRelative,
+  verbs,
+}: { date: number } & RelativeTimeOptions): ReactNode {
+  const now = Date.now();
+  useTick(Math.abs(now - date) < 60_000 ? 1000 : 60_000);
+
+  const text = formatRelativeTime(date, now, alwaysRelative);
+  return verbs ? `${verbs[date > now ? 0 : 1]} ${text.toLowerCase()}` : text;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +90,8 @@ function ZoneDateTimeRow({
 
 function TimeCard({ date, prefix }: { date: number; prefix?: string }) {
   const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const timeAgo = formatTimeAgo(date, useNow(1000));
+  useTick(1000);
+  const timeAgo = formatTimeAgo(date, Date.now());
 
   return (
     <div className="flex flex-col gap-3 min-w-[300px]">
@@ -112,12 +124,13 @@ export function TimestampTooltip({
   children,
   side = 'top',
   prefix,
+  ...relativeTimeOptions
 }: {
   date: number | Date | string | null | undefined;
   children?: ReactNode;
   side?: ContextCardTriggerProps['side'];
   prefix?: string;
-}): ReactNode {
+} & RelativeTimeOptions): ReactNode {
   const hasProvider = useHasContextCardProvider();
   const ts = parseDate(date)?.getTime();
 
@@ -131,7 +144,7 @@ export function TimestampTooltip({
     >
       {children ?? (
         <span>
-          <ShortTimeAgo date={ts} />
+          <RelativeTime date={ts} {...relativeTimeOptions} />
         </span>
       )}
     </ContextCardTrigger>

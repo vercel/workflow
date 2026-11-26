@@ -16,9 +16,24 @@ describe('TimestampTooltip', () => {
 
     expect(
       renderToStaticMarkup(
-        createElement(TimestampTooltip, { date: NOW.getTime() - 3 * DAY })
+        createElement(TimestampTooltip, { date: NOW.getTime() - 2 * DAY })
       )
-    ).toContain('3 days ago');
+    ).toContain('2d ago');
+  });
+
+  it('leads the label with the verb for its tense', () => {
+    vi.useFakeTimers({ now: NOW });
+    const label = (date: number) =>
+      renderToStaticMarkup(
+        createElement(TimestampTooltip, {
+          date,
+          verbs: ['resumes', 'resumed'],
+        })
+      );
+
+    expect(label(NOW.getTime() + 2 * DAY)).toContain('resumes in 2d');
+    expect(label(NOW.getTime() - 2 * DAY)).toContain('resumed 2d ago');
+    expect(label(NOW.getTime() - 1000)).toContain('resumed just now');
   });
 
   it('renders its children in place of the label', () => {

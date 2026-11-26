@@ -104,9 +104,6 @@ const TIME_UNITS = [
   ['second', SECOND],
 ] as const;
 
-const relativeLabel = (diff: number, text: string): string =>
-  diff < 0 ? `in ${text}` : `${text} ago`;
-
 export function formatTimeAgo(date: number, now: number): string {
   const diff = now - date;
   let remaining = Math.abs(diff);
@@ -121,24 +118,25 @@ export function formatTimeAgo(date: number, now: number): string {
     if (parts.length === 3) break;
   }
 
-  return parts.length ? relativeLabel(diff, parts.join(', ')) : 'Just now';
+  if (!parts.length) return 'Just now';
+  return diff < 0 ? `in ${parts.join(', ')}` : `${parts.join(', ')} ago`;
 }
 
-export function formatShortTimeAgo(date: number, now: number): string {
-  const diff = now - date;
+export function formatRelativeTime(
+  date: number,
+  now: number,
+  alwaysRelative = false
+): string {
+  const age = now - date;
+  if (age <= -SECOND) return `in ${formatShortUnit(-age)}`;
+  if (age < 44 * SECOND) return 'Just now';
+  if (alwaysRelative || age < 3 * DAY) return `${formatShortUnit(age)} ago`;
 
-  for (const [unit, ms] of [
-    ['day', DAY],
-    ['hour', HOUR],
-    ['minute', MINUTE],
-  ] as const) {
-    const value = Math.floor(Math.abs(diff) / ms);
-    if (value > 0) {
-      return relativeLabel(diff, `${value} ${unit}${value > 1 ? 's' : ''}`);
-    }
-  }
-
-  return 'Just now';
+  const sameYear = new Date(date).getFullYear() === new Date(now).getFullYear();
+  return new Date(date).toLocaleDateString(
+    'en-US',
+    sameYear ? { month: 'short', day: 'numeric' } : { dateStyle: 'short' }
+  );
 }
 
 export function otelTimeToMs([seconds, nanoseconds]: [number, number]): number {

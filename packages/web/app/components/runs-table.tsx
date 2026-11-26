@@ -913,14 +913,17 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                     </TableCell>
                     <TableCell className="py-2 text-muted-foreground text-xs">
                       {run.startedAt ? (
-                        <TimestampTooltip date={run.startedAt} />
+                        <TimestampTooltip date={run.startedAt} alwaysRelative />
                       ) : (
                         '-'
                       )}
                     </TableCell>
                     <TableCell className="py-2 text-muted-foreground text-xs">
                       {run.completedAt ? (
-                        <TimestampTooltip date={run.completedAt} />
+                        <TimestampTooltip
+                          date={run.completedAt}
+                          alwaysRelative
+                        />
                       ) : (
                         '-'
                       )}

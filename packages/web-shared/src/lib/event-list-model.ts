@@ -16,12 +16,7 @@ import { DUPLICATE_EVENT_MESSAGE } from './duplicate-events';
 import type { ExactWorkflowSearchId } from './exact-event-search-id';
 import { isEncryptedMarker } from './hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from './sealed-events';
-import {
-  formatPreciseDuration,
-  formatTimestampParts,
-  getEventDate,
-  parseDate,
-} from './time';
+import { formatPreciseDuration, getEventDate, parseDate } from './time';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Time
@@ -349,25 +344,14 @@ function getEventMessage(event: Event, queuedMs?: number): string {
     case 'step_started':
       if (attempt && attempt > 1) return `attempt ${attempt}`;
       return queuedMs ? `queued ${formatPreciseDuration(queuedMs)}` : '';
-    case 'step_retrying': {
-      const retryAt = parseDate(data.retryAfter);
-      const head = attempt ? `attempt ${attempt} failed` : 'attempt failed';
-      return retryAt
-        ? `${head} · retry at ${formatTimestampParts(retryAt).clock}`
-        : head;
-    }
+    case 'step_retrying':
+      return attempt ? `attempt ${attempt} failed` : 'attempt failed';
     case 'step_failed':
       return attempt ? `failed on attempt ${attempt}` : 'failed';
     case 'run_failed':
       return typeof data.errorCode === 'string' ? data.errorCode : '';
     case 'run_cancelled':
       return typeof data.cancelReason === 'string' ? data.cancelReason : '';
-    case 'wait_created': {
-      const resumeAt = parseDate(data.resumeAt);
-      return resumeAt
-        ? `resumes at ${formatTimestampParts(resumeAt).clock}`
-        : '';
-    }
     case 'hook_created':
       return data.isWebhook ? 'webhook' : '';
     case 'hook_conflict':
@@ -386,6 +370,24 @@ function getEventMessage(event: Event, queuedMs?: number): string {
     }
     default:
       return '';
+  }
+}
+
+export interface EventMessageTime {
+  date: Date;
+  verbs: [future: string, past: string];
+}
+
+function getEventMessageTime(event: Event): EventMessageTime | undefined {
+  const data = (event.eventData ?? {}) as Record<string, unknown>;
+
+  if (event.eventType === 'step_retrying') {
+    const date = parseDate(data.retryAfter);
+    return date ? { date, verbs: ['retries', 'retried'] } : undefined;
+  }
+  if (event.eventType === 'wait_created') {
+    const date = parseDate(data.resumeAt);
+    return date ? { date, verbs: ['resumes', 'resumed'] } : undefined;
   }
 }
 
@@ -425,6 +427,8 @@ export interface EventListRow {
   /** Step name, hook token, `sleep`, or the workflow name; may be empty. */
   name: string;
   message: string;
+  /** When the step retries or the wait resumes, shown after the message. */
+  messageTime?: EventMessageTime;
   /** Why the row is struck through, when it is. */
   notice?: string;
   /** The step's queued, attempt and backoff breakdown; empty for other events. */
@@ -465,6 +469,7 @@ export function buildEventRow(
         event,
         segments.find((segment) => segment.kind === 'queued')?.ms
       ),
+    messageTime: ignored ? undefined : getEventMessageTime(event),
     notice: ignored?.notice,
     segments,
     durationMs: lookups.timing.eventDurations.get(event.eventId),
