@@ -1,5 +1,8 @@
 # Agent instructions
 
+> [!IMPORTANT]
+> Always read [the `web-guidelines` skill](.agents/skills/web-guidelines/SKILL.md) if your task involves the observability UI (`packages/web` or `packages/web-shared`).
+
 **CRITICAL RULES:**
 - NEVER push directly to the `main` or `stable` branches
 - Do not remove or break agent-discoverable docs sitemap behavior: keep docs/app/sitemap.md/route.ts and docs/app/[lang]/sitemap.md/route.ts, and keep the sitemap link in docs/app/[lang]/llms.mdx/[[...slug]]/route.ts.
@@ -417,7 +420,7 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - Preview-only tooling pages go in a docs tree's `internal/` folder with `internal: true` frontmatter, which makes production answer 404 for them, keeps them out of the sidebar, sitemap, search, `llms.txt` and chat, and marks them `noindex`. Public pages never link to them.
 - `pnpm --filter docs lint:links` (the Docs Links CI job) enforces the three rules above. When a page leaves the site, add a redirect in `docs/next.config.ts`.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
-- `skills/` holds skills published for SDK users. Skills for contributors working in this repository live in `.agents/skills/` and are not published. Read [`web-guidelines`](.agents/skills/web-guidelines/SKILL.md) before changing `packages/web` or `packages/web-shared`.
+- `skills/` holds skills published for SDK users. Skills for contributors working in this repository live in `.agents/skills/` and are not published.
 
 ## Pull requests
 
@@ -441,6 +444,12 @@ When a PR changes the observability UI (`packages/web` or `packages/web-shared`)
 - Vercel shortens long branch slugs, so once the `vercel[bot]` comment appears on the PR, compare the link with the Preview link in its `workflow-web` row and use that one if they differ.
 - Link to the page that shows the change: the home page (`/`, with `?tab=runs`, `hooks` or `workflows`) or a run (`/run/<runId>`, with `?tab=trace`, `events`, `streams` or `graph`).
 - The preview deployment sits behind deployment protection, so the link requires Vercel team access. This is expected; include it anyway for reviewers.
+
+## Code review
+
+Agentic code review tools (Vercel Agent Code Review, Claude Code, Codex, Cursor, and others) read this file when reviewing PRs. Before commenting on a diff, load the skill that owns the changed code, so feedback rests on this repository's rules rather than the reviewer's training data:
+
+- **Observability UI (`packages/web`, `packages/web-shared`)**: load [`web-guidelines`](.agents/skills/web-guidelines/SKILL.md), read every guide its table selects for the changed code, and read [`packages/web-shared/AGENTS.md`](packages/web-shared/AGENTS.md) for styling. Cite the guide behind each finding, e.g. `web-guidelines/loading-states` or `packages/web-shared/AGENTS.md#never-use-opacity-to-set-a-text-colour`. Label a finding no guide supports as a suggestion, not a rule. Flag only violations the diff introduces; existing ones recorded in a `BROKEN-WINDOWS.md` are not findings on that PR.
 
 ## SWC plugin
 
