@@ -16,7 +16,7 @@ import { DUPLICATE_EVENT_MESSAGE } from './duplicate-events';
 import type { ExactWorkflowSearchId } from './exact-event-search-id';
 import { isEncryptedMarker } from './hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from './sealed-events';
-import { formatTimestamp, getEventDate, parseDate } from './time';
+import { formatTimestampParts, getEventDate, parseDate } from './time';
 import { formatDurationPrecise } from './utils';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -352,7 +352,9 @@ function getEventMessage(event: Event, queuedMs?: number): string {
     case 'step_retrying': {
       const retryAt = parseDate(data.retryAfter);
       const head = attempt ? `attempt ${attempt} failed` : 'attempt failed';
-      return retryAt ? `${head} · retry at ${formatTimestamp(retryAt)}` : head;
+      return retryAt
+        ? `${head} · retry at ${formatTimestampParts(retryAt).clock}`
+        : head;
     }
     case 'step_failed':
       return attempt ? `failed on attempt ${attempt}` : 'failed';
@@ -362,7 +364,9 @@ function getEventMessage(event: Event, queuedMs?: number): string {
       return typeof data.cancelReason === 'string' ? data.cancelReason : '';
     case 'wait_created': {
       const resumeAt = parseDate(data.resumeAt);
-      return resumeAt ? `resumes at ${formatTimestamp(resumeAt)}` : '';
+      return resumeAt
+        ? `resumes at ${formatTimestampParts(resumeAt).clock}`
+        : '';
     }
     case 'hook_created':
       return data.isWebhook ? 'webhook' : '';
