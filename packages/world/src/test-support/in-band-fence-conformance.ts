@@ -32,6 +32,9 @@ import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
  *   `creatorMessageId` of an inline step's `step_retrying`.
  * - An in-band write is stored with the `occurredAt` it was sent with as its
  *   `createdAt`.
+ * - An out-of-band `wait_completed` is refused with a 409
+ *   (`wait-completion-in-band-only`) and allocates nothing: only the
+ *   orchestrator completes a spec 9 run's waits.
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
@@ -225,6 +228,46 @@ export function inBandFenceConformance(
           expectedSeqInBand: before.snapshot?.seqInBand,
         })
       ).resolves.toBeDefined();
+    });
+
+    test('refuses an out-of-band wait_completed and allocates nothing', async () => {
+      const events = options.events();
+      const runId = await createRun(events);
+      const waitId = uniqueId('wait');
+      await (events.create as CreateAny)(runId, runStarted, {
+        inBand: true,
+        expectedSeqInBand: atRunCreation,
+      });
+      await (events.create as CreateAny)(runId, waitCreated(waitId), {
+        inBand: true,
+        expectedSeqInBand: atRunCreation + 1,
+      });
+      const before = await load(events, runId);
+      const waitCompleted = {
+        eventType: 'wait_completed',
+        correlationId: waitId,
+        specVersion: SPEC,
+        eventData: { resumeAt: new Date() },
+      } as AnyEventRequest;
+
+      const error = await (events.create as CreateAny)(runId, waitCompleted, {
+        inBand: false,
+      }).catch((err: unknown) => err);
+
+      expect(error).toMatchObject({
+        status: 409,
+        code: 'wait-completion-in-band-only',
+      });
+      expect(await load(events, runId)).toEqual(before);
+      // The orchestrator still completes it, at the very next slot.
+      const completed = await (events.create as CreateAny)(
+        runId,
+        waitCompleted,
+        { inBand: true, expectedSeqInBand: before.snapshot?.seqInBand }
+      );
+      expect(eventIdToSlot(completed.event?.eventId ?? '')).toBe(
+        (before.snapshot?.seq ?? 0) + 1
+      );
     });
 
     test('of concurrent in-band writers holding the same count, exactly one wins', async () => {

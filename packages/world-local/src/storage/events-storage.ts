@@ -806,6 +806,21 @@ export function createEventsStorage(
       }
     }
 
+    // A single-orchestrator run's waits are completed only by its
+    // orchestrator, which runs ahead of far-off waits on that assumption; an
+    // out-of-band completion could land below its speculative writes. Waking
+    // the run asks the orchestrator to write it instead.
+    if (
+      data.eventType === 'wait_completed' &&
+      params?.inBand !== true &&
+      (run?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ) {
+      throw new WorkflowWorldError(
+        "On a single-orchestrator run, wait_completed is written only by the run's orchestrator. Wake the run instead; its orchestrator completes the wait.",
+        { status: 409, code: 'wait-completion-in-band-only' }
+      );
+    }
+
     // ---- The event --------------------------------------------------------
     let event = {
       ...data,

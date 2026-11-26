@@ -67,8 +67,20 @@ async function startRun(
     specVersion
   );
   const runId = run.runId;
-  const event = (e: Record<string, unknown>) =>
-    storage.events.create(runId, { specVersion, ...e } as never);
+  const event = async (e: Record<string, unknown>) => {
+    // A single-orchestrator run's waits are completed only in-band.
+    if (
+      e.eventType === 'wait_completed' &&
+      specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ) {
+      const { snapshot } = await storage.events.list({ runId });
+      return storage.events.create(runId, { specVersion, ...e } as never, {
+        inBand: true,
+        expectedSeqInBand: snapshot?.seqInBand,
+      });
+    }
+    return storage.events.create(runId, { specVersion, ...e } as never);
+  };
   await event({ eventType: 'run_started' });
   return { runId, event };
 }
