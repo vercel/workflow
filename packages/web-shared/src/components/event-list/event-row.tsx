@@ -219,7 +219,7 @@ export function EventRow({
   onSelect,
   showSeparateEventOccurrenceTimestamps = false,
 }: EventRowProps) {
-  const { event, level, name, message, notice } = row;
+  const { event, level, name, message, messageTime, notice } = row;
   const occurredAt = parseDate(event.occurredAt);
   const displayedAt = showSeparateEventOccurrenceTimestamps
     ? new Date(event.createdAt)
@@ -301,7 +301,13 @@ export function EventRow({
         )}
         title={message || undefined}
       >
-        <span className="truncate">{message}</span>
+        <span className="truncate">
+          {message}
+          {message && messageTime ? ' · ' : null}
+          {messageTime ? (
+            <TimestampTooltip {...messageTime} alwaysRelative />
+          ) : null}
+        </span>
       </div>
     </div>
   );

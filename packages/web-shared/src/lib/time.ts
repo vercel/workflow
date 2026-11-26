@@ -95,22 +95,46 @@ export function formatPreciseDuration(ms: number): string {
   return formatDuration(ms);
 }
 
-const relativeTimeFormat = new Intl.RelativeTimeFormat('en-US', {
-  numeric: 'auto',
-});
-
-const RELATIVE_TIME_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+const TIME_UNITS = [
   ['year', 365 * DAY],
-  ['month', 30 * DAY],
+  ['month', 2_628_000_000],
   ['day', DAY],
   ['hour', HOUR],
   ['minute', MINUTE],
-];
+  ['second', SECOND],
+] as const;
 
-export function formatRelativeTime(date: number, now: number): string {
-  const diff = date - now;
-  const [unit, size] = RELATIVE_TIME_UNITS.find(
-    ([, size]) => Math.abs(diff) >= size
-  ) ?? ['second', SECOND];
-  return relativeTimeFormat.format(Math.trunc(diff / size), unit);
+export function formatTimeAgo(date: number, now: number): string {
+  const diff = now - date;
+  let remaining = Math.abs(diff);
+  const parts: string[] = [];
+
+  for (const [unit, ms] of TIME_UNITS) {
+    const value = Math.floor(remaining / ms);
+    if (value > 0 || parts.length > 0) {
+      parts.push(`${value} ${unit}${value !== 1 ? 's' : ''}`);
+      remaining %= ms;
+    }
+    if (parts.length === 3) break;
+  }
+
+  if (!parts.length) return 'Just now';
+  return diff < 0 ? `in ${parts.join(', ')}` : `${parts.join(', ')} ago`;
+}
+
+export function formatRelativeTime(
+  date: number,
+  now: number,
+  alwaysRelative = false
+): string {
+  const age = now - date;
+  if (age <= -SECOND) return `in ${formatShortUnit(-age)}`;
+  if (age < 44 * SECOND) return 'Just now';
+  if (alwaysRelative || age < 3 * DAY) return `${formatShortUnit(age)} ago`;
+
+  const sameYear = new Date(date).getFullYear() === new Date(now).getFullYear();
+  return new Date(date).toLocaleDateString(
+    'en-US',
+    sameYear ? { month: 'short', day: 'numeric' } : { dateStyle: 'short' }
+  );
 }

@@ -33,20 +33,24 @@ describe('buildEventRow', () => {
     });
   });
 
-  it('shows when a failed attempt retries', () => {
+  it('gives a failed attempt the time it retries', () => {
+    const retryAfter = new Date(2026, 0, 1, 9, 5, 7, 250);
     const stepRetrying = {
       eventId: 'evnt_step_retrying',
       eventType: 'step_retrying',
       correlationId: 'step_1',
       createdAt: new Date(2026, 0, 1),
-      eventData: { attempt: 1, retryAfter: new Date(2026, 0, 1, 9, 5, 7, 250) },
+      eventData: { attempt: 1, retryAfter },
     } as Event;
 
     expect(
       buildEventRow(
         stepRetrying,
         buildEventLookups([stepRetrying], null, new Set())
-      ).message
-    ).toBe('attempt 1 failed · retry at 09:05:07');
+      )
+    ).toMatchObject({
+      message: 'attempt 1 failed',
+      messageTime: { date: retryAfter, verbs: ['retries', 'retried'] },
+    });
   });
 });

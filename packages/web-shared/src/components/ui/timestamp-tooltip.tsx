@@ -1,7 +1,8 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useReducer } from 'react';
+import { formatRelativeTime, formatTimeAgo, parseDate } from '../../lib/time';
 import {
   ContextCardProvider,
   ContextCardTrigger,
@@ -9,122 +10,30 @@ import {
   useHasContextCardProvider,
 } from './context-card';
 
-// ---------------------------------------------------------------------------
-// Time formatting helpers
-// ---------------------------------------------------------------------------
-
-interface TimeUnit {
-  unit: Intl.RelativeTimeFormatUnit;
-  ms: number;
+interface RelativeTimeOptions {
+  alwaysRelative?: boolean;
+  verbs?: [future: string, past: string];
 }
 
-const TIME_UNITS: TimeUnit[] = [
-  { unit: 'year', ms: 31536000000 },
-  { unit: 'month', ms: 2628000000 },
-  { unit: 'day', ms: 86400000 },
-  { unit: 'hour', ms: 3600000 },
-  { unit: 'minute', ms: 60000 },
-  { unit: 'second', ms: 1000 },
-];
-
-function formatTimeDifference(diff: number): string {
-  let remaining = Math.abs(diff);
-  const result: string[] = [];
-
-  for (const { unit, ms } of TIME_UNITS) {
-    const value = Math.floor(remaining / ms);
-    if (value > 0 || result.length > 0) {
-      result.push(`${value} ${unit}${value !== 1 ? 's' : ''}`);
-      remaining %= ms;
-    }
-    if (result.length === 3) break;
-  }
-
-  return result.join(', ');
-}
-
-/**
- * Detailed relative time for a `date` relative to `now`, e.g.
- * "2 hours, 15 minutes, 30 seconds ago" for past dates and
- * "in 2 hours, 15 minutes, 30 seconds" for future dates.
- */
-export function formatTimeAgo(date: number, now: number): string {
-  const diff = now - date;
-  const formattedDiff = formatTimeDifference(diff);
-  if (!formattedDiff) return 'Just now';
-  return diff < 0 ? `in ${formattedDiff}` : `${formattedDiff} ago`;
-}
-
-/**
- * Short relative time for a `date` relative to `now`, e.g. "3 days ago" for
- * past dates and "In 3 days" for future dates.
- */
-export function formatShortTimeAgo(date: number, now: number): string {
-  const diff = now - date;
-  const abs = Math.abs(diff);
-  const days = Math.floor(abs / (1000 * 60 * 60 * 24));
-  const hours = Math.floor(abs / (1000 * 60 * 60));
-  const minutes = Math.floor(abs / (1000 * 60));
-
-  let value: string;
-  if (days > 0) {
-    value = `${days} day${days > 1 ? 's' : ''}`;
-  } else if (hours > 0) {
-    value = `${hours} hour${hours > 1 ? 's' : ''}`;
-  } else if (minutes > 0) {
-    value = `${minutes} minute${minutes > 1 ? 's' : ''}`;
-  } else {
-    return diff < 0 ? 'In less than a minute' : 'Just now';
-  }
-  return diff < 0 ? `In ${value}` : `${value} ago`;
-}
-
-/**
- * Detailed relative time string that auto-updates every second
- * (e.g. "2 hours, 15 minutes, 30 seconds ago", or "in 5 minutes, 3 seconds"
- * for future dates). Used inside the hover card.
- */
-export function useTimeAgo(date: number): string {
-  const [timeAgo, setTimeAgo] = useState<string>('');
+function useTick(delay: number): void {
+  const [, tick] = useReducer((count: number) => count + 1, 0);
 
   useEffect(() => {
-    const updateTimeAgo = (): void => {
-      setTimeAgo(formatTimeAgo(date, Date.now()));
-    };
-
-    updateTimeAgo();
-    const timer = setInterval(updateTimeAgo, 1000);
-    return () => clearInterval(timer);
-  }, [date]);
-
-  return timeAgo;
+    const timer = setTimeout(tick, delay);
+    return () => clearTimeout(timer);
+  });
 }
 
-/**
- * Short relative time string that auto-updates every minute
- * (e.g. "3 days ago", "5 hours ago", "In 2 hours"). Returns an empty
- * string if `date` is
- * nullish.
- */
-export function useShortTimeAgo(date: number | null | undefined): string {
-  const [shortTimeAgo, setShortTimeAgo] = useState<string>('');
+function RelativeTime({
+  date,
+  alwaysRelative,
+  verbs,
+}: { date: number } & RelativeTimeOptions): ReactNode {
+  const now = Date.now();
+  useTick(Math.abs(now - date) < 60_000 ? 1000 : 60_000);
 
-  useEffect(() => {
-    if (!date) {
-      setShortTimeAgo('');
-      return;
-    }
-
-    const updateShortTimeAgo = (): void => {
-      setShortTimeAgo(formatShortTimeAgo(date, Date.now()));
-    };
-
-    updateShortTimeAgo();
-    const timer = setInterval(updateShortTimeAgo, 60000);
-    return () => clearInterval(timer);
-  }, [date]);
-
-  return shortTimeAgo;
+  const text = formatRelativeTime(date, now, alwaysRelative);
+  return verbs ? `${verbs[date > now ? 0 : 1]} ${text.toLowerCase()}` : text;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,15 +88,10 @@ function ZoneDateTimeRow({
   );
 }
 
-function RelativeTimeContextCardContent({
-  date,
-  prefix,
-}: {
-  date: number;
-  prefix?: string;
-}): ReactNode {
+function TimeCard({ date, prefix }: { date: number; prefix?: string }) {
   const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const timeAgo = useTimeAgo(date);
+  useTick(1000);
+  const timeAgo = formatTimeAgo(date, Date.now());
 
   return (
     <div className="flex flex-col gap-3 min-w-[300px]">
@@ -204,93 +108,46 @@ function RelativeTimeContextCardContent({
   );
 }
 
-function DefaultTimeText({
-  date,
-}: {
-  date: number | null | undefined;
-}): ReactNode {
-  const shortTimeAgo = useShortTimeAgo(date);
-  return <span className="text-label-14 text-gray-900">{shortTimeAgo}</span>;
-}
-
-// ---------------------------------------------------------------------------
-// RelativeTimeCard
-// ---------------------------------------------------------------------------
-
-type RelativeTimeCardProps = Omit<
-  ContextCardTriggerProps,
-  'content' | 'children'
-> & {
-  /** Timestamp in milliseconds to display as a relative time. */
-  date?: number | null;
-  /** Custom content to render instead of the default relative time text. */
-  children?: ReactNode;
-  prefix?: string;
-};
-
-/**
- * Relative time label that reveals a context card with detailed UTC and local
- * timestamps on hover. Renders a default short relative time label (e.g.
- * "3 days ago") when `children` is omitted; renders only the children without
- * the hover card when `date` is nullish.
- */
-export function RelativeTimeCard({
-  date,
-  children: _children,
-  prefix,
-  ...props
-}: RelativeTimeCardProps): ReactNode {
-  const children =
-    _children === undefined ? <DefaultTimeText date={date} /> : _children;
-
-  if (!date) return children;
-
-  return (
-    <ContextCardTrigger
-      content={<RelativeTimeContextCardContent date={date} prefix={prefix} />}
-      {...props}
-    >
-      {children}
-    </ContextCardTrigger>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // TimestampTooltip: convenience wrapper used across the observability UI
 // ---------------------------------------------------------------------------
 
 /**
- * Wraps an already-formatted timestamp display with a relative-time hover
- * card. Self-mounts a {@link ContextCardProvider} when one isn't already
- * present so it works anywhere, but shares a provider (enabling the animated
- * card morph between adjacent timestamps) when rendered inside one.
+ * Wraps a timestamp display with a relative-time hover card, or renders a
+ * relative time label when it has no children. Self-mounts a
+ * {@link ContextCardProvider} when one isn't already present so it works
+ * anywhere, but shares a provider (enabling the animated card morph between
+ * adjacent timestamps) when rendered inside one.
  */
 export function TimestampTooltip({
   date,
   children,
   side = 'top',
   prefix,
+  ...relativeTimeOptions
 }: {
   date: number | Date | string | null | undefined;
-  children: ReactNode;
+  children?: ReactNode;
   side?: ContextCardTriggerProps['side'];
   prefix?: string;
-}): ReactNode {
+} & RelativeTimeOptions): ReactNode {
   const hasProvider = useHasContextCardProvider();
+  const ts = parseDate(date)?.getTime();
 
-  const ts =
-    date == null
-      ? null
-      : typeof date === 'number'
-        ? date
-        : new Date(date).getTime();
-
-  if (ts == null || Number.isNaN(ts)) return <>{children}</>;
+  if (ts === undefined) return children;
 
   const card = (
-    <RelativeTimeCard date={ts} side={side} prefix={prefix} asChild>
-      {children}
-    </RelativeTimeCard>
+    <ContextCardTrigger
+      content={<TimeCard date={ts} prefix={prefix} />}
+      side={side}
+      asChild
+    >
+      {children ?? (
+        <span>
+          <RelativeTime date={ts} {...relativeTimeOptions} />
+        </span>
+      )}
+    </ContextCardTrigger>
   );
 
   return hasProvider ? card : <ContextCardProvider>{card}</ContextCardProvider>;

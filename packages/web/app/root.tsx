@@ -1,4 +1,5 @@
 import { TooltipProvider } from '@radix-ui/react-tooltip';
+import { ContextCardProvider } from '@workflow/web-shared';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { useEffect, useRef } from 'react';
 import {
@@ -228,7 +229,9 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Scrollable Content */}
-        <div className="flex-1 px-6 pt-6">{children}</div>
+        <div className="flex-1 px-6 pt-6">
+          <ContextCardProvider>{children}</ContextCardProvider>
+        </div>
       </TooltipProvider>
       <Toaster />
     </div>

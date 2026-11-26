@@ -1,45 +1,57 @@
-import { describe, expect, it } from 'vitest';
-import { formatShortTimeAgo, formatTimeAgo } from './timestamp-tooltip';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TimestampTooltip } from './timestamp-tooltip';
 
-const NOW = 1_700_000_000_000;
-const SECOND = 1000;
-const MINUTE = 60 * SECOND;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
+const NOW = new Date('2026-11-18T03:33:23.263Z');
+const DAY = 24 * 60 * 60 * 1000;
 
-describe('formatTimeAgo', () => {
-  it('formats past dates with "ago"', () => {
-    expect(formatTimeAgo(NOW - (5 * MINUTE + 3 * SECOND), NOW)).toBe(
-      '5 minutes, 3 seconds ago'
+describe('TimestampTooltip', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders a relative time label when it has no children', () => {
+    vi.useFakeTimers({ now: NOW });
+
+    expect(
+      renderToStaticMarkup(
+        createElement(TimestampTooltip, { date: NOW.getTime() - 2 * DAY })
+      )
+    ).toContain('2d ago');
+  });
+
+  it('leads the label with the verb for its tense', () => {
+    vi.useFakeTimers({ now: NOW });
+    const label = (date: number) =>
+      renderToStaticMarkup(
+        createElement(TimestampTooltip, {
+          date,
+          verbs: ['resumes', 'resumed'],
+        })
+      );
+
+    expect(label(NOW.getTime() + 2 * DAY)).toContain('resumes in 2d');
+    expect(label(NOW.getTime() - 2 * DAY)).toContain('resumed 2d ago');
+    expect(label(NOW.getTime() - 1000)).toContain('resumed just now');
+  });
+
+  it('renders its children in place of the label', () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        TimestampTooltip,
+        { date: NOW },
+        createElement('span', null, 'Nov 17 22:33:23.26')
+      )
     );
+
+    expect(markup).toContain('Nov 17 22:33:23.26');
+    expect(markup).not.toContain('ago');
   });
 
-  it('formats future dates with "in"', () => {
-    expect(formatTimeAgo(NOW + (5 * MINUTE + 3 * SECOND), NOW)).toBe(
-      'in 5 minutes, 3 seconds'
-    );
-  });
-
-  it('returns "Just now" for sub-second differences', () => {
-    expect(formatTimeAgo(NOW, NOW)).toBe('Just now');
-    expect(formatTimeAgo(NOW + 500, NOW)).toBe('Just now');
-  });
-});
-
-describe('formatShortTimeAgo', () => {
-  it('formats past dates with "ago"', () => {
-    expect(formatShortTimeAgo(NOW - 3 * DAY, NOW)).toBe('3 days ago');
-    expect(formatShortTimeAgo(NOW - HOUR, NOW)).toBe('1 hour ago');
-    expect(formatShortTimeAgo(NOW - 2 * MINUTE, NOW)).toBe('2 minutes ago');
-    expect(formatShortTimeAgo(NOW - 10 * SECOND, NOW)).toBe('Just now');
-  });
-
-  it('formats future dates with "In"', () => {
-    expect(formatShortTimeAgo(NOW + 3 * DAY, NOW)).toBe('In 3 days');
-    expect(formatShortTimeAgo(NOW + HOUR, NOW)).toBe('In 1 hour');
-    expect(formatShortTimeAgo(NOW + 2 * MINUTE, NOW)).toBe('In 2 minutes');
-    expect(formatShortTimeAgo(NOW + 10 * SECOND, NOW)).toBe(
-      'In less than a minute'
-    );
+  it('renders nothing for a missing date and no children', () => {
+    expect(
+      renderToStaticMarkup(createElement(TimestampTooltip, { date: null }))
+    ).toBe('');
   });
 });

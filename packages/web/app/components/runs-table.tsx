@@ -2,6 +2,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   Button,
   Spinner,
+  TimestampTooltip,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -68,7 +69,6 @@ import {
 } from '~/lib/workflow-api-client';
 import { useServerConfig } from '~/lib/world-config-context';
 import { CopyableText } from './display-utils/copyable-text';
-import { RelativeTime } from './display-utils/relative-time';
 import { SelectionBar } from './display-utils/selection-bar';
 import { StatusBadge } from './display-utils/status-badge';
 import { RunActionsDropdownItems } from './run-actions';
@@ -320,11 +320,9 @@ function FilterControls({
       <div className="flex items-end gap-2">
         <p className="text-sm text-muted-foreground">Last refreshed</p>
         {lastRefreshTime && (
-          <RelativeTime
-            date={lastRefreshTime}
-            className="text-sm text-muted-foreground"
-            type="distance"
-          />
+          <span className="text-sm text-muted-foreground">
+            <TimestampTooltip date={lastRefreshTime} />
+          </span>
         )}
       </div>
       <div className="flex items-center gap-4">
@@ -915,14 +913,17 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                     </TableCell>
                     <TableCell className="py-2 text-muted-foreground text-xs">
                       {run.startedAt ? (
-                        <RelativeTime date={run.startedAt} />
+                        <TimestampTooltip date={run.startedAt} alwaysRelative />
                       ) : (
                         '-'
                       )}
                     </TableCell>
                     <TableCell className="py-2 text-muted-foreground text-xs">
                       {run.completedAt ? (
-                        <RelativeTime date={run.completedAt} />
+                        <TimestampTooltip
+                          date={run.completedAt}
+                          alwaysRelative
+                        />
                       ) : (
                         '-'
                       )}
