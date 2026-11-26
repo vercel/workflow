@@ -62,7 +62,7 @@ function TimestampCell({
 }) {
   const parts = formatTimestampParts(date);
   return (
-    <div className={cn(CELL, COL.time, 'tabular-nums')}>
+    <div className={cn(CELL, COL.time, 'tabular-nums uppercase')}>
       <TimestampTooltip date={date}>
         {/* The tooltip trigger lays this span out as a flex row, which would
             trim the space after the day unless whitespace is preserved. */}

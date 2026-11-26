@@ -47,6 +47,6 @@ describe('buildEventRow', () => {
         stepRetrying,
         buildEventLookups([stepRetrying], null, new Set())
       ).message
-    ).toBe('attempt 1 failed · retry at Jan 01 09:05:07.25');
+    ).toBe('attempt 1 failed · retry at 09:05:07');
   });
 });

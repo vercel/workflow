@@ -8,7 +8,12 @@ import {
   isSealedNoopEvent,
   SEALED_EVENT_MESSAGE,
 } from '../../lib/sealed-events';
-import { formatTimestamp, getEventDate, parseDate } from '../../lib/time';
+import {
+  formatTimestamp,
+  formatTimestampParts,
+  getEventDate,
+  parseDate,
+} from '../../lib/time';
 import {
   Collapsible,
   CollapsibleContent,
@@ -106,6 +111,7 @@ function EventItem({
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
     : getEventDate(event);
+  const { day, clock, ms } = formatTimestampParts(displayedCreatedAt);
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
@@ -131,9 +137,9 @@ function EventItem({
               {event.eventType}
             </span>
           </EventNoticeTooltip>
-          <span className="shrink-0 text-label-12-mono text-gray-900">
+          <span className="shrink-0 text-label-12-mono uppercase text-gray-900">
             <TimestampTooltip date={displayedCreatedAt}>
-              <span>{formatTimestamp(displayedCreatedAt)}</span>
+              <span>{`${day} ${clock}${ms}`}</span>
             </TimestampTooltip>
           </span>
         </div>

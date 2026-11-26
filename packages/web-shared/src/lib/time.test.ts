@@ -51,20 +51,21 @@ describe('getEventDate', () => {
 });
 
 describe('formatTimestamp', () => {
-  it('shows the local day and a 24h clock with two fraction digits', () => {
-    const date = new Date('2026-11-18T03:33:23.263Z');
-    expect(formatTimestamp(date)).toBe('Nov 17 22:33:23.26');
-    expect(formatTimestampParts(date)).toEqual({
-      day: 'Nov 17',
-      clock: '22:33:23',
-      ms: '.26',
-    });
+  it('shows the local date and a 24h clock with milliseconds', () => {
+    expect(formatTimestamp(new Date('2026-11-18T03:33:23.263Z'))).toBe(
+      'Nov 17, 2026 22:33:23.263'
+    );
+    expect(formatTimestamp(new Date('2026-03-06T05:04:05.007Z'))).toBe(
+      'Mar 6, 2026 00:04:05.007'
+    );
   });
 
-  it('pads the day and reads midnight as 00', () => {
-    expect(formatTimestamp(new Date('2026-03-06T05:04:05.007Z'))).toBe(
-      'Mar 06 00:04:05.00'
-    );
+  it('splits a row timestamp into a padded day, clock and two fraction digits', () => {
+    expect(formatTimestampParts(new Date('2026-03-06T05:04:05.267Z'))).toEqual({
+      day: 'Mar 06',
+      clock: '00:04:05',
+      ms: '.26',
+    });
   });
 });
 
