@@ -169,7 +169,7 @@ Settings that exist only for spec 9 runs:
 
 - Default: `10`
 - Clamp: `0` to `16`
-- Node.js VM engine only. When no other writer could change what the workflow does next (no awaited hook, no `AbortController` other than an in-band-only one, no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits, and at most this many outcomes are unconfirmed at once. Writes still land in order. See [Run-ahead](#run-ahead).
+- When no other writer could change what the workflow does next (no awaited hook, no `AbortController` other than an in-band-only one, no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits, and at most this many outcomes are unconfirmed at once. Writes still land in order. See [Run-ahead](#run-ahead).
 - A refused or failed write stops the delivery's decisions; it reloads the log and replays from cold with run-ahead off. A path-changing event landing below a speculative write is detected the same way but may already have been decided around: it is logged at error level with `possibleLogCorruption: true` and counted in `workflow.run_ahead.hazard_stops`. Report one with the workflow's code.
 - `0` disables run-ahead.
 

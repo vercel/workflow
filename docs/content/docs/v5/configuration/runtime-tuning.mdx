@@ -316,7 +316,7 @@ the runtime ignores this setting.
 
 - Default: `10`
 
-Maximum number of inline step outcomes that may be unconfirmed at once while the orchestrator runs ahead of its writes. Clamped to `0`-`16`; `0` disables run-ahead. Node.js VM engine only.
+Maximum number of inline step outcomes that may be unconfirmed at once while the orchestrator runs ahead of its writes. Clamped to `0`-`16`; `0` disables run-ahead.
 
 When no other writer could change what the workflow does next (no awaited hook, no `AbortController` other than one created with [`{ inBandOnly: true }`](/docs/foundations/cancellation#best-practices), no step running elsewhere, no wait due), an inline step's outcome reaches the workflow when its body returns, before its write commits. Writes still land in order.
 
