@@ -12,7 +12,8 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
-import { formatPreciseDuration, otelTimeToMs } from '../../../lib/time';
+import { formatPreciseDuration } from '../../../lib/time';
+import { otelTimeToMs } from '../../workflow-traces/trace-time-utils';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
 import type {

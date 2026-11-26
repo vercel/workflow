@@ -1,5 +1,5 @@
 import { isRunCreationEvent } from '@workflow/world';
-import { otelTimeToMs } from '../../lib/time';
+import { otelTimeToMs } from '../workflow-traces/trace-time-utils';
 import type { Span, SpanEvent } from './types';
 
 // ---------------------------------------------------------------------------
