@@ -16,31 +16,12 @@ import { DUPLICATE_EVENT_MESSAGE } from './duplicate-events';
 import type { ExactWorkflowSearchId } from './exact-event-search-id';
 import { isEncryptedMarker } from './hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from './sealed-events';
+import { getEventDate, parseDate } from './time';
 import { formatDurationPrecise } from './utils';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Time
 // ──────────────────────────────────────────────────────────────────────────
-
-export function parseEventDate(value: unknown): Date | null {
-  if (value == null) return null;
-
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-/** When the event happened: `occurredAt` when recorded, else `createdAt`. */
-export function getEffectiveEventDate(
-  event: Pick<Event, 'createdAt' | 'occurredAt'>
-): Date {
-  return parseEventDate(event.occurredAt) ?? new Date(event.createdAt);
-}
-
-export function getEffectiveEventTime(
-  event: Pick<Event, 'createdAt' | 'occurredAt'>
-): number {
-  return getEffectiveEventDate(event).getTime();
-}
 
 const pad = (n: number, width = 2) => n.toString().padStart(width, '0');
 
@@ -59,7 +40,7 @@ export function formatTimestampParts(date: Date): {
 }
 
 function formatClock(value: unknown): string | null {
-  const date = parseEventDate(value);
+  const date = parseDate(value);
   return date ? formatTimestampParts(date).clock : null;
 }
 
@@ -74,7 +55,7 @@ export function sortEventsByTime(
 ): Event[] {
   const dir = order === 'desc' ? -1 : 1;
   return [...events].sort(
-    (a, b) => dir * (getEffectiveEventTime(a) - getEffectiveEventTime(b))
+    (a, b) => dir * (getEventDate(a).getTime() - getEventDate(b).getTime())
   );
 }
 
@@ -273,7 +254,7 @@ export function buildEventTiming(
 ): EventTiming {
   const chronological = events
     .filter((event) => !duplicateEventIds.has(event.eventId))
-    .sort((a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b));
+    .sort((a, b) => getEventDate(a).getTime() - getEventDate(b).getTime());
 
   const clocks = new Map<string, Clock>();
   const eventDurations = new Map<string, number>();
@@ -281,7 +262,7 @@ export function buildEventTiming(
   for (const event of chronological) {
     const { key } = getEventEntity(event);
     if (key === null) continue;
-    const ts = getEffectiveEventTime(event);
+    const ts = getEventDate(event).getTime();
     const type = event.eventType;
     let clock = clocks.get(key);
     if (!clock) {
@@ -542,15 +523,15 @@ export function buildListItems(
   const items: EventListItem[] = [];
   const isNewestFirst =
     rows.length > 1 &&
-    getEffectiveEventTime(rows[0].event) >
-      getEffectiveEventTime(rows[rows.length - 1].event);
+    getEventDate(rows[0].event).getTime() >
+      getEventDate(rows[rows.length - 1].event).getTime();
   const previousOffset = isNewestFirst ? 1 : -1;
   rows.forEach((row, index) => {
     if (options.showGaps && index > 0) {
       const prev = rows[index - 1].event;
       const event = row.event;
-      const a = getEffectiveEventTime(prev);
-      const b = getEffectiveEventTime(event);
+      const a = getEventDate(prev).getTime();
+      const b = getEventDate(event).getTime();
       const ms = Math.abs(b - a);
       if (ms >= IDLE_GAP_MS) {
         const later = b >= a ? event : prev;
@@ -568,8 +549,8 @@ export function buildListItems(
       row,
       index,
       sincePreviousMs: previous
-        ? getEffectiveEventTime(row.event) -
-          getEffectiveEventTime(previous.event)
+        ? getEventDate(row.event).getTime() -
+          getEventDate(previous.event).getTime()
         : undefined,
     });
   });

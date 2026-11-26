@@ -15,7 +15,6 @@ import {
 } from '@workflow/world';
 import {
   type GetStepAttributes,
-  getEventTimestamp,
   hookToSpan,
   runToSpan,
   stepToSpan,
@@ -26,6 +25,7 @@ import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { findDuplicateEventIds } from './duplicate-events';
 import { isSealedNoopEvent } from './sealed-events';
 import { findStartHookCreation, type StartHookCreation } from './start-hook';
+import { getEventDate } from './time';
 import type { Span } from './trace-types';
 
 /**
@@ -134,7 +134,7 @@ export function groupEventsByCorrelation(events: Event[]): GroupedEvents {
 function computeLatestKnownTime(events: Event[], run: WorkflowRun): Date {
   let latest = new Date(run.createdAt).getTime();
   for (const event of events) {
-    const t = (getEventTimestamp(event) ?? new Date(event.createdAt)).getTime();
+    const t = getEventDate(event).getTime();
     if (t > latest) latest = t;
   }
   return new Date(latest);

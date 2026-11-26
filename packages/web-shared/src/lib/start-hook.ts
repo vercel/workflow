@@ -5,6 +5,7 @@ import {
   startHookId,
   type WorkflowRun,
 } from '@workflow/world';
+import { getEventDate } from './time';
 
 /**
  * The creation of a run's start Hook (`start(workflow, args, { hook })`).
@@ -22,13 +23,6 @@ export interface StartHookCreation {
   runId: string;
   token?: string;
   createdAt: Date;
-}
-
-function eventTimestamp(event: Event | undefined): Date | undefined {
-  const value = event?.occurredAt ?? event?.createdAt;
-  if (!value) return undefined;
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 function tokenOf(startHook: unknown): string | undefined {
@@ -74,9 +68,9 @@ export function findStartHookCreation(
     return undefined;
   }
   const createdAt =
-    eventTimestamp(creationEvent) ??
+    (creationEvent && getEventDate(creationEvent)) ??
     (run?.createdAt ? new Date(run.createdAt) : undefined) ??
-    eventTimestamp(hookEvents[0]);
+    (hookEvents[0] && getEventDate(hookEvents[0]));
   if (!createdAt) return undefined;
   return { hookId, runId, token, createdAt };
 }

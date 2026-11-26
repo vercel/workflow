@@ -7,9 +7,9 @@ import { cn } from '../../lib/cn';
 import {
   type EventListRow,
   hasEncryptedValues,
-  parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { parseDate } from '../../lib/time';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -259,7 +259,7 @@ function EventDetailsBody({
   }, [event.eventId, encryptionKey]);
 
   const timingTotal = row.segments.reduce((sum, s) => sum + s.ms, 0);
-  const occurredAt = parseEventDate(event.occurredAt);
+  const occurredAt = parseDate(event.occurredAt);
   const createdAt = new Date(event.createdAt);
   const structuredError = extractStructuredError(data, event.eventType);
 

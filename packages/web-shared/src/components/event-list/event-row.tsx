@@ -9,9 +9,8 @@ import {
   type EventListRow,
   formatElapsed,
   formatTimestampParts,
-  getEffectiveEventDate,
-  parseEventDate,
 } from '../../lib/event-list-model';
+import { getEventDate, parseDate } from '../../lib/time';
 import { formatDurationPrecise } from '../../lib/utils';
 import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
@@ -221,10 +220,10 @@ export function EventRow({
   showSeparateEventOccurrenceTimestamps = false,
 }: EventRowProps) {
   const { event, level, name, message, notice } = row;
-  const occurredAt = parseEventDate(event.occurredAt);
+  const occurredAt = parseDate(event.occurredAt);
   const displayedAt = showSeparateEventOccurrenceTimestamps
     ? new Date(event.createdAt)
-    : getEffectiveEventDate(event);
+    : getEventDate(event);
   // Tinted rows keep one color throughout.
   const isTinted = level === 'warning' || level === 'error';
   const isRelated = relation === 'related';
