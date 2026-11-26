@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
-import { otelTimeToMs } from '../../../lib/time';
+import { otelTimeToMs } from '../../workflow-traces/trace-time-utils';
 import type { Span } from '../types';
 import { formatDurationPrecise } from '../util/timing';
 import {

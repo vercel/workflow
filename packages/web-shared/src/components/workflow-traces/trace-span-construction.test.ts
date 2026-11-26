@@ -1,7 +1,7 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { otelTimeToMs } from '../../lib/time';
 import { runToSpan, stepToSpan } from './trace-span-construction';
+import { otelTimeToMs } from './trace-time-utils';
 
 const date = (ms: number) => new Date(ms);
 

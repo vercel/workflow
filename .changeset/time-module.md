@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Move date parsing and span time conversion into one time module.
+Move date parsing into one time module and convert span times with one helper.
