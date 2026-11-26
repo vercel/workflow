@@ -20,6 +20,7 @@ import {
   dehydrateStepReturnValue,
 } from './serialization.js';
 import { ABORT_HOOK_TOKEN } from './symbols.js';
+import { isInBandOnlyAbortToken } from './util.js';
 import { createContext } from './vm/index.js';
 import {
   createAbortSignalStatics,
@@ -310,6 +311,24 @@ describe('AbortController in workflow VM', () => {
         isSystem: true,
         inBandOnly: true,
       });
+    });
+
+    it("recognizes only an in-band-only controller's own token", () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const inBandOnly = new AbortController({ inBandOnly: true });
+      const plain = new AbortController();
+      expect(isInBandOnlyAbortToken(inBandOnly.signal[ABORT_HOOK_TOKEN])).toBe(
+        true
+      );
+      expect(isInBandOnlyAbortToken(plain.signal[ABORT_HOOK_TOKEN])).toBe(
+        false
+      );
+      // A user hook token that only looks like one is left alone.
+      expect(isInBandOnlyAbortToken('abrt_inband_order-42')).toBe(false);
+      expect(
+        isInBandOnlyAbortToken(`${inBandOnly.signal[ABORT_HOOK_TOKEN]}-copy`)
+      ).toBe(false);
     });
 
     it('refuses to pass the controller to a step, but passes its signal', async () => {
