@@ -17,7 +17,12 @@ import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  TruncatedTooltip,
+} from '../ui/tooltip';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Layout
@@ -273,15 +278,17 @@ export function EventRow({
           isCancelled={event.eventType === 'run_cancelled'}
         />
         {name ? (
-          <span
-            className={cn(
-              '-mx-1 truncate rounded px-1',
-              isRelated && 'text-blue-900',
-              isRelated && isTinted && 'bg-blue-100'
-            )}
-          >
-            {name}
-          </span>
+          <TruncatedTooltip content={name}>
+            <span
+              className={cn(
+                '-mx-1 truncate rounded px-1',
+                isRelated && 'text-blue-900',
+                isRelated && isTinted && 'bg-blue-100'
+              )}
+            >
+              {name}
+            </span>
+          </TruncatedTooltip>
         ) : null}
       </div>
       <div className={cn(CELL, COL.event)}>
@@ -298,7 +305,9 @@ export function EventRow({
           LEVEL_SEPARATOR_CLASS[level]
         )}
       >
-        <span className="truncate">{message}</span>
+        <TruncatedTooltip content={message}>
+          <span className="truncate">{message}</span>
+        </TruncatedTooltip>
       </div>
     </div>
   );

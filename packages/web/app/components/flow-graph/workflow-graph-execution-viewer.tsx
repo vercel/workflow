@@ -16,7 +16,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
 import { GitBranch, RotateCw, Timer, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import { formatDuration, Spinner } from '@workflow/web-shared';
+import {
+  formatDuration,
+  Spinner,
+  TruncatedTooltip,
+} from '@workflow/web-shared';
 import { StatusBadge } from '~/components/display-utils/status-badge';
 import { Badge } from '~/components/ui/badge';
 import type {
@@ -207,9 +211,11 @@ function ExecutionDiamondNodeComponent({ data, selected }: NodeProps) {
           padding: size * 0.25, // Keep text within the diamond's inscribed area
         }}
       >
-        <span className="text-center line-clamp-3 overflow-hidden">
-          {nodeData.label}
-        </span>
+        <TruncatedTooltip content={nodeData.label}>
+          <span className="text-center line-clamp-3 overflow-hidden">
+            {nodeData.label}
+          </span>
+        </TruncatedTooltip>
       </div>
 
       {/* Main flow handles (top/bottom) */}
@@ -724,9 +730,11 @@ function GraphNodeDetailPanel({
     <div className="h-full flex flex-col bg-background border-l">
       {/* Header - similar to trace view */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-b flex-none">
-        <span className="text-xs font-medium truncate flex-1">
-          {node.data.label}
-        </span>
+        <TruncatedTooltip content={node.data.label}>
+          <span className="text-xs font-medium truncate flex-1">
+            {node.data.label}
+          </span>
+        </TruncatedTooltip>
         <div className="flex items-center gap-2 flex-none">
           {latestExecution?.duration !== undefined &&
             latestExecution.duration > 0 && (

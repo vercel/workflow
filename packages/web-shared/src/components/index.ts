@@ -34,4 +34,5 @@ export {
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
+  TruncatedTooltip,
 } from './ui/tooltip';

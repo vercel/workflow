@@ -3,4 +3,4 @@
 '@workflow/web': patch
 ---
 
-Replace native `title` tooltips with the shared Tooltip, and drop the ones that repeat visible text.
+Replace native `title` tooltips with the shared Tooltip; truncated text shows its full value in a tooltip only when it is cut off.

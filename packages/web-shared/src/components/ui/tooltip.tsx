@@ -62,4 +62,40 @@ const TooltipContent = React.forwardRef<
 ));
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+function TruncatedTooltip({
+  content,
+  children,
+}: {
+  content: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = React.useState(false);
+  return (
+    <Tooltip
+      open={open}
+      onOpenChange={(next) => {
+        const trigger = triggerRef.current;
+        setOpen(
+          next &&
+            trigger !== null &&
+            (trigger.scrollWidth > trigger.clientWidth ||
+              trigger.scrollHeight > trigger.clientHeight)
+        );
+      }}
+    >
+      <TooltipTrigger asChild ref={triggerRef}>
+        {children}
+      </TooltipTrigger>
+      <TooltipContent>{content}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+export {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+  TruncatedTooltip,
+};
