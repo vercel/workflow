@@ -445,11 +445,12 @@ When a PR changes the observability UI (`packages/web` or `packages/web-shared`)
 - Link to the page that shows the change: the home page (`/`, with `?tab=runs`, `hooks` or `workflows`) or a run (`/run/<runId>`, with `?tab=trace`, `events`, `streams` or `graph`).
 - The preview deployment sits behind deployment protection, so the link requires Vercel team access. This is expected; include it anyway for reviewers.
 
-When you can, also add a "Screenshots" section with before and after screenshots of each changed surface, side by side in a `| Before | After |` table:
+When you can, also add before and after screenshots of each changed surface, after the Preview section. Attach them with the [`before-and-after`](https://github.com/vercel-labs/before-and-after) skill (`npx skills add vercel-labs/before-and-after#main`), which needs `agent-browser` and GitHub CLI 2.99 or later for `gh pr edit --attach`:
 
-- Capture the before state before you change the code.
-- When the change affects colour or styling, capture both themes. When it changes a state other than the default (loading, empty, error, long content), capture that state.
-- The GitHub CLI cannot upload images. If you have screenshots but cannot attach them, tell the person you are working with where you saved them so they can drag them into the description.
+- Capture the before state before you change the code, at the same viewport, theme, and data as the after state.
+- When the change affects colour or styling, capture both themes. When it changes a state other than the default (loading, empty, error, long content), capture that state. For an interaction or transition, attach a short recording.
+- Review every capture before uploading it. Never publish one that shows tokens, cookies, bypass secrets, or customer data.
+- If you cannot attach the captures, tell the person you are working with where you saved them.
 
 ## Code review
 
