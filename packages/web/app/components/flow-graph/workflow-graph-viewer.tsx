@@ -1,4 +1,3 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import {
   Background,
   BaseEdge,
@@ -228,14 +227,9 @@ export function DiamondNodeComponent({ data, selected }: NodeProps) {
           padding: size * 0.25, // Keep text within the diamond's inscribed area
         }}
       >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="text-center line-clamp-3 overflow-hidden">
-              {nodeData.label}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>{nodeData.label}</TooltipContent>
-        </Tooltip>
+        <span className="text-center line-clamp-3 overflow-hidden">
+          {nodeData.label}
+        </span>
       </div>
 
       {/* Main flow handles (top/bottom) */}

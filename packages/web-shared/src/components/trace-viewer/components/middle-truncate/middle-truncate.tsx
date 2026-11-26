@@ -3,7 +3,6 @@
 import type { ClipboardEvent, ComponentPropsWithoutRef, JSX } from 'react';
 import { useCallback, useRef } from 'react';
 import { cn } from '../../../../lib/cn';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/tooltip';
 import {
   getMiddleTruncateCopyText,
   getMiddleTruncateCopyTextFromSelectionText,
@@ -121,48 +120,43 @@ function MiddleTruncate({
   );
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          {...props}
-          ref={ref}
-          className={cn(
-            'relative inline-grid min-w-0 max-w-full overflow-hidden whitespace-nowrap',
-            className
-          )}
-          onCopy={handleCopy}
-        >
-          {isTruncated && <span className="sr-only select-none">{value}</span>}
-          <span
-            aria-hidden="true"
-            className="pointer-events-none col-start-1 row-start-1 invisible select-none whitespace-nowrap"
-          >
-            {value}
-          </span>
-          <span
-            aria-hidden={isTruncated || undefined}
-            className="col-start-1 row-start-1 min-w-0 overflow-hidden"
-            ref={visibleRef}
-          >
-            {isTruncated ? (
-              <>
-                <span>{prefixText}</span>
-                <span>{ELLIPSIS}</span>
-                <span>{suffixText}</span>
-              </>
-            ) : (
-              displayText
-            )}
-          </span>
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute left-0 top-0 inline-block invisible select-none whitespace-nowrap"
-            ref={measureRef}
-          />
-        </span>
-      </TooltipTrigger>
-      {isTruncated && <TooltipContent>{value}</TooltipContent>}
-    </Tooltip>
+    <span
+      {...props}
+      ref={ref}
+      className={cn(
+        'relative inline-grid min-w-0 max-w-full overflow-hidden whitespace-nowrap',
+        className
+      )}
+      onCopy={handleCopy}
+    >
+      {isTruncated && <span className="sr-only select-none">{value}</span>}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none col-start-1 row-start-1 invisible select-none whitespace-nowrap"
+      >
+        {value}
+      </span>
+      <span
+        aria-hidden={isTruncated || undefined}
+        className="col-start-1 row-start-1 min-w-0 overflow-hidden"
+        ref={visibleRef}
+      >
+        {isTruncated ? (
+          <>
+            <span>{prefixText}</span>
+            <span>{ELLIPSIS}</span>
+            <span>{suffixText}</span>
+          </>
+        ) : (
+          displayText
+        )}
+      </span>
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute left-0 top-0 inline-block invisible select-none whitespace-nowrap"
+        ref={measureRef}
+      />
+    </span>
   );
 }
 

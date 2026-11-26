@@ -303,12 +303,7 @@ export function EventRow({
           LEVEL_SEPARATOR_CLASS[level]
         )}
       >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="truncate">{message}</span>
-          </TooltipTrigger>
-          {message ? <TooltipContent>{message}</TooltipContent> : null}
-        </Tooltip>
+        <span className="truncate">{message}</span>
       </div>
     </div>
   );

@@ -15,7 +15,6 @@ import {
   CollapsibleTrigger,
 } from '../ui/collapsible';
 import { CopyButton } from '../ui/copy-button';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { CopyableDataBlock } from './copyable-data-block';
 
 function isReservedAttributeKey(key: string): boolean {
@@ -112,25 +111,20 @@ function DetailKeyValueRowBase({
           />
         </div>
       ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className={cn(rowValueVariants({ variant }))}>
-              {href ? (
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="hover:underline"
-                >
-                  {value}
-                </a>
-              ) : (
-                value
-              )}
-            </span>
-          </TooltipTrigger>
-          {value ? <TooltipContent>{value}</TooltipContent> : null}
-        </Tooltip>
+        <span className={cn(rowValueVariants({ variant }))}>
+          {href ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:underline"
+            >
+              {value}
+            </a>
+          ) : (
+            value
+          )}
+        </span>
       )}
     </div>
   );
