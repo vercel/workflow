@@ -29,9 +29,11 @@ packages/cli/oclif.manifest.json
 # SWC plugin cache
 .swc
 
-# claude local settings
+# Local agent settings and integration output
 .claude/settings.local.json
 .claude/worktrees
+.codex
+.lat-build
 
 # jj
 .jj/
