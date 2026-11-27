@@ -55,7 +55,7 @@ Use backend-specific Node bindings with the directory and naming convention belo
 | `packages/world-vercel-rust` | `workflow-world-vercel-node` | `@workflow/world-vercel-rust` |
 | `packages/world-postgres-rust` | `workflow-world-postgres-node` | `@workflow/world-postgres-rust` |
 
-Pure Rust libraries live under `crates/`, without Node or binding-runtime dependencies. The shared contract owns the host-independent types, errors and interfaces needed by consumers, without database drivers. Backend libraries own their storage or platform transport, delivery, streams and lifecycle. Node bindings live in the corresponding npm package directories under `packages/`, adapting values, callbacks, streams and resource ownership for the TS SDK.
+Pure Rust libraries live under `crates/`, without Node or binding-runtime dependencies. The shared contract owns the host-independent types, errors and interfaces needed by consumers, without database drivers. Backend libraries own their storage or platform transport, streams and any delivery implemented in Rust. Node bindings live in the corresponding npm package directories under `packages/`, adapting values, callbacks, streams and resource ownership for the TS SDK. A package may also compose existing TS components into its full `World`, as the SQLite package does with the local queue.
 
 The `-node` suffix identifies the Rust crate's host binding; `-rust` distinguishes the npm package from existing TypeScript implementations. Each binding depends on its corresponding backend library, beginning with `workflow-world-sqlite-node` → `workflow-world-sqlite`, so SQLite's native artifact and dependencies remain independently deliverable. Extract shared binding utilities when actual duplication warrants them.
 
@@ -75,13 +75,17 @@ Use each backend to validate the shared architecture through a complete implemen
 
 ### SQLite
 
-SQLite establishes the first Rust World, including its storage semantics, execution delivery, recovery and streams. Its first public TS SDK integration requires the complete World surface promised for that backend.
+SQLite ports the TS local World: Rust provides storage and streams, while `@workflow/world-sqlite-rust` reuses the existing local queue to deliver the complete World surface for its first public TS SDK integration.
 
-Use [[packages/world-local/src/index.ts#createWorld]] and its current tests as the behavioral reference. The existing implementation stores state in SQLite and queues work in memory; [[packages/world-local/README.md]] explains that distinction. Moving storage alone is an internal milestone, not completion of the Rust World.
+Port [[packages/world-local/src/index.ts#createWorld]] rather than designing a new backend. Use its existing tests and match its behavior and defaults, including [[packages/world-local/src/config.ts#Config|configuration]], data location ([[packages/world-local/src/db/index.ts#DATABASE_FILE_NAME]] in the data directory) and the SQLite settings applied by [[packages/world-local/src/db/index.ts#Database]]. Record the reason for any divergence in the PR that introduces it.
 
-Implement database open/migrations and codecs, reads, transactional event writes, streams, then delivery/recovery and lifecycle in coherent slices. An accepted event and all affected projections commit together. Preserve slot allocation, idempotency, hook ownership and resume deduplication, fences, pagination, retention, tag scoping and capability semantics relevant to the supported run formats.
+`workflow-world-sqlite` implements database open/migrations and codecs, reads, transactional event writes and streams in coherent slices. An accepted event and all affected projections commit together. Preserve slot allocation, idempotency, hook ownership and resume deduplication, fences, pagination, retention, tag scoping and capability semantics relevant to the supported run formats.
 
-Decide persisted-data compatibility before implementing schema and codec assumptions. Existing [[packages/world-local/src/db/schema.ts#migrate]] and [[packages/world-local/src/db/codec.ts#encode]] define the TS format. Sharing a database requires bidirectional and mixed-process tests; a distinct format or data location requires an explicit migration and switching policy. Treat a durable queue as a separate behavior decision rather than assuming it follows from using Rust.
+The Node package keeps the in-memory queue from [[packages/world-local/src/queue.ts#createQueue]] in TS to provide the required queue APIs; its storage reads go through the Rust backend. It also owns restart recovery and shutdown, as the TS `createWorld` does; [[packages/world-local/README.md]] explains the storage/queue split. Moving storage alone is an internal milestone, not completion of the Rust World. A shared embedded queue for TS and other language SDKs is proposed separately in [vercel/vercel-rs#32](https://github.com/vercel/vercel-rs/issues/32) and is outside this port.
+
+Start from the TS on-disk format defined by [[packages/world-local/src/db/schema.ts#migrate]] and [[packages/world-local/src/db/codec.ts#encode]]. If TS and Rust are to share a database, the implementation PR must prove it works in both directions and across processes. A distinct format or data location would require an explicit migration and switching policy.
+
+Start connection ownership and concurrency from the TS implementation too. Preserve what callers of [[packages/world-local/src/db/index.ts#databaseFor]] observe when the database is closed, reopened or replaced; the storage PR settles concrete connection management and explains any differences. `workflow-world-sqlite` stays synchronous and needs no async runtime, like the TS World, which calls SQLite on the JS thread. Under write contention, [[packages/world-local/src/db/index.ts#Database#transactAsync]] tries `BEGIN IMMEDIATE` without waiting, then yields to the event loop and retries within a timeout; the Rust crate can return busy and let `@workflow/world-sqlite-rust` retry the same way.
 
 ### Vercel
 
@@ -119,11 +123,11 @@ Open implementation PRs as drafts. Follow [[pull-requests]] and [[releases]] for
 
 ## Rust engineering principles
 
-Rust code should make ownership, failures and concurrency explicit while keeping the contract stable across hosts. Concrete runtime and connection designs belong to the PR that introduces them.
+Rust code should make ownership, failures and concurrency explicit while keeping the contract stable across hosts. Concrete runtime and connection designs start from the TS implementation being ported and belong to the PR that introduces them.
 
-- Own database handles, transport pools, workers and shutdown state through explicit World lifetimes. Process-local synchronization cannot enforce cross-process invariants.
+- Make ownership of database handles, transport pools, workers and shutdown state explicit. Process-local synchronization cannot enforce cross-process invariants.
 - Move owned values across host and worker boundaries. Keep thread-affine host handles on their permitted threads; justify any unsafe code and buffer-sharing assumptions.
-- Keep blocking database and filesystem work off host event loops and async executor workers, with bounded admission and defined shutdown behavior. A timeout or dropped future does not establish that an executing write was canceled.
+- Do not add an async runtime ahead of need. A backend that does use an executor keeps blocking work off its workers, with bounded admission and defined shutdown behavior. A timeout or dropped future does not establish that an executing write was canceled.
 - Avoid calling host/user code while holding write transactions or critical locks. Define how notifications and delivery recover when a commit succeeds but subsequent signaling fails.
 - Return typed failures for expected errors. Malformed inputs, contention and contract refusals must not become panics.
 - Review dependency features, native linkage and compile cost per consumer. Test the distributed addon or library itself; a successful standalone binary build does not establish host compatibility.
