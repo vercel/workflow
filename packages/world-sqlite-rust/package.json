@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "napi build --platform --esm -- --locked",
-    "test": "pnpm build && vitest run --config=../../vitest.config.ts test"
+    "test": "cargo test -p workflow-world-sqlite --locked && pnpm build && vitest run --config=../../vitest.config.ts test"
   },
   "devDependencies": {
     "@napi-rs/cli": "3.10.12",

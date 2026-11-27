@@ -1,0 +1,15 @@
+[package]
+name = "workflow-world-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "SQLite World backend, ported from the TS local World"
+
+[dependencies]
+# 0.41 and later require Rust 1.89; retain the workspace's Rust 1.87 minimum.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

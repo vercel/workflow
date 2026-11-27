@@ -45,6 +45,8 @@ Preserve opaque application payloads as bytes. Host conversions must distinguish
 
 Use backend-specific Node bindings with the directory and naming convention below. Confirm crate interfaces and packaging details before scaffolding each backend.
 
+[[rust#Crate layout]] and [[rust#Workspace]] record the parts of this convention already in use.
+
 | Directory | Rust crate | Node package |
 | --- | --- | --- |
 | `crates/world` | `workflow-world` | — |
@@ -79,7 +81,7 @@ SQLite ports `@workflow/world-local`, the TS local World. Rust provides storage 
 
 Port its behavior rather than designing a new backend. Start from [[packages/world-local/src/index.ts#createWorld]] and its existing tests, and match its defaults, including [[packages/world-local/src/config.ts#Config|configuration]], data location ([[packages/world-local/src/db/index.ts#DATABASE_FILE_NAME]] in the data directory) and the SQLite settings applied by [[packages/world-local/src/db/index.ts#Database]]. Record the reason for any divergence in the PR that introduces it.
 
-The private [[packages/world-sqlite-rust/src/lib.rs#create_world|Node binding]] is exposed through a [[packages/world-sqlite-rust/package.json|generated ESM loader with a root package export]], enabling package-name resolution from within the package as well as consumers. It currently returns a placeholder World; its [[packages/world-sqlite-rust/test/spec.test.ts|initialization test]] verifies SDK loading and protocol rejection, while SQLite operations and World behavior remain unimplemented.
+Readiness: development. [[world-sqlite]] documents the implemented slice: the [[crates/world-sqlite/src/lib.rs#World|Rust World]] opens the TS database file with the TS connection settings, and the private [[packages/world-sqlite-rust/src/lib.rs#create_world|Node binding]] completes the host probe while declaring an unsupported spec version. No parity inventory exists yet; [[world-sqlite#Differences from the TS local World]] lists the known gaps. The next gap is the TS schema migrations and codec, with tests showing that TS and Rust open each other's files, followed by the first storage reads and their connection sharing.
 
 `workflow-world-sqlite` implements database open/migrations and codecs, reads, transactional event writes and streams in coherent slices. An accepted event and all affected projections commit together. Preserve slot allocation, idempotency, hook ownership and resume deduplication, fences, pagination, retention, tag scoping and capability semantics relevant to the supported run formats.
 

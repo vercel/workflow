@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = "~3.4.0"
 napi-derive = "~3.3.0"
+workflow-world-sqlite = { path = "../../crates/world-sqlite" }
 
 [build-dependencies]
 napi-build = "~2.2.4"

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/world-sqlite",
     "packages/swc-plugin-workflow",
     "packages/world-sqlite-rust",
     "workbench/swc-playground/wasm",

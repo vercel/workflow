@@ -32,6 +32,7 @@ Each topic has one detailed authority. Move knowledge to its owner and replace t
 - [[architecture]] owns the execution overview, package map and repository-wide runtime invariants.
 - [[testing]], [[event-log-race-repro]] and [[bundle-size]] own validation procedures and result interpretation.
 - [[documentation]], [[pull-requests]] and [[releases]] own contributor procedures for their respective tasks.
+- [[rust]] owns Rust conventions and implemented Rust World components, one document each; its [[plan]] coordinates the remaining Rust World work.
 - Package READMEs own package purpose, supported interfaces and user setup. Runtime design notes remain beside their code; [[architecture#Architecture#Workflow execution model]] indexes the relevant notes.
 - [[AGENTS.md]] owns immediate constraints and required reading, not copies of the detailed knowledge.
 
