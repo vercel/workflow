@@ -1,0 +1,87 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 101 and seed 3457784645006403143 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 43876] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/StartStamping.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module StartStamping
+Starting... (2026-10-28 18:44:16)
+<< "VARIANT",
+   "CallerHas4327",
+   TRUE,
+   "MissFloor",
+   6,
+   "ProbeBudgetSec",
+   10,
+   "ServerRaise",
+   TRUE,
+   "RaiseOnResilient",
+   TRUE,
+   "RaiseOnNotCommitted",
+   FALSE,
+   "FixLateRunCreated",
+   FALSE,
+   "FixSkipReread",
+   TRUE,
+   "FixGuardStart",
+   TRUE,
+   "FixRecoveryAdopt",
+   TRUE,
+   "FixConsistentIdMode",
+   TRUE,
+   "FixAtomicCreate",
+   TRUE,
+   "FixCompressOnStamp",
+   TRUE,
+   "EnvDrift",
+   TRUE,
+   "MutAttestAboveMax",
+   FALSE,
+   "MalformedReplies",
+   FALSE,
+   "HeadMalformed3",
+   FALSE,
+   "CliCapsSource",
+   FALSE,
+   "ScenarioFilter",
+   "all",
+   "RaceScope",
+   "attesting",
+   "FocusInv",
+   "LB",
+   "scenarios",
+   4672,
+   "layerB classes",
+   72 >>
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Computed 64 initial states...
+Computed 128 initial states...
+Computed 256 initial states...
+Computed 512 initial states...
+Computed 1024 initial states...
+Computed 2048 initial states...
+Computed 4096 initial states...
+Computed 8192 initial states...
+Finished computing initial states: 13960 states generated, with 216 of them distinct at 2026-10-28 18:44:18.
+Progress(8) at 2026-10-28 18:44:21: 167,273 states generated (167,273 s/min), 75,012 distinct states found (75,012 ds/min), 37,295 states left on queue.
+Progress(20) at 2026-10-28 18:45:21: 8,354,768 states generated (8,187,495 s/min), 2,100,885 distinct states found (2,025,873 ds/min), 38,218 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 7.5E-7
+  based on the actual fingerprints:  val = 5.8E-7
+8615386 states generated, 2125396 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 23.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 10 and the 95th percentile is 3).
+Finished in 01min 07s at (2026-10-28 18:45:23)
+exit=0
