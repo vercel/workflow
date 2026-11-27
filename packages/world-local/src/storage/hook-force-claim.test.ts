@@ -34,7 +34,8 @@ describe('local World hook force-claim', () => {
 
   async function runningRun(
     workflowName: string,
-    specVersion: number = SPEC_VERSION_CURRENT
+    specVersion: number = SPEC_VERSION_CURRENT,
+    executionContext?: Record<string, unknown>
   ): Promise<string> {
     const { run } = await storage.events.create(null, {
       eventType: 'run_created',
@@ -43,6 +44,7 @@ describe('local World hook force-claim', () => {
         deploymentId: `dpl_${workflowName}`,
         workflowName,
         input: new Uint8Array(),
+        ...(executionContext && { executionContext }),
       },
     });
     const runId = run!.runId;
@@ -171,6 +173,30 @@ describe('local World hook force-claim', () => {
     expect(retaken.hook?.claimedFrom).toEqual({
       runId: victim,
       hookId: victimHook.hookId,
+    });
+  });
+  it("records the running victim's queue namespace so the claimer wakes it on its own queue", async () => {
+    const token = 'channel:namespace';
+    const victim = await runningRun('victim', SPEC_VERSION_CURRENT, {
+      queueNamespace: 'agent',
+    });
+    const victimHook = await createHook(storage, victim, {
+      hookId: 'hook_victim',
+      token,
+    });
+    const claimer = await runningRun('claimer');
+
+    const result = await storage.events.create(claimer, {
+      eventType: 'hook_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'hook_claimer',
+      eventData: { token, force: true },
+    });
+
+    expect(result.hook?.claimedFrom).toMatchObject({
+      runId: victim,
+      hookId: victimHook.hookId,
+      queueNamespace: 'agent',
     });
   });
 });

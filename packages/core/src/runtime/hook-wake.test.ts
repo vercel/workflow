@@ -50,6 +50,24 @@ describe('publishForceClaimVictimWake', () => {
     expect(options).not.toHaveProperty('idempotencyKey');
   });
 
+  it("publishes on the victim's recorded queue namespace, not the claimer's environment", async () => {
+    const previous = process.env.WORKFLOW_QUEUE_NAMESPACE;
+    process.env.WORKFLOW_QUEUE_NAMESPACE = 'claimer';
+    try {
+      const queue = vi.fn().mockResolvedValue(undefined);
+      await publishForceClaimVictimWake(worldWithQueue(queue), 'wrun_claimer', {
+        ...hook,
+        claimedFrom: { ...hook.claimedFrom, queueNamespace: 'victim' },
+      });
+      expect(queue.mock.calls[0][0]).toBe(
+        '__victim_wkf_workflow_victimWorkflow'
+      );
+    } finally {
+      if (previous === undefined) delete process.env.WORKFLOW_QUEUE_NAMESPACE;
+      else process.env.WORKFLOW_QUEUE_NAMESPACE = previous;
+    }
+  });
+
   it("keys the wake by the claimer's hook when the victim is an older run", async () => {
     const queue = vi.fn().mockResolvedValue(undefined);
     await publishForceClaimVictimWake(worldWithQueue(queue), 'wrun_claimer', {

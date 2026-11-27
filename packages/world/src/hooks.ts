@@ -25,6 +25,11 @@ export const HookResumeContextSchema = z.object({
   // (which needs Node.js >= 22.15) or must use gzip. Absent on runs created
   // before the field existed and on non-Node runtimes, where writers use gzip.
   nodeVersion: z.string().optional(),
+  // Queue namespace the run recorded when it started, mirrored from
+  // `executionContext.queueNamespace`. A resume wakes the run on the queue its
+  // consumer reads, not on the resuming process's `WORKFLOW_QUEUE_NAMESPACE`.
+  // Absent on runs that recorded none, where the default namespace applies.
+  queueNamespace: z.string().optional(),
   traceCarrier: TraceCarrierSchema.optional(),
   // The run's published X25519 public key (base64), mirrored from the run
   // entity. Lets a resume seal (`encp`) its payload to the run without reading
@@ -104,7 +109,7 @@ export type HookResumeCapabilities = z.infer<
  * same transaction that re-points the token, and returned on the
  * `hook_created` response and on every later read of the hook.
  *
- * `workflowName`, `deploymentId` and `runSpecVersion` are the VICTIM run's:
+ * `workflowName`, `deploymentId`, `runSpecVersion` and `queueNamespace` are the VICTIM run's:
  * the claimer's runtime publishes the victim's wake from them (the victim's
  * replay has to read the `hook_disposed{forceClaimedBy}` row the takeover
  * left in its log). They are optional only because a World may not have them
@@ -117,6 +122,7 @@ export const HookClaimedFromSchema = z.object({
   workflowName: z.string().optional(),
   deploymentId: z.string().optional(),
   runSpecVersion: z.number().optional(),
+  queueNamespace: z.string().optional(),
 });
 export type HookClaimedFrom = z.infer<typeof HookClaimedFromSchema>;
 

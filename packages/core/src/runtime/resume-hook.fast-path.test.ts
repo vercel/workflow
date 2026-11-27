@@ -145,6 +145,65 @@ describe('resumeHook (resumeContext fast path)', () => {
     );
   });
 
+  describe('wakes the run on the queue namespace the run recorded', () => {
+    const originalNamespace = process.env.WORKFLOW_QUEUE_NAMESPACE;
+    afterEach(() => {
+      if (originalNamespace === undefined) {
+        delete process.env.WORKFLOW_QUEUE_NAMESPACE;
+      } else {
+        process.env.WORKFLOW_QUEUE_NAMESPACE = originalNamespace;
+      }
+    });
+
+    it("from the stored resumeContext, not the resuming process's environment", async () => {
+      process.env.WORKFLOW_QUEUE_NAMESPACE = 'resumer';
+      const hook = {
+        ...baseHook,
+        resumeContext: { ...resumeContext, queueNamespace: 'agent' },
+      } satisfies Hook;
+      const { queue } = makeWorld(hook);
+
+      await resumeHook(hook.token, { foo: 'bar' });
+
+      expect(queue.mock.calls[0][0]).toBe('__agent_wkf_workflow_processOrder');
+    });
+
+    it("from the run's executionContext on the fallback path", async () => {
+      process.env.WORKFLOW_QUEUE_NAMESPACE = 'resumer';
+      const hook = { ...baseHook } satisfies Hook;
+      const run = {
+        runId: hook.runId,
+        status: 'running',
+        deploymentId: 'deployment_fallback',
+        workflowName: 'processOrder',
+        executionContext: { queueNamespace: 'agent' },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        attributes: {},
+        specVersion: SPEC_VERSION_CURRENT,
+      } as unknown as WorkflowRun;
+      const { queue } = makeWorld(hook, {
+        runsGet: vi.fn().mockResolvedValue(run),
+      });
+
+      await resumeHook(hook.token, { foo: 'bar' });
+
+      expect(queue.mock.calls[0][0]).toBe('__agent_wkf_workflow_processOrder');
+    });
+
+    it('from the environment when the run recorded none', async () => {
+      process.env.WORKFLOW_QUEUE_NAMESPACE = 'resumer';
+      const hook = { ...baseHook, resumeContext } satisfies Hook;
+      const { queue } = makeWorld(hook);
+
+      await resumeHook(hook.token, { foo: 'bar' });
+
+      expect(queue.mock.calls[0][0]).toBe(
+        '__resumer_wkf_workflow_processOrder'
+      );
+    });
+  });
+
   it('surfaces a terminal-run rejection from the server on the fast path (no re-trigger)', async () => {
     // The fast path does not pre-check the run's terminal status; the server
     // rejects hook_received for an ended run, and resumeHook must re-key that

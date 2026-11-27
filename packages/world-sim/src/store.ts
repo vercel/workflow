@@ -32,6 +32,7 @@ import {
   type Event,
   type EventResult,
   entityResolveData,
+  getRunQueueNamespace,
   type Hook,
   type HookResumeContext,
   IN_BAND_SEQ_AT_RUN_CREATION,
@@ -321,6 +322,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       ...(typeof ctx.nodeVersion === 'string'
         ? { nodeVersion: ctx.nodeVersion }
         : {}),
+      queueNamespace: getRunQueueNamespace(ctx),
       ...(ctx.traceCarrier && typeof ctx.traceCarrier === 'object'
         ? {
             traceCarrier: ctx.traceCarrier as HookResumeContext['traceCarrier'],

@@ -1,6 +1,7 @@
 import { HookNotFoundError, WorkflowRuntimeError } from '@workflow/errors';
 import {
   type Event,
+  getRunQueueNamespace,
   type Hook,
   type HookClaimedFrom,
   SPEC_VERSION_LEGACY,
@@ -135,7 +136,10 @@ export async function publishForceClaimVictimWake(
     await publishHookWakeWithRetry(
       () =>
         world.queue(
-          getWorkflowQueueName(from.workflowName as string),
+          getWorkflowQueueName(
+            from.workflowName as string,
+            getRunQueueNamespace({ queueNamespace: from.queueNamespace })
+          ),
           {
             runId: from.runId,
             // Left off when the victim's version is unknown, so routing
