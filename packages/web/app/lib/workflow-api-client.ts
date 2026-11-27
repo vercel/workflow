@@ -39,6 +39,7 @@ export {
   recreateRun,
   reenqueueRun,
   resumeHook,
+  startWorkflowRun,
   wakeUpRun,
 } from './client/workflow-actions';
 export {

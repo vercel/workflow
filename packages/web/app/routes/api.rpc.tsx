@@ -28,6 +28,7 @@ import {
   reenqueueRun,
   resumeHook,
   runHealthCheck,
+  startWorkflowRun,
   wakeUpRun,
 } from '~/server/workflow-server-actions.server';
 import type { Route } from './+types/api.rpc';
@@ -58,6 +59,8 @@ const handlers = {
   bulkCancelRuns: (p: any) => bulkCancelRuns(p.worldEnv ?? {}, p.runIds ?? []),
   recreateRun: (p: any) =>
     recreateRun(p.worldEnv ?? {}, p.runId, p.deploymentId),
+  startWorkflowRun: (p: any) =>
+    startWorkflowRun(p.worldEnv ?? {}, p.workflowId, p.args ?? []),
   reenqueueRun: (p: any) => reenqueueRun(p.worldEnv ?? {}, p.runId),
   wakeUpRun: (p: any) => wakeUpRun(p.worldEnv ?? {}, p.runId, p.options),
   resumeHook: (p: any) => resumeHook(p.worldEnv ?? {}, p.token, p.payload),

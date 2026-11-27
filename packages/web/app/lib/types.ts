@@ -84,6 +84,16 @@ export interface StopSleepResult {
   stoppedCount: number;
 }
 
+/** The result of starting a workflow run from the web UI. */
+export interface StartWorkflowRunResult {
+  runId: string;
+  /**
+   * Whether the app answered the health check. When it didn't, the run is
+   * created and its first delivery waits for the app.
+   */
+  appReachable: boolean;
+}
+
 export interface StopSleepOptions {
   correlationIds?: string[];
 }

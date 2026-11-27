@@ -30,7 +30,11 @@ import type {
 } from '@workflow/world';
 import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { createWorld as createVercelBackendWorld } from '@workflow/world-vercel';
-import type { HookListItem, HookTokenResult } from '~/lib/types';
+import type {
+  HookListItem,
+  HookTokenResult,
+  StartWorkflowRunResult,
+} from '~/lib/types';
 
 /**
  * Environment variable map for world configuration.
@@ -116,6 +120,13 @@ function getObservabilityCwd(): string {
 }
 
 /**
+ * The data directory `ensureLocalWorldDataDirEnv()` fell back to because it
+ * found none, while it is still in use. The web UI is a single module graph
+ * (outside the World module-state rule), so a module variable is enough.
+ */
+let fallbackLocalDataDir: string | undefined;
+
+/**
  * Ensure local-world env is derived consistently when running `packages/web` directly.
  *
  * Without this, the UI may *display* a dataDir detected from WORKFLOW_OBSERVABILITY_CWD,
@@ -123,19 +134,63 @@ function getObservabilityCwd(): string {
  * under the web package cwd), resulting in "no runs" even though data exists.
  */
 async function ensureLocalWorldDataDirEnv(): Promise<void> {
-  if (process.env.WORKFLOW_LOCAL_DATA_DIR) return;
+  const current = process.env.WORKFLOW_LOCAL_DATA_DIR;
+  // Set by the user, or discovered earlier: keep it. A fallback is checked
+  // again, so the app's directory is used as soon as the app creates it,
+  // without restarting the web UI.
+  if (current && current !== fallbackLocalDataDir) return;
 
   const cwd = getObservabilityCwd();
   const info = await findWorkflowDataDir(cwd);
 
   // Prefer a discovered workflow-data directory (e.g. `.next/workflow-data`).
   if (info.dataDir) {
+    const leftFallback = fallbackLocalDataDir;
     process.env.WORKFLOW_LOCAL_DATA_DIR = info.dataDir;
+    fallbackLocalDataDir = undefined;
+    if (leftFallback) await closeCachedWorldsOn(leftFallback);
     return;
   }
 
   // Fall back to a canonical location under the target project directory.
-  process.env.WORKFLOW_LOCAL_DATA_DIR = path.resolve(cwd, '.workflow-data');
+  fallbackLocalDataDir = path.resolve(cwd, '.workflow-data');
+  process.env.WORKFLOW_LOCAL_DATA_DIR = fallbackLocalDataDir;
+}
+
+/**
+ * Close and forget the cached Worlds on `dataDir`, so a World left behind on
+ * the fallback does not keep its queue and database open next to the one on
+ * the app's directory.
+ */
+async function closeCachedWorldsOn(dataDir: string): Promise<void> {
+  const stale: World[] = [];
+  for (const [key, world] of worldCache) {
+    let env: Record<string, string | undefined>;
+    try {
+      env = JSON.parse(key);
+    } catch {
+      continue;
+    }
+    if (env.WORKFLOW_LOCAL_DATA_DIR === dataDir) {
+      worldCache.delete(key);
+      stale.push(world);
+    }
+  }
+  await Promise.all(
+    stale.map((world) =>
+      world.close?.().catch((error) => {
+        console.error('[web-api] closing the fallback World failed:', error);
+      })
+    )
+  );
+}
+
+/** Whether the Local World would use the fallback, not a real data directory. */
+function isUsingFallbackLocalDataDir(): boolean {
+  return (
+    fallbackLocalDataDir !== undefined &&
+    process.env.WORKFLOW_LOCAL_DATA_DIR === fallbackLocalDataDir
+  );
 }
 
 /**
@@ -496,7 +551,14 @@ async function createWorldForBackend(backendId: string): Promise<World> {
     // Read the key the running app wrote to its data directory, never
     // replace it: the web UI acts on that app (cancel, recreate, re-enqueue,
     // wake-up), and a new key would be one the app's routes do not hold.
-    return createLocalWorld({ queueAuthKey: 'read' });
+    // Pass the data directory explicitly: world-local memoizes the one it
+    // reads from the environment on first use, so a World created after
+    // ensureLocalWorldDataDirEnv() moves off the fallback would otherwise
+    // still use the fallback. Unset means world-local's own default.
+    return createLocalWorld({
+      dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
+      queueAuthKey: 'read',
+    });
   }
 
   const cwd = getObservabilityCwd();
@@ -1051,6 +1113,87 @@ export async function recreateRun(
     return createResponse(newRunId);
   } catch (error) {
     return createServerActionError<string>(error, 'recreateRun', { runId });
+  }
+}
+
+/**
+ * Start a new run of a workflow by its ID, with JSON arguments.
+ *
+ * Local backend only: the Workflows tab that calls it is shown only there.
+ * Starts the run the way `workflow start <workflowName>` does in the CLI
+ * (`startRun()` in `packages/cli/src/lib/inspect/run.ts`): on the current
+ * deployment, with the spec version that deployment's health check reports,
+ * capped at this World's. The web package does not depend on the CLI, so
+ * this mirrors that logic rather than importing it.
+ */
+export async function startWorkflowRun(
+  worldEnv: EnvMap,
+  workflowId: string,
+  args: unknown[]
+): Promise<ServerActionResult<StartWorkflowRunResult>> {
+  try {
+    const backendId = getEffectiveBackendId();
+    if (backendId !== 'local' && backendId !== '@workflow/world-local') {
+      throw new Error(
+        `Starting a workflow from the web UI is only supported on the local backend (current backend: ${backendId}).`
+      );
+    }
+    if (typeof workflowId !== 'string' || workflowId.trim() === '') {
+      throw new Error('A workflow ID is required to start a run.');
+    }
+    if (!Array.isArray(args)) {
+      throw new Error('Workflow arguments must be an array.');
+    }
+    // Before the app has run any workflow it has no data directory, and the
+    // fallback is not the app's: a run written there is one the app never
+    // receives (its deliveries carry no key the app holds), so it would sit
+    // in pending with no error. Refuse instead.
+    await ensureLocalWorldDataDirEnv();
+    if (isUsingFallbackLocalDataDir()) {
+      throw new Error(
+        "Couldn't find your app's workflow data directory. Run any workflow in your app once so it creates one, then click Start again. If your app keeps its data somewhere else, set WORKFLOW_LOCAL_DATA_DIR when you start the web UI."
+      );
+    }
+    const world = await getWorldFromEnv({ ...worldEnv });
+
+    // `latest` on a World without atomic deployments (local) is its current
+    // deployment, as in the CLI's `resolveTargetDeploymentId()`.
+    const deploymentId = world.resolveLatestDeploymentId
+      ? await world.resolveLatestDeploymentId()
+      : await world.getDeploymentId();
+
+    // Probe the deployment's spec version, as the CLI does. If the health
+    // check fails, leave it unset and let `start()` decide, and tell the
+    // caller the app did not answer: the run is created either way.
+    let specVersion: number | undefined;
+    let appReachable = false;
+    try {
+      const hc = await healthCheck(world, { deploymentId, timeout: 10_000 });
+      appReachable = hc.healthy;
+      if (
+        hc.healthy &&
+        typeof hc.specVersion === 'number' &&
+        Number.isInteger(hc.specVersion) &&
+        hc.specVersion >= 1
+      ) {
+        specVersion = Math.min(hc.specVersion, world.specVersion);
+      }
+    } catch {
+      // Keep specVersion unset
+    }
+
+    const run = await workflowRunHelpers.start({ workflowId }, args, {
+      deploymentId,
+      specVersion,
+      world,
+    });
+    return createResponse({ runId: run.runId, appReachable });
+  } catch (error) {
+    return createServerActionError<StartWorkflowRunResult>(
+      error,
+      'startWorkflowRun',
+      { workflowId }
+    );
   }
 }
 

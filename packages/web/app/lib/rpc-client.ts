@@ -25,6 +25,7 @@ import type {
   PaginatedResult,
   ResumeHookResult,
   ServerActionResult,
+  StartWorkflowRunResult,
   StopSleepOptions,
   StopSleepResult,
 } from '~/lib/types';
@@ -192,6 +193,14 @@ export async function recreateRun(
   deploymentId?: string
 ): Promise<ServerActionResult<string>> {
   return rpc('recreateRun', { worldEnv, runId, deploymentId });
+}
+
+export async function startWorkflowRun(
+  worldEnv: EnvMap,
+  workflowId: string,
+  args: unknown[]
+): Promise<ServerActionResult<StartWorkflowRunResult>> {
+  return rpc('startWorkflowRun', { worldEnv, workflowId, args });
 }
 
 export async function reenqueueRun(

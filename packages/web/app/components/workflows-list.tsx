@@ -2,6 +2,7 @@ import { pluralize } from '@workflow/utils';
 import { AlertCircle, GitBranch, Workflow } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { WorkflowGraphViewer } from '~/components/flow-graph/workflow-graph-viewer';
+import { StartWorkflowButton } from '~/components/start-workflow-dialog';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
 import { Badge } from '~/components/ui/badge';
 import { Card, CardContent } from '~/components/ui/card';
@@ -108,6 +109,9 @@ export function WorkflowsList({ onWorkflowSelect }: WorkflowsListProps) {
                 <TableHead className="text-center sticky top-0 bg-background z-10 border-b shadow-sm h-10">
                   Steps
                 </TableHead>
+                <TableHead className="sticky top-0 bg-background z-10 border-b shadow-sm h-10">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -138,6 +142,12 @@ export function WorkflowsList({ onWorkflowSelect }: WorkflowsListProps) {
                         {stepCount} {pluralize('step', 'steps', stepCount)}
                       </Badge>
                     </TableCell>
+                    <TableCell className="py-2 text-right">
+                      <StartWorkflowButton
+                        workflowId={workflow.workflowId}
+                        workflowName={workflow.workflowName}
+                      />
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -152,10 +162,18 @@ export function WorkflowsList({ onWorkflowSelect }: WorkflowsListProps) {
           className="w-[75vw] max-w-[75vw] sm:max-w-[75vw]"
         >
           <SheetHeader>
-            <SheetTitle className="flex items-center gap-2">
-              <Workflow className="h-5 w-5" />
-              {selectedWorkflow?.workflowName}
-            </SheetTitle>
+            <div className="flex items-center justify-between gap-4 pr-8">
+              <SheetTitle className="flex items-center gap-2">
+                <Workflow className="h-5 w-5" />
+                {selectedWorkflow?.workflowName}
+              </SheetTitle>
+              {selectedWorkflow && (
+                <StartWorkflowButton
+                  workflowId={selectedWorkflow.workflowId}
+                  workflowName={selectedWorkflow.workflowName}
+                />
+              )}
+            </div>
             {selectedWorkflow && (
               <SheetDescription asChild>
                 <div className="space-y-2">
