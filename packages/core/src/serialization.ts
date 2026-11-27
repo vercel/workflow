@@ -87,6 +87,7 @@ import {
   readProperty,
 } from './serialization/hardened.js';
 import {
+  callSiteInstanceIdentity,
   getClassReducers,
   getClassRevivers,
 } from './serialization/reducers/class.js';
@@ -4346,7 +4347,9 @@ export async function dehydrateStepArguments(
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
-    const str = stringify(value, getWorkflowReducers(global));
+    const str = stringify(value, getWorkflowReducers(global), {
+      operations: { identify: callSiteInstanceIdentity },
+    });
     return revive(str);
   }
   try {

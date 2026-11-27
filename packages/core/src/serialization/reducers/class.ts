@@ -11,6 +11,67 @@ import { getSerializationClass } from '../../class-serialization.js';
 import { readProperty, recordGuestCode } from '../hardened.js';
 import type { Reducers, Revivers } from '../types.js';
 
+// ---- Call-site serialization ----
+
+class CallSiteSerializationFailure {
+  constructor(readonly error: unknown) {}
+}
+
+/**
+ * A custom-class instance already reduced to `{ classId, data }` by
+ * {@link serializeInstanceAtCallSite}. A host object, so encoding it executes
+ * no workflow code.
+ */
+class CallSiteSerializedInstance {
+  constructor(
+    readonly classId: string,
+    readonly data: unknown,
+    /**
+     * The instance this stands in for. Never encoded: the `Instance` reducer
+     * emits only `{ classId, data }`.
+     */
+    readonly original: object
+  ) {}
+}
+
+/** Keep references to a stand-in and its original on the same wire index. */
+export function callSiteInstanceIdentity(value: unknown): unknown {
+  return value instanceof CallSiteSerializedInstance ? value.original : value;
+}
+
+/**
+ * Runs a step argument's custom `[WORKFLOW_SERIALIZE]` at the step call site,
+ * inside the workflow body, and returns a host-side stand-in for it.
+ *
+ * Dehydrating step input happens after suspension, off the replayed path: a
+ * serializer run there executes workflow code a cold replay would never
+ * re-execute, so it would force the retained VM to be discarded
+ * (`serialization_executed_workflow_code`) at every boundary — one full replay
+ * per step for an agent loop that hands its model to a step each iteration
+ * (vercel/workflow#4316). Run from the call site, the serializer executes on
+ * every pass, retained or cold, so whatever it does to workflow state is
+ * reconstructed by replay and the boundary stays retainable.
+ *
+ * Anything that is not a custom-serialized instance with a valid `classId` is
+ * returned unchanged. Failures are deferred to dehydration without invoking
+ * the failing serializer or property accessor a second time.
+ */
+export function serializeInstanceAtCallSite(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  try {
+    const cls = readProperty(value, 'constructor');
+    if (!cls || typeof cls !== 'function') return value;
+    const serialize = readProperty(cls, WORKFLOW_SERIALIZE);
+    if (typeof serialize !== 'function') return value;
+    const classId = readProperty(cls, 'classId');
+    if (typeof classId !== 'string') return value;
+    const data = serialize.call(cls, value);
+    return new CallSiteSerializedInstance(classId, data, value);
+  } catch (error) {
+    return new CallSiteSerializationFailure(error);
+  }
+}
+
 // ---- Reducers ----
 
 export function getClassReducers(): Partial<Reducers> {
@@ -26,6 +87,10 @@ export function getClassReducers(): Partial<Reducers> {
     },
     Instance: (value) => {
       if (value === null || typeof value !== 'object') return false;
+      if (value instanceof CallSiteSerializationFailure) throw value.error;
+      if (value instanceof CallSiteSerializedInstance) {
+        return { classId: value.classId, data: value.data };
+      }
       const cls = readProperty(value, 'constructor');
       if (!cls || typeof cls !== 'function') return false;
 
