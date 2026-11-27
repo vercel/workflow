@@ -6,6 +6,7 @@ import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
 import { getAuthToken } from './auth.js';
 import { fetchTeamInfo } from './vercel-api.js';
+import { getVercelExtensionApiUrl } from './vercel-extension.js';
 import {
   findRepoRoot,
   getProjectLink,
@@ -41,6 +42,7 @@ export const getEnvVars = (): Record<string, string> => {
     WORKFLOW_TARGET_WORLD: env.WORKFLOW_TARGET_WORLD || '',
     WORKFLOW_VERCEL_ENV: env.WORKFLOW_VERCEL_ENV || '',
     WORKFLOW_VERCEL_AUTH_TOKEN: env.WORKFLOW_VERCEL_AUTH_TOKEN || '',
+    WORKFLOW_VERCEL_API_URL: env.WORKFLOW_VERCEL_API_URL || '',
     WORKFLOW_VERCEL_PROJECT: env.WORKFLOW_VERCEL_PROJECT || '',
     WORKFLOW_VERCEL_PROJECT_NAME: env.WORKFLOW_VERCEL_PROJECT_NAME || '',
     WORKFLOW_VERCEL_TEAM: env.WORKFLOW_VERCEL_TEAM || '',
@@ -295,6 +297,11 @@ export const resolveProjectFromLink = (
 
 export interface VercelEnvVars {
   token?: string;
+  /**
+   * Vercel API base URL when requests go through Vercel CLI's extension API
+   * proxy, which authenticates them; `token` is then unset.
+   */
+  vercelApiUrl?: string;
   environment?: string;
   projectId?: string;
   projectName?: string;
@@ -333,7 +340,19 @@ export const inferVercelEnvVars = async (): Promise<VercelEnvVars> => {
     }
   }
 
-  if (!envVars.WORKFLOW_VERCEL_AUTH_TOKEN) {
+  // Run as `vercel workflow`, Vercel CLI's extension API proxy authenticates
+  // requests with the user's Vercel CLI login (whichever way it was given:
+  // `vc login`, `--token`, `VERCEL_TOKEN`), so no token is read here. An
+  // explicit token is used as given instead: the proxy would replace it.
+  const extensionApiUrl = envVars.WORKFLOW_VERCEL_AUTH_TOKEN
+    ? undefined
+    : getVercelExtensionApiUrl();
+  if (extensionApiUrl) {
+    logger.debug(
+      `Authenticating through the Vercel CLI API proxy at ${extensionApiUrl}`
+    );
+    envVars.WORKFLOW_VERCEL_API_URL = extensionApiUrl;
+  } else if (!envVars.WORKFLOW_VERCEL_AUTH_TOKEN) {
     logger.debug('Inferring vercel auth token from CLI auth file');
     const token = await getAuthToken();
     if (!token) {
@@ -346,13 +365,16 @@ export const inferVercelEnvVars = async (): Promise<VercelEnvVars> => {
   // TODO: To redirect to the Vercel dashboard correctly, we need to
   // resolve the team name, which is a whole API request. The alternative would be to
   // change front to allow passing in the team slug directly, or add some generic redirect.
-  if (envVars.WORKFLOW_VERCEL_TEAM && envVars.WORKFLOW_VERCEL_AUTH_TOKEN) {
+  if (
+    envVars.WORKFLOW_VERCEL_TEAM &&
+    (envVars.WORKFLOW_VERCEL_AUTH_TOKEN || extensionApiUrl)
+  ) {
     logger.info('Vercel project detected. Loading project data...');
     logger.debug('Fetching team information from Vercel API');
-    const teamInfo = await fetchTeamInfo(
-      envVars.WORKFLOW_VERCEL_TEAM,
-      envVars.WORKFLOW_VERCEL_AUTH_TOKEN
-    );
+    const teamInfo = await fetchTeamInfo(envVars.WORKFLOW_VERCEL_TEAM, {
+      token: envVars.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+      apiUrl: extensionApiUrl,
+    });
     if (teamInfo) {
       envVars.WORKFLOW_VERCEL_TEAM = teamInfo.teamSlug;
       logger.debug(`Found team slug: ${teamInfo.teamSlug}`);
@@ -365,6 +387,7 @@ export const inferVercelEnvVars = async (): Promise<VercelEnvVars> => {
 
   return {
     token: envVars.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+    vercelApiUrl: extensionApiUrl,
     environment: envVars.WORKFLOW_VERCEL_ENV || undefined,
     projectId: envVars.WORKFLOW_VERCEL_PROJECT || undefined,
     projectName: envVars.WORKFLOW_VERCEL_PROJECT_NAME || undefined,

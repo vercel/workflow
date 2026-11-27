@@ -16,7 +16,7 @@ import * as z from 'zod';
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getDispatcher } from './http-client.js';
 import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
-import type { APIConfig } from './utils.js';
+import { type APIConfig, getVercelApiUrl } from './utils.js';
 
 const ResolveLatestDeploymentResponseSchema = z.object({
   id: z.string(),
@@ -52,6 +52,9 @@ async function resolveDeploymentIdentityToken(
   config?: APIConfig
 ): Promise<string | null> {
   if (config?.token) return config.token;
+  // A custom `vercelApiUrl` authenticates requests itself; never send it an
+  // ambient credential.
+  if (config?.vercelApiUrl) return null;
 
   if (process.env.VERCEL === '1') {
     const oidcToken = await getVercelOidcToken().catch(() => null);
@@ -60,6 +63,9 @@ async function resolveDeploymentIdentityToken(
 
   return resolveVercelApiToken(config);
 }
+
+const authorizationHeaders = (token: string | null): Headers =>
+  new Headers(token ? { Authorization: `Bearer ${token}` } : {});
 
 /**
  * Find a deployment of the configured project in the configured environment,
@@ -79,7 +85,7 @@ async function resolveDeploymentIdentityToken(
 async function findSourceDeployment(
   projectId: string,
   config: APIConfig | undefined,
-  token: string
+  token: string | null
 ): Promise<string> {
   const environment = config?.projectConfig?.environment || 'production';
   const teamId = config?.projectConfig?.teamId;
@@ -101,12 +107,12 @@ async function findSourceDeployment(
   });
   if (branch) params.set('branch', branch);
   if (teamId) params.set('teamId', teamId);
-  const url = `https://api.vercel.com/v6/deployments?${params}`;
+  const url = `${getVercelApiUrl(config)}/v6/deployments?${params}`;
 
   const response = await instrumentedFetch({
     method: 'GET',
     url,
-    headers: new Headers({ Authorization: `Bearer ${token}` }),
+    headers: authorizationHeaders(token),
     dispatcher: getDispatcher(config),
     peerService: 'vercel-api',
     timeoutMs: null,
@@ -162,7 +168,7 @@ export function createResolveLatestDeploymentId(
     }
 
     const token = await resolveDeploymentIdentityToken(config);
-    if (!token) {
+    if (!token && !config?.vercelApiUrl) {
       throw new Error(
         'Cannot resolve latest deployment: no OIDC token or VERCEL_TOKEN available'
       );
@@ -179,7 +185,7 @@ export function createResolveLatestDeploymentId(
     // owns the deployment.
     const teamId = config?.projectConfig?.teamId;
     const query = teamId ? `?${new URLSearchParams({ teamId })}` : '';
-    const url = `https://api.vercel.com/v1/workflow/resolve-latest-deployment/${encodeURIComponent(currentDeploymentId)}${query}`;
+    const url = `${getVercelApiUrl(config)}/v1/workflow/resolve-latest-deployment/${encodeURIComponent(currentDeploymentId)}${query}`;
 
     // 429/5xx retries are handled by the shared RetryAgent from getDispatcher().
     // instrumentedFetch adds the OTEL client span + DEBUG logging the v3/v4
@@ -187,7 +193,7 @@ export function createResolveLatestDeploymentId(
     const response = await instrumentedFetch({
       method: 'GET',
       url,
-      headers: new Headers({ Authorization: `Bearer ${token}` }),
+      headers: authorizationHeaders(token),
       dispatcher: getDispatcher(config),
       peerService: 'vercel-api',
       // Preserve the prior no-timeout behavior for this Vercel-API call; the
