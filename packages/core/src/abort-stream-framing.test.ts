@@ -117,6 +117,205 @@ describe('abort packet compatibility', () => {
     await reader.cancel();
   });
 
+  describe('decoding a legacy packet whose length is unknown', () => {
+    const payload = new TextEncoder().encode(
+      `devl${JSON.stringify(['x'.repeat(200)])}`
+    );
+    const bytes = (from: number, to: number) =>
+      Array.from(payload.subarray(from, to), (byte) => new Uint8Array([byte]));
+    // Stands in for the real decoder: only the whole packet decodes.
+    const decoder = () =>
+      vi.fn(async (packet: Uint8Array) => {
+        if (packet.length !== payload.length) throw new Error('not a packet');
+      });
+    const eventLoopTurn = () =>
+      new Promise<void>((resolve) => setImmediate(resolve));
+
+    it('decodes a packet split byte by byte once, without stream close', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of bytes(0, payload.length)) {
+            controller.enqueue(chunk);
+          }
+          // Deliberately remain open.
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      await reader.cancel();
+    });
+
+    it('decodes once per burst when the transport pauses mid-packet', async () => {
+      const half = payload.length / 2;
+      let deliver!: (chunks: Uint8Array[]) => void;
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          deliver = (chunks) => {
+            for (const chunk of chunks) controller.enqueue(chunk);
+          };
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      const packet = readAbortStreamPacket(reader, tryDecode);
+      deliver([payload.slice(0, half)]);
+      await vi.waitFor(() => expect(tryDecode).toHaveBeenCalledTimes(1));
+      // No further attempt while nothing arrives.
+      for (let turn = 0; turn < 5; turn++) await eventLoopTurn();
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      deliver([payload.slice(half)]);
+      expect(await packet).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(2);
+      await reader.cancel();
+    });
+
+    it('is not held back by fake timers', async () => {
+      vi.useFakeTimers();
+      try {
+        const reader = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(payload.slice());
+          },
+        }).getReader();
+        expect(await readAbortStreamPacket(reader, decoder())).toEqual(payload);
+        await reader.cancel();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      'ends',
+      'fails',
+    ])('decodes a complete packet when the stream %s right behind it', async (outcome) => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of bytes(0, payload.length)) {
+            controller.enqueue(chunk);
+          }
+        },
+        pull(controller) {
+          if (outcome === 'ends') controller.close();
+          else controller.error(new Error('transport reset'));
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns a complete packet that has an empty chunk buffered behind it', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload.slice());
+          controller.enqueue(new Uint8Array(0));
+          // Deliberately remain open.
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      await reader.cancel();
+    });
+
+    it('does not decode at an empty chunk with more data readable behind it', async () => {
+      const half = payload.length / 2;
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload.slice(0, half));
+          controller.enqueue(new Uint8Array(0));
+          controller.enqueue(payload.slice(half));
+          controller.enqueue(new Uint8Array(0));
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      await reader.cancel();
+    });
+
+    it.each([
+      ['another legacy packet', () => payload.slice()],
+      ['a framed packet', () => frameAbortStreamPayload(payload)],
+      ['a stray byte', () => new Uint8Array([10])],
+    ])('returns a complete packet that has %s buffered behind it', async (_, behind) => {
+      for (const closed of [false, true]) {
+        const reader = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(payload.slice());
+            controller.enqueue(behind());
+            if (closed) controller.close();
+          },
+        }).getReader();
+        const tryDecode = decoder();
+        expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+        await reader.cancel();
+      }
+    });
+
+    it('returns a packet the transport split when another is buffered behind it', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload.slice(0, 50));
+          controller.enqueue(payload.slice(50, 120));
+          controller.enqueue(payload.slice(120));
+          controller.enqueue(payload.slice());
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      await reader.cancel();
+    });
+
+    it('bounds the attempts on chunk boundaries inside the buffer', async () => {
+      let deliver!: (chunks: Uint8Array[]) => void;
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          deliver = (chunks) => {
+            for (const chunk of chunks) controller.enqueue(chunk);
+          };
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      const packet = readAbortStreamPacket(reader, tryDecode);
+      // Three bursts of single bytes, each ending mid-packet, then the rest.
+      const cuts = [0, 40, 80, 120, payload.length];
+      for (let burst = 0; burst < 3; burst++) {
+        const before = tryDecode.mock.calls.length;
+        deliver(bytes(cuts[burst], cuts[burst + 1]));
+        await vi.waitFor(() =>
+          expect(tryDecode.mock.calls.length).toBeGreaterThan(before)
+        );
+        for (let turn = 0; turn < 5; turn++) await eventLoopTurn();
+      }
+      // One attempt per pause, plus eight boundaries in total: 9, 1, 1.
+      expect(tryDecode).toHaveBeenCalledTimes(11);
+      deliver(bytes(cuts[3], cuts[4]));
+      expect(await packet).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(12);
+      await reader.cancel();
+    });
+
+    it('reports a stream failure behind an incomplete packet', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of bytes(0, payload.length - 1)) {
+            controller.enqueue(chunk);
+          }
+        },
+        pull(controller) {
+          controller.error(new Error('transport reset'));
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      await expect(readAbortStreamPacket(reader, tryDecode)).rejects.toThrow(
+        'transport reset'
+      );
+      // Everything buffered, then the bounded number of chunk boundaries.
+      expect(tryDecode).toHaveBeenCalledTimes(9);
+    });
+  });
+
   it('reads the first packet when duplicate packets are coalesced', async () => {
     const payload = new TextEncoder().encode('devl[1]');
     const frame = frameAbortStreamPayload(payload);
@@ -233,26 +432,36 @@ describe('real abort reducers and revivers', () => {
       key
     )) as Uint8Array;
     const wire = framed ? frameAbortStreamPayload(payload) : payload;
-    world.streams.get.mockImplementationOnce(
-      async () =>
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            for (const byte of wire) controller.enqueue(new Uint8Array([byte]));
-            // close() is a separate, best-effort writer RPC. Never provide EOF.
-          },
-        })
-    );
-    // Like the step executor, hydrate outside any contextStorage frame: the
-    // reader can only get the key from the reviver.
-    const ops: Promise<void>[] = [];
-    const hydrated = await hydrateStepArguments(input, runId, key, ops);
-    const signal =
-      kind === 'signal'
-        ? (hydrated as AbortSignal)
-        : (hydrated as AbortController).signal;
-    await Promise.all(ops);
-    expect(signal.aborted).toBe(true);
-    expect(signal.reason.message).toBe(reason.message);
+    const decrypt = vi.spyOn(globalThis.crypto.subtle, 'decrypt');
+    try {
+      world.streams.get.mockImplementationOnce(
+        async () =>
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (const byte of wire)
+                controller.enqueue(new Uint8Array([byte]));
+              // close() is a separate, best-effort writer RPC. Never provide EOF.
+            },
+          })
+      );
+      // Like the step executor, hydrate outside any contextStorage frame: the
+      // reader can only get the key from the reviver.
+      const ops: Promise<void>[] = [];
+      const hydrated = await hydrateStepArguments(input, runId, key, ops);
+      const signal =
+        kind === 'signal'
+          ? (hydrated as AbortSignal)
+          : (hydrated as AbortController).signal;
+      await Promise.all(ops);
+      expect(signal.aborted).toBe(true);
+      expect(signal.reason.message).toBe(reason.message);
+      // One decryption for the argument and one for the packet, however many
+      // reads delivered it.
+      expect(wire.length).toBeGreaterThan(100);
+      expect(decrypt).toHaveBeenCalledTimes(2);
+    } finally {
+      decrypt.mockRestore();
+    }
   });
 
   it('frames step-initiated aborts and keeps the durable hook payload unchanged', async () => {

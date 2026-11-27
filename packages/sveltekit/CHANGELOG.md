@@ -1,5 +1,17 @@
 # @workflow/sveltekit
 
+## 5.0.15
+
+### Patch Changes
+
+- [#5676](https://github.com/vercel/workflow/pull/5676) [`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump dev dependency `vite` to patched releases (7.3.8, 8.3.8) to pick up a security fix.
+
+- [#5691](https://github.com/vercel/workflow/pull/5691) [`7436d2b`](https://github.com/vercel/workflow/commit/7436d2b02b54f9b1c56b8f906d39f2b43461bdb6) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Keep `workflow` and `@workflow/*` in the server bundle on SvelteKit 3, whose adapters otherwise leave them external, so a step can return the `Run` from `start()` again.
+- Updated dependencies [[`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15)]:
+  - @workflow/vite@5.0.15
+  - @workflow/builders@5.1.6
+  - @workflow/rollup@5.0.15
+
 ## 5.0.14
 
 ### Patch Changes

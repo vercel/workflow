@@ -19,7 +19,7 @@ import {
   isTerminalWorkflowRunStatus,
   type WorkflowRun,
 } from '@workflow/world';
-import { AlertCircle, GitBranch, HelpCircle, List, Lock } from 'lucide-react';
+import { AlertCircle, HelpCircle, Lock } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useOutlet } from 'react-router';
 import { toast } from 'sonner';
@@ -69,7 +69,6 @@ import {
 import { useServerConfig } from '~/lib/world-config-context';
 import type { RunUsageOutletContext } from '~/routes/run-usage';
 import { CopyableText } from './display-utils/copyable-text';
-import { LiveStatus } from './display-utils/live-status';
 import { RelativeTime } from './display-utils/relative-time';
 import { StatusBadge } from './display-utils/status-badge';
 import { WorkflowGraphExecutionViewer } from './flow-graph/workflow-graph-execution-viewer';
@@ -526,11 +525,6 @@ export function RunDetailView({
 
   const workflowName = parseWorkflowName(run.workflowName)?.shortName;
 
-  // At this point, we've already returned if there was an error
-  // So hasError is always false here
-  const hasError = false;
-  const errorMessage = '';
-
   return (
     <>
       {/* Cancel Confirmation Dialog */}
@@ -629,7 +623,6 @@ export function RunDetailView({
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <LiveStatus hasError={hasError} errorMessage={errorMessage} />
                 <RunActionsButtons
                   env={env}
                   runId={runId}
@@ -651,7 +644,7 @@ export function RunDetailView({
 
             {/* Status and Timeline Row: wraps on narrow screens */}
             <div className="flex flex-wrap items-start gap-x-8 gap-y-4">
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[76px]">
                 <div className="text-xs text-muted-foreground">Status</div>
                 {run.status ? (
                   <StatusBadge
@@ -659,7 +652,7 @@ export function RunDetailView({
                     context={{ error: run.error, cancelReason }}
                   />
                 ) : (
-                  <Skeleton className="w-[55px] h-[24px]" />
+                  <Skeleton className="h-4" />
                 )}
               </div>
               <div className="flex flex-col gap-1">
@@ -691,31 +684,27 @@ export function RunDetailView({
                       '-'
                     )
                   ) : (
-                    <Skeleton className="w-[60px] h-[20px]" />
+                    <Skeleton className="h-4" />
                   )}
                 </div>
               </div>
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Run ID</div>
-                {run.runId ? (
-                  <CopyableText text={run.runId}>
-                    <div className="text-xs mt-0.5 font-mono">{run.runId}</div>
-                  </CopyableText>
-                ) : (
-                  <Skeleton className="w-[280px] h-[20px]" />
-                )}
+                <CopyableText text={runId}>
+                  <div className="text-xs mt-0.5 font-mono">{runId}</div>
+                </CopyableText>
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[104px]">
                 <div className="text-xs text-muted-foreground">Queued</div>
                 {run.createdAt ? (
                   <div className="text-xs">
                     <RelativeTime date={run.createdAt} />
                   </div>
                 ) : (
-                  <Skeleton className="w-[110px] h-[20px]" />
+                  <Skeleton className="h-4" />
                 )}
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[104px]">
                 <div className="text-xs text-muted-foreground">Started</div>
                 <div className="text-xs">
                   {run.runId ? (
@@ -725,11 +714,11 @@ export function RunDetailView({
                       '-'
                     )
                   ) : (
-                    <Skeleton className="w-[110px] h-[20px]" />
+                    <Skeleton className="h-4" />
                   )}
                 </div>
               </div>
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-1 min-w-[104px]">
                 <div className="text-xs text-muted-foreground">Completed</div>
                 <div className="text-xs">
                   {run.runId ? (
@@ -739,7 +728,7 @@ export function RunDetailView({
                       '-'
                     )
                   ) : (
-                    <Skeleton className="w-[110px] h-[20px]" />
+                    <Skeleton className="h-4" />
                   )}
                 </div>
               </div>
@@ -801,35 +790,17 @@ export function RunDetailView({
                   same row. */}
               <div className={RUN_VIEW_ROW_CLASS}>
                 <TabsList className="h-auto border-0 bg-transparent p-0">
-                  <TabsTrigger
-                    value="trace"
-                    className="gap-2"
-                    data-run-view-item="trace"
-                  >
-                    <List className="h-4 w-4" />
+                  <TabsTrigger value="trace" data-run-view-item="trace">
                     Trace
                   </TabsTrigger>
                   {/* Graph tab hidden for now */}
                   {false && isLocalBackend && (
-                    <TabsTrigger value="graph" className="gap-2">
-                      <GitBranch className="h-4 w-4" />
-                      Graph
-                    </TabsTrigger>
+                    <TabsTrigger value="graph">Graph</TabsTrigger>
                   )}
-                  <TabsTrigger
-                    value="events"
-                    className="gap-2"
-                    data-run-view-item="events"
-                  >
-                    <List className="h-4 w-4" />
+                  <TabsTrigger value="events" data-run-view-item="events">
                     Events
                   </TabsTrigger>
-                  <TabsTrigger
-                    value="streams"
-                    className="gap-2"
-                    data-run-view-item="streams"
-                  >
-                    <List className="h-4 w-4" />
+                  <TabsTrigger value="streams" data-run-view-item="streams">
                     Streams
                   </TabsTrigger>
                 </TabsList>
@@ -911,19 +882,22 @@ export function RunDetailView({
                           </div>
                         ) : (
                           streams.map((streamId) => (
-                            <button
-                              key={streamId}
-                              type="button"
-                              onClick={() => setSelectedStreamId(streamId)}
-                              className={`flex h-10 min-h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
-                                selectedStreamId === streamId
-                                  ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
-                                  : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
-                              }`}
-                              title={streamId}
-                            >
-                              {streamId}
-                            </button>
+                            <Tooltip key={streamId}>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedStreamId(streamId)}
+                                  className={`flex h-10 min-h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
+                                    selectedStreamId === streamId
+                                      ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
+                                      : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
+                                  }`}
+                                >
+                                  {streamId}
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent>{streamId}</TooltipContent>
+                            </Tooltip>
                           ))
                         )}
                       </div>

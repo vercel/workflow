@@ -5,6 +5,7 @@ import {
   getMaxInlineSteps,
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
+  getRunAheadWaitWindowEndMs,
   isOptimisticBackgroundStartEnabled,
   isTurboFirstDeliveryAgeAdmitted,
   MAX_INLINE_STEPS,
@@ -13,6 +14,8 @@ import {
   MAX_REPLAY_TIMEOUT_MS,
   MIN_MAX_INLINE_STEPS,
   MIN_REPLAY_TIMEOUT_MS,
+  MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS,
+  OPEN_WAIT_CLOCK_SKEW_MS,
   REPLAY_TIMEOUT_MS,
   TURBO_FIRST_DELIVERY_MAX_AGE_MS,
 } from './constants.js';
@@ -260,5 +263,29 @@ describe('isTurboFirstDeliveryAgeAdmitted', () => {
     expect(isTurboFirstDeliveryAgeAdmitted(new Date(now + 60_000), now)).toBe(
       true
     );
+  });
+});
+
+describe('getRunAheadWaitWindowEndMs', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('ends the allowance after now, or after the inline deadline once it passed', () => {
+    expect(getRunAheadWaitWindowEndMs(1_000, 60_000)).toBe(
+      1_000 + OPEN_WAIT_CLOCK_SKEW_MS
+    );
+    expect(getRunAheadWaitWindowEndMs(60_000, 1_000)).toBe(
+      1_000 + OPEN_WAIT_CLOCK_SKEW_MS
+    );
+  });
+
+  it('keeps the allowance at its floor when the skew setting is below it', () => {
+    vi.stubEnv('WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS', '0');
+    expect(getRunAheadWaitWindowEndMs(1_000, 60_000)).toBe(
+      1_000 + MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS
+    );
+    vi.stubEnv('WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS', '5000');
+    expect(getRunAheadWaitWindowEndMs(1_000, 60_000)).toBe(6_000);
   });
 });

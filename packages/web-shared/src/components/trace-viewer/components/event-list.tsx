@@ -1,7 +1,13 @@
 import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
+import { getSpanColors } from '../../../lib/palette';
+import {
+  TOOLTIP_DELAY_MS,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '../../ui/tooltip';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -15,45 +21,19 @@ import { getSpanDurationMs, isSpanCancelled, isSpanErrored } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
-interface EventStyle {
-  icon: React.ComponentType<{ className?: string }>;
-  className: string;
-  label: string;
-}
-
-const eventStyles: Record<string, EventStyle> = {
-  run: { icon: WorkflowIcon, className: 'text-blue-900', label: 'Workflow' },
-  step: { icon: StepForwardIcon, className: 'text-green-900', label: 'Step' },
-  hook: { icon: WebhookIcon, className: 'text-gray-900', label: 'Hook' },
-  sleep: { icon: SleepIcon, className: 'text-gray-900', label: 'Sleep' },
+const RESOURCE_ICONS: Record<
+  string,
+  { icon: React.ComponentType<{ className?: string }>; label: string }
+> = {
+  run: { icon: WorkflowIcon, label: 'Workflow' },
+  step: { icon: StepForwardIcon, label: 'Step' },
+  hook: { icon: WebhookIcon, label: 'Hook' },
+  sleep: { icon: SleepIcon, label: 'Sleep' },
 };
 
-const defaultStyle: EventStyle = {
-  icon: Circle,
-  className: 'text-gray-900',
-  label: 'Event',
-};
+const DEFAULT_ICON = { icon: Circle, label: 'Event' };
 
 const ROW_HEIGHT_CLASS = 'h-10';
-
-function getEventStyle(
-  resource: string,
-  isErrored: boolean,
-  isCancelled: boolean
-): EventStyle {
-  const style = eventStyles[resource] ?? defaultStyle;
-  return {
-    icon: style.icon,
-    className: cn(
-      isErrored
-        ? 'text-red-900'
-        : isCancelled
-          ? 'text-gray-900'
-          : style.className
-    ),
-    label: style.label,
-  };
-}
 
 /**
  * The colored type icon (workflow, step, hook, sleep) with its tooltip. Shared
@@ -68,15 +48,15 @@ export function ResourceIcon({
   isErrored?: boolean;
   isCancelled?: boolean;
 }) {
-  const {
-    icon: Icon,
-    className,
-    label,
-  } = getEventStyle(resource, isErrored, isCancelled);
+  const { icon: Icon, label } = RESOURCE_ICONS[resource] ?? DEFAULT_ICON;
+  const { icon } = getSpanColors(
+    resource,
+    isErrored ? 'failed' : isCancelled ? 'cancelled' : undefined
+  );
   return (
-    <Tooltip delayDuration={500}>
+    <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
       <TooltipTrigger asChild>
-        <span className={cn('shrink-0', className)}>
+        <span className={cn('shrink-0', icon)}>
           <Icon className="w-4 h-4" />
         </span>
       </TooltipTrigger>

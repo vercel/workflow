@@ -10,7 +10,7 @@ related:
   - /docs/foundations/streaming
 ---
 
-We benchmark the Workflow SDK runtime on Vercel at each point where a workflow waits on it: starting a run, moving from one step to the next, fanning out, resuming from a hook, and delivering a stream. This page explains what each benchmark measures and how, and then shows the [latest results](#latest-results), which compare a new release with an earlier one.
+We benchmark the Workflow SDK runtime on Vercel at each point where a workflow waits on it: starting a run, moving from one step to the next, fanning out, resuming from a hook, and delivering a stream, plus a five-turn agent loop that combines them. This page explains what each benchmark measures and how, and then shows the [latest results](#latest-results), which compare a new release with an earlier one.
 
 ## What we measure
 
@@ -37,6 +37,12 @@ A workflow creates a [hook](/docs/foundations/hooks) and waits on it for 1 s, th
 ### Chunk trip time (CTT)
 
 One step replays a recorded AI agent's token stream, 2,593 chunks over 52.4 s, in real time to a [namespaced stream](/docs/foundations/streaming#namespaced-streams) with [`getWritable()`](/docs/api-reference/workflow/get-writable), and a second step in the same run reads it with `getRun(runId).getReadable()`. Chunk trip time runs from the writer writing a chunk until the reader receives it. The same benchmark records how long the whole response takes to reach the reader and how many runs had a chunk delayed by over 1 s. See [Streams](#streams) for the latest results.
+
+### Agent loop overhead
+
+A five-turn agent built from plain steps, shaped like a durable AI agent. Each turn is one model step that streams 10 tokens over 100 ms to [`getWritable()`](/docs/api-reference/workflow/get-writable). On turns 1 to 4 the model then calls two tools, which run in parallel as 100 ms steps, and turn 5 answers. Each message is 1 KB of JSON, and the conversation passed to every step grows each turn. The overhead runs from `start()` until the first line of a step after the last turn, minus the 900 ms of model and tool work on the critical path. The loop runs with and without streaming its tokens. See [Agent loop](#agent-loop) for the latest results.
+
+Every step uses the default retry settings. A model step marked [`maxRetries = 0`](/docs/foundations/errors-and-retries), as some agent libraries do, waits until its start is recorded before it runs, which added about 70 ms per turn on v5.8.0 in our measurements.
 
 ## Methodology
 
@@ -154,6 +160,33 @@ On the Vercel World, [`WORKFLOW_STREAMS_TRANSPORT`](/docs/configuration/worlds#w
   width={2016}
   height={1628}
 />
+
+### Agent loop
+
+{/* generated:performance agent-loop */}
+
+Measured November 24, 2026 on v4.8.18, v5.2.0 and v5.8.0, which ran at the same time, separately from the results above. Each version ran the loop 15 times with streaming and 15 times without.
+
+At p75, the five-turn loop that streams its tokens adds 912 ms on v5.8.0, against 3,023 ms on v5.2.0 and 9,745 ms on v4.8.18. Without streaming, v5.8.0 adds 257 ms, most of it the time to reach the first step (173 ms at p75), against 2,450 ms on v5.2.0 and 7,569 ms on v4.8.18.
+
+On v5.8.0, most of the streaming loop's overhead is the wait after each model step until its last tokens are stored: the tools start 130 ms after the model step at p75, against 5 ms without streaming.
+
+{/* end generated:performance agent-loop */}
+
+{/* generated:performance agent-loop-table */}
+
+| Metric | v4.8.18 | v5.2.0 | v5.8.0 | v5.8.0 vs v5.2.0 | Samples per version |
+| --- | --: | --: | --: | --: | --: |
+| **Streaming tokens, 15 runs** | | | | | |
+| Overhead, p50 | 9,450 ms | 2,777 ms | 738 ms | 3.8× faster | 15 runs |
+| Overhead, p75 | 9,745 ms | 3,023 ms | 912 ms | 3.3× faster | 15 runs |
+| Model step to tools, p75 | 725 ms | 492 ms | 130 ms | 3.8× faster | 60 turns |
+| **Without streaming, 15 runs** | | | | | |
+| Overhead, p50 | 7,058 ms | 2,214 ms | 215 ms | 10.3× faster | 15 runs |
+| Overhead, p75 | 7,569 ms | 2,450 ms | 257 ms | 9.5× faster | 15 runs |
+| Model step to tools, p75 | 761 ms | 339 ms | 5 ms | 67.8× faster | 60 turns |
+
+{/* end generated:performance agent-loop-table */}
 
 ### All results
 

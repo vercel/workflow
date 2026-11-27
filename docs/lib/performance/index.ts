@@ -8,9 +8,10 @@
 // public/performance/v<next version>/, and run `pnpm --filter docs generate:performance`.
 // That rewrites the generated regions of content/docs/v5/performance.mdx, including the
 // figure paths. The explainer animations carry no results and don't change.
+import agentLoop from './agent-loop.json';
 import metrics from './results.json';
 
-export { metrics };
+export { agentLoop, metrics };
 
 /** Display names of the two versions compared, such as `v5.2.0`. */
 export const versions = {
@@ -18,15 +19,23 @@ export const versions = {
   next: `v${metrics.versions.next}`,
 } as const;
 
+const longDate = (isoDate: string) =>
+  new Date(`${isoDate}T12:00:00Z`).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+
 /** The date the latest results were measured, such as "October 8, 2026". */
-export const measuredOn = new Date(
-  `${metrics.measuredOn}T12:00:00Z`
-).toLocaleDateString('en-US', {
-  year: 'numeric',
-  month: 'long',
-  day: 'numeric',
-  timeZone: 'UTC',
-});
+export const measuredOn = longDate(metrics.measuredOn);
+
+/**
+ * The agent loop benchmark. `agent-loop.json` holds its own sweep, which compares three
+ * releases and is measured separately from `results.json`, so its versions and date can
+ * differ from the latest comparison's.
+ */
+export const agentLoopMeasuredOn = longDate(agentLoop.measuredOn);
 
 /** Where the release figures for the latest results live under public/. */
 export const figuresPath = `/performance/${versions.next}`;
