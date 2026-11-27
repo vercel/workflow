@@ -10,6 +10,7 @@ import {
   type World,
 } from '@workflow/world';
 import { type CryptoKey, importKey } from '../encryption.js';
+import { runtimeLogger } from '../logger.js';
 import {
   getExternalRevivers,
   hydrateWorkflowReturnValue,
@@ -20,7 +21,10 @@ import {
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
+import { transientReadRetryDelayMs } from './transient-read-retry.js';
 import { getWorld } from './world.js';
+
+const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
 
 /**
  * A `ReadableStream` extended with workflow-specific helpers.
@@ -175,6 +179,10 @@ export class Run<TResult> {
   /**
    * The return value of the workflow run.
    * Polls the workflow return value until it is completed.
+   *
+   * While polling, a transient World error (a timeout, a 5xx, or a 429) is
+   * retried with backoff. After 10 such errors in a row, the promise rejects
+   * with the last one.
    */
   get returnValue(): Promise<TResult> {
     return this.pollReturnValue();
@@ -273,6 +281,11 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
+    // Transient World errors in a row (see `transientReadRetryDelayMs`). A
+    // non-terminal read resets it, so only an unbroken run of failures ends
+    // the await.
+    let transientRetries = 0;
+
     while (true) {
       try {
         const run = await this.world.runs.get(this.runId);
@@ -302,7 +315,10 @@ export class Run<TResult> {
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          transientRetries = 0;
+          await new Promise((resolve) =>
+            setTimeout(resolve, RETURN_VALUE_POLL_INTERVAL_MS)
+          );
           continue;
         }
         if (
@@ -312,6 +328,27 @@ export class Run<TResult> {
           const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
           notFoundRetries++;
           await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        const retryDelayMs = transientReadRetryDelayMs(
+          error,
+          transientRetries,
+          RETURN_VALUE_POLL_INTERVAL_MS
+        );
+        if (retryDelayMs !== undefined) {
+          transientRetries++;
+          runtimeLogger.warn(
+            'Transient World error while awaiting returnValue; retrying',
+            {
+              workflowRunId: this.runId,
+              attempt: transientRetries,
+              retryDelayMs,
+              errorName: error instanceof Error ? error.name : undefined,
+              errorMessage:
+                error instanceof Error ? error.message : String(error),
+            }
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
           continue;
         }
         throw error;
