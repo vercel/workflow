@@ -244,5 +244,5 @@ export async function getEncryptionKeyForRun(
   return rpc('getEncryptionKeyForRun', { worldEnv, runId });
 }
 
-// Note: readStreamServerAction returns a ReadableStream which can't go through CBOR RPC.
-// Stream reading uses a dedicated resource route at /api/stream/:streamId.
+// Streams can't go through CBOR RPC: stream reading uses a dedicated resource
+// route at /api/stream/:streamId.
