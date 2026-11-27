@@ -76,6 +76,7 @@ Returns a `WritableStream<W>` where `W` is the type of data you plan to write to
 - When called from a workflow, the stream must be passed as an argument to steps for interaction.
 - When called from a step, it retrieves the same workflow-scoped stream directly.
 - Always release the writer lock after writing to prevent resource leaks.
+- A failed write fails the step, so the step is retried. The exception is a failure that a writer's `write()` or `close()` call in the step rejected with: a step that catches it and returns normally has handled it, and completes without the lost chunks.
 - The stream can write binary data (using `TextEncoder`) or structured objects.
 - Remember to close the stream when finished to signal completion.
 

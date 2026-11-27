@@ -5,6 +5,7 @@ import {
   EntityConflictError,
   FatalError,
   RetryableError,
+  StreamError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type {
@@ -736,6 +737,144 @@ describe('executeStep — stream durability barrier', () => {
       },
     });
     await expect(execution).resolves.toMatchObject({ type: 'completed' });
+  });
+});
+
+describe('executeStep — a stream failure the step body handled', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.restoreAllMocks();
+  });
+
+  function failingStreamWorld(): World {
+    const world = makeLocalWorld();
+    setWorld(world);
+    world.streams.write = vi.fn(async () => {
+      throw new StreamError('Stream write failed: HTTP 503', { status: 503 });
+    }) as typeof world.streams.write;
+    world.streams.writeMulti = world.streams.write as never;
+    return world;
+  }
+
+  /** Write until the stream's failure reaches the writer, then catch it. */
+  async function writeUntilRejected(
+    writer: WritableStreamDefaultWriter<string>
+  ): Promise<unknown> {
+    for (let i = 0; i < 50; i++) {
+      try {
+        await writer.write(`chunk ${i}`);
+      } catch (error) {
+        return error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('the stream failure never reached the writer');
+  }
+
+  it('completes the step when the body caught the rejected write and returned', async () => {
+    const world = failingStreamWorld();
+    let caught: unknown;
+    const stepName = uniqueStepName();
+    registerStepFunction(stepName, async () => {
+      const writer = getWritable<string>().getWriter();
+      caught = await writeUntilRejected(writer);
+      writer.releaseLock();
+      return 'done';
+    });
+    const { runId, stepId, params } = await setupStep(world, stepName);
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+
+    await expect(executeStep(params)).resolves.toMatchObject({
+      type: 'completed',
+    });
+    expect(StreamError.is(caught)).toBe(true);
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+  });
+
+  it('fails the step when the body re-throws the rejected write', async () => {
+    const world = failingStreamWorld();
+    const stepName = uniqueStepName();
+    registerStepFunction(stepName, async () => {
+      const writer = getWritable<string>().getWriter();
+      throw await writeUntilRejected(writer);
+    });
+    const { runId, stepId, params } = await setupStep(world, stepName);
+
+    await expect(executeStep(params)).resolves.toMatchObject({
+      type: 'retry',
+    });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+  });
+
+  it('fails the step when the failure never reached the body', async () => {
+    const world = failingStreamWorld();
+    const stepName = uniqueStepName();
+    registerStepFunction(stepName, async () => {
+      const writer = getWritable<string>().getWriter();
+      // Accepted into the buffer; the server write fails after this resolves.
+      await writer.write('chunk');
+      writer.releaseLock();
+      return 'done';
+    });
+    const { runId, stepId, params } = await setupStep(world, stepName);
+
+    await expect(executeStep(params)).resolves.toMatchObject({
+      type: 'retry',
+    });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+  });
+
+  it('fails the step when the body caught an unrelated writer rejection', async () => {
+    const world = failingStreamWorld();
+    let caught: unknown;
+    const stepName = uniqueStepName();
+    registerStepFunction(stepName, async () => {
+      const writer = getWritable<string>().getWriter();
+      await writer.write('chunk');
+      writer.releaseLock();
+      // A released writer rejects with its own TypeError, not the stream's
+      // server failure, so the body has not seen that failure.
+      caught = await writer.write('late').catch((error: unknown) => error);
+      return 'done';
+    });
+    const { runId, stepId, params } = await setupStep(world, stepName);
+
+    await expect(executeStep(params)).resolves.toMatchObject({
+      type: 'retry',
+    });
+    expect(caught).toBeInstanceOf(TypeError);
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+  });
+
+  it('still fails the step for another stream whose failure the body never saw', async () => {
+    const world = failingStreamWorld();
+    const stepName = uniqueStepName();
+    registerStepFunction(stepName, async () => {
+      const seen = getWritable<string>({ namespace: 'seen' }).getWriter();
+      const unseen = getWritable<string>({ namespace: 'unseen' }).getWriter();
+      await unseen.write('chunk');
+      unseen.releaseLock();
+      await writeUntilRejected(seen);
+      seen.releaseLock();
+      return 'done';
+    });
+    const { runId, stepId, params } = await setupStep(world, stepName);
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+
+    await expect(executeStep(params)).resolves.toMatchObject({
+      type: 'retry',
+    });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
   });
 });
 

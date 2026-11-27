@@ -137,6 +137,13 @@ export interface FlushableStreamState extends PromiseWithResolvers<void> {
   releaseSettlementArmed?: boolean;
   /** Whether the user-facing writable has begun a normal close. */
   userWritableClosing?: boolean;
+  /**
+   * Errors that a `write()` or `close()` on a writer of the user-facing
+   * writable rejected into step code. A step body that returns normally after
+   * seeing the stream's failure has handled it, so that failure does not fail
+   * the step. Any other failure, one the body never saw, still does.
+   */
+  failuresDeliveredToStep?: Set<unknown>;
   /** Step-end snapshot waiters blocked until their target reaches the sink. */
   frameWaiters: Array<{
     target: number;
@@ -341,6 +348,25 @@ export function trackFlushableWritable<T>(
     },
   }) as WritableStream<T>;
 
+  // Once `tracked` is errored, the native writer rejects write() and close()
+  // without calling the sink above, so the rejection is observed on the
+  // writer the step holds rather than inside `write(chunk)`.
+  const acquireWriter = tracked.getWriter.bind(tracked);
+  const deliverToStep = <R>(promise: Promise<R>): Promise<R> =>
+    promise.catch((error: unknown) => {
+      state.failuresDeliveredToStep ??= new Set();
+      state.failuresDeliveredToStep.add(error);
+      throw error;
+    });
+  tracked.getWriter = () => {
+    const writer = acquireWriter();
+    const write = writer.write.bind(writer);
+    const close = writer.close.bind(writer);
+    writer.write = (chunk) => deliverToStep(write(chunk));
+    writer.close = () => deliverToStep(close());
+    return writer;
+  };
+
   // A downstream sink can fail after its early-acknowledged write has already
   // resolved. Forward that terminal error into the public writable even while
   // its producer is idle, so native pipeTo() rejects and cancels its source.
@@ -360,7 +386,7 @@ export function trackFlushableWritable<T>(
 
     let checkpointWriter: WritableStreamDefaultWriter<T>;
     try {
-      checkpointWriter = tracked.getWriter();
+      checkpointWriter = acquireWriter();
     } catch {
       // Closed/errored streams settle through the pipe's normal completion.
       return Promise.resolve(false);
