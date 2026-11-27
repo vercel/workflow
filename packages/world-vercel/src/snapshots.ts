@@ -5,6 +5,7 @@ import {
   encodeSnapshotEnvelope,
 } from '@workflow/world';
 import { request as undiciRequest } from 'undici';
+import { fetchResponse, withFirewallDenyRetry } from './firewall-deny-retry.js';
 import { getDispatcher } from './http-client.js';
 import { HTTP_DEBUG_ENABLED } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
@@ -127,12 +128,23 @@ export function createSnapshotsStorage(
       // (handler returns 500 -> queue retries handler -> save fails
       // again -> 5xx loop until the run TTL).
       const putStart = performance.now();
-      const response = await undiciRequest(url, {
-        method: 'PUT',
-        body: envelope,
-        headers: headersToRecord(headers),
-        dispatcher: getDispatcher(config) as never,
-      });
+      const response = await withFirewallDenyRetry(
+        () =>
+          undiciRequest(url, {
+            method: 'PUT',
+            body: envelope,
+            headers: headersToRecord(headers),
+            dispatcher: getDispatcher(config) as never,
+          }),
+        {
+          inspect: (r) => ({
+            status: r.statusCode,
+            mitigated: firstHeader(r.headers['x-vercel-mitigated']),
+          }),
+          discard: (r) => r.body.dump(),
+          label: `PUT /v2/runs/${runId}/snapshot`,
+        }
+      );
       const putDurationMs = Math.round(performance.now() - putStart);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -169,17 +181,23 @@ export function createSnapshotsStorage(
       await injectTraceContextIntoHeaders(headers);
 
       const getStart = performance.now();
-      const response = await fetch(url, {
-        method: 'GET',
-        headers,
-        // A 3xx here is a misdirected request, not a hop to take: following it
-        // would re-send `x-vercel-trusted-oidc-idp-token` to whatever host the
-        // `Location` names, since fetch only strips `Authorization` across
-        // origins.
-        redirect: 'manual',
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher
-        dispatcher: getDispatcher(config),
-      } as any);
+      const response = await withFirewallDenyRetry(
+        () => {
+          headers.set('X-Request-Time', Date.now().toString());
+          return fetch(url, {
+            method: 'GET',
+            headers,
+            // A 3xx here is a misdirected request, not a hop to take: following
+            // it would re-send `x-vercel-trusted-oidc-idp-token` to whatever
+            // host the `Location` names, since fetch only strips
+            // `Authorization` across origins.
+            redirect: 'manual',
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher
+            dispatcher: getDispatcher(config),
+          } as any);
+        },
+        { ...fetchResponse, label: `GET /v2/runs/${runId}/snapshot` }
+      );
       const getDurationMs = Math.round(performance.now() - getStart);
 
       if (response.status === 404) {
@@ -253,4 +271,9 @@ export function createSnapshotsStorage(
       await response.text();
     },
   };
+}
+
+/** The first value of a header undici may report more than once. */
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
