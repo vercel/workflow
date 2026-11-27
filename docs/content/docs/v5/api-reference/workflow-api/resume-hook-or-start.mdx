@@ -1,0 +1,99 @@
+---
+title: resumeHookOrStart
+description: Send a payload to the run that owns a token, or start that run if none does.
+type: reference
+summary: Use resumeHookOrStart to route a payload to the run that owns a token, starting the workflow when no run holds it yet.
+prerequisites:
+  - /docs/foundations/hooks
+  - /docs/foundations/idempotency
+related:
+  - /docs/api-reference/workflow-api/resume-hook
+  - /docs/api-reference/workflow-api/start
+---
+
+Delivers a payload to the run that owns a token, or starts the workflow as that owner when no run holds the token. Every caller ends up talking to the same run, however many of them race: one call starts it, and the others resume it.
+
+Use it where each key (a chat thread, an order, a document) should have one run that receives a stream of payloads: the first one starts the run, later ones reach it through its Hook.
+
+```typescript title="app/api/chat/route.ts" lineNumbers
+import { resumeHookOrStart } from "workflow/api";
+import { chatSession } from "@/workflows/chat-session";
+
+export async function POST(request: Request) {
+  const { threadId, message } = await request.json();
+
+  const { action, run } = await resumeHookOrStart( // [!code highlight]
+    `chat:${threadId}`,
+    message,
+    chatSession,
+    [threadId, message]
+  );
+
+  return Response.json({ runId: run.runId, started: action === "started" });
+}
+```
+
+```typescript title="workflows/chat-session.ts" lineNumbers
+import { createHook } from "workflow";
+declare function reply(threadId: string, message: string): Promise<void>; // @setup
+
+export async function chatSession(threadId: string, first: string) {
+  "use workflow";
+
+  await reply(threadId, first);
+
+  const messages = createHook<string>({ token: `chat:${threadId}` }); // [!code highlight]
+  for await (const message of messages) {
+    await reply(threadId, message);
+  }
+}
+```
+
+The run that `resumeHookOrStart()` starts receives `args`, not `payload`, so pass the first payload in `args` as above. In the workflow, `createHook({ token })` with the same token opens the run's start Hook and receives every later payload in order, including ones sent before the workflow reached it.
+
+## How it works
+
+- It resumes the token first. When no Hook answers, it starts the workflow with [`start(workflow, args, { experimental_hook: { token } })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts), which admits at most one run per token.
+- When that start is refused because another caller has just started the owner, it resumes that owner instead. When a resume finds the owner has just ended, it starts a new run.
+- It retries a start whose outcome is unknown with the same token, which never admits a second owner, and waits out a World's `retryAfter` before trying again.
+- It throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) naming the owner when a finished run keeps the token through its `experimental_minRetention`, since that run can no longer receive payloads. Any other error is thrown as is.
+
+Without a retention, the token is released when the run ends, so the next call starts a new run. Set `experimental_minRetention` when a finished conversation should refuse new payloads instead.
+
+A `resumed` result means the payload is recorded for the run, not that the run has read it. Payloads the run has not read when it returns are dropped, so keep iterating the Hook for as long as the run accepts payloads.
+
+It needs a World with atomic start Hooks: the Local, Postgres and Vercel Worlds have them (the Postgres World after [migration `0028`](/worlds/postgres#start-hooks)).
+
+<Callout type="warn">
+`resumeHookOrStart` must be called from outside a workflow function, like `resumeHook()`: from an API route, a server action or a step.
+</Callout>
+
+<Callout type="warn">
+`resumeHookOrStart()` does not check who is calling it. Authenticate the caller and confirm they may reach this token before calling it. See [Hook and webhook security](/docs/foundations/hooks#security).
+</Callout>
+
+## API signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import { resumeHookOrStart } from "workflow/api";
+export default resumeHookOrStart;`}
+showSections={["parameters"]}
+/>
+
+`options` takes everything [`start()`](/docs/api-reference/workflow-api/start) takes except `experimental_hook`, plus:
+
+| Option | Description |
+| --- | --- |
+| `experimental_minRetention` | As `start({ experimental_hook: { experimental_minRetention } })`: keep the token after the started run ends, so later calls are refused with `HookConflictError` instead of starting a new run. |
+| `metadata` | As `start({ experimental_hook: { metadata } })`. |
+| `maxAttempts` | How many start and resume calls to make before giving up. Default `8`. |
+
+### Returns
+
+A `Promise` of one of:
+
+- `{ action: "started", run }`: no run held the token, and this call started `run`.
+- `{ action: "resumed", run, hook }`: `payload` was delivered to `hook`, the Hook of `run`. Resolving means the payload is recorded, as with [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook).

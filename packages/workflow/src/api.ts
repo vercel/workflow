@@ -31,6 +31,11 @@ export {
   resumeWebhook,
 } from '@workflow/core/runtime/resume-hook';
 export {
+  type ResumeHookOrStartOptions,
+  type ResumeHookOrStartResult,
+  resumeHookOrStart,
+} from '@workflow/core/runtime/resume-hook-or-start';
+export {
   getRun,
   Run,
   type WorkflowReadableStream,
