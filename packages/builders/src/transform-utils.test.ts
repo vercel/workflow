@@ -660,6 +660,214 @@ export async function run() {
     });
   });
 
+  describe('detectWorkflowPatterns with a directive that shares its line', () => {
+    it.each([
+      [
+        'a function declaration',
+        'async function doWork(i) { "use step"; return i * 2; }',
+      ],
+      [
+        'an exported function declaration',
+        "export async function doWork(i) { 'use step'; return i * 2; }",
+      ],
+      [
+        'an arrow function',
+        "export const doWork = async (i) => { 'use step'; return i * 2; };",
+      ],
+      [
+        'a function expression',
+        'export const doWork = async function (i) { "use step"; return i; };',
+      ],
+      [
+        'an object method',
+        'export const steps = { async doWork(i) { "use step"; return i; } };',
+      ],
+      [
+        'a static class method',
+        'export class Jobs { static async doWork(i) { "use step"; return i; } }',
+      ],
+      [
+        'a TypeScript signature',
+        'export async function doWork(i: number): Promise<number> { "use step"; return i * 2; }',
+      ],
+      [
+        'a body opened on the line before',
+        'export async function doWork(i) {\n  "use step"; return i * 2;\n}',
+      ],
+      ['minified code', 'function a(){"use step";return 1}'],
+      ['no semicolon before the closing brace', 'function a() { "use step" }'],
+      [
+        'other directives first',
+        'function a() { "use strict"; \'use step\'; return 1; }',
+      ],
+      [
+        'other directives first without semicolons',
+        'function a() {\n  "use strict"\n  "use step"\n  return 1;\n}',
+      ],
+      [
+        'a comment before the directive',
+        'function a() { /* runs on Node */ "use step"; return 1; }',
+      ],
+      [
+        'other code earlier on the line',
+        'const base = 2; export async function doWork(i) { "use step"; return i * base; }',
+      ],
+      [
+        'a template literal earlier in the file',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: source under test
+        'const url = `/x/${id}`; async function doWork() { "use step"; return url; }',
+      ],
+      [
+        'a regex literal earlier in the file',
+        'const re = /a\\/b/; async function doWork() { "use step"; return re; }',
+      ],
+      [
+        'a file-level directive',
+        '"use step"; export async function doWork() {}',
+      ],
+    ])('detects "use step" in %s', (_, source) => {
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+      expect(result.hasDirective).toBe(true);
+    });
+
+    it('detects a one-line "use workflow"', () => {
+      const result = detectWorkflowPatterns(
+        'export async function wf() { "use workflow"; return go(); }'
+      );
+      expect(result.hasUseWorkflow).toBe(true);
+      expect(result.hasUseStep).toBe(false);
+    });
+
+    it.each([
+      [
+        'a block comment',
+        'async function doWork(i) { /* "use step"; */ return i * 2; }',
+      ],
+      [
+        'a line comment',
+        '// async function doWork(i) { "use step"; return i * 2; }',
+      ],
+      [
+        'a JSDoc comment',
+        '/** Call as `function f() { "use step"; }`. */\nexport const x = 1;',
+      ],
+      [
+        'a double-quoted string',
+        'const code = "async function doWork(i) { \'use step\'; return i; }";',
+      ],
+      [
+        'a single-quoted string',
+        'const code = \'async function doWork(i) { "use step"; return i; }\';',
+      ],
+      [
+        'a string with a brace before the directive text',
+        "const code = '{ \\'use step\\'; }';",
+      ],
+      [
+        'a template literal',
+        'const code = `async function doWork(i) { "use step"; return i; }`;',
+      ],
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: source under test
+      ['a template literal expression', "const code = `${'use step'}`;"],
+      [
+        'a statement after the first one',
+        'function a() { const x = 1; "use step"; return x; }',
+      ],
+      [
+        'a string after a non-directive statement',
+        'function a() { x = "y"; "use step"; return x; }',
+      ],
+      ['a return value', 'function a() { return "use step"; }'],
+      ['a concatenation', 'function a() { "use step" + suffix; }'],
+      ['an object key', 'const o = { "use step": true };'],
+      ['an optional type key', "type T = { 'use step'?: string };"],
+      ['an array element', 'const a = ["use step", "use workflow"];'],
+      ['a call argument', 'log("use step");'],
+      ['a method name', 'class A { "use step"() {} }'],
+      ['mismatched quotes', 'function a() { "use step\'; }'],
+      ['a longer string', 'function a() { "use steps"; }'],
+    ])('does not detect "use step" in %s', (_, source) => {
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(false);
+      expect(result.hasDirective).toBe(false);
+    });
+
+    it('detects a directive after a regex literal that follows a closing paren', () => {
+      // The scanner reads `/` after `)` as a division, so the quote inside
+      // the regex opens a string that hides the rest of the line.
+      expect(
+        detectWorkflowPatterns(
+          'if (a) /"/.test(b); async function doWork() { "use step"; return 1; }'
+        ).hasUseStep
+      ).toBe(true);
+      expect(
+        detectWorkflowPatterns(
+          "if(a)/'/.test(b);async function doWork(){'use step';return 1}"
+        ).hasUseStep
+      ).toBe(true);
+    });
+
+    it('detects a multi-line prologue that a scanner misreading earlier on its first line hides', () => {
+      // The `{` that opens the body sits on the line the regex misreading
+      // blanks, and the backtick in the comment pairs with the template
+      // below, so only the line-based check still sees the directive.
+      const source = [
+        'if (a) /\'/.test(b); (async function () {"use workflow"',
+        '"use workflow";// `',
+        "'use step'",
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: source under test
+        'return `${x}`;',
+        '})();',
+      ].join('\n');
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
+
+    it.each([
+      ['on one line', ' ', ''],
+      ['on their own lines', '\n', '\n'],
+    ])('stays linear for a long run of string statements %s', (_, separator, end) => {
+      // Each statement walked back over all the ones before it until the walk
+      // was cached: 8,000 of them took 2 seconds, 50,000 would take a minute.
+      const source = `function f() {${separator}x = 1;${separator}${`"use step";${end || separator}`.repeat(50_000)}}`;
+      const started = performance.now();
+      detectWorkflowPatterns(source);
+      expect(performance.now() - started).toBeLessThan(2000);
+    });
+
+    it('misses a directive spelled with an escape (known limitation)', () => {
+      // The SWC plugin compares the decoded value, so this is a step to it.
+      // Detection searches the source text for `use step`.
+      expect(
+        detectWorkflowPatterns(
+          'export async function doWork() { "use\\u0020step"; return 1; }'
+        ).hasUseStep
+      ).toBe(false);
+    });
+
+    it('misses a directive after an apostrophe in JSX text on the same line (known limitation)', () => {
+      expect(
+        detectWorkflowPatterns(
+          "export const A = () => <p>it's</p>; export async function doWork() { 'use step'; return 1; }"
+        ).hasUseStep
+      ).toBe(false);
+    });
+
+    it.each([
+      ['a regex literal', 'const re = /{ "use step"; }/;'],
+      ['a plain block', 'if (x) { "use step"; }'],
+      ['a JSX expression container', 'const A = () => <p>{"use step"}</p>;'],
+    ])('reports a directive in %s (a known false positive that only costs a transform)', (_, source) => {
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
+
+    it('detects the real directive after a look-alike on the same line', () => {
+      const source =
+        "const label = \"{ 'use step'; }\"; async function doWork() { 'use step'; return label; }";
+      expect(detectWorkflowPatterns(source).hasUseStep).toBe(true);
+    });
+  });
+
   describe('shouldTransformFile', () => {
     const noPatterns = {
       hasUseWorkflow: false,

@@ -22,6 +22,7 @@ import {
   RateLimitMaxWaitError,
 } from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
+import { oneLineDouble, oneLineSteps, oneLineTriple } from './_one_line_steps';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
 //////////////////////////////////////////////////////////
@@ -97,6 +98,16 @@ export async function promiseAnyWorkflow() {
 export async function importedStepOnlyWorkflow() {
   'use workflow';
   return await importedStepOnly();
+}
+
+//////////////////////////////////////////////////////////
+
+export async function importedOneLineStepsWorkflow(n: number) {
+  'use workflow';
+  const doubled = await oneLineDouble(n);
+  const tripled = await oneLineTriple(doubled);
+  const squared = await oneLineSteps.square(tripled);
+  return { doubled, tripled, squared };
 }
 
 //////////////////////////////////////////////////////////

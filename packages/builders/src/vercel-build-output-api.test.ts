@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, parse } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DiscoveredEntries } from './base-builder.js';
+import { ALLOW_UNREGISTERED_STEPS_ENV } from './step-registration-check.js';
 import type { VercelBuildOutputConfig } from './types.js';
 import { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 
@@ -22,8 +24,8 @@ function getFlowFuncDir(workingDir: string): string {
   );
 }
 
-function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
-  const config: VercelBuildOutputConfig = {
+function createConfig(workingDir: string): VercelBuildOutputConfig {
+  return {
     buildTarget: 'vercel-build-output-api',
     workingDir,
     dirs: ['src'],
@@ -32,7 +34,104 @@ function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
     webhookBundlePath: join(workingDir, 'unused-webhook.mjs'),
     suppressCreateManifestLogs: true,
   };
-  return new VercelBuildOutputAPIBuilder(config);
+}
+
+function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
+  return new VercelBuildOutputAPIBuilder(createConfig(workingDir));
+}
+
+/**
+ * Stands in for a discovery miss: the builder behaves normally except that
+ * the step file ending in `skippedStepFile` (a path relative to the project,
+ * with forward slashes) is never reported as a step file, which is what
+ * happened to a step whose `"use step"` shared a line with its body.
+ */
+class StepDiscoveryMissBuilder extends VercelBuildOutputAPIBuilder {
+  /** Contexts handed back by the two bundles, to check they get disposed. */
+  readonly contexts: { dispose: ReturnType<typeof vi.fn> }[] = [];
+
+  constructor(
+    workingDir: string,
+    private readonly skippedStepFile: string,
+    private readonly options: {
+      watch?: boolean;
+      rejectDispose?: boolean;
+      /**
+       * Also leave the file out of the files discovery scanned, as when it
+       * cannot read the import that reaches the file.
+       */
+      unscanned?: boolean;
+    } = {}
+  ) {
+    super({ ...createConfig(workingDir), watch: options.watch });
+  }
+
+  protected override async discoverEntries(
+    inputs: string[],
+    outdir: string,
+    tsconfigPath?: string
+  ): Promise<DiscoveredEntries> {
+    const discovered = await super.discoverEntries(
+      inputs,
+      outdir,
+      tsconfigPath
+    );
+    const skipped = [...discovered.discoveredSteps].filter((file) =>
+      file.replace(/\\/g, '/').endsWith(`/${this.skippedStepFile}`)
+    );
+    // Without this, a path that does not match (backslashes on Windows, for
+    // one) turns the miss into a normal build and the test into a no-op.
+    if (skipped.length !== 1) {
+      throw new Error(
+        `Expected to skip one step file ending in ${this.skippedStepFile}, found ${JSON.stringify([...discovered.discoveredSteps])}`
+      );
+    }
+    discovered.discoveredSteps.delete(skipped[0]);
+    if (this.options.unscanned) {
+      discovered.discoveredFiles?.delete(skipped[0]);
+    }
+    return discovered;
+  }
+
+  /** Calls createCombinedBundle() directly, the way watch-mode builders do. */
+  async combine() {
+    return this.createCombinedBundle({
+      inputFiles: await this.getInputFiles(),
+      stepsOutfile: join(this.config.workingDir, '.out/steps.mjs'),
+      flowOutfile: join(this.config.workingDir, '.out/flow.mjs'),
+      bundleFinalOutput: false,
+    });
+  }
+
+  private track<T extends { dispose: () => Promise<void> } | undefined>(
+    context: T
+  ): T {
+    if (!context) return context;
+    const dispose = context.dispose.bind(context);
+    const spy = vi.fn(async () => {
+      await dispose();
+      if (this.options.rejectDispose) throw new Error('dispose failed');
+    });
+    context.dispose = spy;
+    this.contexts.push({ dispose: spy });
+    return context;
+  }
+
+  protected override async createStepsBundle(
+    args: Parameters<VercelBuildOutputAPIBuilder['createStepsBundle']>[0]
+  ) {
+    const result = await super.createStepsBundle(args);
+    this.track(result.context);
+    return result;
+  }
+
+  protected override async createWorkflowsBundle(
+    args: Parameters<VercelBuildOutputAPIBuilder['createWorkflowsBundle']>[0]
+  ) {
+    const result = await super.createWorkflowsBundle(args);
+    this.track(result.interimBundleCtx);
+    return result;
+  }
 }
 
 function executeStep(workingDir: string, stepName: string): string {
@@ -46,11 +145,13 @@ function executeStep(workingDir: string, stepName: string): string {
       '-e',
       `await import(${JSON.stringify(bundleUrl)});
 const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
-const step = [...steps].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
+const step = [...(steps ?? [])].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
 if (!step) throw new Error(${JSON.stringify(`${stepName} step was not registered`)});
 process.stdout.write(JSON.stringify(await step()));`,
     ],
-    { encoding: 'utf8' }
+    // Piped so a failing step's stderr lands in the thrown error's message
+    // instead of the test log.
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
   );
   return JSON.parse(output);
 }
@@ -187,6 +288,640 @@ export async function gaxWorkflow(): Promise<string> {
       expect(
         webhookBundle.match(/var __dirname = __pathDirname\(__filename\);/g)
       ).toHaveLength(1);
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder step discovery', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    'registers steps whose "use step" shares a line with other code',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeWorkflowRuntimeStub(workingDir);
+      // A step in the workflow's own file, and one in a file that only has
+      // one-line steps, so discovery has to find it from the directive alone.
+      await write(
+        join(workingDir, 'src/workflows/inline.ts'),
+        `import { fromOtherFile } from '../lib/helpers';
+
+export async function doWork() { "use step"; return 'same-file'; }
+
+export async function inlineWorkflow() {
+  'use workflow';
+  return [await doWork(), await fromOtherFile()];
+}
+`
+      );
+      await write(
+        join(workingDir, 'src/lib/helpers.ts'),
+        `export const fromOtherFile = async () => { 'use step'; return 'other-file'; };
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      expect(executeStep(workingDir, 'doWork')).toBe('same-file');
+      expect(executeStep(workingDir, 'fromOtherFile')).toBe('other-file');
+
+      const manifest = JSON.parse(
+        await readFile(
+          join(
+            workingDir,
+            '.vercel/output/diagnostics/workflows-manifest.json'
+          ),
+          'utf8'
+        )
+      );
+      expect(Object.keys(manifest.steps).sort()).toEqual([
+        'src/lib/helpers.ts',
+        'src/workflows/inline.ts',
+      ]);
+    }
+  );
+});
+
+/**
+ * A directory for a temp project on the same drive as this checkout. The
+ * project below reaches `@workflow/core` through a link into the checkout, and
+ * the builder imports such a file by a path relative to the project, which
+ * cannot exist across Windows drives (a GitHub Windows runner keeps its temp
+ * directory on C: and the checkout on D:). When the drives differ it uses the
+ * checkout's parent directory: the project sits beside the checkout rather
+ * than inside it, so the checkout's own `node_modules` are not on the paths
+ * the project resolves packages from.
+ */
+function tempRootOnCheckoutDrive(): string {
+  const temp = realpathSync(tmpdir());
+  const checkout = realpathSync(join(import.meta.dirname, '../../..'));
+  return parse(temp).root.toLowerCase() === parse(checkout).root.toLowerCase()
+    ? temp
+    : dirname(checkout);
+}
+
+describe('VercelBuildOutputAPIBuilder SDK steps', () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = mkdtempSync(
+      join(tempRootOnCheckoutDrive(), 'workflow-vercel-')
+    );
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    "registers Run's steps when the project can resolve workflow but not @workflow/core",
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // The project depends on `workflow` alone, the way pnpm installs it:
+      // `@workflow/core` is reachable from `workflow`, not from the project.
+      // The workflow bundle reaches `Run`'s steps through `workflow`'s
+      // `workflow` export condition, so the steps bundle has to as well.
+      //
+      // The `workflow` package here is a stand-in whose `workflow` condition
+      // re-exports `@workflow/core/_workflow`, as the real one does, over the
+      // real `@workflow/core`. Linking `packages/workflow` itself would need
+      // its `dist/`, which the unit test job does not build: `workflow`
+      // depends on `@workflow/builders` (through `@workflow/cli`, `@workflow/next`
+      // and others), so `@workflow/builders` cannot depend on it.
+      const workflowPackage = join(workingDir, 'node_modules/workflow');
+      await write(
+        join(workflowPackage, 'package.json'),
+        JSON.stringify({
+          name: 'workflow',
+          version: '1.0.0',
+          type: 'module',
+          exports: {
+            '.': { workflow: './workflow.js', default: './index.js' },
+            './api': './api.js',
+            './internal/builtins': './internal/builtins.js',
+            './runtime': './runtime.js',
+          },
+        })
+      );
+      await write(
+        join(workflowPackage, 'workflow.js'),
+        "export * from '@workflow/core/_workflow';\n"
+      );
+      await write(
+        join(workflowPackage, 'index.js'),
+        "export * from '@workflow/core';\n"
+      );
+      await write(
+        join(workflowPackage, 'internal/builtins.js'),
+        'export const __workflow_builtins = true;\n'
+      );
+      for (const entry of ['api.js', 'runtime.js']) {
+        await write(
+          join(workflowPackage, entry),
+          "export * from '@workflow/core/runtime';\n"
+        );
+      }
+      await mkdir(join(workflowPackage, 'node_modules/@workflow'), {
+        recursive: true,
+      });
+      symlinkSync(
+        realpathSync(join(import.meta.dirname, '../../core')),
+        join(workflowPackage, 'node_modules/@workflow/core'),
+        'junction'
+      );
+      await write(
+        join(workingDir, 'src/workflows/hello.ts'),
+        `import { sleep } from 'workflow';
+
+export async function helloWorkflow() {
+  'use workflow';
+  await sleep('1s');
+  return 'done';
+}
+`
+      );
+
+      await createBuilder(workingDir).build();
+
+      const registered = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `await import(${JSON.stringify(
+              pathToFileURL(join(getFlowFuncDir(workingDir), 'index.mjs')).href
+            )});
+const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
+process.stdout.write(JSON.stringify([...(steps?.keys() ?? [])]));`,
+          ],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+        )
+      ) as string[];
+      expect(registered.some((id) => id.endsWith('//Run#status'))).toBe(true);
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder unregistered steps', () => {
+  let workingDir: string;
+
+  beforeEach(async () => {
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+    await writeWorkflowRuntimeStub(workingDir);
+    await write(
+      join(workingDir, 'src/workflows/order.ts'),
+      `import { chargeCard } from '../lib/payments';
+
+export async function orderWorkflow() {
+  'use workflow';
+  return chargeCard();
+}
+`
+    );
+    await write(
+      join(workingDir, 'src/lib/payments.ts'),
+      `export async function chargeCard() {
+  'use step';
+  return 'charged';
+}
+`
+    );
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+    delete process.env[ALLOW_UNREGISTERED_STEPS_ENV];
+  });
+
+  it(
+    'fails the build when a workflow can call a step the steps bundle does not register',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      const builder = new StepDiscoveryMissBuilder(
+        workingDir,
+        'src/lib/payments.ts'
+      );
+
+      const error = await builder.build().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain(
+        'Workflow code can call 1 step that is not registered in the steps bundle.'
+      );
+      expect(message).toContain(
+        'chargeCard in src/lib/payments.ts (step//./src/lib/payments//chargeCard)'
+      );
+      expect(message).toContain('"use step" is the first statement');
+      expect(message).toContain(`${ALLOW_UNREGISTERED_STEPS_ENV}=1`);
+    }
+  );
+
+  it.each([
+    ['', false],
+    [' when disposing a context fails', true],
+  ])(
+    'disposes both watch-mode contexts when the check fails%s',
+    { timeout: BUILD_TIMEOUT },
+    async (_, rejectDispose) => {
+      const builder = new StepDiscoveryMissBuilder(
+        workingDir,
+        'src/lib/payments.ts',
+        { watch: true, rejectDispose }
+      );
+
+      const error = await builder.combine().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+
+      // The check's error wins over a failed dispose.
+      expect((error as Error).message).toContain(
+        'Workflow code can call 1 step that is not registered'
+      );
+      expect(builder.contexts).toHaveLength(2);
+      for (const context of builder.contexts) {
+        expect(context.dispose).toHaveBeenCalledOnce();
+      }
+    }
+  );
+
+  it(
+    'fails the build when discovery could not read the import that reaches a step file',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // An application file is never declined, so a step file the workflow
+      // bundle reaches that discovery never scanned is a miss.
+      const builder = new StepDiscoveryMissBuilder(
+        workingDir,
+        'src/lib/payments.ts',
+        {
+          unscanned: true,
+        }
+      );
+      await expect(builder.build()).rejects.toThrow(
+        /can call 1 step that is not registered[\s\S]*chargeCard in src\/lib\/payments\.ts/
+      );
+    }
+  );
+
+  it(
+    'builds with a warning behind the escape hatch',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      process.env[ALLOW_UNREGISTERED_STEPS_ENV] = '1';
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await new StepDiscoveryMissBuilder(
+          workingDir,
+          'src/lib/payments.ts'
+        ).build();
+
+        const warnings = warnSpy.mock.calls.map(([message]) => String(message));
+        expect(
+          warnings.some((message) =>
+            message.includes('chargeCard in src/lib/payments.ts')
+          )
+        ).toBe(true);
+        // The warning is accurate: the deployment really lacks the step.
+        expect(() => executeStep(workingDir, 'chargeCard')).toThrow(
+          /chargeCard step was not registered/
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    }
+  );
+
+  it(
+    'builds without a warning when discovery finds the step',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await createBuilder(workingDir).build();
+        expect(
+          warnSpy.mock.calls.some(([message]) =>
+            String(message).includes('not registered')
+          )
+        ).toBe(false);
+        expect(executeStep(workingDir, 'chargeCard')).toBe('charged');
+      } finally {
+        warnSpy.mockRestore();
+      }
+    }
+  );
+});
+
+describe('VercelBuildOutputAPIBuilder steps in packages discovery skips', () => {
+  // The workflow bundle compiles every step in a file the workflow imports,
+  // called or not. A package discovery does not scan keeps its steps out of
+  // the steps bundle on purpose, so a workflow that uses only a helper from
+  // it must still build. These builds passed before the unregistered-step
+  // check, and failed with it before it told these steps apart.
+  let workingDir: string;
+
+  const writeHelperLib = async (packageJson: object) => {
+    const dir = join(workingDir, 'node_modules/helper-lib');
+    await write(join(dir, 'package.json'), JSON.stringify(packageJson));
+    await write(
+      join(dir, 'index.js'),
+      `export function format(n) {
+  return '#' + n;
+}
+
+export async function unusedStep() {
+  'use step';
+  return 'registered';
+}
+`
+    );
+  };
+
+  const buildAndCollectWarnings = async (
+    config: VercelBuildOutputConfig
+  ): Promise<string> => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await new VercelBuildOutputAPIBuilder(config).build();
+      return warnSpy.mock.calls.map((call) => call.join(' ')).join('\n');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  };
+
+  beforeEach(async () => {
+    delete process.env[ALLOW_UNREGISTERED_STEPS_ENV];
+    workingDir = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-vercel-'));
+    await writeWorkflowRuntimeStub(workingDir);
+    await write(
+      join(workingDir, 'src/workflows/order.ts'),
+      `import { format } from 'helper-lib';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+    );
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  it(
+    'builds, with a warning, when the package does not depend on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+      });
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: it is only reached through a package that does not depend on workflow/
+      );
+    }
+  );
+
+  it(
+    'builds, with a warning, when node_modules discovery is off',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+        dependencies: { workflow: '*' },
+      });
+      const warnings = await buildAndCollectWarnings({
+        ...createConfig(workingDir),
+        discoverWorkflowsInNodeModules: false,
+      });
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: node_modules discovery is off/
+      );
+    }
+  );
+
+  it(
+    'builds, with a warning, when a monorepo hoists the package to the repository root',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // The app lives in apps/web and the package in the root node_modules,
+      // as npm, yarn and pnpm workspaces install it. The manifest records the
+      // file as node_modules/helper-lib/index.js: its path from the app with
+      // the ../ parts dropped, which does not lead to the file from the app.
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+      });
+      const appDir = join(workingDir, 'apps/web');
+      await write(
+        join(appDir, 'package.json'),
+        JSON.stringify({
+          name: 'web',
+          private: true,
+          dependencies: { workflow: '*', 'helper-lib': '*' },
+        })
+      );
+      await write(
+        join(appDir, 'src/workflows/order.ts'),
+        `import { format } from 'helper-lib';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(appDir));
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/helper-lib\/index\.js .*: it is only reached through a package that does not depend on workflow/
+      );
+    }
+  );
+
+  it(
+    'builds, with a warning, for a package in the repository that does not depend on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // A workspace package: linked into node_modules, its real path outside it.
+      const packageDir = join(workingDir, 'packages/internal-lib');
+      await write(
+        join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: 'internal-lib',
+          version: '1.0.0',
+          type: 'module',
+        })
+      );
+      await write(
+        join(packageDir, 'index.js'),
+        `export function format(n) {
+  return '#' + n;
+}
+
+export async function unusedStep() {
+  'use step';
+  return 'registered';
+}
+`
+      );
+      symlinkSync(
+        packageDir,
+        join(workingDir, 'node_modules/internal-lib'),
+        'junction'
+      );
+      await write(
+        join(workingDir, 'src/workflows/order.ts'),
+        `import { format } from 'internal-lib';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).toMatch(
+        /unusedStep in .*internal-lib\/index\.js .*: it is only reached through a package that does not depend on workflow/
+      );
+      expect(warnings).not.toMatch(/Workflow SDK bug/);
+    }
+  );
+
+  it(
+    'builds, with a warning, when the package is reached through one that does not depend on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // chain-a re-exports chain-b. chain-b depends on workflow, but
+      // discovery stops at chain-a, which does not.
+      await write(
+        join(workingDir, 'node_modules/chain-a/package.json'),
+        JSON.stringify({
+          name: 'chain-a',
+          version: '1.0.0',
+          type: 'module',
+          main: 'index.js',
+        })
+      );
+      await write(
+        join(workingDir, 'node_modules/chain-a/index.js'),
+        "export { format } from 'chain-b';\n"
+      );
+      await write(
+        join(workingDir, 'node_modules/chain-b/package.json'),
+        JSON.stringify({
+          name: 'chain-b',
+          version: '1.0.0',
+          type: 'module',
+          main: 'index.js',
+          dependencies: { workflow: '*' },
+        })
+      );
+      await write(
+        join(workingDir, 'node_modules/chain-b/index.js'),
+        `export function format(n) {
+  return '#' + n;
+}
+
+export async function unusedStep() {
+  'use step';
+  return 'registered';
+}
+`
+      );
+      await write(
+        join(workingDir, 'src/workflows/order.ts'),
+        `import { format } from 'chain-a';
+
+export async function orderWorkflow(n: number) {
+  'use workflow';
+  return format(n);
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).toMatch(
+        /unusedStep in node_modules\/chain-b\/index\.js .*: it is only reached through a package that does not depend on workflow/
+      );
+    }
+  );
+
+  it(
+    'registers and runs a step that a minified package imports without spaces',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      // `import{charge}from"./steps.js"`: discovery used to require a space
+      // after `from`, so it never reached steps.js, which the workflow calls.
+      const dir = join(workingDir, 'node_modules/minlib');
+      await write(
+        join(dir, 'package.json'),
+        JSON.stringify({
+          name: 'minlib',
+          version: '1.0.0',
+          type: 'module',
+          main: 'index.js',
+          dependencies: { workflow: '*' },
+        })
+      );
+      await write(
+        join(dir, 'index.js'),
+        'import{charge}from"./steps.js";export{charge};'
+      );
+      await write(
+        join(dir, 'steps.js'),
+        `export async function charge() {
+  'use step';
+  return 'charged';
+}
+`
+      );
+      await write(
+        join(workingDir, 'src/workflows/order.ts'),
+        `import { charge } from 'minlib';
+
+export async function orderWorkflow() {
+  'use workflow';
+  return charge();
+}
+`
+      );
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).not.toContain('not registered');
+      expect(executeStep(workingDir, 'charge')).toBe('charged');
+    }
+  );
+
+  it(
+    'registers the step without a warning when the package depends on workflow',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      await writeHelperLib({
+        name: 'helper-lib',
+        version: '1.0.0',
+        type: 'module',
+        dependencies: { workflow: '*' },
+      });
+      const warnings = await buildAndCollectWarnings(createConfig(workingDir));
+      expect(warnings).not.toContain('not registered');
+      expect(executeStep(workingDir, 'unusedStep')).toBe('registered');
     }
   );
 });

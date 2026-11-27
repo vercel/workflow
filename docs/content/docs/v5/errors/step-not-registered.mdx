@@ -26,6 +26,21 @@ Workflow runs are pegged to a specific deployment, so this error is not caused b
 
 This is an **infrastructure error**, not a user code error.
 
+## Build-time check
+
+The build checks that every step workflow code can call is registered in the steps bundle, and fails before anything is deployed when one is not:
+
+```text
+Workflow code can call 1 step that is not registered in the steps bundle. Every call would fail at runtime with "Step ... is not registered in the current deployment":
+  - doWork in workflows/order.ts (step//./workflows/order//doWork)
+```
+
+The workflow bundle compiled the function as a step, but its file was not discovered as a step file. Check that `"use step"` is the first statement of the function body. If it is, please [report the file](https://github.com/vercel/workflow/issues), because the build should have found it.
+
+As a last resort, set `WORKFLOW_ALLOW_UNREGISTERED_STEPS=1` to downgrade the build failure to a warning. Calls to the listed steps still fail at runtime.
+
+Discovery follows imports into a package only when the package depends on `workflow` or an `@workflow/*` package, and, while [node_modules discovery](/docs/configuration/build-and-diagnostics#workflow_discover_node_modules) is off, it does not follow imports from your code into `node_modules`. A step that workflow code only reaches through such an import is reported as a warning instead of failing the build, wherever the package is installed. The SDK's own `Run` steps are the exception: discovery always reads the file that defines them, so a missing one always fails the build. Nothing fails unless workflow code calls one of the listed steps. If it does, turn node_modules discovery on, or add the dependency to the package that contains the step and to each package that imports it on the way.
+
 ## Common causes
 
 ### Build tooling issue

@@ -45,8 +45,10 @@ const NODE_BUILTIN_SPECIFIERS = new Set([
   ...builtinModules.map((moduleName) => `node:${moduleName}`),
 ]);
 const IMPORT_SPECIFIER_PATTERNS = [
-  /\bfrom\s+['"]([^'"]+)['"]/g,
-  /(?:^|[;\n])\s*import\s+['"]([^'"]+)['"]/g,
+  // `\s*`, not `\s+`: minified code writes `import{a}from"./a.js"` and
+  // `export*from"./a.js"`.
+  /\bfrom\s*['"]([^'"]+)['"]/g,
+  /(?:^|[;\n])\s*import\s*['"]([^'"]+)['"]/g,
   /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
@@ -61,6 +63,14 @@ export interface DiscoveredEntries {
    * unrelated application file edits.
    */
   discoveredFiles?: Set<string>;
+  /**
+   * Roots of the packages discovery declined to walk while node_modules
+   * discovery is on: a package an import resolves to that does not depend on
+   * `workflow` or an `@workflow/*` package, and a package under node_modules
+   * whose files' imports discovery does not follow for that reason. Files
+   * reached only through these packages are not scanned for steps on purpose.
+   */
+  declinedPackageRoots?: Set<string>;
   /**
    * Paths an import in the graph would resolve to if the file existed, for
    * relative and tsconfig-alias imports that did not resolve. An import can be
@@ -246,7 +256,7 @@ function isGeneratedBuildArtifactPath(filePath: string): boolean {
   );
 }
 
-function isNodeModulesPath(filePath: string): boolean {
+export function isNodeModulesPath(filePath: string): boolean {
   const normalizedPath = normalizePath(filePath);
   return (
     normalizedPath.includes('/node_modules/') ||
@@ -287,6 +297,35 @@ function extractImportSpecifiers(source: string): string[] {
   }
 
   return Array.from(specifiers);
+}
+
+/**
+ * Whether a parsed `package.json` belongs to a package that discovery walks
+ * under `node_modules`: the SDK itself, or a package that lists `workflow` or
+ * an `@workflow/*` package among its dependencies of any kind. Discovery
+ * reads nothing else in such a package for steps or workflows.
+ *
+ * @param packageName - The name to use when the manifest has none.
+ */
+function packageDeclaresWorkflow(
+  parsed: {
+    name?: unknown;
+    dependencies?: unknown;
+    peerDependencies?: unknown;
+    optionalDependencies?: unknown;
+    devDependencies?: unknown;
+  },
+  packageName = ''
+): boolean {
+  const name = typeof parsed.name === 'string' ? parsed.name : packageName;
+  return (
+    name === 'workflow' ||
+    name.startsWith('@workflow/') ||
+    hasWorkflowDependency(parsed.dependencies) ||
+    hasWorkflowDependency(parsed.peerDependencies) ||
+    hasWorkflowDependency(parsed.optionalDependencies) ||
+    hasWorkflowDependency(parsed.devDependencies)
+  );
 }
 
 function hasWorkflowDependency(dependencies: unknown): boolean {
@@ -471,16 +510,9 @@ async function findPackageInfo(
           optionalDependencies?: unknown;
           devDependencies?: unknown;
         };
-        const packageName = typeof parsed.name === 'string' ? parsed.name : '';
         return {
           root: normalizePath(currentDir),
-          hasWorkflowDependency:
-            packageName === 'workflow' ||
-            packageName.startsWith('@workflow/') ||
-            hasWorkflowDependency(parsed.dependencies) ||
-            hasWorkflowDependency(parsed.peerDependencies) ||
-            hasWorkflowDependency(parsed.optionalDependencies) ||
-            hasWorkflowDependency(parsed.devDependencies),
+          hasWorkflowDependency: packageDeclaresWorkflow(parsed),
         };
       })
       .catch(() => null);
@@ -733,17 +765,9 @@ export async function fastDiscoverEntries({
           optionalDependencies?: unknown;
           devDependencies?: unknown;
         };
-        const parsedPackageName =
-          typeof parsed.name === 'string' ? parsed.name : packageName;
         return {
           root: normalizePath(dirname(packageJsonPath)),
-          hasWorkflowDependency:
-            parsedPackageName === 'workflow' ||
-            parsedPackageName.startsWith('@workflow/') ||
-            hasWorkflowDependency(parsed.dependencies) ||
-            hasWorkflowDependency(parsed.peerDependencies) ||
-            hasWorkflowDependency(parsed.optionalDependencies) ||
-            hasWorkflowDependency(parsed.devDependencies),
+          hasWorkflowDependency: packageDeclaresWorkflow(parsed, packageName),
         };
       } catch {
         return null;
@@ -849,6 +873,15 @@ export async function fastDiscoverEntries({
     return packageInfo?.hasWorkflowDependency === true;
   };
 
+  const declinedPackageRoots = new Set<string>();
+  /** Records the package `filePath` belongs to as one discovery declined. */
+  const recordDeclinedPackage = async (filePath: string): Promise<void> => {
+    const packageInfo = await findPackageInfo(filePath, packageInfoCache);
+    if (packageInfo) {
+      declinedPackageRoots.add(packageInfo.root);
+    }
+  };
+
   /**
    * Discovery does not walk packages with no `workflow` dependency, but such a
    * package can still define serde classes. AI SDK providers mark their models
@@ -885,6 +918,9 @@ export async function fastDiscoverEntries({
       const resolved = await resolveLimit(() =>
         resolveBareSpecifier(importer, specifier)
       );
+      if (resolved) {
+        await recordDeclinedPackage(resolved);
+      }
       if (
         !resolved ||
         !isJsTsFile(resolved) ||
@@ -981,6 +1017,7 @@ export async function fastDiscoverEntries({
       forceFollowImports
     );
     if (!shouldFollow) {
+      await recordDeclinedPackage(filePath);
       return;
     }
 
@@ -1025,5 +1062,6 @@ export async function fastDiscoverEntries({
   }
 
   state.discoveredFiles = processedFiles;
+  state.declinedPackageRoots = declinedPackageRoots;
   state.unresolvedImportCandidates = unresolvedImportCandidates;
 }
