@@ -157,6 +157,8 @@ try {
 
 Workflow function references and [`Run`](/docs/api-reference/workflow-api/get-run) handles are serializable too, so a step can receive a workflow function to `start()` or a run handle to await. And when a value cannot cross a boundary, the failure is precise instead of generic: dedicated [`SerializationError`](/docs/api-reference/workflow-errors) and structured context-violation errors name the offending value and where it was used.
 
+Since 5.5.0, state that grows across steps, such as a conversation history, no longer has to be stored in full by every step that receives it. Pass it as a deeply frozen value, for example the result of immer's `produce`, and Workflow stores a step input that holds an already stored value as a reference to it, and a step output as its change. See [Frozen values](/docs/foundations/serialization#frozen-values).
+
 See [Serialization](/docs/foundations/serialization).
 
 ### A redesigned trace viewer
