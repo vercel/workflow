@@ -1,0 +1,19 @@
+@keyframes span-flash {
+  0%,
+  44%,
+  100% {
+    background-color: var(--ds-gray-100);
+  }
+  12%,
+  28%,
+  58%,
+  74% {
+    background-color: var(--ds-amber-200);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .landing [role='treeitem'][aria-selected='true'] {
+    animation: span-flash 0.6s ease-in-out 0.15s backwards;
+  }
+}

@@ -1728,8 +1728,10 @@ export const listSleeps = async (
           eventId: waitCreated.eventId,
           createdAt: waitCreated.createdAt,
           resumeAt:
+            // A run whose data was deleted lists its events without
+            // `eventData`.
             waitCreated.eventType === 'wait_created'
-              ? waitCreated.eventData.resumeAt
+              ? waitCreated.eventData?.resumeAt
               : undefined,
           completedAt: waitCompleted?.createdAt,
         };

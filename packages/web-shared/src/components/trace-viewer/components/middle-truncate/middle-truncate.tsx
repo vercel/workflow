@@ -121,7 +121,6 @@ function MiddleTruncate({
 
   return (
     <span
-      title={isTruncated ? value : undefined}
       {...props}
       ref={ref}
       className={cn(

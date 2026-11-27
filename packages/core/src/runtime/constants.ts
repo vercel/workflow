@@ -495,10 +495,11 @@ export function getRunAheadDepth(): number {
 }
 
 /**
- * Allowance added to the invocation's inline window when deciding whether
- * an open wait can come due while the orchestrator is still deciding. A wait
- * due within the window plus this allowance makes a run-ahead boundary drain
- * instead.
+ * Allowance added when deciding whether an open wait can come due while the
+ * orchestrator is still deciding. Spec 9 run-ahead adds it to now, capped at
+ * the invocation's inline deadline (`getRunAheadWaitWindowEndMs`); spec 8's
+ * inline scheduling adds it to the end of the inline window. A wait due by
+ * then makes the boundary drain instead.
  *
  * It covers clocks that are not this process's (the host that delivers a
  * timer, and an early timer delivery) and the last boundary of a window
@@ -509,6 +510,14 @@ export function getRunAheadDepth(): number {
  * single-orchestrator run it does so by naming them on an orchestrator
  * message, and the orchestrator writes `wait_completed` in-band. An open wait
  * is therefore only path-changing through its own timer.
+ *
+ * For spec 9 run-ahead the window decides cost, not correctness. Only an
+ * orchestrator writes `wait_completed`, in-band: a wait that comes due while
+ * this delivery runs ahead is completed by it at the top of a later pass,
+ * after the writes in flight, or by its timer's delivery, which the in-band
+ * fence orders against this one (one of them is refused and redelivered).
+ * Draining near a due wait avoids that redelivery and completes the wait on
+ * time.
  */
 export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
 
@@ -524,6 +533,32 @@ export function getOpenWaitClockSkewMs(): number {
     {
       integer: true,
     }
+  );
+}
+
+/**
+ * The smallest allowance run-ahead's wait check uses, whatever
+ * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` says: a few round trips, so a wait about
+ * to come due drains the boundary instead of costing a fenced redelivery or
+ * completing a pass late. Correctness does not depend on
+ * it (see {@link OPEN_WAIT_CLOCK_SKEW_MS}).
+ */
+export const MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS = 1_000;
+
+/**
+ * Where run-ahead's wait check ends: an open wait whose `resumeAt` is at or
+ * before this makes a boundary path-changing. It is now plus the allowance
+ * (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`, at least
+ * {@link MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS}), capped at the inline deadline plus
+ * that allowance.
+ */
+export function getRunAheadWaitWindowEndMs(
+  nowMs: number,
+  inlineDeadlineMs: number
+): number {
+  return (
+    Math.min(nowMs, inlineDeadlineMs) +
+    Math.max(getOpenWaitClockSkewMs(), MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS)
   );
 }
 

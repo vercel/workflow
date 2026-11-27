@@ -1,6 +1,6 @@
 ---- MODULE StreamPurge ----
 (* Stream chunk inserts against a run's finish and the deletion of its data
-   (src/streamer.ts `insertDataChunks`, src/retention.ts `purgeRunUserData`),
+   (src/streamer.ts `appendChunks`, src/retention.ts `purgeRunUserData`),
    under Postgres row-lock and snapshot rules. The constants select the
    shipped design or a variant of it; see README.md. *)
 EXTENDS FiniteSets

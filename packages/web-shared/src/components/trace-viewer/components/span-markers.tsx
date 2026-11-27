@@ -138,7 +138,7 @@ export function OffscreenMarkerIndicator({
   const Chevron = direction === 'right' ? ArrowRight : ArrowLeft;
   const label = `${count} marker${count === 1 ? '' : 's'} ${
     direction === 'right' ? 'ahead' : 'behind'
-  } — click to scroll to ${count === 1 ? 'it' : 'the nearest'}`;
+  }`;
   const chevron = (
     <span className="flex h-6 w-6 shrink-0 items-center justify-center">
       <Chevron className="size-3 text-gray-900" />
@@ -150,7 +150,6 @@ export function OffscreenMarkerIndicator({
     <button
       type="button"
       aria-label={label}
-      title={label}
       onClick={(e) => {
         // Don't let the row's onClick fire, since revealing shouldn't also
         // change the span selection.
@@ -158,7 +157,7 @@ export function OffscreenMarkerIndicator({
         onReveal?.(targetMs);
       }}
       className={cn(
-        'pointer-events-auto absolute top-1/2 z-20 flex h-6 -translate-y-1/2 cursor-pointer items-center rounded-[0.25rem] border border-gray-alpha-400 bg-background-100 hover:bg-gray-100',
+        'pointer-events-auto absolute top-1/2 z-20 flex h-6 -translate-y-1/2 cursor-pointer items-center rounded-sm border border-gray-alpha-400 bg-background-100 hover:bg-gray-100',
         direction === 'right' ? 'right-0 pl-1.5' : 'left-0 pr-1.5'
       )}
     >

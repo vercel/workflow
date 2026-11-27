@@ -252,4 +252,34 @@ describe('shared invocation notifications', () => {
     expect(mocks.client).toHaveBeenCalledOnce();
     watch.dispose();
   });
+
+  it('preserves non-enumerable password credentials when opening dedicated client', async () => {
+    const password = async () => 'secret-auth-token';
+    const poolOptions = { host: 'localhost', user: 'postgres' };
+    Object.defineProperty(poolOptions, 'password', {
+      value: password,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    const authNotifications = createInvocationNotifications({
+      options: poolOptions,
+    } as unknown as Pool);
+
+    const watch = authNotifications.watch(INVOCATION_INPUT_TOPIC, inputKey);
+    await ready(watch);
+
+    expect(mocks.client).toHaveBeenCalledOnce();
+    const clientOptions = mocks.client.mock.calls[0][0] as {
+      password?: unknown;
+      application_name?: string;
+      connectionTimeoutMillis?: number;
+    };
+    expect(clientOptions.password).toBe(password);
+    expect(clientOptions.application_name).toBe('workflow:invocations');
+    expect(clientOptions.connectionTimeoutMillis).toBe(1_000);
+
+    watch.dispose();
+    await authNotifications.close();
+  });
 });

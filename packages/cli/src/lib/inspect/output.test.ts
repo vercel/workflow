@@ -854,6 +854,36 @@ describe('listSleeps analytics degradation', () => {
     write.mockRestore();
   });
 
+  it('lists the sleeps of a run whose data was deleted', async () => {
+    const world = {
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [
+            {
+              ...eventBase,
+              eventId: 'evnt-1',
+              eventType: 'wait_created',
+              correlationId: 'wait-1',
+              createdAt: new Date('2026-06-30T00:00:00.000Z'),
+            },
+          ],
+          cursor: null,
+          hasMore: false,
+        }),
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listSleeps(world, { json: true, runId: 'run-1' });
+
+    const [sleep] = JSON.parse(write.mock.calls.join(''));
+    expect(sleep).toMatchObject({ correlationId: 'wait-1' });
+    expect(sleep).not.toHaveProperty('resumeAt');
+    write.mockRestore();
+  });
+
   // --all fetches every analytics page before printing, so a later page
   // failing still degrades to one complete answer from the event log rather
   // than a partial array followed by a second one.

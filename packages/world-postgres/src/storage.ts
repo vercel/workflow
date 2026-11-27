@@ -133,6 +133,7 @@ import {
   type StartHookDecision,
   startHookConflict,
 } from './start-hook.js';
+import { parseStoredEvent, parseStoredEvents } from './stored-event.js';
 import { compact } from './util.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -671,10 +672,7 @@ async function acquireRateSlot(
     )
     .limit(1);
   let created: Event | undefined;
-  if (row) {
-    row.eventData ||= row.eventDataJson;
-    created = EventSchema.parse(compact(row));
-  }
+  if (row) created = await parseStoredEvent(db, row);
   if (
     created?.eventType !== 'rate_created' ||
     created.correlationId !== correlationId ||
@@ -908,10 +906,9 @@ async function reportSkippedSlots(
       )
     )
     .orderBy(Schema.events.eventId);
-  const events = rows.map((row) => {
-    row.eventData ||= row.eventDataJson;
-    return stripEventDataRefs(EventSchema.parse(compact(row)), resolveData);
-  });
+  const events = (await parseStoredEvents(db, rows)).map((event) =>
+    stripEventDataRefs(event, resolveData)
+  );
   return {
     events,
     hasMore: events.length < committedSlot - askedFor - 1,
@@ -976,9 +973,7 @@ async function createHookResume(
       )
       .limit(1);
     if (prior) {
-      const parsed = EventSchema.parse(
-        compact({ ...prior, eventData: prior.eventData ?? prior.eventDataJson })
-      );
+      const parsed = await parseStoredEvent(tx, prior);
       if (
         parsed.eventType !== 'hook_received' ||
         prior.correlationId !== data.correlationId ||
@@ -1046,16 +1041,8 @@ async function createHookResume(
       )
       .orderBy(Schema.events.eventId)
       .limit(101);
-    const events = rows.slice(0, 100).map((row) =>
-      stripEventDataRefs(
-        EventSchema.parse(
-          compact({
-            ...row,
-            eventData: row.eventData ?? row.eventDataJson,
-          })
-        ),
-        resolveData
-      )
+    const events = (await parseStoredEvents(drizzle, rows.slice(0, 100))).map(
+      (event) => stripEventDataRefs(event, resolveData)
     );
     return {
       ...result,
@@ -2416,6 +2403,21 @@ function createUnfencedEventsStorage(
             { status: 400 }
           );
         }
+      }
+
+      // A single-orchestrator run's waits are completed only by its
+      // orchestrator, which runs ahead of far-off waits on that assumption;
+      // an out-of-band completion could land below its speculative writes.
+      // Waking the run asks the orchestrator to write it instead.
+      if (
+        data.eventType === 'wait_completed' &&
+        params?.inBand !== true &&
+        (currentRun?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+      ) {
+        throw new WorkflowWorldError(
+          "On a single-orchestrator run, wait_completed is written only by the run's orchestrator. Wake the run instead; its orchestrator completes the wait.",
+          { status: 409, code: 'wait-completion-in-band-only' }
+        );
       }
 
       // Step-related event validation (ordering and terminal state)
@@ -4419,11 +4421,9 @@ function createUnfencedEventsStorage(
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        const data = eventRows.map((e) => {
-          e.eventData ||= e.eventDataJson;
-          const parsed = EventSchema.parse(compact(e));
-          return stripEventDataRefs(parsed, resolveData);
-        });
+        const data = (await parseStoredEvents(drizzle, eventRows)).map(
+          (event) => stripEventDataRefs(event, resolveData)
+        );
         eventPage = {
           data,
           cursor: data.at(-1)?.eventId ?? null,
@@ -4452,10 +4452,9 @@ function createUnfencedEventsStorage(
           .orderBy(Schema.events.eventId)
           .limit(limit + 1);
         const page = deltaRows.slice(0, limit);
-        const data = page.map((e) => {
-          e.eventData ||= e.eventDataJson;
-          return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
-        });
+        const data = (await parseStoredEvents(drizzle, page)).map((event) =>
+          stripEventDataRefs(event, resolveData)
+        );
         eventPage = {
           data,
           cursor: data.at(-1)?.eventId ?? null,
@@ -4535,10 +4534,11 @@ function createUnfencedEventsStorage(
         throw new WorkflowWorldError(`Event not found: ${eventId}`);
       }
 
-      value.eventData ||= value.eventDataJson;
-      const parsed = EventSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
-      return stripEventDataRefs(parsed, resolveData);
+      return stripEventDataRefs(
+        await parseStoredEvent(drizzle, value),
+        resolveData
+      );
     },
     async list(params: ListEventsParams): Promise<EventListResponse> {
       const limit = params.pagination?.limit ?? getMaxEventsPerRun();
@@ -4570,9 +4570,7 @@ function createUnfencedEventsStorage(
           .limit(pageLimit + 1);
         const page = rows.slice(0, pageLimit);
 
-        for (const row of page) {
-          row.eventData ||= row.eventDataJson;
-          const event = EventSchema.parse(compact(row));
+        for (const event of await parseStoredEvents(drizzle, page)) {
           data.push(stripEventDataRefs(event, resolveData));
         }
 
@@ -4620,11 +4618,9 @@ function createUnfencedEventsStorage(
 
       const resolveData = params?.resolveData ?? 'all';
       return {
-        data: values.map((v) => {
-          v.eventData ||= v.eventDataJson;
-          const parsed = EventSchema.parse(compact(v));
-          return stripEventDataRefs(parsed, resolveData);
-        }),
+        data: (await parseStoredEvents(drizzle, values)).map((event) =>
+          stripEventDataRefs(event, resolveData)
+        ),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
       };

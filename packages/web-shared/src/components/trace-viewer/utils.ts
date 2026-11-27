@@ -54,6 +54,12 @@ export function isSpanCancelled(span: Span): boolean {
   return workflowStatus === 'cancelled';
 }
 
+export function getSpanState(span: Span): 'failed' | 'cancelled' | undefined {
+  if (isSpanErrored(span)) return 'failed';
+  if (isSpanCancelled(span)) return 'cancelled';
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Viewport
 // ---------------------------------------------------------------------------
@@ -283,47 +289,6 @@ export function computeSpanDelta(
 }
 
 // ---------------------------------------------------------------------------
-// Resource colors
-// ---------------------------------------------------------------------------
-
-export const RESOURCE_CLASS_NAMES: Record<
-  string,
-  {
-    className: string;
-    errorClassName?: string;
-  }
-> = {
-  run: {
-    className: 'border-blue-500 bg-blue-200',
-    errorClassName: 'border-red-500 bg-red-200',
-  },
-  step: {
-    className: 'border-green-500 bg-green-200',
-    errorClassName: 'border-red-500 bg-red-200',
-  },
-  // Passive spans (hooks) stay gray; matches event-list icons and the minimap.
-  hook: {
-    className: 'border-gray-500 bg-gray-200',
-    errorClassName: 'border-red-500 bg-red-200',
-  },
-  sleep: {
-    className: 'border-purple-500 bg-purple-200',
-    errorClassName: 'border-red-500 bg-red-200',
-  },
-  default: {
-    className: 'border-gray-500 bg-gray-200',
-    errorClassName: 'border-red-500 bg-red-200',
-  },
-};
-
-export function getResourceClassNames(resource: string): {
-  className: string;
-  errorClassName?: string;
-} {
-  return RESOURCE_CLASS_NAMES[resource] ?? RESOURCE_CLASS_NAMES.default;
-}
-
-// ---------------------------------------------------------------------------
 // Span segments: split a timeline bar into colored sections by event state
 // ---------------------------------------------------------------------------
 
@@ -337,8 +302,7 @@ export type SegmentStatus =
   | 'retrying'
   | 'succeeded'
   | 'waiting'
-  | 'sleeping'
-  | 'received';
+  | 'sleeping';
 
 export interface Segment {
   startFraction: number;

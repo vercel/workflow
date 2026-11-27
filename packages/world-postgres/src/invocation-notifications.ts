@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Client, type Pool } from 'pg';
+import { cloneClientConfig, connectionErrorCode } from './util.js';
 
 export const INVOCATION_INPUT_TOPIC = 'workflow_invocation_input';
 export const INVOCATION_RESULT_TOPIC = 'workflow_invocation_result';
@@ -53,7 +54,8 @@ export function createInvocationNotifications(pool: Pool) {
     retryAfter = Date.now() + RECONNECT_BACKOFF_MS;
     if (!closed && !degraded) {
       degraded = true;
-      // State transitions only, and no raw pg errors/connection options.
+      // State transitions and error codes only, never a raw pg error message
+      // or the connection options.
       console.warn(
         `[world-postgres] Invocation notifications unavailable (${reason}); using fallback reads`
       );
@@ -66,12 +68,13 @@ export function createInvocationNotifications(pool: Pool) {
 
   const ensureListening = () => {
     if (closed || client || connecting || Date.now() < retryAfter) return;
-    const connection = new Client({
-      ...pool.options,
-      application_name: `${pool.options.application_name ?? 'workflow'}:invocations`,
-      connectionTimeoutMillis: pool.options.connectionTimeoutMillis || 1_000,
-      query_timeout: pool.options.query_timeout || 1_000,
-    });
+    const connection = new Client(
+      cloneClientConfig(pool.options, {
+        application_name: `${pool.options.application_name ?? 'workflow'}:invocations`,
+        connectionTimeoutMillis: pool.options.connectionTimeoutMillis || 1_000,
+        query_timeout: pool.options.query_timeout || 1_000,
+      })
+    );
     client = connection;
     connection.on('error', () => disconnected(connection, 'connection error'));
     connection.on('end', () => disconnected(connection, 'connection ended'));
@@ -98,8 +101,11 @@ export function createInvocationNotifications(pool: Pool) {
           }
           wakeAll();
         }
-      } catch {
-        disconnected(connection, 'subscription failed');
+      } catch (error) {
+        disconnected(
+          connection,
+          `subscription failed: ${connectionErrorCode(error)}`
+        );
       } finally {
         connecting = undefined;
       }

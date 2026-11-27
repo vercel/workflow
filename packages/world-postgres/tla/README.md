@@ -1,6 +1,6 @@
 # TLA+ model: stream writes against data deletion
 
-`StreamPurge.tla` models a stream chunk insert (`insertDataChunks` in
+`StreamPurge.tla` models a stream chunk insert (`appendChunks` in
 `src/streamer.ts`) racing a run's terminal transition and the deletion of its
 data (`purgeRunUserData` in `src/retention.ts`), under Postgres row locks and
 statement snapshots.
