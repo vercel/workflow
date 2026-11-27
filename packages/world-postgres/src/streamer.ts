@@ -6,8 +6,9 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { Client, type Pool } from 'pg';
-import { monotonicFactory } from 'ulid';
+import { incrementBase32, monotonicFactory, TIME_LEN } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import { Mutex } from './util.js';
@@ -42,6 +43,34 @@ class Rc<T extends { drop(): void }> {
     }
   }
 }
+
+/**
+ * Class id of the transaction-scoped advisory lock that orders writes to one
+ * stream (`pg_advisory_xact_lock(class, streamLockKey(stream_id))`). The class
+ * keeps these locks apart from advisory locks other code takes on the same
+ * database. Two streams whose names hash alike share a lock, which only
+ * serializes their writes.
+ */
+const STREAM_LOCK_CLASS = 0x5753_7472;
+
+/**
+ * The second key of a stream's advisory lock: a 32-bit FNV-1a hash of its
+ * name, as a signed `int4`. Every process derives the same key from a name.
+ */
+function streamLockKey(name: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash | 0;
+}
+
+/**
+ * Attempts an append makes to land above the stream's highest id before it
+ * inserts regardless (see `appendChunks`).
+ */
+const MAX_APPEND_ATTEMPTS = 3;
 
 /**
  * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
@@ -92,6 +121,8 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   }>();
   const { streams } = Schema;
   const genChunkId = () => `chnk_${ulid()}` as const;
+  // Renders drizzle `sql` for a statement sent on a checked-out client.
+  const dialect = new PgDialect();
   const mutexes = new Map<string, Rc<{ drop(): void; mutex: Mutex }>>();
   // One abort function per reader that has not yet reached a terminal state
   // (EOF, cancel, or initial-query failure). `close()` drains this set so a
@@ -142,10 +173,6 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     });
   });
 
-  const notifyStream = async (payload: string) => {
-    await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
-  };
-
   const loadPersistedChunks = (name: string): Promise<StreamChunkEvent[]> =>
     drizzle
       .select({
@@ -177,31 +204,174 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
 
+  /**
+   * Appends chunks to a stream, in one transaction.
+   *
+   * Chunk ids order a stream: `readFromStream()`, `getStreamChunks()` and
+   * `getStreamInfo()` read it by id, and a live reader drops a notification
+   * whose id is not above the last one it delivered. So a chunk must commit,
+   * and its notification must arrive, after every chunk with a lower id. Ids
+   * taken before the insert do not guarantee that once two writers share a
+   * stream, whether two steps in one process or writers in processes with
+   * their own id generator and clock: the write that took the lower id can
+   * commit second, and a live reader then skips it while `getStreamChunks()`
+   * still returns it.
+   *
+   * The transaction therefore takes a lock on the stream first, which it
+   * holds until it commits, and inserts only if its first id is above the
+   * stream's highest id. If not, it takes ids above that one and inserts
+   * again; the lock keeps the highest id from moving in between. It sends the
+   * notifications in the same transaction, and Postgres delivers them when
+   * the transaction commits, in commit order. Under the lock, commit order is
+   * id order.
+   *
+   * `test/stream-concurrent-writers.test.ts` covers the ordering.
+   */
+  const appendChunks = async (
+    runId: string,
+    name: string,
+    chunks: { data: Buffer; eof: boolean }[]
+  ): Promise<void> => {
+    const client = await pool.connect();
+    try {
+      // One round trip: the lock key is two integers computed here, so the
+      // stream name is never written into the SQL text.
+      await client.query(
+        `BEGIN ISOLATION LEVEL READ COMMITTED; SELECT pg_advisory_xact_lock(${STREAM_LOCK_CLASS}, ${streamLockKey(name)})`
+      );
+      let chunkIds = chunks.map(() => genChunkId());
+      for (let attempt = 1; ; attempt++) {
+        // A writer that does not take the lock (an earlier version of this
+        // World) can still move the highest id between attempts. After a few
+        // attempts, insert regardless rather than never.
+        const checkHead = attempt <= MAX_APPEND_ATTEMPTS;
+        const query = dialect.sqlToQuery(
+          appendStatement(runId, name, chunks, chunkIds, { checkHead })
+        );
+        const { rows } = await client.query<{
+          head: `chnk_${string}` | null;
+          inserted: number;
+        }>(query.sql, query.params);
+        const [{ head, inserted }] = rows;
+        if (inserted > 0) break;
+        if (checkHead && head !== null && head >= chunkIds[0]) {
+          chunkIds = chunkIdsAfter(head, chunkIds.length);
+          continue;
+        }
+        break;
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+
+  /**
+   * The statement `appendChunks` runs under the stream lock: insert the
+   * chunks (if `checkHead`, only when the first id is above the stream's
+   * highest), notify each inserted chunk in id order, and return the highest
+   * id it saw and how many chunks it inserted.
+   */
+  const appendStatement = (
+    runId: string,
+    name: string,
+    chunks: { data: Buffer; eof: boolean }[],
+    chunkIds: `chnk_${string}`[],
+    { checkHead }: { checkHead: boolean }
+  ) => {
+    const rows = sql.join(
+      chunks.map(
+        (chunk, i) =>
+          sql`(${chunkIds[i]}, ${name}, ${runId}, ${chunk.data}::bytea, ${chunk.eof}::boolean)`
+      ),
+      sql`, `
+    );
+    const aboveHead = checkHead
+      ? sql`COALESCE(${chunkIds[0]} > (SELECT id FROM head), true)`
+      : sql`true`;
+    return sql`
+      WITH head AS (
+        SELECT max(id) AS id FROM ${streams} WHERE stream_id = ${name}
+      ),
+      ins AS (
+        INSERT INTO ${streams} (id, stream_id, run_id, data, eof)
+        SELECT v.id, v.stream_id, v.run_id, v.data, v.eof
+        FROM (VALUES ${rows}) AS v (id, stream_id, run_id, data, eof)
+        WHERE ${aboveHead}
+        RETURNING id
+      ),
+      notified AS (
+        SELECT pg_notify(
+          ${STREAM_TOPIC},
+          json_build_object('streamId', ${name}::text, 'chunkId', s.id)::text
+        )
+        FROM (SELECT id FROM ins ORDER BY id) AS s
+      )
+      SELECT
+        (SELECT id FROM head) AS head,
+        (SELECT count(*) FROM notified)::int AS inserted`;
+  };
+
+  /**
+   * `count` increasing chunk ids above `head`: fresh ones when this process's
+   * clock is already past it, otherwise `head`'s timestamp with its random
+   * part incremented, as a monotonic ULID generator does within one
+   * millisecond.
+   */
+  const chunkIdsAfter = (
+    head: `chnk_${string}`,
+    count: number
+  ): `chnk_${string}`[] => {
+    const fresh = Array.from({ length: count }, () => genChunkId());
+    if (fresh[0] > head) return fresh;
+    const ulid = head.slice('chnk_'.length);
+    const time = ulid.slice(0, TIME_LEN);
+    let random = ulid.slice(TIME_LEN);
+    return Array.from({ length: count }, () => {
+      random = incrementBase32(random);
+      return `chnk_${time}${random}` as const;
+    });
+  };
+
+  /**
+   * Writes to one stream from this World run one at a time, in call order,
+   * so they also commit in call order. Each write still takes the stream
+   * lock, which orders it against writers in other processes.
+   */
+  const writeQueues = new Map<string, Promise<void>>();
+  const queueStreamWrite = <T>(
+    name: string,
+    task: () => Promise<T>
+  ): Promise<T> => {
+    const previous = writeQueues.get(name) ?? Promise.resolve();
+    const run = previous.then(task);
+    const tail = run.then(
+      () => {},
+      () => {}
+    );
+    writeQueues.set(name, tail);
+    void tail.then(() => {
+      if (writeQueues.get(name) === tail) writeQueues.delete(name);
+    });
+    return run;
+  };
+
   return {
     async writeToStream(
       name: string,
       _runId: string | Promise<string>,
       chunk: string | Uint8Array
     ) {
-      // Await runId if it's a promise to ensure proper flushing
-      const runId = await _runId;
-
-      const chunkId = genChunkId();
-      await drizzle.insert(streams).values({
-        chunkId,
-        streamId: name,
-        runId,
-        chunkData: toBuffer(chunk),
-        eof: false,
+      await queueStreamWrite(name, async () => {
+        // Await runId if it's a promise to ensure proper flushing
+        const runId = await _runId;
+        await appendChunks(runId, name, [
+          { data: toBuffer(chunk), eof: false },
+        ]);
       });
-      await notifyStream(
-        JSON.stringify(
-          StreamPublishMessage.encode({
-            chunkId,
-            streamId: name,
-          })
-        )
-      );
     },
 
     async writeToStreamMulti(
@@ -210,59 +380,27 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       chunks: (string | Uint8Array)[]
     ) {
       if (chunks.length === 0) return;
-
-      // Generate all chunk IDs up front to preserve ordering
-      const chunkIds = chunks.map(() => genChunkId());
-
-      // Await runId if it's a promise to ensure proper flushing
-      const runId = await _runId;
-
-      // Batch insert all chunks in a single query
-      await drizzle.insert(streams).values(
-        chunks.map((chunk, i) => ({
-          chunkId: chunkIds[i],
-          streamId: name,
+      await queueStreamWrite(name, async () => {
+        // Await runId if it's a promise to ensure proper flushing
+        const runId = await _runId;
+        // One statement, so the group commits together and in order.
+        await appendChunks(
           runId,
-          chunkData: toBuffer(chunk),
-          eof: false,
-        }))
-      );
-
-      // Notify for each chunk (could be batched in future if needed)
-      for (const chunkId of chunkIds) {
-        await notifyStream(
-          JSON.stringify(
-            StreamPublishMessage.encode({
-              chunkId,
-              streamId: name,
-            })
-          )
+          name,
+          chunks.map((chunk) => ({ data: toBuffer(chunk), eof: false }))
         );
-      }
+      });
     },
+
     async closeStream(
       name: string,
       _runId: string | Promise<string>
     ): Promise<void> {
-      // Await runId if it's a promise to ensure proper flushing
-      const runId = await _runId;
-
-      const chunkId = genChunkId();
-      await drizzle.insert(streams).values({
-        chunkId,
-        streamId: name,
-        runId,
-        chunkData: Buffer.from([]),
-        eof: true,
+      await queueStreamWrite(name, async () => {
+        // Await runId if it's a promise to ensure proper flushing
+        const runId = await _runId;
+        await appendChunks(runId, name, [{ data: Buffer.from([]), eof: true }]);
       });
-      await notifyStream(
-        JSON.stringify(
-          StreamPublishMessage.encode({
-            streamId: name,
-            chunkId,
-          })
-        )
-      );
     },
     async getStreamChunks(
       name: string,
