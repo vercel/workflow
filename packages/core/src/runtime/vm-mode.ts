@@ -11,6 +11,9 @@
  * instead of a `node:vm` context, which makes it usable on platforms that
  * do not implement `node:vm` (e.g. Cloudflare Workers) and is the
  * foundation for VM-memory snapshotting.
+ *
+ * Where the two engines differ in latency on spec 9 runs, and what would
+ * close the gap: `quickjs-performance.md` next to this file.
  */
 
 import { WorkflowRuntimeError } from '@workflow/errors';
