@@ -3,6 +3,7 @@ import { Footer } from '@vercel/geistdocs/footer';
 import { Navbar } from '@vercel/geistdocs/navbar';
 import type { Metadata } from 'next';
 import { GeistdocsProvider } from '@/components/geistdocs/provider';
+import { SiteFooter } from '@/components/geistdocs/site-footer';
 import { config } from '@/lib/geistdocs/config';
 import { mono, sans } from '@/lib/geistdocs/fonts';
 import { cn } from '@/lib/utils';
@@ -36,6 +37,7 @@ const Layout = async ({ children, params }: LayoutProps<'/[lang]'>) => {
         <GeistdocsProvider basePath={config.basePath} lang={lang}>
           <Navbar config={config} />
           {children}
+          <SiteFooter />
           <Footer />
         </GeistdocsProvider>
       </body>
