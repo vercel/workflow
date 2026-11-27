@@ -1134,6 +1134,171 @@ export const templateHint = \`static [WS](value) for \${WORKFLOW_SERIALIZE.toStr
     expect(discovered.discoveredSerdeFiles).toEqual(new Set());
   });
 
+  describe('TypeScript type-only imports', () => {
+    const STEP_SOURCE = `export async function doStep() {
+  'use step';
+  return 1;
+}
+export interface StepResult {
+  value: number;
+}
+`;
+
+    const typeOnlyCases: Array<[string, string]> = [
+      [
+        'typeof import() in a type alias',
+        `export type StepModule = typeof import('./step');\n`,
+      ],
+      [
+        'import() in a type annotation',
+        `export let result: import('./step').StepResult | undefined;\n`,
+      ],
+      [
+        'import type with named specifiers',
+        `import type { StepResult } from './step';\nexport let result: StepResult | undefined;\n`,
+      ],
+      [
+        'import type with a namespace',
+        `import type * as step from './step';\nexport let mod: typeof step | undefined;\n`,
+      ],
+      [
+        'import with only inline type specifiers',
+        `import { type StepResult, type doStep } from './step';\nexport let result: StepResult | undefined;\nexport let fn: typeof doStep | undefined;\n`,
+      ],
+      ['export type re-export', `export type { StepResult } from './step';\n`],
+      [
+        'export with only inline type specifiers',
+        `export { type StepResult } from './step';\n`,
+      ],
+      ['export type star re-export', `export type * from './step';\n`],
+    ];
+
+    const runtimeCases: Array<[string, string]> = [
+      [
+        'a named value import',
+        `import { doStep } from './step';\nvoid doStep;\n`,
+      ],
+      [
+        'an import mixing type and value specifiers',
+        `import { type StepResult, doStep } from './step';\nexport let result: StepResult | undefined;\nvoid doStep;\n`,
+      ],
+      ['a side-effect import', `import './step';\n`],
+      [
+        'a dynamic import',
+        `export async function load() {\n  return await import('./step');\n}\n`,
+      ],
+      ['a require call', `const step = require('./step');\nvoid step;\n`],
+      [
+        'a module.require call next to type-only syntax',
+        `export type StepModule = typeof import('./step');\nconst step = module.require('./step');\nvoid step;\n`,
+      ],
+      ['a named re-export', `export { doStep } from './step';\n`],
+      ['a star re-export', `export * from './step';\n`],
+      [
+        'a type-only and a runtime import of the same module',
+        `export type StepModule = typeof import('./step');\nimport { doStep } from './step';\nvoid doStep;\n`,
+      ],
+    ];
+
+    const extensions = ['.ts', '.tsx', '.mts', '.cts'];
+
+    async function discoverStepsFrom(
+      extension: string,
+      importerSource: string
+    ): Promise<Set<string>> {
+      const entryFile = join(testRoot, 'src', `entry${extension}`);
+      const stepFile = join(testRoot, 'src', 'step.ts');
+      const jsxLine =
+        extension === '.tsx' ? `export const view = <div>{1}</div>;\n` : '';
+
+      writeFile(entryFile, `${importerSource}${jsxLine}`);
+      writeFile(stepFile, STEP_SOURCE);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+      return discovered.discoveredSteps;
+    }
+
+    for (const extension of extensions) {
+      describe(`in ${extension} files`, () => {
+        it.each(typeOnlyCases)('does not follow %s', async (_, source) => {
+          expect(await discoverStepsFrom(extension, source)).toEqual(new Set());
+        });
+
+        it.each(runtimeCases)('follows %s', async (_, source) => {
+          expect(await discoverStepsFrom(extension, source)).toEqual(
+            new Set([normalize(join(testRoot, 'src', 'step.ts'))])
+          );
+        });
+      });
+    }
+
+    it('does not discover steps from a typeof import() next to a workflow', async () => {
+      const workflowFile = join(testRoot, 'src', 'workflow.ts');
+      const stepFile = join(testRoot, 'src', 'unused-step.ts');
+
+      writeFile(
+        workflowFile,
+        `export type StepModule = typeof import('./unused-step');
+export async function example() {
+  'use workflow';
+  return 'ok';
+}
+`
+      );
+      writeFile(stepFile, STEP_SOURCE);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [workflowFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredWorkflows).toEqual(
+        new Set([normalize(workflowFile)])
+      );
+      expect(discovered.discoveredSteps).toEqual(new Set());
+    });
+
+    it('still follows imports in .js files', async () => {
+      const entryFile = join(testRoot, 'src', 'entry.js');
+      const stepFile = join(testRoot, 'src', 'step.ts');
+
+      writeFile(
+        entryFile,
+        `export async function load() {\n  return await import('./step');\n}\n`
+      );
+      writeFile(stepFile, STEP_SOURCE);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredSteps).toEqual(
+        new Set([normalize(stepFile)])
+      );
+    });
+
+    it('still follows imports in TypeScript files that fail to parse', async () => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const stepFile = join(testRoot, 'src', 'step.ts');
+
+      writeFile(entryFile, `import { doStep } from './step';\nconst = ;\n`);
+      writeFile(stepFile, STEP_SOURCE);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredSteps).toEqual(
+        new Set([normalize(stepFile)])
+      );
+    });
+  });
+
   it('relativizes nested package step registration imports', () => {
     const routeDir = join(testRoot, 'app', '.well-known', 'workflow', 'v1');
     const directPackageFile = join(
