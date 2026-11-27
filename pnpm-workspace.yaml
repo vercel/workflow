@@ -17,7 +17,10 @@ catalog:
   ai: 6.0.325
   enhanced-resolve: 5.26.1
   esbuild: ^0.28.2
-  nitro: ^3.0.260610-beta
+  # Nightly carries nitrojs/nitro#5178 (Vercel node entry keeps `remoteAddress`
+  # redefinable on keep-alive sockets), which no RC has yet. Move back to a
+  # `nitro` release once one includes it.
+  nitro: npm:nitro-nightly@3.0.1-20261125-025754-925c1355
   semver: 7.8.6
   typescript: ^6.0.3
   ulid: ~3.0.2
@@ -74,10 +77,11 @@ overrides:
   '@vercel/speed-insights>@sveltejs/kit': '-'
   '@vercel/agent-readability>@sveltejs/kit': '-'
   # srvx 0.11.22 only honors `X-Forwarded-Proto` behind a configured
-  # `trustProxy`, which Nitro's Vercel node preset (this beta) does not pass, so
+  # `trustProxy`, which Nitro's Vercel node preset does not pass, so
   # `request.url` turns `http://` behind Vercel's TLS termination and webhook
   # URLs built from it break. Keep Nitro's copy on 0.11.21 until Nitro sets it.
-  'nitro>srvx': 0.11.21
+  # The `nitro` catalog entry installs the `nitro-nightly` package.
+  'nitro-nightly>srvx': 0.11.21
 
 savePrefix: ""
 
@@ -115,6 +119,10 @@ minimumReleaseAgeExclude:
   - '@tanstack/react-start@1.168.60'
   - '@tanstack/react-start-client@1.168.39'
   - '@tanstack/react-start-rsc@0.1.59'
+  # nitrojs/nitro#5178 (see the `nitro` catalog entry) is only in nightlies
+  # published after it merged on 2026-11-23; drop this exact version once
+  # it is older than the 48h gate.
+  - 'nitro-nightly@3.0.1-20261125-025754-925c1355'
   - '@tanstack/react-start-server@1.167.46'
   - '@tanstack/router-core@1.171.34'
   - '@tanstack/router-generator@1.167.40'
