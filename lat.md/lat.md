@@ -10,3 +10,4 @@ Workflow SDK makes JavaScript and TypeScript functions durable by recording exec
 - [[documentation]] — Public documentation, maintainer knowledge and publishing rules.
 - [[pull-requests]] — Review requirements and docs or observability preview procedures.
 - [[releases]] — Release branches, changesets, backports and npm tags.
+- [[rust-worlds]] — Framework for building and adopting Rust SQLite, Vercel and Postgres Worlds through incremental PRs.
