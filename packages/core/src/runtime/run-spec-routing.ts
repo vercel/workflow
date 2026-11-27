@@ -5,7 +5,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { trace } from '../telemetry.js';
-import { getWorld } from './world.js';
+import { getWorldLazy } from './get-world-lazy.js';
 
 /** The spec version of a message's run, and the run when it had to be read. */
 export interface RunSpec {
@@ -58,7 +58,7 @@ export async function resolveRunSpec(
     message.runContext?.specVersion ??
     message.runSpecVersion;
   if (stamped !== undefined) return { specVersion: stamped };
-  const world = await getWorld();
+  const world = await getWorldLazy();
   try {
     const run = (await trace('workflow.route.resolve_spec', () =>
       world.runs.get(message.runId, { resolveData: 'none' })
