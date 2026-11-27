@@ -46,6 +46,7 @@ import {
   slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
+  type WorkflowRunStatus,
 } from '@workflow/world';
 
 import { decodeTime } from 'ulid';
@@ -2350,6 +2351,7 @@ async function runDelivery(
         ) {
           throw err;
         }
+        if (await runEndedUnderReplay(err)) return undefined;
         return await failRun(err, effectiveWorkflowCode);
       }
     }
@@ -3895,6 +3897,7 @@ async function runDelivery(
             await fullLoad();
             continue;
           }
+          if (await runEndedUnderReplay(err)) return undefined;
           if (replayStart > 0) {
             replayRecoveryReporter.activate();
           }
@@ -5537,6 +5540,76 @@ async function runDelivery(
       maxEventsLimit,
       { eventCountIsLowerBound: logStoppedAtEventLimit }
     );
+  }
+
+  /**
+   * Whether `err`, which ended a replay, is the World refusing a write
+   * because the run finished under this delivery: a `run_cancelled` (or
+   * another writer's `run_failed`) landed after the pass's terminal check,
+   * so the write that followed, such as the next step's creation, was
+   * refused. The delivery then acknowledges, as a refused `run_completed`
+   * does, instead of logging an error and failing a finished run.
+   *
+   * Neither error alone says the run finished: a conflict can be an entity
+   * that already exists, and a World may answer a 410 for something else
+   * (one refuses a write ahead of `run_started` with it). So the run is read
+   * again, and a run that has not finished still fails. A read the World
+   * answers with an expiry counts as finished whichever error ended the
+   * replay: a 410 on the run itself means it ended and passed its retention,
+   * and failing it would only log an error before the World refused its
+   * `run_failed` as well. A not-found read does not: world-vercel answers
+   * any 404 with one, including a route it does not serve, so it fails the
+   * run like any other failed read. A transient failure of the read is
+   * thrown, so the queue redelivers and the next delivery reads the run
+   * again.
+   */
+  async function runEndedUnderReplay(err: unknown): Promise<boolean> {
+    if (!EntityConflictError.is(err) && !RunExpiredError.is(err)) return false;
+    const read = await readRunAgain();
+    if (read.type === 'unreadable') return false;
+    if (read.type === 'read' && !isTerminalWorkflowRunStatus(read.status)) {
+      return false;
+    }
+    recordTerminalRun(world, runId);
+    runtimeLogger.info('Run already finished during replay, skipping', {
+      workflowRunId: runId,
+      ...(read.type === 'read'
+        ? { status: read.status }
+        : { runExpired: true }),
+      message: err.message,
+    });
+    return true;
+  }
+
+  /**
+   * The run as {@link runEndedUnderReplay} reads it again: its status,
+   * expired (the World answers the read with `RunExpiredError`), or
+   * unreadable (any other failure that will not pass, a not-found
+   * included). A transient failure is thrown, as the replay's own catch
+   * throws one, so the queue redelivers instead of the run failing.
+   */
+  async function readRunAgain(): Promise<
+    | { type: 'read'; status: WorkflowRunStatus }
+    | { type: 'expired' }
+    | { type: 'unreadable' }
+  > {
+    try {
+      const run = await world.runs.get(runId, { resolveData: 'none' });
+      return { type: 'read', status: run.status };
+    } catch (readErr) {
+      if (RunExpiredError.is(readErr)) return { type: 'expired' };
+      if (!isRetryableWorldError(readErr)) return { type: 'unreadable' };
+      runLogger.warn(
+        'Transient world error during replay; redelivering via queue instead of failing the run',
+        {
+          errorName: readErr instanceof Error ? readErr.name : 'UnknownError',
+          errorMessage:
+            readErr instanceof Error ? readErr.message : String(readErr),
+          deliveryAttempt: metadata.attempt,
+        }
+      );
+      throw readErr;
+    }
   }
 
   /** Records `run_failed` for an error the run cannot survive. */
