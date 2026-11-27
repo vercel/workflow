@@ -133,6 +133,7 @@ import {
   type StartHookDecision,
   startHookConflict,
 } from './start-hook.js';
+import { parseStoredEvent } from './stored-event.js';
 import { compact } from './util.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -908,10 +909,9 @@ async function reportSkippedSlots(
       )
     )
     .orderBy(Schema.events.eventId);
-  const events = rows.map((row) => {
-    row.eventData ||= row.eventDataJson;
-    return stripEventDataRefs(EventSchema.parse(compact(row)), resolveData);
-  });
+  const events = rows.map((row) =>
+    stripEventDataRefs(parseStoredEvent(row), resolveData)
+  );
   return {
     events,
     hasMore: events.length < committedSlot - askedFor - 1,
@@ -1046,17 +1046,9 @@ async function createHookResume(
       )
       .orderBy(Schema.events.eventId)
       .limit(101);
-    const events = rows.slice(0, 100).map((row) =>
-      stripEventDataRefs(
-        EventSchema.parse(
-          compact({
-            ...row,
-            eventData: row.eventData ?? row.eventDataJson,
-          })
-        ),
-        resolveData
-      )
-    );
+    const events = rows
+      .slice(0, 100)
+      .map((row) => stripEventDataRefs(parseStoredEvent(row), resolveData));
     return {
       ...result,
       events,
@@ -4434,11 +4426,9 @@ function createUnfencedEventsStorage(
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        const data = eventRows.map((e) => {
-          e.eventData ||= e.eventDataJson;
-          const parsed = EventSchema.parse(compact(e));
-          return stripEventDataRefs(parsed, resolveData);
-        });
+        const data = eventRows.map((e) =>
+          stripEventDataRefs(parseStoredEvent(e), resolveData)
+        );
         eventPage = {
           data,
           cursor: data.at(-1)?.eventId ?? null,
@@ -4467,10 +4457,9 @@ function createUnfencedEventsStorage(
           .orderBy(Schema.events.eventId)
           .limit(limit + 1);
         const page = deltaRows.slice(0, limit);
-        const data = page.map((e) => {
-          e.eventData ||= e.eventDataJson;
-          return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
-        });
+        const data = page.map((e) =>
+          stripEventDataRefs(parseStoredEvent(e), resolveData)
+        );
         eventPage = {
           data,
           cursor: data.at(-1)?.eventId ?? null,
@@ -4550,10 +4539,8 @@ function createUnfencedEventsStorage(
         throw new WorkflowWorldError(`Event not found: ${eventId}`);
       }
 
-      value.eventData ||= value.eventDataJson;
-      const parsed = EventSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
-      return stripEventDataRefs(parsed, resolveData);
+      return stripEventDataRefs(parseStoredEvent(value), resolveData);
     },
     async list(params: ListEventsParams): Promise<EventListResponse> {
       const limit = params.pagination?.limit ?? getMaxEventsPerRun();
@@ -4586,9 +4573,7 @@ function createUnfencedEventsStorage(
         const page = rows.slice(0, pageLimit);
 
         for (const row of page) {
-          row.eventData ||= row.eventDataJson;
-          const event = EventSchema.parse(compact(row));
-          data.push(stripEventDataRefs(event, resolveData));
+          data.push(stripEventDataRefs(parseStoredEvent(row), resolveData));
         }
 
         cursor = page.at(-1)?.eventId;
@@ -4635,11 +4620,9 @@ function createUnfencedEventsStorage(
 
       const resolveData = params?.resolveData ?? 'all';
       return {
-        data: values.map((v) => {
-          v.eventData ||= v.eventDataJson;
-          const parsed = EventSchema.parse(compact(v));
-          return stripEventDataRefs(parsed, resolveData);
-        }),
+        data: values.map((v) =>
+          stripEventDataRefs(parseStoredEvent(v), resolveData)
+        ),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
       };
