@@ -12,7 +12,7 @@ import { Client, type Pool } from 'pg';
 import { incrementBase32, monotonicFactory, TIME_LEN } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
-import { Mutex } from './util.js';
+import { cloneClientConfig, Mutex } from './util.js';
 
 const StreamPublishMessage = z.object({
   streamId: z.string(),
@@ -158,9 +158,10 @@ export const listenChannel = async (
 
   const subscribe = async (connectionTimeoutMillis?: number) => {
     const client = new Client(
-      connectionTimeoutMillis
-        ? { ...pool.options, connectionTimeoutMillis }
-        : pool.options
+      cloneClientConfig(
+        pool.options,
+        connectionTimeoutMillis ? { connectionTimeoutMillis } : undefined
+      )
     );
     // Without an `error` listener, a server-side disconnect is rethrown by
     // the EventEmitter as an uncaught exception and ends the process. Keep it

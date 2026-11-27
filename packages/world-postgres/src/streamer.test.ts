@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { Client } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Drizzle } from './drizzle/index.js';
-import { createStreamer } from './streamer.js';
+import {
+  createStreamer,
+  LISTEN_RECONNECT_DELAY_MS,
+  listenChannel,
+} from './streamer.js';
 
 vi.mock('pg', () => ({
   Client: vi.fn(function Client() {
@@ -424,4 +429,63 @@ describe('streams.get() rows written after the first EOF', () => {
     },
     5_000
   );
+});
+
+describe('postgres streamer listenChannel credentials', () => {
+  it('retains non-enumerable password credentials on initial connect and reconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const password = async () => 'dynamic-token-456';
+      const poolOptions = { host: 'localhost', user: 'postgres' };
+      Object.defineProperty(poolOptions, 'password', {
+        value: password,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+
+      const handlers: Record<string, () => void> = {};
+      const fakeClient = {
+        connect: vi.fn(async () => {}),
+        query: vi.fn(async () => {}),
+        on: vi.fn((event: string, handler: () => void) => {
+          handlers[event] = handler;
+        }),
+        removeListener: vi.fn(),
+        end: vi.fn(async () => {}),
+      };
+
+      vi.mocked(Client)
+        .mockReset()
+        .mockImplementation(
+          class {
+            constructor() {
+              // biome-ignore lint/correctness/noConstructorReturn: fake client instance
+              return fakeClient as any;
+            }
+          } as any
+        );
+
+      const pool = { options: poolOptions } as any;
+      const sub = await listenChannel(pool, 'test_channel', async () => {});
+
+      expect(Client).toHaveBeenCalled();
+      const firstCallConfig = vi.mocked(Client).mock.calls[0][0] as any;
+      expect(firstCallConfig.password).toBe(password);
+
+      // Trigger disconnect to exercise reconnect
+      handlers.error?.();
+      await vi.advanceTimersByTimeAsync(LISTEN_RECONNECT_DELAY_MS);
+
+      expect(Client).toHaveBeenCalledTimes(2);
+      const reconnectConfig = vi.mocked(Client).mock.calls[1][0] as any;
+      expect(reconnectConfig.password).toBe(password);
+      expect(reconnectConfig.connectionTimeoutMillis).toBe(10_000);
+
+      await sub.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
