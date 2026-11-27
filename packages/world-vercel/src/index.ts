@@ -1,6 +1,6 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
-import { createAnalytics } from './analytics.js';
+import { createAnalytics, getRunUsage } from './analytics.js';
 import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -38,6 +38,17 @@ export type { APIConfig } from './utils.js';
  * open socket keeps the process alive.
  */
 export { openWsChannel as openEventsChannel } from './ws-transport.js';
+
+/**
+ * `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE` is `1` or `true` (any case), the same
+ * values `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` accepts. Read when the
+ * World is created.
+ */
+function isVercelUsageEnabled(): boolean {
+  const raw = process.env.WORKFLOW_EXPERIMENTAL_VERCEL_USAGE;
+  if (raw === undefined) return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
 
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
@@ -141,6 +152,16 @@ export function createWorld(config?: APIConfig): World {
     ...createQueue(config),
     ...createStorage(config),
     analytics: createAnalytics(config),
+    // Experimental and off by default: the web UI and the CLI show usage
+    // whenever this exists, and the backend half (`include=usage`) is not
+    // available everywhere yet.
+    ...(isVercelUsageEnabled()
+      ? {
+          experimental_usage: instrumentObject('world.experimental_usage', {
+            getRun: (runId: string) => getRunUsage(runId, config),
+          }),
+        }
+      : {}),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     regionForRunId,

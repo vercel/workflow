@@ -3,6 +3,7 @@ import {
   formatCount,
   formatDataPurgedNote,
   formatDataWrittenHeading,
+  formatUsageAsOf,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
@@ -146,6 +147,9 @@ export function formatRunUsageText(
   if (usage.inProgress) {
     lines.push(c.dim('This run has not finished; its usage can still grow.'));
   }
+  // Usage read from analytics, which can lag (absent on a local run).
+  const asOf = formatUsageAsOf(usage);
+  if (asOf) lines.push(c.dim(escapeControlChars(asOf)));
   lines.push('');
 
   // Summary block. Retries are on the step rows.

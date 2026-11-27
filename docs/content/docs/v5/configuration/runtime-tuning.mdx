@@ -446,6 +446,14 @@ Dynamic source runs with the full privileges of the deployment's functions. Enab
 
 When disabled, `start()` with source throws before writing anything, and a delivered dynamic run fails instead of executing.
 
+## Run usage
+
+### `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE`
+
+- Default: disabled
+- Set `1` or `true` (case-insensitive) to read a run's [usage](/docs/observability/usage) from the Vercel backend, for `workflow inspect run <id> --usage --backend vercel`. Any other value leaves it disabled. Experimental: it needs backend support, and its output may change.
+- It also turns on the web UI's Usage page for Vercel runs, which shows the same counts and the pricing link, without the time they were taken.
+
 ## Compression and tracing
 
 | Variable | Default | What it does |

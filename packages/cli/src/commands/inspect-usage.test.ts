@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Config } from '@oclif/core';
 import {
+  buildRunUsage,
   RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -423,6 +424,65 @@ describe('workflow inspect run <id> --usage', () => {
     expect(stderr).toContain('only available for the local backend');
     expect(stdout).toBe('');
     expect(getRun).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints usage from a billed backend, with asOf in --json and pricing in text', async () => {
+    const runId = await seedRun();
+    const billed = buildRunUsage({
+      runId,
+      status: 'completed',
+      workflowName: 'workflow//./src/workflows/order//processOrder',
+      eventGroups: [{ eventType: 'run_created', events: 1, bytes: 10 }],
+      stepGroups: [],
+      streamBytes: 0,
+      billed: true,
+      asOf: '2026-11-20T17:10:00.000Z',
+    });
+    state.world = {
+      ...world,
+      experimental_usage: { getRun: vi.fn().mockResolvedValue(billed) },
+    } as World;
+
+    const json = await runInspect([
+      'run',
+      runId,
+      '--usage',
+      '--json',
+      '--backend',
+      'vercel',
+    ]);
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      billed: true,
+      asOf: '2026-11-20T17:10:00.000Z',
+    });
+
+    const text = await runInspect([
+      'run',
+      runId,
+      '--usage',
+      '--backend',
+      'vercel',
+    ]);
+    expect(text.stdout).toContain('Counted as of 2026-11-20T17:10:00.000Z.');
+    expect(text.stdout).toContain('See pricing: ');
+    expect(text.stdout).toContain('Not your final bill.');
+  });
+
+  it('names the experimental flag on the Vercel backend without usage', async () => {
+    const runId = await seedRun();
+    const { experimental_usage: _omit, ...withoutUsage } = world;
+    state.world = withoutUsage as World;
+    const { stdout, stderr } = await runInspect([
+      'run',
+      runId,
+      '--usage',
+      '--backend',
+      'vercel',
+    ]);
+    expect(stderr).toContain('WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1');
+    expect(stderr).not.toContain('only available for the local backend');
+    expect(stdout).toBe('');
     expect(process.exitCode).toBe(1);
   });
 

@@ -921,17 +921,22 @@ export const showRun = async (
 };
 
 /**
- * `inspect run <id> --usage`: the run's usage (`RunUsage`). Only Worlds that implement `experimental_usage` (world-local
- * today) have it; elsewhere this fails rather than printing the run.
+ * `inspect run <id> --usage`: the run's usage (`RunUsage`). Only Worlds that implement `experimental_usage` (world-local,
+ * and world-vercel behind `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1`) have it; elsewhere this fails rather than printing the run.
  */
 export const showRunUsage = async (
   world: World,
   runId: string,
   opts: InspectCLIOptions = {}
 ) => {
+  const onVercel = isVercelWorldTarget(
+    opts.backend ?? process.env.WORKFLOW_TARGET_WORLD ?? ''
+  );
   if (!world.experimental_usage) {
     logger.error(
-      'Run usage is only available for the local backend so far. Run `workflow inspect run <id> --usage --backend local` against a local data directory.'
+      onVercel
+        ? 'Run usage for the Vercel backend is experimental: set WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1 to try it (the backend must support it), or run `workflow inspect run <id> --usage --backend local` against a local data directory.'
+        : 'Run usage is only available for the local backend so far. Run `workflow inspect run <id> --usage --backend local` against a local data directory.'
     );
     process.exitCode = 1;
     return;
@@ -945,9 +950,7 @@ export const showRunUsage = async (
     logger.log(
       formatRunUsageText(usage, {
         color: usageTextColor(),
-        pricing: isVercelWorldTarget(
-          opts.backend ?? process.env.WORKFLOW_TARGET_WORLD ?? ''
-        ),
+        pricing: onVercel,
       })
     );
   } catch (error) {

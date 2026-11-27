@@ -24,6 +24,7 @@ import {
   type UsageRowGroup,
   type UsageRowType,
   usageRows,
+  WORKFLOW_PRICING_DOCS_URL,
 } from '@workflow/world';
 import {
   AlertCircle,
@@ -817,9 +818,10 @@ const FOOTER_LINK =
   'whitespace-nowrap rounded-sm py-1 text-blue-900 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--ds-focus-ring)]';
 
 /**
- * One line under the tables: that the run isn't billed (usage is counted on
- * the Local World only), then the docs link, in the same paragraph so it
- * reads as part of it and wraps with it.
+ * One line under the tables: the shared footer (a local run isn't billed; a
+ * billed run's usage is not the final bill), then the docs link and, on a
+ * billed run, the pricing link, in the same paragraph so they read as part of
+ * it and wrap with it.
  */
 function UsageFooter({ usage }: { usage: RunUsage }) {
   return (
@@ -837,6 +839,18 @@ function UsageFooter({ usage }: { usage: RunUsage }) {
         <NewTabLink href={USAGE_DOCS_URL} className={FOOTER_LINK}>
           How usage is counted
         </NewTabLink>
+        {/* The rates for what a billed run's usage counts (the CLI links them too). */}
+        {usage.billed ? (
+          <>
+            {' '}
+            <NewTabLink
+              href={WORKFLOW_PRICING_DOCS_URL}
+              className={FOOTER_LINK}
+            >
+              Pricing
+            </NewTabLink>
+          </>
+        ) : null}
       </p>
     </footer>
   );

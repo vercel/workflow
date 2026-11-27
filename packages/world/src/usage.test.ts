@@ -7,6 +7,7 @@ import {
   formatLocalDataWrittenNote,
   formatOtherSteps,
   formatRunEventsLine,
+  formatUsageAsOf,
   formatUsageBytes,
   formatUsageFooter,
   formatUsageShare,
@@ -296,6 +297,50 @@ describe('usage formatting', () => {
     expect(formatDataWrittenHeading(usage)).toBe('Storage (local)');
     expect(formatLocalDataWrittenNote(usage)).toBe(
       "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code."
+    );
+  });
+
+  it('keeps the local storage note for local runs only', () => {
+    expect(formatLocalDataWrittenNote(buildRunUsage(aggregates({})))).toMatch(
+      /^The bytes of the run's payloads/
+    );
+    expect(
+      formatLocalDataWrittenNote(buildRunUsage(aggregates({ billed: true })))
+    ).toBeNull();
+  });
+
+  it('reports per-entity dataWritten from a backend instead of summing group bytes', () => {
+    const usage = buildRunUsage(
+      aggregates({
+        eventGroups: [{ eventType: 'run_created', events: 1, bytes: 999 }],
+        dataWritten: { run: 10, step: 20, hook: 30, stream: 40 },
+      })
+    );
+    expect(usage.dataWritten).toEqual({
+      bytes: 100,
+      byEntity: { run: 10, step: 20, hook: 30, stream: 40 },
+      source: 'log',
+    });
+    // Without it, the groups' bytes are summed as before.
+    expect(
+      buildRunUsage(
+        aggregates({
+          eventGroups: [{ eventType: 'run_created', events: 1, bytes: 999 }],
+        })
+      ).dataWritten.bytes
+    ).toBe(999);
+  });
+
+  it('carries asOf only when the backend sets it', () => {
+    const local = buildRunUsage(aggregates({}));
+    expect('asOf' in local).toBe(false);
+    expect(formatUsageAsOf(local)).toBeNull();
+    const fromAnalytics = buildRunUsage(
+      aggregates({ billed: true, asOf: '2026-11-20T17:10:00.000Z' })
+    );
+    expect(fromAnalytics.asOf).toBe('2026-11-20T17:10:00.000Z');
+    expect(formatUsageAsOf(fromAnalytics)).toBe(
+      'Counted as of 2026-11-20T17:10:00.000Z. Analytics can lag, so the newest events may be missing.'
     );
   });
 

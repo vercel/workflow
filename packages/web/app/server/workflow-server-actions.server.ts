@@ -718,11 +718,9 @@ export async function fetchRun(
 /**
  * Fetch a run's usage (events, retries, data written), counted over its
  * whole log by the World. `null` when the World does not compute usage
- * (only world-local does today), so the UI shows nothing rather than a
- * count of the events it happened to load.
- *
- * Production data path (world-vercel): tracked in #5445, from an analytics
- * API or a precomputed per-run rollup.
+ * (world-local does; world-vercel only with
+ * `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1`), so the UI shows nothing rather
+ * than a count of the events it happened to load.
  */
 export async function fetchRunUsage(
   worldEnv: EnvMap,

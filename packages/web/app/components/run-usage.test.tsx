@@ -680,9 +680,7 @@ describe('the footer', () => {
     const footer = screen.getByTestId('run-usage-footer-line');
     expect(footer.querySelectorAll('a')).toHaveLength(1);
   });
-  it('never links pricing, even on a billed run', () => {
-    // Usage is counted on the Local World only; the page never shows on
-    // Vercel, so there is no pricing link to show.
+  it('links pricing on a billed run, after the docs link', () => {
     render(
       <RunUsagePage
         runId="wrun_1"
@@ -690,12 +688,23 @@ describe('the footer', () => {
         error={null}
       />
     );
-    expect(screen.queryByRole('link', { name: /pricing/i })).toBeNull();
-    expect(document.body.innerHTML).not.toContain(WORKFLOW_PRICING_DOCS_URL);
+    const pricing = screen.getByRole('link', {
+      name: 'Pricing (opens in a new tab)',
+    });
+    expect(pricing.getAttribute('href')).toBe(WORKFLOW_PRICING_DOCS_URL);
+    expect(pricing.getAttribute('target')).toBe('_blank');
     const footer = screen.getByTestId('run-usage-footer-line');
     expect(
       [...footer.querySelectorAll('a')].map((a) => a.getAttribute('href'))
-    ).toEqual([USAGE_DOCS_URL]);
+    ).toEqual([USAGE_DOCS_URL, WORKFLOW_PRICING_DOCS_URL]);
+    expect(footer.textContent).toBe(
+      'Not your final bill. How usage is counted (opens in a new tab) Pricing (opens in a new tab)'
+    );
+  });
+  it('never links pricing on a local run, which is not billed', () => {
+    render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);
+    expect(screen.queryByRole('link', { name: /pricing/i })).toBeNull();
+    expect(document.body.innerHTML).not.toContain(WORKFLOW_PRICING_DOCS_URL);
   });
   it('puts the link inline, right after its sentence, with no arrow', () => {
     render(<RunUsagePage runId="wrun_1" usage={bigRun()} error={null} />);

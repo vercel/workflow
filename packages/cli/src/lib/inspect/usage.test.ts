@@ -190,6 +190,54 @@ describe('formatRunUsageText', () => {
     expect(formatRunUsageText(usageOf(), { pricing: true })).toContain(pricing);
   });
 
+  it('prints a billed run from analytics with pricing and when it was counted', () => {
+    const asOf = '2026-11-20T17:10:00.000Z';
+    const text = formatRunUsageText(usageOf({ billed: true, asOf }), {
+      pricing: true,
+    });
+    expect(text).toContain(`See pricing: ${WORKFLOW_PRICING_DOCS_URL}`);
+    expect(text).toContain(
+      `Counted as of ${asOf}. Analytics can lag, so the newest events may be missing.`
+    );
+    // What the backend's storage includes is the backend's to say: no
+    // note about it is printed for a billed run.
+    expect(text).not.toContain('QuickJS');
+    // The as-of line sits with the run, above the numbers it qualifies.
+    const lines = text.split('\n');
+    expect(
+      lines.findIndex((line) => line.startsWith('Counted as of'))
+    ).toBeLessThan(lines.findIndex((line) => line.startsWith('Events')));
+  });
+
+  it('prints a local run exactly as before: no as-of line and no storage note', () => {
+    const text = formatRunUsageText(usageOf());
+    expect(text).not.toContain('Counted as of');
+    expect(text).not.toContain('QuickJS');
+  });
+
+  it('says a running billed run can still grow and may be missing its newest events', () => {
+    const text = formatRunUsageText(
+      usageOf({
+        billed: true,
+        status: 'running',
+        asOf: '2026-11-20T17:10:00.000Z',
+      })
+    );
+    const lines = text.split('\n');
+    expect(lines[1]).toBe(
+      'This run has not finished; its usage can still grow.'
+    );
+    expect(lines[2]).toMatch(/^Counted as of 2026-11-20T17:10:00\.000Z\./);
+  });
+
+  it('escapes control characters in an as-of time from the backend', () => {
+    const text = formatRunUsageText(
+      usageOf({ billed: true, asOf: 'now\u001b[2J' })
+    );
+    expect(text).not.toMatch(ANSI);
+    expect(text).toContain('now\\x1b[2J');
+  });
+
   it('escapes control characters in names from the run, and keeps the table lined up', () => {
     // A token that would clear the screen and break the table, a workflow
     // name that would retitle the terminal, and a step name with a tab and

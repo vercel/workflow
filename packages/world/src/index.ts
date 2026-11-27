@@ -8,6 +8,8 @@ export {
   AnalyticsEventSchema,
   AnalyticsHookSchema,
   AnalyticsRunSchema,
+  AnalyticsRunUsageSchema,
+  AnalyticsRunWithUsageSchema,
   AnalyticsStepSchema,
   AnalyticsWaitSchema,
 } from './analytics.js';
@@ -271,6 +273,7 @@ export {
   formatLocalDataWrittenNote,
   formatOtherSteps,
   formatRunEventsLine,
+  formatUsageAsOf,
   formatUsageBytes,
   formatUsageEvents,
   formatUsageFooter,

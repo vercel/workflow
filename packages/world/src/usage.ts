@@ -17,12 +17,11 @@ import { isTerminalWorkflowRunStatus } from './runs.js';
  * and Workflow Data Retained, so a future backend API can return this shape
  * unchanged.
  *
- * Only world-local computes it today (`world.experimental_usage`), from
- * aggregate queries over its database.
- *
- * Production data path (world-vercel): tracked in #5445. World-vercel needs
- * this shape from an analytics API or a precomputed per-run rollup, not from
- * reading the run's log.
+ * world-local computes it (`world.experimental_usage`) from aggregate queries
+ * over its database. world-vercel, behind
+ * `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1`, builds it from per-run aggregates
+ * its analytics API returns (`AnalyticsRunUsageSchema`), not from reading the
+ * run's log; tracked in #5445.
  *
  * Pure (no Node.js imports), so a browser UI can bundle it.
  */
@@ -159,6 +158,13 @@ export interface RunUsage {
     byteMonths: number;
     retentionMonths: number;
   } | null;
+  /**
+   * When the counts were taken (ISO 8601), set only by a backend that reads
+   * them from analytics. Analytics ingestion can lag, so the newest events
+   * may be missing. Absent where the counts come from the run's own log
+   * (world-local).
+   */
+  asOf?: string;
 }
 
 export type RunUsageDataWrittenSource =
@@ -289,6 +295,15 @@ export interface RunUsageAggregates {
   calls?: { wait: number };
   /** Whether the backend bills this run (default `false`). */
   billed?: boolean;
+  /** See {@link RunUsage.asOf}. */
+  asOf?: string;
+  /**
+   * Data Written by entity, from a backend that knows the totals but not
+   * the bytes of each event type or step (world-vercel). When set, it is
+   * reported instead of the sum of the groups' `bytes`. Ignored for a run
+   * whose data was deleted, which reports `savedDataWritten`.
+   */
+  dataWritten?: Record<RunUsageEntity, number>;
 }
 
 const UNKNOWN_STEP_NAME = '(unknown step)';
@@ -516,6 +531,8 @@ export function buildRunUsage(input: RunUsageAggregates): RunUsage {
     dataWritten: dataWrittenOf(input, byEntity),
     dataPurged: input.dataPurged === true,
     dataRetained: input.dataRetained ?? null,
+    // Only when set, so a local run's usage (and its `--json`) is unchanged.
+    ...(input.asOf ? { asOf: input.asOf } : {}),
   };
 }
 
@@ -523,7 +540,9 @@ function dataWrittenOf(
   input: RunUsageAggregates,
   measured: Record<RunUsageEntity, number>
 ): RunUsage['dataWritten'] {
-  const saved = input.dataPurged ? input.savedDataWritten : undefined;
+  const saved = input.dataPurged
+    ? input.savedDataWritten
+    : (input.dataWritten ?? undefined);
   const byEntity = saved
     ? {
         run: toCount(saved.run),
@@ -619,6 +638,12 @@ export function formatDataWrittenHeading(usage: RunUsage): string {
 export function formatLocalDataWrittenNote(usage: RunUsage): string | null {
   if (usage.billed) return null;
   return "The bytes of the run's payloads as the SDK sent them, plus the bytes it wrote to streams, counted the way Vercel counts Data Written. It doesn't include QuickJS VM snapshots or a dynamic workflow's code.";
+}
+
+/** When the counts were taken, for usage read from analytics; else `null`. */
+export function formatUsageAsOf(usage: RunUsage): string | null {
+  if (!usage.asOf) return null;
+  return `Counted as of ${usage.asOf}. Analytics can lag, so the newest events may be missing.`;
 }
 
 /** The footer under the usage: not a bill, and how to read it. */

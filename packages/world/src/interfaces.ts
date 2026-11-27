@@ -683,7 +683,8 @@ export interface Storage {
    * surfaces such as `workflow inspect run --usage`.
    *
    * @experimental OPTIONAL, and its shape (`RunUsage`) may change without a
-   * major version bump. Only world-local implements it today; consumers
+   * major version bump. world-local implements it, and world-vercel does
+   * behind `WORKFLOW_EXPERIMENTAL_VERCEL_USAGE=1`; consumers
    * feature-detect (`world.experimental_usage?.…`) and show nothing when it
    * is absent.
    *
