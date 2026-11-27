@@ -2350,6 +2350,7 @@ async function runDelivery(
         ) {
           throw err;
         }
+        if (await runEndedUnderReplay(err)) return undefined;
         return await failRun(err, effectiveWorkflowCode);
       }
     }
@@ -3895,6 +3896,7 @@ async function runDelivery(
             await fullLoad();
             continue;
           }
+          if (await runEndedUnderReplay(err)) return undefined;
           if (replayStart > 0) {
             replayRecoveryReporter.activate();
           }
@@ -5534,6 +5536,65 @@ async function runDelivery(
       maxEventsLimit,
       { eventCountIsLowerBound: logStoppedAtEventLimit }
     );
+  }
+
+  /**
+   * Whether `err`, which ended a replay, is the World refusing a write
+   * because the run finished under this delivery: a `run_cancelled` (or
+   * another writer's `run_failed`) landed after the pass's terminal check,
+   * so the write that followed, such as the next step's creation, was
+   * refused. The delivery then acknowledges, as a refused `run_completed`
+   * does, instead of logging an error and failing a finished run.
+   *
+   * An expiry is terminal in every World. A conflict alone does not say the
+   * run finished (an entity that already exists is a conflict too), so the
+   * run is read again, and a conflict on a run that has not finished still
+   * fails it. A transient failure of that read is thrown, so the queue
+   * redelivers and the next delivery reads the run again.
+   */
+  async function runEndedUnderReplay(err: unknown): Promise<boolean> {
+    let status: string | undefined;
+    if (RunExpiredError.is(err)) {
+      status = err.runStatus;
+    } else if (EntityConflictError.is(err)) {
+      status = await readRunStatusAgain();
+      if (status === undefined || !isTerminalWorkflowRunStatus(status)) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+    recordTerminalRun(world, runId);
+    runtimeLogger.info('Run already finished during replay, skipping', {
+      workflowRunId: runId,
+      status,
+      message: err.message,
+    });
+    return true;
+  }
+
+  /**
+   * The run's status, read again for {@link runEndedUnderReplay}; undefined
+   * when the read fails for good. A transient failure is thrown, as the
+   * replay's own catch throws one, so the queue redelivers instead of the run
+   * failing.
+   */
+  async function readRunStatusAgain(): Promise<string | undefined> {
+    try {
+      return (await world.runs.get(runId, { resolveData: 'none' })).status;
+    } catch (readErr) {
+      if (!isRetryableWorldError(readErr)) return undefined;
+      runLogger.warn(
+        'Transient world error during replay; redelivering via queue instead of failing the run',
+        {
+          errorName: readErr instanceof Error ? readErr.name : 'UnknownError',
+          errorMessage:
+            readErr instanceof Error ? readErr.message : String(readErr),
+          deliveryAttempt: metadata.attempt,
+        }
+      );
+      throw readErr;
+    }
   }
 
   /** Records `run_failed` for an error the run cannot survive. */
