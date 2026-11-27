@@ -2,16 +2,16 @@
 title: createWorld
 description: Create a new World instance from environment configuration.
 type: reference
-summary: Use createWorld to construct a fresh instance of the build-injected World, bypassing the cached instance.
+summary: Use createWorld to construct a fresh instance of the configured World, bypassing the cached instance.
 prerequisites:
   - /docs/api-reference/workflow-runtime/get-world
 related:
   - /docs/api-reference/workflow-runtime/set-world
 ---
 
-Creates a new [World](/docs/api-reference/workflow-runtime/world) instance by invoking the World factory that was statically injected into the bundle at build time. The `WORKFLOW_TARGET_WORLD` environment variable selects the implementation, such as the local development World or the Vercel production World, when the app is built. Changing the variable at runtime has no effect.
+Creates a new [World](/docs/api-reference/workflow-runtime/world) instance by resolving `WORKFLOW_TARGET_WORLD` from the process environment and invoking that target's factory: the local development World or the Vercel production World by default, or a custom module you name. The target is read from the environment on every call, so a later call can construct a different implementation than an earlier one when the environment has changed. Some framework integrations compile the Local and Vercel World implementations into the server bundle, but that only affects which code is available — selection still happens when the World is created, not at build time.
 
-Unlike [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), which caches a singleton instance, `createWorld()` constructs a fresh instance on every call. Application code should almost always use `getWorld()`. `createWorld()` is for infrastructure code that manages World lifecycles itself.
+Unlike [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), which caches a singleton instance, `createWorld()` constructs a fresh instance on every call and does not touch that cache. Changing `WORKFLOW_TARGET_WORLD` therefore does not replace an instance `getWorld()` has already cached; it only affects the next instance that is constructed. Application code should almost always use `getWorld()`. `createWorld()` is for infrastructure code that manages World lifecycles itself.
 
 ```typescript lineNumbers
 import { createWorld } from "workflow/runtime";
@@ -23,7 +23,7 @@ const world = await createWorld(); // [!code highlight]
 
 ### Parameters
 
-This function does not accept any parameters. Configuration comes from the World that was injected at build time (World implementations typically read their own settings from environment variables when constructed).
+This function does not accept any parameters. Configuration comes from the environment of the process creating the World (World implementations typically read their own settings from environment variables when constructed).
 
 ### Returns
 
