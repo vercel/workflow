@@ -282,6 +282,7 @@ The fence is optional. The runtime sends `inBand` only on spec 9 runs, so a Worl
 - **Fence first.** Decide the fence before anything else the write does. A stale writer must touch no entity row. If the write updates entity state as well as appending, make the check, the update and the append one atomic operation (in Postgres, one transaction that locks the run's counter row first).
 - **Missing count.** Answer an in-band write without `expectedSeqInBand` with a 400 (`WorkflowWorldError` with `status: 400`).
 - **Out-of-band creates** (`inBand: false` or absent) allocate unconditionally, move `seq`, and never move `seqInBand`. The fence never refuses them.
+- **Out-of-band `wait_completed`.** On a run stamped at spec version 9 or later, refuse an out-of-band `wait_completed` with a 409 (`WorkflowWorldError` with `status: 409`, `code: 'wait-completion-in-band-only'`) and allocate nothing. The orchestrator runs ahead past a wait that is not about to come due, which is only sound if it is the one that completes it.
 
 `world-local`, `world-postgres` and `world-vercel` declare the fence. `world-vercel`'s backend fences in-band writes on every run with an event sequencer (spec version 7 and later). On an older run it answers an in-band write with a 400 (`WorkflowWorldError`, `code: 'in-band-fence-unsupported'`) rather than writing it unfenced, so a writer decides whether to fence from the run's spec version. Its list responses carry the snapshot only where the backend reports one, so a writer there can find none.
 

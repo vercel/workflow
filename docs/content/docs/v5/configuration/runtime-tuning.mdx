@@ -177,12 +177,12 @@ Transient or unknown queue publishing failures use normal queue redelivery and d
 
 Allowance for clock skew between the runtime and the wait timer, used when deciding whether a pending wait stops the orchestrator from [running ahead](#workflow_run_ahead_depth) of its writes. Must be a finite integer; `Infinity` is rejected and falls back to the default.
 
-A pending wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) stops run-ahead at a boundary only if it can fire while the current invocation is still running steps inline: its target time must fall before the end of the invocation's inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms), which is otherwise derived from the platform's function deadline and tops out at 10 minutes) plus this allowance. A `wait_created` whose target time cannot be read is treated as due now.
+A pending wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) stops run-ahead at a boundary only if its target time falls within this allowance of now (at least 1 second), and before the end of the invocation's inline window ([`WORKFLOW_V2_TIMEOUT_MS`](#workflow_v2_timeout_ms), which is otherwise derived from the platform's function deadline and tops out at 10 minutes) plus this allowance. A wait due later still completes on time; its `wait_completed` is written after the writes in flight. A `wait_created` whose target time cannot be read is treated as due now.
 
 Turbo's forced optimistic start is unaffected: any open wait keeps it off, whatever the target time.
 
 <Spec8Note>
-a pending wait that can fire within the same window keeps the per-step event-log delta optimization off instead, and a wait due later does not cost the extra `events.list()` per step. Before an invocation parks on a wait over a log it last extended from a step's inline delta, it re-reads the log once, so a wait completed early through `run.wakeUp()` (the dashboard's "cancel sleeps" action) is acted on then rather than when the wait's own timer would have fired. `31536000000` (one year) gates on any pending wait. Open hooks gate regardless of this setting.
+a pending wait whose target time falls before the end of the inline window plus this allowance keeps the per-step event-log delta optimization off instead, and a wait due later does not cost the extra `events.list()` per step. Before an invocation parks on a wait over a log it last extended from a step's inline delta, it re-reads the log once, so a wait completed early through `run.wakeUp()` (the dashboard's "cancel sleeps" action) is acted on then rather than when the wait's own timer would have fired. `31536000000` (one year) gates on any pending wait. Open hooks gate regardless of this setting.
 </Spec8Note>
 
 ### Stale reads, and why nothing has to be rejected
