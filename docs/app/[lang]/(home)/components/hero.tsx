@@ -11,6 +11,7 @@ import {
   CommandPromptTriggerDivider,
   CommandPromptViewport,
 } from '@vercel/geistdocs/components/command-prompt';
+import { Customers } from './customers';
 
 const COMMAND_FOR_HUMANS = 'npm install workflow';
 const COMMAND_FOR_AGENTS = 'npx skills add vercel/workflow';
@@ -59,6 +60,7 @@ export const Hero = ({ title, description }: HeroProps) => {
           <CommandPromptCopy />
         </CommandPromptSurface>
       </CommandPromptRoot>
+      <Customers />
     </section>
   );
 };
