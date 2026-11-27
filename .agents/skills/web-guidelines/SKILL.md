@@ -14,6 +14,7 @@ Before finalizing a review or implementation, inspect the rendering tree of the 
 | Sheets, alert dialogs, or modals, including their dynamic content, scrolling, sizing, or footer actions | [Dialogs](./dialogs/GUIDE.md)                                                   |
 | Text colour, typography, or other Geist tokens                                                        | [`packages/web-shared/AGENTS.md`](../../../packages/web-shared/AGENTS.md)       |
 | Any change to code in either package, including logic, styles, layout, and loading states             | [Validation](./validation/GUIDE.md)                                             |
+| A change to what the UI looks like, or opening or updating a PR that changes either package           | [Pull Requests](./pull-requests/GUIDE.md)                                       |
 
 ## Guide Structure
 
@@ -44,3 +45,9 @@ Choose between a Sheet and a modal by how stable and how large the content is.
 Check every change before calling it done. Add unit tests for logic, not for constants or types. Render visual changes.
 
 [Guide](./validation/GUIDE.md)
+
+## Pull Requests
+
+Link the change on the preview deployment, and attach before and after screenshots when you can. Capture the before state before changing the code.
+
+[Guide](./pull-requests/GUIDE.md)
