@@ -58,6 +58,8 @@ Keep the dynamic `workflow/api` import inside the `NEXT_RUNTIME === "nodejs"` gu
 
 `registerLifecycleHooks` returns an unregister function. You can register multiple hook sets, and handlers run in registration order. Registrations are not deduplicated: register each hook set once per process, and call its unregister function before registering it again during hot reload or module re-evaluation. Otherwise, repeated registrations invoke the same handler multiple times for each transition.
 
+**Keep `instrumentation.ts` to the hook registration.** Next.js bundles `instrumentation.ts`, and everything it imports, into every server Function, separately from each route. Import only what registering hooks needs (`workflow/api`'s `registerLifecycleHooks` and your handler modules), not workflow modules or step code, or every Function carries a second copy of it.
+
 **Restart `next dev` after changing handlers registered by `instrumentation.ts`.** Next.js memoizes instrumentation registration per process, so edits may not take effect until restart. For other hot-reloading hosts, preserve the unregister function in process-wide state across module re-evaluation, or restart the server. A module-local variable may be reset by the reload.
 
 ## Handler parameters

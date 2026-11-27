@@ -24,6 +24,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { resumeHook, setWorld, start } from '@workflow/core/runtime';
 import {
   type Event,
+  type QueuePayload,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type WorkflowRunStatus,
@@ -38,6 +39,7 @@ import {
   type SelectNext,
 } from './drive.js';
 import { checkInvariants } from './invariants.js';
+import type { SimHoldAnswer } from './queue.js';
 import { verifyReplay } from './replay.js';
 import { createTempo, ScenarioAborted } from './tempo.js';
 import type {
@@ -128,6 +130,22 @@ export interface ScenarioSpec {
   expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
   /**
+   * Run on a World that can hold queue messages for their sender
+   * (`capabilities.experimental_queueHold`, as on Vercel): `start()` and the
+   * scenario's hook deliveries then run the run's orchestrator delivery in
+   * the sending call, through a held send, instead of a delivery from the
+   * loop. A held delivery's resume is not attributed to the scenario: its
+   * inline delivery is the run's orchestrator, and must stay a call point.
+   */
+  queueHold?: boolean;
+  /**
+   * With `queueHold`, overrides how a held send is answered, e.g. a
+   * `not_held` that arrives after a round trip (see `SimHoldAnswer`).
+   */
+  holdAnswer?: (payload: QueuePayload) => SimHoldAnswer | undefined;
+  /** Options for the scenario's `start()` call, e.g. `{ specVersion: 8 }`. */
+  startOptions?: { specVersion?: number };
+  /**
    * Runtime environment variables set for this scenario only (for example a
    * runtime fast path the scenario's premise rules out), restored when it
    * ends.
@@ -212,7 +230,11 @@ export async function runScenario(
   // One expectation, whichever world this is. Aliased rather than read inline
   // so the outcome check and the output check below cannot drift apart.
   const expected = spec.expect;
-  const world = createSimWorld({ clock });
+  const world = createSimWorld({
+    clock,
+    queueHold: spec.queueHold,
+    holdAnswer: spec.holdAnswer,
+  });
 
   const workflowId =
     typeof spec.workflow === 'string'
@@ -268,6 +290,10 @@ export async function runScenario(
       // to the `external` writer and are not themselves call points, so a
       // script that delivers a hook while holding a writer cannot trip one of
       // its own holds.
+      if (spec.queueHold) {
+        await resumeHook(token, payload);
+        return;
+      }
       await world.asExternal(() => resumeHook(token, payload));
     },
     async beginHookDelivery(token, payload) {
@@ -306,6 +332,20 @@ export async function runScenario(
             : 'expireLease: no orchestrator delivery of the run is in flight',
       });
       return expired.length;
+    },
+    lapseHeldDeliveries(options) {
+      const lapsed = world.simQueue.lapseHolds({
+        runId,
+        crash: options?.crash,
+      });
+      world.pushTrace({
+        kind: 'note',
+        message:
+          lapsed.length > 0
+            ? `hold lapsed: ${lapsed.map((h) => h.message.messageId).join(', ')} is pending again; its sender ${options?.crash ? 'died' : 'keeps running'}`
+            : 'lapseHeldDeliveries: no held delivery of the run is in flight',
+      });
+      return lapsed.length;
     },
     async deliverQueued(select) {
       const pending = world.simQueue.view();
@@ -377,7 +417,11 @@ export async function runScenario(
   setWorld(world);
 
   try {
-    const run = await start({ workflowId }, (spec.input ?? []) as unknown[]);
+    const run = await start(
+      { workflowId },
+      (spec.input ?? []) as unknown[],
+      spec.startOptions
+    );
     runId = run.runId;
 
     const drain = await driveQueue({

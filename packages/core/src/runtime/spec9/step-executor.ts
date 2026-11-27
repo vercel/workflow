@@ -60,6 +60,7 @@ import {
 } from '../constants.js';
 import { getPortLazy } from '../get-port-lazy.js';
 import { memoizeEncryptionKey } from '../helpers.js';
+import { noteInlineStepStarted } from '../inline-orchestrator.js';
 import {
   computeResumeTtrAttributes,
   type ResumeTtrTracking,
@@ -840,6 +841,8 @@ export async function executeStep(
 
       let stepExecutionStatus: 'ok' | 'error' = 'ok';
       const stepExecutionStartTime = performance.now();
+      // The first step body of an inline delivery stamps its timing.
+      noteInlineStepStarted();
       try {
         result = await trace('step.execute', {}, async () => {
           return await contextStorage.run(

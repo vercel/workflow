@@ -275,6 +275,10 @@ export async function POST(request: Request) {
 
 See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how the workflow claims the token with `hook.getConflict()` and how concurrent starts converge on one active owner.
 
+### Where the woken delivery runs
+
+On Vercel, `resumeHook()` runs the orchestrator delivery it wakes in the route that called it, instead of waiting for the queue to deliver the wake to the flow route, under the same conditions as [`start()`](/docs/api-reference/workflow-api/start#where-the-first-delivery-runs). The wake is queued as usual when the run belongs to another deployment or region, or when its orchestrator is already running in another delivery (on a single-orchestrator run, that delivery picks up the resume). `WORKFLOW_INLINE_DELIVERY=0` turns it off.
+
 ## Related functions
 
 - [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Get hook details before resuming.

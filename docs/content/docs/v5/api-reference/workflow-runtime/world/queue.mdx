@@ -109,7 +109,7 @@ if (world.capabilities?.experimental_queueHold) {
 **`consume(handler)`** runs `handler` as the message's first delivery (`deliveryCount: 1`), with the same result rules as `createQueueHandler()`: resolve to acknowledge, return `{ timeoutSeconds }` to have the same message delivered again later, or reject to retry with backoff. It renews the lease while the handler runs. Call it at most once, and not after `release()`. Two `meta` fields differ from a pushed delivery's:
 
 - `invocationStartedAt` is when the enclosing queue delivery began if you call `consume` inside one, otherwise when you called `consume`.
-- `requestId` is set only inside a queue delivery, so don't hold an `invoke: true` request.
+- `requestId` is the enclosing queue delivery's, or else the ID of the request `consume` runs in (on Vercel, its `x-vercel-id`). Don't hold an `invoke: true` request, which needs a queue delivery's.
 
 **`not_held` reasons:**
 

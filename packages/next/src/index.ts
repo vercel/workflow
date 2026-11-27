@@ -16,6 +16,7 @@ import {
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
+import { inlineWorkflowManifestPath } from './inline-entry.js';
 import {
   joinWorkflowBasePath,
   normalizeWorkflowRoutePrefix,
@@ -699,6 +700,20 @@ export function withWorkflow(
       return workflowBuilderPromise;
     };
 
+    // Per-workflow inline entries (production builds): the loader makes each
+    // workflow module import the entry holding that workflow's code, so a
+    // route that starts or resumes a run carries the code of the workflows it
+    // imports and nothing else (see `inline-entry.ts` and `@workflow/core`'s
+    // `runtime/inline-orchestrator.ts`). Not in `next dev`: it runs on the
+    // local World, which never holds a message.
+    const inlineManifest =
+      phase === 'phase-development-server'
+        ? undefined
+        : inlineWorkflowManifestPath(workingDir, experimentalRoutePrefix);
+    const workflowLoader = inlineManifest
+      ? { loader: loaderPath, options: { inlineManifest } }
+      : loaderPath;
+
     for (const key of [
       '*.tsx',
       '*.ts',
@@ -728,7 +743,7 @@ export function withWorkflow(
               },
             }
           : {}),
-        loaders: [...(existingRules[key]?.loaders || []), loaderPath],
+        loaders: [...(existingRules[key]?.loaders || []), workflowLoader],
       };
     }
 
@@ -746,7 +761,9 @@ export function withWorkflow(
       // ours comes before the default swc transform
       webpackConfig.module.rules.push({
         test: /.*\.(mjs|cjs|cts|ts|tsx|js|jsx)$/,
-        loader: loaderPath,
+        ...(typeof workflowLoader === 'string'
+          ? { loader: workflowLoader }
+          : workflowLoader),
       });
 
       if (args[1]?.isServer) {

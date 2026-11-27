@@ -18,6 +18,7 @@ import {
 } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type {
+  QueueOptions,
   RunRetention,
   StartHook,
   WorkflowInvokePayload,
@@ -89,6 +90,13 @@ import {
   type HealthCheckResult,
   healthCheck,
 } from './helpers.js';
+import {
+  decideInline,
+  inlineGate,
+  loadInlineEntry,
+  recordInlineGate,
+  sendOrchestratorMessage,
+} from './inline-orchestrator.js';
 import { Run } from './run.js';
 import { wakePendingStartHookHolder } from './start-hook-holder.js';
 import {
@@ -917,6 +925,7 @@ export async function start<TArgs extends unknown[], TResult>(
       } as Record<string, string | number | boolean>);
     };
     const startBody = async (span: Span | undefined): Promise<Run<TResult>> => {
+      const startCalledAt = Date.now();
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -928,6 +937,16 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      // Loads the app's flow entry beside the rest of the start, so its
+      // orchestrator handler is registered by the time the message is sent
+      // (see `inline-orchestrator.ts`). Only where a send could be held.
+      const inlineGateReason = inlineGate(world);
+      const inlineEntryLoadStartedAt = Date.now();
+      const inlineEntryLoad =
+        !startHook && inlineGateReason === undefined
+          ? loadInlineEntry(undefined, { queueName, workflowName })
+          : undefined;
+      if (!startHook) recordInlineGate(span, inlineGateReason);
       // A World that mints single-orchestrator runs must provide their fence,
       // so a misconfigured one fails before anything is read or written.
       // `mintedSpecVersion()` returns 9 only to a World that passes
@@ -1566,34 +1585,32 @@ export async function start<TArgs extends unknown[], TResult>(
           },
           { v1Compat, inBand: false }
         );
-      const enqueueRun = () =>
-        world.queue(
-          queueName,
-          {
-            runId,
-            traceCarrier,
-            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-              ? {
-                  runInput: {
-                    ...runCreationData,
-                    specVersion,
-                    ...(creatorEnvironment !== undefined
-                      ? { environment: creatorEnvironment }
-                      : {}),
-                  },
-                }
-              : {}),
-          } satisfies WorkflowInvokePayload,
-          {
-            deploymentId,
-            specVersion,
-            // Forward any caller-supplied region hint so worlds with
-            // per-region queue routing (e.g. world-vercel) can target the
-            // matching queue. Worlds without a regional dimension ignore
-            // this field.
-            ...(opts.region !== undefined ? { region: opts.region } : {}),
-          }
-        );
+      const startMessage = {
+        runId,
+        traceCarrier,
+        ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+          ? {
+              runInput: {
+                ...runCreationData,
+                specVersion,
+                ...(creatorEnvironment !== undefined
+                  ? { environment: creatorEnvironment }
+                  : {}),
+              },
+            }
+          : {}),
+      } satisfies WorkflowInvokePayload;
+      const enqueueRun = (extra?: QueueOptions) =>
+        world.queue(queueName, startMessage, {
+          deploymentId,
+          specVersion,
+          // Forward any caller-supplied region hint so worlds with
+          // per-region queue routing (e.g. world-vercel) can target the
+          // matching queue. Worlds without a regional dimension ignore
+          // this field.
+          ...(opts.region !== undefined ? { region: opts.region } : {}),
+          ...extra,
+        });
 
       // These argument-stream ops are flushed in the background; the promise
       // handed to waitUntil must never reject (an unconsumed waitUntil
@@ -1626,6 +1643,14 @@ export async function start<TArgs extends unknown[], TResult>(
         // registered their gated pipes in `ops` and pipe only once admitted.
         flushArgumentStreams();
         span?.setAttributes(Attribute.DeploymentId(deploymentId));
+        if (inlineGateReason === undefined) {
+          // Admission decides the run after its message is published, which
+          // a hold (consumed as soon as it is taken) cannot wait for.
+          span?.setAttributes({
+            ...Attribute.WorkflowInlineOutcome('skipped'),
+            ...Attribute.WorkflowInlineSkipReason('unsupported_start'),
+          });
+        }
         let createdRunStatus: WorkflowRunStatus;
         try {
           let enqueueFailure: { error: unknown } | undefined;
@@ -1768,7 +1793,17 @@ export async function start<TArgs extends unknown[], TResult>(
         return new Run<TResult>(runId, { resilientStart: false });
       }
 
+      const runCreatedAt = Date.now();
       const runCreated = createRun();
+      // Phase timing for the span: how long `run_created` took, beside the
+      // send (they run concurrently).
+      void runCreated.then(
+        () =>
+          span?.setAttributes(
+            Attribute.WorkflowStartRunCreatedMs(Date.now() - runCreatedAt)
+          ),
+        () => {}
+      );
 
       // A dynamic run publishes only once the backend has confirmed it stored
       // the code. The queue message carries that code too, and its first
@@ -1802,9 +1837,70 @@ export async function start<TArgs extends unknown[], TResult>(
       // run, the create has already succeeded above).
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
+      //
+      // On a World that can hold the message for this process, it is sent
+      // with a hold, and a held message starts running here as soon as the
+      // send returns, beside the `run_created` write: its first delivery's
+      // fast path creates the run from `runInput` if that write has not
+      // landed yet (resilient start), exactly as a queue delivery that
+      // outruns it does. Everywhere else the send is the plain queued one.
+      const enqueueStartedAt = Date.now();
+      const enqueue = (
+        inlineEntryLoad
+          ? inlineEntryLoad.then(async () => {
+              span?.setAttributes(
+                Attribute.WorkflowStartEntryLoadMs(
+                  Date.now() - inlineEntryLoadStartedAt
+                )
+              );
+              const checksStartedAt = Date.now();
+              const decision = decideInline({
+                world,
+                queueName,
+                runId,
+                sameDeployment: !crossDeployment,
+                runSpecVersion: specVersion,
+                // The engine `start()` stamps on the run (unset: node:vm).
+                quickjs: workflowVm === 'quickjs',
+                // The inline handler drives the process's configured World.
+                unsupported:
+                  dynamicWorkflow !== undefined ||
+                  (opts.world !== undefined &&
+                    opts.world !== (await getWorldLazy())),
+              });
+              span?.setAttributes(
+                Attribute.WorkflowStartInlineChecksMs(
+                  Date.now() - checksStartedAt
+                )
+              );
+              return sendOrchestratorMessage({
+                decision,
+                runId,
+                span,
+                message: startMessage,
+                queueName,
+                callStartedAt: startCalledAt,
+                // One key for the held attempt and a plain resend after it
+                // throws, so a held attempt that did enqueue is not delivered
+                // twice. A fresh run ID has no other message to collide with.
+                send: (hold, inlineAttempt) =>
+                  enqueueRun(
+                    inlineAttempt
+                      ? { idempotencyKey: `wkf-start-${runId}`, ...hold }
+                      : undefined
+                  ),
+              });
+            })
+          : enqueueRun()
+      ).then((result) => {
+        span?.setAttributes(
+          Attribute.WorkflowStartEnqueueMs(Date.now() - enqueueStartedAt)
+        );
+        return result;
+      });
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
-        enqueueRun(),
+        enqueue,
       ]);
 
       // Queue failure is always fatal: the run was not enqueued

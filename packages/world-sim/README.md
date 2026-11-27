@@ -146,6 +146,19 @@ single-writer guarantee, and a scenario forces an overlap with
 `sim.expireLease()` (see below). It is checked by the shared conformance
 suite in `src/in-band-fence.test.ts`.
 
+**Send-and-hold:** with `ScenarioSpec.queueHold` the World declares
+`capabilities.experimental_queueHold`, as world-vercel does, so `start()` and
+the scenario's hook deliveries hold their orchestrator message and run it in
+the sending call (inline delivery) instead of leaving it to the loop. A held
+single-orchestrator message takes its run's lease, or comes back `not_held` /
+`lost` when the lease is taken. `sim.lapseHeldDeliveries()` lets a hold lapse
+while its sender keeps running (the message is pending again, and the fence
+keeps the two apart); `{ crash: true }` kills the sender instead: its later
+world calls take no effect, and one in flight commits but answers with
+`SimulatedCrashError`. `src/inline-delivery.fuzz.test.ts` plays seeded faults
+on this path (`WORLD_SIM_INLINE_FUZZ_SEEDS`, default 60; replay one with
+`WORLD_SIM_INLINE_FUZZ_SEED=<n>`).
+
 ## Usage
 
 You write two things: a **workflow**, and a **script** that controls how that

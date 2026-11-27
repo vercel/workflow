@@ -1,13 +1,5 @@
-import { constants, type Dirent } from 'node:fs';
-import {
-  access,
-  mkdir,
-  readdir,
-  readFile,
-  realpath,
-  rm,
-  stat,
-} from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { mkdir, readdir, readFile, realpath, rm } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   assertFlowBundleIsSandboxSafe,
@@ -16,6 +8,11 @@ import {
 } from '@workflow/builders';
 import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
+import {
+  INLINE_WORKFLOW_ENTRIES_DIR,
+  resolveWorkflowAppDirectory,
+  workflowGeneratedDirectory,
+} from './inline-entry.js';
 import {
   normalizeWorkflowRoutePrefix,
   workflowRoutePrefixDirectory,
@@ -149,10 +146,9 @@ export async function getNextBuilderEager(
       );
       const routePrefixDir = workflowRoutePrefixDirectory(routePrefix);
       const publicDir = join(this.config.workingDir, 'public');
-      const workflowGeneratedDir = join(
+      const workflowGeneratedDir = workflowGeneratedDirectory(
         outputDir,
-        routePrefixDir,
-        '.well-known/workflow/v1'
+        routePrefix
       );
       const publicManifestDir = join(
         publicDir,
@@ -969,7 +965,7 @@ export async function getNextBuilderEager(
       const flowRouteDir = join(workflowGeneratedDir, 'flow');
       await mkdir(flowRouteDir, { recursive: true });
 
-      return await this.createCombinedBundle({
+      const combined = await this.createCombinedBundle({
         format: 'esm',
         inputFiles,
         stepsOutfile: join(flowRouteDir, '__step_registrations.js'),
@@ -979,6 +975,23 @@ export async function getNextBuilderEager(
         sourceStepRegistrationImports: true,
         tsconfigPath,
       });
+      // Per-workflow inline entries for production builds: `withWorkflow()`'s
+      // loader makes each workflow module import its own (see
+      // `inline-entry.ts`). `next dev` runs on the local World, which never
+      // holds a message.
+      if (
+        !this.config.watch &&
+        process.env.WORKFLOW_INLINE_ENTRIES !== '0' &&
+        // Absent on test doubles of the base builder.
+        typeof this.createInlineWorkflowEntries === 'function'
+      ) {
+        await this.createInlineWorkflowEntries({
+          discoveredEntries: combined.discoveredEntries,
+          outDir: join(flowRouteDir, INLINE_WORKFLOW_ENTRIES_DIR),
+          tsconfigPath,
+        });
+      }
+      return combined;
     }
 
     private async buildWebhookRoute({
@@ -997,54 +1010,16 @@ export async function getNextBuilderEager(
     }
 
     private async findAppDirectory(): Promise<string> {
-      const appDir = resolve(this.config.workingDir, 'app');
-      const srcAppDir = resolve(this.config.workingDir, 'src/app');
-      const pagesDir = resolve(this.config.workingDir, 'pages');
-      const srcPagesDir = resolve(this.config.workingDir, 'src/pages');
-
-      // Helper to check if a path exists and is a directory
-      const isDirectory = async (path: string): Promise<boolean> => {
-        try {
-          await access(path, constants.F_OK);
-          const stats = await stat(path);
-          if (!stats.isDirectory()) {
-            throw new Error(`Path exists but is not a directory: ${path}`);
-          }
-          return true;
-        } catch (e) {
-          if (e instanceof Error && e.message.includes('not a directory')) {
-            throw e;
-          }
-          return false;
-        }
-      };
-
-      // Check if app directory exists
-      if (await isDirectory(appDir)) {
-        return appDir;
-      }
-
-      // Check if src/app directory exists
-      if (await isDirectory(srcAppDir)) {
-        return srcAppDir;
-      }
-
-      // If no app directory exists, check for pages directory and create app next to it
-      if (await isDirectory(pagesDir)) {
-        // Create app directory next to pages directory
-        await mkdir(appDir, { recursive: true });
-        return appDir;
-      }
-
-      if (await isDirectory(srcPagesDir)) {
-        // Create src/app directory next to src/pages directory
-        await mkdir(srcAppDir, { recursive: true });
-        return srcAppDir;
-      }
-
-      throw new Error(
-        'Could not find Next.js app or pages directory. Expected one of: "app", "src/app", "pages", or "src/pages" to exist.'
+      // Shared with `withWorkflow()`, which aliases `@workflow/core/inline-entry` to
+      // the flow route generated here.
+      const { dir, create } = resolveWorkflowAppDirectory(
+        this.config.workingDir
       );
+      if (create) {
+        // A Pages Router app: create the app directory next to `pages`.
+        await mkdir(dir, { recursive: true });
+      }
+      return dir;
     }
   }
 

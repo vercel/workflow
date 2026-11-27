@@ -6,6 +6,7 @@
  * lifecycles, edge cases and the decisions behind them. Read it before
  * changing spec 9 behaviour, and update it in the same change.
  */
+
 import assert from 'node:assert/strict';
 import { types } from 'node:util';
 import {
@@ -47,7 +48,6 @@ import {
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
-
 import { decodeTime } from 'ulid';
 import {
   classifyRunError,
@@ -133,7 +133,9 @@ import {
   settleEventSlotGap,
   slotSnapshotParams,
 } from '../helpers.js';
+import { currentInlineDelivery } from '../inline-orchestrator.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
+import { maybeQuickJSEngine, quickJSEngine } from '../quickjs-loader.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import {
   ReplayRecoveryReporter,
@@ -2284,9 +2286,18 @@ async function runDelivery(
 
     // --- QuickJS VM engine dispatch ---
     if (useQuickJSVm(workflowRun)) {
-      const { runWorkflowWithQuickJS } = await import(
-        './quickjs-entrypoint.js'
-      );
+      // Only an inline delivery can lack the engine (the flow route always
+      // has it): hand the message back once the run's start is durable, and
+      // the queue delivers it to the flow route. A resume cannot always tell
+      // a run's engine before it sends (see `decideInline`).
+      if (!maybeQuickJSEngine() && currentInlineDelivery()) {
+        await awaitRunReady();
+        runLogger.info(
+          'QuickJS run reached a function without the QuickJS engine; handing it to the flow route'
+        );
+        return { timeoutSeconds: 0 };
+      }
+      const { runWorkflowWithQuickJS } = await quickJSEngine().spec9();
       try {
         const quickjsResult = await runWorkflowWithQuickJS({
           workflowCode: effectiveWorkflowCode,
