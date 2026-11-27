@@ -361,22 +361,6 @@ export async function runSpec9Delivery(
     : result;
 }
 
-/**
- * Why a failed read of a run says the run is gone: the World answered it
- * expired, or not found (as a `WorkflowRunNotFoundError` or a bare 404, as
- * the run setup reads both). Undefined for any other failure.
- */
-function runGoneReason(readErr: unknown): 'expired' | 'not-found' | undefined {
-  if (RunExpiredError.is(readErr)) return 'expired';
-  if (
-    WorkflowRunNotFoundError.is(readErr) ||
-    (WorkflowWorldError.is(readErr) && readErr.status === 404)
-  ) {
-    return 'not-found';
-  }
-  return undefined;
-}
-
 /** The events the per-run ceiling counts: every one but a sealed `noop`. */
 function countWorkflowEvents(events: readonly Event[]): number {
   return events.reduce((n, e) => (isSealedNoopEvent(e) ? n : n + 1), 0);
@@ -5566,12 +5550,15 @@ async function runDelivery(
    * Neither error alone says the run finished: a conflict can be an entity
    * that already exists, and a World may answer a 410 for something else
    * (one refuses a write ahead of `run_started` with it). So the run is read
-   * again, and a run that has not finished still fails. A read that finds
-   * the run gone (expired, or not found) counts as finished whichever error
-   * ended the replay: nothing can drive that run on, and failing it would
-   * only log an error before the World refused its `run_failed` as well. A
-   * transient failure of the read is thrown, so the queue redelivers and the
-   * next delivery reads the run again; any other failure fails the run.
+   * again, and a run that has not finished still fails. A read the World
+   * answers with an expiry counts as finished whichever error ended the
+   * replay: a 410 on the run itself means it ended and passed its retention,
+   * and failing it would only log an error before the World refused its
+   * `run_failed` as well. A not-found read does not: world-vercel answers
+   * any 404 with one, including a route it does not serve, so it fails the
+   * run like any other failed read. A transient failure of the read is
+   * thrown, so the queue redelivers and the next delivery reads the run
+   * again.
    */
   async function runEndedUnderReplay(err: unknown): Promise<boolean> {
     if (!EntityConflictError.is(err) && !RunExpiredError.is(err)) return false;
@@ -5585,30 +5572,29 @@ async function runDelivery(
       workflowRunId: runId,
       ...(read.type === 'read'
         ? { status: read.status }
-        : { runGone: read.reason }),
+        : { runExpired: true }),
       message: err.message,
     });
     return true;
   }
 
   /**
-   * The run as {@link runEndedUnderReplay} reads it again: its status, gone
-   * (the World answers it expired or not found), or unreadable (any other
-   * failure that will not pass). A transient failure is thrown, as the
-   * replay's own catch throws one, so the queue redelivers instead of the run
-   * failing.
+   * The run as {@link runEndedUnderReplay} reads it again: its status,
+   * expired (the World answers the read with `RunExpiredError`), or
+   * unreadable (any other failure that will not pass, a not-found
+   * included). A transient failure is thrown, as the replay's own catch
+   * throws one, so the queue redelivers instead of the run failing.
    */
   async function readRunAgain(): Promise<
     | { type: 'read'; status: WorkflowRunStatus }
-    | { type: 'gone'; reason: 'expired' | 'not-found' }
+    | { type: 'expired' }
     | { type: 'unreadable' }
   > {
     try {
       const run = await world.runs.get(runId, { resolveData: 'none' });
       return { type: 'read', status: run.status };
     } catch (readErr) {
-      const gone = runGoneReason(readErr);
-      if (gone !== undefined) return { type: 'gone', reason: gone };
+      if (RunExpiredError.is(readErr)) return { type: 'expired' };
       if (!isRetryableWorldError(readErr)) return { type: 'unreadable' };
       runLogger.warn(
         'Transient world error during replay; redelivering via queue instead of failing the run',

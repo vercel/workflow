@@ -108,10 +108,12 @@ async function refuseLikeWorldLocal(
  * - `conflict`: as world-local and world-postgres do, and as world-vercel
  *   maps the backend's 409, with `EntityConflictError`. The next write is the
  *   second step's creation.
- * - `expiry`: as the fake World does by default, with `RunExpiredError`. An
- *   inline step's creation-bearing start refused that way is the step's own
- *   start refusal and never reaches the replay's catch, so the next write
- *   here is a sleep's `wait_created`, which does.
+ * - `expiry`: with `RunExpiredError`, as the World contract for spec 9 runs
+ *   asks (`spec9/README.md`, "Spec 9 event rules"), as world-vercel maps the
+ *   backend's 410, and as the fake World answers by default. An inline
+ *   step's creation-bearing start refused that way is the step's own start
+ *   refusal and never reaches the replay's catch, so the next write here is
+ *   a sleep's `wait_created`, which does.
  */
 type Refusal = 'conflict' | 'expiry';
 
@@ -240,17 +242,16 @@ describe.each([
       }
     });
 
-    it.each([
-      ['expired', new RunExpiredError('run expired')],
-      ['not-found', new WorkflowRunNotFoundError('wrun_gone')],
-      ['not-found', new WorkflowWorldError('not found', { status: 404 })],
-    ] as const)('is acknowledged when re-reading the run finds it gone (%s: %s)', async (reason, readError) => {
+    it('is acknowledged when re-reading the run finds it expired', async () => {
       const errors = vi.spyOn(runtimeLogger, 'error');
       const info = vi.spyOn(runtimeLogger, 'info');
       const { world, run, start } = await setupCancellableRun(engine, refusal, {
         cancelOnOutcome: true,
       });
-      const failedReads = failNextRunReadAfterCancel(run, readError);
+      const failedReads = failNextRunReadAfterCancel(
+        run,
+        new RunExpiredError('run expired')
+      );
 
       releaseBody.resolve();
       expectAcknowledged(world, await world.deliver(start), start);
@@ -260,9 +261,39 @@ describe.each([
       expect(errors).not.toHaveBeenCalled();
       expect(info).toHaveBeenCalledWith(
         SKIPPED,
-        expect.objectContaining({ runGone: reason })
+        expect.objectContaining({ runExpired: true })
       );
       await expectCancelledOnly(run);
+    });
+
+    // world-vercel answers any 404 of a run read as not found, including one
+    // from a route it does not serve, so a not-found read is no evidence the
+    // run finished: the delivery fails the run, as for any failed read.
+    it.each([
+      ['WorkflowRunNotFoundError', new WorkflowRunNotFoundError('wrun_gone')],
+      ['a 404', new WorkflowWorldError('not found', { status: 404 })],
+    ] as const)('fails the run when re-reading the run answers %s', async (_what, readError) => {
+      const errors = vi
+        .spyOn(runtimeLogger, 'error')
+        .mockImplementation(() => undefined);
+      const info = vi.spyOn(runtimeLogger, 'info');
+      const { world, run, start } = await setupCancellableRun(engine, refusal, {
+        cancelOnOutcome: true,
+      });
+      const failedReads = failNextRunReadAfterCancel(run, readError);
+
+      releaseBody.resolve();
+      expectAcknowledged(world, await world.deliver(start), start);
+
+      expect(failedReads()).toBe(1);
+      expect(info).not.toHaveBeenCalledWith(SKIPPED, expect.anything());
+      expect(errors).toHaveBeenCalledWith(
+        'Error while running workflow',
+        expect.objectContaining({
+          errorName:
+            refusal === 'conflict' ? 'EntityConflictError' : 'RunExpiredError',
+        })
+      );
     });
 
     it('redelivers, without failing the run, when re-reading the run fails transiently', async () => {
