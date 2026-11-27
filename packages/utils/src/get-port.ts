@@ -79,7 +79,12 @@ async function getLinuxPorts(pid: number): Promise<number[]> {
 
   for (const tcpFile of tcpFiles) {
     try {
-      const content = await readFile(tcpFile, 'utf8');
+      // Not a file of the app: without the ignore comment, every Turbopack
+      // build warns that this dynamic path traces the whole project.
+      const content = await readFile(
+        /* turbopackIgnore: true */ tcpFile,
+        'utf8'
+      );
       const lines = content.split('\n').slice(1); // Skip header
 
       for (const line of lines) {

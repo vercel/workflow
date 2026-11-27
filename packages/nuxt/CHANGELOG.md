@@ -1,5 +1,49 @@
 # @workflow/nuxt
 
+## 5.0.15
+
+### Patch Changes
+
+- [#5676](https://github.com/vercel/workflow/pull/5676) [`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump dev dependency `vite` to patched releases (7.3.8, 8.3.8) to pick up a security fix.
+- Updated dependencies [[`7b2fc6c`](https://github.com/vercel/workflow/commit/7b2fc6c49436b8f86d8334f17f756c4ec34add15)]:
+  - @workflow/nitro@5.0.15
+
+## 5.0.14
+
+### Patch Changes
+
+- Updated dependencies [[`c989836`](https://github.com/vercel/workflow/commit/c989836f14d9f4e9b59d151ce706db94a064cc60)]:
+  - @workflow/nitro@5.0.14
+
+## 5.0.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.13
+
+## 5.0.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.12
+
+## 5.0.11
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f)]:
+  - @workflow/nitro@5.0.11
+
+## 5.0.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.10
+
 ## 5.0.9
 
 ### Patch Changes

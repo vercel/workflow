@@ -57,8 +57,19 @@ describe('serializeForClipboard', () => {
     expect(serializeForClipboard(circular)).toBe('[object Object]');
   });
 
-  it('falls back to String() for BigInt values JSON cannot encode', () => {
+  it('serializes a top-level BigInt as its decimal string', () => {
     expect(serializeForClipboard(10n)).toBe('10');
+  });
+
+  it('writes nested BigInt values as decimal strings in valid JSON', () => {
+    expect(
+      JSON.parse(serializeForClipboard({ amount: 10n, name: 'x' }))
+    ).toEqual({ amount: '10', name: 'x' });
+    expect(JSON.parse(serializeForClipboard([1n, 2n]))).toEqual(['1', '2']);
+    expect(
+      JSON.parse(serializeForClipboard({ input: [{ a: { b: 5n } }] }))
+    ).toEqual({ input: [{ a: { b: '5' } }] });
+    expect(serializeForClipboard({ id: 1n })).toBe('{\n  "id": "1"\n}');
   });
 
   it('passes undefined through (JSON.stringify yields no string)', () => {
@@ -142,7 +153,7 @@ describe('EncryptedDataBlock', () => {
     expect(markup).toContain('disabled=""');
   });
 
-  it('disables the Decrypt button with a reason when decryption is unavailable', () => {
+  it('disables the Decrypt button when decryption is unavailable', () => {
     const ctx: DecryptClickContextValue = {
       onDecrypt: () => {},
       isDecrypting: false,
@@ -159,12 +170,11 @@ describe('EncryptedDataBlock', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
   });
 });
 
 describe('decrypt controls', () => {
-  it('disables the shared Decrypt button with a reason', () => {
+  it('disables the shared Decrypt button when decryption is unavailable', () => {
     const markup = renderToStaticMarkup(
       createElement(DecryptButton, {
         disabled: true,
@@ -173,10 +183,9 @@ describe('decrypt controls', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
   });
 
-  it('disables inline Decrypt buttons with a reason', () => {
+  it('disables inline Decrypt buttons when decryption is unavailable', () => {
     // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
     const Encrypted = { Encrypted: function () {} }.Encrypted;
     const encryptedMarker = Object.create(Encrypted.prototype);
@@ -190,6 +199,5 @@ describe('decrypt controls', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
   });
 });

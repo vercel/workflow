@@ -97,6 +97,8 @@ async function callApi(endpoint: string) {
 }
 ```
 
+To keep calls under an upstream's rate limit across every run in the first place, call [`experimental_rateLimit()`](/docs/foundations/rate-limits) in the workflow before the step. A step's retries don't wait for a new slot, so keep handling 429 in the step too.
+
 ## Advanced example
 
 This final example combines everything we've learned, along with [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
@@ -277,7 +279,3 @@ export async function placeOrderSaga(orderId: string) {
   }
 }
 ```
-
-## Spec 9 (experimental)
-
-The experimental spec 9 runtime retries steps differently: a failed step is retried after about a second by default on its one queue message, and a `maxRetries = 0` step whose invocation dies after it started fails instead of running again.

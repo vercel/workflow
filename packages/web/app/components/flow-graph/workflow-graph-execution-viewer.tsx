@@ -14,9 +14,9 @@ import {
 } from '@xyflow/react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import '@xyflow/react/dist/style.css';
-import { GitBranch, Loader2, X } from 'lucide-react';
+import { GitBranch, RotateCw, Timer, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
-import { formatDuration } from '@workflow/web-shared';
+import { formatDuration, Spinner } from '@workflow/web-shared';
 import { StatusBadge } from '~/components/display-utils/status-badge';
 import { Badge } from '~/components/ui/badge';
 import type {
@@ -206,7 +206,6 @@ function ExecutionDiamondNodeComponent({ data, selected }: NodeProps) {
           fontWeight: 600,
           padding: size * 0.25, // Keep text within the diamond's inscribed area
         }}
-        title={typeof nodeData.label === 'string' ? nodeData.label : undefined}
       >
         <span className="text-center line-clamp-3 overflow-hidden">
           {nodeData.label}
@@ -350,9 +349,10 @@ function renderNodeLabel(
         {hasRetries && (
           <Badge
             variant="outline"
-            className="text-xs px-1.5 py-0 border-orange-500 text-orange-700 dark:text-orange-300"
+            className="gap-1 text-xs px-1.5 py-0 border-amber-500 text-amber-900"
           >
-            ↻ {totalAttempts}x
+            <RotateCw className="size-3" aria-hidden />
+            {totalAttempts}x
           </Badge>
         )}
 
@@ -360,9 +360,10 @@ function renderNodeLabel(
         {latestExecution.duration && latestExecution.duration > 0 && (
           <Badge
             variant="secondary"
-            className="text-xs px-1.5 py-0 bg-black/10 dark:bg-white/15 border-0"
+            className="gap-1 text-xs px-1.5 py-0 bg-gray-alpha-200 border-0"
           >
-            ⏱ {formatDuration(latestExecution.duration, true)}
+            <Timer className="size-3" aria-hidden />
+            {formatDuration(latestExecution.duration, true)}
           </Badge>
         )}
       </div>
@@ -723,10 +724,7 @@ function GraphNodeDetailPanel({
     <div className="h-full flex flex-col bg-background border-l">
       {/* Header - similar to trace view */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-b flex-none">
-        <span
-          className="text-xs font-medium truncate flex-1"
-          title={node.data.label}
-        >
+        <span className="text-xs font-medium truncate flex-1">
           {node.data.label}
         </span>
         <div className="flex items-center gap-2 flex-none">
@@ -816,7 +814,7 @@ function GraphNodeDetailPanel({
         {/* Loading indicator for resolved data */}
         {stepLoading && stepId && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground mb-3">
-            <Loader2 className="h-3 w-3 animate-spin" />
+            <Spinner size="sm" />
             <span>Loading step data...</span>
           </div>
         )}
@@ -859,15 +857,13 @@ function GraphNodeDetailPanel({
         {/* Error section */}
         {resolvedError && (
           <details className="group mb-3" open>
-            <summary className="cursor-pointer rounded-md border border-red-300 bg-red-50 dark:bg-red-950/20 px-2.5 py-1.5 text-xs hover:brightness-95">
-              <span className="font-medium text-red-600 dark:text-red-400">
-                Error
-              </span>
+            <summary className="cursor-pointer rounded-md border border-red-300 bg-red-100 px-2.5 py-1.5 text-xs hover:brightness-95">
+              <span className="font-medium text-red-800">Error</span>
             </summary>
             <div className="relative pl-6 mt-3">
               <div className="absolute left-3 -top-3 w-px h-3 bg-red-300" />
               <div className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg border-red-300" />
-              <pre className="text-[11px] overflow-x-auto rounded-md border border-red-200 p-2.5 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-300 whitespace-pre-wrap max-h-64 overflow-y-auto">
+              <pre className="text-[11px] overflow-x-auto rounded-md border border-red-200 p-2.5 bg-red-100 text-red-900 whitespace-pre-wrap max-h-64 overflow-y-auto">
                 <code>
                   {typeof resolvedError === 'object'
                     ? JSON.stringify(resolvedError, null, 2)

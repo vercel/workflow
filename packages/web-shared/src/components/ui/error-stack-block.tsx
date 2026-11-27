@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle } from 'lucide-react';
-import { CopyButton } from '../trace-viewer/components/copy-button';
+import { CopyButton } from './copy-button';
 
 export type StructuredErrorRecord = Record<string, unknown> & {
   message?: string;
@@ -78,9 +78,9 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       }}
     >
       <CopyButton
-        copyText={copyText}
-        ariaLabel="Copy error"
-        className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border border-red-400 bg-red-100 p-0 text-red-900 transition-transform transition-colors duration-100 hover:bg-red-200 active:scale-95"
+        textToCopy={copyText}
+        aria-label="Copy error"
+        className="absolute right-2 top-2 border border-red-400 text-red-900 enabled:hover:bg-red-200 enabled:hover:text-red-900 focus-visible:text-red-900"
       />
 
       {title && (
@@ -98,7 +98,6 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
             // shows the first line, single-line, with overflow
             // ellipsised so a long title doesn't push the copy button or
             // wrap into the framed hint/docs lines.
-            title={message}
           >
             {title}
           </p>

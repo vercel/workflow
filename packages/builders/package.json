@@ -1,6 +1,6 @@
 {
   "name": "@workflow/builders",
-  "version": "5.1.0",
+  "version": "5.1.6",
   "description": "Shared builder infrastructure for Workflow SDK",
   "type": "module",
   "main": "./dist/index.js",
@@ -16,7 +16,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"

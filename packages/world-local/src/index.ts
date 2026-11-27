@@ -12,6 +12,7 @@ import { decode } from './db/codec.js';
 import { databaseFor } from './db/index.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
+import { removeLegacyData } from './legacy-data.js';
 import {
   createReleasePipeline,
   releaseOrphanedSteps,
@@ -19,6 +20,7 @@ import {
 import { createQueue, type DirectHandler } from './queue.js';
 import { createQueueAuthKey } from './queue-auth-key.js';
 import { backstopWakeDelaySeconds } from './recovery-wake.js';
+import { deletePurgedUsage } from './storage/purged-usage.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -141,12 +143,16 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     // The per-run in-band count is a column of the run's row, checked and
     // advanced in the write's transaction.
     inBandFence: true,
+    // `experimental_rateLimit()`: each key's next free slot is a row of the
+    // database, reserved in the `rate_created` write's transaction.
+    rateLimits: true,
   } satisfies WorldCapabilities;
   return {
-    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
-    // the in-band fence declared above; spec 8 otherwise.
+    // Spec 10 runs by default, which need the in-band fence and rate limits
+    // declared above; `WORKFLOW_SPEC_VERSION=8` keeps new runs on spec 8.
     specVersion: mintedSpecVersion(process.env, {
       inBandFence: capabilities.inBandFence,
+      rateLimits: capabilities.rateLimits,
     }),
     capabilities,
     // The queue, its handlers and `queueAuthMode: 'loopback'`; `close()` is
@@ -281,11 +287,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           ]) {
             db.run(`DELETE FROM ${table}`);
           }
+          deletePurgedUsage(db);
           return;
         }
         // Only this tag's data: its runs and everything they own, and its
         // streams.
         const runs = 'SELECT run_id FROM runs WHERE tag = ?';
+        deletePurgedUsage(db, { runIdsSql: runs, params: [tag] });
         for (const table of [
           'events',
           'steps',
@@ -306,6 +314,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         db.run('DELETE FROM stream_chunks WHERE tag = ?', tag);
         db.run('DELETE FROM runs WHERE tag = ?', tag);
       });
+      // The JSON files of an earlier release in the same directory are run
+      // data too, and their `clear()` removed them.
+      await removeLegacyData(mergedConfig.dataDir, tag);
       // Shrink the file: `@workflow/vitest` clears in every worker, and the
       // freed pages would otherwise keep the database at its largest size.
       await db.reclaimFreePages();

@@ -2,6 +2,7 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import {
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
@@ -89,7 +90,28 @@ export function assertWorldSupportsInBandFence(
       'stale in-band write with `InBandSupersededError` (412), it can declare ' +
       '`capabilities.inBandFence: true` and ' +
       '`specVersion: mintedSpecVersion(process.env, { inBandFence: true })`, ' +
-      'which creates spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set. ' +
+      'which creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts out), ' +
+      'or spec 10 runs once it also declares `capabilities.rateLimits` and passes `rateLimits: true`. ' +
+      'See "Building a World" in the Workflow docs.'
+  );
+}
+
+/**
+ * Rejects a World that does not reserve rate limit slots
+ * (`WorldCapabilities.rateLimits`) for a run at spec
+ * `SPEC_VERSION_RATE_LIMITS` or later. Such a run may write rate events, and
+ * only a World that decides them may hold one.
+ */
+export function assertWorldSupportsRateLimits(
+  world: Pick<World, 'capabilities'>
+): void {
+  if (world.capabilities?.rateLimits === true) return;
+  throw new WorkflowRuntimeError(
+    `Spec version ${SPEC_VERSION_RATE_LIMITS} runs require a World that reserves ` +
+      'rate limit slots (`capabilities.rateLimits`), which the configured World ' +
+      'does not declare. A World that has not implemented them should declare ' +
+      '`specVersion: mintedSpecVersion(process.env, { inBandFence: true })`, ' +
+      `which never creates spec ${SPEC_VERSION_RATE_LIMITS} runs. ` +
       'See "Building a World" in the Workflow docs.'
   );
 }

@@ -1,5 +1,53 @@
 # @workflow/world
 
+## 5.4.0
+
+### Minor Changes
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Add `burst` to `experimental_rateLimit()`: an idle key admits up to `burst` calls at once (default 1, and up to a day of the rate, so it may exceed `limit`), then refills one per interval, like a token bucket.
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Add spec version 10 with the `rate_created`, `rate_acquired` and `rate_failed` events, the `rateLimits` World capability, and the shared GCRA rate limit decision.
+
+- [#5622](https://github.com/vercel/workflow/pull/5622) [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - New runs on the Vercel, Local and Postgres Worlds now use a new execution engine that supports speculative execution, and vastly reduces engine overhead. `WORKFLOW_SPEC_VERSION=8` opts out. Runs on third-party worlds use the old engine (spec 8) unless they implement the prerequisites.
+
+### Patch Changes
+
+- [#5685](https://github.com/vercel/workflow/pull/5685) [`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116) Thanks [@pranaygp](https://github.com/pranaygp)! - Keep the skipped-slot report of a batch whose first rate limit write is refused or sent again, so events another writer appended below it still reach the run.
+
+## 5.3.1
+
+### Patch Changes
+
+- [#5446](https://github.com/vercel/workflow/pull/5446) [`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Count a run's usage on the Local World (its events by type, each step function and hook, and its storage, counted the way Vercel's Data Written counts it) and print it with `workflow inspect run <id> --usage`.
+
+## 5.3.0
+
+### Minor Changes
+
+- [#5353](https://github.com/vercel/workflow/pull/5353) [`5668d4b`](https://github.com/vercel/workflow/commit/5668d4bf66657c49c76dd2eff0ed6873a535294e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optional `runs.deleteDataMany` method to the World interface, which deletes the stored data (payloads, not metadata) of finished runs on demand, and implement it in the Vercel, Local and Postgres Worlds. Exposed as `run.delete()` and `deleteRuns()` (`workflow/api`), `deleteRuns(world, runIds)` (`@workflow/core/runtime`), and `pnpx workflow delete <runId>` in the CLI. `workflow cancel` and `workflow start` no longer accept listing flags they ignored, such as `--limit` on `start` or `--cursor` and `--sort` on either. `workflow delete`, `workflow cancel` and `workflow start` now print the error they fail with, such as an unknown flag, instead of exiting with no output.
+
+### Patch Changes
+
+- [#5619](https://github.com/vercel/workflow/pull/5619) [`de68280`](https://github.com/vercel/workflow/commit/de682801c806b6966f09521442eadd9812cbd470) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report the events a replay diverged at (`replayDivergenceEventIds`, ids only) beside `replayDivergenceCount` on the write that ends a divergence episode, including the `run_failed` of a `CORRUPTED_EVENT_LOG` failure, so world-vercel can locate the divergence when the run's error payload is encrypted.
+
+- [#5621](https://github.com/vercel/workflow/pull/5621) [`d8caf7c`](https://github.com/vercel/workflow/commit/d8caf7c2a3fd99483638cb2fc469bbb7f59429ec) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The warning for a `WORKFLOW_SPEC_VERSION` value that is not understood now names the spec version new runs use instead.
+
+- [#5468](https://github.com/vercel/workflow/pull/5468) [`80d89c0`](https://github.com/vercel/workflow/commit/80d89c07d77f2382b7b6d7cecf285fe2159c22a9) Thanks [@benpankow](https://github.com/benpankow)! - A `resumeHook()` wake names the `hook_received` it was sent for, so a spec 9 orchestrator delivery in a process that already consumed the run's log below that event skips the tail read that checks for a no-op wake.
+
+## 5.2.2
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+
+- [#5506](https://github.com/vercel/workflow/pull/5506) [`4c1adef`](https://github.com/vercel/workflow/commit/4c1adef2dec2fb4a5965d047bf441da7346b19df) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a bug where spec 9 runs inconsistently enforced the max events per run limit
+
+## 5.2.1
+
+### Patch Changes
+
+- [#5159](https://github.com/vercel/workflow/pull/5159) [`7c72296`](https://github.com/vercel/workflow/commit/7c7229670c15fcbae1ffef87379f0c7931d7191c) Thanks [@pranaygp](https://github.com/pranaygp)! - Experimental: `QueueOptions.experimental_hold` (`true`, or `{ consumerGroup, visibilityTimeoutSeconds }`) asks the queue to claim a message for its sender before `queue()` returns, so the sender can run it in the request that sent it (the result's `experimental_hold` is `{ status: 'held', consume, release, ... }` or `{ status: 'not_held', reason }`; `consume(handler)` takes the same handler and delivery semantics as `createQueueHandler`), with the queue as the crash backstop.
+
 ## 5.2.0
 
 ### Minor Changes

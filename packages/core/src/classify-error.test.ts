@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  DynamicWorkflowsNotEnabledError,
   HookConflictError,
   MaxEventsExceededError,
   ReplayDivergenceError,
@@ -43,6 +44,23 @@ describe('classifyRunError', () => {
     expect(
       classifyRunError(new WorkflowRuntimeError('corrupted event log'))
     ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+  });
+
+  it('classifies DynamicWorkflowsNotEnabledError as USER_ERROR', () => {
+    // A missing opt-in is the project's configuration, not an SDK failure.
+    expect(
+      classifyRunError(new DynamicWorkflowsNotEnabledError('not enabled'))
+    ).toBe(RUN_ERROR_CODES.USER_ERROR);
+  });
+
+  it('classifies a cross-realm DynamicWorkflowsNotEnabledError by name as USER_ERROR', () => {
+    // What a step's refusal revives as in the workflow VM: a plain Error
+    // that keeps the name, which must not fall into any RUNTIME_ERROR check.
+    const err = Object.assign(new Error('not enabled'), {
+      name: 'DynamicWorkflowsNotEnabledError',
+      fatal: true,
+    });
+    expect(classifyRunError(err)).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 
   it('classifies WorkflowNotRegisteredError as WORKFLOW_NOT_REGISTERED', () => {

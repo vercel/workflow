@@ -1,11 +1,14 @@
 {
   "name": "@workflow/world-cloudflare",
-  "version": "0.0.0",
+  "version": "0.0.5",
+  "private": true,
   "description": "Experimental Workflow World for Cloudflare Workers: each run is a Durable Object that stores and runs it",
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"

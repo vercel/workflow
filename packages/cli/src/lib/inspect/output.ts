@@ -4,6 +4,7 @@ import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
+import { isVercelWorldTarget } from '@workflow/utils';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -14,8 +15,6 @@ import {
   type World,
 } from '@workflow/world';
 import chalk from 'chalk';
-
-import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
@@ -27,7 +26,9 @@ import {
   isExpiredRef,
 } from './hydration.js';
 import { stringifyJSON } from './json.js';
+import { formatRelativeTime } from './relative-time.js';
 import { resolveTimeWindow } from './time-window.js';
+import { formatRunUsageText, usageTextColor } from './usage.js';
 import { resolveWorkflowNameFilter } from './workflow-name.js';
 
 /**
@@ -535,7 +536,7 @@ const formatTableTimestamp = (
     !opts.disableRelativeDates;
 
   if (shouldShowRelative) {
-    const relative = formatDistance(value, new Date(), { addSuffix: true });
+    const relative = formatRelativeTime(value, new Date());
     return `${isoTime} (${relative})`;
   }
 
@@ -911,6 +912,44 @@ export const showRun = async (
       }
       logger.log(runWithHydratedIO);
     }
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+};
+
+/**
+ * `inspect run <id> --usage`: the run's usage (`RunUsage`). Only Worlds that implement `experimental_usage` (world-local
+ * today) have it; elsewhere this fails rather than printing the run.
+ */
+export const showRunUsage = async (
+  world: World,
+  runId: string,
+  opts: InspectCLIOptions = {}
+) => {
+  if (!world.experimental_usage) {
+    logger.error(
+      'Run usage is only available for the local backend so far. Run `workflow inspect run <id> --usage --backend local` against a local data directory.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const usage = await world.experimental_usage.getRun(runId);
+    if (opts.json) {
+      showJson(usage);
+      return;
+    }
+    logger.log(
+      formatRunUsageText(usage, {
+        color: usageTextColor(),
+        pricing: isVercelWorldTarget(
+          opts.backend ?? process.env.WORKFLOW_TARGET_WORLD ?? ''
+        ),
+      })
+    );
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
       process.exit(1);

@@ -1,5 +1,50 @@
 # @workflow/rollup
 
+## 5.0.15
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.6
+
+## 5.0.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.5
+
+## 5.0.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.1.4
+
+## 5.0.12
+
+### Patch Changes
+
+- [#5568](https://github.com/vercel/workflow/pull/5568) [`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc) Thanks [@abhiramshaji-cyber](https://github.com/abhiramshaji-cyber)! - Read decorator options from tsconfig in the Rollup transform, so Nitro and Nuxt builds parse decorators in workflow files when `experimentalDecorators` is on.
+- Updated dependencies [[`953e917`](https://github.com/vercel/workflow/commit/953e9174b116e8897ca802fcb1158c4f80ffe1cc)]:
+  - @workflow/builders@5.1.3
+
+## 5.0.11
+
+### Patch Changes
+
+- [#5367](https://github.com/vercel/workflow/pull/5367) [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
+- Updated dependencies [[`e6f5bc7`](https://github.com/vercel/workflow/commit/e6f5bc7251f0c8daa8f03c1dd29fce04b6f57fa5), [`7404b8f`](https://github.com/vercel/workflow/commit/7404b8f4cae9c09887deb3bcb2bb1f646ee6db0f)]:
+  - @workflow/swc-plugin@5.0.2
+  - @workflow/builders@5.1.2
+
+## 5.0.10
+
+### Patch Changes
+
+- Updated dependencies [[`c88e158`](https://github.com/vercel/workflow/commit/c88e158eaed8c69a9aadb9ae0ef43d14d748ad25)]:
+  - @workflow/builders@5.1.1
+
 ## 5.0.9
 
 ### Patch Changes

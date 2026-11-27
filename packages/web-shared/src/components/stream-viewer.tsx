@@ -2,11 +2,12 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { STATUS_DOT } from '../lib/palette';
 import { getStreamImageType } from '../lib/stream-image';
 import { serializeForClipboard } from './sidebar/copyable-data-block';
 import { StreamImagePreview } from './stream-image-preview';
 import { StreamViewerSkeleton } from './stream-viewer-skeleton';
-import { CopyButton } from './trace-viewer/components/copy-button';
+import { CopyButton } from './ui/copy-button';
 import { DataInspector } from './ui/data-inspector';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
         {image ? (
           <StreamImagePreview data={image} />
         ) : typeof chunk.value === 'string' ? (
-          <span className="whitespace-pre-wrap break-words text-label-12 font-mono text-gray-1000">
+          <span className="whitespace-pre-wrap break-words text-label-12-mono text-gray-1000">
             {chunk.value}
           </span>
         ) : (
@@ -55,9 +56,9 @@ const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
       </div>
       {!image && (
         <CopyButton
-          copyText={serializeForClipboard(chunk.value)}
-          ariaLabel="Copy chunk"
-          className="shrink-0 -mr-1 [&>div]:h-4 [&>div]:w-4 [&_svg]:h-4 [&_svg]:w-4"
+          textToCopy={serializeForClipboard(chunk.value)}
+          aria-label="Copy chunk"
+          className="-mr-1"
         />
       )}
     </div>
@@ -104,8 +105,10 @@ export function StreamViewer({
       <div className="flex h-10 min-h-10 items-center gap-1.5 border-b border-gray-alpha-400 px-3">
         {isLive && (
           <>
-            <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
-            <span className="text-label-12 text-green-700">Live</span>
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${STATUS_DOT.running}`}
+            />
+            <span className="text-label-12 text-gray-900">Live</span>
           </>
         )}
       </div>
@@ -119,7 +122,7 @@ export function StreamViewer({
           </div>
         ) : chunks.length === 0 ? (
           <div className="flex h-10 items-center border-b border-gray-alpha-400 bg-background-200 px-3 text-label-12 text-gray-900">
-            {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
+            {isLive ? 'Waiting for stream data…' : 'Stream is empty'}
           </div>
         ) : (
           <Virtuoso

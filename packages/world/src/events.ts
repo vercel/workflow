@@ -40,6 +40,10 @@ export const EventTypeSchema = z.enum([
   // Wait lifecycle events
   'wait_created',
   'wait_completed',
+  // Rate limit events (specVersion >= 10, `experimental_rateLimit()`)
+  'rate_created',
+  'rate_acquired', // Also committed by the World in place of a rate_created
+  'rate_failed', // Created by world when a rate_created's slot is past its deadline
   // Sealed-log filler (specVersion >= 7): written ONLY by the World's backend
   // to occupy a slot whose writer allocated it and died. Carries no workflow
   // meaning; replay skips it (see EventsConsumer). Never user-creatable.
@@ -149,10 +153,23 @@ export function isWaitEventType(eventType: string): eventType is WaitEventType {
   return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
 }
 
+const RateEventTypeSchema = EventTypeSchema.extract([
+  'rate_created',
+  'rate_acquired',
+  'rate_failed',
+] as const);
+export type RateEventType = z.infer<typeof RateEventTypeSchema>;
+export const RATE_EVENT_TYPES = RateEventTypeSchema.options;
+
+export function isRateEventType(eventType: string): eventType is RateEventType {
+  return RATE_EVENT_TYPES.includes(eventType as RateEventType);
+}
+
 const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
   'step_created',
   'hook_created',
   'wait_created',
+  'rate_created',
 ] as const);
 export type ChildEntityCreationEventType = z.infer<
   typeof ChildEntityCreationEventTypeSchema
@@ -539,6 +556,99 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
     .optional(),
 });
 
+// One correlation id (`rate_<ulid>`) per `experimental_rateLimit()` call. The
+// runtime writes `rate_created`; the World reserves the call's slot on the
+// key and commits what the reservation decided IN PLACE of the request:
+//
+//   rate_acquired                       the slot is now: the call goes ahead
+//   rate_created(acquireAt) ...         the slot is later: the run waits,
+//     rate_acquired                       then the runtime records the end
+//   rate_failed                         the slot is past the deadline
+//
+// `rate_acquired` after a wait is what gives the end of the wait a position
+// in the log, the way `wait_completed` does for `sleep()`. Rate events exist
+// only on runs stamped at `SPEC_VERSION_RATE_LIMITS` or later.
+
+/** What every rate event repeats from its call. */
+const RateCallSchema = z.object({
+  /** The key whose rate is limited. Shared by every run of the project. */
+  key: z.string(),
+  /** How many calls the key admits per `periodMs`. */
+  limit: z.number(),
+  periodMs: z.number(),
+  /** The call's deadline: past it, the call fails instead of waiting. */
+  expiresAt: z.coerce.date(),
+  /**
+   * How many calls may go at once on an idle key, at least 1, saving up at
+   * most 24 hours of the rate. Absent for no burst. Recorded, so a call
+   * reserved again keeps it.
+   */
+  burst: z.number().int().positive().optional(),
+});
+
+const RateCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('rate_created'),
+  correlationId: z.string(),
+  eventData: RateCallSchema.extend({
+    /**
+     * The reserved slot. Set by the World on the committed event, never by
+     * the runtime's request: the run waits until then.
+     */
+    acquireAt: z.coerce.date().optional(),
+    /**
+     * Queue message id of the orchestrator delivery that wrote this event.
+     * As for `wait_created`, only that delivery, or a redelivery of the same
+     * message, schedules the wait's timer; the World keeps it on the
+     * committed event.
+     */
+    creatorMessageId: z.string().optional(),
+    /**
+     * Set by the World on a `rate_created` it reserved again after a late
+     * wake: how many times the call was woken past its grace. It sets the
+     * grace the call's next wake is judged with. Never set by the runtime.
+     */
+    lateWakes: z.number().int().nonnegative().optional(),
+    /**
+     * The request's opt-in to a key in the reserved `$` namespace
+     * (`RESERVED_RATE_LIMIT_KEY_PREFIX`), for Workflow SDK libraries. Checked
+     * by the World on the request; never set on a committed event.
+     */
+    allowReservedKey: z.literal(true).optional(),
+  }),
+});
+
+const RateAcquiredEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('rate_acquired'),
+  correlationId: z.string(),
+  eventData: RateCallSchema.partial().extend({
+    /** The slot the call went ahead at (set by the World). */
+    acquireAt: z.coerce.date().optional(),
+    /**
+     * After a wait: the log slot of the call's own `rate_created`. The World
+     * reads that event back and commits its `acquireAt`, never one the
+     * request carries. Absent when the World committed `rate_acquired` in
+     * place of the `rate_created`.
+     */
+    createdSlot: z.number().int().positive().optional(),
+  }),
+});
+
+/**
+ * World-only: committed in place of a `rate_created` whose earliest slot is
+ * past the call's deadline. Nothing is reserved.
+ */
+const RateFailedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('rate_failed'),
+  correlationId: z.string(),
+  eventData: RateCallSchema.extend({
+    reason: z.literal('max_wait'),
+    /** The slot the call would have had. */
+    acquireAt: z.coerce.date().optional(),
+    /** As on `rate_created`: late wakes before the call failed. */
+    lateWakes: z.number().int().nonnegative().optional(),
+  }),
+});
+
 const AttributeWriterSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('workflow'),
@@ -746,6 +856,9 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  // Rate limit events
+  RateCreatedEventSchema,
+  RateAcquiredEventSchema,
 ]);
 
 // Discriminated union for ALL events (includes World-only events like hook_conflict)
@@ -772,6 +885,10 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  // Rate limit events
+  RateCreatedEventSchema,
+  RateAcquiredEventSchema,
+  RateFailedEventSchema, // World-only: the slot is past the call's deadline
   NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
 ]);
 
@@ -1026,6 +1143,14 @@ export interface CreateEventParams {
    * materialization or persist it into the event log.
    */
   replayDivergenceCount?: number;
+  /**
+   * The ids of the events at which the replays of that episode diverged,
+   * oldest first, sent with {@link CreateEventParams.replayDivergenceCount}.
+   * Event ids only, never payloads, so a divergence can be located even when
+   * the run's error payload is encrypted. Request telemetry like the count:
+   * Worlds may log it, and must not require or persist it.
+   */
+  replayDivergenceEventIds?: readonly string[];
   /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
@@ -1451,6 +1576,14 @@ export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
  */
 export type EventListResponse = PaginatedResponse<Event> & {
   snapshot?: EventLogSnapshot;
+  /**
+   * The run's event ceiling, the same value {@link EventResult.maxEvents}
+   * carries on a run-lifecycle write. Optional: a World that does not report
+   * it here leaves the runtime with the ceiling from its own `run_started`
+   * write, if any. The spec 9 orchestrator, which writes `run_started` only on
+   * a run's first delivery, enforces it on every later one from its log load.
+   */
+  maxEvents?: number;
 };
 
 /** Options for {@link Storage.events.subscribe}. */

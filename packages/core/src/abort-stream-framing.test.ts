@@ -1,23 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRunCapabilities } from './capabilities.js';
+import { publishLocalAbort } from './serialization/abort-local.js';
 import {
   frameAbortStreamPayload,
   readAbortStreamPacket,
 } from './serialization/abort-stream.js';
-import {
-  deriveRunPayloadKeys,
-  type PayloadKey,
-  sealTo,
-} from './serialization/encryption.js';
+import { deriveRunPayloadKeys, sealTo } from './serialization/encryption.js';
 import {
   cancelAbortReaders,
   dehydrateStepArguments,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   hydrateStepArguments,
+  hydrateWorkflowReturnValue,
   peekFormatPrefix,
 } from './serialization.js';
 import { contextStorage, type StepContext } from './step/context-storage.js';
+import { ABORT_STREAM_NAME } from './symbols.js';
 
 const { world, resumeHook } = vi.hoisted(() => ({
   world: {
@@ -46,7 +45,7 @@ function chunksStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
-function stepContext(key?: PayloadKey): StepContext {
+function stepContext(): StepContext {
   return {
     stepMetadata: {
       stepId: 'step_abort',
@@ -59,9 +58,8 @@ function stepContext(key?: PayloadKey): StepContext {
       workflowName: 'abort-test',
       workflowStartedAt: new Date(),
       url: 'http://localhost',
-      features: { encryption: Boolean(key) },
+      features: { encryption: false },
     },
-    encryptionKey: key,
     ops: [],
     preCompletionOps: [],
   };
@@ -117,6 +115,205 @@ describe('abort packet compatibility', () => {
     }).getReader();
     expect(await readAbortStreamPacket(reader)).toEqual(payload);
     await reader.cancel();
+  });
+
+  describe('decoding a legacy packet whose length is unknown', () => {
+    const payload = new TextEncoder().encode(
+      `devl${JSON.stringify(['x'.repeat(200)])}`
+    );
+    const bytes = (from: number, to: number) =>
+      Array.from(payload.subarray(from, to), (byte) => new Uint8Array([byte]));
+    // Stands in for the real decoder: only the whole packet decodes.
+    const decoder = () =>
+      vi.fn(async (packet: Uint8Array) => {
+        if (packet.length !== payload.length) throw new Error('not a packet');
+      });
+    const eventLoopTurn = () =>
+      new Promise<void>((resolve) => setImmediate(resolve));
+
+    it('decodes a packet split byte by byte once, without stream close', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of bytes(0, payload.length)) {
+            controller.enqueue(chunk);
+          }
+          // Deliberately remain open.
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      await reader.cancel();
+    });
+
+    it('decodes once per burst when the transport pauses mid-packet', async () => {
+      const half = payload.length / 2;
+      let deliver!: (chunks: Uint8Array[]) => void;
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          deliver = (chunks) => {
+            for (const chunk of chunks) controller.enqueue(chunk);
+          };
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      const packet = readAbortStreamPacket(reader, tryDecode);
+      deliver([payload.slice(0, half)]);
+      await vi.waitFor(() => expect(tryDecode).toHaveBeenCalledTimes(1));
+      // No further attempt while nothing arrives.
+      for (let turn = 0; turn < 5; turn++) await eventLoopTurn();
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      deliver([payload.slice(half)]);
+      expect(await packet).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(2);
+      await reader.cancel();
+    });
+
+    it('is not held back by fake timers', async () => {
+      vi.useFakeTimers();
+      try {
+        const reader = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(payload.slice());
+          },
+        }).getReader();
+        expect(await readAbortStreamPacket(reader, decoder())).toEqual(payload);
+        await reader.cancel();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      'ends',
+      'fails',
+    ])('decodes a complete packet when the stream %s right behind it', async (outcome) => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of bytes(0, payload.length)) {
+            controller.enqueue(chunk);
+          }
+        },
+        pull(controller) {
+          if (outcome === 'ends') controller.close();
+          else controller.error(new Error('transport reset'));
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns a complete packet that has an empty chunk buffered behind it', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload.slice());
+          controller.enqueue(new Uint8Array(0));
+          // Deliberately remain open.
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      await reader.cancel();
+    });
+
+    it('does not decode at an empty chunk with more data readable behind it', async () => {
+      const half = payload.length / 2;
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload.slice(0, half));
+          controller.enqueue(new Uint8Array(0));
+          controller.enqueue(payload.slice(half));
+          controller.enqueue(new Uint8Array(0));
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(1);
+      await reader.cancel();
+    });
+
+    it.each([
+      ['another legacy packet', () => payload.slice()],
+      ['a framed packet', () => frameAbortStreamPayload(payload)],
+      ['a stray byte', () => new Uint8Array([10])],
+    ])('returns a complete packet that has %s buffered behind it', async (_, behind) => {
+      for (const closed of [false, true]) {
+        const reader = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(payload.slice());
+            controller.enqueue(behind());
+            if (closed) controller.close();
+          },
+        }).getReader();
+        const tryDecode = decoder();
+        expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+        await reader.cancel();
+      }
+    });
+
+    it('returns a packet the transport split when another is buffered behind it', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload.slice(0, 50));
+          controller.enqueue(payload.slice(50, 120));
+          controller.enqueue(payload.slice(120));
+          controller.enqueue(payload.slice());
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      expect(await readAbortStreamPacket(reader, tryDecode)).toEqual(payload);
+      await reader.cancel();
+    });
+
+    it('bounds the attempts on chunk boundaries inside the buffer', async () => {
+      let deliver!: (chunks: Uint8Array[]) => void;
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          deliver = (chunks) => {
+            for (const chunk of chunks) controller.enqueue(chunk);
+          };
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      const packet = readAbortStreamPacket(reader, tryDecode);
+      // Three bursts of single bytes, each ending mid-packet, then the rest.
+      const cuts = [0, 40, 80, 120, payload.length];
+      for (let burst = 0; burst < 3; burst++) {
+        const before = tryDecode.mock.calls.length;
+        deliver(bytes(cuts[burst], cuts[burst + 1]));
+        await vi.waitFor(() =>
+          expect(tryDecode.mock.calls.length).toBeGreaterThan(before)
+        );
+        for (let turn = 0; turn < 5; turn++) await eventLoopTurn();
+      }
+      // One attempt per pause, plus eight boundaries in total: 9, 1, 1.
+      expect(tryDecode).toHaveBeenCalledTimes(11);
+      deliver(bytes(cuts[3], cuts[4]));
+      expect(await packet).toEqual(payload);
+      expect(tryDecode).toHaveBeenCalledTimes(12);
+      await reader.cancel();
+    });
+
+    it('reports a stream failure behind an incomplete packet', async () => {
+      const reader = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of bytes(0, payload.length - 1)) {
+            controller.enqueue(chunk);
+          }
+        },
+        pull(controller) {
+          controller.error(new Error('transport reset'));
+        },
+      }).getReader();
+      const tryDecode = decoder();
+      await expect(readAbortStreamPacket(reader, tryDecode)).rejects.toThrow(
+        'transport reset'
+      );
+      // Everything buffered, then the bounded number of chunk boundaries.
+      expect(tryDecode).toHaveBeenCalledTimes(9);
+    });
   });
 
   it('reads the first packet when duplicate packets are coalesced', async () => {
@@ -214,12 +411,18 @@ describe('real abort reducers and revivers', () => {
   });
 
   it.each([
-    false,
-    true,
-  ])('propagates a split encrypted packet before stream close (framed=%s)', async (framed) => {
+    { kind: 'signal', framed: false },
+    { kind: 'signal', framed: true },
+    { kind: 'controller', framed: false },
+    { kind: 'controller', framed: true },
+  ] as const)('propagates a split encrypted packet to a $kind before stream close (framed=$framed)', async ({
+    kind,
+    framed,
+  }) => {
     const key = await deriveRunPayloadKeys(new Uint8Array(32).fill(8));
+    const source = new AbortController();
     const input = await dehydrateWorkflowArguments(
-      new AbortController().signal,
+      kind === 'signal' ? source.signal : source,
       runId,
       key
     );
@@ -229,27 +432,36 @@ describe('real abort reducers and revivers', () => {
       key
     )) as Uint8Array;
     const wire = framed ? frameAbortStreamPayload(payload) : payload;
-    world.streams.get.mockImplementationOnce(
-      async () =>
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            for (const byte of wire) controller.enqueue(new Uint8Array([byte]));
-            // close() is a separate, best-effort writer RPC. Never provide EOF.
-          },
-        })
-    );
-    const ctx = stepContext(key);
-    await contextStorage.run(ctx, async () => {
-      const signal = (await hydrateStepArguments(
-        input,
-        runId,
-        key,
-        ctx.ops
-      )) as AbortSignal;
-      await Promise.all(ctx.ops);
+    const decrypt = vi.spyOn(globalThis.crypto.subtle, 'decrypt');
+    try {
+      world.streams.get.mockImplementationOnce(
+        async () =>
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (const byte of wire)
+                controller.enqueue(new Uint8Array([byte]));
+              // close() is a separate, best-effort writer RPC. Never provide EOF.
+            },
+          })
+      );
+      // Like the step executor, hydrate outside any contextStorage frame: the
+      // reader can only get the key from the reviver.
+      const ops: Promise<void>[] = [];
+      const hydrated = await hydrateStepArguments(input, runId, key, ops);
+      const signal =
+        kind === 'signal'
+          ? (hydrated as AbortSignal)
+          : (hydrated as AbortController).signal;
+      await Promise.all(ops);
       expect(signal.aborted).toBe(true);
       expect(signal.reason.message).toBe(reason.message);
-    });
+      // One decryption for the argument and one for the packet, however many
+      // reads delivered it.
+      expect(wire.length).toBeGreaterThan(100);
+      expect(decrypt).toHaveBeenCalledTimes(2);
+    } finally {
+      decrypt.mockRestore();
+    }
   });
 
   it('frames step-initiated aborts and keeps the durable hook payload unchanged', async () => {
@@ -344,6 +556,7 @@ describe('real abort reducers and revivers', () => {
     )) as AbortSignal;
     await Promise.all(ops);
     expect(signal.aborted).toBe(false);
+    cancelAbortReaders(signal);
   });
 
   it('cancels a partial packet read when the step finishes without aborting the signal', async () => {
@@ -374,5 +587,248 @@ describe('real abort reducers and revivers', () => {
     await Promise.all(ops);
     await vi.waitFor(() => expect(cancel).toHaveBeenCalled());
     expect(signal.aborted).toBe(false);
+  });
+});
+
+describe('in-process abort delivery', () => {
+  /** A stream that delivers nothing and ends when `end` is called. */
+  function clearedStream() {
+    let end: () => void = () => {};
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        end = () => {
+          try {
+            controller.close();
+          } catch {
+            // Already cancelled by the reader.
+          }
+        };
+      },
+    });
+    return { stream, end: () => end() };
+  }
+
+  async function abortPacket(
+    key?: Awaited<ReturnType<typeof deriveRunPayloadKeys>>
+  ) {
+    return (await dehydrateStepArguments(
+      { aborted: true, reason },
+      runId,
+      key
+    )) as Uint8Array;
+  }
+
+  it.each([
+    'signal',
+    'controller',
+  ] as const)('aborts a revived %s whose stream ends empty, as a cleared one does', async (kind) => {
+    const key = await deriveRunPayloadKeys(new Uint8Array(32).fill(9));
+    const source = new AbortController();
+    const input = await dehydrateWorkflowArguments(
+      kind === 'signal' ? source.signal : source,
+      runId,
+      key
+    );
+    const cleared = clearedStream();
+    world.streams.get.mockImplementationOnce(async () => cleared.stream);
+    const ops: Promise<void>[] = [];
+    const hydrated = await hydrateStepArguments(input, runId, key, ops);
+    const signal =
+      kind === 'signal'
+        ? (hydrated as AbortSignal)
+        : (hydrated as AbortController).signal;
+    const streamName = (signal as unknown as Record<symbol, string>)[
+      ABORT_STREAM_NAME
+    ];
+    expect(streamName).toMatch(/_system_abort$/);
+
+    publishLocalAbort(runId, streamName, await abortPacket(key));
+    cleared.end();
+    await Promise.all(ops);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason.message).toBe(reason.message);
+  });
+
+  it.each([
+    'ends empty',
+    'fails',
+  ] as const)("keeps a step's reader listening in-process after its stream %s", async (outcome) => {
+    const stepRunId = `${runId}_after_${outcome.replace(' ', '_')}`;
+    const input = await dehydrateWorkflowArguments(
+      new AbortController().signal,
+      stepRunId,
+      undefined
+    );
+    const read = vi.fn();
+    world.streams.get.mockImplementationOnce(async () => {
+      read();
+      return outcome === 'fails'
+        ? chunksStream([frameAbortStreamPayload(new Uint8Array(8)).slice(0, 5)])
+        : chunksStream([]);
+    });
+    const ops: Promise<void>[] = [];
+    const signal = (await hydrateStepArguments(
+      input,
+      stepRunId,
+      undefined,
+      ops
+    )) as AbortSignal;
+    // The reader's op settles with the stream, so a signal the step's
+    // teardown cannot reach holds nothing open.
+    await Promise.all(ops);
+    expect(read).toHaveBeenCalled();
+    expect(signal.aborted).toBe(false);
+
+    publishLocalAbort(
+      stepRunId,
+      (signal as unknown as Record<symbol, string>)[ABORT_STREAM_NAME],
+      (await dehydrateStepArguments(
+        { aborted: true, reason },
+        stepRunId,
+        undefined
+      )) as Uint8Array
+    );
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
+    expect(signal.reason.message).toBe(reason.message);
+  });
+
+  it("stops listening in-process once a step's reader is cancelled", async () => {
+    const stepRunId = `${runId}_cancelled_after_end`;
+    const input = await dehydrateWorkflowArguments(
+      new AbortController().signal,
+      stepRunId,
+      undefined
+    );
+    world.streams.get.mockImplementationOnce(async () => chunksStream([]));
+    const ops: Promise<void>[] = [];
+    const signal = (await hydrateStepArguments(
+      input,
+      stepRunId,
+      undefined,
+      ops
+    )) as AbortSignal;
+    await Promise.all(ops);
+    // The step returns.
+    cancelAbortReaders(signal);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    publishLocalAbort(
+      stepRunId,
+      (signal as unknown as Record<symbol, string>)[ABORT_STREAM_NAME],
+      (await dehydrateStepArguments(
+        { aborted: true, reason },
+        stepRunId,
+        undefined
+      )) as Uint8Array
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(signal.aborted).toBe(false);
+  });
+
+  it('stops an external reader with its empty stream', async () => {
+    const source = new AbortController();
+    const ops: Promise<void>[] = [];
+    // A signal a step returns, revived by the caller of `returnValue`: no
+    // one cancels its reader, so it must not outlive the stream.
+    const serialized = await dehydrateStepReturnValue(
+      source.signal,
+      runId,
+      undefined,
+      ops
+    );
+    world.streams.get.mockImplementationOnce(async () => chunksStream([]));
+    const hydrateOps: Promise<void>[] = [];
+    const signal = (await hydrateWorkflowReturnValue(
+      serialized,
+      runId,
+      undefined,
+      hydrateOps
+    )) as AbortSignal;
+    await Promise.all(hydrateOps);
+    expect(signal.aborted).toBe(false);
+  });
+
+  it('aborts a signal revived just after the abort was published', async () => {
+    const source = new AbortController();
+    const input = await dehydrateWorkflowArguments(
+      source.signal,
+      `${runId}_late`,
+      undefined
+    );
+    const ops: Promise<void>[] = [];
+    // Revive once to learn the stream name, then publish before the second
+    // revive, as a step still reviving its arguments would see it.
+    const first = (await hydrateStepArguments(
+      input,
+      `${runId}_late`,
+      undefined,
+      ops
+    )) as AbortSignal;
+    const streamName = (first as unknown as Record<symbol, string>)[
+      ABORT_STREAM_NAME
+    ];
+    cancelAbortReaders(first);
+    await Promise.all(ops.splice(0));
+
+    publishLocalAbort(
+      `${runId}_late`,
+      streamName,
+      (await dehydrateStepArguments(
+        { aborted: true, reason },
+        `${runId}_late`,
+        undefined
+      )) as Uint8Array
+    );
+    world.streams.get.mockImplementationOnce(async () => chunksStream([]));
+    const signal = (await hydrateStepArguments(
+      input,
+      `${runId}_late`,
+      undefined,
+      ops
+    )) as AbortSignal;
+    await Promise.all(ops);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason.message).toBe(reason.message);
+  });
+
+  it("aborts a sibling step's signal when a step aborts the shared controller", async () => {
+    const input = await dehydrateWorkflowArguments(
+      new AbortController(),
+      `${runId}_sibling`,
+      undefined
+    );
+    const cleared = [clearedStream(), clearedStream()];
+    world.streams.get
+      .mockImplementationOnce(async () => cleared[0].stream)
+      .mockImplementationOnce(async () => cleared[1].stream);
+    const ctx = stepContext();
+    ctx.workflowMetadata.workflowRunId = `${runId}_sibling`;
+    const siblingOps: Promise<void>[] = [];
+    const sibling = (await hydrateStepArguments(
+      input,
+      `${runId}_sibling`,
+      undefined,
+      siblingOps
+    )) as AbortController;
+    await contextStorage.run(ctx, async () => {
+      const controller = (await hydrateStepArguments(
+        input,
+        `${runId}_sibling`,
+        undefined,
+        ctx.ops
+      )) as AbortController;
+      controller.abort(reason);
+      await Promise.all(ctx.preCompletionOps);
+      // The step returns, and the executor stops its own readers.
+      cancelAbortReaders(controller);
+      await Promise.all(ctx.ops);
+    });
+    for (const stream of cleared) stream.end();
+    await Promise.all(siblingOps);
+    expect(sibling.signal.aborted).toBe(true);
+    expect(sibling.signal.reason.message).toBe(reason.message);
+    // Delivered once: the sibling's own abort did not write the stream or
+    // resume the hook again.
+    expect(world.streams.write).toHaveBeenCalledTimes(1);
+    expect(resumeHook).toHaveBeenCalledTimes(1);
   });
 });

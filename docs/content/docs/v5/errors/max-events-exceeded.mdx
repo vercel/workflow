@@ -64,7 +64,7 @@ If a run doesn't need to be a single long-lived run, start [child workflows](/co
 
 ### Fix unbounded loops
 
-If the run wasn't expected to grow this large, check the workflow function for loops that create steps, hooks, or sleeps without terminating.
+If the run wasn't expected to grow this large, check the workflow function for loops that create steps, hooks, or sleeps without terminating. A run's [usage](/docs/observability/usage) shows which steps and hooks write its events.
 
 ## This error cannot be caught
 

@@ -12,7 +12,7 @@
  * class instances.
  */
 
-import { Lock } from 'lucide-react';
+import { ChevronDown, ChevronRight, Lock, Radio } from 'lucide-react';
 import {
   createContext,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -26,47 +26,34 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../lib/cn';
-import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
+import {
+  type ClassInstanceRef,
+  isClassInstanceRef,
+  isEncryptedMarker,
+  isRunRef,
+  isStreamRef,
+  type RunRef,
+  type StreamRef,
+} from '../../lib/hydration';
 import {
   type DecodedStreamChunkSource,
   type FormattedStreamChunkDisplay,
   formatArrayBufferViewForDisplay,
 } from '../../lib/stream-display';
 import { Button } from './button';
-import { CLS, JSON_VIEW_STYLES } from './data-inspector.styles';
-import { Spinner } from './spinner';
+import styles from './data-inspector.module.css';
+import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip';
 
 // ---------------------------------------------------------------------------
-// StreamRef / ClassInstanceRef type detection
-// (inline to avoid circular deps with hydration module)
+// Decoded byte display (built by `collapseRefs`, rendered by `DataRender`)
 // ---------------------------------------------------------------------------
 
-const STREAM_REF_TYPE = '__workflow_stream_ref__';
-const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
-const RUN_REF_TYPE = '__workflow_run_ref__';
 const BYTES_DISPLAY_TYPE = '__workflow_bytes_display__';
-
-interface StreamRef {
-  __type: typeof STREAM_REF_TYPE;
-  streamId: string;
-}
-
-interface RunRef {
-  __type: typeof RUN_REF_TYPE;
-  runId: string;
-}
 
 interface BytesDisplay {
   __type: typeof BYTES_DISPLAY_TYPE;
   text: string;
   decodedFrom?: DecodedStreamChunkSource;
-}
-
-interface ClassInstanceRef {
-  __type: typeof CLASS_INSTANCE_REF_TYPE;
-  className: string;
-  classId: string;
-  data: unknown;
 }
 
 function deserializeChunkText(text: string): string {
@@ -89,41 +76,10 @@ function parseChunkData(text: string): unknown {
   }
 }
 
-function isStreamRef(value: unknown): value is StreamRef {
-  if (value === null || typeof value !== 'object') return false;
-  // Check both enumerable and non-enumerable __type (opaque refs use non-enumerable)
-  const desc = Object.getOwnPropertyDescriptor(value, '__type');
-  return desc?.value === STREAM_REF_TYPE;
-}
-
-function isRunRef(value: unknown): value is RunRef {
-  if (value === null || typeof value !== 'object') return false;
-  const desc = Object.getOwnPropertyDescriptor(value, '__type');
-  return desc?.value === RUN_REF_TYPE;
-}
-
 export function isBytesDisplay(value: unknown): value is BytesDisplay {
   if (value === null || typeof value !== 'object') return false;
   const desc = Object.getOwnPropertyDescriptor(value, '__type');
   return desc?.value === BYTES_DISPLAY_TYPE;
-}
-
-function isClassInstanceRef(value: unknown): value is ClassInstanceRef {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    '__type' in value &&
-    (value as Record<string, unknown>).__type === CLASS_INSTANCE_REF_TYPE
-  );
-}
-
-function isEncryptedMarker(value: unknown): boolean {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    (value as { constructor?: { name?: string } }).constructor?.name ===
-      ENCRYPTED_DISPLAY_NAME
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -166,23 +122,28 @@ function EncryptedInlineLabel() {
   const ctx = useContext(DecryptClickContext);
   if (ctx) {
     return (
-      <Button
-        size="tiny"
-        className="align-baseline"
-        disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
-        title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
-        onClick={(e) => {
-          e.stopPropagation();
-          ctx.onDecrypt();
-        }}
-      >
-        {ctx.isDecrypting ? (
-          <Spinner size={10} />
-        ) : (
-          <Lock className="h-3 w-3" />
-        )}
-        <span>Decrypt</span>
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button
+              size="small"
+              className="align-baseline"
+              loading={ctx.isDecrypting}
+              disabled={ctx.isDecryptDisabled}
+              prefix={<Lock />}
+              onClick={(e) => {
+                e.stopPropagation();
+                ctx.onDecrypt();
+              }}
+            >
+              Decrypt
+            </Button>
+          </span>
+        </TooltipTrigger>
+        {ctx.isDecryptDisabled && ctx.decryptDisabledReason ? (
+          <TooltipContent>{ctx.decryptDisabledReason}</TooltipContent>
+        ) : null}
+      </Tooltip>
     );
   }
   return (
@@ -203,9 +164,8 @@ function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
         e.stopPropagation();
         onStreamClick?.(streamRef.streamId);
       }}
-      title={`View stream: ${streamRef.streamId}`}
     >
-      <span>📡</span>
+      <Radio className="size-3 shrink-0" aria-hidden />
       <span>{streamRef.streamId}</span>
     </button>
   );
@@ -221,7 +181,6 @@ function RunRefInline({ runRef }: { runRef: RunRef }) {
         e.stopPropagation();
         onRunClick?.(runRef.runId);
       }}
-      title={`View run: ${runRef.runId}`}
     >
       <span>{runRef.runId}</span>
     </button>
@@ -256,35 +215,39 @@ function DecodedBytesChunk({
         <DecodedBytesInspector decodedText={decodedText} source={source} />
       )}
       <div className="mt-2 flex">
-        <div
-          className="inline-flex overflow-hidden rounded border border-gray-400"
-          title={`${source.type} decoded as ${source.encoding.toUpperCase()} text. Switch to Bytes to inspect the summarized raw value.`}
-        >
-          <button
-            type="button"
-            className={cn(
-              'h-5 px-1.5 font-medium text-[10px] text-gray-900',
-              selectedView === 'decoded' ? 'bg-gray-200' : 'bg-gray-100'
-            )}
-            onClick={() => setSelectedView('decoded')}
-            aria-pressed={selectedView === 'decoded'}
-            aria-label="Show decoded text"
-          >
-            Decoded
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'h-5 border-gray-400 border-l px-1.5 font-medium text-[10px] text-gray-900',
-              selectedView === 'bytes' ? 'bg-gray-200' : 'bg-gray-100'
-            )}
-            onClick={() => setSelectedView('bytes')}
-            aria-pressed={selectedView === 'bytes'}
-            aria-label="Show raw bytes summary"
-          >
-            Bytes
-          </button>
-        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="inline-flex overflow-hidden rounded border border-gray-400">
+              <button
+                type="button"
+                className={cn(
+                  'h-5 px-1.5 font-medium text-[10px] text-gray-900',
+                  selectedView === 'decoded' ? 'bg-gray-200' : 'bg-gray-100'
+                )}
+                onClick={() => setSelectedView('decoded')}
+                aria-pressed={selectedView === 'decoded'}
+                aria-label="Show decoded text"
+              >
+                Decoded
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'h-5 border-gray-400 border-l px-1.5 font-medium text-[10px] text-gray-900',
+                  selectedView === 'bytes' ? 'bg-gray-200' : 'bg-gray-100'
+                )}
+                onClick={() => setSelectedView('bytes')}
+                aria-pressed={selectedView === 'bytes'}
+                aria-label="Show raw bytes summary"
+              >
+                Bytes
+              </button>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            {`${source.type} decoded as ${source.encoding.toUpperCase()}`}
+          </TooltipContent>
+        </Tooltip>
       </div>
     </div>
   );
@@ -305,10 +268,13 @@ function DecodedBytesInspector({
         type="button"
         className="flex max-w-full items-start gap-1 text-left text-gray-1000"
         onClick={() => setExpanded((value) => !value)}
-        title={`${source.type} decoded as ${source.encoding.toUpperCase()} text`}
       >
-        <span className="select-none text-gray-700">
-          {expanded ? '▼' : '▶'}
+        <span className="flex h-[1lh] shrink-0 items-center text-gray-700">
+          {expanded ? (
+            <ChevronDown className="size-3" aria-hidden />
+          ) : (
+            <ChevronRight className="size-3" aria-hidden />
+          )}
         </span>
         <span className="min-w-0 break-words">{source.rawSummary}</span>
       </button>
@@ -465,27 +431,27 @@ function describeContainer(
 }
 
 function describePrimitive(value: unknown): { text: string; cls: string } {
-  if (value === null) return { text: 'null', cls: CLS.null };
-  if (value === undefined) return { text: 'undefined', cls: CLS.undefined };
+  if (value === null) return { text: 'null', cls: styles.null };
+  if (value === undefined) return { text: 'undefined', cls: styles.undefined };
   if (typeof value === 'string' || value instanceof String) {
-    return { text: `"${String(value)}"`, cls: CLS.string };
+    return { text: `"${String(value)}"`, cls: styles.string };
   }
   if (typeof value === 'boolean' || value instanceof Boolean) {
-    return { text: String(value), cls: CLS.boolean };
+    return { text: String(value), cls: styles.boolean };
   }
   if (typeof value === 'number' || value instanceof Number) {
-    return { text: String(value), cls: CLS.number };
+    return { text: String(value), cls: styles.number };
   }
   if (typeof value === 'bigint') {
-    return { text: `${value.toString()}n`, cls: CLS.number };
+    return { text: `${value.toString()}n`, cls: styles.number };
   }
-  return { text: String(value), cls: CLS.punctuation };
+  return { text: String(value), cls: styles.punctuation };
 }
 
 function Label({ field, clickable }: { field?: string; clickable?: boolean }) {
   if (field === undefined) return null;
   return (
-    <span className={clickable ? CLS.clickableLabel : CLS.label}>
+    <span className={clickable ? styles.clickableLabel : styles.label}>
       {`${formatField(field)}:`}
     </span>
   );
@@ -493,7 +459,7 @@ function Label({ field, clickable }: { field?: string; clickable?: boolean }) {
 
 function Comma({ isLast }: { isLast: boolean }) {
   if (isLast) return null;
-  return <span className={CLS.punctuation}>,</span>;
+  return <span className={styles.punctuation}>,</span>;
 }
 
 /** A non-expandable row: `field: <value>`. */
@@ -507,7 +473,7 @@ function LeafRow({
   children: ReactNode;
 }) {
   return (
-    <div className={CLS.child} role="treeitem" tabIndex={-1}>
+    <div className={styles.child} role="treeitem" tabIndex={-1}>
       <Label field={field} />
       {children}
       <Comma isLast={isLast} />
@@ -538,11 +504,11 @@ function EmptyContainer({
   isLast: boolean;
 }) {
   return (
-    <div className={CLS.child} role="treeitem" tabIndex={-1}>
+    <div className={styles.child} role="treeitem" tabIndex={-1}>
       <Label field={field} />
-      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
-      <span className={CLS.punctuation}>{open}</span>
-      <span className={CLS.punctuation}>{close}</span>
+      {prefix ? <span className={styles.className}>{prefix}</span> : null}
+      <span className={styles.punctuation}>{open}</span>
+      <span className={styles.punctuation}>{close}</span>
       <Comma isLast={isLast} />
     </div>
   );
@@ -654,7 +620,7 @@ function ExpandableContainer({
     // The treeitem row is the focusable, keyboard-operable control (roving
     // tabindex + arrow keys); the disclosure marker below is purely decorative.
     <div
-      className={CLS.child}
+      className={styles.child}
       role="treeitem"
       aria-expanded={expanded}
       aria-controls={expanded ? contentsId : undefined}
@@ -665,17 +631,19 @@ function ExpandableContainer({
       onKeyDown={onKeyDown}
     >
       <span
-        className={expanded ? CLS.collapseIcon : CLS.expandIcon}
+        className={expanded ? styles.collapseIcon : styles.expandIcon}
         aria-hidden="true"
       />
       {field !== undefined && (
-        <span className={CLS.clickableLabel}>{`${formatField(field)}:`}</span>
+        <span
+          className={styles.clickableLabel}
+        >{`${formatField(field)}:`}</span>
       )}
-      {prefix ? <span className={CLS.className}>{prefix}</span> : null}
-      <span className={CLS.punctuation}>{open}</span>
+      {prefix ? <span className={styles.className}>{prefix}</span> : null}
+      <span className={styles.punctuation}>{open}</span>
       {expanded ? (
         // biome-ignore lint/a11y/useSemanticElements: ARIA tree group is the correct role here
-        <ul id={contentsId} className={CLS.childFields} role="group">
+        <ul id={contentsId} className={styles.childFields} role="group">
           {entries.map(([childField, childValue, entryKey], index) => (
             <DataRender
               key={entryKey ?? childField ?? index}
@@ -687,9 +655,9 @@ function ExpandableContainer({
           ))}
         </ul>
       ) : (
-        <span className={CLS.collapsedContent} aria-hidden="true" />
+        <span className={styles.collapsedContent} aria-hidden="true" />
       )}
-      <span className={CLS.punctuation}>{close}</span>
+      <span className={styles.punctuation}>{close}</span>
       <Comma isLast={isLast} />
     </div>
   );
@@ -734,14 +702,14 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
   if (value instanceof Date) {
     return (
       <LeafRow field={field} isLast={isLast}>
-        <span className={CLS.date}>{value.toISOString()}</span>
+        <span className={styles.date}>{value.toISOString()}</span>
       </LeafRow>
     );
   }
   if (value instanceof RegExp) {
     return (
       <LeafRow field={field} isLast={isLast}>
-        <span className={CLS.regexp}>{value.toString()}</span>
+        <span className={styles.regexp}>{value.toString()}</span>
       </LeafRow>
     );
   }
@@ -804,7 +772,7 @@ function ClassInstanceNode({
   const { text, cls } = describePrimitive(instance.data);
   return (
     <LeafRow field={field} isLast={isLast}>
-      <span className={CLS.className}>{instance.className}</span>
+      <span className={styles.className}>{instance.className}</span>
       <span className={cls}>{text}</span>
     </LeafRow>
   );
@@ -827,7 +795,7 @@ function JsonTree({
   return (
     <div
       ref={outerRef}
-      className={CLS.container}
+      className={styles.container}
       role="tree"
       aria-label="JSON view"
     >
@@ -955,14 +923,7 @@ export function DataInspector({
   const stableData = useStableInspectorData(collapsedData);
 
   let content: ReactNode = (
-    <>
-      {/* React 19 hoists & dedupes this <style> by href, so it is emitted once
-          regardless of how many inspectors are mounted. */}
-      <style href="wf-json-view" precedence="default">
-        {JSON_VIEW_STYLES}
-      </style>
-      <JsonTree data={stableData} name={name} expandLevel={expandLevel} />
-    </>
+    <JsonTree data={stableData} name={name} expandLevel={expandLevel} />
   );
 
   if (onStreamClick) {

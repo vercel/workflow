@@ -11,7 +11,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { Button } from '../ui/button';
 import { DecryptClickContext } from '../ui/data-inspector';
-import { Spinner } from '../ui/spinner';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -205,7 +204,7 @@ export function EntityDetailPanel({
   const handleWakeUp = async () => {
     if (stoppingSleep || !resourceId) return;
     if (!onWakeUpSleep) {
-      toast.error('Unable to wake up sleep', {
+      toast.error('Failed to wake up run', {
         description: 'No wake-up handler provided.',
       });
       return;
@@ -227,8 +226,7 @@ export function EntityDetailPanel({
     } catch (err) {
       console.error('Failed to wake up run:', err);
       toast.error('Failed to wake up run', {
-        description:
-          err instanceof Error ? err.message : 'An unknown error occurred',
+        description: err instanceof Error ? err.message : 'Try again.',
       });
     } finally {
       setStoppingSleep(false);
@@ -239,15 +237,15 @@ export function EntityDetailPanel({
     async (payload: unknown) => {
       if (resolvingHook) return;
       if (!onResolveHook) {
-        toast.error('Unable to resolve hook', {
+        toast.error('Failed to resolve hook', {
           description: 'No resolve handler provided.',
         });
         return;
       }
       if (!hookToken) {
-        toast.error('Unable to resolve hook', {
+        toast.error('Failed to resolve hook', {
           description:
-            'Missing hook token. Try refreshing the run data and retry.',
+            'The hook token is missing. Reload the page, then try again.',
         });
         return;
       }
@@ -268,8 +266,7 @@ export function EntityDetailPanel({
       } catch (err) {
         console.error('Failed to resolve hook:', err);
         toast.error('Failed to resolve hook', {
-          description:
-            err instanceof Error ? err.message : 'An unknown error occurred',
+          description: err instanceof Error ? err.message : 'Try again.',
         });
       } finally {
         setResolvingHook(false);
@@ -342,10 +339,8 @@ export function EntityDetailPanel({
                   size="small"
                   className="w-full"
                   onClick={handleWakeUp}
-                  disabled={stoppingSleep}
-                  aria-busy={stoppingSleep}
+                  loading={stoppingSleep}
                 >
-                  {stoppingSleep ? <Spinner size={16} /> : null}
                   Wake Up Sleep
                 </Button>
               )}
@@ -357,10 +352,8 @@ export function EntityDetailPanel({
                   size="small"
                   className="w-full"
                   onClick={() => setShowResolveHookModal(true)}
-                  disabled={resolvingHook}
-                  aria-busy={resolvingHook}
+                  loading={resolvingHook}
                 >
-                  {resolvingHook ? <Spinner size={16} /> : null}
                   Resolve Hook
                 </Button>
               )}

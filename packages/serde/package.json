@@ -1,11 +1,13 @@
 {
   "name": "@workflow/serde",
   "description": "Serialization symbols for custom class serialization in Workflow SDK",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "publishConfig": {
     "access": "public"

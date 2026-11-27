@@ -190,6 +190,15 @@ export const MAX_RUN_AHEAD_RESTARTS = 1;
  */
 export const MAX_INLINE_STEPS = 3;
 
+/**
+ * How many wait timers a delivery sends at once (see `sendWaitTimers` in
+ * `spec9/delivery.ts`). Sent one after another, a run with many open waits
+ * (rate limit calls made at once each have one) waited a queue round trip per
+ * timer; unbounded, a thousand open waits would be a thousand publishes in
+ * flight from one invocation.
+ */
+export const WAIT_TIMER_SEND_CONCURRENCY = 16;
+
 /** Lower bound for the inline-steps env override (0 = every step is enqueued). */
 export const MIN_MAX_INLINE_STEPS = 0;
 
@@ -374,6 +383,37 @@ export function isTurboEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
+/**
+ * The oldest a spec 9 run's first orchestrator message may be, measured from
+ * when the queue first enqueued it, for its delivery to take the turbo path.
+ *
+ * Turbo assumes nothing of the run has executed yet. The queue's delivery
+ * count cannot prove that: a platform that re-runs an invocation which
+ * crashed (an out-of-memory kill, for one) re-sends the same request, so the
+ * replay carries the same message with delivery count 1, while the crashed
+ * invocation may have run the run for minutes. A first delivery normally
+ * arrives within a few seconds of `start()` (99.99% under 6s on Vercel), so a
+ * message older than this is treated as a possible replay and loads the log.
+ * A replay younger than this still reaches turbo; its `run_started` conflict
+ * then restarts the delivery on the normal path.
+ */
+export const TURBO_FIRST_DELIVERY_MAX_AGE_MS = 15_000;
+
+/**
+ * Whether a first delivery's message is young enough for turbo (see
+ * {@link TURBO_FIRST_DELIVERY_MAX_AGE_MS}). A queue that does not report when
+ * it enqueued the message admits it, as before.
+ */
+export function isTurboFirstDeliveryAgeAdmitted(
+  createdAt: Date | undefined,
+  now: number = Date.now()
+): boolean {
+  if (createdAt === undefined) return true;
+  const enqueuedAt = createdAt.getTime();
+  if (Number.isNaN(enqueuedAt)) return true;
+  return now - enqueuedAt <= TURBO_FIRST_DELIVERY_MAX_AGE_MS;
+}
+
 /** Environment variable that opts a deployment into dynamic workflows. */
 export const DYNAMIC_WORKFLOWS_ENV = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
 
@@ -455,10 +495,11 @@ export function getRunAheadDepth(): number {
 }
 
 /**
- * Allowance added to the invocation's inline window when deciding whether
- * an open wait can come due while the orchestrator is still deciding. A wait
- * due within the window plus this allowance makes a run-ahead boundary drain
- * instead.
+ * Allowance added when deciding whether an open wait can come due while the
+ * orchestrator is still deciding. Spec 9 run-ahead adds it to now, capped at
+ * the invocation's inline deadline (`getRunAheadWaitWindowEndMs`); spec 8's
+ * inline scheduling adds it to the end of the inline window. A wait due by
+ * then makes the boundary drain instead.
  *
  * It covers clocks that are not this process's (the host that delivers a
  * timer, and an early timer delivery) and the last boundary of a window
@@ -469,6 +510,14 @@ export function getRunAheadDepth(): number {
  * single-orchestrator run it does so by naming them on an orchestrator
  * message, and the orchestrator writes `wait_completed` in-band. An open wait
  * is therefore only path-changing through its own timer.
+ *
+ * For spec 9 run-ahead the window decides cost, not correctness. Only an
+ * orchestrator writes `wait_completed`, in-band: a wait that comes due while
+ * this delivery runs ahead is completed by it at the top of a later pass,
+ * after the writes in flight, or by its timer's delivery, which the in-band
+ * fence orders against this one (one of them is refused and redelivered).
+ * Draining near a due wait avoids that redelivery and completes the wait on
+ * time.
  */
 export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
 
@@ -484,6 +533,32 @@ export function getOpenWaitClockSkewMs(): number {
     {
       integer: true,
     }
+  );
+}
+
+/**
+ * The smallest allowance run-ahead's wait check uses, whatever
+ * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` says: a few round trips, so a wait about
+ * to come due drains the boundary instead of costing a fenced redelivery or
+ * completing a pass late. Correctness does not depend on
+ * it (see {@link OPEN_WAIT_CLOCK_SKEW_MS}).
+ */
+export const MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS = 1_000;
+
+/**
+ * Where run-ahead's wait check ends: an open wait whose `resumeAt` is at or
+ * before this makes a boundary path-changing. It is now plus the allowance
+ * (`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`, at least
+ * {@link MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS}), capped at the inline deadline plus
+ * that allowance.
+ */
+export function getRunAheadWaitWindowEndMs(
+  nowMs: number,
+  inlineDeadlineMs: number
+): number {
+  return (
+    Math.min(nowMs, inlineDeadlineMs) +
+    Math.max(getOpenWaitClockSkewMs(), MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS)
   );
 }
 

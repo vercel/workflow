@@ -5,13 +5,13 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  isHookLifecycleEventType,
   isRunCreationEvent,
   isTerminalStepEventType,
   type WorkflowRun,
 } from '@workflow/world';
 import type { StartHookCreation } from '../../lib/start-hook';
 import type { Span, SpanEvent } from '../../lib/trace-types';
-import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
 export const WORKFLOW_LIBRARY = {
@@ -49,7 +49,7 @@ export const getEventTimestamp = (
  * Convert workflow events to span events
  * Only includes events that should be displayed as markers
  */
-export function convertEventsToSpanEvents(
+function convertEventsToSpanEvents(
   events: Event[],
   filterTypes = true,
   options: { preferOccurredAt?: boolean } = {}
@@ -71,7 +71,7 @@ export function convertEventsToSpanEvents(
         eventData: 'eventData' in event ? event.eventData : undefined,
       },
       // Control whether to show vertical line in timeline
-      showVerticalLine: shouldShowVerticalLine(event.eventType),
+      showVerticalLine: isHookLifecycleEventType(event.eventType),
     }));
 }
 
@@ -327,7 +327,7 @@ export function stepToSpan(
  * (the run's creation stands for it), so pass its `startHook` creation from
  * `findStartHookCreation` to build it from deliveries alone.
  */
-export const hookEventsToHookEntity = (
+const hookEventsToHookEntity = (
   events: Event[],
   startHook?: StartHookCreation
 ): {

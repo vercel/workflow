@@ -11,18 +11,10 @@ export type {
 export {
   HookResolveModalWrapper,
   ResolveHookDropdownItem,
-  ResolveHookModal,
   useHookActions,
 } from './hook-actions';
-export { ConversationView } from './sidebar/conversation-view';
-export type {
-  SelectedSpanInfo,
-  SpanSelectionInfo,
-} from './sidebar/entity-detail-panel';
-export {
-  type SidebarDataContextValue,
-  SidebarDataProvider,
-} from './sidebar/sidebar-data-context';
+export type { SpanSelectionInfo } from './sidebar/entity-detail-panel';
+export type { SidebarDataContextValue } from './sidebar/sidebar-data-context';
 export type {
   DetailResource,
   FetchSpanDetail,
@@ -30,19 +22,12 @@ export type {
 export { type StreamChunk, StreamViewer } from './stream-viewer';
 export { StreamViewerSkeleton } from './stream-viewer-skeleton';
 export { TraceViewer } from './trace-viewer';
+export { ResourceIcon } from './trace-viewer/components/event-list';
 export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 export { Button, type ButtonProps, buttonVariants } from './ui/button';
-export {
-  DataInspector,
-  type DataInspectorProps,
-  DecryptClickContext,
-  type DecryptClickContextValue,
-} from './ui/data-inspector';
+export { CopyButton, type CopyButtonProps } from './ui/copy-button';
+export { DataInspector, type DataInspectorProps } from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
-export { IconButton } from './ui/icon-button';
-export { Kbd } from './ui/kbd';
-export { LoadMoreButton } from './ui/load-more-button';
-export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';
 export { Spinner } from './ui/spinner';
 export {
   Tooltip,

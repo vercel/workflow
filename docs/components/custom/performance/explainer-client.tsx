@@ -224,7 +224,7 @@ export const PerformanceExplainerClient = ({
           </label>
           <input
             aria-valuetext={status}
-            className="w-full accent-[var(--ds-gray-1000)]"
+            className="w-full accent-[var(--ds-blue-800)]"
             id={`${id}-scrub`}
             max={100}
             min={0}
@@ -247,7 +247,9 @@ export const PerformanceExplainerClient = ({
         className={cn(
           'my-0! min-w-0',
           '[&_.line]:transition-opacity motion-reduce:[&_.line]:transition-none',
-          t < 100 && '[&_.line:not([data-active=true])]:opacity-40'
+          t < 100 && '[&_.line:not([data-active=true])]:opacity-40',
+          // The lines the clock is on, in the accent.
+          '[&_.line[data-active=true]]:bg-[var(--ds-blue-100)]! [&_.line[data-active=true]]:shadow-[inset_2px_0_0_var(--ds-blue-800)]'
         )}
       >
         {lines.map((line, i) => (

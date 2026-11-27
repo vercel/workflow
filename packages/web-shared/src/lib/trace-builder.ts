@@ -35,7 +35,7 @@ import type { Span } from './trace-types';
  * step/timer/hook events (e.g. `attr_set`, whose correlationId is a dedup
  * token rather than a child entity ID).
  */
-export const isRunLevelEvent = (event: Event): boolean =>
+const isRunLevelEvent = (event: Event): boolean =>
   !event.correlationId ||
   (!isWaitEventType(event.eventType) &&
     !isHookLifecycleEventType(event.eventType) &&
@@ -57,6 +57,11 @@ export function filterSpanRawEvents(
   }
   if (!spanId) return [];
   return events.filter((e) => e.correlationId === spanId);
+}
+
+export function getEventSpanId(event: Event): string {
+  const { correlationId } = event;
+  return correlationId && !isRunLevelEvent(event) ? correlationId : event.runId;
 }
 
 // ---------------------------------------------------------------------------

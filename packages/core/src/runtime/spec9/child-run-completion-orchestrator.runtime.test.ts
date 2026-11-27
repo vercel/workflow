@@ -87,19 +87,32 @@ const RAN_AHEAD = [0, 1, 2, 3, 4, 5];
 const DRAINED = [0, 0, 0, 0, 0, 0];
 
 /**
- * Longest a `cra_inc` outcome write is held when the bodies do not all start
- * (the workflow drains, and each body waits for the outcome before it).
+ * Longest a `cra_inc` outcome write is held in a test that expects the
+ * workflow to drain: there the bodies never all start (each waits for the
+ * outcome before it), and every hold ends by timing out.
  */
-const OUTCOME_HOLD_MS = 200;
+const DRAIN_HOLD_MS = 200;
+/**
+ * Longest a `cra_inc` outcome write is held in a test that expects the
+ * workflow to run ahead. Such a test passes without this bound mattering:
+ * the holds end when the last body starts. It only ends a hold when the
+ * workflow drained instead, so that the test fails on its assertion rather
+ * than by timing out. It is far longer than any machine takes to start the
+ * bodies: a bound short enough to notice (200 ms) failed on slow runners
+ * with coarse timers, where six bodies took longer than that to start.
+ */
+const RUN_AHEAD_HOLD_MS = 5_000;
+/** The bound of the test that is running. */
+let outcomeHoldMs = RUN_AHEAD_HOLD_MS;
 
 /**
  * Holds each `cra_inc` outcome write until every `cra_inc` body has started,
- * or {@link OUTCOME_HOLD_MS}, whichever is first. While the workflow runs
- * ahead, the bodies start without waiting for these writes, so body `k`
- * finds exactly `k` outcomes unconfirmed (`RAN_AHEAD`) however slow the
- * machine. A fixed delay let a slow runner commit an outcome before the last
- * body started. While it drains, each body waits for the previous outcome,
- * which commits once the hold times out (`DRAINED`).
+ * or `outcomeHoldMs`, whichever is first. While the workflow runs ahead, the
+ * bodies start without waiting for these writes, so body `k` finds exactly
+ * `k` outcomes unconfirmed (`RAN_AHEAD`) however slow the machine: no hold
+ * ends before the last body started ({@link RUN_AHEAD_HOLD_MS}). While it
+ * drains, each body waits for the previous outcome, which commits once the
+ * hold times out (`DRAINED`, {@link DRAIN_HOLD_MS}).
  */
 const slowOutcomes = {
   async beforeCreate(data: {
@@ -112,13 +125,17 @@ const slowOutcomes = {
     ) {
       await Promise.race([
         allIncStartedPromise,
-        new Promise((resolve) => setTimeout(resolve, OUTCOME_HOLD_MS)),
+        new Promise((resolve) => setTimeout(resolve, outcomeHoldMs)),
       ]);
     }
   },
 };
 
-async function run(body: string, { untilSteps = false } = {}) {
+async function run(
+  body: string,
+  { untilSteps = false, holdMs = RUN_AHEAD_HOLD_MS } = {}
+) {
+  outcomeHoldMs = holdMs;
   const setup = await setupOrchestratorRun(
     workflowCode(body),
     [STEPS],
@@ -193,7 +210,7 @@ describe('spec 9 run-ahead beside a child run (node engine)', () => {
       const [n] = await Promise.all([loop(steps), returnValue(id)]);
       return n;
     `,
-      { untilSteps: true }
+      { untilSteps: true, holdMs: DRAIN_HOLD_MS }
     );
     expect(unconfirmed).toEqual(DRAINED);
   });

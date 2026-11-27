@@ -264,6 +264,7 @@ const SYMBOL_NAMES = [
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
   '@workflow/errors//HookForceClaimedError',
+  '@workflow/errors//RateLimitMaxWaitError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
@@ -1234,6 +1235,25 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
+    RateLimitMaxWaitError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'RateLimitMaxWaitError')
+        return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        key: own(value, 'key'),
+      };
+      const wouldAcquireAt = own(value, 'wouldAcquireAt');
+      if (wouldAcquireAt && !wouldAcquireAt.isUndefined) {
+        reduced.wouldAcquireAt = wouldAcquireAt;
+      } else {
+        wouldAcquireAt?.dispose();
+      }
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
     WorkflowStartError: (value) => {
       if (!isHandle(value) || !value.isError) return false;
       if (chainedString(value, 'name') !== 'WorkflowStartError') return false;
@@ -1960,6 +1980,40 @@ export function createQuickJSSerde(
       } else {
         error = buildError(i.Error, value, { name: 'HookForceClaimedError' });
         for (const field of ['token', 'claimedByRunId', 'claimedByHookId']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+      }
+      return error;
+    },
+    RateLimitMaxWaitError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass(
+        '@workflow/errors//RateLimitMaxWaitError'
+      );
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (key, wouldAcquireAt); the message is the
+        // original's.
+        const key = own(value, 'key') ?? vm.undefined;
+        const wouldAcquireAt = own(value, 'wouldAcquireAt') ?? vm.undefined;
+        error = vm.construct(cls, key, wouldAcquireAt);
+        if (key !== vm.undefined) key.dispose();
+        if (wouldAcquireAt !== vm.undefined) wouldAcquireAt.dispose();
+        for (const field of ['message', 'stack']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+        if (guestHasOwn(value, 'cause')) {
+          const cause = own(value, 'cause') ?? vm.undefined;
+          define(error, 'cause', cause);
+          if (cause !== vm.undefined) cause.dispose();
+        }
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'RateLimitMaxWaitError' });
+        for (const field of ['key', 'wouldAcquireAt']) {
           const handle = own(value, field);
           if (handle && !handle.isUndefined) define(error, field, handle);
           handle?.dispose();

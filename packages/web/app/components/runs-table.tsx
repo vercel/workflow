@@ -1,6 +1,8 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   Button,
+  Spinner,
+  STATUS_DOT,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -15,7 +17,6 @@ import {
   AlertCircle,
   ArrowDownAZ,
   ArrowUpAZ,
-  Loader2,
   MoreHorizontal,
   RefreshCw,
   XCircle,
@@ -184,18 +185,18 @@ interface RunsTableProps {
 }
 
 const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'bg-neutral-600 dark:bg-neutral-400' },
-  running: { label: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
-  completed: { label: 'Completed', color: 'bg-green-600 dark:bg-green-400' },
-  failed: { label: 'Failed', color: 'bg-red-600 dark:bg-red-400' },
-  cancelled: { label: 'Cancelled', color: 'bg-gray-600 dark:bg-gray-400' },
+  pending: { label: 'Pending', color: STATUS_DOT.pending },
+  running: { label: 'Running', color: STATUS_DOT.running },
+  completed: { label: 'Completed', color: STATUS_DOT.completed },
+  failed: { label: 'Failed', color: STATUS_DOT.failed },
+  cancelled: { label: 'Cancelled', color: STATUS_DOT.cancelled },
 };
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 /**
- * Listing-window presets, mirroring front's workflows o11y period picker.
+ * Listing-window presets for the period picker.
  * The selected preset is sent to the backend as an explicit
  * startTime/endTime window so the analytics scan stays bounded. Presets
  * longer than the plan's observability lookback are disabled in the picker
@@ -429,12 +430,8 @@ function FilterControls({
               size="small"
               onClick={onSortToggle}
               disabled={loading}
+              prefix={sortOrder === 'desc' ? <ArrowDownAZ /> : <ArrowUpAZ />}
             >
-              {sortOrder === 'desc' ? (
-                <ArrowDownAZ className="h-4 w-4" />
-              ) : (
-                <ArrowUpAZ className="h-4 w-4" />
-              )}
               {sortOrder === 'desc' ? 'Newest' : 'Oldest'}
             </Button>
           </TooltipTrigger>
@@ -450,9 +447,9 @@ function FilterControls({
               variant="secondary"
               size="small"
               onClick={onRefresh}
-              disabled={loading}
+              loading={loading}
+              prefix={<RefreshCw />}
             >
-              <RefreshCw className={loading ? 'animate-spin' : ''} />
               Refresh
             </Button>
           </TooltipTrigger>
@@ -543,7 +540,6 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
     hasMore,
     loadMore,
     reload,
-    refresh,
     pageInfo: analyticsPageInfo,
   } = useWorkflowRunsInfinite(env, {
     sortOrder,
@@ -627,8 +623,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   const onRefresh = useCallback(() => {
     setLastRefreshTime(() => new Date());
     refreshListingWindow();
-    refresh();
-  }, [refresh, refreshListingWindow]);
+    reload();
+  }, [reload, refreshListingWindow]);
 
   // Get selected runs that are cancellable (pending or running)
   const selectedRuns = useMemo(() => {
@@ -854,7 +850,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                 <TableRow>
                   <TableCell colSpan={7} className="h-[400px]">
                     <div className="flex items-center justify-center h-full">
-                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                      <Spinner size="2xl" />
                     </div>
                   </TableCell>
                 </TableRow>
@@ -947,7 +943,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                 <TableRow>
                   <TableCell colSpan={7} className="py-3">
                     <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Spinner size="md" />
                       Loading more runs…
                     </div>
                   </TableCell>
@@ -993,13 +989,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                   size="small"
                   className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                   onClick={handleBulkReenqueue}
-                  disabled={isBulkReenqueuing || selectedRuns.length === 0}
+                  loading={isBulkReenqueuing}
+                  disabled={selectedRuns.length === 0}
+                  prefix={<Zap />}
                 >
-                  {isBulkReenqueuing ? (
-                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  ) : (
-                    <Zap className="h-4 w-4 mr-1" />
-                  )}
                   {isBulkReenqueuing ? 'Re-enqueuing...' : 'Re-enqueue'}
                 </Button>
               </TooltipTrigger>
@@ -1019,13 +1012,10 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                       size="small"
                       className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                       onClick={handleBulkCancel}
-                      disabled={isBulkCancelling || exceedsBulkCancelLimit}
+                      loading={isBulkCancelling}
+                      disabled={exceedsBulkCancelLimit}
+                      prefix={<XCircle />}
                     >
-                      {isBulkCancelling ? (
-                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                      ) : (
-                        <XCircle className="h-4 w-4 mr-1" />
-                      )}
                       Cancel{' '}
                       {cancellableSelectedRuns.length !==
                       selection.selectionCount
