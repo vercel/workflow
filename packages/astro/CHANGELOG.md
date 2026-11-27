@@ -1,5 +1,14 @@
 # @workflow/astro
 
+## 4.0.34
+
+### Patch Changes
+
+- Updated dependencies [[`514bcbd`](https://github.com/vercel/workflow/commit/514bcbd904b5bb81bc3ff452aa1942ae4d14a9ff)]:
+  - @workflow/vite@4.0.34
+  - @workflow/builders@4.1.24
+  - @workflow/rollup@4.0.34
+
 ## 4.0.33
 
 ### Patch Changes

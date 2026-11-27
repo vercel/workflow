@@ -1,5 +1,11 @@
 # @workflow/world-postgres
 
+## 4.4.2
+
+### Patch Changes
+
+- [#5753](https://github.com/vercel/workflow/pull/5753) [`4deb28a`](https://github.com/vercel/workflow/commit/4deb28aa98746da9e7169cdd8f3657ce6869758a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Live stream readers no longer drop or repeat chunks when several writers write one stream at the same time.
+
 ## 4.4.1
 
 ### Patch Changes

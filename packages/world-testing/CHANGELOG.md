@@ -1,5 +1,14 @@
 # @workflow/world-testing
 
+## 4.1.34
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.8.19
+  - @workflow/cli@4.3.23
+  - @workflow/core@4.8.19
+
 ## 4.1.33
 
 ### Patch Changes
