@@ -31,6 +31,8 @@ This variable is read by the process awaiting `Run.returnValue`, such as an E2E 
 
 Applies whenever the World cannot hold a read open. When it can, the wait below replaces most of this polling and the interval only paces retries.
 
+It is also the first delay after a status read fails with a transient World error (a timeout, a 5xx, or a 429). The delay doubles with each consecutive failure up to 30 seconds (or this interval, if longer), and a `Retry-After` from the World raises it, up to 5 minutes. After 10 failures in a row, `Run.returnValue` rejects with the last error.
+
 ### `WORKFLOW_RETURN_VALUE_WAIT_MS`
 
 - Default: `50000`
