@@ -823,6 +823,10 @@ export class Run<TResult> {
     // NOTE: when this poll runs inside a step (e.g. the step that a parent
     // workflow uses to await a child workflow's `returnValue`), it blocks
     // a queue worker slot for as long as the child run takes to finish.
+    // That includes the transient-error retries below: a World that stays
+    // down holds the slot for up to the whole backoff schedule (about three
+    // minutes at the default interval) in each attempt of the step, before
+    // the step's own retry policy sees the error.
     // Worker-based worlds like `world-postgres` must be sized to cover the
     // peak number of such polls in flight; see the `queueConcurrency`
     // default on the Postgres world and the notes in the eager-processing
@@ -834,7 +838,6 @@ export class Run<TResult> {
         // and payload refs are resolved once below, after a terminal status is
         // observed.
         const useLongPoll = waitForTerminalStatus && longPolls < maxLongPolls;
-        if (useLongPoll) longPolls++;
         const runMetadata = useLongPoll
           ? await waitForTerminalStatus(this.runId, {
               timeoutMs: getReturnValueWaitTimeoutMs(),
@@ -843,6 +846,9 @@ export class Run<TResult> {
           : await world.runs.get(this.runId, {
               resolveData: 'none',
             });
+        // Only a wait that returned counts toward the cap: one that failed
+        // with a transient error is retried as a wait.
+        if (useLongPoll) longPolls++;
 
         if (runMetadata.status === 'cancelled') {
           throw new WorkflowRunCancelledError(this.runId);

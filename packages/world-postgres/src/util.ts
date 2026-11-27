@@ -31,7 +31,7 @@ export function compact<T extends object>(obj: T) {
  */
 export function cloneClientConfig<T extends object>(
   options: T,
-  overrides?: Record<string, unknown>
+  overrides?: Partial<T>
 ): T {
   const config = Object.defineProperties(
     {},
@@ -45,4 +45,19 @@ export function cloneClientConfig<T extends object>(
     }
   }
   return config;
+}
+
+/**
+ * The code of a failed connection or query, for a log line: the SQLSTATE of
+ * a server error (`28P01` for a failed password, `57P01` for a terminated
+ * backend) or the Node.js code of a socket error (`ECONNREFUSED`), else the
+ * error's name. Never its message, which can quote connection options.
+ */
+export function connectionErrorCode(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const { code } = error as { code?: unknown };
+    if (typeof code === 'string' && /^[A-Z0-9_]{1,32}$/.test(code)) return code;
+    if (error instanceof Error) return error.name;
+  }
+  return 'unknown';
 }

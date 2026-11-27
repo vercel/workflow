@@ -31,7 +31,7 @@ This variable is read by the process awaiting `Run.returnValue`, such as an E2E 
 
 Applies whenever the World cannot hold a read open. When it can, the wait below replaces most of this polling and the interval only paces retries.
 
-It is also the first delay after a status read fails with a transient World error (a timeout, a 5xx, or a 429). The delay doubles with each consecutive failure up to 30 seconds (or this interval, if longer), and a `Retry-After` from the World raises it, up to 5 minutes. After 10 failures in a row, `Run.returnValue` rejects with the last error.
+It is also the first delay after a status read fails with a transient World error (a timeout, a 5xx, or a 429). The delay doubles with each consecutive failure up to 30 seconds (or this interval, if longer), and a `Retry-After` from the World raises it, up to 5 minutes. After 10 failures in a row, `Run.returnValue` rejects with the last error. When `Run.returnValue` is awaited inside a step, these retries run within one attempt of that step, which can therefore keep running for about three minutes at the default interval before the step's own retries start.
 
 ### `WORKFLOW_RETURN_VALUE_WAIT_MS`
 
@@ -49,7 +49,7 @@ Read by the process awaiting `Run.returnValue`, like the interval above.
 
 - Default: `10`
 
-How many consecutive waits `Run.returnValue` issues before falling back to interval polling for the rest of the await. Minimum `1`.
+How many consecutive waits `Run.returnValue` issues before falling back to interval polling for the rest of the await. A wait that fails with a transient World error does not count. Minimum `1`.
 
 Change it when: you routinely await long runs. Raise it.
 

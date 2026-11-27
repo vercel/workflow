@@ -120,6 +120,33 @@ describe('Run.returnValue on a transient World error', () => {
     await assertion;
   });
 
+  it('does not count a failed long poll toward WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS', async () => {
+    const maxLongPolls = 'WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS';
+    const previous = process.env[maxLongPolls];
+    process.env[maxLongPolls] = '1';
+    try {
+      const waitForTerminalStatus = vi
+        .fn()
+        .mockRejectedValueOnce(timedOut())
+        .mockResolvedValue(cancelledRun);
+      const get = vi.fn().mockResolvedValue(cancelledRun);
+      setWorld(createWorld({ get, waitForTerminalStatus }));
+
+      const assertion = expect(new Run(RUN_ID).returnValue).rejects.toThrow(
+        WorkflowRunCancelledError
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+
+      // The one wait the cap allows is the retry, not a plain read.
+      expect(waitForTerminalStatus).toHaveBeenCalledTimes(2);
+      expect(get).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env[maxLongPolls];
+      else process.env[maxLongPolls] = previous;
+    }
+  });
+
   it('retries the payload read of a completed run', async () => {
     vi.useRealTimers();
     process.env[envName] = '10';

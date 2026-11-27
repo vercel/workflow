@@ -12,7 +12,7 @@ import { Client, type Pool } from 'pg';
 import { incrementBase32, monotonicFactory, TIME_LEN } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
-import { cloneClientConfig, Mutex } from './util.js';
+import { cloneClientConfig, connectionErrorCode, Mutex } from './util.js';
 
 const StreamPublishMessage = z.object({
   streamId: z.string(),
@@ -121,6 +121,10 @@ export const listenChannel = async (
   // Set while the subscription is down, so the drop and the recovery each
   // log once per outage rather than once per failed attempt.
   let degraded = false;
+  // The code of the last failed reconnect attempt this outage. A failure is
+  // logged when its code differs from the previous one, so an outage that
+  // keeps failing the same way (a wrong password: `28P01`) logs it once.
+  let lastFailureCode: string | undefined;
 
   const onNotification = (msg: { payload?: string | undefined }) => {
     onPayload(msg.payload ?? '').catch(() => {});
@@ -194,12 +198,20 @@ export const listenChannel = async (
         pool.options.connectionTimeoutMillis ||
           LISTEN_RECONNECT_CONNECT_TIMEOUT_MS
       );
-    } catch {
+    } catch (error) {
+      const code = connectionErrorCode(error);
+      if (code !== lastFailureCode) {
+        lastFailureCode = code;
+        console.warn(
+          `[world-postgres] LISTEN ${channel} reconnect failed (${code}); retrying`
+        );
+      }
       scheduleReconnect();
       return;
     }
     if (!subscribed) return;
     degraded = false;
+    lastFailureCode = undefined;
     console.warn(`[world-postgres] LISTEN ${channel} connection restored`);
     try {
       options.onReconnect?.();

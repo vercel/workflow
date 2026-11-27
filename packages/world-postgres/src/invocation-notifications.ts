@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Client, type Pool } from 'pg';
-import { cloneClientConfig } from './util.js';
+import { cloneClientConfig, connectionErrorCode } from './util.js';
 
 export const INVOCATION_INPUT_TOPIC = 'workflow_invocation_input';
 export const INVOCATION_RESULT_TOPIC = 'workflow_invocation_result';
@@ -54,7 +54,8 @@ export function createInvocationNotifications(pool: Pool) {
     retryAfter = Date.now() + RECONNECT_BACKOFF_MS;
     if (!closed && !degraded) {
       degraded = true;
-      // State transitions only, and no raw pg errors/connection options.
+      // State transitions and error codes only, never a raw pg error message
+      // or the connection options.
       console.warn(
         `[world-postgres] Invocation notifications unavailable (${reason}); using fallback reads`
       );
@@ -100,8 +101,11 @@ export function createInvocationNotifications(pool: Pool) {
           }
           wakeAll();
         }
-      } catch {
-        disconnected(connection, 'subscription failed');
+      } catch (error) {
+        disconnected(
+          connection,
+          `subscription failed: ${connectionErrorCode(error)}`
+        );
       } finally {
         connecting = undefined;
       }
