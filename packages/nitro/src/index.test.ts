@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
@@ -618,5 +622,46 @@ describe('@workflow/nitro published-package bundling', () => {
     await nitroModule.setup(nitro);
 
     expect(nitro.options).not.toHaveProperty('moduleSideEffects');
+  });
+});
+
+describe('@workflow/nitro server chunk banner', () => {
+  async function serverChunkBanner(): Promise<string> {
+    const rollupBeforeHooks: Array<(nitro: any, config: any) => void> = [];
+    const nitro = createNitroStub({ routing: true });
+    nitro.hooks.hook = (
+      name: string,
+      hook: (nitro: any, config: any) => void
+    ) => {
+      if (name === 'rollup:before') rollupBeforeHooks.push(hook);
+    };
+    await nitroModule.setup(nitro);
+
+    const config: { plugins: unknown[]; output?: { banner?: string } } = {
+      plugins: [],
+    };
+    for (const hook of rollupBeforeHooks) hook(nitro, config);
+    return config.output?.banner ?? '';
+  }
+
+  function runChunk(source: string): string {
+    const dir = mkdtempSync(join(tmpdir(), 'workflow-nitro-banner-'));
+    try {
+      const file = join(dir, 'chunk.mjs');
+      writeFileSync(file, source);
+      return execFileSync(process.execPath, [file], { encoding: 'utf8' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('loads a chunk that declares its own module-scoped `require`', async () => {
+    const banner = await serverChunkBanner();
+
+    const stdout = runChunk(
+      `${banner}\nconst require = () => 'chunk';\nconsole.log(typeof globalThis.require, require());\n`
+    );
+
+    expect(stdout.trim()).toBe('function chunk');
   });
 });

@@ -76,24 +76,28 @@ function createWorkflowPlugins(builder: SvelteKitBuilder): Plugin[] {
       // set on the resolved config. We gate to the SSR build because a
       // `node:module` import in the client/browser bundle would break it.
       //
+      // The check reads `globalThis.require` because a chunk can declare its
+      // own `const require` below the banner, which is still in its temporal
+      // dead zone.
+      //
       // This is a Node-server-runtime-only shim. Note the deliberate global
       // side effect: defining `globalThis.require` makes `typeof require` truthy
       // for *every* bundled dependency in this ESM server output, so any library
       // that feature-detects `require` will take its CJS path here. That is safe
-      // because (a) it never touches the client bundle, (b) the `typeof require
-      // === 'undefined'` guard makes it a no-op in CJS chunks where a real
-      // `require` already exists, and (c) the `require` we install is a working
-      // `createRequire`, so a library that switches to the require path gets a
-      // functional `require`, not a broken stub. The behavior to watch for is a
-      // bundled lib that, on seeing `require`, does `require()` of an ESM-only
-      // dependency on a Node version without `require(ESM)` support.
+      // because (a) it never touches the client bundle, (b) the check leaves a
+      // `require` that already exists alone, and (c) the `require` we install is
+      // a working `createRequire`, so a library that switches to the require
+      // path gets a functional `require`, not a broken stub. The behavior to
+      // watch for is a bundled lib that, on seeing `require`, does `require()`
+      // of an ESM-only dependency on a Node version without `require(ESM)`
+      // support.
       configResolved(config) {
         if (!config.build?.ssr) {
           return;
         }
 
         const banner =
-          "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+          "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof globalThis.require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
         const rollupOptions = config.build.rollupOptions;
         rollupOptions.output ??= {};
         const output = rollupOptions.output;
