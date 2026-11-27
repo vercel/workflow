@@ -1,0 +1,25 @@
+{
+  "name": "@workflow/inline-step-bench",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "description": "Local benchmark for step-to-step overhead of eagerly-inlined steps (single invocation, no queue hop)",
+  "scripts": {
+    "build": "wf build",
+    "bench": "node bench.mjs",
+    "clean": "rm -rf .well-known .workflow-data .swc results"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.19.13",
+    "@workflow/cli": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "hono": "4.12.25",
+    "workflow": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
+  }
+}
