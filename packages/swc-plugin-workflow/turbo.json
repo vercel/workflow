@@ -3,8 +3,15 @@
   "extends": ["//"],
   "tasks": {
     "build": {
-      "outputs": ["swc_plugin_workflow.wasm", "build-hash.json"],
+      "outputs": [
+        "swc_plugin_workflow.wasm",
+        "swc_plugin_workflow_swc116.wasm",
+        "build-hash.json"
+      ],
       "env": ["RUSTUP_HOME", "CARGO_HOME"]
+    },
+    "test": {
+      "dependsOn": ["build", "^build"]
     }
   }
 }

@@ -7,6 +7,7 @@
   "main": "swc_plugin_workflow.wasm",
   "files": [
     "swc_plugin_workflow.wasm",
+    "swc_plugin_workflow_swc116.wasm",
     "build-hash.json"
   ],
   "publishConfig": {
@@ -19,11 +20,12 @@
   },
   "exports": {
     ".": "./swc_plugin_workflow.wasm",
+    "./swc-1.16": "./swc_plugin_workflow_swc116.wasm",
     "./package.json": "./package.json",
     "./build-hash.json": "./build-hash.json"
   },
   "peerDependencies": {
-    "@swc/core": "catalog:"
+    "@swc/core": ">=1.15.0 <1.17.0"
   },
   "keywords": [
     "swc-plugin"
@@ -31,8 +33,18 @@
   "scripts": {
     "build": "node build.js",
     "clean": "cargo clean",
-    "test": "cargo test -p swc_workflow",
+    "test": "cargo test -p swc_workflow -p swc_workflow_swc116 && vitest run --config=../../vitest.config.ts test",
     "prepublishOnly": "pnpm build"
   },
-  "preferUnplugged": true
+  "preferUnplugged": true,
+  "devDependencies": {
+    "@swc/core": "catalog:",
+    "next": "16.4.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "swc-core-1-15-0": "npm:@swc/core@1.15.0",
+    "swc-core-1-16": "npm:@swc/core@1.16.22",
+    "swc-core-1-16-0": "npm:@swc/core@1.16.0",
+    "vitest": "catalog:"
+  }
 }

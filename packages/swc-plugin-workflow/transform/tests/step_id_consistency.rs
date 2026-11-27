@@ -1,5 +1,9 @@
 //! Step and workflow mode must agree on every step's ID: workflow mode looks a
 //! step up by the ID that step mode registered for the same function body.
+
+// Built as `swc_workflow_swc116` by ../transform-swc-1.16; same API.
+#[cfg(feature = "swc-116")]
+extern crate swc_workflow_swc116 as swc_workflow;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -37,8 +41,8 @@ fn lookups(code: &str) -> BTreeSet<String> {
         .collect()
 }
 
-#[testing::fixture("tests/fixture/**/input.js")]
-#[testing::fixture("tests/fixture/**/input.ts")]
+#[testing::fixture("../transform/tests/fixture/**/input.js")]
+#[testing::fixture("../transform/tests/fixture/**/input.ts")]
 fn workflow_lookups_are_registered(input: PathBuf) {
     let dir = input.parent().unwrap();
     let step = fs::read_to_string(dir.join("output-step.js")).unwrap();
@@ -91,8 +95,8 @@ fn step_name_assignments(input: &PathBuf, mode: TransformMode) -> BTreeMap<(u32,
 /// are swapped between the modes. Step mode also names steps that workflow
 /// mode never sees (e.g. steps nested in a step body), so only the steps
 /// workflow mode names are compared.
-#[testing::fixture("tests/fixture/**/input.js")]
-#[testing::fixture("tests/fixture/**/input.ts")]
+#[testing::fixture("../transform/tests/fixture/**/input.js")]
+#[testing::fixture("../transform/tests/fixture/**/input.ts")]
 fn modes_assign_same_step_names(input: PathBuf) {
     let step = step_name_assignments(&input, TransformMode::Step);
     let workflow = step_name_assignments(&input, TransformMode::Workflow);
@@ -138,8 +142,8 @@ fn top_level_declarations(code: &str) -> Vec<&str> {
 
 /// Each step is registered once, under its own ID and binding, and generated
 /// bindings never redeclare a top-level name in either output.
-#[testing::fixture("tests/fixture/**/input.js")]
-#[testing::fixture("tests/fixture/**/input.ts")]
+#[testing::fixture("../transform/tests/fixture/**/input.js")]
+#[testing::fixture("../transform/tests/fixture/**/input.ts")]
 fn registrations_and_bindings_are_unique(input: PathBuf) {
     let dir = input.parent().unwrap();
     let step = fs::read_to_string(dir.join("output-step.js")).unwrap();

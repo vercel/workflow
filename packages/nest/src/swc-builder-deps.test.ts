@@ -18,8 +18,10 @@ import {
   devInstallCommand,
   inspectSwcBuilderPackages,
   isSupportedSwcCoreVersion,
-  SUPPORTED_SWC_CORE_LINE,
   SWC_CORE_INSTALL_SPEC,
+  SWC_PLUGIN_BUILDS,
+  swcPluginBuildFor,
+  swcPluginBuildOfPath,
 } from './swc-builder-deps.js';
 
 /** Write a package into `nodeModules` and return its directory. */
@@ -64,7 +66,7 @@ afterEach(() => {
 
 describe('supported @swc/core line', () => {
   const PINS =
-    'SUPPORTED_SWC_CORE_LINE and SWC_CORE_INSTALL_SPEC in ' +
+    'SWC_PLUGIN_BUILDS and SWC_CORE_INSTALL_SPEC in ' +
     'packages/nest/src/swc-builder-deps.ts, and the pinned @swc/core version ' +
     'in docs/content/docs/v4/getting-started/nestjs.mdx, ' +
     'docs/content/docs/v5/getting-started/nestjs.mdx and ' +
@@ -81,23 +83,32 @@ describe('supported @swc/core line', () => {
     const { version } = JSON.parse(readFileSync(packageJson, 'utf-8'));
     expect(
       isSupportedSwcCoreVersion(version),
-      `@workflow/nest depends on @swc/core ${version}, but ` +
-        `SUPPORTED_SWC_CORE_LINE is ${SUPPORTED_SWC_CORE_LINE}. Only if the ` +
-        'Workflow SWC plugin has been rebuilt for the new @swc/core line, ' +
+      `@workflow/nest depends on @swc/core ${version}, but no entry in ` +
+        'SWC_PLUGIN_BUILDS runs on it. Only if the Workflow SWC plugin has ' +
+        'a build for the new @swc/core line, ' +
         `update ${PINS} together. Otherwise, revert the @swc/core catalog ` +
         'bump in pnpm-workspace.yaml.'
     ).toBe(true);
   });
 
-  it('installs a version on the supported line', () => {
+  it('installs a version on a supported line', () => {
     expect(
-      SWC_CORE_INSTALL_SPEC.startsWith(
-        `@swc/core@~${SUPPORTED_SWC_CORE_LINE}.`
+      SWC_PLUGIN_BUILDS.some((build) =>
+        SWC_CORE_INSTALL_SPEC.startsWith(`@swc/core@~${build.line}.`)
       ),
-      `SWC_CORE_INSTALL_SPEC (${SWC_CORE_INSTALL_SPEC}) is not on ` +
-        `SUPPORTED_SWC_CORE_LINE (${SUPPORTED_SWC_CORE_LINE}): update ${PINS} ` +
-        'together.'
+      `SWC_CORE_INSTALL_SPEC (${SWC_CORE_INSTALL_SPEC}) is not on a line in ` +
+        `SWC_PLUGIN_BUILDS: update ${PINS} together.`
     ).toBe(true);
+  });
+
+  it.each(
+    SWC_PLUGIN_BUILDS.map((build) => [build.specifier, build.wasm] as const)
+  )('@workflow/swc-plugin exports %s as %s', (specifier, wasm) => {
+    // init writes the path this resolves to into .swcrc, so each build has to
+    // be a real export of the package @workflow/nest depends on, pointing at
+    // the wasm file its name says.
+    const resolved = createRequire(import.meta.url).resolve(specifier);
+    expect(resolved.replace(/\\/g, '/').split('/').pop()).toBe(wasm);
   });
 
   it.each([
@@ -141,8 +152,11 @@ describe('isSupportedSwcCoreVersion', () => {
     ['1.15.3', true],
     ['1.15.18', true],
     ['1.15.18-nightly-20260101.1', true],
-    ['1.16.0', false],
-    ['1.16.22', false],
+    ['1.15.47', true],
+    ['1.16.0', true],
+    ['1.16.22', true],
+    ['1.16.22-nightly-20261105.1', true],
+    ['1.17.0', false],
     ['1.14.0', false],
     ['1.150.0', false],
     ['2.15.0', false],
@@ -152,14 +166,61 @@ describe('isSupportedSwcCoreVersion', () => {
   });
 });
 
+describe('swcPluginBuildFor', () => {
+  it.each([
+    ['1.15.3', '@workflow/swc-plugin'],
+    ['1.15.47', '@workflow/swc-plugin'],
+    ['1.16.0', '@workflow/swc-plugin/swc-1.16'],
+    ['1.16.22', '@workflow/swc-plugin/swc-1.16'],
+  ])('%s -> %s', (version, specifier) => {
+    expect(swcPluginBuildFor(version)?.specifier).toBe(specifier);
+  });
+
+  it.each(['1.14.0', '1.17.0', 'unknown'])('%s -> none', (version) => {
+    expect(swcPluginBuildFor(version)).toBeUndefined();
+  });
+});
+
+describe('swcPluginBuildOfPath', () => {
+  it.each([
+    ['/app/node_modules/@workflow/swc-plugin/swc_plugin_workflow.wasm', '1.15'],
+    [
+      '/app/node_modules/@workflow/swc-plugin/swc_plugin_workflow_swc116.wasm',
+      '1.16',
+    ],
+    [
+      'C:\\app\\node_modules\\@workflow\\swc-plugin\\swc_plugin_workflow_swc116.wasm',
+      '1.16',
+    ],
+  ])('%s -> %s', (path, line) => {
+    expect(swcPluginBuildOfPath(path)?.line).toBe(line);
+  });
+
+  it.each([
+    ['@workflow/swc-plugin', '1.15'],
+    ['@workflow/swc-plugin/swc-1.16', '1.16'],
+  ])('reads a hand-written package specifier %s as %s', (path, line) => {
+    expect(swcPluginBuildOfPath(path)?.line).toBe(line);
+  });
+
+  it.each([
+    '/plugins/other_plugin.wasm',
+    './swc_plugin_workflow.wasm.bak',
+    '@workflow/swc-plugin/build-hash.json',
+    '',
+  ])('is undefined for %j', (path) => {
+    expect(swcPluginBuildOfPath(path)).toBeUndefined();
+  });
+});
+
 describe('inspectSwcBuilderPackages', () => {
-  it('reports @swc/core 1.16 at the project root, not the 1.15 copy nested under @workflow/nest (npm, yarn)', () => {
-    // The layout `npm i -D @swc/cli @swc/core` produces today: the app's
-    // @swc/core 1.16 is hoisted, and @workflow/nest keeps its own 1.15 copy.
+  it('reports @swc/core 1.17 at the project root, not the 1.15 copy nested under @workflow/nest (npm, yarn)', () => {
+    // The app's @swc/core is hoisted, and @workflow/nest keeps its own 1.15
+    // copy. 1.17 stands for any line no plugin build runs on.
     const dir = createApp();
     const nm = join(dir, 'node_modules');
     installFake(nm, '@swc/cli', '0.8.2');
-    const core = installFake(nm, '@swc/core', '1.16.22');
+    const core = installFake(nm, '@swc/core', '1.17.0');
     installFake(
       join(nm, '@workflow', 'nest', 'node_modules'),
       '@swc/core',
@@ -167,7 +228,7 @@ describe('inspectSwcBuilderPackages', () => {
     );
     expect(inspectSwcBuilderPackages(dir)).toEqual({
       cli: true,
-      core: { state: 'unsupported', version: '1.16.22', path: core },
+      core: { state: 'unsupported', version: '1.17.0', path: core },
     });
   });
 
@@ -203,10 +264,10 @@ describe('inspectSwcBuilderPackages', () => {
   it('follows pnpm symlinks to the @swc/core that @swc/cli resolves', () => {
     const dir = createApp();
     const store = join(dir, 'node_modules', '.pnpm');
-    const core116 = installFake(
-      join(store, '@swc+core@1.16.22', 'node_modules'),
+    const core117 = installFake(
+      join(store, '@swc+core@1.17.0', 'node_modules'),
       '@swc/core',
-      '1.16.22'
+      '1.17.0'
     );
     const core115 = installFake(
       join(store, '@swc+core@1.15.3', 'node_modules'),
@@ -215,17 +276,17 @@ describe('inspectSwcBuilderPackages', () => {
     );
     const cliModules = join(
       store,
-      '@swc+cli@0.8.2_@swc+core@1.16.22',
+      '@swc+cli@0.8.2_@swc+core@1.17.0',
       'node_modules'
     );
     const cli = installFake(cliModules, '@swc/cli', '0.8.2');
-    link(cliModules, '@swc/core', core116);
+    link(cliModules, '@swc/core', core117);
     // @workflow/nest's own 1.15 copy, which must not be what we report.
     const nestModules = join(store, '@workflow+nest@5.1.7', 'node_modules');
     installFake(nestModules, '@workflow/nest', '5.1.7');
     link(nestModules, '@swc/core', core115);
     link(join(dir, 'node_modules'), '@swc/cli', cli);
-    link(join(dir, 'node_modules'), '@swc/core', core116);
+    link(join(dir, 'node_modules'), '@swc/core', core117);
     link(
       join(dir, 'node_modules'),
       '@workflow/nest',
@@ -234,7 +295,7 @@ describe('inspectSwcBuilderPackages', () => {
 
     expect(inspectSwcBuilderPackages(dir)).toEqual({
       cli: true,
-      core: { state: 'unsupported', version: '1.16.22', path: core116 },
+      core: { state: 'unsupported', version: '1.17.0', path: core117 },
     });
   });
 
@@ -248,11 +309,11 @@ describe('inspectSwcBuilderPackages', () => {
     const nested = installFake(
       join(cli, 'node_modules'),
       '@swc/core',
-      '1.16.22'
+      '1.17.0'
     );
     expect(inspectSwcBuilderPackages(dir).core).toEqual({
       state: 'unsupported',
-      version: '1.16.22',
+      version: '1.17.0',
       path: nested,
     });
   });
@@ -275,12 +336,12 @@ describe('inspectSwcBuilderPackages', () => {
   it('finds packages hoisted to a monorepo root', () => {
     const dir = createApp();
     installFake(join(dir, 'node_modules'), '@swc/cli', '0.8.2');
-    installFake(join(dir, 'node_modules'), '@swc/core', '1.16.0');
+    installFake(join(dir, 'node_modules'), '@swc/core', '1.17.0');
     const app = join(dir, 'apps', 'api');
     mkdirSync(app, { recursive: true });
     expect(inspectSwcBuilderPackages(app).core).toMatchObject({
       state: 'unsupported',
-      version: '1.16.0',
+      version: '1.17.0',
     });
   });
 
@@ -299,7 +360,7 @@ describe('inspectSwcBuilderPackages', () => {
 
 /**
  * An npm (or yarn 1) workspace as `npm i` lays it out: the root declares
- * @nestjs/cli and @swc/core 1.16, and the app follows the docs with 1.15.
+ * @nestjs/cli and @swc/core 1.17, and the app follows the docs with 1.15.
  * Everything the root declares is hoisted to the root `node_modules`.
  */
 function npmWorkspace() {
@@ -311,7 +372,7 @@ function npmWorkspace() {
   const rootModules = join(root, 'node_modules');
   installFake(rootModules, '@nestjs/cli', '12.0.13');
   installFake(rootModules, '@swc/cli', '0.8.2');
-  const rootCore = installFake(rootModules, '@swc/core', '1.16.22');
+  const rootCore = installFake(rootModules, '@swc/core', '1.17.0');
   const app = join(root, 'apps', 'api');
   mkdirSync(app, { recursive: true });
   writeFileSync(join(app, 'package.json'), '{"name":"api"}');
@@ -327,7 +388,7 @@ function npmWorkspace() {
 /**
  * The same workspace under pnpm: packages live in the root's `.pnpm` store
  * and every `node_modules` entry is a symlink. The root @nestjs/cli's
- * @swc/cli and @swc/core peers are linked to the root's 1.16 copy.
+ * @swc/cli and @swc/core peers are linked to the root's 1.17 copy.
  */
 function pnpmWorkspace() {
   const root = createApp();
@@ -339,7 +400,7 @@ function pnpmWorkspace() {
       '@swc/core',
       version
     );
-  const core116 = core('1.16.22');
+  const core117 = core('1.17.0');
   const core115 = core('1.15.47');
   const cli = (version: string, coreDir: string, coreVersion: string) => {
     const modules = join(
@@ -350,31 +411,31 @@ function pnpmWorkspace() {
     link(modules, '@swc/core', coreDir);
     return installFake(modules, '@swc/cli', version);
   };
-  const cli116 = cli('0.8.2', core116, '1.16.22');
+  const cli117 = cli('0.8.2', core117, '1.17.0');
   const cli115 = cli('0.8.1', core115, '1.15.47');
   const nestModules = join(
     store,
-    '@nestjs+cli@12.0.13_@swc+cli@0.8.2_@swc+core@1.16.22',
+    '@nestjs+cli@12.0.13_@swc+cli@0.8.2_@swc+core@1.17.0',
     'node_modules'
   );
   const nestCli = installFake(nestModules, '@nestjs/cli', '12.0.13');
-  link(nestModules, '@swc/cli', cli116);
-  link(nestModules, '@swc/core', core116);
+  link(nestModules, '@swc/cli', cli117);
+  link(nestModules, '@swc/core', core117);
   link(join(root, 'node_modules'), '@nestjs/cli', nestCli);
   const app = join(root, 'apps', 'api');
   mkdirSync(app, { recursive: true });
   writeFileSync(join(app, 'package.json'), '{"name":"api"}');
   link(join(app, 'node_modules'), '@swc/cli', cli115);
   link(join(app, 'node_modules'), '@swc/core', core115);
-  return { root, app, core116, core115, store };
+  return { root, app, core117, core115, store };
 }
 
 describe('inspectSwcBuilderPackages in workspaces', () => {
-  it('reports the 1.16 @swc/core the root @nestjs/cli loads, not the app 1.15 (npm workspace)', () => {
+  it('reports the 1.17 @swc/core the root @nestjs/cli loads, not the app 1.15 (npm workspace)', () => {
     const { root, app, rootCore } = npmWorkspace();
     expect(inspectSwcBuilderPackages(app)).toEqual({
       cli: true,
-      core: { state: 'unsupported', version: '1.16.22', path: rootCore },
+      core: { state: 'unsupported', version: '1.17.0', path: rootCore },
       outside: {
         dir: root,
         relative: '../..',
@@ -384,11 +445,11 @@ describe('inspectSwcBuilderPackages in workspaces', () => {
     });
   });
 
-  it('reports the 1.16 @swc/core the root @nestjs/cli loads, not the app 1.15 (pnpm workspace)', () => {
-    const { root, app, core116 } = pnpmWorkspace();
+  it('reports the 1.17 @swc/core the root @nestjs/cli loads, not the app 1.15 (pnpm workspace)', () => {
+    const { root, app, core117 } = pnpmWorkspace();
     expect(inspectSwcBuilderPackages(app)).toEqual({
       cli: true,
-      core: { state: 'unsupported', version: '1.16.22', path: core116 },
+      core: { state: 'unsupported', version: '1.17.0', path: core117 },
       outside: {
         dir: root,
         relative: '../..',
@@ -486,7 +547,7 @@ describe('inspectSwcBuilderPackages in workspaces', () => {
       inspectSwcBuilderPackages(app),
       'npm'
     );
-    expect(message).toContain('@swc/core 1.16.22 is installed');
+    expect(message).toContain('@swc/core 1.17.0 is installed');
     expect(message).toContain(
       `\`nest build\` loads them through @nestjs/cli in ${root}, outside this app`
     );
@@ -553,20 +614,20 @@ describe('describeSwcBuilderProblems', () => {
     ).toBeNull();
   });
 
-  it('names the installed 1.16 version and gives the pinned install command', () => {
+  it('names the installed 1.17 version and gives the pinned install command', () => {
     const message = describeSwcBuilderProblems(
       {
         cli: true,
         core: {
           state: 'unsupported',
-          version: '1.16.22',
+          version: '1.17.0',
           path: '/app/node_modules/@swc/core',
         },
       },
       'npm'
     );
-    expect(message).toContain('@swc/core 1.16.22 is installed');
-    expect(message).toContain('only runs on @swc/core 1.15.x');
+    expect(message).toContain('@swc/core 1.17.0 is installed');
+    expect(message).toContain('only runs on @swc/core 1.15.x or 1.16.x');
     expect(message).toContain('/app/node_modules/@swc/core');
     expect(message?.split('\n').at(-1)).toBe('  npm i -D @swc/core@~1.15.18');
   });
@@ -586,12 +647,12 @@ describe('describeSwcBuilderProblems', () => {
     const message = describeSwcBuilderProblems(
       {
         cli: false,
-        core: { state: 'unsupported', version: '1.16.0', path: '/x' },
+        core: { state: 'unsupported', version: '1.17.0', path: '/x' },
       },
       'yarn'
     );
     expect(message).toContain('@swc/cli is not installed');
-    expect(message).toContain('@swc/core 1.16.0 is installed');
+    expect(message).toContain('@swc/core 1.17.0 is installed');
     expect(message?.split('\n').at(-1)).toBe(
       '  yarn add -D @swc/cli @swc/core@~1.15.18'
     );

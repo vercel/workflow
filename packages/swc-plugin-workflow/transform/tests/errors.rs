@@ -1,3 +1,7 @@
+// Built as `swc_workflow_swc116` by ../transform-swc-1.16; same API.
+#[cfg(feature = "swc-116")]
+extern crate swc_workflow_swc116 as swc_workflow;
+
 use std::path::PathBuf;
 use swc_core::ecma::{
     transforms::testing::{test_fixture, FixtureTestConfig},
@@ -5,7 +9,7 @@ use swc_core::ecma::{
 };
 use swc_workflow::{StepTransform, TransformMode};
 
-#[testing::fixture("tests/errors/**/input.js")]
+#[testing::fixture("../transform/tests/errors/**/input.js")]
 fn step_mode(input: PathBuf) {
     let output = input.parent().unwrap().join("output-step.js");
     if !output.exists() {
@@ -31,7 +35,7 @@ fn step_mode(input: PathBuf) {
     );
 }
 
-#[testing::fixture("tests/errors/**/input.js")]
+#[testing::fixture("../transform/tests/errors/**/input.js")]
 fn workflow_mode(input: PathBuf) {
     let output = input.parent().unwrap().join("output-workflow.js");
     if !output.exists() {

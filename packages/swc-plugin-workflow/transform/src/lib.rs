@@ -10,6 +10,23 @@ use swc_core::{
     },
 };
 
+mod compat;
+use compat::{
+    ArrowBody, FnBody, Stmts, fn_body, getter_body, getter_body_mut, setter_body, setter_param,
+    visit_getter_children, visit_mut_getter_children, visit_mut_setter_children,
+    visit_setter_children,
+};
+
+/// `ArrowBody`'s block variant, usable as a pattern or an expression.
+#[cfg(not(feature = "swc-116"))]
+macro_rules! arrow_block {
+    ($($t:tt)*) => { BlockStmtOrExpr::BlockStmt($($t)*) };
+}
+#[cfg(feature = "swc-116")]
+macro_rules! arrow_block {
+    ($($t:tt)*) => { ArrowFunctionBody::FunctionBody($($t)*) };
+}
+
 #[derive(Debug, Clone)]
 enum WorkflowErrorKind {
     NonAsyncFunction {
@@ -84,7 +101,7 @@ fn sanitize_ident_part(name: &str) -> String {
         .collect()
 }
 
-fn block_has_use_step_directive(body: Option<&BlockStmt>) -> bool {
+fn block_has_use_step_directive(body: Option<&FnBody>) -> bool {
     body.is_some_and(|body| {
         body.stmts.iter().any(|stmt| {
             matches!(
@@ -115,7 +132,7 @@ impl NestedStepDetector {
         detector.found
     }
 
-    fn inspect_body(&mut self, body: Option<&BlockStmt>) {
+    fn inspect_body(&mut self, body: Option<&FnBody>) {
         if self.function_depth > 0 && block_has_use_step_directive(body) {
             self.found = true;
         }
@@ -139,7 +156,7 @@ impl Visit for NestedStepDetector {
         if self.found {
             return;
         }
-        if let BlockStmtOrExpr::BlockStmt(body) = &*arrow.body {
+        if let arrow_block!(body) = &*arrow.body {
             self.inspect_body(Some(body));
         }
         self.function_depth += 1;
@@ -151,10 +168,14 @@ impl Visit for NestedStepDetector {
         if self.found {
             return;
         }
-        self.inspect_body(getter.body.as_ref());
+        self.inspect_body(getter_body(getter).as_ref());
         self.function_depth += 1;
-        getter.visit_children_with(self);
+        visit_getter_children(getter, self);
         self.function_depth -= 1;
+    }
+
+    fn visit_setter_prop(&mut self, setter: &SetterProp) {
+        visit_setter_children(setter, self);
     }
 }
 
@@ -190,8 +211,8 @@ impl Visit for ExplicitTildeStepDetector {
         }
         let has_step = match &*prop.value {
             Expr::Arrow(arrow) => match &*arrow.body {
-                BlockStmtOrExpr::BlockStmt(body) => block_has_use_step_directive(Some(body)),
-                BlockStmtOrExpr::Expr(_) => false,
+                arrow_block!(body) => block_has_use_step_directive(Some(body)),
+                ArrowBody::Expr(_) => false,
             },
             Expr::Fn(function) => block_has_use_step_directive(function.function.body.as_ref()),
             _ => false,
@@ -214,10 +235,12 @@ impl Visit for ExplicitTildeStepDetector {
     }
 
     fn visit_getter_prop(&mut self, prop: &GetterProp) {
-        if prop_name_contains_tilde(&prop.key) && block_has_use_step_directive(prop.body.as_ref()) {
+        if prop_name_contains_tilde(&prop.key)
+            && block_has_use_step_directive(getter_body(prop).as_ref())
+        {
             self.found = true;
         } else if !self.found {
-            prop.visit_children_with(self);
+            visit_getter_children(prop, self);
         }
     }
 }
@@ -997,10 +1020,10 @@ impl ClosureVariableCollector {
 
         // Visit arrow body
         match &*arrow.body {
-            BlockStmtOrExpr::BlockStmt(block) => {
+            arrow_block!(block) => {
                 collector.collect_from_block_stmt(block);
             }
-            BlockStmtOrExpr::Expr(expr) => {
+            ArrowBody::Expr(expr) => {
                 collector.collect_from_expr(expr);
             }
         }
@@ -1046,8 +1069,8 @@ impl ClosureVariableCollector {
         }
     }
 
-    fn collect_from_block_stmt(&mut self, block: &BlockStmt) {
-        for stmt in &block.stmts {
+    fn collect_from_block_stmt(&mut self, block: &impl Stmts) {
+        for stmt in block.stmts() {
             self.collect_from_stmt(stmt);
         }
     }
@@ -1367,13 +1390,15 @@ impl ClosureVariableCollector {
                                     }
                                 }
                                 Prop::Getter(getter) => {
-                                    if let Some(body) = &getter.body {
+                                    if let Some(body) = getter_body(getter) {
                                         self.collect_from_block_stmt(body);
                                     }
                                 }
                                 Prop::Setter(setter) => {
-                                    self.collect_declared_names(&setter.param);
-                                    if let Some(body) = &setter.body {
+                                    if let Some(param) = setter_param(setter) {
+                                        self.collect_declared_names(param);
+                                    }
+                                    if let Some(body) = setter_body(setter) {
                                         self.collect_from_block_stmt(body);
                                     }
                                 }
@@ -1406,10 +1431,10 @@ impl ClosureVariableCollector {
                     self.collect_declared_names(param);
                 }
                 match &*arrow.body {
-                    BlockStmtOrExpr::BlockStmt(block) => {
+                    arrow_block!(block) => {
                         self.collect_from_block_stmt(block);
                     }
-                    BlockStmtOrExpr::Expr(expr) => {
+                    ArrowBody::Expr(expr) => {
                         self.collect_from_expr(expr);
                     }
                 }
@@ -1689,7 +1714,7 @@ impl ClosureVariableNormalizer {
         }
     }
 
-    fn normalize_function_body(closure_vars: &[String], body: &mut BlockStmt) {
+    fn normalize_function_body(closure_vars: &[String], body: &mut FnBody) {
         let mut normalizer = Self::new(closure_vars);
         body.visit_mut_with(&mut normalizer);
     }
@@ -1707,6 +1732,14 @@ impl VisitMut for ClosureVariableNormalizer {
     // Don't descend into nested functions - their closure vars are handled separately
     fn visit_mut_function(&mut self, _: &mut Function) {}
     fn visit_mut_arrow_expr(&mut self, _: &mut ArrowExpr) {}
+
+    // Object-literal getters and setters are not functions here (see `compat`).
+    fn visit_mut_getter_prop(&mut self, getter: &mut GetterProp) {
+        visit_mut_getter_children(getter, self);
+    }
+    fn visit_mut_setter_prop(&mut self, setter: &mut SetterProp) {
+        visit_mut_setter_children(setter, self);
+    }
 
     noop_visit_mut_type!();
 }
@@ -2011,7 +2044,7 @@ impl StepTransform {
                             // Check if the initializer is an arrow function with object literal body
                             if let Expr::Arrow(arrow_expr) = &mut **init {
                                 match &mut *arrow_expr.body {
-                                    BlockStmtOrExpr::Expr(expr) => {
+                                    ArrowBody::Expr(expr) => {
                                         // Handle both direct object literals and parenthesized ones
                                         let obj_lit_mut = match &mut **expr {
                                             Expr::Object(obj) => Some(obj),
@@ -2724,6 +2757,8 @@ impl StepTransform {
                                     let fn_from_arrow = FnExpr {
                                         ident: None,
                                         function: Box::new(Function {
+                                            #[cfg(feature = "swc-116")]
+                                            this_param: None,
                                             params: arrow_expr
                                                 .params
                                                 .iter()
@@ -2737,15 +2772,15 @@ impl StepTransform {
                                             span: arrow_expr.span,
                                             ctxt: SyntaxContext::empty(),
                                             body: Some(match &*arrow_expr.body {
-                                                BlockStmtOrExpr::BlockStmt(block) => block.clone(),
-                                                BlockStmtOrExpr::Expr(expr) => BlockStmt {
-                                                    span: DUMMY_SP,
-                                                    ctxt: SyntaxContext::empty(),
-                                                    stmts: vec![Stmt::Return(ReturnStmt {
+                                                arrow_block!(block) => block.clone(),
+                                                ArrowBody::Expr(expr) => fn_body(
+                                                    DUMMY_SP,
+                                                    SyntaxContext::empty(),
+                                                    vec![Stmt::Return(ReturnStmt {
                                                         span: DUMMY_SP,
                                                         arg: Some(expr.clone()),
                                                     })],
-                                                },
+                                                ),
                                             }),
                                             is_generator: arrow_expr.is_generator,
                                             is_async: arrow_expr.is_async,
@@ -2949,10 +2984,9 @@ impl StepTransform {
                             _ => continue, // Skip complex keys
                         };
 
-                        let has_step =
-                            self.has_use_step_directive(&getter_prop.body.as_ref().cloned());
+                        let has_step = self.has_use_step_directive(getter_body(getter_prop));
                         let has_workflow =
-                            self.has_use_workflow_directive(&getter_prop.body.as_ref().cloned());
+                            self.has_use_workflow_directive(getter_body(getter_prop));
 
                         if has_workflow {
                             HANDLER.with(|handler| {
@@ -2982,7 +3016,7 @@ impl StepTransform {
                             // Getters don't need async validation (they can't be async syntactically)
 
                             // Remove the directive from the getter body
-                            let mut body_as_option = getter_prop.body.clone();
+                            let mut body_as_option = getter_body(getter_prop).clone();
                             self.remove_use_step_directive(&mut body_as_option);
 
                             let span = getter_prop.span;
@@ -2992,6 +3026,8 @@ impl StepTransform {
                             let fn_from_getter = FnExpr {
                                 ident: None,
                                 function: Box::new(Function {
+                                    #[cfg(feature = "swc-116")]
+                                    this_param: None,
                                     params: vec![],
                                     decorators: vec![],
                                     span: DUMMY_SP,
@@ -3019,7 +3055,7 @@ impl StepTransform {
                             match self.mode {
                                 TransformMode::Step => {
                                     // Strip directive from original getter, keep the getter in place
-                                    getter_prop.body = body_as_option;
+                                    *getter_body_mut(getter_prop) = body_as_option;
 
                                     // Track for metadata
                                     let step_id = self.create_object_property_id(
@@ -3058,10 +3094,10 @@ impl StepTransform {
                                         .push((var_name.clone(), step_id.clone()));
 
                                     // Replace getter body: return __step_var();
-                                    getter_prop.body = Some(BlockStmt {
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        stmts: vec![Stmt::Return(ReturnStmt {
+                                    *getter_body_mut(getter_prop) = Some(fn_body(
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                        vec![Stmt::Return(ReturnStmt {
                                             span: DUMMY_SP,
                                             arg: Some(Box::new(Expr::Call(CallExpr {
                                                 span: DUMMY_SP,
@@ -3077,7 +3113,7 @@ impl StepTransform {
                                                 type_args: None,
                                             }))),
                                         })],
-                                    });
+                                    ));
 
                                     self.object_property_workflow_conversions.push((
                                         parent_var_name.to_string(),
@@ -3244,7 +3280,7 @@ impl StepTransform {
     }
 
     // Check if a function has the "use step" directive
-    fn has_use_step_directive(&self, body: &Option<BlockStmt>) -> bool {
+    fn has_use_step_directive(&self, body: &Option<FnBody>) -> bool {
         if let Some(body) = body {
             let mut is_first_meaningful = true;
 
@@ -3306,7 +3342,7 @@ impl StepTransform {
     }
 
     // Check if a function has the "use workflow" directive
-    fn has_use_workflow_directive(&self, body: &Option<BlockStmt>) -> bool {
+    fn has_use_workflow_directive(&self, body: &Option<FnBody>) -> bool {
         if let Some(body) = body {
             let mut is_first_meaningful = true;
 
@@ -3498,7 +3534,7 @@ impl StepTransform {
     }
 
     // Remove "use step" directive from function body
-    fn remove_use_step_directive(&self, body: &mut Option<BlockStmt>) {
+    fn remove_use_step_directive(&self, body: &mut Option<FnBody>) {
         if let Some(body) = body {
             if !body.stmts.is_empty() {
                 // First try to remove from the top level
@@ -3517,7 +3553,7 @@ impl StepTransform {
     }
 
     // Remove "use workflow" directive from function body
-    fn remove_use_workflow_directive(&self, body: &mut Option<BlockStmt>) {
+    fn remove_use_workflow_directive(&self, body: &mut Option<FnBody>) {
         if let Some(body) = body {
             if !body.stmts.is_empty() {
                 // First try to remove from the top level
@@ -3536,8 +3572,8 @@ impl StepTransform {
     }
 
     // Check if an arrow function has the "use step" directive
-    fn has_use_step_directive_arrow(&self, body: &BlockStmtOrExpr) -> bool {
-        if let BlockStmtOrExpr::BlockStmt(body) = body {
+    fn has_use_step_directive_arrow(&self, body: &ArrowBody) -> bool {
+        if let arrow_block!(body) = body {
             // Check for direct directive
             if let Some(first_stmt) = body.stmts.first() {
                 if let Stmt::Expr(ExprStmt { expr, .. }) = first_stmt {
@@ -3568,8 +3604,8 @@ impl StepTransform {
     }
 
     // Check if an arrow function has the "use workflow" directive
-    fn has_use_workflow_directive_arrow(&self, body: &BlockStmtOrExpr) -> bool {
-        if let BlockStmtOrExpr::BlockStmt(body) = body {
+    fn has_use_workflow_directive_arrow(&self, body: &ArrowBody) -> bool {
+        if let arrow_block!(body) = body {
             // Check for direct directive
             if let Some(first_stmt) = body.stmts.first() {
                 if let Stmt::Expr(ExprStmt { expr, .. }) = first_stmt {
@@ -3822,8 +3858,8 @@ impl StepTransform {
     }
 
     // Remove "use step" directive from arrow function body
-    fn remove_use_step_directive_arrow(&self, body: &mut BlockStmtOrExpr) {
-        if let BlockStmtOrExpr::BlockStmt(body) = body {
+    fn remove_use_step_directive_arrow(&self, body: &mut ArrowBody) {
+        if let arrow_block!(body) = body {
             if !body.stmts.is_empty() {
                 // First try to remove from the top level
                 if let Stmt::Expr(ExprStmt { expr, .. }) = &body.stmts[0] {
@@ -3841,8 +3877,8 @@ impl StepTransform {
     }
 
     // Remove "use workflow" directive from arrow function body
-    fn remove_use_workflow_directive_arrow(&self, body: &mut BlockStmtOrExpr) {
-        if let BlockStmtOrExpr::BlockStmt(body) = body {
+    fn remove_use_workflow_directive_arrow(&self, body: &mut ArrowBody) {
+        if let arrow_block!(body) = body {
             if !body.stmts.is_empty() {
                 // First try to remove from the top level
                 if let Stmt::Expr(ExprStmt { expr, .. }) = &body.stmts[0] {
@@ -3867,23 +3903,23 @@ impl StepTransform {
                 if let Stmt::Return(ret) = &block.stmts[0] {
                     if let Some(arg) = &ret.arg {
                         // Single return statement - use expression body
-                        Box::new(BlockStmtOrExpr::Expr(arg.clone()))
+                        Box::new(ArrowBody::Expr(arg.clone()))
                     } else {
                         // return with no value - keep as block
-                        Box::new(BlockStmtOrExpr::BlockStmt(block.clone()))
+                        Box::new(arrow_block!(block.clone()))
                     }
                 } else {
-                    Box::new(BlockStmtOrExpr::BlockStmt(block.clone()))
+                    Box::new(arrow_block!(block.clone()))
                 }
             } else {
-                Box::new(BlockStmtOrExpr::BlockStmt(block.clone()))
+                Box::new(arrow_block!(block.clone()))
             }
         } else {
-            Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
-                span: DUMMY_SP,
-                ctxt: SyntaxContext::empty(),
-                stmts: vec![],
-            }))
+            Box::new(arrow_block!(fn_body(
+                DUMMY_SP,
+                SyntaxContext::empty(),
+                vec![]
+            )))
         };
 
         ArrowExpr {
@@ -4178,6 +4214,8 @@ impl StepTransform {
                     expr: Box::new(Expr::Fn(FnExpr {
                         ident: None,
                         function: Box::new(Function {
+                            #[cfg(feature = "swc-116")]
+                            this_param: None,
                             params: params
                                 .iter()
                                 .map(|name| Param {
@@ -4192,11 +4230,7 @@ impl StepTransform {
                             decorators: vec![],
                             span: DUMMY_SP,
                             ctxt: SyntaxContext::empty(),
-                            body: Some(BlockStmt {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                stmts: body,
-                            }),
+                            body: Some(fn_body(DUMMY_SP, SyntaxContext::empty(), body)),
                             is_generator: false,
                             is_async: false,
                             type_params: None,
@@ -4421,10 +4455,10 @@ impl StepTransform {
             }))),
         });
 
-        let function_body = BlockStmt {
-            span: DUMMY_SP,
-            ctxt: SyntaxContext::empty(),
-            stmts: vec![
+        let function_body = fn_body(
+            DUMMY_SP,
+            SyntaxContext::empty(),
+            vec![
                 Stmt::Decl(Decl::Var(Box::new(VarDecl {
                     span: DUMMY_SP,
                     ctxt: SyntaxContext::empty(),
@@ -4435,7 +4469,7 @@ impl StepTransform {
                 throw_if_missing,
                 return_stmt,
             ],
-        };
+        );
 
         // (function() { ... })()
         Expr::Call(CallExpr {
@@ -4446,6 +4480,8 @@ impl StepTransform {
                 expr: Box::new(Expr::Fn(FnExpr {
                     ident: None,
                     function: Box::new(Function {
+                        #[cfg(feature = "swc-116")]
+                        this_param: None,
                         params: vec![],
                         decorators: vec![],
                         span: DUMMY_SP,
@@ -4531,7 +4567,7 @@ impl StepTransform {
                 span: DUMMY_SP,
                 ctxt: SyntaxContext::empty(),
                 params: vec![],
-                body: Box::new(BlockStmtOrExpr::Expr(Box::new(closure_obj))),
+                body: Box::new(ArrowBody::Expr(Box::new(closure_obj))),
                 is_async: false,
                 is_generator: false,
                 type_params: None,
@@ -5823,18 +5859,20 @@ impl StepTransform {
                 PropOrSpread::Prop(Box::new(Prop::Method(MethodProp {
                     key: PropName::Ident(IdentName::new("get".into(), DUMMY_SP)),
                     function: Box::new(Function {
+                        #[cfg(feature = "swc-116")]
+                        this_param: None,
                         params: vec![],
                         decorators: vec![],
                         span: DUMMY_SP,
                         ctxt: SyntaxContext::empty(),
-                        body: Some(BlockStmt {
-                            span: DUMMY_SP,
-                            ctxt: SyntaxContext::empty(),
-                            stmts: vec![Stmt::Return(ReturnStmt {
+                        body: Some(fn_body(
+                            DUMMY_SP,
+                            SyntaxContext::empty(),
+                            vec![Stmt::Return(ReturnStmt {
                                 span: DUMMY_SP,
                                 arg: Some(Box::new(proxy_call)),
                             })],
-                        }),
+                        )),
                         is_generator: false,
                         is_async: false,
                         type_params: None,
@@ -6193,6 +6231,8 @@ impl StepTransform {
         let iife = Expr::Fn(FnExpr {
             ident: None,
             function: Box::new(Function {
+                #[cfg(feature = "swc-116")]
+                this_param: None,
                 params: vec![Param {
                     span: DUMMY_SP,
                     decorators: vec![],
@@ -6204,11 +6244,7 @@ impl StepTransform {
                 decorators: vec![],
                 span: DUMMY_SP,
                 ctxt: SyntaxContext::empty(),
-                body: Some(BlockStmt {
-                    span: DUMMY_SP,
-                    ctxt: SyntaxContext::empty(),
-                    stmts: body,
-                }),
+                body: Some(fn_body(DUMMY_SP, SyntaxContext::empty(), body)),
                 is_generator: false,
                 is_async: false,
                 type_params: None,
@@ -6836,6 +6872,15 @@ impl VisitMut for StepTransform {
         self.in_workflow_function = old_in_workflow;
         self.current_workflow_function_name = old_workflow_name;
         self.in_module_level = old_in_module;
+    }
+
+    // Object-literal getters and setters are not functions here (see `compat`).
+    fn visit_mut_getter_prop(&mut self, getter: &mut GetterProp) {
+        visit_mut_getter_children(getter, self);
+    }
+
+    fn visit_mut_setter_prop(&mut self, setter: &mut SetterProp) {
+        visit_mut_setter_children(setter, self);
     }
 
     fn visit_mut_arrow_expr(&mut self, arrow: &mut ArrowExpr) {
@@ -8217,16 +8262,15 @@ impl VisitMut for StepTransform {
                                                         }]),
                                                         type_args: None,
                                                     });
-                                                    arrow_expr.body = Box::new(
-                                                        BlockStmtOrExpr::BlockStmt(BlockStmt {
-                                                            span: DUMMY_SP,
-                                                            ctxt: SyntaxContext::empty(),
-                                                            stmts: vec![Stmt::Throw(ThrowStmt {
+                                                    arrow_expr.body =
+                                                        Box::new(arrow_block!(fn_body(
+                                                            DUMMY_SP,
+                                                            SyntaxContext::empty(),
+                                                            vec![Stmt::Throw(ThrowStmt {
                                                                 span: DUMMY_SP,
                                                                 arg: Box::new(error_expr),
-                                                            })],
-                                                        }),
-                                                    );
+                                                            })]
+                                                        )));
 
                                                     self.workflow_functions_needing_id
                                                         .push((name.clone(), arrow_expr.span));
@@ -8577,6 +8621,8 @@ impl VisitMut for StepTransform {
                                                     SyntaxContext::empty(),
                                                 )),
                                                 function: Box::new(Function {
+                                                    #[cfg(feature = "swc-116")]
+                                                    this_param: None,
                                                     params: cloned_arrow
                                                         .params
                                                         .iter()
@@ -8590,21 +8636,15 @@ impl VisitMut for StepTransform {
                                                     span: cloned_arrow.span,
                                                     ctxt: SyntaxContext::empty(),
                                                     body: match *cloned_arrow.body {
-                                                        BlockStmtOrExpr::BlockStmt(block) => {
-                                                            Some(block)
-                                                        }
-                                                        BlockStmtOrExpr::Expr(expr) => {
-                                                            Some(BlockStmt {
+                                                        arrow_block!(block) => Some(block),
+                                                        ArrowBody::Expr(expr) => Some(fn_body(
+                                                            DUMMY_SP,
+                                                            SyntaxContext::empty(),
+                                                            vec![Stmt::Return(ReturnStmt {
                                                                 span: DUMMY_SP,
-                                                                ctxt: SyntaxContext::empty(),
-                                                                stmts: vec![Stmt::Return(
-                                                                    ReturnStmt {
-                                                                        span: DUMMY_SP,
-                                                                        arg: Some(expr),
-                                                                    },
-                                                                )],
-                                                            })
-                                                        }
+                                                                arg: Some(expr),
+                                                            })],
+                                                        )),
                                                     },
                                                     is_generator: false,
                                                     is_async: cloned_arrow.is_async,
@@ -8700,9 +8740,8 @@ impl VisitMut for StepTransform {
                                                     })
                                                     .collect();
                                             }
-                                            arrow_expr.body = Box::new(BlockStmtOrExpr::Expr(
-                                                Box::new(proxy_call),
-                                            ));
+                                            arrow_expr.body =
+                                                Box::new(ArrowBody::Expr(Box::new(proxy_call)));
                                         }
                                         TransformMode::Detect => {}
                                     }
@@ -8768,15 +8807,14 @@ impl VisitMut for StepTransform {
                                                 }]),
                                                 type_args: None,
                                             });
-                                            arrow_expr.body =
-                                                Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
+                                            arrow_expr.body = Box::new(arrow_block!(fn_body(
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                                vec![Stmt::Throw(ThrowStmt {
                                                     span: DUMMY_SP,
-                                                    ctxt: SyntaxContext::empty(),
-                                                    stmts: vec![Stmt::Throw(ThrowStmt {
-                                                        span: DUMMY_SP,
-                                                        arg: Box::new(error_expr),
-                                                    })],
-                                                }));
+                                                    arg: Box::new(error_expr),
+                                                })]
+                                            )));
                                             self.workflow_functions_needing_id
                                                 .push((name.clone(), arrow_expr.span));
                                         }
@@ -9492,10 +9530,7 @@ impl VisitMut for StepTransform {
                                 self.create_id(Some(&full_name), method.function.span, true);
 
                             // Replace body with error throw
-                            method.function.body = Some(BlockStmt {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                stmts: vec![Stmt::Throw(ThrowStmt {
+                            method.function.body = Some(fn_body(DUMMY_SP, SyntaxContext::empty(), vec![Stmt::Throw(ThrowStmt {
                                     span: DUMMY_SP,
                                     arg: Box::new(Expr::New(NewExpr {
                                         span: DUMMY_SP,
@@ -9518,8 +9553,7 @@ impl VisitMut for StepTransform {
                                         }]),
                                         type_args: None,
                                     })),
-                                })],
-                            });
+                                })]));
 
                             // Track for workflowId assignment
                             self.static_method_workflow_registrations.push((
@@ -9725,6 +9759,8 @@ impl VisitMut for StepTransform {
                                         SyntaxContext::empty(),
                                     )),
                                     function: Box::new(Function {
+                                        #[cfg(feature = "swc-116")]
+                                        this_param: None,
                                         params: cloned_arrow
                                             .params
                                             .iter()
@@ -9738,15 +9774,15 @@ impl VisitMut for StepTransform {
                                         span: cloned_arrow.span,
                                         ctxt: SyntaxContext::empty(),
                                         body: match *cloned_arrow.body {
-                                            BlockStmtOrExpr::BlockStmt(block) => Some(block),
-                                            BlockStmtOrExpr::Expr(expr) => Some(BlockStmt {
-                                                span: DUMMY_SP,
-                                                ctxt: SyntaxContext::empty(),
-                                                stmts: vec![Stmt::Return(ReturnStmt {
+                                            arrow_block!(block) => Some(block),
+                                            ArrowBody::Expr(expr) => Some(fn_body(
+                                                DUMMY_SP,
+                                                SyntaxContext::empty(),
+                                                vec![Stmt::Return(ReturnStmt {
                                                     span: DUMMY_SP,
                                                     arg: Some(expr),
                                                 })],
-                                            }),
+                                            )),
                                         },
                                         is_generator: false,
                                         is_async: cloned_arrow.is_async,
@@ -10161,14 +10197,14 @@ impl VisitMut for StepTransform {
                                     type_args: None,
                                 });
                                 // Replace arrow body with block containing throw statement
-                                arrow_expr.body = Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
-                                    span: DUMMY_SP,
-                                    ctxt: SyntaxContext::empty(),
-                                    stmts: vec![Stmt::Throw(ThrowStmt {
+                                arrow_expr.body = Box::new(arrow_block!(fn_body(
+                                    DUMMY_SP,
+                                    SyntaxContext::empty(),
+                                    vec![Stmt::Throw(ThrowStmt {
                                         span: DUMMY_SP,
                                         arg: Box::new(error_expr),
-                                    })],
-                                }));
+                                    })]
+                                )));
 
                                 // Track for const declaration and workflowId assignment
                                 self.default_workflow_exports.push((
@@ -10301,6 +10337,8 @@ impl VisitMut for StepTransform {
                                                             SyntaxContext::empty(),
                                                         )),
                                                         function: Box::new(Function {
+                                                            #[cfg(feature = "swc-116")]
+                                                            this_param: None,
                                                             params: cloned_arrow
                                                                 .params
                                                                 .iter()
@@ -10314,21 +10352,18 @@ impl VisitMut for StepTransform {
                                                             span: cloned_arrow.span,
                                                             ctxt: SyntaxContext::empty(),
                                                             body: match *cloned_arrow.body {
-                                                                BlockStmtOrExpr::BlockStmt(
-                                                                    block,
-                                                                ) => Some(block),
-                                                                BlockStmtOrExpr::Expr(expr) => {
-                                                                    Some(BlockStmt {
-                                                                        span: DUMMY_SP,
-                                                                        ctxt: SyntaxContext::empty(
-                                                                        ),
-                                                                        stmts: vec![Stmt::Return(
+                                                                arrow_block!(block,) => Some(block),
+                                                                ArrowBody::Expr(expr) => {
+                                                                    Some(fn_body(
+                                                                        DUMMY_SP,
+                                                                        SyntaxContext::empty(),
+                                                                        vec![Stmt::Return(
                                                                             ReturnStmt {
                                                                                 span: DUMMY_SP,
                                                                                 arg: Some(expr),
                                                                             },
                                                                         )],
-                                                                    })
+                                                                    ))
                                                                 }
                                                             },
                                                             is_generator: false,

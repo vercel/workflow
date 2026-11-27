@@ -78,6 +78,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "supports-color": "10.2.2",
+    "swc-core-1-16": "npm:@swc/core@1.16.22",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

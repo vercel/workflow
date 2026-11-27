@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { hasWorkflowPlugin, mergeSwcrc, serializeSwcrc } from './swcrc.js';
+import {
+  hasWorkflowPlugin,
+  mergeSwcrc,
+  serializeSwcrc,
+  workflowPluginPath,
+} from './swcrc.js';
 
 const PLUGIN = '/abs/path/@workflow/swc-plugin/swc_plugin_workflow.wasm';
 
@@ -133,5 +138,43 @@ describe('hasWorkflowPlugin', () => {
     expect(hasWorkflowPlugin('')).toBe(false);
     expect(hasWorkflowPlugin('{')).toBe(false);
     expect(hasWorkflowPlugin('{}')).toBe(false);
+  });
+});
+
+describe('workflowPluginPath', () => {
+  const swcrc = (plugins: unknown) =>
+    JSON.stringify({ jsc: { experimental: { plugins } } });
+
+  it('returns the workflow entry path, next to other plugins', () => {
+    expect(
+      workflowPluginPath(
+        swcrc([
+          ['/plugins/other.wasm', {}],
+          [
+            '/app/node_modules/@workflow/swc-plugin/swc_plugin_workflow_swc116.wasm',
+            {},
+          ],
+        ])
+      )
+    ).toBe(
+      '/app/node_modules/@workflow/swc-plugin/swc_plugin_workflow_swc116.wasm'
+    );
+  });
+
+  it('returns a hand-written package specifier as written', () => {
+    expect(workflowPluginPath(swcrc([['@workflow/swc-plugin', {}]]))).toBe(
+      '@workflow/swc-plugin'
+    );
+  });
+
+  it.each([
+    ['invalid JSON', '{ "jsc": '],
+    ['no jsc', '{}'],
+    ['no experimental', '{"jsc":{}}'],
+    ['plugins not an array', '{"jsc":{"experimental":{"plugins":{}}}}'],
+    ['no workflow entry', swcrc([['/plugins/other.wasm', {}]])],
+    ['a non-array entry', swcrc(['/plugins/swc_plugin_workflow.wasm'])],
+  ])('is null for %s', (_, content) => {
+    expect(workflowPluginPath(content)).toBeNull();
   });
 });

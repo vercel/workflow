@@ -356,6 +356,7 @@ jobs:
             packages/*/src/version.ts
             packages/core/src/runtime/quickjs-assets.generated.ts
             packages/swc-plugin-workflow/swc_plugin_workflow.wasm
+            packages/swc-plugin-workflow/swc_plugin_workflow_swc116.wasm
             packages/swc-plugin-workflow/build-hash.json
           include-hidden-files: true
           retention-days: 1

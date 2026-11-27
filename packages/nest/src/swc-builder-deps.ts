@@ -3,16 +3,40 @@ import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'pathe';
 
 /**
- * The `@swc/core` minor line the Workflow SWC plugin runs on. On any other
- * line (1.16 included), `nest build` fails every file with "failed to invoke
- * plugin ... Failed to deserialize program received from host".
+ * The `@swc/core` minor lines the Workflow SWC plugin has a build for: the
+ * `@workflow/swc-plugin` export to load on each, and the wasm file that export
+ * points at. A build only runs on its own line; on any other, `nest build`
+ * fails every file with "failed to invoke plugin ... Failed to deserialize
+ * program received from host".
  */
-export const SUPPORTED_SWC_CORE_LINE = '1.15';
+export const SWC_PLUGIN_BUILDS = [
+  {
+    line: '1.15',
+    specifier: '@workflow/swc-plugin',
+    wasm: 'swc_plugin_workflow.wasm',
+  },
+  {
+    line: '1.16',
+    specifier: '@workflow/swc-plugin/swc-1.16',
+    wasm: 'swc_plugin_workflow_swc116.wasm',
+  },
+] as const;
+
+export type SwcPluginBuild = (typeof SWC_PLUGIN_BUILDS)[number];
+
+/** The build used when the app's `@swc/core` is missing or unsupported. */
+export const DEFAULT_SWC_PLUGIN_BUILD: SwcPluginBuild = SWC_PLUGIN_BUILDS[0];
+
+/** "1.15.x or 1.16.x", for messages. */
+export const SUPPORTED_SWC_CORE_LINES_TEXT = SWC_PLUGIN_BUILDS.map(
+  (build) => `${build.line}.x`
+).join(' or ');
 
 /**
  * What to install to get a supported `@swc/core`. 1.15.18 is the lowest
  * version the NestJS CLI 12 peer range (`^1.15.18`) accepts, and `~` keeps the
- * package manager on 1.15.x.
+ * package manager on 1.15.x, the line the 1.15 build (the package's main
+ * export) has run on longest.
  */
 export const SWC_CORE_INSTALL_SPEC = '@swc/core@~1.15.18';
 
@@ -113,11 +137,34 @@ function readVersion(packageJsonPath: string): string {
   }
 }
 
-export function isSupportedSwcCoreVersion(version: string): boolean {
+/** The plugin build for an `@swc/core` version, or `undefined` when none runs on it. */
+export function swcPluginBuildFor(version: string): SwcPluginBuild | undefined {
   const match = /^(\d+)\.(\d+)\./.exec(version);
-  return (
-    match !== null && `${match[1]}.${match[2]}` === SUPPORTED_SWC_CORE_LINE
+  if (!match) return undefined;
+  const line = `${match[1]}.${match[2]}`;
+  return SWC_PLUGIN_BUILDS.find((build) => build.line === line);
+}
+
+export function isSupportedSwcCoreVersion(version: string): boolean {
+  return swcPluginBuildFor(version) !== undefined;
+}
+
+/**
+ * The plugin build a `.swcrc` plugin entry points at: an absolute path, from
+ * its wasm file name, or a hand-written package specifier
+ * (`@workflow/swc-plugin`, `@workflow/swc-plugin/swc-1.16`). `undefined` for
+ * anything else.
+ */
+export function swcPluginBuildOfPath(
+  pluginPath: string
+): SwcPluginBuild | undefined {
+  const normalized = pluginPath.replace(/\\/g, '/');
+  const bySpecifier = SWC_PLUGIN_BUILDS.find(
+    (build) => build.specifier === normalized
   );
+  if (bySpecifier) return bySpecifier;
+  const file = normalized.split('/').pop();
+  return SWC_PLUGIN_BUILDS.find((build) => build.wasm === file);
 }
 
 /**
@@ -262,13 +309,13 @@ export function describeSwcBuilderProblems(
     lines.push(
       `⚠ ${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} ` +
         `not installed${where}. The NestJS SWC builder needs @swc/cli and ` +
-        `@swc/core ${SUPPORTED_SWC_CORE_LINE}.x as dev dependencies.`
+        `@swc/core ${SUPPORTED_SWC_CORE_LINES_TEXT} as dev dependencies.`
     );
   }
   if (core.state === 'unsupported') {
     lines.push(
       `⚠ @swc/core ${core.version} is installed, but the Workflow SWC ` +
-        `plugin only runs on @swc/core ${SUPPORTED_SWC_CORE_LINE}.x, so ` +
+        `plugin only runs on @swc/core ${SUPPORTED_SWC_CORE_LINES_TEXT}, so ` +
         '`nest build` fails with "failed to invoke plugin".',
       `  Resolved from: ${core.path}`
     );

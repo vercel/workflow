@@ -80,7 +80,13 @@ try {
 
 // Build the WASM plugin
 console.log('Running cargo build...');
-runCommand('cargo build-wasm32 --release -p swc_plugin_workflow');
+// Two builds of the same plugin: swc_plugin_workflow for @swc/core 1.15.x (the
+// package's main export) and swc_plugin_workflow_swc116 for @swc/core 1.16.x
+// (`@workflow/swc-plugin/swc-1.16`). A plugin only loads on the @swc/core line
+// its swc_core was built for.
+runCommand(
+  'cargo build-wasm32 --release -p swc_plugin_workflow -p swc_plugin_workflow_swc116'
+);
 
 // Copy the WASM file
 const wasmSource = new URL(
@@ -123,11 +129,24 @@ if (!existsSync(wasmSource)) {
 console.log('Copying WASM file...');
 copyFileSync(wasmSource, wasmDest);
 
-// Generate hash of the WASM file for cache invalidation
+const swc116Source = new URL(
+  '../../target/wasm32-unknown-unknown/release/swc_plugin_workflow_swc116.wasm',
+  import.meta.url
+);
+const swc116Dest = new URL('swc_plugin_workflow_swc116.wasm', import.meta.url);
+if (!existsSync(swc116Source)) {
+  console.error(`WASM file not found at ${swc116Source}`);
+  process.exit(1);
+}
+console.log(`Copying ${swc116Source} to ${swc116Dest}...`);
+copyFileSync(swc116Source, swc116Dest);
+
+// Generate a hash of both WASM files for cache invalidation, so a change to
+// either build invalidates caches keyed on it.
 console.log('Generating build hash...');
-const wasmContent = readFileSync(wasmDest);
 const buildHash = createHash('sha256')
-  .update(wasmContent)
+  .update(readFileSync(wasmDest))
+  .update(readFileSync(swc116Dest))
   .digest('hex')
   .slice(0, 16);
 const buildHashPath = new URL('build-hash.json', import.meta.url);

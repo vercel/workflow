@@ -1,0 +1,45 @@
+# The same AST transform as ../transform, compiled against the swc_core that
+# @swc/core 1.16 runs. It has no sources of its own: lib and tests point at
+# ../transform, and `#[cfg(feature = "swc-116")]` marks the few places where the
+# two swc_core APIs differ.
+[package]
+authors      = { workspace = true }
+description  = "AST Transforms for workflow (swc_core for @swc/core 1.16)"
+edition      = { workspace = true }
+license      = { workspace = true }
+name         = "swc_workflow_swc116"
+publish      = false
+rust-version = { workspace = true }
+version      = "0.1.0"
+
+[lib]
+path = "../transform/src/lib.rs"
+
+[features]
+default = ["swc-116"]
+swc-116 = []
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+swc_core   = { version = "77.0", features = ["ecma_plugin_transform"] }
+
+[dev-dependencies]
+swc_ecma_parser = "45.0"
+testing         = "27.0"
+
+[[test]]
+name = "fixture"
+path = "../transform/tests/fixture.rs"
+
+[[test]]
+name = "errors"
+path = "../transform/tests/errors.rs"
+
+[[test]]
+name = "class_names"
+path = "../transform/tests/class_names.rs"
+
+[[test]]
+name = "step_id_consistency"
+path = "../transform/tests/step_id_consistency.rs"

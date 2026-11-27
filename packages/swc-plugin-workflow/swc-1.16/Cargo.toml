@@ -1,0 +1,22 @@
+# The Workflow SWC plugin built for @swc/core 1.16.x. Same source as the
+# plugin in ../ (which is built for @swc/core 1.15): only the swc_core version
+# differs. build.js copies the result to ../swc_plugin_workflow_swc116.wasm.
+[package]
+authors      = { workspace = true }
+description  = "Workflow SWC plugin for @swc/core 1.16.x"
+edition      = { workspace = true }
+license      = { workspace = true }
+name         = "swc_plugin_workflow_swc116"
+publish      = false
+rust-version = { workspace = true }
+version      = "4.0.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path       = "../src/lib.rs"
+
+[dependencies]
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+swc_core     = { version = "77.0", features = ["ecma_plugin_transform"] }
+swc_workflow = { package = "swc_workflow_swc116", path = "../transform-swc-1.16" }

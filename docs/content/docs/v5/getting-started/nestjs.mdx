@@ -92,13 +92,13 @@ export class AppModule {}
 
 NestJS supports SWC as an alternative compiler for faster builds. The Workflow SDK uses an SWC plugin to transform workflow files.
 
-Install the required SWC packages. `@swc/core` is pinned to 1.15.x because the Workflow SWC plugin does not run on `@swc/core` 1.16 yet:
+Install the required SWC packages. The Workflow SWC plugin has a build for `@swc/core` 1.15 and one for 1.16, and `npx @workflow/nest init` points `.swcrc` at the one that matches the installed version. The command pins `@swc/core` to 1.15.x:
 
 ```package-install
 npm i -D @swc/cli @swc/core@~1.15.18
 ```
 
-Don't upgrade `@swc/core` past 1.15 (for example with `pnpm update --latest`, Dependabot or Renovate) until the Workflow SWC plugin supports 1.16; `npx @workflow/nest init` warns if the installed version isn't 1.15.x.
+Moving `@swc/core` to 1.16 works too; run `npx @workflow/nest init --force` afterwards (the `prebuild` script below does) so `.swcrc` switches to the 1.16 build. Don't upgrade past 1.16 (for example with `pnpm update --latest`, Dependabot or Renovate) until the plugin supports the next line; `npx @workflow/nest init` warns if the installed version isn't 1.15.x or 1.16.x.
 
 Ensure your `nest-cli.json` has SWC as the builder:
 
