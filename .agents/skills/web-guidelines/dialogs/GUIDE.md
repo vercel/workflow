@@ -27,7 +27,7 @@ If the Sheet has actions, render them at the bottom of the Sheet, outside its sc
 
 Use `AlertDialog` from `packages/web/app/components/ui/alert-dialog.tsx` for confirmations, as the run actions in `run-detail-view.tsx` do. Name the action in the confirm button and the title, and keep the cancel button as `Cancel`. For deletes, use `This cannot be undone.` for the irreversibility note and give the confirm button the destructive treatment.
 
-Dialogs in `packages/web-shared` (such as `ResolveHookModal`) cannot import from `packages/web`. Keep them styled to match the dashboard's dialogs, since they also render there.
+Dialogs in `packages/web-shared` (such as `ResolveHookModal`) cannot import from `packages/web`. Build them on `Modal` from `packages/web-shared/src/components/ui/modal.tsx`.
 
 ## Rationale
 
