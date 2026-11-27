@@ -114,59 +114,45 @@ export function escapeRegExp(value: string) {
 }
 
 /**
- * Get the imported identifier from a specifier.
- * @param specifier - The specifier to get the imported identifier from.
- * @returns The imported identifier.
+ * Get the runtime bindings an import clause introduces.
+ * @param specifier - The import clause, e.g. `fs, { readFile as read }`.
+ * @returns The local identifiers, skipping type-only imports.
  */
-export function getImportedIdentifier(specifier: string) {
-  const namespaceMatch = specifier.match(/\*\s+as\s+([A-Za-z0-9_$]+)/);
-  if (namespaceMatch) {
-    return namespaceMatch[1];
+export function getImportedIdentifiers(specifier: string) {
+  // `import type ...` is erased at compile time
+  if (/^type\s/.test(specifier)) {
+    return [];
   }
 
-  if (specifier.includes('{')) {
-    const inside = specifier.replace(/^[^{]*\{/, '').replace(/\}.*$/, '');
-    const firstNamed = inside
-      .split(',')
-      .map((token) => token.trim())
-      .find(Boolean);
+  const defaultImport = specifier.match(/^([A-Za-z_$][\w$]*)\s*(?:,|$)/)?.[1];
+  const namespaceImport = specifier.match(/\*\s*as\s+([A-Za-z_$][\w$]*)/)?.[1];
+  const namedImports = (specifier.match(/\{([^}]*)\}/)?.[1].split(',') ?? [])
+    .map((token) => token.trim())
+    // `type Foo` is erased; `type as foo` renames an export called `type`
+    .filter((token) => !/^type\s+(?!as\b)/.test(token))
+    // The local name follows `as` when the import is renamed
+    .map((token) => token.match(/^(?:[\w$]+\s+as\s+)?([A-Za-z_$][\w$]*)/)?.[1]);
 
-    if (firstNamed) {
-      const aliasMatch = firstNamed.match(
-        /([A-Za-z0-9_$]+)\s+as\s+([A-Za-z0-9_$]+)/
-      );
-      if (aliasMatch) {
-        return aliasMatch[2];
-      }
-      // Validate that firstNamed is a valid identifier (not empty braces or whitespace)
-      const identifierMatch = firstNamed.match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
-      if (identifierMatch) {
-        return identifierMatch[0];
-      }
-    }
-    // Empty braces or no valid identifier found - return undefined
-    return undefined;
-  }
-
-  const defaultPart = specifier.split(',')[0]?.trim();
-  if (defaultPart && defaultPart !== '*') {
-    return defaultPart;
-  }
+  return [defaultImport, namespaceImport, ...namedImports].filter(
+    (identifier) => identifier !== undefined
+  );
 }
 
 /**
- * Find the usage of an identifier in a list of lines.
+ * Find the first usage of any of the identifiers in a list of lines.
  * @param lines - The list of lines to search in.
  * @param startIndex - The index to start searching from.
- * @param identifier - The identifier to search for.
- * @returns The usage of the identifier.
+ * @param identifiers - The identifiers to search for.
+ * @returns The first usage of any of the identifiers.
  */
 function findIdentifierUsage(
   lines: string[],
   startIndex: number,
-  identifier: string
+  identifiers: string[]
 ) {
-  const usageRegex = new RegExp(`\\b${escapeRegExp(identifier)}\\b`);
+  const usageRegex = new RegExp(
+    `\\b(?:${identifiers.map(escapeRegExp).join('|')})\\b`
+  );
   let inBlockComment = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
@@ -220,6 +206,7 @@ function findIdentifierUsage(
         line: i,
         column: match.index,
         lineText: lines[i],
+        length: match[0].length,
       };
     }
   }
@@ -249,30 +236,35 @@ export async function getViolationLocation(
     // in a preceding comment can't become the start of the match.
     const importRegex = new RegExp(
       `(?:^|;)[ \\t]*import\\s+([^;'"]+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`,
-      'm'
+      'gm'
     );
-    const importMatch = contents.match(importRegex);
+    // The module can be imported more than once (e.g. `import type` next to
+    // a value import), so collect the bindings of every import and search
+    // for usages after the last one.
+    const importMatches = [...contents.matchAll(importRegex)];
+    const importMatch = importMatches.at(-1);
 
-    if (importMatch && importMatch.index !== undefined) {
+    if (importMatch) {
       const startLine =
         contents.slice(0, importMatch.index).split(/\r?\n/).length - 1;
       const endLine = startLine + importMatch[0].split(/\r?\n/).length - 1;
 
-      const specifier = importMatch[1].trim();
-      const identifier = getImportedIdentifier(specifier);
-      if (identifier) {
-        const usage = findIdentifierUsage(lines, endLine + 1, identifier);
+      const identifiers = importMatches.flatMap((match) =>
+        getImportedIdentifiers(match[1].trim())
+      );
+      if (identifiers.length > 0) {
+        const usage = findIdentifierUsage(lines, endLine + 1, identifiers);
         if (usage) {
           return {
             file: relativePath,
             line: usage.line + 1,
             column: usage.column,
             lineText: usage.lineText,
-            length: identifier.length,
+            length: usage.length,
           };
         }
 
-        // Identifier exists but is never referenced; surface no location
+        // Identifiers exist but are never referenced; surface no location
         return undefined;
       }
 
