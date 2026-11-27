@@ -434,7 +434,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       // One round trip: the lock key is two integers computed here, so the
       // stream name is never written into the SQL text.
       await client.query(
-        `BEGIN; SELECT pg_advisory_xact_lock(${STREAM_LOCK_CLASS}, ${streamLockKey(name)})`
+        `BEGIN ISOLATION LEVEL READ COMMITTED; SELECT pg_advisory_xact_lock(${STREAM_LOCK_CLASS}, ${streamLockKey(name)})`
       );
       let chunkIds = chunks.map(() => genChunkId());
       let written = false;
