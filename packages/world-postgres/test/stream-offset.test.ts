@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createStreamer } from '../src/streamer.js';
 import { TestPool } from './pool.js';
@@ -47,6 +47,18 @@ describe('Postgres stream offsets', () => {
     });
     const drizzle = createClient(pool);
     streamer = createStreamer(pool, drizzle);
+
+    // The streamer subscribes in the background; a NOTIFY sent before its
+    // LISTEN is registered would be lost and the test would hang on read().
+    await vi.waitFor(async () => {
+      const result = await pool.query(
+        `SELECT count(*)::int AS count FROM pg_stat_activity
+         WHERE application_name = $1
+         AND query = 'LISTEN workflow_event_chunk' AND state = 'idle'`,
+        [applicationName]
+      );
+      expect(result.rows[0].count).toBe(1);
+    }, 30_000);
   }, 120_000);
 
   afterAll(async () => {
@@ -56,20 +68,6 @@ describe('Postgres stream offsets', () => {
   });
 
   test('a repeated notification for a skipped chunk does not consume the offset twice', async () => {
-    // The streamer subscribes in the background; a NOTIFY sent before its
-    // LISTEN is registered would be lost and the test would hang on read().
-    await expect
-      .poll(async () => {
-        const result = await pool.query(
-          `SELECT count(*)::int AS count FROM pg_stat_activity
-           WHERE application_name = $1
-           AND query = 'LISTEN workflow_event_chunk' AND state = 'idle'`,
-          [applicationName]
-        );
-        return result.rows[0].count;
-      })
-      .toBe(1);
-
     const runId = `run_${randomUUID()}`;
     const name = `stream_${randomUUID()}`;
     const stream = await streamer.streams.get(runId, name, 2);
@@ -90,6 +88,71 @@ describe('Postgres stream offsets', () => {
       const result = await reader.read();
       expect(result.done).toBe(false);
       expect(Buffer.from(result.value as Uint8Array).toString()).toBe('third');
+    } finally {
+      await reader.cancel();
+    }
+  });
+
+  async function readAll(stream: ReadableStream<Uint8Array>) {
+    let out = '';
+    for await (const chunk of stream) out += Buffer.from(chunk).toString();
+    return out;
+  }
+
+  async function payloadBytesWhile<T>(fn: () => Promise<T>) {
+    let bytes = 0;
+    const query = pool.query.bind(pool) as (
+      ...args: unknown[]
+    ) => Promise<{ rows: object[] }>;
+    const spy = vi.spyOn(pool, 'query').mockImplementation((async (
+      ...args: unknown[]
+    ) => {
+      const res = await query(...args);
+      for (const value of res.rows.flatMap(Object.values)) {
+        if (Buffer.isBuffer(value)) bytes += value.byteLength;
+      }
+      return res;
+    }) as never);
+    try {
+      return { value: await fn(), bytes };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  const chunks = ['x'.repeat(100_000), 'y'.repeat(100_000), 'suffix'];
+
+  test.each([
+    [undefined, 0, 200_006],
+    [1, 1, 100_006],
+    [2, 2, 6],
+    [3, 3, 0],
+    [4, 3, 0],
+    [Number.POSITIVE_INFINITY, 3, 0],
+    [-1, 2, 200_006],
+  ])('startIndex %s delivers from chunk %i and reads %i payload bytes', async (startIndex, from, expectedBytes) => {
+    const runId = `run_${randomUUID()}`;
+    const name = `stream_${randomUUID()}`;
+    await streamer.streams.writeMulti(runId, name, chunks);
+    await streamer.streams.close(runId, name);
+
+    const { value, bytes } = await payloadBytesWhile(async () =>
+      readAll(await streamer.streams.get(runId, name, startIndex))
+    );
+    expect(value).toBe(chunks.slice(from).join(''));
+    expect(bytes).toBe(expectedBytes);
+  });
+
+  test('a start index past the tail of an open stream waits for the next chunk', async () => {
+    const runId = `run_${randomUUID()}`;
+    const name = `stream_${randomUUID()}`;
+    await streamer.streams.writeMulti(runId, name, ['a', 'b']);
+    const reader = (await streamer.streams.get(runId, name, 3)).getReader();
+    try {
+      await streamer.streams.write(runId, name, 'c');
+      await streamer.streams.write(runId, name, 'd');
+      const result = await reader.read();
+      expect(Buffer.from(result.value as Uint8Array).toString()).toBe('d');
     } finally {
       await reader.cancel();
     }
