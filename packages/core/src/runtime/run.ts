@@ -17,6 +17,7 @@ import {
   type World,
 } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
+import { runtimeLogger } from '../logger.js';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -464,6 +465,10 @@ export class Run<TResult> {
    * `WorkflowRunFailedError` or `WorkflowRunCancelledError` if the run fails
    * or is cancelled.
    *
+   * While polling, a transient World error (a timeout, a 5xx, or a 429) is
+   * retried with backoff. After 10 such errors in a row, the promise rejects
+   * with the last one.
+   *
    * Inside the workflow that started this run, the parent suspends on a system
    * hook the run resumes when it finishes, so waiting costs no compute and
    * resumes as soon as the run is done. Everywhere else (host code, steps,
@@ -810,6 +815,9 @@ export class Run<TResult> {
     // `RETURN_VALUE_MAX_LONG_POLLS`. Never a reason to stop awaiting.
     let longPolls = 0;
     const maxLongPolls = getReturnValueMaxLongPolls();
+    // Transient World errors in a row (see `transientReadRetryDelayMs`). A
+    // non-terminal read resets it, so only an unbroken run of failures ends
+    // the await.
     let transientRetries = 0;
 
     // NOTE: when this poll runs inside a step (e.g. the step that a parent
@@ -885,6 +893,17 @@ export class Run<TResult> {
         );
         if (retryDelayMs !== undefined) {
           transientRetries++;
+          runtimeLogger.warn(
+            'Transient World error while awaiting returnValue; retrying',
+            {
+              workflowRunId: this.runId,
+              attempt: transientRetries,
+              retryDelayMs,
+              errorName: error instanceof Error ? error.name : undefined,
+              errorMessage:
+                error instanceof Error ? error.message : String(error),
+            }
+          );
           await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
           continue;
         }

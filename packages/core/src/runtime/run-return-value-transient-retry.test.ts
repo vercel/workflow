@@ -8,9 +8,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
+import { runtimeLogger } from '../logger.js';
 import { dehydrateWorkflowReturnValue } from '../serialization.js';
 import { Run } from './run.js';
-import { transientReadRetryDelayMs } from './transient-read-retry.js';
+import {
+  TRANSIENT_READ_MAX_BACKOFF_MS,
+  TRANSIENT_READ_MAX_RETRIES,
+  TRANSIENT_READ_MAX_RETRY_AFTER_MS,
+  transientReadRetryDelayMs,
+} from './transient-read-retry.js';
 import { setWorld } from './world.js';
 
 const RUN_ID = 'wrun_01JB0000000000000000000000';
@@ -64,9 +70,11 @@ describe('Run.returnValue on a transient World error', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     process.env[envName] = '1000';
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     if (originalValue === undefined) delete process.env[envName];
     else process.env[envName] = originalValue;
@@ -192,7 +200,7 @@ describe('Run.returnValue on a transient World error', () => {
     await assertion;
   });
 
-  it('gives up after ten transient failures in a row', async () => {
+  it('gives up after TRANSIENT_READ_MAX_RETRIES transient failures in a row', async () => {
     const get = vi.fn().mockRejectedValue(serverError());
     setWorld(createWorld({ get }));
 
@@ -200,9 +208,42 @@ describe('Run.returnValue on a transient World error', () => {
       'Internal Server Error'
     );
 
-    await vi.advanceTimersByTimeAsync(181_000);
+    let totalDelayMs = 0;
+    for (let attempt = 0; attempt < TRANSIENT_READ_MAX_RETRIES; attempt++) {
+      const delayMs = transientReadRetryDelayMs(serverError(), attempt, 1_000);
+      if (delayMs === undefined) throw new Error('expected a retry delay');
+      totalDelayMs += delayMs;
+    }
+    await vi.advanceTimersByTimeAsync(totalDelayMs - 1);
+    expect(get).toHaveBeenCalledTimes(TRANSIENT_READ_MAX_RETRIES);
+    await vi.advanceTimersByTimeAsync(1);
     await assertion;
-    expect(get).toHaveBeenCalledTimes(11);
+    expect(get).toHaveBeenCalledTimes(TRANSIENT_READ_MAX_RETRIES + 1);
+  });
+
+  it('logs each retried error with the run and the delay', async () => {
+    const get = vi
+      .fn()
+      .mockRejectedValueOnce(timedOut())
+      .mockResolvedValue(cancelledRun);
+    setWorld(createWorld({ get }));
+
+    const assertion = expect(new Run(RUN_ID).returnValue).rejects.toThrow(
+      WorkflowRunCancelledError
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await assertion;
+
+    expect(runtimeLogger.warn).toHaveBeenCalledOnce();
+    expect(runtimeLogger.warn).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        workflowRunId: RUN_ID,
+        attempt: 1,
+        retryDelayMs: 1_000,
+        errorName: 'WorkflowWorldError',
+      })
+    );
   });
 
   it('still rejects on a permanent World error', async () => {
@@ -237,10 +278,23 @@ describe('transientReadRetryDelayMs', () => {
   });
 
   it('caps the backoff', () => {
+    const last = TRANSIENT_READ_MAX_RETRIES - 1;
     expect(transientReadRetryDelayMs(timedOut(), 3, 1_000)).toBe(8_000);
-    expect(transientReadRetryDelayMs(timedOut(), 9, 1_000)).toBe(30_000);
-    expect(transientReadRetryDelayMs(timedOut(), 9, 60_000)).toBe(60_000);
-    expect(transientReadRetryDelayMs(timedOut(), 10, 1_000)).toBeUndefined();
+    expect(
+      transientReadRetryDelayMs(
+        timedOut(),
+        last,
+        TRANSIENT_READ_MAX_BACKOFF_MS / 2 ** (last - 1)
+      )
+    ).toBe(TRANSIENT_READ_MAX_BACKOFF_MS);
+    // An interval above the cap is used as is, never shortened.
+    const longInterval = TRANSIENT_READ_MAX_BACKOFF_MS * 2;
+    expect(transientReadRetryDelayMs(timedOut(), last, longInterval)).toBe(
+      longInterval
+    );
+    expect(
+      transientReadRetryDelayMs(timedOut(), TRANSIENT_READ_MAX_RETRIES, 1_000)
+    ).toBeUndefined();
   });
 
   it('never waits less than the backoff, whatever retryAfter says', () => {
@@ -251,6 +305,8 @@ describe('transientReadRetryDelayMs', () => {
     expect(transientReadRetryDelayMs(throttled(Number.NaN), 0, 1_000)).toBe(
       1_000
     );
-    expect(transientReadRetryDelayMs(throttled(1e9), 0, 1_000)).toBe(300_000);
+    expect(transientReadRetryDelayMs(throttled(1e9), 0, 1_000)).toBe(
+      TRANSIENT_READ_MAX_RETRY_AFTER_MS
+    );
   });
 });
