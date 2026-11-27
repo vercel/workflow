@@ -1,5 +1,14 @@
 # @workflow/world-local
 
+## 5.6.1
+
+### Patch Changes
+
+- [#5659](https://github.com/vercel/workflow/pull/5659) [`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77) Thanks [@benpankow](https://github.com/benpankow)! - Refuse an out-of-band `wait_completed` on a single-orchestrator run with 409 `wait-completion-in-band-only`.
+- Updated dependencies [[`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77)]:
+  - @workflow/world@5.4.1
+  - @workflow/errors@5.2.1
+
 ## 5.6.0
 
 ### Minor Changes

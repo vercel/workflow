@@ -1,5 +1,24 @@
 # @workflow/core
 
+## 5.8.1
+
+### Patch Changes
+
+- [#5682](https://github.com/vercel/workflow/pull/5682) [`a306cb1`](https://github.com/vercel/workflow/commit/a306cb1455e55e6407ca80e1bb06da5b983781b4) Thanks [@pranaygp](https://github.com/pranaygp)! - Decode a legacy unframed abort packet once per pause in the stream instead of once per chunk read.
+
+- [#5699](https://github.com/vercel/workflow/pull/5699) [`294de1b`](https://github.com/vercel/workflow/commit/294de1bc328280b06e345378fae9788d9b44184d) Thanks [@ruiconti](https://github.com/ruiconti)! - Deliver events such as hook resumes to a run whose inline step is still running past the invocation's inline budget.
+
+- [#5756](https://github.com/vercel/workflow/pull/5756) [`67e7ebe`](https://github.com/vercel/workflow/commit/67e7ebed1c7a520354b40eeeda24fdb5c5e68aaf) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `Run.returnValue` does not count a wait that failed with a transient World error toward `WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS`.
+
+- [#5684](https://github.com/vercel/workflow/pull/5684) [`7a412ca`](https://github.com/vercel/workflow/commit/7a412cae8d575b56df23f1e3652c9432261bcc2f) Thanks [@abhiramshaji-cyber](https://github.com/abhiramshaji-cyber)! - Retry transient World errors (timeouts, 5xx, 429) up to 10 times in a row while `run.returnValue` waits for a run, instead of rejecting on the first one.
+
+- [#5659](https://github.com/vercel/workflow/pull/5659) [`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77) Thanks [@benpankow](https://github.com/benpankow)! - Run-ahead keeps going past an open `sleep()` that comes due more than `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` (at least 1 s) from now.
+- Updated dependencies [[`9da279d`](https://github.com/vercel/workflow/commit/9da279d38f37ff0e62f4d4e10c1b6ea4406eeb20), [`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77)]:
+  - @workflow/world-vercel@5.8.1
+  - @workflow/world@5.4.1
+  - @workflow/world-local@5.6.1
+  - @workflow/errors@5.2.1
+
 ## 5.8.0
 
 ### Minor Changes

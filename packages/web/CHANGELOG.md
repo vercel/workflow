@@ -1,5 +1,23 @@
 # @workflow/web
 
+## 5.4.0
+
+### Patch Changes
+
+- [#5711](https://github.com/vercel/workflow/pull/5711) [`9aa9934`](https://github.com/vercel/workflow/commit/9aa9934e555dd248a62f3d0f5fd9ff04867df564) Thanks [@mitul-s](https://github.com/mitul-s)! - Remove the icons from the run page's Trace, Events, Streams, and Usage tabs.
+
+- [#5741](https://github.com/vercel/workflow/pull/5741) [`55870da`](https://github.com/vercel/workflow/commit/55870da4eae072051af152a666b1b5106974c454) Thanks [@mitul-s](https://github.com/mitul-s)! - Export `STATUS_DOT` from `@workflow/web-shared` and use it for the run status badge and runs status filter. Remove the run header's Live indicator.
+
+- [#5710](https://github.com/vercel/workflow/pull/5710) [`c646464`](https://github.com/vercel/workflow/commit/c6464641779b77fcab03787146372d6e11cd1207) Thanks [@mitul-s](https://github.com/mitul-s)! - Keep the run header from shifting when a run finishes loading.
+
+- [#5744](https://github.com/vercel/workflow/pull/5744) [`e09942a`](https://github.com/vercel/workflow/commit/e09942aba555f0ac57d8c96f4ea475e5de6f6f0a) Thanks [@mitul-s](https://github.com/mitul-s)! - Replace native `title` hover text with the shared Tooltip, which no longer needs a `TooltipProvider`.
+
+- [#5720](https://github.com/vercel/workflow/pull/5720) [`cefba4c`](https://github.com/vercel/workflow/commit/cefba4cac5eae5b57c4bd22b314b9ca191382c4c) Thanks [@mitul-s](https://github.com/mitul-s)! - Restyle tooltips on an inverted surface and open them all after the same delay.
+
+- [#5566](https://github.com/vercel/workflow/pull/5566) [`0fbcc2f`](https://github.com/vercel/workflow/commit/0fbcc2ffbe2554fd977c0f9952fa8c575c6b90e1) Thanks [@mitul-s](https://github.com/mitul-s)! - Align error copy in the observability UI: "Failed to …" instead of "Unable to …", error cards and toasts that name what failed instead of "An error occurred", and `…` instead of `...`.
+- Updated dependencies [[`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77)]:
+  - @workflow/world-local@5.6.1
+
 ## 5.3.3
 
 ### Patch Changes

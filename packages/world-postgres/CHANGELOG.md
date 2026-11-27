@@ -1,5 +1,23 @@
 # @workflow/world-postgres
 
+## 5.5.1
+
+### Patch Changes
+
+- [#5756](https://github.com/vercel/workflow/pull/5756) [`67e7ebe`](https://github.com/vercel/workflow/commit/67e7ebed1c7a520354b40eeeda24fdb5c5e68aaf) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Log the error code, such as `28P01` for a rejected password, when a LISTEN connection fails to reconnect.
+
+- [#5459](https://github.com/vercel/workflow/pull/5459) [`7f3f946`](https://github.com/vercel/workflow/commit/7f3f9462d0fd7c1d025dee79146500e0987de508) Thanks [@Potrock](https://github.com/Potrock)! - Fix reading the events of a run whose data was deleted (`experimental_retention: 0` or `deleteRuns()`): they now read back without `eventData` instead of failing to parse, which made every later message for the run fail and retry.
+
+- [#5753](https://github.com/vercel/workflow/pull/5753) [`85249fb`](https://github.com/vercel/workflow/commit/85249fb9cd01f685b72fe497bd5b093f763118c8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Live stream readers no longer drop or repeat chunks when several writers write one stream at the same time.
+
+- [#5659](https://github.com/vercel/workflow/pull/5659) [`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77) Thanks [@benpankow](https://github.com/benpankow)! - Refuse an out-of-band `wait_completed` on a single-orchestrator run with 409 `wait-completion-in-band-only`.
+
+- [#5453](https://github.com/vercel/workflow/pull/5453) [`85db315`](https://github.com/vercel/workflow/commit/85db315152fa2af64b1f7cc0d1fdc38619b089fa) Thanks [@vishalrajofficial](https://github.com/vishalrajofficial)! - Fix LISTEN connections failing to authenticate when the World is given a `pg.Pool` that sets `password` or a password callback.
+- Updated dependencies [[`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77)]:
+  - @workflow/world@5.4.1
+  - @workflow/world-local@5.6.1
+  - @workflow/errors@5.2.1
+
 ## 5.5.0
 
 ### Minor Changes
