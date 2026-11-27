@@ -46,6 +46,7 @@ import {
   slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
+  type WorkflowRunStatus,
 } from '@workflow/world';
 
 import { decodeTime } from 'ulid';
@@ -358,6 +359,22 @@ export async function runSpec9Delivery(
   return continuation.handoff && result === undefined
     ? { timeoutSeconds: 0 }
     : result;
+}
+
+/**
+ * Why a failed read of a run says the run is gone: the World answered it
+ * expired, or not found (as a `WorkflowRunNotFoundError` or a bare 404, as
+ * the run setup reads both). Undefined for any other failure.
+ */
+function runGoneReason(readErr: unknown): 'expired' | 'not-found' | undefined {
+  if (RunExpiredError.is(readErr)) return 'expired';
+  if (
+    WorkflowRunNotFoundError.is(readErr) ||
+    (WorkflowWorldError.is(readErr) && readErr.status === 404)
+  ) {
+    return 'not-found';
+  }
+  return undefined;
 }
 
 /** The events the per-run ceiling counts: every one but a sealed `noop`. */
@@ -5546,44 +5563,53 @@ async function runDelivery(
    * refused. The delivery then acknowledges, as a refused `run_completed`
    * does, instead of logging an error and failing a finished run.
    *
-   * An expiry is terminal in every World. A conflict alone does not say the
-   * run finished (an entity that already exists is a conflict too), so the
-   * run is read again, and a conflict on a run that has not finished still
-   * fails it. A transient failure of that read is thrown, so the queue
-   * redelivers and the next delivery reads the run again.
+   * Neither error alone says the run finished: a conflict can be an entity
+   * that already exists, and a World may answer a 410 for something else
+   * (one refuses a write ahead of `run_started` with it). So the run is read
+   * again, and a run that has not finished still fails. A read that finds
+   * the run gone (expired, or not found) counts as finished whichever error
+   * ended the replay: nothing can drive that run on, and failing it would
+   * only log an error before the World refused its `run_failed` as well. A
+   * transient failure of the read is thrown, so the queue redelivers and the
+   * next delivery reads the run again; any other failure fails the run.
    */
   async function runEndedUnderReplay(err: unknown): Promise<boolean> {
-    let status: string | undefined;
-    if (RunExpiredError.is(err)) {
-      status = err.runStatus;
-    } else if (EntityConflictError.is(err)) {
-      status = await readRunStatusAgain();
-      if (status === undefined || !isTerminalWorkflowRunStatus(status)) {
-        return false;
-      }
-    } else {
+    if (!EntityConflictError.is(err) && !RunExpiredError.is(err)) return false;
+    const read = await readRunAgain();
+    if (read.type === 'unreadable') return false;
+    if (read.type === 'read' && !isTerminalWorkflowRunStatus(read.status)) {
       return false;
     }
     recordTerminalRun(world, runId);
     runtimeLogger.info('Run already finished during replay, skipping', {
       workflowRunId: runId,
-      status,
+      ...(read.type === 'read'
+        ? { status: read.status }
+        : { runGone: read.reason }),
       message: err.message,
     });
     return true;
   }
 
   /**
-   * The run's status, read again for {@link runEndedUnderReplay}; undefined
-   * when the read fails for good. A transient failure is thrown, as the
+   * The run as {@link runEndedUnderReplay} reads it again: its status, gone
+   * (the World answers it expired or not found), or unreadable (any other
+   * failure that will not pass). A transient failure is thrown, as the
    * replay's own catch throws one, so the queue redelivers instead of the run
    * failing.
    */
-  async function readRunStatusAgain(): Promise<string | undefined> {
+  async function readRunAgain(): Promise<
+    | { type: 'read'; status: WorkflowRunStatus }
+    | { type: 'gone'; reason: 'expired' | 'not-found' }
+    | { type: 'unreadable' }
+  > {
     try {
-      return (await world.runs.get(runId, { resolveData: 'none' })).status;
+      const run = await world.runs.get(runId, { resolveData: 'none' });
+      return { type: 'read', status: run.status };
     } catch (readErr) {
-      if (!isRetryableWorldError(readErr)) return undefined;
+      const gone = runGoneReason(readErr);
+      if (gone !== undefined) return { type: 'gone', reason: gone };
+      if (!isRetryableWorldError(readErr)) return { type: 'unreadable' };
       runLogger.warn(
         'Transient world error during replay; redelivering via queue instead of failing the run',
         {
