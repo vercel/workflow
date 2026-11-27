@@ -1,5 +1,18 @@
 # @workflow/nitro
 
+## 4.1.25
+
+### Patch Changes
+
+- [#5676](https://github.com/vercel/workflow/pull/5676) [`514bcbd`](https://github.com/vercel/workflow/commit/514bcbd904b5bb81bc3ff452aa1942ae4d14a9ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump dev dependency `vite` to patched releases (7.3.8, 8.3.8) to pick up a security fix.
+
+- Updated dependencies [[`514bcbd`](https://github.com/vercel/workflow/commit/514bcbd904b5bb81bc3ff452aa1942ae4d14a9ff)]:
+  - @workflow/vite@4.0.34
+  - @workflow/web@4.1.35
+  - @workflow/core@4.8.19
+  - @workflow/builders@4.1.24
+  - @workflow/rollup@4.0.34
+
 ## 4.1.24
 
 ### Patch Changes
