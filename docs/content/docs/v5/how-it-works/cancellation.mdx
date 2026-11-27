@@ -35,7 +35,7 @@ Every `AbortController` in the workflow context is backed by:
 
 When `new AbortController()` is called in a workflow, an internal hook is created, similar to calling `createHook()`. This hook is registered in the workflow's invocations queue and produces events in the [event log](/docs/how-it-works/event-sourcing):
 
-- **On creation**: A `hook_created` event records that the controller exists
+- **On creation**: A `hook_created` event records that the controller exists. A controller created after the workflow's last suspension and never aborted records no events, because the run ends before the hook is needed
 - **On abort**: The hook is resumed (producing a `hook_received` event), recording the abort permanently
 - **On replay**: The event consumer processes the `hook_received` event and updates `signal.aborted` to `true` at the same point in the replay as the original abort
 
