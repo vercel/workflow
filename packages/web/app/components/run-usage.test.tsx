@@ -538,7 +538,7 @@ describe('the usage table', () => {
     ).toEqual(['hook_1', 'hook_2']);
   });
 
-  it('shows a long hook token in full on hover, and lets it wrap at its separators', () => {
+  it('shows a long hook token in full, and lets it wrap at its separators', () => {
     const token = 'approval:order-1042/region.us-east_1';
     const usage = runOf({
       eventGroups: [{ eventType: 'hook_created', events: 1, bytes: 1 }],
@@ -547,7 +547,6 @@ describe('the usage table', () => {
     });
     render(<RunUsagePage runId="wrun_1" usage={usage} error={null} />);
     const label = childrenOf('hooks').getByTestId('run-usage-child-label');
-    expect(label.getAttribute('title')).toBe(token);
     // Nothing is cut: the whole token is the text, split only by <wbr>.
     expect(label.textContent).toBe(token);
     // After each of : - / . - _

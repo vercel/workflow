@@ -1,12 +1,12 @@
 import {
   CopyButton,
   cn,
+  STATUS_DOT,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@workflow/web-shared';
 import type { Step, WorkflowRun } from '@workflow/world';
-import { getStatusColorClass } from '~/lib/status-colors';
 import { formatDuration } from '~/lib/utils';
 
 /** Extract the error code from an unknown error value (StructuredError shape). */
@@ -40,10 +40,7 @@ export function StatusBadge({
     <span className={cn('flex flex-row gap-2', className)}>
       <span className="flex items-center gap-1.5">
         <span
-          className={cn(
-            'size-2 rounded-full shrink-0',
-            getStatusColorClass(status)
-          )}
+          className={cn('size-2 rounded-full shrink-0', STATUS_DOT[status])}
         />
         <span className="text-muted-foreground text-xs font-medium capitalize">
           {status}

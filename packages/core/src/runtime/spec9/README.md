@@ -86,7 +86,7 @@ Lazy inline step start, batched step claims, optimistic inline start outside tur
 
 ## Settings and behaviour on spec 9 runs
 
-The rest of the documentation describes spec 8 runs. This section collects what differs for a spec 9 run. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#spec-9) lists the spec 9 settings briefly and links here.
+The public documentation describes spec 9 runs as the default, and marks what differs for spec 8 runs with a note. This section collects what differs for a spec 9 run in more depth. [Runtime tuning](https://workflow-sdk.dev/docs/configuration/runtime-tuning#orchestrator) lists the orchestrator settings briefly.
 
 ### Runtime settings
 
@@ -94,7 +94,7 @@ Settings that apply to every run, read differently on spec 9 runs:
 
 - **`WORKFLOW_MAX_QUEUE_DELIVERIES`** (48): only orchestrator messages count. A fence refusal's redelivery counts on every first-party World, so a run whose every write is refused fails instead of looping; a handoff does not count. Step messages retry in place and are bounded by `maxRetries` and retention instead, except that past the cap a step showing no activity for an hour (every delivery fails before it starts, say because its input cannot be read) fails with a catchable `FatalError` naming `MAX_DELIVERIES_EXCEEDED`.
 - **`WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`**: recovery replays run in the same delivery, reloading the log and replaying from cold in a fresh VM. Once spent, the run fails with [`CORRUPTED_EVENT_LOG`](https://workflow-sdk.dev/docs/errors/corrupted-event-log); a redelivery starts the count again.
-- **`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`**: an open wait due within the inline window plus this allowance makes [run-ahead](#workflow_run_ahead_depth) wait for its writes at that boundary.
+- **`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`**: an open wait due within this allowance of now (at least 1 s, `MIN_RUN_AHEAD_WAIT_ALLOWANCE_MS`; capped at the inline deadline plus the allowance) makes [run-ahead](#workflow_run_ahead_depth) wait for its writes at that boundary.
 - **`WORKFLOW_MAX_INLINE_STEPS`**: clamped to `0` to `16`. `0` enqueues every step (on spec 8 runs `0` is read as unset). An inline step whose retry is due moves to the background.
 - **`WORKFLOW_OPTIMISTIC_INLINE_START`**: only `0` or `false` has an effect, making bodies wait for their start to commit on turbo's first delivery, under run-ahead, and under `WORKFLOW_OPTIMISTIC_BACKGROUND_START`.
 - **Not read**: `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` and the `WORKFLOW_PRECONDITION_*` settings. Spec 9 runs have no precondition guard; the fence replaces it.
@@ -463,7 +463,7 @@ At each suspension that schedules inline steps, the delivery classifies who else
 flowchart TD
     A["Boundary schedules inline steps"] --> B{"Depth above 0, and run-ahead not off for this World or delivery?"}
     B -->|"no"| AW["Awaited writes"]
-    B -->|"yes"| C{"An awaited or unknown hook, an abort-signal hook, a step running elsewhere, or a wait due within the inline window plus 30 s?"}
+    B -->|"yes"| C{"An awaited or unknown hook, an abort-signal hook, a step running elsewhere, or a wait due within the allowance (30 s, at least 1 s)?"}
     C -->|"yes"| DR["Not inert: drain speculative writes, fold what landed below, then decide"]
     C -->|"no"| G["Inert: run ahead"]
     G --> H{"All new steps inline, no wait, World has createBatch, at most 16 events, none with maxRetries 0?"}
@@ -471,7 +471,7 @@ flowchart TD
     H -->|"no"| PC["Creations committed first, outcomes still run ahead"]
 ```
 
-A hook the workflow created but does not await is inert on node:vm: its payload is buffered and moves neither step results nor the clock (on QuickJS it moves the clock; see the clock gate below). A wait is classified by time, since whether anything still awaits a sleep cannot be told; only the orchestrator writes `wait_completed` on spec 9, so a far-future wait is inert. At an inert boundary the outcome is placed at the slot the writer predicts and handed to the VM while the write is in flight, with `occurredAt` set to the time the workflow used.
+A hook the workflow created but does not await is inert on node:vm: its payload is buffered and moves neither step results nor the clock (on QuickJS it moves the clock; see the clock gate below). A wait is classified by time, since whether anything still awaits a sleep cannot be told; only the orchestrator writes `wait_completed` on spec 9, so a wait due beyond the allowance (30 s, at least 1 s) is inert. At an inert boundary the outcome is placed at the slot the writer predicts and handed to the VM while the write is in flight, with `occurredAt` set to the time the workflow used.
 
 #### Where a speculative event is placed
 
@@ -500,7 +500,7 @@ A displaced write commits above its predicted slot, and that slot's event id the
 |---|---|
 | `hook_received`, `hook_disposed`, `hook_conflict` | the hook was sensitive at a boundary still in flight: awaited, unknown, or an abort-signal hook |
 | `step_started`, `step_completed`, `step_failed`, `step_retrying` | the step is not one this delivery runs inline |
-| `wait_completed` | always: on spec 9 only the orchestrator completes waits (world-vercel refuses an out-of-band one with 409 `wait-completion-in-band-only`) |
+| `wait_completed` | always: on spec 9 only the orchestrator completes waits (every first-party World refuses an out-of-band one with 409 `wait-completion-in-band-only`) |
 | anything else (`run_cancelled`, `attr_set`, `noop`) | never |
 
 The classification rules these out, so a hazard means a writer the classification missed. A hazard stops the writer's decisions (only outcomes of steps whose start committed still go out); the delivery sends what its writes owe, takes a fresh writer, reloads and replays from cold in the same delivery with run-ahead off for the rest of it. `MAX_RUN_AHEAD_RESTARTS` (1) bounds the restarts, and a stop past it hands the message off. A hazard stop detects a classification gap rather than recovering from one: a coalesced run-ahead group may already have committed decisions made without the event, so it is logged at error level with `possibleLogCorruption: true`. A stop can also run a body twice, when the body started ahead of a speculative creation the stop refused; a `maxRetries: 0` step never starts ahead, so it is never one of them (see [Known limitations](#known-limitations)).
@@ -831,7 +831,7 @@ With `{ inBandFence: true }`, `mintedSpecVersion` returns 9 when `WORKFLOW_SPEC_
 
 #### Spec 9 event rules
 
-**Step and wait events are appends.** On a spec 9 run, `step_created`, `step_started`, `step_retrying`, `step_completed`, `step_failed`, `wait_created` and `wait_completed` are plain appends. The runtime keeps their lifecycles correct itself, and replay treats any event after an entity's terminal event as inert. A World may keep step and wait records for `steps.get()` / `steps.list()`, but the runtime never relies on it refusing a write. Two run checks apply: refuse `step_created`, `step_started`, `step_retrying` and `wait_created` on a terminal run (`RunExpiredError`), and keep accepting `step_completed`, `step_failed` and `wait_completed` after it. Return no step or wait entity on the result.
+**Step and wait events are appends.** On a spec 9 run, `step_created`, `step_started`, `step_retrying`, `step_completed`, `step_failed`, `wait_created` and `wait_completed` are plain appends. The runtime keeps their lifecycles correct itself, and replay treats any event after an entity's terminal event as inert. A World may keep step and wait records for `steps.get()` / `steps.list()`, but the runtime never relies on it refusing a write. Two run checks apply: refuse `step_created`, `step_started`, `step_retrying` and `wait_created` on a terminal run (`RunExpiredError`), and keep accepting `step_completed`, `step_failed` and `wait_completed` after it. Refuse an out-of-band `wait_completed` with 409 `wait-completion-in-band-only`: run-ahead treats a wait due later than the allowance as inert, so only the orchestrator may complete it (checked by the in-band fence conformance suite). Return no step or wait entity on the result.
 
 **Inline steps are created by their first `step_started`.** A step the orchestrator runs inline has no `step_created`: its first `step_started` (`attempt: 1`) carries `stepName`, `workflowName`, `input` and `inline: true` (no `creatorMessageId`), and is the step's creation. Store it as one event, keep its `input`, and write no `step_created` beside it. A background step keeps `step_created` followed by its invocation's own `step_started`. The runtime still reads logs with a `step_created` for an inline step, so a World does not rewrite older runs.
 
@@ -1220,7 +1220,7 @@ flowchart TD
     D -->|"no"| F["Full load with fence snapshot"]
     E --> L
     F --> L
-    L["Loop top"] --> N{"Inline deadline or replay budget reached?"}
+    L["Loop top"] --> N{"Inline deadline with no inline step in flight, or replay budget reached?"}
     N -->|"yes"| HO["Hand off, or fail the run"]
     N -->|"no"| P["Fold buffered writes and feed events"]
     P --> Q2{"Run terminal?"}
@@ -1507,7 +1507,7 @@ If only the wait's own timer delivery could arm the next one, a first timer coal
 
 - A `Promise.race` between a hook and a `sleep()` does not cancel the sleep's timer. If the hook wins, the timer, when it comes, completes the wait in a delivery that replays the finished race and changes nothing, or finds a terminal run and acknowledges.
 - If a hook payload and a timer arrive close together on world-vercel, the second wake is coalesced into the first's delivery. The re-run reads the log, sees both, and the replay picks the winner by log order, the same on every later replay.
-- A wait due within the invocation's inline window plus `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` (30 s) makes the next boundary path-changing, so the orchestrator does not run ahead past it.
+- A wait due within `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS` (30 s, at least 1 s) of now, capped at the invocation's inline deadline plus that allowance (`getRunAheadWaitWindowEndMs`), makes the next boundary path-changing, so the orchestrator does not run ahead past it. A wait due later doesn't: only the orchestrator completes waits, in-band at the top of a later pass, after the writes in flight. Once the wait comes due, the next boundary is classified as path-changing and drains first.
 
 #### Long sleeps are reached in hops
 
@@ -1855,7 +1855,7 @@ A fan-out of `step(i); sleep('3s')` whose outcomes each wake the run in their ow
 
 #### Deadline handoff and the inline-start margin
 
-The inline deadline is 2, 5 or 10 minutes from the invocation's start, by the function's maximum duration, and no inline step starts within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` (60 seconds) of it. When a long inline step runs into the deadline, the next pass starts past it and hands off on the same message, not an attempt. When short inline steps reach the margin first, the next step is created as a background step and the run continues from its completion wake; that costs a step invocation and a queue hop where a handoff would cost a redelivery (see [Known limitations](#known-limitations)).
+The inline deadline is 2, 5 or 10 minutes from the invocation's start, by the function's maximum duration, and no inline step starts within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` (60 seconds) of it. When a long inline step runs into the deadline, the delivery keeps replaying while the step runs, since it cannot end before the step does, so an event that arrives meanwhile (say, a hook resume that aborts the step) reaches the workflow. The first pass past the deadline with no inline step in flight hands off on the same message, not an attempt. A step the workflow reaches past the deadline while another inline step is still running is created as a background step, as past the margin. When short inline steps reach the margin first, the next step is created as a background step and the run continues from its completion wake; that costs a step invocation and a queue hop where a handoff would cost a redelivery (see [Known limitations](#known-limitations)).
 
 #### Stream-flush handoff
 

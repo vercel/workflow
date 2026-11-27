@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   type AnyEventRequest,
+  type Event,
   IN_BAND_SEQ_AT_RUN_CREATION,
   RETENTION_ATTRIBUTE,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -392,6 +393,119 @@ describe('Retention ($retention: 0)', () => {
       await events.create(runId, { eventType: 'run_cancelled' });
 
       expect(await countRemainingPayloads(runId)).toBe(0);
+    });
+
+    describe("a purged run's event log", () => {
+      const identity = (event: Event) => [
+        event.eventId,
+        event.eventType,
+        event.correlationId,
+      ];
+      const dataOf = (event: Event) =>
+        'eventData' in event ? event.eventData : undefined;
+
+      /** A finished zero-retention run, and its log as it was before the purge. */
+      async function purgedRun() {
+        const seeded = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+        const before = (
+          await events.list({ runId: seeded.runId, pagination: {} })
+        ).data;
+        const { event: terminal } = await events.create(seeded.runId, {
+          eventType: 'run_completed',
+          eventData: { output: new Uint8Array([12, 13]) },
+        });
+        if (!terminal) throw new Error('Expected the terminal event');
+        return { ...seeded, log: [...before, terminal] };
+      }
+
+      // The replay's load reads with 'skip-step-inputs', an observability
+      // listing with 'all' or 'none'.
+      for (const resolveData of ['skip-step-inputs', 'all', 'none'] as const) {
+        it(`lists with resolveData '${resolveData}', every event without its eventData`, async () => {
+          const { runId, log } = await purgedRun();
+          // Sanity: the log holds events whose type requires `eventData`.
+          expect(log.map((event) => event.eventType)).toEqual(
+            expect.arrayContaining([
+              'run_created',
+              'step_completed',
+              'hook_created',
+              'run_completed',
+            ])
+          );
+
+          const listed = await events.list({
+            runId,
+            pagination: {},
+            resolveData,
+          });
+
+          expect(listed.data.map(identity)).toEqual(log.map(identity));
+          expect(listed.data.map(dataOf)).toEqual(log.map(() => undefined));
+        });
+      }
+
+      it('lists the events of a run whose data was deleted on demand', async () => {
+        const { runId } = await seedRun();
+        await events.create(runId, {
+          eventType: 'run_completed',
+          eventData: { output: new Uint8Array([12, 13]) },
+        });
+        const log = (await events.list({ runId, pagination: {} })).data;
+        await runs.deleteDataMany?.({ runIds: [runId] });
+
+        const listed = await events.list({ runId, pagination: {} });
+
+        expect(listed.data.map(identity)).toEqual(log.map(identity));
+        expect(listed.data.map(dataOf)).toEqual(log.map(() => undefined));
+      });
+
+      it('rejects an event without its data on a run whose data was not deleted', async () => {
+        const { runId, stepId } = await seedRun();
+        await pool.query(
+          `UPDATE workflow.workflow_events SET payload_cbor = NULL, payload = NULL
+           WHERE run_id = $1 AND correlation_id = $2 AND type = 'step_created'`,
+          [runId, stepId]
+        );
+
+        await expect(events.list({ runId, pagination: {} })).rejects.toThrow();
+      });
+
+      it("pages through a purged run's log", async () => {
+        const { runId, log } = await purgedRun();
+        const listed: Event[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await events.list({
+            runId,
+            pagination: { limit: 2, ...(cursor ? { cursor } : {}) },
+          });
+          listed.push(...page.data);
+          cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+        } while (cursor);
+
+        expect(listed.map(identity)).toEqual(log.map(identity));
+        expect(listed.map(dataOf)).toEqual(log.map(() => undefined));
+      });
+
+      it('reads one event and the events of one step', async () => {
+        const { runId, stepId, log } = await purgedRun();
+
+        const created = await events.get(runId, log[0].eventId);
+        expect(created.eventType).toBe('run_created');
+        expect(created.createdAt).toEqual(log[0].createdAt);
+        expect(dataOf(created)).toBeUndefined();
+
+        const ofStep = await events.listByCorrelationId({
+          runId,
+          correlationId: stepId,
+          pagination: {},
+        });
+        expect(ofStep.data.map((event) => event.eventType)).toEqual([
+          'step_created',
+          'step_started',
+          'step_completed',
+        ]);
+      });
     });
 
     /** A step started on `runId` and still running when the run ends. */

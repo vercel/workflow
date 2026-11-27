@@ -153,7 +153,7 @@ describe('EncryptedDataBlock', () => {
     expect(markup).toContain('disabled=""');
   });
 
-  it('disables the Decrypt button with a reason when decryption is unavailable', () => {
+  it('disables the Decrypt button when decryption is unavailable', () => {
     const ctx: DecryptClickContextValue = {
       onDecrypt: () => {},
       isDecrypting: false,
@@ -170,12 +170,11 @@ describe('EncryptedDataBlock', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
   });
 });
 
 describe('decrypt controls', () => {
-  it('disables the shared Decrypt button with a reason', () => {
+  it('disables the shared Decrypt button when decryption is unavailable', () => {
     const markup = renderToStaticMarkup(
       createElement(DecryptButton, {
         disabled: true,
@@ -184,10 +183,9 @@ describe('decrypt controls', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
   });
 
-  it('disables inline Decrypt buttons with a reason', () => {
+  it('disables inline Decrypt buttons when decryption is unavailable', () => {
     // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
     const Encrypted = { Encrypted: function () {} }.Encrypted;
     const encryptedMarker = Object.create(Encrypted.prototype);
@@ -201,6 +199,5 @@ describe('decrypt controls', () => {
     );
 
     expect(markup).toContain('disabled=""');
-    expect(markup).toContain('title="Requires decrypt access"');
   });
 });

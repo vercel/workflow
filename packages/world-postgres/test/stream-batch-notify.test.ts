@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createStreamer } from '../src/streamer.js';
@@ -58,14 +59,21 @@ describe('Postgres stream batch notifications', () => {
       .toBe(1);
 
     const statements: string[] = [];
-    const query = pool.query.bind(pool);
-    const spy = vi.spyOn(pool, 'query').mockImplementation(((
-      config: string | { text: string },
-      ...rest: unknown[]
-    ) => {
-      statements.push(typeof config === 'string' ? config : config.text);
-      return (query as (...args: unknown[]) => unknown)(config, ...rest);
-    }) as typeof pool.query);
+    const query = Client.prototype.query;
+    const spy = vi
+      .spyOn(Client.prototype, 'query')
+      .mockImplementation(function (
+        this: Client,
+        config: string | { text: string },
+        ...rest: unknown[]
+      ) {
+        statements.push(typeof config === 'string' ? config : config.text);
+        return (query as (...args: unknown[]) => unknown).call(
+          this,
+          config,
+          ...rest
+        );
+      } as typeof Client.prototype.query);
     try {
       const notifies = () =>
         statements.filter((text) => text.includes('pg_notify')).length;

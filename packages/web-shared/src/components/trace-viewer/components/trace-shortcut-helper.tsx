@@ -105,7 +105,7 @@ export function TraceShortcutHelper({
       </span>
       <button
         type="button"
-        className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none"
+        className="inline-flex h-5 w-5 items-center justify-center rounded text-gray-900 opacity-0 transition-opacity hover:bg-gray-alpha-100 hover:text-gray-1000 group-hover:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none"
         onClick={dismiss}
         aria-label="Dismiss trace shortcuts helper"
       >

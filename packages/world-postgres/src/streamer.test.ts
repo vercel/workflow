@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
+import { Client } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Drizzle } from './drizzle/index.js';
-import { createStreamer } from './streamer.js';
+import {
+  createStreamer,
+  LISTEN_RECONNECT_DELAY_MS,
+  listenChannel,
+} from './streamer.js';
 
 vi.mock('pg', () => ({
   Client: vi.fn(function Client() {
@@ -424,4 +429,123 @@ describe('streams.get() rows written after the first EOF', () => {
     },
     5_000
   );
+});
+
+describe('postgres streamer listenChannel credentials', () => {
+  // The tests below replace the module-level `Client` mock; put it back so a
+  // test added after them gets the default fake client.
+  const defaultClient = vi.mocked(Client).getMockImplementation();
+  afterEach(() => {
+    vi.mocked(Client).mockReset();
+    if (defaultClient) vi.mocked(Client).mockImplementation(defaultClient);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('retains non-enumerable password credentials on initial connect and reconnect', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const password = async () => 'dynamic-token-456';
+    const poolOptions = { host: 'localhost', user: 'postgres' };
+    Object.defineProperty(poolOptions, 'password', {
+      value: password,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+
+    const handlers: Record<string, () => void> = {};
+    const fakeClient = {
+      connect: vi.fn(async () => {}),
+      query: vi.fn(async () => {}),
+      on: vi.fn((event: string, handler: () => void) => {
+        handlers[event] = handler;
+      }),
+      removeListener: vi.fn(),
+      end: vi.fn(async () => {}),
+    };
+
+    vi.mocked(Client)
+      .mockReset()
+      .mockImplementation(
+        class {
+          constructor() {
+            // biome-ignore lint/correctness/noConstructorReturn: fake client instance
+            return fakeClient as any;
+          }
+        } as any
+      );
+
+    const pool = { options: poolOptions } as any;
+    const sub = await listenChannel(pool, 'test_channel', async () => {});
+
+    expect(Client).toHaveBeenCalled();
+    const firstCallConfig = vi.mocked(Client).mock.calls[0][0] as any;
+    expect(firstCallConfig.password).toBe(password);
+
+    // Trigger disconnect to exercise reconnect
+    handlers.error?.();
+    await vi.advanceTimersByTimeAsync(LISTEN_RECONNECT_DELAY_MS);
+
+    expect(Client).toHaveBeenCalledTimes(2);
+    const reconnectConfig = vi.mocked(Client).mock.calls[1][0] as any;
+    expect(reconnectConfig.password).toBe(password);
+    expect(reconnectConfig.connectionTimeoutMillis).toBe(10_000);
+
+    await sub.close();
+  });
+
+  it('logs the code of a failed reconnect once per outage, never the error message', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const handlers: Record<string, () => void> = {};
+    const authError = Object.assign(
+      new Error('password authentication failed for user "postgres"'),
+      { code: '28P01' }
+    );
+    let failures = 3;
+    const fakeClient = {
+      connect: vi.fn(async () => {
+        if (vi.mocked(Client).mock.calls.length > 1 && failures-- > 0) {
+          throw authError;
+        }
+      }),
+      query: vi.fn(async () => {}),
+      on: vi.fn((event: string, handler: () => void) => {
+        handlers[event] = handler;
+      }),
+      removeListener: vi.fn(),
+      end: vi.fn(async () => {}),
+    };
+    vi.mocked(Client)
+      .mockReset()
+      .mockImplementation(
+        class {
+          constructor() {
+            // biome-ignore lint/correctness/noConstructorReturn: fake client instance
+            return fakeClient as any;
+          }
+        } as any
+      );
+
+    const onReconnect = vi.fn();
+    const sub = await listenChannel(
+      { options: {} } as any,
+      'test_channel',
+      async () => {},
+      { onReconnect }
+    );
+    handlers.error?.();
+    for (let i = 0; i <= 3; i++) {
+      await vi.advanceTimersByTimeAsync(LISTEN_RECONNECT_DELAY_MS);
+    }
+
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+    const lines = warn.mock.calls.map((call) => String(call[0]));
+    expect(lines.filter((line) => line.includes('reconnect failed'))).toEqual([
+      '[world-postgres] LISTEN test_channel reconnect failed (28P01); retrying',
+    ]);
+    expect(lines.join('\n')).not.toContain('password authentication');
+    await sub.close();
+  });
 });

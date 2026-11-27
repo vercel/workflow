@@ -5,13 +5,13 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  isHookLifecycleEventType,
   isRunCreationEvent,
   isTerminalStepEventType,
   type WorkflowRun,
 } from '@workflow/world';
 import type { StartHookCreation } from '../../lib/start-hook';
 import type { Span, SpanEvent } from '../../lib/trace-types';
-import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
 export const WORKFLOW_LIBRARY = {
@@ -71,7 +71,7 @@ function convertEventsToSpanEvents(
         eventData: 'eventData' in event ? event.eventData : undefined,
       },
       // Control whether to show vertical line in timeline
-      showVerticalLine: shouldShowVerticalLine(event.eventType),
+      showVerticalLine: isHookLifecycleEventType(event.eventType),
     }));
 }
 

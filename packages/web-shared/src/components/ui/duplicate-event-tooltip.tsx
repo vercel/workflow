@@ -29,14 +29,10 @@ export function EventNoticeTooltip({
   if (!notice) return children;
 
   return (
-    <TooltipProvider delayDuration={300}>
+    <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>{children}</TooltipTrigger>
-        <TooltipContent
-          className="max-w-[264px] leading-snug"
-          collisionPadding={8}
-          side="top"
-        >
+        <TooltipContent collisionPadding={8} side="top">
           {notice}
         </TooltipContent>
       </Tooltip>
