@@ -4,17 +4,20 @@ import { parseStoredEvent } from './stored-event.js';
 
 type EventRow = typeof Schema.events.$inferSelect;
 
-const createdAt = new Date('2026-01-02T03:04:05.000Z');
+/** The fields every stored event has, whatever its type. */
+const identity = {
+  runId: 'wrun_01',
+  eventId: 'evnt_0000000000000000000000001',
+  createdAt: new Date('2026-01-02T03:04:05.000Z'),
+  specVersion: 9,
+};
 
 function row(fields: Partial<EventRow> & Pick<EventRow, 'eventType'>) {
   return {
-    eventId: 'evnt_0000000000000000000000001',
+    ...identity,
     correlationId: null,
-    createdAt,
-    runId: 'wrun_01',
     eventDataJson: null,
     eventData: null,
-    specVersion: 9,
     resumeId: null,
     resumePayloadDigest: null,
     ...fields,
@@ -68,12 +71,9 @@ describe('parseStoredEvent', () => {
         row({ eventType, correlationId: correlationId ?? null })
       );
       expect(event).toEqual({
+        ...identity,
         eventType,
         ...(correlationId ? { correlationId } : {}),
-        runId: 'wrun_01',
-        eventId: 'evnt_0000000000000000000000001',
-        createdAt,
-        specVersion: 9,
       });
     });
   }
