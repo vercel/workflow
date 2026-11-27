@@ -10,7 +10,7 @@ related:
   - /docs/foundations/streaming
 ---
 
-We benchmark the Workflow SDK runtime on Vercel at each point where a workflow waits on it: starting a run, moving from one step to the next, fanning out, resuming from a hook, and delivering a stream, plus a five-turn agent loop that combines them. This page explains what each benchmark measures and how, and then shows the [latest results](#latest-results), which compare a new release with an earlier one.
+We benchmark the Workflow SDK runtime on Vercel at each point where a workflow waits on it: starting a run, moving from one step to the next, fanning out, resuming from a hook, and delivering a stream, plus a five-turn agent loop that combines them. This page explains what each benchmark measures and how, and then shows the [latest results](#latest-results), which compare the latest release with earlier ones.
 
 ## What we measure
 
@@ -46,7 +46,7 @@ Every step uses the default retry settings. A model step marked [`maxRetries = 0
 
 ## Methodology
 
-- **Platform**: Each version runs the same benchmark app on Vercel production in `iad1`, against the managed [Vercel World](/worlds/vercel), on its own deployment. The versions are measured at the same time. Before measuring, each deployment runs two short workflows and one fan-out that are not counted.
+- **Platform**: Each version runs the same benchmark app on Vercel production in `iad1`, against the managed [Vercel World](/worlds/vercel), on its own deployment. The versions are measured at the same time. Before each sweep of a benchmark, every deployment runs one warm-up that is not counted: a five-step workflow before the 1,020-step run, and one run of the benchmark otherwise. The agent loop runs on a separate app, deployed the same way once per version, which runs one loop with and one without streaming before measuring.
 - **Workload**: Every step takes 1 KB of JSON in and out and does 100 ms of simulated work, which the overhead measurements exclude.
 - **Runs**: Each version runs every benchmark several times, and each result pools the samples from all of its runs. The run counts are listed with the latest results.
 - **Percentiles**: Each percentile pools every sample across a version's runs and uses the nearest-rank method. Half of the samples are at or below the p50 (the median), three quarters at or below the p75, and all but the slowest 1% at or below the p99. With 100 or fewer samples, a p99 is the slowest sample.
@@ -62,131 +62,125 @@ Every step uses the default retry settings. A model step marked [`maxRetries = 0
 <Callout type="info">
 {/* generated:performance latest */}
 
-**Latest results:** Workflow SDK v5.2.0 compared with v4.8.12, measured October 8, 2026. We run these benchmarks regularly and publish updated results here.
+**Latest results:** Workflow SDK v5.8.0 compared with v5.2.0 and v4.8.18, measured November 27, 2026. We run these benchmarks regularly and publish updated results here.
 
 {/* end generated:performance latest */}
 </Callout>
 
 {/* generated:performance headline */}
 
-At p75, v5.2.0 is as fast as or faster than v4.8.12 on every benchmark. The largest change is in long runs: 1,000 steps into a run, v5.2.0 adds 70 ms between steps where v4.8.12 adds 1,748 ms.
+At p75, v5.8.0 is as fast as or faster than v5.2.0 on every benchmark, and faster than v4.8.18 on every benchmark. The largest change from v5.2.0 is in step-to-step overhead: 7 ms on v5.8.0, 260 ms on v5.2.0 and 818 ms on v4.8.18.
 
 {/* end generated:performance headline */}
 
 {/* generated:performance caveats */}
 
-Both versions ran at the same time and shared the platform. The exception is the 1,020-step benchmark on v4: one of its five runs ran alongside v5.2.0's, and the other four ran on their own afterwards, the same day with the same configuration. Each version ran the sequential workflow 10 times, the agent stream 10 times, the fan-out 25 times, the resume benchmark 25 times, and the 1,020-step run 5 times.
+All three versions ran at the same time and shared the platform. The fan-out and resume benchmarks ran as three back-to-back sweeps of 10, 10 and 5 runs, and the 1,020-step run as five sweeps of one run, each with all three versions at once. v4.8.18 takes longer to finish the agent stream and the 1,020-step run, so most of its runs of those two finished after the v5 versions had. In the fan-out, the first branch started after more than 1 s in 8 of 25 runs on v5.2.0, 5 on v5.8.0 and 1 on v4.8.18; on v5.2.0 those runs set the p75. Each version ran the sequential workflow 10 times, the agent stream 10 times, the fan-out 25 times, the resume benchmark 25 times, the 1,020-step run 5 times, and the agent loop 15 times with streaming and 15 times without.
 
 {/* end generated:performance caveats */}
 
 <Image
-  srcLight="/performance/v5.2.0/01-overview-light.png"
-  srcDark="/performance/v5.2.0/01-overview-dark.png"
-  alt="Dot plot of how many times faster the newer version is than the older one at p75 on each benchmark, on a log scale. The full values are in the results table below."
+  srcLight="/performance/v5.8.0/01-overview-light.png"
+  srcDark="/performance/v5.8.0/01-overview-dark.png"
+  alt="Dot plot of how many times faster the latest version is than each earlier one at p75 on each benchmark, on a log scale. The full values are in the results table below."
   width={2016}
-  height={1444}
+  height={2250}
 />
 
 ### Steps and long runs
 
 {/* generated:performance sequential */}
 
-At p75, a five-step workflow reaches its first step in 172 ms on v5.2.0 and 418 ms on v4.8.12, and v5.2.0 adds 109 ms between steps where v4.8.12 adds 618 ms.
+At p75, a five-step workflow reaches its first step in 197 ms on v5.8.0, 189 ms on v5.2.0 and 662 ms on v4.8.18. Between steps, it adds 7 ms on v5.8.0, 260 ms on v5.2.0 and 818 ms on v4.8.18.
 
 {/* end generated:performance sequential */}
 
 {/* generated:performance long-run */}
 
-Through a 1,020-step run, step-to-step overhead on v4.8.12 grows from 622 ms in steps 1 to 20 to 1,748 ms in steps 1,001 to 1,020, at p75. On v5.2.0 it is 110 ms and 70 ms. The median run takes 21.0 min on v4.8.12 and 3.0 min on v5.2.0.
+Through a 1,020-step run, from steps 1 to 20 to steps 1,001 to 1,020, step-to-step overhead at p75 grows from 828 ms to 1,933 ms on v4.8.18, falls from 144 ms to 73 ms on v5.2.0, and falls from 10 ms to 9 ms on v5.8.0. The median run takes 1.8 min on v5.8.0, 3.0 min on v5.2.0 and 21.8 min on v4.8.18.
 
 {/* end generated:performance long-run */}
 
 <Image
-  srcLight="/performance/v5.2.0/02-sequential-light.png"
-  srcDark="/performance/v5.2.0/02-sequential-dark.png"
-  alt="Three charts comparing the two versions: time to first step and step-to-step overhead for a five-step workflow, step-to-step overhead through a 1,020-step run at p75, and the time to finish all 1,020 steps. The full values are in the results table below."
+  srcLight="/performance/v5.8.0/02-sequential-light.png"
+  srcDark="/performance/v5.8.0/02-sequential-dark.png"
+  alt="Three charts comparing the three versions: time to first step and step-to-step overhead for a five-step workflow, step-to-step overhead through a 1,020-step run at p75, and the time to finish all 1,020 steps. The full values are in the results table below."
   width={2016}
-  height={2328}
+  height={2746}
 />
 
 ### Fan-out
 
 {/* generated:performance fanout */}
 
-At p75, v5.2.0 starts the first of 64 branches in 360 ms against 478 ms on v4.8.12, then starts the slowest branch at about the same time (996 ms against 972 ms) and joins in 448 ms against 464 ms.
+At p75, the first of 64 branches starts in 226 ms on v5.8.0, 1,914 ms on v5.2.0 and 706 ms on v4.8.18. The slowest branch starts in 1,400 ms on v5.8.0, 3,282 ms on v5.2.0 and 1,781 ms on v4.8.18, and the join takes 264 ms on v5.8.0, 717 ms on v5.2.0 and 702 ms on v4.8.18.
 
 {/* end generated:performance fanout */}
 
 <Image
-  srcLight="/performance/v5.2.0/03-fanout-light.png"
-  srcDark="/performance/v5.2.0/03-fanout-dark.png"
-  alt="Dumbbell chart of a 64-branch fan-out at p75, comparing the two versions for the first branch to start, the slowest branch to start, and the join. The full values are in the results table below."
+  srcLight="/performance/v5.8.0/03-fanout-light.png"
+  srcDark="/performance/v5.8.0/03-fanout-dark.png"
+  alt="Chart of a 64-branch fan-out at p75, comparing the three versions for the first branch to start, the slowest branch to start, and the join. The full values are in the results table below."
   width={2016}
-  height={804}
+  height={1056}
 />
 
 ### Resuming a workflow
 
 {/* generated:performance resume */}
 
-At p75, a workflow waiting on a hook resumes in 425 ms on v5.2.0 against 699 ms on v4.8.12.
+At p75, a workflow waiting on a hook resumes in 220 ms on v5.8.0, 562 ms on v5.2.0 and 953 ms on v4.8.18.
 
 {/* end generated:performance resume */}
 
 <Image
-  srcLight="/performance/v5.2.0/04-resume-light.png"
-  srcDark="/performance/v5.2.0/04-resume-dark.png"
-  alt="Dumbbell chart of time to resume after 1 s idle at p50 and p75, comparing the two versions. The full values are in the results table below."
+  srcLight="/performance/v5.8.0/04-resume-light.png"
+  srcDark="/performance/v5.8.0/04-resume-dark.png"
+  alt="Chart of time to resume after 1 s idle at p50 and p75, comparing the three versions. The full values are in the results table below."
   width={2016}
-  height={700}
+  height={832}
 />
 
 ### Streams
 
 {/* generated:performance streams */}
 
-The agent produced its 2,593-chunk response over 52.4 s. On v4.8.12 the writer step manages about 12 chunks per second, so the response takes 226.1 s to reach the reader. v5.2.0 writes streams over a WebSocket by default, keeps up at about 49 chunks per second, and delivers the response in 53.5 s.
+The agent produced its 2,593-chunk response over 52.4 s. On v4.8.18 the writer step manages about 12 chunks per second, so the response takes 215.1 s to reach the reader. v5.2.0 and v5.8.0 write streams over a WebSocket by default, keep up at about 49 chunks per second, and deliver the response in 54.1 s on v5.2.0 and 53.5 s on v5.8.0.
 
-At p75, a chunk reaches the reader in 102 ms on v5.2.0 against 172 ms on v4.8.12. v5.2.0 had a chunk delayed by over 1 s in 0 of 10 runs, against 6 of 10 on v4.8.12.
+At p75, a chunk reaches the reader in 93 ms on v5.8.0, 94 ms on v5.2.0 and 160 ms on v4.8.18. A chunk was delayed by over 1 s in 0 of 10 runs on v5.8.0, 0 of 10 runs on v5.2.0 and 6 of 10 runs on v4.8.18.
 
 {/* end generated:performance streams */}
 
 On the Vercel World, [`WORKFLOW_STREAMS_TRANSPORT`](/docs/configuration/worlds#workflow_streams_transport) sets the transport for stream writes.
 
 <Image
-  srcLight="/performance/v5.2.0/05-streams-light.png"
-  srcDark="/performance/v5.2.0/05-streams-dark.png"
-  alt="Three charts of a replayed agent stream comparing the two versions: the time to deliver the whole response against the recording's length, chunk trip time at p50 and p75, and the number of runs with a chunk delayed by over 1 s. The full values are in the results table below."
+  srcLight="/performance/v5.8.0/05-streams-light.png"
+  srcDark="/performance/v5.8.0/05-streams-dark.png"
+  alt="Three charts of a replayed agent stream comparing the three versions: the time to deliver the whole response against the recording's length, chunk trip time at p50 and p75, and the number of runs with a chunk delayed by over 1 s. The full values are in the results table below."
   width={2016}
-  height={1628}
+  height={2154}
 />
 
 ### Agent loop
 
 {/* generated:performance agent-loop */}
 
-Measured November 24, 2026 on v4.8.18, v5.2.0 and v5.8.0, which ran at the same time, separately from the results above. Each version ran the loop 15 times with streaming and 15 times without.
+The loop runs on a benchmark app of its own, deployed once per version, and each version ran it 15 times with streaming and 15 times without.
 
-At p75, the five-turn loop that streams its tokens adds 912 ms on v5.8.0, against 3,023 ms on v5.2.0 and 9,745 ms on v4.8.18. Without streaming, v5.8.0 adds 257 ms, most of it the time to reach the first step (173 ms at p75), against 2,450 ms on v5.2.0 and 7,569 ms on v4.8.18.
+At p75, the five-turn loop that streams its tokens adds 892 ms on v5.8.0, 3,394 ms on v5.2.0 and 9,814 ms on v4.8.18. Without streaming, v5.8.0 adds 366 ms, of which 198 ms is the time to reach the first step (at p75), against 2,252 ms on v5.2.0 and 7,078 ms on v4.8.18.
 
-On v5.8.0, most of the streaming loop's overhead is the wait after each model step until its last tokens are stored: the tools start 130 ms after the model step at p75, against 5 ms without streaming.
+On v5.8.0, the streaming loop waits after each model step until its last tokens are stored: the tools start 130 ms after the model step at p75, against 7 ms without streaming.
 
 {/* end generated:performance agent-loop */}
 
-{/* generated:performance agent-loop-table */}
+<Image
+  srcLight="/performance/v5.8.0/06-agent-loop-light.png"
+  srcDark="/performance/v5.8.0/06-agent-loop-dark.png"
+  alt="Chart of the five-turn agent loop's overhead at p75, with and without streaming, comparing the three versions. The full values are in the results table below."
+  width={2016}
+  height={872}
+/>
 
-| Metric | v4.8.18 | v5.2.0 | v5.8.0 | v5.8.0 vs v5.2.0 | Samples per version |
-| --- | --: | --: | --: | --: | --: |
-| **Streaming tokens, 15 runs** | | | | | |
-| Overhead, p50 | 9,450 ms | 2,777 ms | 738 ms | 3.8× faster | 15 runs |
-| Overhead, p75 | 9,745 ms | 3,023 ms | 912 ms | 3.3× faster | 15 runs |
-| Model step to tools, p75 | 725 ms | 492 ms | 130 ms | 3.8× faster | 60 turns |
-| **Without streaming, 15 runs** | | | | | |
-| Overhead, p50 | 7,058 ms | 2,214 ms | 215 ms | 10.3× faster | 15 runs |
-| Overhead, p75 | 7,569 ms | 2,450 ms | 257 ms | 9.5× faster | 15 runs |
-| Model step to tools, p75 | 761 ms | 339 ms | 5 ms | 67.8× faster | 60 turns |
-
-{/* end generated:performance agent-loop-table */}
 
 ### All results
 
@@ -194,27 +188,34 @@ Every measured value from the latest results. Percentiles follow the [methodolog
 
 {/* generated:performance table */}
 
-| Metric | v4.8.12 | v5.2.0 | Change | Samples per version |
-| --- | --: | --: | --: | --: |
-| **Sequential workflow, 5 steps, 10 runs** | | | | |
-| Time to first step, p75 | 418 ms | 172 ms | 2.4× faster | 10 runs |
-| Time to first step, slowest run | 451 ms | 253 ms | 1.8× faster | 10 runs |
-| Step-to-step overhead, p75 | 618 ms | 109 ms | 5.7× faster | 40 gaps |
-| Step-to-step overhead, p99 | 777 ms | 327 ms | 2.4× faster | 40 gaps |
-| **Long run, 1,020 steps, 5 runs** | | | | |
-| Step overhead, steps 1 to 20, p75 | 622 ms | 110 ms | 5.7× faster | 95 gaps |
-| Step overhead, steps 101 to 120, p75 | 719 ms | 74 ms | 9.7× faster | 95 gaps |
-| Step overhead, steps 1,001 to 1,020, p75 | 1,748 ms | 70 ms | 25.0× faster | 95 gaps |
-| Whole run, median wall time | 21.0 min | 3.0 min | 7.0× faster | 5 runs |
-| **Fan-out, 64 parallel branches, 25 runs** | | | | |
-| First branch starts, p75 | 478 ms | 360 ms | 1.3× faster | 25 runs |
-| Slowest branch to start, p75 | 972 ms | 996 ms | No change | 25 runs |
-| Join, p75 | 464 ms | 448 ms | No change | 25 runs |
-| **Resume after 1 s idle, 25 runs of 5 resumes** | | | | |
-| Time to resume, p50 | 619 ms | 383 ms | 1.6× faster | 125 resumes |
-| Time to resume, p75 | 699 ms | 425 ms | 1.6× faster | 125 resumes |
-| **Agent stream, 52.4 s recording, 10 runs** | | | | |
-| Delivery, median wall time | 226.1 s | 53.5 s | 4.2× faster | 10 runs |
-| Chunk trip time, p75 | 172 ms | 102 ms | 1.7× faster | 25,930 chunks |
+| Metric | v4.8.18 | v5.2.0 | v5.8.0 | v5.8.0 vs v5.2.0 | v5.8.0 vs v4.8.18 | Samples per version |
+| --- | --: | --: | --: | --: | --: | --: |
+| **Sequential workflow, 5 steps, 10 runs** | | | | | | |
+| Time to first step, p75 | 662 ms | 189 ms | 197 ms | No change | 3.4× faster | 10 runs |
+| Step-to-step overhead, p75 | 818 ms | 260 ms | 7 ms | 37.1× faster | 116.9× faster | 40 gaps |
+| Step-to-step overhead, p99 | 987 ms | 684 ms | 381 ms | 1.8× faster | 2.6× faster | 40 gaps |
+| **Long run, 1,020 steps, 5 runs** | | | | | | |
+| Step overhead, steps 1 to 20, p75 | 828 ms | 144 ms | 10 ms | 14.4× faster | 82.8× faster | 95 gaps |
+| Step overhead, steps 101 to 120, p75 | 884 ms | 98 ms | 7 ms | 14.0× faster | 126.3× faster | 95 gaps |
+| Step overhead, steps 1,001 to 1,020, p75 | 1,933 ms | 73 ms | 9 ms | 8.1× faster | 214.8× faster | 95 gaps |
+| Whole run, median wall time | 21.8 min | 3.0 min | 1.8 min | 1.6× faster | 11.8× faster | 5 runs |
+| **Fan-out, 64 parallel branches, 25 runs** | | | | | | |
+| First branch starts, p75 | 706 ms | 1,914 ms | 226 ms | 8.5× faster | 3.1× faster | 25 runs |
+| Slowest branch to start, p75 | 1,781 ms | 3,282 ms | 1,400 ms | 2.3× faster | 1.3× faster | 25 runs |
+| Join, p75 | 702 ms | 717 ms | 264 ms | 2.7× faster | 2.7× faster | 25 runs |
+| **Resume after 1 s idle, 25 runs of 5 resumes** | | | | | | |
+| Time to resume, p50 | 875 ms | 493 ms | 177 ms | 2.8× faster | 4.9× faster | 125 resumes |
+| Time to resume, p75 | 953 ms | 562 ms | 220 ms | 2.6× faster | 4.3× faster | 125 resumes |
+| **Agent stream, 52.4 s recording, 10 runs** | | | | | | |
+| Delivery, median wall time | 215.1 s | 54.1 s | 53.5 s | No change | 4.0× faster | 10 runs |
+| Chunk trip time, p75 | 160 ms | 94 ms | 93 ms | No change | 1.7× faster | 25,930 chunks |
+| **Agent loop, 5 turns, streaming tokens, 15 runs** | | | | | | |
+| Overhead, p50 | 9,523 ms | 2,913 ms | 695 ms | 4.2× faster | 13.7× faster | 15 runs |
+| Overhead, p75 | 9,814 ms | 3,394 ms | 892 ms | 3.8× faster | 11.0× faster | 15 runs |
+| Model step to tools, p75 | 719 ms | 507 ms | 130 ms | 3.9× faster | 5.5× faster | 60 turns |
+| **Agent loop, 5 turns, without streaming, 15 runs** | | | | | | |
+| Overhead, p50 | 6,812 ms | 2,015 ms | 288 ms | 7.0× faster | 23.7× faster | 15 runs |
+| Overhead, p75 | 7,078 ms | 2,252 ms | 366 ms | 6.2× faster | 19.3× faster | 15 runs |
+| Model step to tools, p75 | 764 ms | 339 ms | 7 ms | 48.4× faster | 109.1× faster | 60 turns |
 
 {/* end generated:performance table */}
