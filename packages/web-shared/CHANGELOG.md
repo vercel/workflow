@@ -1,5 +1,38 @@
 # @workflow/web-shared
 
+## 5.4.0
+
+### Minor Changes
+
+- [#5741](https://github.com/vercel/workflow/pull/5741) [`55870da`](https://github.com/vercel/workflow/commit/55870da4eae072051af152a666b1b5106974c454) Thanks [@mitul-s](https://github.com/mitul-s)! - Export `STATUS_DOT` from `@workflow/web-shared` and use it for the run status badge and runs status filter. Remove the run header's Live indicator.
+
+### Patch Changes
+
+- [#5616](https://github.com/vercel/workflow/pull/5616) [`512377d`](https://github.com/vercel/workflow/commit/512377d1fcc8b5d09016b1c123c8bb916993f870) Thanks [@mitul-s](https://github.com/mitul-s)! - Events tab: the elapsed column shows the time since the previous event instead of since the run started, right-aligned under a "Delta" header, and the Duration column is removed.
+
+- [#5739](https://github.com/vercel/workflow/pull/5739) [`8d6aa20`](https://github.com/vercel/workflow/commit/8d6aa20c36723ecbef092b081c49906d38285753) Thanks [@mitul-s](https://github.com/mitul-s)! - Draw short sleeps in the trace timeline gray, like longer ones.
+
+- [#5719](https://github.com/vercel/workflow/pull/5719) [`c67c488`](https://github.com/vercel/workflow/commit/c67c4885375c0321c40779e378e20dc76afc2632) Thanks [@mitul-s](https://github.com/mitul-s)! - Kbd outlines no longer change the key's size, collapsible sections rotate a single chevron and show a keyboard focus ring, and context cards fade in with a sharper edge and tip.
+
+- [#5740](https://github.com/vercel/workflow/pull/5740) [`ea1f5f1`](https://github.com/vercel/workflow/commit/ea1f5f185bb4c2e1b5c0a57f7b1324433dc738af) Thanks [@mitul-s](https://github.com/mitul-s)! - Colour retries amber in the trace, mute cancelled span icons, and use the status dot colours in the Events timing breakdown and the stream Live indicator.
+
+- [#5744](https://github.com/vercel/workflow/pull/5744) [`e09942a`](https://github.com/vercel/workflow/commit/e09942aba555f0ac57d8c96f4ea475e5de6f6f0a) Thanks [@mitul-s](https://github.com/mitul-s)! - Replace native `title` hover text with the shared Tooltip, which no longer needs a `TooltipProvider`.
+
+- [#5720](https://github.com/vercel/workflow/pull/5720) [`cefba4c`](https://github.com/vercel/workflow/commit/cefba4cac5eae5b57c4bd22b314b9ca191382c4c) Thanks [@mitul-s](https://github.com/mitul-s)! - Restyle tooltips on an inverted surface and open them all after the same delay.
+
+- [#5723](https://github.com/vercel/workflow/pull/5723) [`d45627f`](https://github.com/vercel/workflow/commit/d45627f05769e9b4a0b9384111c7cec6ad601a20) Thanks [@mitul-s](https://github.com/mitul-s)! - Use standard radius, size and position utilities where an arbitrary value matched one.
+
+- [#5566](https://github.com/vercel/workflow/pull/5566) [`0fbcc2f`](https://github.com/vercel/workflow/commit/0fbcc2ffbe2554fd977c0f9952fa8c575c6b90e1) Thanks [@mitul-s](https://github.com/mitul-s)! - Align error copy in the observability UI: "Failed to …" instead of "Unable to …", error cards and toasts that name what failed instead of "An error occurred", and `…` instead of `...`.
+
+- [#5721](https://github.com/vercel/workflow/pull/5721) [`4f9ae8c`](https://github.com/vercel/workflow/commit/4f9ae8c4dd3a7358884b4514766c222d96b26aaa) Thanks [@mitul-s](https://github.com/mitul-s)! - Ship the data inspector and span landing styles as CSS modules so they apply in every host.
+
+- [#5722](https://github.com/vercel/workflow/pull/5722) [`224e875`](https://github.com/vercel/workflow/commit/224e8759ac636ad1de74f39888d52e197a9395c0) Thanks [@mitul-s](https://github.com/mitul-s)! - Use token classes instead of inline colour styles in the attribute panel and events list.
+
+- [#5724](https://github.com/vercel/workflow/pull/5724) [`dea74d2`](https://github.com/vercel/workflow/commit/dea74d2ed3d8d47a02c3968cb7b9488d3f8845c9) Thanks [@mitul-s](https://github.com/mitul-s)! - Use the mono typography classes instead of stacking `font-mono` on sans ones.
+- Updated dependencies [[`a306cb1`](https://github.com/vercel/workflow/commit/a306cb1455e55e6407ca80e1bb06da5b983781b4), [`294de1b`](https://github.com/vercel/workflow/commit/294de1bc328280b06e345378fae9788d9b44184d), [`67e7ebe`](https://github.com/vercel/workflow/commit/67e7ebed1c7a520354b40eeeda24fdb5c5e68aaf), [`7a412ca`](https://github.com/vercel/workflow/commit/7a412cae8d575b56df23f1e3652c9432261bcc2f), [`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77), [`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77)]:
+  - @workflow/core@5.8.1
+  - @workflow/world@5.4.1
+
 ## 5.3.3
 
 ### Patch Changes

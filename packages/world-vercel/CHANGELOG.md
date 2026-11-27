@@ -1,5 +1,14 @@
 # @workflow/world-vercel
 
+## 5.8.1
+
+### Patch Changes
+
+- [#5702](https://github.com/vercel/workflow/pull/5702) [`9da279d`](https://github.com/vercel/workflow/commit/9da279d38f37ff0e62f4d4e10c1b6ea4406eeb20) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reuse one stream WebSocket across consecutive steps that write to the same stream
+- Updated dependencies [[`26cd490`](https://github.com/vercel/workflow/commit/26cd4906289854399168f476a0d545f329223d77)]:
+  - @workflow/world@5.4.1
+  - @workflow/errors@5.2.1
+
 ## 5.8.0
 
 ### Minor Changes
