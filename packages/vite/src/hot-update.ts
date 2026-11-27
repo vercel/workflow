@@ -25,6 +25,22 @@ interface WorkflowHotUpdatePluginOptions {
  */
 const MAX_REMEMBERED_CHANGES = 256;
 
+async function affectsBuild(
+  builder: BaseBuilder,
+  { file, read }: HotUpdateOptions
+): Promise<boolean> {
+  let content: string;
+  try {
+    content = await read();
+  } catch {
+    const graph = builder.getSettledDiscoveredEntries()?.discoveredFiles;
+    return !graph || graph.has(file);
+  }
+
+  const patterns = detectWorkflowPatterns(content);
+  return patterns.hasDirective || patterns.hasSerde;
+}
+
 /**
  * Vite plugin that watches for workflow/step file changes and triggers rebuilds.
  *
@@ -75,7 +91,7 @@ export function workflowHotUpdatePlugin(
         return;
       }
 
-      const { file, read } = ctx;
+      const { file } = ctx;
 
       // Check if this is a TS/JS file that might contain workflow directives
       const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
@@ -92,28 +108,12 @@ export function workflowHotUpdatePlugin(
         return;
       }
 
-      // Read the file to check for workflow/step directives
-      let content: string;
-      try {
-        content = await read();
-      } catch {
-        // File might have been deleted - trigger rebuild to update generated routes
-        console.log('Workflow file changed, rebuilding...');
-        await runBuild(() => resolvedBuilder.build());
-        return;
-      }
-
-      // Detect workflow patterns using shared utilities
-      const patterns = detectWorkflowPatterns(content);
-
-      if (!patterns.hasDirective && !patterns.hasSerde) {
+      if (!(await affectsBuild(resolvedBuilder, ctx))) {
         return;
       }
 
       console.log('Workflow file changed, rebuilding...');
       await runBuild(() => resolvedBuilder.build());
-      // Let Vite handle the normal HMR for the changed file
-      return;
     },
   };
 }
