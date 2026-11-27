@@ -1,5 +1,9 @@
 [workspace]
-members = ["packages/swc-plugin-workflow", "workbench/swc-playground/wasm"]
+members = [
+    "packages/swc-plugin-workflow",
+    "packages/world-sqlite-rust",
+    "workbench/swc-playground/wasm",
+]
 
 resolver = "2"
 
