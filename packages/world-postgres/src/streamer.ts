@@ -6,7 +6,7 @@ import type {
   Streamer,
   StreamInfoResponse,
 } from '@workflow/world';
-import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, asc, between, eq, gt, lt, sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { Client, type Pool } from 'pg';
 import { incrementBase32, monotonicFactory, TIME_LEN } from 'ulid';
@@ -17,6 +17,8 @@ import { cloneClientConfig, connectionErrorCode, Mutex } from './util.js';
 const StreamPublishMessage = z.object({
   streamId: z.string(),
   chunkId: z.templateLiteral(['chnk_', z.string()]),
+  firstChunkId: z.templateLiteral(['chnk_', z.string()]).optional(),
+  rangeFollows: z.literal(true).optional(),
 });
 
 interface StreamChunkEvent {
@@ -296,25 +298,33 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
       const key = `strm:${parsed.streamId}` as const;
-      if (!events.listenerCount(key)) {
+      if (parsed.rangeFollows || !events.listenerCount(key)) {
         return;
       }
 
       const resource = getMutex(key);
       await resource.mutex.andThen(async () => {
-        const [value] = await drizzle
-          .select({ eof: streams.eof, data: chunkDataUnlessRunDeleted })
+        const chunks = await drizzle
+          .select({
+            id: streams.chunkId,
+            eof: streams.eof,
+            data: chunkDataUnlessRunDeleted,
+          })
           .from(streams)
           .where(
             and(
               eq(streams.streamId, parsed.streamId),
-              eq(streams.chunkId, parsed.chunkId)
+              between(
+                streams.chunkId,
+                parsed.firstChunkId ?? parsed.chunkId,
+                parsed.chunkId
+              )
             )
           )
-          .limit(1);
-        if (!value) return;
-        const { data, eof } = value;
-        events.emit(key, { id: parsed.chunkId, data, eof });
+          .orderBy(streams.chunkId);
+        for (const chunk of chunks) {
+          events.emit(key, chunk);
+        }
       });
     },
     { onReconnect: () => replayActiveStreams() }
@@ -543,9 +553,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       notified AS (
         SELECT pg_notify(
           ${STREAM_TOPIC},
-          json_build_object('streamId', ${name}::text, 'chunkId', s.id)::text
+          CASE WHEN s.id = s.last_id
+            THEN json_build_object('streamId', ${name}::text, 'chunkId', s.id, 'firstChunkId', s.first_id)
+            ELSE json_build_object('streamId', ${name}::text, 'chunkId', s.id, 'rangeFollows', true)
+          END::text
         )
-        FROM (SELECT id FROM ins ORDER BY id) AS s
+        FROM (
+          SELECT id, min(id) OVER () AS first_id, max(id) OVER () AS last_id
+          FROM ins ORDER BY id
+        ) AS s
       )
       SELECT
         (SELECT id FROM head) AS head,
