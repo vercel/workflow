@@ -105,6 +105,52 @@ describe('Postgres LISTEN connection drop', () => {
     expect(await listenBackends(channel)).toHaveLength(0);
   });
 
+  // `pg.Pool` keeps `options.password` non-enumerable. The replacement
+  // connection must still authenticate through the pool's password callback,
+  // and must call it again rather than reuse the token it returned before.
+  test('re-subscribes with a pool that authenticates through a password callback', async () => {
+    const role = `listen_auth_${randomUUID().replaceAll('-', '')}`;
+    let password = randomUUID();
+    await pool.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}'`);
+    const getPassword = vi.fn(async () => password);
+    const authPool = new TestPool({
+      host: container.getHost(),
+      port: container.getPort(),
+      database: container.getDatabase(),
+      user: role,
+      password: getPassword,
+      max: 1,
+    });
+    const channel = `listen_reconnect_${randomUUID().replaceAll('-', '')}`;
+    const payloads: string[] = [];
+    const onReconnect = vi.fn();
+    const sub = await listenChannel(
+      authPool,
+      channel,
+      async (payload) => {
+        payloads.push(payload);
+      },
+      { onReconnect }
+    );
+    try {
+      password = randomUUID();
+      await pool.query(`ALTER ROLE ${role} PASSWORD '${password}'`);
+      const calls = getPassword.mock.calls.length;
+      await terminateListeners(channel);
+      await vi.waitFor(() => expect(onReconnect).toHaveBeenCalledTimes(1), {
+        timeout: LISTEN_RECONNECT_DELAY_MS * 10,
+      });
+      expect(getPassword.mock.calls.length).toBeGreaterThan(calls);
+
+      await pool.query('SELECT pg_notify($1, $2)', [channel, 'after']);
+      await vi.waitFor(() => expect(payloads).toEqual(['after']));
+    } finally {
+      await sub.close();
+      await authPool.end();
+      await pool.query(`DROP ROLE ${role}`);
+    }
+  });
+
   test('a reader receives chunks and EOF written while LISTEN was down', async () => {
     const streamer = createStreamer(pool, createClient(pool));
     try {
