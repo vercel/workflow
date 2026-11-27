@@ -133,7 +133,7 @@ import {
   type StartHookDecision,
   startHookConflict,
 } from './start-hook.js';
-import { parseStoredEvent } from './stored-event.js';
+import { parseStoredEvent, parseStoredEvents } from './stored-event.js';
 import { compact } from './util.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -672,10 +672,7 @@ async function acquireRateSlot(
     )
     .limit(1);
   let created: Event | undefined;
-  if (row) {
-    row.eventData ||= row.eventDataJson;
-    created = EventSchema.parse(compact(row));
-  }
+  if (row) created = await parseStoredEvent(db, row);
   if (
     created?.eventType !== 'rate_created' ||
     created.correlationId !== correlationId ||
@@ -909,8 +906,8 @@ async function reportSkippedSlots(
       )
     )
     .orderBy(Schema.events.eventId);
-  const events = rows.map((row) =>
-    stripEventDataRefs(parseStoredEvent(row), resolveData)
+  const events = (await parseStoredEvents(db, rows)).map((event) =>
+    stripEventDataRefs(event, resolveData)
   );
   return {
     events,
@@ -976,9 +973,7 @@ async function createHookResume(
       )
       .limit(1);
     if (prior) {
-      const parsed = EventSchema.parse(
-        compact({ ...prior, eventData: prior.eventData ?? prior.eventDataJson })
-      );
+      const parsed = await parseStoredEvent(tx, prior);
       if (
         parsed.eventType !== 'hook_received' ||
         prior.correlationId !== data.correlationId ||
@@ -1046,9 +1041,9 @@ async function createHookResume(
       )
       .orderBy(Schema.events.eventId)
       .limit(101);
-    const events = rows
-      .slice(0, 100)
-      .map((row) => stripEventDataRefs(parseStoredEvent(row), resolveData));
+    const events = (await parseStoredEvents(drizzle, rows.slice(0, 100))).map(
+      (event) => stripEventDataRefs(event, resolveData)
+    );
     return {
       ...result,
       events,
@@ -4426,8 +4421,8 @@ function createUnfencedEventsStorage(
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        const data = eventRows.map((e) =>
-          stripEventDataRefs(parseStoredEvent(e), resolveData)
+        const data = (await parseStoredEvents(drizzle, eventRows)).map(
+          (event) => stripEventDataRefs(event, resolveData)
         );
         eventPage = {
           data,
@@ -4457,8 +4452,8 @@ function createUnfencedEventsStorage(
           .orderBy(Schema.events.eventId)
           .limit(limit + 1);
         const page = deltaRows.slice(0, limit);
-        const data = page.map((e) =>
-          stripEventDataRefs(parseStoredEvent(e), resolveData)
+        const data = (await parseStoredEvents(drizzle, page)).map((event) =>
+          stripEventDataRefs(event, resolveData)
         );
         eventPage = {
           data,
@@ -4540,7 +4535,10 @@ function createUnfencedEventsStorage(
       }
 
       const resolveData = params?.resolveData ?? 'all';
-      return stripEventDataRefs(parseStoredEvent(value), resolveData);
+      return stripEventDataRefs(
+        await parseStoredEvent(drizzle, value),
+        resolveData
+      );
     },
     async list(params: ListEventsParams): Promise<EventListResponse> {
       const limit = params.pagination?.limit ?? getMaxEventsPerRun();
@@ -4572,8 +4570,8 @@ function createUnfencedEventsStorage(
           .limit(pageLimit + 1);
         const page = rows.slice(0, pageLimit);
 
-        for (const row of page) {
-          data.push(stripEventDataRefs(parseStoredEvent(row), resolveData));
+        for (const event of await parseStoredEvents(drizzle, page)) {
+          data.push(stripEventDataRefs(event, resolveData));
         }
 
         cursor = page.at(-1)?.eventId;
@@ -4620,8 +4618,8 @@ function createUnfencedEventsStorage(
 
       const resolveData = params?.resolveData ?? 'all';
       return {
-        data: values.map((v) =>
-          stripEventDataRefs(parseStoredEvent(v), resolveData)
+        data: (await parseStoredEvents(drizzle, values)).map((event) =>
+          stripEventDataRefs(event, resolveData)
         ),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
