@@ -19,6 +19,7 @@ Project knowledge lives in [lat.md/](lat.md/lat.md). Read the relevant topic bef
 | Public docs, maintainer docs or SDK skills | [Documentation](lat.md/documentation.md) |
 | Opening or updating a PR | [Pull requests](lat.md/pull-requests.md) |
 | Release automation, changesets, backports or npm tags | [Releases](lat.md/releases.md) |
+| Rust crates, bindings or Rust Worlds | [Rust](lat.md/rust/rust.md), then the plan or component document it lists |
 
 Repository rules outside the `lat:begin` / `lat:end` markers are maintained here. Lat owns only its marked block and the generated [authoring skill](.agents/skills/lat-md/SKILL.md). Keep project knowledge in `lat.md/` and leave generated templates intact.
 
