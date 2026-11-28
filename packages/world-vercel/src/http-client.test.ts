@@ -789,9 +789,14 @@ describe('wedged HTTP/2 session', () => {
   // Any value above the pool's connection count, so the loop cannot pass merely
   // by exhausting the poisoned connection.
   const REQUESTS_AFTER_BLACKHOLE = 12;
-  // Long enough that a healthy loopback request never hits it, short enough that
-  // a wedged one gives up quickly. This is the timeout that turns a black hole
-  // into the UND_ERR_INFO stream timeout seen in production.
+  // The deadline a request sent into the black hole gives up at: the timeout
+  // that turns the black hole into the stream timeout seen in production. It is
+  // carried by those requests alone (see `attempt`), never by the agent. A
+  // stream deadline is a wall-clock timer, and Node runs expired timers before
+  // it reads sockets, so a process that is descheduled for longer than the
+  // deadline times out a response that has already arrived. An agent-wide
+  // short deadline therefore fails healthy requests on a busy machine, and a
+  // single such failure is indistinguishable from the fault under test.
   const STREAM_TIMEOUT_MS = 300;
 
   let server: Http2SecureServer;
@@ -801,12 +806,11 @@ describe('wedged HTTP/2 session', () => {
   let holed: Set<number>;
   let httpVersions: string[];
 
-  /** Options that point an events agent at the loopback proxy. */
-  const AGENT_OVERRIDES = {
-    connect: { rejectUnauthorized: false },
-    bodyTimeout: STREAM_TIMEOUT_MS,
-    headersTimeout: STREAM_TIMEOUT_MS,
-  };
+  /**
+   * Options that point an events agent at the loopback proxy. The agent keeps
+   * its production deadlines.
+   */
+  const AGENT_OVERRIDES = { connect: { rejectUnauthorized: false } };
 
   beforeAll(async () => {
     // allowHTTP1 so the same origin can serve the kill-switch case, which takes
@@ -869,13 +873,37 @@ describe('wedged HTTP/2 session', () => {
     httpVersions = [];
   });
 
-  /** One request through `dispatcher`; resolves to the error, or undefined. */
-  async function attempt(dispatcher: unknown): Promise<unknown> {
+  /**
+   * One request through `dispatcher`; resolves to the error, or undefined.
+   *
+   * `blackHoled` marks a request the test is sending at a connection it has
+   * black-holed, and gives that request STREAM_TIMEOUT_MS to fail in. Every
+   * other request runs on the agent's own deadline.
+   */
+  async function attempt(
+    dispatcher: RetryAgent,
+    { blackHoled = false } = {}
+  ): Promise<unknown> {
     try {
       const response = await fetch(`${origin}/`, {
         method: 'POST',
         body: 'x',
-        dispatcher,
+        dispatcher: blackHoled
+          ? {
+              dispatch: (
+                opts: Parameters<RetryAgent['dispatch']>[0],
+                handler: Parameters<RetryAgent['dispatch']>[1]
+              ) =>
+                dispatcher.dispatch(
+                  {
+                    ...opts,
+                    headersTimeout: STREAM_TIMEOUT_MS,
+                    bodyTimeout: STREAM_TIMEOUT_MS,
+                  },
+                  handler
+                ),
+            }
+          : dispatcher,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
       } as any);
       await response.text();
@@ -883,6 +911,18 @@ describe('wedged HTTP/2 session', () => {
     } catch (error) {
       return error;
     }
+  }
+
+  /**
+   * The undici error code behind a failed attempt (`fetch` wraps it as the
+   * `cause` of its own TypeError), for assertion messages.
+   */
+  function errorCode(error: unknown): string {
+    const { code, name } = ((error as { cause?: unknown })?.cause ?? error) as {
+      code?: string;
+      name?: string;
+    };
+    return code ?? name ?? String(error);
   }
 
   // Establishes the premise. Without the failure accounting, an events agent
@@ -896,7 +936,7 @@ describe('wedged HTTP/2 session', () => {
 
       const errors: unknown[] = [];
       for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
-        const error = await attempt(agent);
+        const error = await attempt(agent, { blackHoled: true });
         if (error) errors.push(error);
       }
       // Every single one, and every one for the reason we key the rebuild off.
@@ -920,19 +960,31 @@ describe('wedged HTTP/2 session', () => {
       holed.add(1);
 
       const failures: number[] = [];
+      const failureCodes: string[] = [];
       const successes: number[] = [];
       for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
         // Re-resolved per request, exactly as fetchV4 does — caching the
         // dispatcher across requests would pin the caller to the retired pool.
         const dispatcher = recycler.get();
-        const error = await attempt(dispatcher);
+        // Only `first` owns the black-holed connection. A request routed to
+        // its replacement keeps the agent's deadline, so the only failures
+        // this loop can see are the black hole's.
+        const error = await attempt(dispatcher, {
+          blackHoled: dispatcher === first,
+        });
         recycler.note(dispatcher, error);
         (error ? failures : successes).push(i);
+        if (error) {
+          const pool = dispatcher === first ? 'first' : 'rebuilt';
+          failureCodes.push(`#${i} ${errorCode(error)} on the ${pool} pool`);
+        }
       }
 
       // Bounded, not merely eventually-fine: the threshold is the entire cost of
       // the fault, and everything after it succeeds on the rebuilt pool.
-      expect(failures).toHaveLength(EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
+      expect(failures, failureCodes.join('; ')).toHaveLength(
+        EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES
+      );
       expect(successes[0]).toBe(EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
       expect(recycler.get()).not.toBe(first);
       expect(flows).toBeGreaterThan(1);
@@ -959,7 +1011,12 @@ describe('wedged HTTP/2 session', () => {
 
       const errors: unknown[] = [];
       for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
-        const error = await attempt(agent);
+        // The request the black hole swallows needs the short deadline, and
+        // which one that is depends on the connection the pool picks, so every
+        // request carries it. One sent on a fresh connection can therefore
+        // also time out if the process stalls, which the assertion below
+        // allows for: it bounds the failures rather than counting them.
+        const error = await attempt(agent, { blackHoled: true });
         if (error) errors.push(error);
       }
       // A handful of connections are lost to the black hole; the point is that

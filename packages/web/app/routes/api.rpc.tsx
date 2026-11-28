@@ -18,6 +18,7 @@ import {
   fetchHookToken,
   fetchRun,
   fetchRuns,
+  fetchRunUsage,
   fetchStep,
   fetchStreams,
   fetchWorkflowsManifest,
@@ -36,6 +37,7 @@ type RpcMethod = keyof typeof handlers;
 const handlers = {
   fetchRuns: (p: any) => fetchRuns(p.worldEnv ?? {}, p.params ?? {}),
   fetchRun: (p: any) => fetchRun(p.worldEnv ?? {}, p.runId, p.resolveData),
+  fetchRunUsage: (p: any) => fetchRunUsage(p.worldEnv ?? {}, p.runId),
   fetchStep: (p: any) =>
     fetchStep(p.worldEnv ?? {}, p.runId, p.stepId, p.resolveData),
   fetchEvents: (p: any) =>

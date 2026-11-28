@@ -6,6 +6,7 @@ import type { ModelMessage } from 'ai';
 import { format } from 'date-fns';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { cn } from '../../lib/cn';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import {
@@ -52,21 +53,12 @@ function TabButton({
       aria-selected={active}
       tabIndex={active ? 0 : -1}
       onClick={onClick}
-      className="px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px"
-      style={{
-        // Explicit styles to prevent app-level button overrides when web-shared
-        // is embedded in a self-hosted app.
-        backgroundColor: 'transparent',
-        borderTop: 'none',
-        borderLeft: 'none',
-        borderRight: 'none',
-        borderBottom: `2px solid ${active ? 'var(--ds-blue-600)' : 'transparent'}`,
-        borderRadius: 0,
-        outline: 'none',
-        boxShadow: 'none',
-        cursor: 'pointer',
-        color: active ? 'var(--ds-gray-1000)' : 'var(--ds-gray-600)',
-      }}
+      className={cn(
+        'px-3 py-1.5 text-[11px] font-medium transition-colors -mb-px cursor-pointer rounded-none border-0 border-b-2 bg-transparent shadow-none outline-none',
+        active
+          ? 'border-blue-600 text-gray-1000'
+          : 'border-transparent text-gray-600'
+      )}
     >
       {children}
     </button>
@@ -105,22 +97,12 @@ function TabbedContainer<T extends string>({
   );
 
   return (
-    <div
-      className="rounded-md border"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'transparent',
-      }}
-    >
+    <div className="rounded-md border border-gray-300">
       <div
-        className="flex gap-1 border-b"
+        className="flex gap-1 border-b border-gray-300"
         role="tablist"
         aria-label={ariaLabel}
         onKeyDown={handleKeyDown}
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'transparent',
-        }}
       >
         {tabs.map((tab) => (
           <TabButton
@@ -203,14 +185,7 @@ function EncryptedFieldBlock() {
  */
 function ExpiredFieldBlock() {
   return (
-    <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
-      style={{
-        borderColor: 'var(--ds-gray-300)',
-        backgroundColor: 'var(--ds-gray-100)',
-        color: 'var(--ds-gray-700)',
-      }}
-    >
+    <div className="flex items-center gap-1.5 rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-label-12 text-gray-700">
       <span className="font-medium">Data expired</span>
     </div>
   );
@@ -759,14 +734,7 @@ const selfHeaderedAttributes = new Set([
 ]);
 
 const ExpiredDataMessage = () => (
-  <div
-    className="text-label-12 rounded-md border p-4 my-2"
-    style={{
-      borderColor: 'var(--ds-gray-300)',
-      backgroundColor: 'var(--ds-gray-100)',
-      color: 'var(--ds-gray-700)',
-    }}
-  >
+  <div className="text-label-12 rounded-md border border-gray-300 bg-gray-100 p-4 my-2 text-gray-700">
     <span>The data for this run has expired and is no longer available.</span>
   </div>
 );
@@ -840,15 +808,10 @@ const AttributeBlock = ({
   if (inline) {
     return (
       <div className="flex items-center gap-1.5">
-        <span
-          className="text-[11px] font-medium"
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+        <span className="text-[11px] font-medium text-gray-700">
           {attribute}
         </span>
-        <span className="text-[11px]" style={{ color: 'var(--ds-gray-1000)' }}>
-          {displayValue}
-        </span>
+        <span className="text-[11px] text-gray-1000">{displayValue}</span>
       </div>
     );
   }
@@ -868,12 +831,7 @@ const AttributeBlock = ({
         <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
-        <span
-          className="text-label-12"
-          style={{ color: 'var(--ds-gray-1000)' }}
-        >
-          {displayValue}
-        </span>
+        <span className="text-label-12 text-gray-1000">{displayValue}</span>
       </div>
     </div>
   );

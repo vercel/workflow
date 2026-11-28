@@ -110,6 +110,10 @@ describe('replay divergence on a single-orchestrator run (node engine)', () => {
       (c) => c.event.eventType === 'run_completed'
     );
     expect(completed?.params?.replayDivergenceCount).toBe(1);
+    // The event the replay diverged at: the corrupted `hook_created`.
+    const divergentId = eventsOf(world, 'hook_created')[0]?.eventId;
+    expect(divergentId).toBeDefined();
+    expect(completed?.params?.replayDivergenceEventIds).toEqual([divergentId]);
   });
 
   it('fails the run as corrupted once the recovery budget is spent, within the one delivery', async () => {
@@ -133,6 +137,12 @@ describe('replay divergence on a single-orchestrator run (node engine)', () => {
       RUN_ERROR_CODES.CORRUPTED_EVENT_LOG
     );
     expect(failed?.params?.replayDivergenceCount).toBe(maxRecoveryReplays + 1);
+    // Every replay diverged at the corrupted `hook_created`.
+    const divergentId = eventsOf(world, 'hook_created')[0]?.eventId;
+    expect(divergentId).toBeDefined();
+    expect(failed?.params?.replayDivergenceEventIds).toEqual(
+      Array.from({ length: maxRecoveryReplays + 1 }, () => divergentId)
+    );
     const logged = error.mock.calls.find(([message]) =>
       String(message).includes('Error while running workflow')
     );

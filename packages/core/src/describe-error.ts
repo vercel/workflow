@@ -1,5 +1,7 @@
 import {
   CorruptedEventLogError,
+  DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT,
+  DynamicWorkflowsNotEnabledError,
   QUICKJS_SNAPSHOT_REMEDIATION,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -91,6 +93,8 @@ const WORLD_CONTRACT_HINT =
 const DEPLOYMENT_MISMATCH_HINT =
   "The run was delivered to a deployment other than the deployment it is pinned to, and was stopped to protect against code-skew errors after the runtime failed to re-route it there. Verify that the run's deployment is still available and that queue callbacks route to it.";
 
+const DYNAMIC_WORKFLOWS_NOT_ENABLED_DESCRIPTION_HINT = `Dynamic workflows are not enabled for this project. ${DYNAMIC_WORKFLOWS_NOT_ENABLED_HINT}`;
+
 const WORKFLOW_NOT_REGISTERED_HINT =
   'The deployment that executed this run does not have its workflow registered. Usually the run was started or replayed against a deployment where the workflow was renamed, moved, or removed, or the build did not bundle it. Check the workflowId and the deployment the run is pinned to.';
 
@@ -168,6 +172,13 @@ export function describeRunError(
   if (name === 'SerializationError') {
     return { attribution: 'user', errorCode, hint: SERIALIZATION_ERROR_HINT };
   }
+  if (name === 'DynamicWorkflowsNotEnabledError') {
+    return {
+      attribution: 'user',
+      errorCode,
+      hint: DYNAMIC_WORKFLOWS_NOT_ENABLED_DESCRIPTION_HINT,
+    };
+  }
   if (name && CONTEXT_ERROR_NAMES.has(name)) {
     return { attribution: 'user', errorCode, hint: CONTEXT_ERROR_HINT };
   }
@@ -209,6 +220,8 @@ export function describeRunError(
  *   value, didn't register a class). We attribute it to the user.
  * - Context-violation errors (`NotInWorkflowContextError`, etc.) likewise
  *   describe a user mistake.
+ * - `DynamicWorkflowsNotEnabledError` means the project has not opted into
+ *   dynamic workflows: a configuration the user fixes, so `user`.
  * - `WorkflowRuntimeError` (and subclasses like `StepNotRegisteredError`)
  *   indicates an internal SDK invariant broke, so surface that as `sdk`.
  *
@@ -237,6 +250,16 @@ export function describeError(
       attribution: 'user',
       errorCode: effectiveCode,
       hint: CONTEXT_ERROR_HINT,
+    };
+  }
+
+  // The project has not opted into dynamic workflows: its configuration, not
+  // an SDK failure, and the hint says how to opt in.
+  if (DynamicWorkflowsNotEnabledError.is(err)) {
+    return {
+      attribution: 'user',
+      errorCode: effectiveCode,
+      hint: DYNAMIC_WORKFLOWS_NOT_ENABLED_DESCRIPTION_HINT,
     };
   }
 

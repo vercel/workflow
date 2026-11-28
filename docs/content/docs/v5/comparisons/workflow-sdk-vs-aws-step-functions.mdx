@@ -105,7 +105,7 @@ Each row is a Step Functions capability the Workflow SDK does not replicate one-
 | Step Functions feature | How to cover it with the Workflow SDK |
 | --- | --- |
 | Express workflows | At-least-once and 5-minute duration fit the durable-replay model poorly; keep them on Step Functions or move to a queue consumer |
-| Distributed Map (up to 10,000 concurrent children, S3 item sources) | Fan out with `start()` per item directly from the workflow, then bound concurrency with `p-limit` |
+| Distributed Map (up to 10,000 concurrent children, S3 item sources) | Fan out with `start()` per item directly from the workflow, then bound concurrency with `p-limit`. To keep the children under an upstream API's rate limit, call [`experimental_rateLimit()`](/docs/foundations/rate-limits) before the step: every child run shares the key |
 | Optimized AWS service integrations | Become ordinary SDK calls inside steps; `.sync` waits become explicit polling or hooks |
 | Per-state IAM roles | Steps share the deployment's credentials; scope secrets at deploy time |
 

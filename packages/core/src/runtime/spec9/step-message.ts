@@ -21,6 +21,7 @@ import {
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
+import { settleAllThrowFirst } from '../settle-all.js';
 import {
   MAX_STEP_MESSAGE_INPUT_BYTES,
   type StepMessageSpec,
@@ -122,9 +123,5 @@ export async function sendStepDispatchMessages<T>(
       )
     );
   }
-  const sent = await Promise.allSettled(sends);
-  const failed = sent.find(
-    (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected'
-  );
-  if (failed) throw failed.reason;
+  await settleAllThrowFirst(sends);
 }

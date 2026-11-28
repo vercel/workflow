@@ -10,12 +10,12 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
+import { getSpanColors, SPAN_COLORS } from '../../../lib/palette';
 import type { Span } from '../types';
 import { formatDurationPrecise, getHighResInMs } from '../util/timing';
 import {
   clampViewportToRoot,
-  isSpanCancelled,
-  isSpanErrored,
+  getSpanState,
   type RootBounds,
   type ViewportRange,
   wheelDeltaToPixels,
@@ -36,20 +36,6 @@ const CLICK_DRAG_THRESHOLD_PX = 3;
 const MIN_BRUSH_WIDTH_PX = 6;
 /** Fraction of the current window that arrow keys pan by. */
 const KEYBOARD_PAN_FRACTION = 0.1;
-
-/**
- * Line colors resolved from the design-system tokens on the container, so the
- * canvas follows the active theme. Runs and steps carry the accent hues;
- * passive spans (hooks, sleeps) stay gray like their event-list icons.
- */
-const RESOURCE_LINE_TOKENS: Record<string, string> = {
-  run: '--ds-blue-400',
-  step: '--ds-green-400',
-  hook: '--ds-gray-400',
-  sleep: '--ds-gray-400',
-};
-const DEFAULT_LINE_TOKEN = '--ds-gray-400';
-const ERROR_LINE_TOKEN = '--ds-red-400';
 
 // ---------------------------------------------------------------------------
 // Density layer geometry
@@ -82,11 +68,7 @@ function computeDensityLayout(
 
   const rectsByToken = new Map<string, [number, number, number][]>();
   spans.forEach((span, index) => {
-    const token = isSpanErrored(span)
-      ? ERROR_LINE_TOKEN
-      : isSpanCancelled(span)
-        ? '--ds-gray-600'
-        : (RESOURCE_LINE_TOKENS[span.resource] ?? DEFAULT_LINE_TOKEN);
+    const token = getSpanColors(span.resource, getSpanState(span)).line;
     const startMs = getHighResInMs(span.startTime);
     const endMs = getHighResInMs(span.endTime);
     const x =
@@ -247,9 +229,9 @@ export const Minimap = memo(function Minimap({
       };
       // Errored spans are drawn last so red never disappears under neighbors.
       for (const token of rectsByToken.keys()) {
-        if (token !== ERROR_LINE_TOKEN) drawToken(token);
+        if (token !== SPAN_COLORS.failed.line) drawToken(token);
       }
-      drawToken(ERROR_LINE_TOKEN);
+      drawToken(SPAN_COLORS.failed.line);
     };
 
     draw();

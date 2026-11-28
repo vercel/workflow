@@ -10,6 +10,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { STATUS_DOT } from '../../lib/palette';
 import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
@@ -95,10 +96,10 @@ function extractStructuredError(
 }
 
 const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
-  queued: 'bg-gray-400',
-  failed: 'bg-amber-700',
-  backoff: 'bg-amber-300',
-  ok: 'bg-green-700',
+  queued: STATUS_DOT.queued,
+  failed: STATUS_DOT.failed,
+  backoff: STATUS_DOT.retrying,
+  ok: STATUS_DOT.succeeded,
 };
 
 function PayloadView({
@@ -265,8 +266,6 @@ function EventDetailsBody({
 
   return (
     <div className="@container px-4 pb-8">
-      {/* Start and since-start are already in the selected row; Timing adds
-          the step's breakdown, or the duration for other events. */}
       {timingTotal > 0 ? (
         <Collapsible
           defaultOpen

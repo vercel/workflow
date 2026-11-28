@@ -111,7 +111,7 @@ export function TraceDetailPanel({
       onNext={nextSpanId ? handleSelectNext : undefined}
       onClose={onClose}
     >
-      <ErrorBoundary>
+      <ErrorBoundary title="Failed to load span details">
         <EntityDetailPanel
           run={sidebar.run}
           onStreamClick={sidebar.onStreamClick}

@@ -7,7 +7,7 @@ import { cn } from '../../lib/cn';
 import {
   type EventLevel,
   type EventListRow,
-  formatSinceStart,
+  formatElapsed,
   formatTimestampParts,
   getEffectiveEventDate,
   parseEventDate,
@@ -17,6 +17,7 @@ import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Layout
@@ -25,17 +26,16 @@ import { TimestampTooltip } from '../ui/timestamp-tooltip';
 const COL = {
   level: 'w-6 justify-center',
   time: 'w-[172px]',
-  since: 'w-[100px]',
+  since: 'w-[100px] justify-end pr-4',
   event: 'w-[136px]',
-  name: 'w-[200px]',
-  duration: 'w-[96px] justify-end',
+  name: 'w-[280px]',
 } as const;
 
 const CELL = 'flex h-full shrink-0 items-center overflow-hidden px-1.5';
 
 const LEVEL_ROW_CLASS: Record<EventLevel, string> = {
-  default: 'text-gray-1000 hover:bg-gray-alpha-200',
-  muted: 'text-gray-700 hover:bg-gray-alpha-200',
+  default: 'text-gray-1000 hover:bg-gray-100',
+  muted: 'text-gray-700 hover:bg-gray-100',
   warning: 'bg-amber-100 text-amber-900 hover:bg-amber-200',
   error: 'bg-red-100 text-red-900 hover:bg-red-200',
 };
@@ -49,8 +49,8 @@ const LEVEL_SEPARATOR_CLASS: Record<EventLevel, string> = {
 };
 
 const LEVEL_SELECTED_CLASS: Record<EventLevel, string> = {
-  default: 'bg-gray-200 hover:bg-gray-200',
-  muted: 'bg-gray-200 hover:bg-gray-200',
+  default: 'bg-blue-300 hover:bg-blue-300',
+  muted: 'bg-blue-300 hover:bg-blue-300',
   warning: 'bg-amber-300 hover:bg-amber-300',
   error: 'bg-red-300 hover:bg-red-300',
 };
@@ -147,7 +147,7 @@ export function EventListHeader({
   return (
     <div
       role="row"
-      className="mx-1 flex h-10 shrink-0 items-center border-b border-gray-alpha-200 font-sans text-label-14 text-gray-900"
+      className="flex h-10 shrink-0 items-center border-b border-gray-alpha-400 px-1 font-sans text-label-14 text-gray-900"
     >
       <div className={cn(CELL, COL.level)} />
       {showOccurred ? (
@@ -158,15 +158,23 @@ export function EventListHeader({
       ) : (
         sortButton('Time')
       )}
-      <div className={cn(CELL, COL.since)} />
-      <div className={cn(CELL, COL.event)}>Event</div>
+      <div className={cn(CELL, COL.since)}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>Delta</span>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            Time since the previous event
+          </TooltipContent>
+        </Tooltip>
+      </div>
       <div className={cn(CELL, COL.name)}>Name</div>
+      <div className={cn(CELL, COL.event)}>Event</div>
       <div
         className={cn(CELL, 'min-w-0 flex-1 h-3.5 border-l border-gray-400')}
       >
         Message
       </div>
-      <div className={cn(CELL, COL.duration)}>Duration</div>
     </div>
   );
 }
@@ -191,11 +199,12 @@ export interface EventRowProps {
   row: EventListRow;
   /** Position among events (not gap rows); drives zebra striping. */
   index: number;
+  sincePreviousMs?: number;
   isSelected: boolean;
   /** The one row Tab lands on (roving tabindex): the selection, else the first row. */
   isTabStop: boolean;
-  /** The row belongs to the selected event's step, hook, wait or run. */
-  isRelated: boolean;
+  /** Whether the row belongs to the selected event's step, hook, wait or run. */
+  relation?: 'related' | 'unrelated';
   onSelect: (event: Event) => void;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
@@ -204,9 +213,10 @@ export interface EventRowProps {
 export function EventRow({
   row,
   index,
+  sincePreviousMs,
   isSelected,
   isTabStop,
-  isRelated,
+  relation,
   onSelect,
   showSeparateEventOccurrenceTimestamps = false,
 }: EventRowProps) {
@@ -215,10 +225,11 @@ export function EventRow({
   const displayedAt = showSeparateEventOccurrenceTimestamps
     ? new Date(event.createdAt)
     : getEffectiveEventDate(event);
-  const zebra = (level === 'default' || level === 'muted') && index % 2 === 1;
   // Tinted rows keep one color throughout.
-  const secondaryClass =
-    level === 'warning' || level === 'error' ? undefined : 'text-gray-900';
+  const isTinted = level === 'warning' || level === 'error';
+  const isRelated = relation === 'related';
+  const isMuted = relation === 'unrelated' && !isTinted;
+  const secondaryClass = isTinted || isMuted ? undefined : 'text-gray-900';
 
   return (
     <div
@@ -236,7 +247,9 @@ export function EventRow({
       className={cn(
         'mx-1 mt-px flex h-6 cursor-pointer items-center rounded-md font-mono text-[13px] leading-5 outline-none focus-visible:relative focus-visible:z-10 focus-visible:shadow-[0_0_0_2px_var(--ds-focus-color)]',
         LEVEL_ROW_CLASS[level],
-        zebra && 'bg-gray-alpha-100',
+        !isTinted && !relation && index % 2 === 1 && 'bg-background-200',
+        isRelated && !isTinted && 'bg-blue-300/50 hover:bg-blue-300/75',
+        isMuted && 'text-gray-700 [&_svg]:text-gray-700',
         isSelected && LEVEL_SELECTED_CLASS[level]
       )}
     >
@@ -251,36 +264,37 @@ export function EventRow({
         ))}
       <TimestampCell date={displayedAt} secondaryClass={secondaryClass} />
       <div className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}>
-        {row.sinceStartMs !== undefined
-          ? formatSinceStart(row.sinceStartMs)
-          : ''}
+        {sincePreviousMs !== undefined ? formatElapsed(sincePreviousMs) : ''}
       </div>
-      <div className={cn(CELL, COL.event)}>
-        <EventNoticeTooltip notice={notice}>
-          <span
-            className={cn('truncate', notice && 'line-through')}
-            title={event.eventType}
-          >
-            {event.eventType}
-          </span>
-        </EventNoticeTooltip>
-      </div>
-      <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
+      <div className={cn(CELL, COL.name, 'gap-2')}>
         <ResourceIcon
           resource={row.resource}
           isErrored={level === 'error'}
           isCancelled={event.eventType === 'run_cancelled'}
         />
         {name ? (
-          <span
-            className={cn(
-              '-mx-1 truncate rounded px-1',
-              isRelated && 'bg-blue-100 text-blue-900'
-            )}
-          >
-            {name}
-          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className={cn(
+                  '-mx-1 truncate rounded px-1',
+                  isRelated && 'text-blue-900',
+                  isRelated && isTinted && 'bg-blue-100'
+                )}
+              >
+                {name}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{name}</TooltipContent>
+          </Tooltip>
         ) : null}
+      </div>
+      <div className={cn(CELL, COL.event)}>
+        <EventNoticeTooltip notice={notice}>
+          <span className={cn('truncate', notice && 'line-through')}>
+            {event.eventType}
+          </span>
+        </EventNoticeTooltip>
       </div>
       <div
         className={cn(
@@ -288,14 +302,8 @@ export function EventRow({
           'min-w-0 flex-1 h-3.5 border-l',
           LEVEL_SEPARATOR_CLASS[level]
         )}
-        title={message || undefined}
       >
         <span className="truncate">{message}</span>
-      </div>
-      <div className={cn(CELL, COL.duration, 'tabular-nums')}>
-        {row.durationMs !== undefined
-          ? formatDurationPrecise(row.durationMs)
-          : ''}
       </div>
     </div>
   );
@@ -315,7 +323,7 @@ export function EventRowsSkeleton() {
           key={i}
           className={cn(
             'mx-1 mt-px flex h-6 items-center rounded-md',
-            i % 2 === 1 && 'bg-gray-alpha-100'
+            i % 2 === 1 && 'bg-background-200'
           )}
         >
           <div className={cn(CELL, COL.level)} />
@@ -325,11 +333,11 @@ export function EventRowsSkeleton() {
           <div className={cn(CELL, COL.since)}>
             <Skeleton className="h-3 w-12" />
           </div>
-          <div className={cn(CELL, COL.event)}>
-            <Skeleton className="h-3 w-[104px]" />
-          </div>
           <div className={cn(CELL, COL.name)}>
             <Skeleton className="h-3 w-24" />
+          </div>
+          <div className={cn(CELL, COL.event)}>
+            <Skeleton className="h-3 w-[104px]" />
           </div>
           <div className={cn(CELL, 'min-w-0 flex-1')}>
             <Skeleton
@@ -340,7 +348,6 @@ export function EventRowsSkeleton() {
               }}
             />
           </div>
-          <div className={cn(CELL, COL.duration)} />
         </div>
       ))}
     </div>

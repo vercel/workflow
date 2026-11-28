@@ -674,11 +674,17 @@ describe('sim store', () => {
         correlationId: 'wait_1',
         eventData: { resumeAt: new Date(1_704_067_260_000) },
       });
-      await store.events.create(RUN, {
-        eventType: 'wait_completed',
-        specVersion: SPEC,
-        correlationId: 'wait_1',
-      });
+      // Only the orchestrator completes a wait, in-band.
+      const { snapshot } = await store.events.list({ runId: RUN });
+      await store.events.create(
+        RUN,
+        {
+          eventType: 'wait_completed',
+          specVersion: SPEC,
+          correlationId: 'wait_1',
+        },
+        { inBand: true, expectedSeqInBand: snapshot?.seqInBand }
+      );
 
       const fresh = seededFrom(store);
       expectSameEntities(store, fresh);

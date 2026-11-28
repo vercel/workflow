@@ -8,7 +8,7 @@ import { createFetcher, startServer } from './util.mjs';
  *
  * - Sequential steps (no streams): 1 invocation
  * - Sequential steps with WritableStream: 1 invocation (sync flush)
- * - Sleep + step: 2 invocations (sleep requires queue round-trip)
+ * - Sleep + step: 2 invocations (the sleep's timer is a queue round-trip)
  * - Parallel steps (Promise.all): 1-3 invocations depending on whether the
  *   embedded harness observes the background step and continuation separately
  * - Hook + resume: 2 invocations (hook requires external resume)
@@ -80,7 +80,7 @@ export function inlineExecution(world: string) {
 
   test(
     'sleep workflow requires exactly 2 flow invocations',
-    { timeout: 30_000 },
+    { timeout: 45_000 },
     async () => {
       const server = await startServer({ world }).then(createFetcher);
       const result = await server.invoke(
@@ -105,10 +105,25 @@ export function inlineExecution(world: string) {
       );
       expect(output).toBe(3);
 
-      // Invocation 1: replay → sleep → return {timeoutSeconds}
-      // Invocation 2: sleep completed → replay → step inline → complete
-      const count = await server.getFlowInvocationCount(result.runId);
-      expect(count).toBe(2);
+      // Spec 8, and spec 9 without a live event feed (world-local):
+      //   Invocation 1: replay → sleep → suspend; the sleep's timer is queued
+      //   Invocation 2: the timer → sleep completed → step inline → complete
+      // Spec 9 with a live event feed (world-postgres): invocation 1 lingers
+      // through the short sleep and completes the run itself, and the timer,
+      // armed before the linger, still arrives as invocation 2 and finds the
+      // run completed. That delivery can land just after the run is seen
+      // completed, so wait for it rather than reading the count once, then
+      // read it again after a pause so a third invocation landing later
+      // still fails the test.
+      await vi.waitFor(
+        async () => {
+          const count = await server.getFlowInvocationCount(result.runId);
+          expect(count).toBeGreaterThanOrEqual(2);
+        },
+        { interval: 100, timeout: 10_000 }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(await server.getFlowInvocationCount(result.runId)).toBe(2);
     }
   );
 

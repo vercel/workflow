@@ -1,10 +1,19 @@
 import type { Queue, Storage, World, WorldCapabilities } from '@workflow/world';
-import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
+import {
+  mintedSpecVersion,
+  orchestratorRunIdOf,
+  reenqueueActiveRuns,
+} from '@workflow/world';
 import { Pool } from 'pg';
-import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
+import {
+  type PostgresWorldConfig,
+  resolveJobPrefix,
+  UNPINNED_DEPLOYMENT_ID,
+} from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { worldPurgeTask } from './retention.js';
 import { createRunEventsFeed, type RunEventsFeed } from './run-events.js';
 import {
   createRunStatusListener,
@@ -24,11 +33,18 @@ function createStorage(
   drizzle: Drizzle,
   runStatusListener: RunStatusListener,
   jobPrefix: string,
-  runEventsFeed: RunEventsFeed
+  purgeTask: string,
+  runEventsFeed: RunEventsFeed,
+  rateLimitScope: string
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
-    events: createEventsStorage(drizzle, { jobPrefix, runEventsFeed }),
+    events: createEventsStorage(drizzle, {
+      jobPrefix,
+      purgeTask,
+      runEventsFeed,
+      rateLimitScope,
+    }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
@@ -60,6 +76,7 @@ export function createWorld(
     pollInterval: getPositiveIntEnv('WORKFLOW_POSTGRES_POLL_INTERVAL_MS'),
     applicationManagedShutdown:
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
+    skipWorkers: process.env.WORKFLOW_POSTGRES_SKIP_WORKERS === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
   }
 ): World &
@@ -93,7 +110,12 @@ export function createWorld(
     drizzle,
     runStatusListener,
     jobPrefix,
-    runEventsFeed
+    worldPurgeTask(config),
+    runEventsFeed,
+    // Rate limit keys are shared by every deployment of this app (its base
+    // `jobPrefix`, without the deployment), as on the Vercel World, where a
+    // key is shared by the project's deployments in one environment.
+    resolveJobPrefix(config, undefined)
   );
   const streamer = createStreamer(pool, drizzle);
 
@@ -121,6 +143,11 @@ export function createWorld(
     maxConcurrency: true,
     // Required by the runtime; see in-band-fence.test.ts for conformance.
     inBandFence: true,
+    // `experimental_rateLimit()`: each key's next free slot is a row of
+    // `workflow_rate_limits`, reserved under its lock in the fenced
+    // `rate_created` write's transaction (see `reserveRateSlot` in
+    // storage.ts). Not `rateEventsInBatch`: this World has no batch write.
+    rateLimits: true,
     // With a `deploymentId`, each deployment's workers claim only its own
     // runs' jobs and messages for another deployment's runs are routed to
     // its task (queue.ts), so a run executes only where it started.
@@ -129,10 +156,11 @@ export function createWorld(
       : {}),
   } satisfies WorldCapabilities;
   return {
-    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
-    // the in-band fence declared above; spec 8 otherwise.
+    // Spec 10 runs by default, which need the in-band fence and rate limits
+    // declared above; `WORKFLOW_SPEC_VERSION=8` keeps new runs on spec 8.
     specVersion: mintedSpecVersion(process.env, {
       inBandFence: capabilities.inBandFence,
+      rateLimits: capabilities.rateLimits,
     }),
     capabilities,
     ...storage,
@@ -143,15 +171,42 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Recovery enqueues runs for this World's own workers. Without workers,
+      // a run this process created but didn't get to enqueue is recovered the
+      // next time a process with workers starts. Every boot of such a process
+      // would otherwise re-enqueue every active run.
+      if (config.skipWorkers) {
+        // Its runs execute only on workers that share the database, the job
+        // prefix and the deployment ID: if none does, they stay pending. The
+        // configured prefix, not `jobPrefix` (which has the deployment ID
+        // appended), so it compares with the workers' WORKFLOW_POSTGRES_JOB_PREFIX.
+        console.info(
+          `[world-postgres] skipWorkers: this process runs no workers. Its runs execute on processes with workers on the same database, jobPrefix ${JSON.stringify(resolveJobPrefix({ jobPrefix: config.jobPrefix }))} and deploymentId ${JSON.stringify(config.deploymentId ?? UNPINNED_DEPLOYMENT_ID)}.`
+        );
+        return;
+      }
       // Recover only this World's runs (and unstamped legacy ones): every
       // recovered run lands in this World's own task, so a run created under
-      // another `jobPrefix` would be driven by the wrong app's runner.
+      // another `jobPrefix` would be driven by the wrong app's runner. The
+      // listing leaves out runs parked on a hook or a wait (see
+      // `createRecoverableRunsList`), and each run's recovery job is keyed by
+      // the run, so a boot replaces the job an earlier boot left queued
+      // rather than adding another. A parked run with a locked orchestrator
+      // job, a delivery that may have been cut off, is recovered anyway.
       await reenqueueActiveRuns(
         {
           ...storage.runs,
-          list: createRecoverableRunsList(drizzle, jobPrefix),
+          list: createRecoverableRunsList(
+            drizzle,
+            jobPrefix,
+            await queue.lockedOrchestratorRunIds()
+          ),
         },
-        queue.queue,
+        (queueName, message, opts) =>
+          queue.queue(queueName, message, {
+            ...opts,
+            jobKey: `startup-recovery:${orchestratorRunIdOf(message)}`,
+          }),
         'world-postgres',
         config.namespace
       );

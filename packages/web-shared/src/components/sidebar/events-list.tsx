@@ -153,7 +153,7 @@ function EventItem({
         <div className="flex w-full items-center justify-between gap-3">
           <EventNoticeTooltip notice={rowNotice}>
             <span
-              className={`text-label-12 font-mono ${
+              className={`text-label-12-mono ${
                 rowNotice ? 'text-gray-700' : 'text-gray-1000'
               }`}
             >
@@ -172,7 +172,7 @@ function EventItem({
             <div className="flex items-center justify-between gap-2 py-2 px-3">
               <span className="text-label-12 text-gray-900">Occurred</span>
               <TimestampTooltip date={occurredAt}>
-                <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+                <span className="max-w-[70%] truncate text-right text-label-12-mono">
                   {formatEventTimestamp(occurredAt)}
                 </span>
               </TimestampTooltip>
@@ -180,7 +180,7 @@ function EventItem({
           )}
           <div className="flex items-center justify-between gap-2 py-2 px-3">
             <span className="text-label-12 text-gray-900">Event ID</span>
-            <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+            <span className="max-w-[70%] truncate text-right text-label-12-mono">
               {event.eventId}
             </span>
           </div>
@@ -189,7 +189,7 @@ function EventItem({
               <span className="text-label-12 text-gray-900">
                 Correlation ID
               </span>
-              <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
+              <span className="max-w-[70%] truncate text-right text-label-12-mono">
                 {event.correlationId}
               </span>
             </div>
@@ -201,7 +201,7 @@ function EventItem({
           <div className="p-3">
             <Skeleton className="h-4 w-[35%]" />
             <Skeleton className="mt-2 h-4 w-[90%]" />
-            <Skeleton className="mt-2 h-4 w-[75%]" />
+            <Skeleton className="mt-2 h-4 w-3/4" />
           </div>
         )}
 
@@ -259,14 +259,7 @@ function EventDataBlock({
   // since the server stubs each ref field independently.
   if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
     return (
-      <div
-        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
-        style={{
-          borderColor: 'var(--ds-gray-300)',
-          backgroundColor: 'var(--ds-gray-100)',
-          color: 'var(--ds-gray-700)',
-        }}
-      >
+      <div className="flex items-center gap-1.5 rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-label-12 text-gray-700">
         <span className="font-medium">Data expired</span>
       </div>
     );

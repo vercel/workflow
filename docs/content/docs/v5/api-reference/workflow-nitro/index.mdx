@@ -54,6 +54,7 @@ export default defineConfig({
 | `typescriptPlugin` | `boolean` | `false` | Adds the `workflow` TypeScript plugin to the generated `tsconfig.json` for integrated development environment (IDE) IntelliSense. |
 | `runtime` | `string` | — | Node.js runtime version for Vercel Functions (for example, `'nodejs22.x'` or `'nodejs24.x'`). Only applies when deploying to Vercel. |
 | `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles, which helps stay under the Vercel 250 MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
+| `dashboard` | `boolean \| { enabled?: boolean; path?: string; allowedHosts?: string[] \| true }` | `true` (dev) / `false` (prod) | Embeds the observability web UI at `/_workflow` (or `path`). Never mounted on Vercel. `allowedHosts` lists host names the dashboard accepts besides `localhost`, `*.localhost`, and IP addresses; defaults to `WORKFLOW_WEB_ALLOWED_HOSTS`. |
 
 ## Vite-based Nitro
 

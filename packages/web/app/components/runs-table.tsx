@@ -2,6 +2,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   Button,
   Spinner,
+  STATUS_DOT,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -184,11 +185,11 @@ interface RunsTableProps {
 }
 
 const statusMap: Record<WorkflowRunStatus, { label: string; color: string }> = {
-  pending: { label: 'Pending', color: 'bg-neutral-600 dark:bg-neutral-400' },
-  running: { label: 'Running', color: 'bg-blue-600 dark:bg-blue-400' },
-  completed: { label: 'Completed', color: 'bg-green-600 dark:bg-green-400' },
-  failed: { label: 'Failed', color: 'bg-red-600 dark:bg-red-400' },
-  cancelled: { label: 'Cancelled', color: 'bg-gray-600 dark:bg-gray-400' },
+  pending: { label: 'Pending', color: STATUS_DOT.pending },
+  running: { label: 'Running', color: STATUS_DOT.running },
+  completed: { label: 'Completed', color: STATUS_DOT.completed },
+  failed: { label: 'Failed', color: STATUS_DOT.failed },
+  cancelled: { label: 'Cancelled', color: STATUS_DOT.cancelled },
 };
 
 const HOUR_MS = 60 * 60 * 1000;

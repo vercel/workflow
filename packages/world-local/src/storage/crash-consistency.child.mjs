@@ -18,7 +18,6 @@ const spec = 8;
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value));
 
 let n = 0;
-process.send?.({ status: 'ready' });
 for (;;) {
   n++;
   const created = await storage.events.create(null, {
@@ -31,6 +30,11 @@ for (;;) {
     },
   });
   const runId = created.event.runId;
+  // Ready once a run is in: the parent's kill then lands among writes, not
+  // in process startup or in opening the database, which on a slow runner
+  // can outlast the parent's whole delay (every kill in every round landed
+  // there, and the data directory had no run to check).
+  if (n === 1) process.send?.({ status: 'ready' });
   await storage.events.create(runId, {
     eventType: 'run_started',
     specVersion: spec,

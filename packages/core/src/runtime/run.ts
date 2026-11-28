@@ -9,6 +9,7 @@ import {
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
+  type DeleteRunDataResult,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -16,6 +17,7 @@ import {
   type World,
 } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
+import { runtimeLogger } from '../logger.js';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -35,12 +37,14 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  deleteRuns,
   isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
   wakeRunAfterOutOfBandWrite,
   wakeUpRun,
 } from './runs.js';
+import { transientReadRetryDelayMs } from './transient-read-retry.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
 
@@ -392,6 +396,41 @@ export class Run<TResult> {
   }
 
   /**
+   * Deletes the stored data of the finished run: its input, output and
+   * error, its steps' and events' payloads, its hook payloads, and its
+   * stream contents, as if it had been started with
+   * `experimental_retention: 0`. This cannot be undone.
+   *
+   * Metadata is not deleted: the run stays listed, and so do its steps,
+   * events and hooks, with their IDs, names, statuses, timestamps and the
+   * run's attributes. Only their payloads go, reading back as expired.
+   *
+   * Only a finished run has its data deleted. A run that has not finished
+   * is answered `skipped` and left running: cancel it first (see
+   * {@link Run.cancel}) to delete its data now.
+   *
+   * Runs as a step. Inside a workflow, a retryable failure (or the World
+   * rate-limiting the request) throws a `RetryableError`, so the step
+   * retries; deletion is idempotent, so a retry finishes what the failed
+   * attempt left. Called outside a workflow, a `failed` result is returned
+   * as is.
+   *
+   * @returns the run's outcome: `deleted`, `already_deleted` (its data was
+   *   already gone), `skipped` (with the run's `status`), `not_created`,
+   *   `not_found`, or `failed` (with `code`, and `retryable` when retrying
+   *   can succeed).
+   * @throws if the configured World does not support deleting run data.
+   */
+  async delete(): Promise<DeleteRunDataResult> {
+    'use step';
+    const { results } = await deleteRuns(await this.#lazyWorldPromise, [
+      this.runId,
+    ]);
+    // `deleteRuns` guarantees exactly one result, for this run.
+    return results[0] as DeleteRunDataResult;
+  }
+
+  /**
    * Whether the workflow run exists.
    */
   get exists(): Promise<boolean> {
@@ -425,6 +464,10 @@ export class Run<TResult> {
    * The return value of the workflow run, once it completes. Rejects with
    * `WorkflowRunFailedError` or `WorkflowRunCancelledError` if the run fails
    * or is cancelled.
+   *
+   * While polling, a transient World error (a timeout, a 5xx, or a 429) is
+   * retried with backoff. After 10 such errors in a row, the promise rejects
+   * with the last one.
    *
    * Inside the workflow that started this run, the parent suspends on a system
    * hook the run resumes when it finishes, so waiting costs no compute and
@@ -772,10 +815,18 @@ export class Run<TResult> {
     // `RETURN_VALUE_MAX_LONG_POLLS`. Never a reason to stop awaiting.
     let longPolls = 0;
     const maxLongPolls = getReturnValueMaxLongPolls();
+    // Transient World errors in a row (see `transientReadRetryDelayMs`). A
+    // non-terminal read resets it, so only an unbroken run of failures ends
+    // the await.
+    let transientRetries = 0;
 
     // NOTE: when this poll runs inside a step (e.g. the step that a parent
     // workflow uses to await a child workflow's `returnValue`), it blocks
     // a queue worker slot for as long as the child run takes to finish.
+    // That includes the transient-error retries below: a World that stays
+    // down holds the slot for up to the whole backoff schedule (about three
+    // minutes at the default interval) in each attempt of the step, before
+    // the step's own retry policy sees the error.
     // Worker-based worlds like `world-postgres` must be sized to cover the
     // peak number of such polls in flight; see the `queueConcurrency`
     // default on the Postgres world and the notes in the eager-processing
@@ -787,7 +838,6 @@ export class Run<TResult> {
         // and payload refs are resolved once below, after a terminal status is
         // observed.
         const useLongPoll = waitForTerminalStatus && longPolls < maxLongPolls;
-        if (useLongPoll) longPolls++;
         const runMetadata = useLongPoll
           ? await waitForTerminalStatus(this.runId, {
               timeoutMs: getReturnValueWaitTimeoutMs(),
@@ -796,6 +846,9 @@ export class Run<TResult> {
           : await world.runs.get(this.runId, {
               resolveData: 'none',
             });
+        // Only a wait that returned counts toward the cap: one that failed
+        // with a transient error is retried as a wait.
+        if (useLongPoll) longPolls++;
 
         if (runMetadata.status === 'cancelled') {
           throw new WorkflowRunCancelledError(this.runId);
@@ -814,6 +867,7 @@ export class Run<TResult> {
         throw new WorkflowRunNotCompletedError(this.runId, runMetadata.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
+          transientRetries = 0;
           // Space consecutive non-terminal observations at least one poll
           // interval apart. On the plain-poll path that is the familiar fixed
           // sleep; on the long-poll path the wait has usually already
@@ -836,6 +890,27 @@ export class Run<TResult> {
           const delay = NOT_FOUND_RETRY_DELAYS[notFoundRetries]!;
           notFoundRetries++;
           await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        const retryDelayMs = transientReadRetryDelayMs(
+          error,
+          transientRetries,
+          getReturnValuePollIntervalMs()
+        );
+        if (retryDelayMs !== undefined) {
+          transientRetries++;
+          runtimeLogger.warn(
+            'Transient World error while awaiting returnValue; retrying',
+            {
+              workflowRunId: this.runId,
+              attempt: transientRetries,
+              retryDelayMs,
+              errorName: error instanceof Error ? error.name : undefined,
+              errorMessage:
+                error instanceof Error ? error.message : String(error),
+            }
+          );
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
           continue;
         }
         throw error;

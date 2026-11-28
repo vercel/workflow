@@ -206,7 +206,6 @@ function ExecutionDiamondNodeComponent({ data, selected }: NodeProps) {
           fontWeight: 600,
           padding: size * 0.25, // Keep text within the diamond's inscribed area
         }}
-        title={typeof nodeData.label === 'string' ? nodeData.label : undefined}
       >
         <span className="text-center line-clamp-3 overflow-hidden">
           {nodeData.label}
@@ -725,10 +724,7 @@ function GraphNodeDetailPanel({
     <div className="h-full flex flex-col bg-background border-l">
       {/* Header - similar to trace view */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-b flex-none">
-        <span
-          className="text-xs font-medium truncate flex-1"
-          title={node.data.label}
-        >
+        <span className="text-xs font-medium truncate flex-1">
           {node.data.label}
         </span>
         <div className="flex items-center gap-2 flex-none">
