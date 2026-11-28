@@ -7,7 +7,7 @@ import { cn } from '../../lib/cn';
 import {
   type EventLevel,
   type EventListRow,
-  formatSinceStart,
+  formatElapsed,
   formatTimestampParts,
   getEffectiveEventDate,
   parseEventDate,
@@ -17,6 +17,7 @@ import { ResourceIcon } from '../trace-viewer/components/event-list';
 import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Layout
@@ -25,10 +26,9 @@ import { TimestampTooltip } from '../ui/timestamp-tooltip';
 const COL = {
   level: 'w-6 justify-center',
   time: 'w-[172px]',
-  since: 'w-[100px]',
+  since: 'w-[100px] justify-end pr-4',
   event: 'w-[136px]',
   name: 'w-[280px]',
-  duration: 'w-[96px] justify-end',
 } as const;
 
 const CELL = 'flex h-full shrink-0 items-center overflow-hidden px-1.5';
@@ -158,7 +158,16 @@ export function EventListHeader({
       ) : (
         sortButton('Time')
       )}
-      <div className={cn(CELL, COL.since)} />
+      <div className={cn(CELL, COL.since)}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>Delta</span>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            Time since the previous event
+          </TooltipContent>
+        </Tooltip>
+      </div>
       <div className={cn(CELL, COL.name)}>Name</div>
       <div className={cn(CELL, COL.event)}>Event</div>
       <div
@@ -166,7 +175,6 @@ export function EventListHeader({
       >
         Message
       </div>
-      <div className={cn(CELL, COL.duration)}>Duration</div>
     </div>
   );
 }
@@ -191,6 +199,7 @@ export interface EventRowProps {
   row: EventListRow;
   /** Position among events (not gap rows); drives zebra striping. */
   index: number;
+  sincePreviousMs?: number;
   isSelected: boolean;
   /** The one row Tab lands on (roving tabindex): the selection, else the first row. */
   isTabStop: boolean;
@@ -204,6 +213,7 @@ export interface EventRowProps {
 export function EventRow({
   row,
   index,
+  sincePreviousMs,
   isSelected,
   isTabStop,
   relation,
@@ -254,34 +264,34 @@ export function EventRow({
         ))}
       <TimestampCell date={displayedAt} secondaryClass={secondaryClass} />
       <div className={cn(CELL, COL.since, 'tabular-nums', secondaryClass)}>
-        {row.sinceStartMs !== undefined
-          ? formatSinceStart(row.sinceStartMs)
-          : ''}
+        {sincePreviousMs !== undefined ? formatElapsed(sincePreviousMs) : ''}
       </div>
-      <div className={cn(CELL, COL.name, 'gap-2')} title={name || undefined}>
+      <div className={cn(CELL, COL.name, 'gap-2')}>
         <ResourceIcon
           resource={row.resource}
           isErrored={level === 'error'}
           isCancelled={event.eventType === 'run_cancelled'}
         />
         {name ? (
-          <span
-            className={cn(
-              '-mx-1 truncate rounded px-1',
-              isRelated && 'text-blue-900',
-              isRelated && isTinted && 'bg-blue-100'
-            )}
-          >
-            {name}
-          </span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className={cn(
+                  '-mx-1 truncate rounded px-1',
+                  isRelated && 'text-blue-900',
+                  isRelated && isTinted && 'bg-blue-100'
+                )}
+              >
+                {name}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{name}</TooltipContent>
+          </Tooltip>
         ) : null}
       </div>
       <div className={cn(CELL, COL.event)}>
         <EventNoticeTooltip notice={notice}>
-          <span
-            className={cn('truncate', notice && 'line-through')}
-            title={event.eventType}
-          >
+          <span className={cn('truncate', notice && 'line-through')}>
             {event.eventType}
           </span>
         </EventNoticeTooltip>
@@ -292,14 +302,8 @@ export function EventRow({
           'min-w-0 flex-1 h-3.5 border-l',
           LEVEL_SEPARATOR_CLASS[level]
         )}
-        title={message || undefined}
       >
         <span className="truncate">{message}</span>
-      </div>
-      <div className={cn(CELL, COL.duration, 'tabular-nums')}>
-        {row.durationMs !== undefined
-          ? formatDurationPrecise(row.durationMs)
-          : ''}
       </div>
     </div>
   );
@@ -344,7 +348,6 @@ export function EventRowsSkeleton() {
               }}
             />
           </div>
-          <div className={cn(CELL, COL.duration)} />
         </div>
       ))}
     </div>

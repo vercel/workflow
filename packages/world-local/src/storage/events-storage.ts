@@ -47,21 +47,30 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
+  assertRateLimitKeyAllowed,
+  decideRateLimit,
+  decideRateWake,
   getEventDataRefFields,
   getMaxEventsForRun,
   getMaxEventsPerRun,
   IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
+  isRateEventType,
   isStartHookId,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  MAX_RATE_WAIT_MS,
+  RATE_MAX_LATE_WAKES,
+  rateLimitIntervalUs,
+  rateLimitToleranceUs,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   START_HOOK_CANDIDATE_MAX_AGE_MS,
@@ -69,6 +78,7 @@ import {
   stripEventDataRefs,
   ulidToDate,
   validateAttributeChanges,
+  validateRateLimitCall,
   validateUlidTimestamp,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -334,6 +344,198 @@ export function createEventsStorage(
   // ---------------------------------------------------------------- create
 
   /** The body of one create, run inside its transaction. */
+  /**
+   * Reserves a `rate_created`'s slot on its key and returns the event to
+   * commit in its place: `rate_acquired` (the slot is now), `rate_created`
+   * with `acquireAt` (later), or `rate_failed` (past `expiresAt`, nothing
+   * reserved). Runs inside the write's transaction, so the reservation and
+   * the event commit together.
+   */
+  function decideRateCreated(
+    event: Event,
+    eventData: {
+      key: string;
+      limit: number;
+      periodMs: number;
+      burst?: number;
+      expiresAt: Date;
+      creatorMessageId?: string;
+    },
+    // The World's own count of late wakes, for a call reserved again: never
+    // the runtime's.
+    lateWakes = 0
+  ): Event {
+    const call = {
+      key: eventData.key,
+      limit: eventData.limit,
+      periodMs: eventData.periodMs,
+      // Recorded, so a call reserved again keeps its burst.
+      ...(eventData.burst !== undefined &&
+        eventData.burst > 1 && { burst: eventData.burst }),
+    };
+    try {
+      // The burst as sent, so a 0 or a fraction is refused rather than read
+      // as no burst.
+      validateRateLimitCall({
+        ...call,
+        ...(eventData.burst !== undefined && { burst: eventData.burst }),
+      });
+    } catch (error) {
+      throw new WorkflowWorldError((error as Error).message, { status: 400 });
+    }
+    const requested = new Date(eventData.expiresAt);
+    if (!Number.isFinite(requested.getTime())) {
+      throw new WorkflowWorldError(
+        'rate_created requires expiresAt as a date',
+        {
+          status: 400,
+        }
+      );
+    }
+    // The World's clock, not the orchestrator's `occurredAt`.
+    const nowMs = Date.now();
+    const nowUs = nowMs * 1000;
+    // Capped at 30 days, and recorded capped.
+    const expiresAt = new Date(
+      Math.min(requested.getTime(), nowMs + MAX_RATE_WAIT_MS)
+    );
+    const decision = decideRateLimit({
+      tatUs: store.getRateTat(call.key),
+      intervalUs: rateLimitIntervalUs(call),
+      toleranceUs: rateLimitToleranceUs(call),
+      nowUs,
+      deadlineUs: expiresAt.getTime() * 1000,
+    });
+    const request = {
+      ...call,
+      expiresAt,
+      ...(lateWakes > 0 && { lateWakes }),
+    };
+    if (decision.status === 'deadline_exceeded') {
+      return {
+        ...event,
+        eventType: 'rate_failed',
+        eventData: {
+          ...request,
+          reason: 'max_wait',
+          acquireAt: new Date(Math.ceil(decision.wouldAcquireAtUs / 1000)),
+        },
+      } as Event;
+    }
+    store.setRateTat(call.key, decision.tatUs);
+    if (decision.acquireAtUs <= nowUs) {
+      // Never after the event's own createdAt: rounded down, and that time
+      // was read a moment before this one.
+      const acquireAtMs = Math.min(
+        Math.floor(decision.acquireAtUs / 1000),
+        new Date(event.createdAt).getTime()
+      );
+      return {
+        ...event,
+        eventType: 'rate_acquired',
+        eventData: { ...request, acquireAt: new Date(acquireAtMs) },
+      } as Event;
+    }
+    // Rounded up, so the run never wakes before its slot.
+    return {
+      ...event,
+      eventData: {
+        ...request,
+        acquireAt: new Date(Math.ceil(decision.acquireAtUs / 1000)),
+        ...(eventData.creatorMessageId !== undefined && {
+          creatorMessageId: eventData.creatorMessageId,
+        }),
+      },
+    } as Event;
+  }
+
+  /**
+   * Checks a `rate_acquired` against the `rate_created` its `createdSlot`
+   * names, and returns it carrying that event's recorded `acquireAt`.
+   */
+  function acquireRate(
+    runId: string,
+    event: Event,
+    correlationId: string,
+    eventData: { createdSlot?: number }
+  ): Event {
+    const createdSlot = eventData.createdSlot;
+    if (
+      typeof createdSlot !== 'number' ||
+      !Number.isSafeInteger(createdSlot) ||
+      createdSlot < 1
+    ) {
+      throw new WorkflowWorldError(
+        'rate_acquired requires eventData.createdSlot as a positive integer',
+        { status: 400 }
+      );
+    }
+    const created = store.getEventAt(runId, createdSlot);
+    if (
+      created?.eventType !== 'rate_created' ||
+      created.correlationId !== correlationId ||
+      created.eventData.acquireAt === undefined
+    ) {
+      throw new EntityConflictError(
+        `Slot ${createdSlot} does not hold the rate_created of ${correlationId}`
+      );
+    }
+    // Settled: acquired, failed, or reserved again past its grace window
+    // (anything of the call's after it in the log).
+    if (store.hasCorrelationEventAfter(runId, correlationId, createdSlot)) {
+      throw new EntityConflictError(`${correlationId} was already acquired`);
+    }
+    const acquireAt = new Date(created.eventData.acquireAt);
+    const waitMs = acquireAt.getTime() - Date.now();
+    if (waitMs > 0) {
+      throw new TooEarlyError(
+        `Cannot acquire ${correlationId} before ${acquireAt.toISOString()}`,
+        { retryAfter: Math.ceil(waitMs / 1000) }
+      );
+    }
+    const lateWakes = created.eventData.lateWakes ?? 0;
+    const wake = decideRateWake({
+      acquireAt,
+      nowMs: Date.now(),
+      periodMs: created.eventData.periodMs,
+      lateWakes,
+      expiresAt: new Date(created.eventData.expiresAt),
+    });
+    if (wake === 'reserve_again') {
+      // Woken past its grace window: reserved again from what the call
+      // recorded, with one more late wake, and what that decided is
+      // committed in its place.
+      return decideRateCreated(
+        { ...event, eventType: 'rate_created' } as Event,
+        created.eventData,
+        Math.min(lateWakes + 1, RATE_MAX_LATE_WAKES)
+      );
+    }
+    const {
+      creatorMessageId: _creator,
+      lateWakes: _lateWakes,
+      ...call
+    } = created.eventData;
+    if (wake === 'fail') {
+      // Late past its largest grace and past its own deadline: it fails as a
+      // timed-out call would, rather than going ahead after it.
+      return {
+        ...event,
+        eventType: 'rate_failed',
+        eventData: {
+          ...call,
+          ...(lateWakes > 0 && { lateWakes }),
+          reason: 'max_wait',
+          acquireAt,
+        },
+      } as Event;
+    }
+    return {
+      ...event,
+      eventData: { ...call, createdSlot },
+    } as Event;
+  }
+
   function createInTransaction(
     runIdArg: string | null,
     data: AnyEventRequest,
@@ -483,6 +685,14 @@ export function createEventsStorage(
           `Cannot set attributes on run in terminal state "${run.status}"`
         );
       }
+      // A late rate_acquired may reserve the call again: a finished run has
+      // nobody to wait for that slot, so it would only use up the key's
+      // capacity, which every run of the project shares.
+      if (data.eventType === 'rate_acquired') {
+        throw new EntityConflictError(
+          `Cannot acquire a rate limit slot on run in terminal state "${run.status}"`
+        );
+      }
     }
 
     // ---- Step ordering ----------------------------------------------------
@@ -568,6 +778,47 @@ export function createEventsStorage(
           );
         }
       }
+    }
+
+    // ---- Rate limit calls (spec >= 10) -----------------------------------
+    // Decided here, below the in-band fence and the terminal-run checks, so a
+    // write either of them refuses reserves nothing. See `rateLimits` on
+    // `WorldCapabilities` for the contract.
+    if (isRateEventType(data.eventType)) {
+      // Not a request type, but a client can still send one.
+      if ((data.eventType as string) === 'rate_failed') {
+        throw new WorkflowWorldError(
+          'rate_failed is written only by the World',
+          { status: 400 }
+        );
+      }
+      if ((run?.specVersion ?? 0) < SPEC_VERSION_RATE_LIMITS) {
+        throw new WorkflowWorldError(
+          `${data.eventType} can only be written to a run stamped at spec version ${SPEC_VERSION_RATE_LIMITS} or later`,
+          { status: 400 }
+        );
+      }
+      if (params?.inBand !== true) {
+        throw new WorkflowWorldError(
+          `${data.eventType} is written only by the run's orchestrator (in-band)`,
+          { status: 400 }
+        );
+      }
+    }
+
+    // A single-orchestrator run's waits are completed only by its
+    // orchestrator, which runs ahead of far-off waits on that assumption; an
+    // out-of-band completion could land below its speculative writes. Waking
+    // the run asks the orchestrator to write it instead.
+    if (
+      data.eventType === 'wait_completed' &&
+      params?.inBand !== true &&
+      (run?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ) {
+      throw new WorkflowWorldError(
+        "On a single-orchestrator run, wait_completed is written only by the run's orchestrator. Wake the run instead; its orchestrator completes the wait.",
+        { status: 409, code: 'wait-completion-in-band-only' }
+      );
     }
 
     // ---- The event --------------------------------------------------------
@@ -975,6 +1226,36 @@ export function createEventsStorage(
           updatedAt: now,
         };
         store.updateWait(data.correlationId, wait);
+        break;
+      }
+
+      case 'rate_created': {
+        // One call is one rate_created request: a second for the same id
+        // (a replay that drew an id already in the log) would reserve
+        // another slot for a call already decided.
+        if (store.hasCorrelationEventAfter(runId, data.correlationId, 0)) {
+          throw new EntityConflictError(
+            `Rate limit call "${data.correlationId}" already exists`
+          );
+        }
+        // The reserved `$` namespace, checked on the request only: a call
+        // reserved again was checked when it was made.
+        try {
+          assertRateLimitKeyAllowed(
+            data.eventData.key,
+            data.eventData.allowReservedKey
+          );
+        } catch (error) {
+          throw new WorkflowWorldError((error as Error).message, {
+            status: 400,
+          });
+        }
+        event = decideRateCreated(event, data.eventData);
+        break;
+      }
+
+      case 'rate_acquired': {
+        event = acquireRate(runId, event, data.correlationId, data.eventData);
         break;
       }
 

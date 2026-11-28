@@ -20,6 +20,7 @@ import { ThemePicker } from '~/components/theme-dropdown';
 import { DocsLink } from '~/components/top-nav/docs-link';
 import { Toaster } from '~/components/ui/sonner';
 import { Logo } from '~/icons/logo';
+import { DEFAULT_META_DESCRIPTION, DEFAULT_TITLE } from '~/lib/meta';
 import { ServerConfigProvider } from '~/lib/world-config-context';
 import { getPublicServerConfig } from '~/server/workflow-server-actions.server';
 
@@ -70,6 +71,17 @@ export async function action({ request }: { request: Request }) {
   return null;
 }
 
+/**
+ * The default title and description. A route with its own `meta` (the run's
+ * Usage page) replaces them; every other route inherits these.
+ */
+export function meta() {
+  return [
+    { title: DEFAULT_TITLE },
+    { name: 'description', content: DEFAULT_META_DESCRIPTION },
+  ];
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
@@ -77,11 +89,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
-        <title>Workflow Observability UI</title>
-        <meta
-          name="description"
-          content="Web interface for inspecting flow runs, steps, streams, and events"
-        />
         <Meta />
         <Links />
       </head>
@@ -201,10 +208,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           <div className="flex items-center justify-between w-full">
             <div className="flex items-center gap-4">
               <Link to="/">
-                <h1
-                  className="flex items-center gap-2"
-                  title="Workflow Observability"
-                >
+                <h1 className="flex items-center gap-2">
                   <Logo />
                 </h1>
               </Link>

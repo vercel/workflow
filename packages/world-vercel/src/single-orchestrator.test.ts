@@ -1091,4 +1091,9 @@ describe('capabilities', () => {
   it('declares the in-band fence the runtime requires', () => {
     expect(createWorld().capabilities?.inBandFence).toBe(true);
   });
+
+  it('declares that its batch decides rate events', () => {
+    expect(createWorld().capabilities?.rateLimits).toBe(true);
+    expect(createWorld().capabilities?.rateEventsInBatch).toBe(true);
+  });
 });

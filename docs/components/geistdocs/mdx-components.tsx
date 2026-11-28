@@ -6,6 +6,7 @@ import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { PerformanceExplainer } from '@/components/custom/performance/explainer';
 import { MetricVideo } from '@/components/custom/performance/metric-video';
+import { RateLimitExplainer } from '@/components/custom/rate-limit-explainer';
 import { Details } from '@/components/geistdocs/details';
 import { PreviewInstallServer } from '@/components/preview-install-server';
 import { WorldTestingPerformance as WorldTestingPerformanceView } from '@/components/worlds/WorldTestingPerformance';
@@ -56,6 +57,7 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
     Details,
     MetricVideo,
     PerformanceExplainer,
+    RateLimitExplainer,
     TSDoc,
     PreviewInstall: PreviewInstallServer,
     WorldTestingPerformance,

@@ -19,6 +19,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { checkRequest, normalizeAllowedHosts } from './host-guard.js';
 import { recordDashboard } from './registry.js';
 import { createStaticHandler } from './static.js';
 
@@ -38,11 +39,18 @@ function normalizeBasename(basename) {
 const handlerCache = new Map();
 
 /**
- * @param {{ basename?: string }} [options]
+ * @param {{ basename?: string, allowedHosts?: string | string[] | true }} [options]
+ *   `allowedHosts`: host names, besides `localhost`, `*.localhost` and IP
+ *   literals, that requests may address the dashboard by (see `host-guard.js`).
+ *   Defaults to `WORKFLOW_WEB_ALLOWED_HOSTS`; `true` or `"*"` disables the
+ *   check.
  * @returns {Promise<(request: Request) => Promise<Response>>}
  */
 export async function createWorkflowWebHandler(options = {}) {
   const basename = normalizeBasename(options.basename ?? '/');
+  const allowedHosts = normalizeAllowedHosts(
+    options.allowedHosts ?? process.env.WORKFLOW_WEB_ALLOWED_HOSTS
+  );
   let promise = handlerCache.get(basename);
   if (!promise) {
     promise = buildHandler(basename).catch((err) => {
@@ -51,7 +59,13 @@ export async function createWorkflowWebHandler(options = {}) {
     });
     handlerCache.set(basename, promise);
   }
-  return promise;
+  const handler = await promise;
+  // The host server owns the connection and usually listens on every
+  // interface without validating `Host` itself, so the dashboard applies the
+  // same guard as the standalone server. It runs before the registry records
+  // the request's origin, so a rejected request never advertises its host.
+  return async (request) =>
+    checkRequest(request, allowedHosts) ?? handler(request);
 }
 
 async function buildHandler(basename) {

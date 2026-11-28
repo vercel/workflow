@@ -43,7 +43,10 @@ import type {
 import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
+  assertRateLimitKeyAllowed,
   DeleteRunsDataRequestSchema,
+  decideRateLimit,
+  decideRateWake,
   EVENT_ID_BODY_LENGTH,
   EVENT_ID_PREFIX,
   EventSchema,
@@ -56,15 +59,21 @@ import {
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isLegacySpecVersion,
+  isRateEventType,
   isStartHookId,
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  MAX_RATE_WAIT_MS,
+  RATE_MAX_LATE_WAKES,
+  rateLimitIntervalUs,
+  rateLimitToleranceUs,
   readRunRetention,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_RATE_LIMITS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
@@ -73,6 +82,7 @@ import {
   TERMINAL_STEP_STATUSES,
   TERMINAL_WORKFLOW_RUN_STATUSES,
   validateAttributeChanges,
+  validateRateLimitCall,
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -123,6 +133,7 @@ import {
   type StartHookDecision,
   startHookConflict,
 } from './start-hook.js';
+import { parseStoredEvent, parseStoredEvents } from './stored-event.js';
 import { compact } from './util.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -478,6 +489,263 @@ async function fencedInsertAttempt(
  * or before the hook, wait or step row is, so the run row is always locked
  * first, as every other writer of both does.
  */
+// ---------------------------------------------------------- rate limits
+
+/** What a `rate_created` (or a call reserved again) asks for. */
+interface RateCallRequest {
+  key: string;
+  limit: number;
+  periodMs: number;
+  burst?: number;
+  expiresAt: Date | string;
+  creatorMessageId?: string;
+}
+
+/** The event committed in place of a rate write. */
+interface RateCommit {
+  eventType: 'rate_created' | 'rate_acquired' | 'rate_failed';
+  eventData: Record<string, unknown>;
+}
+
+/**
+ * Reserves one call's slot on its key, under the key row's lock, in the
+ * caller's transaction, and returns the event to commit in place of the
+ * request: `rate_acquired` (the slot is now), `rate_created` with
+ * `acquireAt` (later), or `rate_failed` (past its deadline, nothing
+ * reserved). The same decision as world-local's `decideRateCreated` and the
+ * Vercel World's backend.
+ *
+ * Race-free across runs: the row is inserted (idle) if missing, then locked
+ * `FOR UPDATE` before it is read, and the new `tat` is written before the
+ * transaction commits. Two transactions inserting a new key serialize on its
+ * primary key (the second's insert waits for the first, then does nothing),
+ * and every reservation of a key reads, under the lock, the `tat` the last
+ * one committed. Taken after the run's fence lock, one key per transaction,
+ * so it cannot deadlock against another run's write.
+ */
+async function reserveRateSlot(
+  db: DrizzleLike,
+  scope: string,
+  request: RateCallRequest,
+  // The World's own count of late wakes, for a call reserved again.
+  lateWakes: number,
+  // The committed event's createdAt: an in-place `rate_acquired` is never
+  // after it.
+  createdAt: Date
+): Promise<RateCommit> {
+  const call = {
+    key: request.key,
+    limit: request.limit,
+    periodMs: request.periodMs,
+    ...(request.burst !== undefined &&
+      request.burst > 1 && { burst: request.burst }),
+  };
+  try {
+    // The burst as sent, so a 0 or a fraction is refused rather than read as
+    // no burst.
+    validateRateLimitCall({
+      ...call,
+      ...(request.burst !== undefined && { burst: request.burst }),
+    });
+  } catch (error) {
+    throw new WorkflowWorldError((error as Error).message, { status: 400 });
+  }
+  const requested = new Date(request.expiresAt);
+  if (!Number.isFinite(requested.getTime())) {
+    throw new WorkflowWorldError('rate_created requires expiresAt as a date', {
+      status: 400,
+    });
+  }
+  await db
+    .insert(Schema.rateLimits)
+    .values({ scope, key: call.key, tatUs: null })
+    .onConflictDoNothing();
+  const [row] = await db
+    .select({ tatUs: Schema.rateLimits.tatUs })
+    .from(Schema.rateLimits)
+    .where(
+      and(
+        eq(Schema.rateLimits.scope, scope),
+        eq(Schema.rateLimits.key, call.key)
+      )
+    )
+    .for('update')
+    .limit(1);
+  // The World's clock, read under the lock, not the orchestrator's
+  // `occurredAt`.
+  const nowMs = Date.now();
+  const nowUs = nowMs * 1000;
+  // Capped at 30 days, and recorded capped.
+  const expiresAt = new Date(
+    Math.min(requested.getTime(), nowMs + MAX_RATE_WAIT_MS)
+  );
+  const decision = decideRateLimit({
+    tatUs: row?.tatUs ?? undefined,
+    intervalUs: rateLimitIntervalUs(call),
+    toleranceUs: rateLimitToleranceUs(call),
+    nowUs,
+    deadlineUs: expiresAt.getTime() * 1000,
+  });
+  const recorded = {
+    ...call,
+    expiresAt,
+    ...(lateWakes > 0 && { lateWakes }),
+  };
+  if (decision.status === 'deadline_exceeded') {
+    return {
+      eventType: 'rate_failed',
+      eventData: {
+        ...recorded,
+        reason: 'max_wait',
+        acquireAt: new Date(Math.ceil(decision.wouldAcquireAtUs / 1000)),
+      },
+    };
+  }
+  await db
+    .update(Schema.rateLimits)
+    .set({ tatUs: decision.tatUs })
+    .where(
+      and(
+        eq(Schema.rateLimits.scope, scope),
+        eq(Schema.rateLimits.key, call.key)
+      )
+    );
+  if (decision.acquireAtUs <= nowUs) {
+    // Never after the event's own createdAt: rounded down, and capped.
+    return {
+      eventType: 'rate_acquired',
+      eventData: {
+        ...recorded,
+        acquireAt: new Date(
+          Math.min(Math.floor(decision.acquireAtUs / 1000), createdAt.getTime())
+        ),
+      },
+    };
+  }
+  // Rounded up, so the run never wakes before its slot.
+  return {
+    eventType: 'rate_created',
+    eventData: {
+      ...recorded,
+      acquireAt: new Date(Math.ceil(decision.acquireAtUs / 1000)),
+      ...(request.creatorMessageId !== undefined && {
+        creatorMessageId: request.creatorMessageId,
+      }),
+    },
+  };
+}
+
+/**
+ * Checks a `rate_acquired` against the `rate_created` its `createdSlot`
+ * names and returns what to commit: the recorded `acquireAt` within the
+ * call's grace, or, woken past it, what reserving the call again decided
+ * (see `decideRateWake`). The same checks as world-local's `acquireRate`.
+ */
+async function acquireRateSlot(
+  db: DrizzleLike,
+  scope: string,
+  runId: string,
+  correlationId: string,
+  eventData: { createdSlot?: unknown },
+  createdAt: Date
+): Promise<RateCommit> {
+  const createdSlot = eventData.createdSlot;
+  if (
+    typeof createdSlot !== 'number' ||
+    !Number.isSafeInteger(createdSlot) ||
+    createdSlot < 1
+  ) {
+    throw new WorkflowWorldError(
+      'rate_acquired requires eventData.createdSlot as a positive integer',
+      { status: 400 }
+    );
+  }
+  const createdEventId = slotToEventId(createdSlot);
+  const [row] = await db
+    .select()
+    .from(Schema.events)
+    .where(
+      and(
+        eq(Schema.events.runId, runId),
+        eq(Schema.events.eventId, createdEventId)
+      )
+    )
+    .limit(1);
+  let created: Event | undefined;
+  if (row) created = await parseStoredEvent(db, row);
+  if (
+    created?.eventType !== 'rate_created' ||
+    created.correlationId !== correlationId ||
+    created.eventData.acquireAt === undefined
+  ) {
+    throw new EntityConflictError(
+      `Slot ${createdSlot} does not hold the rate_created of ${correlationId}`
+    );
+  }
+  // Settled: acquired, failed, or reserved again past its grace window
+  // (anything of the call's after it in the log).
+  const [later] = await db
+    .select({ eventId: Schema.events.eventId })
+    .from(Schema.events)
+    .where(
+      and(
+        eq(Schema.events.runId, runId),
+        eq(Schema.events.correlationId, correlationId),
+        gt(Schema.events.eventId, createdEventId)
+      )
+    )
+    .limit(1);
+  if (later) {
+    throw new EntityConflictError(`${correlationId} was already acquired`);
+  }
+  const acquireAt = new Date(created.eventData.acquireAt);
+  const waitMs = acquireAt.getTime() - Date.now();
+  if (waitMs > 0) {
+    throw new TooEarlyError(
+      `Cannot acquire ${correlationId} before ${acquireAt.toISOString()}`,
+      { retryAfter: Math.ceil(waitMs / 1000) }
+    );
+  }
+  const lateWakes = created.eventData.lateWakes ?? 0;
+  const wake = decideRateWake({
+    acquireAt,
+    nowMs: Date.now(),
+    periodMs: created.eventData.periodMs,
+    lateWakes,
+    expiresAt: new Date(created.eventData.expiresAt),
+  });
+  if (wake === 'reserve_again') {
+    // Woken past its grace window: reserved again from what the call
+    // recorded, with one more late wake.
+    return reserveRateSlot(
+      db,
+      scope,
+      created.eventData,
+      Math.min(lateWakes + 1, RATE_MAX_LATE_WAKES),
+      createdAt
+    );
+  }
+  const {
+    creatorMessageId: _creator,
+    lateWakes: _lateWakes,
+    ...call
+  } = created.eventData;
+  if (wake === 'fail') {
+    // Late past its largest grace and past its own deadline: it fails as a
+    // call past its maxWait would, rather than going ahead after it.
+    return {
+      eventType: 'rate_failed',
+      eventData: {
+        ...call,
+        ...(lateWakes > 0 && { lateWakes }),
+        reason: 'max_wait',
+        acquireAt,
+      },
+    };
+  }
+  return { eventType: 'rate_acquired', eventData: { ...call, createdSlot } };
+}
+
 async function markWakePending(db: DrizzleLike, runId: string): Promise<void> {
   await db
     .update(Schema.runs)
@@ -638,10 +906,9 @@ async function reportSkippedSlots(
       )
     )
     .orderBy(Schema.events.eventId);
-  const events = rows.map((row) => {
-    row.eventData ||= row.eventDataJson;
-    return stripEventDataRefs(EventSchema.parse(compact(row)), resolveData);
-  });
+  const events = (await parseStoredEvents(db, rows)).map((event) =>
+    stripEventDataRefs(event, resolveData)
+  );
   return {
     events,
     hasMore: events.length < committedSlot - askedFor - 1,
@@ -706,9 +973,7 @@ async function createHookResume(
       )
       .limit(1);
     if (prior) {
-      const parsed = EventSchema.parse(
-        compact({ ...prior, eventData: prior.eventData ?? prior.eventDataJson })
-      );
+      const parsed = await parseStoredEvent(tx, prior);
       if (
         parsed.eventType !== 'hook_received' ||
         prior.correlationId !== data.correlationId ||
@@ -776,16 +1041,8 @@ async function createHookResume(
       )
       .orderBy(Schema.events.eventId)
       .limit(101);
-    const events = rows.slice(0, 100).map((row) =>
-      stripEventDataRefs(
-        EventSchema.parse(
-          compact({
-            ...row,
-            eventData: row.eventData ?? row.eventDataJson,
-          })
-        ),
-        resolveData
-      )
+    const events = (await parseStoredEvents(drizzle, rows.slice(0, 100))).map(
+      (event) => stripEventDataRefs(event, resolveData)
     );
     return {
       ...result,
@@ -1407,12 +1664,21 @@ export function createEventsStorage(
      * no `subscribe`. Writes announce spec 9 runs on it either way.
      */
     runEventsFeed?: RunEventsFeed;
+    /**
+     * What `experimental_rateLimit()` keys are shared within: every run
+     * created with the same scope shares a key's rate. `createWorld` passes
+     * its base `jobPrefix` (without the deployment), so the deployments of
+     * one app share their keys and apps sharing a database do not. Omitted,
+     * every run on the database shares them.
+     */
+    rateLimitScope?: string;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix, purgeTask, runEventsFeed } = options;
+  const { jobPrefix, purgeTask, runEventsFeed, rateLimitScope } = options;
   const events = createUnfencedEventsStorage(drizzle, {
     jobPrefix,
     purgeTask,
+    rateLimitScope,
   });
   const unfencedCreate = events.create as (
     runId: string | null,
@@ -1424,6 +1690,14 @@ export function createEventsStorage(
     data: AnyEventRequest,
     params?: CreateEventParams
   ): Promise<EventResult> => {
+    // Rate limit calls (spec >= 10): decided in the fenced write's
+    // transaction (see the rate branch of `create` below). Not a request
+    // type, but a client can still send one.
+    if ((data.eventType as string) === 'rate_failed') {
+      throw new WorkflowWorldError('rate_failed is written only by the World', {
+        status: 400,
+      });
+    }
     const result = await createFenced(runId, data, params);
     // Wakes the live feed (see run-events.ts), in any process, of every
     // spec 9 run the write committed an event to. Only a spec 9 run has
@@ -1489,6 +1763,7 @@ export function createEventsStorage(
       const inTransaction = createUnfencedEventsStorage(tx, {
         jobPrefix,
         purgeTask,
+        rateLimitScope,
         deferTerminal: (terminal) => terminalRuns.push(terminal),
       }).create as (
         runId: string | null,
@@ -1635,9 +1910,12 @@ function createUnfencedEventsStorage(
     purgeTask?: string;
     /** See `DeferredTerminal`. */
     deferTerminal?: (terminal: DeferredTerminal) => void;
+    /** See `createEventsStorage`. */
+    rateLimitScope?: string;
   } = {}
 ): Storage['events'] {
   const { jobPrefix, purgeTask } = options;
+  const rateLimitScope = options.rateLimitScope ?? '';
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -2106,6 +2384,40 @@ function createUnfencedEventsStorage(
             `Cannot set attributes on run in terminal state "${currentRun.status}"`
           );
         }
+      }
+
+      // Rate limit calls (spec >= 10): below the in-band fence (a fenced
+      // write took the run's slots lock before getting here) and the
+      // terminal-run checks above, so a write either refuses reserves
+      // nothing. See `rateLimits` on `WorldCapabilities` for the contract.
+      if (isRateEventType(data.eventType)) {
+        if ((currentRun?.specVersion ?? 0) < SPEC_VERSION_RATE_LIMITS) {
+          throw new WorkflowWorldError(
+            `${data.eventType} can only be written to a run stamped at spec version ${SPEC_VERSION_RATE_LIMITS} or later`,
+            { status: 400 }
+          );
+        }
+        if (params?.inBand !== true) {
+          throw new WorkflowWorldError(
+            `${data.eventType} is written only by the run's orchestrator (in-band)`,
+            { status: 400 }
+          );
+        }
+      }
+
+      // A single-orchestrator run's waits are completed only by its
+      // orchestrator, which runs ahead of far-off waits on that assumption;
+      // an out-of-band completion could land below its speculative writes.
+      // Waking the run asks the orchestrator to write it instead.
+      if (
+        data.eventType === 'wait_completed' &&
+        params?.inBand !== true &&
+        (currentRun?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+      ) {
+        throw new WorkflowWorldError(
+          "On a single-orchestrator run, wait_completed is written only by the run's orchestrator. Wake the run instead; its orchestrator completes the wait.",
+          { status: 409, code: 'wait-completion-in-band-only' }
+        );
       }
 
       // Step-related event validation (ordering and terminal state)
@@ -3684,6 +3996,119 @@ function createUnfencedEventsStorage(
         }, SLOT_INSERT_TRANSACTION);
       }
 
+      // Rate limit calls: reserve the call's slot on its key and commit what
+      // that decided IN PLACE of the request, in one transaction with the
+      // event (the fenced write's, which holds the run's slots lock). A
+      // refused or failed write reserves nothing.
+      let rateCommittedType: RateCommit['eventType'] | undefined;
+      if (
+        data.eventType === 'rate_created' ||
+        data.eventType === 'rate_acquired'
+      ) {
+        const correlationId = data.correlationId;
+        const rateEventData = (data as { eventData: Record<string, unknown> })
+          .eventData;
+        const occurredAt =
+          params?.occurredAt !== undefined &&
+          !Number.isNaN(+new Date(params.occurredAt))
+            ? new Date(params.occurredAt)
+            : undefined;
+        value = await drizzle.transaction(async (tx) => {
+          // The run row's lock, as a terminal transition takes it, so a run
+          // cancelled out of band in the meantime reserves nothing for a
+          // late wake (a `rate_created` on a finished run is already
+          // refused as a new entity, above).
+          const [runRow] = await tx
+            .select({
+              status: Schema.runs.status,
+              // The transaction's `now()`, the createdAt of an event it
+              // inserts without an `occurredAt`.
+              dbNow: sql<Date | string>`now()`,
+            })
+            .from(Schema.runs)
+            .where(eq(Schema.runs.runId, effectiveRunId))
+            .for('update')
+            .limit(1);
+          if (!runRow) throw new WorkflowRunNotFoundError(effectiveRunId);
+          // The committed event's createdAt: an in-band write is stored at
+          // its `occurredAt` (see `fencedInsertAttempt`), otherwise at the
+          // transaction's `now()`.
+          const createdAt = occurredAt ?? new Date(runRow.dbNow);
+          if (isTerminalWorkflowRunStatus(runRow.status)) {
+            throw new EntityConflictError(
+              data.eventType === 'rate_acquired'
+                ? `Cannot acquire a rate limit slot on run in terminal state "${runRow.status}"`
+                : `Cannot create new entities on run in terminal state "${runRow.status}"`
+            );
+          }
+          let committed: RateCommit;
+          if (data.eventType === 'rate_created') {
+            // One call is one rate_created request: a second for the same
+            // id would reserve another slot for a call already decided.
+            const [existing] = await tx
+              .select({ eventId: events.eventId })
+              .from(events)
+              .where(
+                and(
+                  eq(events.runId, effectiveRunId),
+                  eq(events.correlationId, correlationId)
+                )
+              )
+              .limit(1);
+            if (existing) {
+              throw new EntityConflictError(
+                `Rate limit call "${correlationId}" already exists`
+              );
+            }
+            // The reserved `$` namespace, checked on the request only: a
+            // call reserved again was checked when it was made.
+            try {
+              assertRateLimitKeyAllowed(
+                rateEventData.key as string,
+                rateEventData.allowReservedKey as boolean | undefined
+              );
+            } catch (error) {
+              throw new WorkflowWorldError((error as Error).message, {
+                status: 400,
+              });
+            }
+            committed = await reserveRateSlot(
+              tx,
+              rateLimitScope,
+              rateEventData as unknown as RateCallRequest,
+              0,
+              createdAt
+            );
+          } else {
+            committed = await acquireRateSlot(
+              tx,
+              rateLimitScope,
+              effectiveRunId,
+              correlationId,
+              rateEventData,
+              createdAt
+            );
+          }
+          const eventValue = await insertEventRow(tx, {
+            runId: effectiveRunId,
+            eventId: await getEventId(tx),
+            correlationId,
+            eventType: committed.eventType,
+            eventData: committed.eventData,
+            specVersion: effectiveSpecVersion,
+          });
+          if (!eventValue) {
+            throw new EntityConflictError(
+              `${data.eventType} for run "${effectiveRunId}" could not be created`
+            );
+          }
+          eventId = eventValue.eventId;
+          storedEventData = committed.eventData;
+          rateCommittedType = committed.eventType;
+          return { createdAt: eventValue.createdAt };
+        }, SLOT_INSERT_TRANSACTION);
+      }
+
       // Handle wait_created event: create the wait entity and its event in ONE
       // transaction. Committed separately, a process that dies between the
       // two leaves a wait row with no wait_created, and every redelivery is
@@ -3945,6 +4370,10 @@ function createUnfencedEventsStorage(
         ...(storedEventData !== undefined
           ? { eventData: storedEventData }
           : {}),
+        // What a rate write committed in place of the request.
+        ...(rateCommittedType !== undefined
+          ? { eventType: rateCommittedType }
+          : {}),
       };
       // Strip eventData leaked by ...data spread for run_started events.
       // The eventData (run input for resilient start) belongs on
@@ -3992,11 +4421,9 @@ function createUnfencedEventsStorage(
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        const data = eventRows.map((e) => {
-          e.eventData ||= e.eventDataJson;
-          const parsed = EventSchema.parse(compact(e));
-          return stripEventDataRefs(parsed, resolveData);
-        });
+        const data = (await parseStoredEvents(drizzle, eventRows)).map(
+          (event) => stripEventDataRefs(event, resolveData)
+        );
         eventPage = {
           data,
           cursor: data.at(-1)?.eventId ?? null,
@@ -4025,10 +4452,9 @@ function createUnfencedEventsStorage(
           .orderBy(Schema.events.eventId)
           .limit(limit + 1);
         const page = deltaRows.slice(0, limit);
-        const data = page.map((e) => {
-          e.eventData ||= e.eventDataJson;
-          return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
-        });
+        const data = (await parseStoredEvents(drizzle, page)).map((event) =>
+          stripEventDataRefs(event, resolveData)
+        );
         eventPage = {
           data,
           cursor: data.at(-1)?.eventId ?? null,
@@ -4108,10 +4534,11 @@ function createUnfencedEventsStorage(
         throw new WorkflowWorldError(`Event not found: ${eventId}`);
       }
 
-      value.eventData ||= value.eventDataJson;
-      const parsed = EventSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
-      return stripEventDataRefs(parsed, resolveData);
+      return stripEventDataRefs(
+        await parseStoredEvent(drizzle, value),
+        resolveData
+      );
     },
     async list(params: ListEventsParams): Promise<EventListResponse> {
       const limit = params.pagination?.limit ?? getMaxEventsPerRun();
@@ -4143,9 +4570,7 @@ function createUnfencedEventsStorage(
           .limit(pageLimit + 1);
         const page = rows.slice(0, pageLimit);
 
-        for (const row of page) {
-          row.eventData ||= row.eventDataJson;
-          const event = EventSchema.parse(compact(row));
+        for (const event of await parseStoredEvents(drizzle, page)) {
           data.push(stripEventDataRefs(event, resolveData));
         }
 
@@ -4193,11 +4618,9 @@ function createUnfencedEventsStorage(
 
       const resolveData = params?.resolveData ?? 'all';
       return {
-        data: values.map((v) => {
-          v.eventData ||= v.eventDataJson;
-          const parsed = EventSchema.parse(compact(v));
-          return stripEventDataRefs(parsed, resolveData);
-        }),
+        data: (await parseStoredEvents(drizzle, values)).map((event) =>
+          stripEventDataRefs(event, resolveData)
+        ),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
       };

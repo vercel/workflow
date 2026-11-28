@@ -7,14 +7,14 @@ const kbdVariants = cva(
   {
     variants: {
       variant: {
-        subtle: 'bg-background-100/20',
+        subtle: 'bg-gray-400',
         outline:
-          'border border-gray-alpha-400 bg-background-100 font-medium text-gray-900',
+          'bg-background-100 font-medium text-gray-900 shadow-[0_0_0_1px_var(--ds-gray-alpha-400)]',
       },
       size: {
         default: 'h-5 min-w-5 text-label-12 leading-none',
-        compact: 'h-4 min-h-4 min-w-4 text-[11px] leading-none',
-        search: 'h-5 min-h-5 min-w-5 text-label-13 leading-[1.7em]',
+        compact: 'h-5 min-h-5 min-w-5 text-label-12',
+        search: 'h-5 min-h-5 min-w-5 text-label-12',
       },
     },
     defaultVariants: {

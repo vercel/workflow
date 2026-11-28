@@ -4,6 +4,7 @@ import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
+import { isVercelWorldTarget } from '@workflow/utils';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -27,6 +28,7 @@ import {
 import { stringifyJSON } from './json.js';
 import { formatRelativeTime } from './relative-time.js';
 import { resolveTimeWindow } from './time-window.js';
+import { formatRunUsageText, usageTextColor } from './usage.js';
 import { resolveWorkflowNameFilter } from './workflow-name.js';
 
 /**
@@ -918,6 +920,44 @@ export const showRun = async (
   }
 };
 
+/**
+ * `inspect run <id> --usage`: the run's usage (`RunUsage`). Only Worlds that implement `experimental_usage` (world-local
+ * today) have it; elsewhere this fails rather than printing the run.
+ */
+export const showRunUsage = async (
+  world: World,
+  runId: string,
+  opts: InspectCLIOptions = {}
+) => {
+  if (!world.experimental_usage) {
+    logger.error(
+      'Run usage is only available for the local backend so far. Run `workflow inspect run <id> --usage --backend local` against a local data directory.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const usage = await world.experimental_usage.getRun(runId);
+    if (opts.json) {
+      showJson(usage);
+      return;
+    }
+    logger.log(
+      formatRunUsageText(usage, {
+        color: usageTextColor(),
+        pricing: isVercelWorldTarget(
+          opts.backend ?? process.env.WORKFLOW_TARGET_WORLD ?? ''
+        ),
+      })
+    );
+  } catch (error) {
+    if (handleApiError(error, opts.backend)) {
+      process.exit(1);
+    }
+    throw error;
+  }
+};
+
 export const listSteps = async (
   world: World,
   opts: InspectCLIOptions = {
@@ -1688,8 +1728,10 @@ export const listSleeps = async (
           eventId: waitCreated.eventId,
           createdAt: waitCreated.createdAt,
           resumeAt:
+            // A run whose data was deleted lists its events without
+            // `eventData`.
             waitCreated.eventType === 'wait_created'
-              ? waitCreated.eventData.resumeAt
+              ? waitCreated.eventData?.resumeAt
               : undefined,
           completedAt: waitCompleted?.createdAt,
         };

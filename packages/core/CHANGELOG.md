@@ -1,5 +1,57 @@
 # @workflow/core
 
+## 5.8.0
+
+### Minor Changes
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Add `burst` to `experimental_rateLimit()`: an idle key admits up to `burst` calls at once (default 1, and up to a day of the rate, so it may exceed `limit`), then refills one per interval, like a token bucket.
+
+- [#5538](https://github.com/vercel/workflow/pull/5538) [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Add `experimental_rateLimit()` for spec 10 runs on both the node:vm and QuickJS engines, driven by the single orchestrator like `sleep()`.
+
+- [#5622](https://github.com/vercel/workflow/pull/5622) [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - New runs on the Vercel, Local and Postgres Worlds now use a new execution engine that supports speculative execution, and vastly reduces engine overhead. `WORKFLOW_SPEC_VERSION=8` opts out. Runs on third-party worlds use the old engine (spec 8) unless they implement the prerequisites.
+
+### Patch Changes
+
+- [#5688](https://github.com/vercel/workflow/pull/5688) [`40f340a`](https://github.com/vercel/workflow/commit/40f340a9ffae5385beab8eac778ce81e73583348) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` again before QuickJS stores VM snapshots for runs without an encryption key, since a snapshot holds the handler's environment variables.
+
+- [#5654](https://github.com/vercel/workflow/pull/5654) [`1b0f72b`](https://github.com/vercel/workflow/commit/1b0f72b6f27373e38a2b2fac0c34e1eeeba35d23) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Send a run's wait timers concurrently instead of one at a time.
+
+- [#5685](https://github.com/vercel/workflow/pull/5685) [`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116) Thanks [@pranaygp](https://github.com/pranaygp)! - Keep the skipped-slot report of a batch whose first rate limit write is refused or sent again, so events another writer appended below it still reach the run.
+
+- [#5647](https://github.com/vercel/workflow/pull/5647) [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Send `experimental_rateLimit()` calls made at once in one batch.
+- Updated dependencies [[`002a324`](https://github.com/vercel/workflow/commit/002a324af002bb3d8bb5f50b7f07330bb089f116), [`7854d50`](https://github.com/vercel/workflow/commit/7854d5018ec0254ab80c86bb08471796eb2b84ff), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`03b8d82`](https://github.com/vercel/workflow/commit/03b8d82429c6da776eeb0be754a7b57f878ee4a9), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0), [`09a1f93`](https://github.com/vercel/workflow/commit/09a1f9373816b422883122f4356e72a2585df6a0)]:
+  - @workflow/world@5.4.0
+  - @workflow/world-vercel@5.8.0
+  - @workflow/world-local@5.6.0
+  - @workflow/errors@5.2.0
+
+## 5.7.2
+
+### Patch Changes
+
+- [#5649](https://github.com/vercel/workflow/pull/5649) [`3b86e28`](https://github.com/vercel/workflow/commit/3b86e28977f6195470c2a008ee3d8ff6431ae992) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a spec 9 run sometimes requiring a full event log reload when an incremental read of the event log moved its position past an event it did not take in when merging speculative writes.
+- Updated dependencies [[`9fb1ab2`](https://github.com/vercel/workflow/commit/9fb1ab27cd4f69a4c341ad3f86fd26a1a22e378a)]:
+  - @workflow/world@5.3.1
+  - @workflow/world-local@5.5.2
+  - @workflow/errors@5.1.6
+  - @workflow/world-vercel@5.7.2
+
+## 5.7.1
+
+### Patch Changes
+
+- [#5502](https://github.com/vercel/workflow/pull/5502) [`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62) Thanks [@pranaygp](https://github.com/pranaygp)! - Throw `DynamicWorkflowsNotEnabledError` instead of `WorkflowRuntimeError` when dynamic workflows are not enabled, at `start()` and on delivery, so a run that fails on it is recorded as `USER_ERROR` instead of `RUNTIME_ERROR`. Code that caught this refusal with `WorkflowRuntimeError.is(err)` should check `DynamicWorkflowsNotEnabledError.is(err)` instead.
+
+- [#5618](https://github.com/vercel/workflow/pull/5618) [`bad8cf0`](https://github.com/vercel/workflow/commit/bad8cf032d7a619307c3fdff6930e8244b702a03) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - An abort published by a workflow or a step reaches the inline steps running in the same process directly, so a race's loser on a zero-retention run is still aborted when the run's end clears the abort stream before the step reads it.
+
+- [#5643](https://github.com/vercel/workflow/pull/5643) [`a5e6933`](https://github.com/vercel/workflow/commit/a5e6933232d468de5db1b87d46ca1762aa32ca6c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Close a remaining spec 9 run-ahead gap: an incremental read of the event log could bring a committed event to a slot the orchestrator held another event's speculative copy at, drop it, and let a pass run before the log was repaired. A read now follows the same rule as the live feed and a write's answer, and the repair runs before the next pass.
+
+- [#5627](https://github.com/vercel/workflow/pull/5627) [`b5fa392`](https://github.com/vercel/workflow/commit/b5fa392f27f28a915ad18d733da0dfbb0aa7acc6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix spec 9 runs that failed with `CORRUPTED_EVENT_LOG` ("Workflow replay diverged …" or "has a hole at slot …"), or never completed, after the orchestrator ran ahead of its writes while the live event feed delivered one of those writes before its answer. The orchestrator then placed later speculative events at the wrong slots, where two events could share an id and one of them, a step's outcome among them, was dropped from the log the workflow consumed. Each position is now counted once, no two events share a slot, a step outcome still being written is taken in before any speculative one placed after it, and a committed event is never dropped in favour of a speculative one.
+- Updated dependencies [[`16c62b4`](https://github.com/vercel/workflow/commit/16c62b46e16023c66bc4e3c60b4605e43a31af62)]:
+  - @workflow/errors@5.1.5
+  - @workflow/world-local@5.5.1
+  - @workflow/world-vercel@5.7.1
+
 ## 5.7.0
 
 ### Minor Changes

@@ -3,9 +3,9 @@ import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 
 /**
- * Step, wait, hook and attribute correlation ids share one ULID draw per
- * entity, prefixed by kind (`step_<ulid>`, `wait_<ulid>`, `hook_<ulid>`,
- * `attr_<ulid>`). A replay that drew the same ordinal for a different kind of
+ * Step, wait, hook, rate limit and attribute correlation ids share one ULID
+ * draw per entity, prefixed by kind (`step_<ulid>`, `wait_<ulid>`,
+ * `hook_<ulid>`, `rate_<ulid>`, `attr_<ulid>`). A replay that drew the same ordinal for a different kind of
  * entity than the one the log recorded there produces an event nobody can
  * consume, and the decisive fact for diagnosing that is which pending
  * invocation currently holds the ordinal. This looks it up by the shared ULID
@@ -39,6 +39,8 @@ function describeQueueItem(item: QueueItem): string {
       return `hook (${item.correlationId})`;
     case 'wait':
       return `wait (${item.correlationId})`;
+    case 'rate':
+      return `rate limit ${JSON.stringify(item.key)} (${item.correlationId})`;
     case 'attribute':
       return `attribute (${item.correlationId})`;
   }

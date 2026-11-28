@@ -34,7 +34,10 @@ const NULL = sql`NULL`;
  *
  * **The rows themselves stay.** Only user data goes, so a purged run is still
  * listable and still traceable — it just reads back as expired. That is the
- * contract the Vercel World implements and this one matches it.
+ * contract the Vercel World implements and this one matches it. An event
+ * loses its whole `eventData`, which most event types require, so the event
+ * reads go through `parseStoredEvent` (`./stored-event.ts`) and return it with
+ * its id, type, correlation id and time.
  *
  * **Ordering is a non-issue here, deliberately.** The rule it would otherwise
  * have to satisfy is that data must become *unreadable* no later than it
@@ -52,15 +55,18 @@ const NULL = sql`NULL`;
  * stream list into an empty one. An empty `bytea` holds no user data and
  * keeps both behaviors intact.
  *
- * Bounded by the transaction's snapshot: a chunk or event written concurrently
- * by a writer that has not yet committed is not cleared here. The writes a
- * finished run still takes are covered where they are made: a step still
- * running when the run finished (a `Promise.race` loser) settles with
- * `scrubStepWriteIfRunPurged` after its write, and a stream chunk is not
- * written to a purged run at all (see the streamer). Both take the run's row
- * lock to read `expired_at`, so they wait for a purge in progress, and a purge
- * waits for them. That depends on the purge updating the run row first,
- * before any row it clears: keep that statement first.
+ * Each statement sees only rows committed before it starts: a chunk or event
+ * written concurrently by a writer that has not yet committed is not cleared
+ * by it. The writes a finished run still takes are covered where they are
+ * made: a step still running when the run finished (a `Promise.race` loser)
+ * settles with `scrubStepWriteIfRunPurged` after its write, and a stream
+ * chunk insert holds the run's row lock (`FOR SHARE`) until it commits,
+ * whatever the run's state, so the purge's first statement waits for it and
+ * the stream clear below sees its rows; an insert that starts after that
+ * statement waits for the purge and writes nothing (see the streamer). That
+ * depends on the purge updating the run row first, before any row it clears,
+ * and on this transaction running at READ COMMITTED, so the later statements
+ * see what committed while the first waited: keep both.
  */
 export async function purgeRunUserData(
   drizzle: DrizzleHandle,
@@ -136,8 +142,17 @@ export async function purgeRunUserData(
     // finished run is never resumed from it, and a snapshot load does not
     // check the run's `expired_at`, so the row goes.
     await tx.delete(snapshots).where(eq(snapshots.runId, runId));
-  });
+  }, PURGE_TRANSACTION);
 }
+
+/**
+ * Isolation for {@link purgeRunUserData}, set rather than left to the
+ * database default: a statement under REPEATABLE READ or SERIALIZABLE would
+ * read the transaction's first snapshot, taken before the run update waited
+ * out a stream insert, and miss its chunks (`Var_RepeatableRead` in
+ * `tla/StreamPurge.tla`).
+ */
+const PURGE_TRANSACTION = { isolationLevel: 'read committed' } as const;
 
 /**
  * Purge a terminal run's user data if it asked for zero retention.

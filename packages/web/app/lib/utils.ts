@@ -2,8 +2,6 @@ export { formatDuration } from '@workflow/web-shared';
 
 export const DEFAULT_PAGE_SIZE = 10;
 
-export const LIVE_UPDATE_INTERVAL_MS = 5000;
-
 /**
  * Returns a formatted pagination display string
  * @param currentPage - The current page number
